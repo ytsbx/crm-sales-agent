@@ -1,4 +1,5 @@
 import { formatBeijingTime } from '../../shared/beijing-time'
+import { ApiError } from '../../shared/api/client'
 import { useState, type ComponentProps } from 'react'
 import {
   ConfirmRequiredModal,
@@ -49,6 +50,19 @@ const KIND_TONE: Record<string, TagColor> = {
   exception_route: 'red',
 }
 
+//: 条件操作符的展示符号。**单一来源**：编辑器的下拉、列表的触发条件、
+//: 版本详情、沙盒回退展示都从这里取，避免同一个 op 在四个地方写出四种样子。
+//: 后端 `OPS_LABEL` 是权威文案（发布确认、conditions_pretty 用它的符号），
+//: 这里只补前端自己拼文案时的兜底。
+const OP_LABEL: Record<string, string> = {
+  gte: '≥',
+  gt: '>',
+  lte: '≤',
+  lt: '<',
+  eq: '=',
+  in: '属于',
+}
+
 const KIND_HINT: Record<string, string> = {
   auto_pass: '条件全部命中 → 提交即通过，不进审批流（留痕可查）',
   express: '条件全部命中 → 跳过金额分档的高层级，由第一级（主管）直接审批',
@@ -78,6 +92,18 @@ export default function RulesPanel() {
   const queryClient = useQueryClient()
   const [editing, setEditing] = useState<DraftState | null>(null)
   const [versionTarget, setVersionTarget] = useState<ApprovalRuleRow | null>(null)
+  // 409 冲突提示：后端把「和哪条规则、哪两个阈值撞了」写在 message 里，
+  // 这里原样展示。发布/启用失败时只弹这个，不关编辑器、不改表单。
+  const [conflictNotice, setConflictNotice] = useState<{ title: string; message: string } | null>(
+    null,
+  )
+  const notifyConflict = (error: Error, verb: string): boolean => {
+    const status = (error as ApiError).status
+    const code = (error as ApiError).code
+    if (status !== 409 && code !== 40901) return false
+    setConflictNotice({ title: `规则冲突，未${verb}`, message: error.message })
+    return true
+  }
 
   const rulesQuery = useQuery({ queryKey: ['approval-rules'], queryFn: listApprovalRules })
   const fieldsQuery = useQuery({ queryKey: ['approval-rule-fields'], queryFn: listConditionFields })
@@ -117,8 +143,10 @@ export default function RulesPanel() {
     mutationFn: ({ id, enabled }: { id: number; enabled: boolean }) =>
       toggleApprovalRule(id, enabled),
     onSuccess: () => refresh(),
-    onError: (error: Error) => {
-      Toast.error(error.message)
+    onError: (error: Error, variables) => {
+      // 启用被 409 拦下：开关必须回到实际状态 —— 拉一次列表拿后端真实 enabled，
+      // 不做乐观更新（否则会显示成"已经开了"）。
+      if (!notifyConflict(error, variables.enabled ? '启用' : '停用')) Toast.error(error.message)
       refresh()
     },
   })
@@ -143,7 +171,9 @@ export default function RulesPanel() {
     onError: (error: Error, variables) => {
       if (isConfirmRequired(error)) {
         setPublishGate({ message: confirmMessageOf(error), ruleId: variables.id })
-      } else {
+      } else if (!notifyConflict(error, '发布')) {
+        // 发布失败不清草稿：草稿是后端的 rule.conditions，前端列表随后 refresh，
+        // 编辑器（如果开着）保持原样，用户改完阈值可以直接再发一次。
         Toast.error(error.message)
       }
     },
@@ -194,7 +224,7 @@ export default function RulesPanel() {
               <span key={index}>
                 {meta?.label ?? cond.field}{' '}
                 {row.conditions_pretty?.[index]?.value_label ??
-                  `${cond.op} ${String(cond.value)}`}
+                  `${OP_LABEL[cond.op] ?? cond.op} ${String(cond.value)}`}
               </span>
             )
           })}
@@ -269,6 +299,31 @@ export default function RulesPanel() {
 
   return (
     <>
+      <Modal
+        visible={conflictNotice !== null}
+        title={conflictNotice?.title ?? '规则冲突'}
+        width={560}
+        onCancel={() => setConflictNotice(null)}
+        footer={
+          <Button type="primary" onClick={() => setConflictNotice(null)}>
+            知道了
+          </Button>
+        }
+      >
+        <div
+          style={{
+            fontSize: 13,
+            lineHeight: 1.8,
+            color: 'var(--crm-text-1)',
+            padding: '2px 0 4px',
+          }}
+        >
+          {conflictNotice?.message}
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 10 }}>
+          这次没有写入任何配置：开关/发布状态保持原样，草稿也还在。
+        </div>
+      </Modal>
       <ConfirmRequiredModal
         visible={publishGate !== null}
         message={publishGate?.message ?? ''}
@@ -389,7 +444,7 @@ export default function RulesPanel() {
                         }}
                         optionList={(meta?.ops ?? ['gte']).map((op) => ({
                           value: op,
-                          label: op === 'gte' ? '≥' : op === 'lte' ? '≤' : op === 'eq' ? '=' : '属于',
+                          label: OP_LABEL[op] ?? op,
                         }))}
                       />
                       {meta?.value_type === 'bool' ? (
@@ -608,8 +663,7 @@ function VersionDrawer({
                   ? '没有条件，整单适用'
                   : (version.payload.conditions ?? []).map((cond, index) => {
                       const meta = fields.find((f) => f.field === cond.field)
-                      const symbol =
-                        cond.op === 'gte' ? '≥' : cond.op === 'lte' ? '≤' : cond.op === 'eq' ? '=' : '属于'
+                      const symbol = OP_LABEL[cond.op] ?? cond.op
                       const value =
                         typeof cond.value === 'boolean'
                           ? cond.value

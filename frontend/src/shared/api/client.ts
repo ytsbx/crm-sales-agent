@@ -7,11 +7,15 @@ import type { Envelope } from '../types'
 
 export class ApiError extends Error {
   code: number
+  /** HTTP 状态码（仅拦截器知道）。业务码 `code` 与状态码可能不同： */
+  /** 例如规则冲突是 code=40901 + status=409，调用方要按"是不是 409"分支时看 status。 */
+  status?: number
 
-  constructor(message: string, code: number) {
+  constructor(message: string, code: number, status?: number) {
     super(message)
     this.name = 'ApiError'
     this.code = code
+    this.status = status
   }
 }
 
@@ -143,7 +147,7 @@ http.interceptors.response.use(
       // 不属于当前登录态：只把这次的错误抛给调用方，不动登录态、不跳转。
       // （调用方本来就会把这条请求的错误显示/忽略掉，与"当前用户被踢出"是两件事。）
     }
-    return Promise.reject(new ApiError(message, code))
+    return Promise.reject(new ApiError(message, code, status))
   },
 )
 

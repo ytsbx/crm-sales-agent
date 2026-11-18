@@ -73,6 +73,60 @@ def _validate_payload(payload: RulePayload) -> None:
             raise AppError(ErrorCode.PARAM_ERROR, "异常会签使用独立的财务会签权限", 422)
 
 
+async def _conflicts_with_enabled_rules(
+    session: AsyncSession,
+    *,
+    rule: ApprovalRule,
+    conditions: list[dict],
+    verb: str,
+) -> None:
+    """候选规则与"其它已启用、已发布"的规则是否撞在同一个数值区间上。
+
+    只拿**已启用且已发布**的规则比：草稿、停用规则都不参与求值，拿它们比会误报。
+    对比的是对方**当前发布版本**的快照（引擎真正在用的那份），不是它的草稿。
+
+    有冲突就抛 409，message 里带对方规则名和两边阈值（前端原样展示）。
+    """
+    if not conditions:
+        return
+    rows = (
+        await session.execute(
+            select(ApprovalRule).where(
+                ApprovalRule.id != rule.id,
+                ApprovalRule.enabled.is_(True),
+                ApprovalRule.published_version_no > 0,
+            )
+        )
+    ).scalars().all()
+    messages: list[str] = []
+    for other in rows:
+        version = (
+            await session.execute(
+                select(ApprovalRuleVersion).where(
+                    ApprovalRuleVersion.rule_id == other.id,
+                    ApprovalRuleVersion.version_no == other.published_version_no,
+                )
+            )
+        ).scalar_one_or_none()
+        if version is None:
+            continue
+        other_conditions = (version.payload or {}).get("conditions") or []
+        message = rules_engine.conflict_between(
+            {"conditions": conditions},
+            {"conditions": other_conditions},
+            first_rule=rule.name,
+            second_rule=other.name,
+        )
+        if message:
+            messages.append(message)
+    if messages:
+        raise AppError(
+            ErrorCode.DUPLICATE,
+            f"存在规则冲突，未{verb}：" + "；".join(messages),
+            409,
+        )
+
+
 def _snapshot(rule: ApprovalRule) -> dict:
     return {
         "name": rule.name,
@@ -322,6 +376,19 @@ async def toggle_rule(
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED, "该规则从未发布过，请先发布再启用", 422
         )
+    if payload.enabled:
+        version = (
+            await session.execute(
+                select(ApprovalRuleVersion).where(
+                    ApprovalRuleVersion.rule_id == rule.id,
+                    ApprovalRuleVersion.version_no == rule.published_version_no,
+                )
+            )
+        ).scalar_one_or_none()
+        conditions = ((version.payload or {}) if version else {}).get("conditions") or []
+        await _conflicts_with_enabled_rules(
+            session, rule=rule, conditions=conditions, verb="启用"
+        )
     before = rule.enabled
     rule.enabled = payload.enabled
     await session.flush()
@@ -386,6 +453,10 @@ async def publish_rule(
             description=rule.description,
         )
     )
+    if rule.enabled:
+        await _conflicts_with_enabled_rules(
+            session, rule=rule, conditions=rule.conditions or [], verb="发布"
+        )
     new_no = rule.published_version_no + 1
     session.add(
         ApprovalRuleVersion(

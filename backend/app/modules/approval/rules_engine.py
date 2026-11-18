@@ -38,32 +38,113 @@ from app.modules.order.model import SalesOrder
 # 前端编辑器的字段/操作符下拉、沙盒的展示文案都以这份目录为准（单一事实来源）。
 CONTEXT_FIELDS = [
     {"field": "total_amount", "label": "报价总金额", "value_type": "number", "unit": "元",
-     "ops": ["gte", "lte"], "hint": "人民币口径，外币按快照汇率折算"},
+     "ops": ["gte", "gt", "lte", "lt"], "hint": "人民币口径，外币按快照汇率折算"},
     #: ⚠️ `cost_sensitive=True` = **由成本推出的字段**（第十批审查 ③，2026-10-13）。
     #: 没有 `price:manage` 的人拿到它就能反推成本：
     #: 售价 100、毛利率 80% → 成本 20。所有读出口（沙盒、审批详情）必须按权限
     #: 置空，见 `strip_cost_context`。
     {"field": "gross_margin", "label": "综合毛利率", "value_type": "number", "unit": "%",
-     "ops": ["gte", "lte"], "cost_sensitive": True,
+     "ops": ["gte", "gt", "lte", "lt"], "cost_sensitive": True,
      "hint": "整单（含运费）的加权毛利率"},
     {"field": "min_item_margin", "label": "最低明细毛利率", "value_type": "number", "unit": "%",
-     "ops": ["gte", "lte"], "cost_sensitive": True,
+     "ops": ["gte", "gt", "lte", "lt"], "cost_sensitive": True,
      "hint": "所有明细里最差一行的毛利率"},
     {"field": "customer_level", "label": "客户等级", "value_type": "string", "unit": "",
      "ops": ["in", "eq"], "hint": "客户档案上的等级（A/B/C/D）"},
     {"field": "customer_has_overdue", "label": "客户有逾期应收", "value_type": "bool", "unit": "",
      "ops": ["eq"], "hint": "该客户名下存在逾期状态的应收计划"},
     {"field": "concession_amount", "label": "较上一版让价金额", "value_type": "number", "unit": "元",
-     "ops": ["gte", "lte"], "hint": "上一版本总额 − 本版本总额，无上一版按 0 算"},
+     "ops": ["gte", "gt", "lte", "lt"], "hint": "上一版本总额 − 本版本总额，无上一版按 0 算"},
     {"field": "payment_terms_days", "label": "账期天数", "value_type": "number", "unit": "天",
-     "ops": ["gte", "lte"],
+     "ops": ["gte", "gt", "lte", "lt"],
      # ⚠️ 这句提示是给配规则的人看的：识别不出时**不是** 0（现款），而是"无数据"，
      # 规则会**未命中**（2026-10-12 第四批审查 P1：从前按 0 算，导致
      # "预付30%，余款月结60天"被当成 30 天，配上"账期≤30免审"就绕过了审批）
      "hint": "从付款条件里识别的天数；识别不出时该单此字段为「无数据」，本条件不成立"},
 ]
 
-OPS_LABEL = {"gte": "≥", "lte": "≤", "eq": "=", "in": "属于"}
+OPS_LABEL = {"gte": "≥", "gt": ">", "lte": "≤", "lt": "<", "eq": "=", "in": "属于"}
+
+#: 可以两两比较"区间是否重叠"的操作符。eq / in 不参与这套边界判断：
+#: 「客户等级 = A」这类值域型条件，重叠与否要看具体取值，不能按数值区间算。
+_NUMERIC_RANGE_OPS = ("gte", "gt", "lte", "lt")
+
+
+def _range_of(cond: dict) -> tuple[tuple[float, bool] | None, tuple[float, bool] | None] | None:
+    """把一个数值条件写成区间 (下界, 上界)；端点是 (值, 是否包含)。
+
+    `gte 22` → ([22 含], 无上界)；`gt 22` → ((22 不含], 无上界)；
+    `lte 22` → (无下界, [22 含])；`lt 22` → (无下界, (22 不含))。
+    非数值 / 非区间操作符返回 None（不参与冲突判定）。
+    """
+    op = cond.get("op")
+    if op not in _NUMERIC_RANGE_OPS:
+        return None
+    try:
+        value = float(cond.get("value"))
+    except (TypeError, ValueError):
+        return None
+    if op in ("gte", "gt"):
+        return ((value, op == "gte"), None)
+    return (None, (value, op == "lte"))
+
+
+def ranges_overlap(first: dict, second: dict) -> bool | None:
+    """两个数值条件的取值区间是否有交集。
+
+    ⚠️ **边界开闭必须一起判**，这正是本次要区分的两种配置：
+
+        ≥ 22 与 ≤ 22 → 在 22% 这个点上两边都算命中 → **冲突**（交集非空）
+        > 22 与 ≤ 22 → 一边是开区间，22% 只归后者 → **互斥**（交集为空）
+
+    只看数值不看开闭（或者把 > 当成 ≥），后一种会被误报成冲突。
+    任一方不是数值区间条件时返回 None（表示"这套判据不适用"，不是"没冲突"）。
+    """
+    left = _range_of(first)
+    right = _range_of(second)
+    if left is None or right is None:
+        return None
+    lower = [bound for bound in (left[0], right[0]) if bound is not None]
+    upper = [bound for bound in (left[1], right[1]) if bound is not None]
+    low_value = max((v for v, _ in lower), default=None)
+    # 下界取最紧的那个；同为最大值时，只要有一个"不含"就是开区间
+    low_inclusive = all(inclusive for v, inclusive in lower if v == low_value) if lower else True
+    high_value = min((v for v, _ in upper), default=None)
+    high_inclusive = all(inclusive for v, inclusive in upper if v == high_value) if upper else True
+    if low_value is None or high_value is None:
+        return True
+    if low_value > high_value:
+        return False
+    if low_value == high_value:
+        return low_inclusive and high_inclusive
+    return True
+
+
+def conflict_between(first: dict, second: dict, *, first_rule: str, second_rule: str) -> str | None:
+    """两条规则（各自一组条件）之间的第一条冲突说明；没有冲突返回 None。
+
+    判据：同一字段、双方都是数值区间条件、区间有交集。文案要带**两条规则名**
+    和**两边的阈值**，发布/启用被 409 拦下时直接给人看这句话。
+    """
+    for cond_a in first.get("conditions") or []:
+        for cond_b in second.get("conditions") or []:
+            if cond_a.get("field") != cond_b.get("field"):
+                continue
+            overlap = ranges_overlap(cond_a, cond_b)
+            if overlap is None or not overlap:
+                continue
+            meta = next((f for f in CONTEXT_FIELDS if f["field"] == cond_a.get("field")), None)
+            label = (meta or {}).get("label", cond_a.get("field"))
+            unit = (meta or {}).get("unit", "")
+            left = f"{OPS_LABEL.get(cond_a.get('op'), cond_a.get('op'))} {_fmt(cond_a.get('value'))}{unit}"
+            right = f"{OPS_LABEL.get(cond_b.get('op'), cond_b.get('op'))} {_fmt(cond_b.get('value'))}{unit}"
+            return (
+                f"「{first_rule}」要求 {label} {left}，与已启用规则「{second_rule}」要求 {label} {right} "
+                f"有重叠：同一张报价会同时命中这两条，按优先级只能留一条。"
+                f"如果这两个阈值本来就该互斥，请把其中一边改成 > 或 <（例如 > 与 ≤ 在边界上互斥）。"
+            )
+    return None
+
 
 VALID_KINDS = ("auto_pass", "express", "exception_route")
 
@@ -151,8 +232,12 @@ def evaluate_conditions(conditions: list[dict], ctx: dict) -> tuple[bool, list[d
         try:
             if op == "gte":
                 hit = actual >= expected
+            elif op == "gt":
+                hit = actual > expected
             elif op == "lte":
                 hit = actual <= expected
+            elif op == "lt":
+                hit = actual < expected
             elif op == "eq":
                 hit = actual == expected
             elif op == "in":

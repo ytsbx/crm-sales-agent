@@ -6,6 +6,8 @@
 
 from app.modules.approval.rules_engine import (
     RuleDecision,
+    conflict_between,
+    ranges_overlap,
     _cond_detail_pretty,
     effect_summary,
     evaluate_conditions,
@@ -299,3 +301,93 @@ class TestTraceAndPretty:
             [{"field": "customer_has_overdue", "op": "eq", "value": True, "actual": False}]
         )
         assert pretty[0]["actual_label"] == "否"
+
+
+class TestStrictComparisons:
+    """2026-11-18：数值字段新增 gt / lt（大于 / 小于）。
+
+    为什么必须单独有这两个：只有 ≥ / ≤ 时，「毛利率 > 22%」没法表达，
+    业务只能配成「≥ 22%」，于是 22% 这个边界既算"高于"又算"低于"，
+    两条规则在同一个点上同时命中，审批走向取决于优先级 —— 不可解释。
+    """
+
+    def test_gt_excludes_boundary(self):
+        cond = [{"field": "gross_margin", "op": "gt", "value": 22}]
+        hit, detail = evaluate_conditions(cond, {"gross_margin": 22})
+        assert hit is False and detail[0]["hit"] is False
+        hit, _ = evaluate_conditions(cond, {"gross_margin": 22.1})
+        assert hit is True
+
+    def test_lt_excludes_boundary(self):
+        cond = [{"field": "gross_margin", "op": "lt", "value": 22}]
+        assert evaluate_conditions(cond, {"gross_margin": 22})[0] is False
+        assert evaluate_conditions(cond, {"gross_margin": 21.9})[0] is True
+
+    def test_pretty_label_uses_new_symbols(self):
+        """列表/版本/沙盒的「要求 ≥ 22%」文案由 OPS_LABEL 拼，符号必须一致。"""
+        detail = _cond_detail_pretty(
+            [{"field": "gross_margin", "op": "gt", "value": 22, "actual": None}]
+        )
+        assert detail[0]["value_label"].startswith(">")
+
+
+class TestRuleConflicts:
+    """同一数值字段的区间冲突判定（发布/启用被 409 拦下的依据）。
+
+    口径（用户 2026-11-18 明确）：
+    - 「毛利率 ≥ 22%」与「≤ 22%」在 22% 这个点上同时命中 → **冲突**
+    - 「毛利率 > 22%」与「≤ 22%」在该边界互斥 → **不冲突**
+    """
+
+    @staticmethod
+    def _ranges(first: dict, second: dict) -> bool | None:
+        return ranges_overlap(
+            {"field": "gross_margin", **first},
+            {"field": "gross_margin", **second},
+        )
+
+    def test_closed_boundary_conflicts(self):
+        assert self._ranges({"op": "gte", "value": 22}, {"op": "lte", "value": 22}) is True
+
+    def test_open_and_closed_are_exclusive(self):
+        assert self._ranges({"op": "gt", "value": 22}, {"op": "lte", "value": 22}) is False
+        assert self._ranges({"op": "gte", "value": 22}, {"op": "lt", "value": 22}) is False
+
+    def test_overlapping_bands_conflict(self):
+        assert self._ranges({"op": "gte", "value": 10}, {"op": "lte", "value": 30}) is True
+
+    def test_disjoint_bands_do_not(self):
+        assert self._ranges({"op": "gte", "value": 30}, {"op": "lt", "value": 10}) is False
+
+    def test_non_numeric_op_is_not_judged(self):
+        # eq 不参与区间判定：返回 None 表示"这套判据不适用"，调用方不能当成"没冲突"
+        assert (
+            ranges_overlap(
+                {"field": "customer_level", "op": "eq", "value": "A"},
+                {"field": "customer_level", "op": "eq", "value": "A"},
+            )
+            is None
+        )
+
+    def test_conflict_message_names_both_rules(self):
+        message = conflict_between(
+            {"conditions": [{"field": "gross_margin", "op": "gte", "value": 22}]},
+            {"conditions": [{"field": "gross_margin", "op": "lte", "value": 22}]},
+            first_rule="高毛利免审",
+            second_rule="低毛利会签",
+        )
+        assert message is not None
+        assert "高毛利免审" in message and "低毛利会签" in message
+        # 两边阈值都要出现，用户才知道改哪一边
+        assert "≥ 22%" in message and "≤ 22%" in message
+
+    def test_exclusive_rules_have_no_message(self):
+        assert (
+            conflict_between(
+                {"conditions": [{"field": "gross_margin", "op": "gt", "value": 22}]},
+                {"conditions": [{"field": "gross_margin", "op": "lte", "value": 22}]},
+                first_rule="A",
+                second_rule="B",
+            )
+            is None
+        )
