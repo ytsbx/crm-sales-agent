@@ -1038,9 +1038,12 @@ export default function QuoteDetailPage() {
             ),
             '客户接受': Boolean(canManage && canRespond),
             '客户拒绝': Boolean(canManage && canRespond),
+            // 判据只看"这一版发出去过、客户也接受了"——不再要求整单 status 恰好是
+            // accepted：整单状态可能因为别的环节（如后续跟进）先变了，那一版的接受
+            // 事实并没有消失。已转成订单（converted）就不再给这个入口。
             '转销售订单': Boolean(
               can('order:manage') && isCurrentVersion && version.sent_at && version.accepted_at
-              && quote.status === 'accepted',
+              && !version.declined_at && quote.status !== 'converted',
             ),
             '下载 PDF': Boolean(version),
             // ⚠️ 这里只放**原本就在这一行里**的动作。「批量录入」「添加费用」
@@ -1200,9 +1203,18 @@ export default function QuoteDetailPage() {
             return cloneElement(item.element, { key: label })
           }
 
-          const primaryLabel = primary
-            ? (primary.handler === 'markSent' && version.sent_at ? '登记再次发送' : primary.label)
-            : null
+          // ⚠️ 阶段由待办列表第一条决定。主数据/运费没确认时，第一条是"准备明细"
+          // 或"确认费用"，`quoteActions(master)` 的主动作是 null —— 于是客户已经
+          // 接受了、有订单权限，右上角却一个「转销售订单」都没有（2026-11-18 复验）。
+          // 转单是这一版已经挣到的下一步，不能被"明细还没补全"的待办挤掉：
+          // 只要条件成立就钉在最前，主数据警告照旧在页面下方单独展示。
+          const convertReady = conditions['转销售订单'] === true && stage !== 'converted'
+
+          const primaryLabel = convertReady
+            ? '转销售订单'
+            : primary
+              ? (primary.handler === 'markSent' && version.sent_at ? '登记再次发送' : primary.label)
+              : null
           if (primaryLabel) {
             const element = take(primaryLabel)
             if (element) rendered.push(element)
