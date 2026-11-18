@@ -505,14 +505,37 @@ async def main():
 
     print()
     print('=== 7. 需求一键转报价（§3.1：从需求页可发起报价）===')
+    # 一需求一报价（主人 2026-11-18 拍板「去原报价加版本，不要重复生成」）：
+    # 主需求在 §4/§5 已挂过报价明细，再转必须拒——先钉住这条新规矩。
     status, payload = call('POST', f'/custom-inquiries/{inquiry_id}/create-quote', token=token, body={
+        'unit_cost': 8.0,
+        'quoted_price': 11.5,
+    })
+    check('已挂报价的需求再转 → 409（不要重复生成）', status, 409)
+    check_true('指引去原报价加版本',
+               '原报价' in (payload.get('message') or '') and '不要重复生成' in (payload.get('message') or ''),
+               str(payload.get('message'))[:60])
+
+    # 功能本体（§3.1 一键转报价）用**全新需求**测：转出定制报价、带回需求编号、
+    # 是否触发审批一并回报。挂在老需求上测会撞一需求一报价的闸门（见上）。
+    status, payload = call('POST', '/custom-inquiries', token=token, body={
+        'title': title + '-转报价', 'customer_id': customer_id, 'quantity': 10,
+    })
+    fresh = payload['data']
+    fresh_id = fresh['id']
+    ids['inquiries'].append(fresh_id)
+    status, payload = call('POST', f'/custom-inquiries/{fresh_id}/create-quote', token=token, body={
         'unit_cost': 8.0,
         'quoted_price': 11.5,
     })
     check('一键转报价成功', status, 200)
     direct = payload.get('data') or {}
     ids['quotes'].append(direct['quote_id'])
-    check('带回报价单号与需求编号', direct.get('inquiry_no'), inquiry['inquiry_no'])
+    # 一键转报价没挂商机时会自动建一条（标题沿用需求名）——必须进清理清单，
+    # 否则收尾"夹具已清理"是假干净，check_fixture_residue 会验出商机残。
+    if direct.get('opportunity_id'):
+        ids['opportunities'].append(direct['opportunity_id'])
+    check('带回报价单号与需求编号', direct.get('inquiry_no'), fresh['inquiry_no'])
     check_true('同时回报是否触发审批（省得点进去才发现）',
                direct.get('approval_required') is False,
                str(direct.get('approval_required')))
@@ -520,7 +543,7 @@ async def main():
     direct_item = (payload.get('data') or [{}])[0]
     check_true('生成的明细就是定制项',
                direct_item.get('is_custom') is True
-               and direct_item.get('inquiry_no') == inquiry['inquiry_no'],
+               and direct_item.get('inquiry_no') == fresh['inquiry_no'],
                str(direct_item.get('inquiry_no')))
 
     # 需求没挂客户时不能报价（否则报价单没有客户，等于凭空造单据）
