@@ -3323,40 +3323,65 @@ table:not(.semi-table) td {
   border-top: 1px solid var(--crm-border);
   /* 上方 12 给正文一点收尾，下方 12 与按钮高度对齐 —— 按钮底边距卡片底边
      不再比上边距多一倍，整张卡上下才不违和。 */
-  padding: 12px 28px 12px;
+  padding: 12px 28px 14px;
   /* Semi 的 footer 默认带 24px 下外边距 —— 就是按钮下方那 40 来像素空白。
      这里只保留 0，让卡片底边贴着按钮。 */
   margin: 0 !important;
 }
+/* 卡片本体：只对确认弹窗生效。圆角从 8 提到 14、阴影改成"远而软"的一层，
+   边框用极浅的中性色 —— 原来 8px 圆角 + 浓阴影，是十年前后台的味道。 */
+.semi-modal-content:has(.crm-confirm-body) {
+  border-radius: 14px;
+  border: 1px solid rgba(15, 23, 42, .06);
+  box-shadow:
+    0 24px 64px -24px rgba(15, 23, 42, .26),
+    0 2px 8px rgba(15, 23, 42, .05);
+  animation: crm-confirm-in .22s cubic-bezier(.22, 1, .36, 1) both;
+}
+@keyframes crm-confirm-in {
+  from { opacity: 0; transform: translateY(6px) scale(.985); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .semi-modal-content:has(.crm-confirm-body) { animation: none; }
+}
+
 .crm-confirm-header {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 10px;
+  /* 自定义 header 不进 Semi 的 .semi-modal-header 包裹，那边加的 padding 落空，
+     标题被顶到卡片上沿（实拍只剩 3px）。这里补足 24px 顶部呼吸位。 */
+  padding-top: 24px;
 }
 .crm-confirm-icon {
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: rgba(245, 158, 11, .14);
+  /* 原来是一个扁平黄圆，像贴纸；换成"浅琥珀底 + 内侧高光"的圆角方块，
+     和标题的方头字更配，也不抢橙色风险句的注意力。 */
+  background: linear-gradient(180deg, #FEF3C7, #FDE68A);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .9);
   color: #B45309;
   font-size: 15px;
-  font-weight: 700;
+  font-weight: 800;
 }
 .crm-confirm-title {
-  font-size: 16px;
-  font-weight: 600;
+  font-size: 17px;
+  font-weight: 650;
   color: var(--crm-text);
-  letter-spacing: .2px;
+  letter-spacing: .3px;
 }
 .crm-confirm-sub {
   width: 100%;
-  margin-left: 36px;
-  margin-top: 4px;
-  font-size: 12px;
+  margin-left: 40px;
+  margin-top: 2px;
+  font-size: 12.5px;
+  letter-spacing: .2px;
   color: var(--crm-text-3);
 }
 .crm-confirm-body {
@@ -3369,18 +3394,53 @@ table:not(.semi-table) td {
   margin: 0 0 10px;
 }
 .crm-confirm-lead {
-  margin-bottom: 8px !important;
+  margin-bottom: 10px !important;
+  color: var(--crm-text);
+  font-size: 14.5px;
+  font-weight: 500;
 }
 .crm-confirm-list {
-  margin: 2px 0 4px;
-  padding-left: 20px;
+  margin: 2px 0 2px;
+  padding-left: 4px;
+  list-style: none;
 }
+/* 要点不再用系统圆点（每个字号都长得不一样）：自己画一个 5px 的菱形小点，
+   和文字起点对齐，色用中性灰蓝，风险条那一行才变琥珀。 */
 .crm-confirm-list li {
-  margin-bottom: 10px;
-  list-style: disc;
+  position: relative;
+  margin-bottom: 11px;
+  padding-left: 18px;
+  animation: crm-confirm-item-in .26s cubic-bezier(.22, 1, .36, 1) both;
+}
+.crm-confirm-list li::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: .82em;
+  width: 5px;
+  height: 5px;
+  border-radius: 2px;
+  transform: rotate(45deg);
+  background: #94A3B8;
+}
+.crm-confirm-list li:last-child { margin-bottom: 0; }
+/* 每条错开 45ms 进场：读的时候从上往下"落"下来，不是一整块蹦出来。 */
+.crm-confirm-list li:nth-child(2) { animation-delay: .045s; }
+.crm-confirm-list li:nth-child(3) { animation-delay: .09s; }
+.crm-confirm-list li:nth-child(4) { animation-delay: .135s; }
+.crm-confirm-list li:nth-child(n+5) { animation-delay: .18s; }
+@keyframes crm-confirm-item-in {
+  from { opacity: 0; transform: translateX(-4px); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .crm-confirm-list li { animation: none; }
 }
 .crm-confirm-body .crm-confirm-risk {
   color: #B45309;
+}
+.crm-confirm-body .crm-confirm-risk::before {
+  background: #F59E0B;
 }
 .crm-confirm-body .crm-confirm-risk strong {
   color: #B45309;
@@ -3577,4 +3637,28 @@ table:not(.semi-table) td {
   .crm-mp-body,
   .crm-mp-item,
   .crm-mp-after { animation: none; }
+}
+
+/* 确认弹窗的两个按钮：主按钮加一层"同色淡影"，按下时收掉 —— 这是 Material
+   里"有抬起感"的做法；取消改成描边，避免两个实心块抢视线。 */
+.semi-modal-content:has(.crm-confirm-body) .semi-modal-footer .semi-button-primary {
+  box-shadow: 0 6px 16px -6px rgba(22, 119, 255, .55);
+  transition: box-shadow .18s ease, transform .12s ease;
+}
+.semi-modal-content:has(.crm-confirm-body) .semi-modal-footer .semi-button-primary:hover {
+  box-shadow: 0 8px 22px -6px rgba(22, 119, 255, .6);
+}
+.semi-modal-content:has(.crm-confirm-body) .semi-modal-footer .semi-button-primary:active {
+  box-shadow: 0 2px 6px -2px rgba(22, 119, 255, .5);
+  transform: translateY(1px);
+}
+.semi-modal-content:has(.crm-confirm-body) .semi-modal-footer .semi-button:not(.semi-button-primary) {
+  background: transparent;
+  border: 1px solid var(--crm-border);
+  color: var(--crm-text-2);
+  transition: background .16s ease, border-color .16s ease;
+}
+.semi-modal-content:has(.crm-confirm-body) .semi-modal-footer .semi-button:not(.semi-button-primary):hover {
+  background: rgba(15, 23, 42, .04);
+  border-color: rgba(15, 23, 42, .18);
 }
