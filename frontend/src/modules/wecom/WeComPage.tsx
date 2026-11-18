@@ -475,6 +475,12 @@ export default function WeComPage() {
           </div>
         </SectionCard>
 
+        {/* 中栏 + 右栏收进同一个右半区，上下叠：详情在上、疑似客户在下。
+            原来三栏并排，中栏 220px、右栏 190px，左栏名单却有 570px ——
+            右边两栏底下拖出一大块灰底空白，三张卡底边也互相对不齐
+            （2026-11-18 主人："空的太多了，也没有对齐"）。叠起来以后右半区
+            自己成一块，左边名单多长都不会把右边撕成两截。 */}
+        <div className="wecom-side">
         {/* 中：企业微信详情。纵向弹性 + 底下那块 margin-top auto：
             卡片被拉到与左栏等高后，内容不会全挤在上半截、下半截空一大片。 */}
         <SectionCard style={{ display: 'flex', flexDirection: 'column' }}>
@@ -605,8 +611,9 @@ export default function WeComPage() {
               </div>
 
               {canManage && active && (
-                // 两个出口原来各占一整行、通栏灰块，像张表单；并排放在一行就够了
-                <div style={{ display: 'flex', gap: 8, paddingTop: 12 }}>
+                // 两个出口原来各占一整行、通栏灰块，像张表单；并排放在一行就够了。
+                // marginTop:auto：卡片被拉到半栏高时，按钮贴底，不悬在中间。
+                <div style={{ display: 'flex', gap: 8, paddingTop: 12, marginTop: 'auto' }}>
                   <Button
                     onClick={() => {
                       setCreateForm({
@@ -630,6 +637,7 @@ export default function WeComPage() {
             </>
           )}
         </SectionCard>
+        </div>
       </div>
 
       <SectionCard style={{ marginTop: 16 }}>
