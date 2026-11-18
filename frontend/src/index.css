@@ -3137,3 +3137,16 @@ table:not(.semi-table) td {
   color: var(--crm-primary);
 }
 
+
+/* 页面上的一行说明（不是错误、也不该弹 toast）：浅底、细边、正常字色。
+   用于"审批暂停 / 暂时确认不了"这类持续状态 —— 它一直在，直到状态变化。 */
+.inline-note {
+  margin: 12px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--crm-border);
+  border-radius: var(--crm-radius-sm);
+  background: var(--crm-surface-low);
+  color: var(--crm-text-2);
+  font-size: 13px;
+  line-height: 1.7;
+}

@@ -174,3 +174,20 @@ export interface InquirySubmissionOptions {
 export function getInquirySubmissionOptions(inquiryId?: number) {
   return api.get<InquirySubmissionOptions>(inquiryId ? `/inquiries/${inquiryId}/oa-submission` : '/inquiries/oa-submission-options')
 }
+
+/**
+ * 查 OA 审批结果失败时要给**业务话术**，不是后端原话。
+ *
+ * 后端约定：查询失败（超时、配置异常等 OaError）统一 HTTP 502 + code=50201，
+ * 它的 message 本身能用，但直接 toast 容易把 502 读成"审批被拒"。
+ * 这里统一成一句短提示，并明确"没确认 ≠ 被拒绝"。
+ */
+export const OA_SYNC_UNCERTAIN_MESSAGE =
+  '暂时无法确认最新审批结果，请稍后重试；审批确认前暂不能执行需要审批通过的操作'
+
+export function oaSyncErrorMessage(error: unknown): string {
+  const code = (error as { code?: number } | null)?.code
+  if (code === 50201 || code === 502) return OA_SYNC_UNCERTAIN_MESSAGE
+  const message = (error as { message?: string } | null)?.message
+  return message && message.trim() ? message : OA_SYNC_UNCERTAIN_MESSAGE
+}

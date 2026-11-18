@@ -413,7 +413,7 @@ export default function KnowledgePage() {
   const submissionOptions = useQuery({
     queryKey: ['inquiry-oa-submission', submitTarget?.id ?? editing?.id ?? 'new'],
     queryFn: () => getInquirySubmissionOptions(submitTarget?.id ?? editing?.id),
-    enabled: Boolean(submitTarget) || editVisible,
+    enabled: true,
   })
   const submissionFiles = useQuery({
     queryKey: ['business-files', submissionOptions.data?.file_business_type || 'inquiry', submitTarget?.id ?? editing?.id],
@@ -734,7 +734,7 @@ export default function KnowledgePage() {
     if (submitAttachments.length + pendingAttachments.length > 10) { Toast.warning('单次最多选择10个附件，请移除多余文件'); return }
     if (submit) {
       const options = submissionOptions.data
-      if (!options?.configured || !options.enabled) { Toast.warning('同序 OA 询价暂不可提交，请先保存草稿'); return }
+      if (!options?.configured || !options.enabled) { Toast.warning('询价审批暂未启用，可先保存需求和内部报价草稿；正式对外报价仍需通过核价及报价复核'); return }
       if (options.quote_owner_required && !(submitQuoteOwner ?? options.selected_quote_owner)) { Toast.warning('请选择对接报价员'); return }
       const missing = options.fields.find((field) => field.required && (field.type === 'DDAttachment'
         ? !submitAttachments.length && !pendingAttachments.length : !submitFields[field.id]?.trim()))
@@ -760,6 +760,26 @@ export default function KnowledgePage() {
         title="定制需求"
         subtitle="客户问了但我们还没有标准产品的需求都沉淀在这里——这是找开发方向的原料"
       />
+
+      {/* 审批暂停要**在页面上先说**，不能等点了提交失败才弹一句 toast。
+          两种情况分开写：
+          · 明确暂停（configured/enabled 由后端下发）→ 说清"能做什么、不能做什么"；
+          · 接口取不到 → 只说"不确定"，不擅自判定暂停，也不挡草稿保存。 */}
+      {submissionOptions.isError && (
+        <div className="inline-note" role="status">
+          暂时无法确认询价审批是否可用；保存需求和内部报价草稿不受影响，请稍后重试。
+        </div>
+      )}
+      {submissionOptions.data && !submissionOptions.data.configured && (
+        <div className="inline-note" role="status">
+          同序 OA 询价模板尚未配置，可先保存需求和内部报价草稿；正式对外报价仍需通过核价及报价复核。
+        </div>
+      )}
+      {submissionOptions.data && submissionOptions.data.configured && !submissionOptions.data.enabled && (
+        <div className="inline-note" role="status">
+          询价审批暂未启用，可先保存需求和内部报价草稿；正式对外报价仍需通过核价及报价复核。
+        </div>
+      )}
 
       <SectionCard>
         {opportunityFilter && <div style={{ marginBottom: 12 }}>

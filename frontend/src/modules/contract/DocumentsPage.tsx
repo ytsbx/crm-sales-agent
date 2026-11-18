@@ -49,7 +49,7 @@ import {
 } from '../../shared/components/ResolveOaActions'
 import { newRequestKey } from '../../shared/api/requestKey'
 import SyncOaButton from '../../shared/components/SyncOaButton'
-import type { OaApprovalInstance } from '../../shared/api/dingtalk'
+import { oaSyncErrorMessage, type OaApprovalInstance } from '../../shared/api/dingtalk'
 
 const STATUS_TONE: Record<string, 'green' | 'grey' | 'red'> = {
   signed: 'green',
@@ -1058,7 +1058,7 @@ export default function DocumentsPage() {
                     void queryClient.invalidateQueries({ queryKey: ['contract-detail', detail.id] })
                     refresh()
                     Toast.success('审批进度已同步')
-                  } catch (e) { Toast.error(e instanceof Error ? e.message : '同步失败') }
+                  } catch (e) { Toast.error(oaSyncErrorMessage(e)) }
                 }}>刷新{oaLabel}进度</Button>}
                 {detail.dingtalk_oa.provider !== 'self_oa' && detail.dingtalk_oa.result && <ApprovalHistory result={detail.dingtalk_oa.result} />}
                 {detail.dingtalk_oa.provider !== 'self_oa' && detail.dingtalk_oa_row && (
