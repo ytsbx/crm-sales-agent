@@ -3941,14 +3941,18 @@ table:not(.semi-table) td {
 .qa-col:nth-child(2) { padding-left: 22px; }
 @media (max-width: 1100px) {
   .quote-archive-grid { grid-template-columns: minmax(0, 1fr); }
+  /* 单列时三段依次往下排，中间那条分隔线原来上下各只留 0 / 14：
+     表格最后一行紧挨着线，下一段的标题又贴着线起（主人 2026-11-18 圈"挨太近"）。
+     统一改成：每段下留 18，除第一段外上留 18，线在正中间。 */
   .qa-col {
-    padding: 0 0 14px;
+    padding: 0 0 18px;
     border-right: 0;
     border-bottom: 1px solid var(--crm-border);
   }
+  .qa-col + .qa-col { padding-top: 18px; }
   .qa-col:nth-child(2) { padding-left: 0; }
   .qa-col-last {
-    padding: 14px 0 0;
+    padding: 18px 0 0;
     border-bottom: 0;
   }
 }
