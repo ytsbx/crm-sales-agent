@@ -65,7 +65,9 @@ def test_chinese_action_name_maps_to_code():
 
 def test_partial_chinese_also_works():
     """打半截也要能用 —— 否则用户得先记住完整名字才搜得到。"""
-    assert business_type_codes("定制") == {"custom_inquiry"}
+    # 「定制」带出「定制需求」和「定制询价」两家——命中多个是期望行为
+    # （2026-11-18：inquiry 起名「定制询价」后别把这条又改成精确全集断言）
+    assert {"custom_inquiry", "inquiry"} <= business_type_codes("定制")
     assert "sample" in business_type_codes("打样")
     assert len(action_codes("审批")) > 1  # 「审批」能带出审批通过/提交审批等
 
