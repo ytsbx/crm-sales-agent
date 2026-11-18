@@ -1049,7 +1049,12 @@ export default function QuoteDetailPage() {
             // ⚠️ 这里只放**原本就在这一行里**的动作。「批量录入」「添加费用」
             // 分别在「报价明细」「附加费用」两个区块内（我第一版把它们搬上来，
             // 等于同一个入口出现两次），所以**不列在这里**。
-            '一键刷新到最新适用价': Boolean(driftQuery.data?.items?.some((it) => it.drift)),
+            // 没检测到价差就**不给入口**（菜单里直接不出现）；
+            // 有价差但这一版已锁定（已发送/已审批/历史版本）也不能按 —— 那是另一种说法，
+            // 见下面 moreNotes 里那句具体原因，不再用笼统的"当前版本/状态不可用"。
+            '一键刷新到最新适用价': Boolean(
+              canManage && editable && driftQuery.data?.items?.some((it) => it.drift),
+            ),
           }
 
           // 页面上的动作（顺序即渲染顺序）。不在表里的（例如弹窗内部按钮）不参与分层。
@@ -1234,8 +1239,12 @@ export default function QuoteDetailPage() {
           const more = moreOrder
             .filter((label) => byLabel.has(label) && !used.has(label))
             .map((label) => byLabel.get(label) as { label: string; element: ReactElement })
-          // 想收但这一刻不能用的：列成灰字说明，**不是一个能按的动作**
-          const moreMissing = moreOrder.filter((label) => !byLabel.has(label) && conditions[label] === false)
+          // 缺项说明只给"用户会问为什么没有"的那一个：
+          // 有价差、但这一版已经锁定（已发送/审批中/历史版本）时，直接说清下一步，
+          // 不再笼统地写"当前版本/状态不可用"（2026-11-18 主人圈掉的就是这句）。
+          const hasDrift = Boolean(driftQuery.data?.items?.some((it) => it.drift))
+          const moreNotes: string[] = []
+          if (hasDrift && !editable) moreNotes.push('当前报价版本已锁定，如需改价，请新建版本')
 
           return (
             <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -1252,8 +1261,9 @@ export default function QuoteDetailPage() {
                         </Dropdown.Item>
                       ))}
                       {/* 缺项说明照 `KnowledgePage` 的写法：不套 Item、不给 onClick */}
-                      {moreMissing.length > 0 && (
+                      {moreNotes.map((note) => (
                         <li
+                          key={note}
                           style={{
                             listStyle: 'none',
                             padding: '6px 12px',
@@ -1263,9 +1273,9 @@ export default function QuoteDetailPage() {
                             whiteSpace: 'normal',
                           }}
                         >
-                          {moreMissing.join('、')}：当前版本/状态不可用（原因见页面上的提示）
+                          {note}
                         </li>
-                      )}
+                      ))}
                     </Dropdown.Menu>
                   }
                 >
