@@ -2179,26 +2179,25 @@ export default function QuoteDetailPage() {
           <div className="oa-inquiry-list">
             {inquiryApprovalRows.map((row) => (
               <div className="oa-inquiry-row" key={row.key}>
-                {/* 两行结构，不再摊成六栏：
-                    第一行"这是什么 + 现在什么状态"，两端对齐；
-                    第二行"走到哪一步 + 动作"，同样两端对齐。
-                    这样左右都不空、也不挤，读起来是"一条审批"而不是一张表。 */}
-                <div className="oa-inquiry-head">
-                  <span className="oa-inquiry-no">{row.inquiry.inquiryNo ?? '未编号需求'}</span>
-                  {row.latest ? (
-                    <Tag
-                      color={row.latest.status === 'approved' ? 'green'
-                        : row.latest.status === 'pending' ? 'orange'
-                          : row.latest.status === 'rejected' ? 'red' : 'grey'}
-                      type="light"
-                    >
-                      {row.latest.status_label}
-                    </Tag>
-                  ) : (
-                    <Tag color="grey" type="light">未发起</Tag>
-                  )}
-                </div>
-                <div className="oa-inquiry-foot">
+                {/* 左边是一段"审批概况"，右边只有一个按钮：
+                    状态贴编号，不再单独飘到右上角；按钮垂直居中，
+                    不和状态标签在右上角上下挤成一对。 */}
+                <div className="oa-inquiry-main">
+                  <div className="oa-inquiry-head">
+                    <span className="oa-inquiry-no">{row.inquiry.inquiryNo ?? '未编号需求'}</span>
+                    {row.latest ? (
+                      <Tag
+                        color={row.latest.status === 'approved' ? 'green'
+                          : row.latest.status === 'pending' ? 'orange'
+                            : row.latest.status === 'rejected' ? 'red' : 'grey'}
+                        type="light"
+                      >
+                        {row.latest.status_label}
+                      </Tag>
+                    ) : (
+                      <Tag color="grey" type="light">未发起</Tag>
+                    )}
+                  </div>
                   <span className="oa-inquiry-meta">
                     {row.latest ? (
                       <>
@@ -2210,33 +2209,30 @@ export default function QuoteDetailPage() {
                       '还没有发起同序 OA 审批'
                     )}
                   </span>
-                  {row.latest && canManage && (
-                    <span className="oa-inquiry-action">
-                      {/* 待审时打开页面就先对一次，之后每 10 秒对一次 —— 别让用户看见过期的"待审批" */}
-                      <AutoOaSync
-                        row={row.latest}
-                        invalidateKeys={[
-                          ['quote-linked-inquiry-approvals', linkedInquiryKey],
-                          ['quote-version', versionId],
-                          ['quote-versions', quoteId],
-                        ]}
-                      />
-                      <SyncOaButton
-                        oaId={row.latest.id}
-                        invalidateKeys={[
-                          ['quote-linked-inquiry-approvals', linkedInquiryKey],
-                          ['quote-version', versionId],
-                          ['quote-versions', quoteId],
-                        ]}
-                      />
-                    </span>
+                  {row.quotation?.approved && (
+                    <span className="oa-stage-approved">✓ 核价 / 报价复核已通过</span>
                   )}
                 </div>
-                {/* 报价这一关过了就单独标出来，别被整单的"审批中"盖掉 */}
-                {row.quotation?.approved && (
-                  <span className="oa-stage-approved">✓ 核价 / 报价复核已通过</span>
-                )}
-              </div>
+                {row.latest && canManage && (
+                  <span className="oa-inquiry-action">
+                    {<AutoOaSync
+                      row={row.latest}
+                      invalidateKeys={[
+                        ['quote-linked-inquiry-approvals', linkedInquiryKey],
+                        ['quote-version', versionId],
+                        ['quote-versions', quoteId],
+                      ]}
+                    />}
+                    <SyncOaButton
+                      oaId={row.latest.id}
+                      invalidateKeys={[
+                        ['quote-linked-inquiry-approvals', linkedInquiryKey],
+                        ['quote-version', versionId],
+                        ['quote-versions', quoteId],
+                      ]}
+                    />
+                  </span>
+                )}              </div>
             ))}
           </div>
         </SectionCard>
