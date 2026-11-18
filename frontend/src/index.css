@@ -4416,3 +4416,14 @@ table:not(.semi-table) td {
     flex: 1 1 calc(50% - 8px);
   }
 }
+
+/* 金额列右对齐的兜底（2026-11-19）。
+   全站表格内容默认居中（见 1762 行那段），而 Semi 的列 align:'right'
+   **只写 class、不写 inline style**，于是被那条全局 text-align 压掉 ——
+   实测 1024 下「报价总额」「应收金额」「已收/未收」全是居中，右边界参差，
+   主人反复说的"读不出量级"就是这么来的。
+   这里给这些列挂 .cell-right，用 !important 把对齐拿回来。 */
+.semi-table-tbody .semi-table-row-cell.cell-right,
+.semi-table-thead .semi-table-row-head.cell-right {
+  text-align: right !important;
+}

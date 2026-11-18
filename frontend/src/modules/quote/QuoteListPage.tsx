@@ -166,6 +166,7 @@ export default function QuoteListPage() {
       /* 金额右对齐：位数不同的报价左对齐时右边界参差，
          ¥100.00 和 ¥34,343.00 摆一起读不出量级（与回款中心一致）。 */
       align: 'right' as const,
+      className: 'cell-right',
       render: (v: number | null, record: Quote) =>
         formatMoney(record.current_version_amount_exact ?? v, record.currency),
     },

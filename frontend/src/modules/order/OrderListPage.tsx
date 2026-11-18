@@ -256,6 +256,9 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       dataIndex: 'total_amount',
       /* 金额右对齐：位数不同的钱左对齐时右边界参差，一眼读不出量级。 */
       align: 'right' as const,
+      /* 全局 CSS 把每个单元格居中，Semi 的 align 不写 inline style，
+         所以金额仍被居中；补一个 class 由下面 CSS 用 !important 兜住。 */
+      className: 'cell-right',
       // 140 → 124：8 列合计本来正好 1130，但列表一长出现纵向滚动条，
       // 它占掉 15px，body 只剩 1115 → 横向滚动条又冒出来（2026-11-16 实测）。
       width: compact ? 108 : 124,
@@ -267,6 +270,9 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       dataIndex: 'received_amount',
       /* 金额右对齐：位数不同的钱左对齐时右边界参差，一眼读不出量级。 */
       align: 'right' as const,
+      /* 全局 CSS 把每个单元格居中，Semi 的 align 不写 inline style，
+         所以金额仍被居中；补一个 class 由下面 CSS 用 !important 兜住。 */
+      className: 'cell-right',
       width: compact ? 116 : 130,
       /* 这一列原来混着两种写法：有的行取到库里的精确字符串（¥2,100.00），
          有的行只有后端给的 number（¥0）—— 同一列里一半带两位小数、一半不带。
@@ -337,6 +343,9 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       dataIndex: 'amount',
       /* 金额右对齐：位数不同的钱左对齐时右边界参差，一眼读不出量级。 */
       align: 'right' as const,
+      /* 全局 CSS 把每个单元格居中，Semi 的 align 不写 inline style，
+         所以金额仍被居中；补一个 class 由下面 CSS 用 !important 兜住。 */
+      className: 'cell-right',
       width: compact ? 100 : 130,
       /* 同一行里「已收/未收」走的是库里的精确十进制字符串（900.00），
          这里原来传的是 number（900）—— 一行里一半带两位小数、一半不带，
@@ -349,6 +358,9 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       dataIndex: 'received_amount',
       /* 金额右对齐：位数不同的钱左对齐时右边界参差，一眼读不出量级。 */
       align: 'right' as const,
+      /* 全局 CSS 把每个单元格居中，Semi 的 align 不写 inline style，
+         所以金额仍被居中；补一个 class 由下面 CSS 用 !important 兜住。 */
+      className: 'cell-right',
       width: compact ? 110 : 130,
       render: (v: number, record: Receivable) => {
         const received = formatMoney(record.received_amount_exact ?? v, record.currency)
@@ -371,6 +383,9 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
           dataIndex: 'remaining_amount',
       /* 金额右对齐：位数不同的钱左对齐时右边界参差，一眼读不出量级。 */
       align: 'right' as const,
+      /* 全局 CSS 把每个单元格居中，Semi 的 align 不写 inline style，
+         所以金额仍被居中；补一个 class 由下面 CSS 用 !important 兜住。 */
+      className: 'cell-right',
           width: 130,
           render: (v: number, record: Receivable) =>
             formatMoney(record.remaining_amount_exact ?? v, record.currency),
@@ -412,6 +427,9 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       dataIndex: 'received_amount',
       /* 金额右对齐：位数不同的钱左对齐时右边界参差，一眼读不出量级。 */
       align: 'right' as const,
+      /* 全局 CSS 把每个单元格居中，Semi 的 align 不写 inline style，
+         所以金额仍被居中；补一个 class 由下面 CSS 用 !important 兜住。 */
+      className: 'cell-right',
       width: compact ? 104 : 118,
       render: (v: number, record: Payment) => formatMoney(record.received_amount_exact ?? v, record.currency),
     },
