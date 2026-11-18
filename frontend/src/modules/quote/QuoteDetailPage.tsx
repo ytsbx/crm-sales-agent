@@ -2133,7 +2133,7 @@ export default function QuoteDetailPage() {
 
       {/* 关联询价的审批：只有明细里带 inquiry_id 才出现，纯现货报价看不到这张卡 */}
       {linkedInquiries.length > 0 && (
-        <SectionCard title="关联询价的审批进度" style={{ marginTop: 16 }}>
+        <SectionCard title="关联询价的审批进度" className="oa-inquiry-card" style={{ marginTop: 16 }}>
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 12 }}>
             「核价 / 报价复核」在同序 OA 的询价单上办理；这一层没通过时，正式对外发送仍会被拦。
           </div>
@@ -2149,16 +2149,9 @@ export default function QuoteDetailPage() {
             {inquiryApprovalRows.map((row) => (
               <div className="oa-inquiry-row" key={row.key}>
                 <div className="oa-inquiry-main">
-                  <div className="oa-inquiry-no">{row.inquiry.inquiryNo ?? '未编号需求'}</div>
-                  <div className="oa-inquiry-meta">
-                    {row.latest
-                      ? `第 ${row.latest.submit_round ?? 1} 轮 · 最近同步 ${row.latest.synced_at ? formatBeijingTime(row.latest.synced_at) : '从未同步'}`
-                      : '该需求还没有发起同序 OA 审批'}
-                  </div>
-                </div>
-                <div className="oa-inquiry-side">
-                  {row.latest ? (
-                    <>
+                  <div className="oa-inquiry-title">
+                    <span className="oa-inquiry-no">{row.inquiry.inquiryNo ?? '未编号需求'}</span>
+                    {row.latest ? (
                       <Tag
                         color={row.latest.status === 'approved' ? 'green'
                           : row.latest.status === 'pending' ? 'orange'
@@ -2167,12 +2160,23 @@ export default function QuoteDetailPage() {
                       >
                         {row.latest.status_label}
                       </Tag>
+                    ) : (
+                      <Tag color="grey" type="light">未发起</Tag>
+                    )}
+                  </div>
+                  <div className="oa-inquiry-meta">
+                    {row.latest
+                      ? `第 ${row.latest.submit_round ?? 1} 轮 · 最近同步 ${row.latest.synced_at ? formatBeijingTime(row.latest.synced_at) : '从未同步'}`
+                      : '该需求还没有发起同序 OA 审批'}
+                  </div>
+                </div>
+                <div className="oa-inquiry-side">
+                  {row.latest && (
+                    <>
                       {/* 待审时打开页面就先对一次，之后每 10 秒对一次 —— 别让用户看见过期的"待审批" */}
                       <AutoOaSync row={row.latest} invalidateKeys={[['quote-linked-inquiry-approvals', linkedInquiryKey], ['quote-detail', quoteId]]} />
                       <SyncOaButton oaId={row.latest.id} invalidateKeys={[['quote-linked-inquiry-approvals', linkedInquiryKey], ['quote-detail', quoteId]]} />
                     </>
-                  ) : (
-                    <Tag color="grey" type="light">未发起</Tag>
                   )}
                 </div>
               </div>

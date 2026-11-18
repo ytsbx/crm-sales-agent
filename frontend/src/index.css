@@ -3153,6 +3153,12 @@ table:not(.semi-table) td {
 
 /* 关联询价审批：一两行信息用不着表格，表格会把词摊到整屏宽、两头贴边。
    左栏放"是什么"（需求号 + 轮次/同步时间），右栏放"现在怎样"（状态 + 动作）。 */
+/* 这张卡内容少、又只有一两条，按默认 24/20 的内边距看还是"贴着框"
+   （主人连着两轮都说挤）。这张卡单独把内边距放大到 28/26，
+   里面的浅底条再退 18px，形成"卡边 → 卡内留白 → 条边 → 条内留白"四层。 */
+.oa-inquiry-card {
+  padding: 26px 28px;
+}
 .oa-inquiry-list {
   display: flex;
   flex-direction: column;
@@ -3166,12 +3172,17 @@ table:not(.semi-table) td {
   justify-content: space-between;
   gap: 20px;
   /* 一整条浅底 + 自身留白：内容离卡片边再退 16px，不再"顶格" */
-  padding: 14px 16px;
+  padding: 14px 18px;
   border-radius: 8px;
   background: var(--crm-surface-low);
 }
 .oa-inquiry-main {
   min-width: 0;
+}
+.oa-inquiry-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 .oa-inquiry-no {
   font-size: 13px;
