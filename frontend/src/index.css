@@ -3208,6 +3208,12 @@ table:not(.semi-table) td {
 .oa-cell > .semi-tag {
   align-self: flex-start;
 }
+.oa-stage-approved {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--crm-success, #2f9e5f);
+}
 .oa-inquiry-action {
   display: inline-flex;
   align-items: center;

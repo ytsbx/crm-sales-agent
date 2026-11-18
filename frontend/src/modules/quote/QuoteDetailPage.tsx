@@ -463,7 +463,19 @@ export default function QuoteDetailPage() {
       const nodes = (open.length > 0 ? open : tasks).map((entry) => entry.node)
       return [...new Set(nodes)].join(' / ')
     })()
-    return { key: inquiry.id, inquiry, latest, stageText }
+    /**
+     * 报价这一关单独看 `business_stages.quotation`：
+     * 整张询价单可能是 pending（后面还有打样、备货节点在办），
+     * 但核价/报价复核这一关已经过了 —— 那就能正式报价。
+     * 只看整单状态会把"已可报价"误显示成"待审批"，所以这里单独取。
+     */
+    const quotation = (() => {
+      const stages = (latest?.result as { business_stages?: Record<string, unknown> } | null | undefined)?.business_stages
+      const node = stages?.quotation as { status?: string; label?: string } | undefined
+      if (!node || typeof node !== 'object') return null
+      return { approved: node.status === 'approved' }
+    })()
+    return { key: inquiry.id, inquiry, latest, stageText, quotation }
   })
 
   const isCurrentVersion = Boolean(version && quote?.current_version_id === version.id)
@@ -2191,6 +2203,10 @@ export default function QuoteDetailPage() {
                 <div className="oa-cell oa-cell-stage">
                   <span className="oa-cell-label">当前阶段</span>
                   <span className="oa-cell-value">{row.stageText || (row.latest?.status === 'pending' ? '同步后可见' : '—')}</span>
+                  {/* 报价这一关过了就明说，别让整单的"待审批"盖住它 */}
+                  {row.quotation?.approved && (
+                    <span className="oa-stage-approved">核价 / 报价复核已通过</span>
+                  )}
                 </div>
                 <div className="oa-cell">
                   <span className="oa-cell-label">最近同步</span>
