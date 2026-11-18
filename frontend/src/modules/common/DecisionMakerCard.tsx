@@ -35,6 +35,12 @@ interface Props {
   /** 是否自带 .card-block 外壳；嵌在已有卡片里时传 false。 */
   boxed?: boolean
   /**
+   * 自带外壳时的上间距。其他页面靠父级 gap 分开，报价详情是直接挂在
+   * 两列栅格下面的 —— 不传就是 0，卡片会**贴着**上面那张卡的底边
+   * （2026-11-18 主人圈出「这里贴太近了」）。空态那支自己带 16。
+   */
+  marginTop?: number
+  /**
    * 空态降级成一行注脚（不带卡片外壳、不带标题栏）。
    * 用在"客户还没登记联系人"的场景：一张卡只装一句话，会把整块版面撑空，
    * 反复被主人圈"空着"（2026-11-16）。有联系人时照旧渲染卡片。
@@ -48,6 +54,7 @@ export default function DecisionMakerCard({
   compact = false,
   boxed = true,
   footnoteOnEmpty = false,
+  marginTop = 0,
 }: Props) {
   const navigate = useNavigate()
   const contactsQuery = useQuery({
@@ -104,7 +111,7 @@ export default function DecisionMakerCard({
   }
 
   return (
-    <div className={boxed ? 'card-block' : undefined}>
+    <div className={boxed ? 'card-block' : undefined} style={boxed ? { marginTop } : undefined}>
       <div className="toolbar" style={{ marginBottom: 12 }}>
         <div style={{ fontWeight: 600 }}>{title}</div>
         <div style={{ flex: 1 }} />

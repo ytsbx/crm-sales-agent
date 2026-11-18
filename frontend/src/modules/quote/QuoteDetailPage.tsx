@@ -2207,7 +2207,14 @@ export default function QuoteDetailPage() {
       {/* 客户决策关系图：报价要发给谁、谁能拍板都在这。
           客户还没登记联系人时（0 位）收成一行注脚，不再占一整张卡 —
           "一张卡只装一句话"正是这块反复空着的原因（2026-11-16）。 */}
-      <DecisionMakerCard customerId={quote.customer_id} title="客户决策关系图" footnoteOnEmpty />
+      <DecisionMakerCard
+        customerId={quote.customer_id}
+        title="客户决策关系图"
+        footnoteOnEmpty
+        // 上面那排「附加费用 / 金额汇总」是栅格，卡片自己不带外边距；
+        // 这里补 16，和其余 SectionCard 的节奏一致（原来贴着底边）。
+        marginTop={16}
+      />
 
       {detail.approval && (
         <SectionCard title="审批记录" style={{ marginTop: 16 }}>
