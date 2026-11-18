@@ -3849,24 +3849,28 @@ table:not(.semi-table) td {
 }
 
 /* ===== 待办行：说明在左、动作在右 ===== */
+/* 说明一行、动作一行：原来说明与「下一步：… / 去处理」同一条基线，
+   句子一长就把两个标签压在最右边（1440 下只剩一条缝，2026-11-18 主人
+   一直指这里"挤"）。现在说明独占整宽，动作另起一行、贴右对齐。 */
 .quote-todo-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 5px 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 10px;
+  padding: 6px 0;
 }
-.quote-todo-dot { flex: 0 0 auto; }
+.quote-todo-dot { grid-column: 1; }
 .quote-todo-reason {
-  flex: 1 1 auto;
+  grid-column: 2;
   min-width: 0;
   line-height: 1.8;
 }
 .quote-todo-side {
-  flex: 0 0 auto;
+  grid-column: 2;
   display: flex;
+  justify-content: flex-end;
   align-items: center;
   gap: 14px;
-  padding-top: 1px;
+  margin-top: 2px;
   white-space: nowrap;
 }
 .qt-next { color: var(--crm-text-3); }
@@ -3916,7 +3920,10 @@ table:not(.semi-table) td {
    窄屏（<1100）回到单列，分隔线换回横线。 */
 .quote-archive-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr) minmax(0, 1fr);
+  /* 第一列只要放得下三列表格（发送时间/渠道/发给了谁），多出来的宽度
+     让给后面两段说明文字 —— 三列等分时「合同文档」「对客单据」的话被折成
+     四五短行，右边却空着（2026-11-18）。 */
+  grid-template-columns: minmax(345px, 0.95fr) minmax(0, 1.15fr) minmax(0, 1.15fr);
   gap: 0;
   min-width: 0;
 }

@@ -211,7 +211,11 @@ export default function PricingPage() {
           </div>
         </SectionCard>
 
-        <SectionCard title="成本结构（单件）">
+        {/* 没选 SKU 时这两张卡原来被栅格拉成一屏高，只有顶上一句话，
+            下面 500 多像素纯白 —— 看着像页面没加载完（2026-11-18）。
+            没有结果就让它们按内容收高（alignSelf:start），选完 SKU 再和
+            输入卡等高。 */}
+        <SectionCard title="成本结构（单件）" style={{ alignSelf: result ? 'stretch' : 'start', minHeight: result ? undefined : 150 }}>
           {resultQuery.isLoading && <div style={{ color: 'var(--crm-text-3)' }}>计算中…</div>}
           {result && (
             <>
@@ -237,10 +241,15 @@ export default function PricingPage() {
               </div>
             </>
           )}
-          {!skuId && <div style={{ color: 'var(--crm-text-3)' }}>请先选择 SKU</div>}
+          {!skuId && (
+            <div style={{ color: 'var(--crm-text-3)' }}>
+              请先选择 SKU。选好后这里按采购、生产、包装、加工拆出单件成本，
+              运费只作参考、不计入核价基数。
+            </div>
+          )}
         </SectionCard>
 
-        <SectionCard title="核价结果">
+        <SectionCard title="核价结果" style={{ alignSelf: result ? 'stretch' : 'start', minHeight: result ? undefined : 150 }}>
           {result && (
             <>
               {/* D3：报价基准是「系统适用价」（专属价→等级价→通用指导价），
@@ -297,7 +306,12 @@ export default function PricingPage() {
               </div>
             </>
           )}
-          {!skuId && <div style={{ color: 'var(--crm-text-3)' }}>选择 SKU 后自动计算</div>}
+          {!skuId && (
+            <div style={{ color: 'var(--crm-text-3)' }}>
+              选择 SKU 后自动计算：建议价按客户专属价 → 等级价 → 通用指导价的顺序取，
+              同时给出最低允许价和是否需要审批。
+            </div>
+          )}
         </SectionCard>
       </div>
 

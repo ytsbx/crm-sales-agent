@@ -81,7 +81,10 @@ export default function QuoteSendLogsPanel({
           {
             title: '发送时间',
             dataIndex: 'sent_at',
-            width: 170,
+            // 150 够放「2026-11-16 10:56」；原来 170 + 渠道 110 把第三列
+            // 「发给了谁」挤到 40px，在「对外与归档」左列里出现横向滚动条
+            // 且表头被切成「发给」（2026-11-18）。
+            width: 150,
             render: (value: string) => (value ? // ⚠️ 原来是切 ISO 串 —— `sent_at` 是 UTC 瞬时，切片等于按 UTC 显示，
                 // 比北京时间早 8 小时、跨零点显示成前一天；而同一页的审批记录
                 // 用的是 toLocaleString，两种口径同屏并列。
@@ -90,7 +93,7 @@ export default function QuoteSendLogsPanel({
           {
             title: '渠道',
             dataIndex: 'channel',
-            width: 110,
+            width: 80,
             render: (value: string) => <Tag size="small">{value || '-'}</Tag>,
           },
           {
