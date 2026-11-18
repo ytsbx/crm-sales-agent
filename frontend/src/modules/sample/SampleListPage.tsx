@@ -333,6 +333,9 @@ export default function SampleListPage() {
 
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ['timeline', 'customer'] })
+    // 深链打开（不在当前列表页）时详情走独立的 ['sample-detail'] 查询，
+    // 只刷 ['samples'] 它不会重新取，登记完制作/寄样页面还停在旧状态。
+    void queryClient.invalidateQueries({ queryKey: ['sample-detail'] })
     return queryClient.invalidateQueries({ queryKey: ['samples'] })
   }
   const onError = (error: Error) => Toast.error(error.message)
@@ -1134,7 +1137,11 @@ export default function SampleListPage() {
             )}
 
             {canManage && <Button theme="outline" type="primary" onClick={() => setOaTarget(detail.id)}>同序 OA 打样申请 / 查看进度</Button>}
-            {canManage && !((detail.source_context as unknown as { dingtalk_oa?: { submitted?: boolean } } | null)?.dingtalk_oa?.submitted) && (
+            {/* 动作区不再整块挂在「同序 OA 已提交」上：approve/reject 那一组
+                自己带 `!dingtalk_oa` 判据，但这之后的制作 / 寄样 / 签收是**业务事实登记**，
+                跟审批走哪条通道无关。原来 OA 提交过的单子获批后整块消失，
+                详情里只剩「查看进度」—— 下一步没入口。 */}
+            {canManage && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 {/* 待审批时是「批准 / 拒绝」；已驳回时给两条纠错的路 ——
                     主管改判（上次驳错了）、跟单原样重提（认为驳回理由不成立）。
@@ -1177,8 +1184,15 @@ export default function SampleListPage() {
                   </>
                 )}
 
-                {detail.status === 'approved' && (
+                {/* 已批准后的下一步按**业务顺序**给，不同时摆出来：
+                    先「登记制作完成」（车间做完这一笔事实），登记过之后才轮到「登记寄样」。
+                    原来寄样按钮和制作登记一起出现，可以跳过制作直接寄样，
+                    记录里就少了一笔"什么时候做完的"，后续追质量问题没有锚点。 */}
+                {detail.status === 'approved' && (detail.made_at ? (
                   <>
+                    <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                      已登记制作完成，下一步登记寄样（承运商 / 单号 / 运费）。
+                    </div>
                     <div style={{ display: 'flex', gap: 8 }}>
                       <Input
                         placeholder="承运商"
@@ -1201,7 +1215,25 @@ export default function SampleListPage() {
                       <Button theme="outline" type="primary" loading={shipMutation.isPending}>登记寄样</Button>
                     </Popconfirm>
                   </>
-                )}
+                ) : (
+                  <>
+                    <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                      打样已批准，下一步登记制作完成；登记后才能登记寄样。
+                    </div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <Button
+                        theme="outline"
+                        type="primary"
+                        onClick={() => {
+                          setMadeForm({ remark: '', fileIds: [] })
+                          setMadeModal(true)
+                        }}
+                      >
+                        登记制作完成
+                      </Button>
+                    </div>
+                  </>
+                ))}
 
                 {detail.status === 'shipped' && (
                   <Popconfirm title="确认登记客户已签收？" onConfirm={() => signMutation.mutate()}>
@@ -1489,17 +1521,8 @@ export default function SampleListPage() {
                     </div>
                   )}
 
-                  {canManage && detail.status === 'approved' && !detail.made_at && (
-                    <Button
-                      style={{ marginTop: 8 }}
-                      onClick={() => {
-                        setMadeForm({ remark: '', fileIds: [] })
-                        setMadeModal(true)
-                      }}
-                    >
-                      登记制作完成
-                    </Button>
-                  )}
+                  {/* 「登记制作完成」入口已挪到详情顶部动作区（跟「下一步」放在一起）：
+                      这一栏只留资料展示，同一个人不用滚到页面底部再找按钮。 */}
 
                   {/* 已制作 / 已寄出之后改车间依据的**唯一出路**（§3.3）：
                       原地改会被后端拒绝（同一行上留着旧制作时间却写新资料，和已做出来的

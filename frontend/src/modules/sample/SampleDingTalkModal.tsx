@@ -41,6 +41,10 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
   const [edited,setEdited]=useState<Draft | null>(null)
   // 认领弹窗的目标与"同一次核定"的请求键（键由打开弹窗时生成，弹窗里的重试复用它）
   const [adoptTarget,setAdoptTarget]=useState<OaApprovalInstance | null>(null)
+  // 工时没填时给出"能照着做"的提示，并把光标定位到工时框（2026-11-18）。
+  // 原来直接提交，后端按模板必填校验报「请填写本次打样积分」——
+  // 页面上根本没有积分输入框（积分是工时算出来的），用户照着提示找不到东西。
+  const [hoursMissing,setHoursMissing]=useState(false)
   const [adoptKey,setAdoptKey]=useState<string | null>(null)
   const draft=edited ?? {mode:query.data?.draft.mode ?? 'standalone',source_oa_id:query.data?.draft.source_oa_id,fields:query.data?.draft.fields ?? {}, resubmit:query.data?.draft.resubmit ?? false}
   const submitted=Boolean(query.data?.draft.submitted) && !edited?.resubmit
@@ -76,8 +80,21 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
     mutationFn:async(send:boolean)=>{
       if(send && draft.mode==='standalone') {
         if(!query.data?.configured||!query.data.enabled)throw new Error('独立打样模板未配置或推送关闭，请先保存草稿')
-        const missing=query.data.fields.find(f=>!f.system&&f.required&&!draft.fields[f.id]?.trim())
+        // 通用必填先按顺序挡（**排除积分那一格**：页面上没有它的输入框）。
+        const missing=query.data.fields.find(f=>!f.system&&f.required&&f.id!==pointsFieldId&&!draft.fields[f.id]?.trim())
         if(missing)throw new Error(`请填写${missing.label}`)
+        // 积分是派生的（工时 × 10），页面上只有工时框：轮到积分时要点名**工时**，
+        // 别让后端那句「请填写本次打样积分」指着一个界面上不存在的格子。
+        if(pointsFieldId && !hoursInput.trim()) {
+          setHoursMissing(true)
+          requestAnimationFrame(()=>{
+            const el=document.querySelector<HTMLInputElement>('.sample-hours-input input')
+            el?.scrollIntoView({behavior:'smooth',block:'center'})
+            el?.focus()
+          })
+          throw new Error('请填写预计工时，系统会自动换算打样积分')
+        }
+        setHoursMissing(false)
       }
       if(send&&draft.mode==='inquiry'&&!draft.source_oa_id)throw new Error('请选择原询价审批单')
       if(send)return api.post<OaApprovalInstance|null>(`/samples/${sampleId}/dingtalk-submit`,draft)
@@ -190,9 +207,13 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
           {(() => { const raw = draft.fields['_estimated_hours'] || ''; const n = Number(raw)
             const points = raw.trim() && Number.isFinite(n) ? n * 10 : null
             return <>
-              <Field label="预计工时（小时）">
-                <Input style={{width:'100%'}} value={raw} disabled={submitted||mutate.isPending}
-                  onChange={value=>setEdited({...draft,fields:{...draft.fields,['_estimated_hours']:value}})}/>
+              <Field label="预计工时（小时）" required>
+                <Input className="sample-hours-input" style={{width:'100%'}} value={raw} disabled={submitted||mutate.isPending}
+                  onChange={value=>{setHoursMissing(false);setEdited({...draft,fields:{...draft.fields,['_estimated_hours']:value}})}}/>
+                {/* 这句是"照着做"的提示：告诉人填哪个、系统会替他算什么 */}
+                <div style={{marginTop:4,fontSize:12,color:hoursMissing?'var(--crm-error)':'var(--crm-text-3)'}}>
+                  {hoursMissing?'请填写预计工时，系统会自动换算打样积分':`按小时填；打样积分由系统按「工时 × 10」自动换算，不用手填`}
+                </div>
               </Field>
               {points !== null && <Field label="打样积分">
                 <div style={{height:32,lineHeight:'32px',fontSize:13,color:'var(--crm-text-2)'}}>{points} 分</div>
