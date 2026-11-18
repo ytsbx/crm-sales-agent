@@ -48,6 +48,7 @@ import {
   ResolveOaActions,
 } from '../../shared/components/ResolveOaActions'
 import { newRequestKey } from '../../shared/api/requestKey'
+import AutoOaSync from '../../shared/components/AutoOaSync'
 import SyncOaButton from '../../shared/components/SyncOaButton'
 import { oaSyncErrorMessage, type OaApprovalInstance } from '../../shared/api/dingtalk'
 
@@ -1038,6 +1039,15 @@ export default function DocumentsPage() {
             {detail.dingtalk_oa && (
               <div>
                 <div style={DETAIL_LABEL}>{oaLabel} 合同审批</div>
+                {/* 5 秒那次只能读 CRM 里存着的快照 —— OA 那边批了，CRM 不动它也永远是 pending。
+                    这里挂 AutoOaSync：打开详情先对一次 OA，仍在审批中时每 10 秒对一次，
+                    拿到"已通过"就立刻回写并刷新本页，用户不必自己去点"立即同步"。
+                    只在 self_oa + pending 时启用，权限沿用页面的 canManage。 */}
+                <AutoOaSync
+                  enabled={canManage}
+                  row={detail.dingtalk_oa_row}
+                  invalidateKeys={[['contract-detail', detail.id], ['contract-documents']]}
+                />
                 <div style={{ fontSize: 12, marginBottom: 8 }}>页面每5秒自动更新记录，无需刷新浏览器。</div>
                 {canManage && detail.dingtalk_oa_row?.instance_id && <SyncOaButton oaId={detail.dingtalk_oa_row.id} invalidateKeys={[[ 'contract-detail',detail.id ],['contract-documents']]}/>}
                 <div style={DETAIL_VALUE}>
