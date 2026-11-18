@@ -35,6 +35,9 @@ export default function ApprovalPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
   const [rejectTarget, setRejectTarget] = useState<ApprovalRow | null>(null)
+  // 展开行自己管：不再用 Semi 的 expandIcon（它会把按钮塞进首列、宽度不够时
+  // 两个字被压成一字一行）。这里把按钮放进单独的 72px 小列，点击切换 key。
+  const [expandedKeys, setExpandedKeys] = useState<number[]>([])
   const [rejectComment, setRejectComment] = useState('')
   const [transferTarget, setTransferTarget] = useState<ApprovalRow | null>(null)
   const [transferUserId, setTransferUserId] = useState<number | null>(null)
@@ -101,13 +104,39 @@ export default function ApprovalPage() {
   })
 
   const columns = [
+    /* 展开按钮单独占最前面一列（64px，表头留空）。
+       原来它挤在「报价单号」那一格的最前面：单号 + V1 已经把 190px 占满，
+       「展开」两个字被压成一行一个字、竖着摞起来（2026-11-18 主人：
+       "展开方式换一下，文字不要倒转"）。单独一列以后，文字永远横排。 */
+    {
+      title: '',
+      dataIndex: '_expand',
+      width: 72,
+      // 展开 / 收起做成文字按钮：横排、永远一行，点一下切换这一行的展开状态
+      render: (_: unknown, record: ApprovalRow) => {
+        const open = expandedKeys.includes(record.id)
+        return (
+          <span
+            className="expand-toggle"
+            style={{ color: 'var(--crm-primary)', cursor: 'pointer' }}
+            onClick={() => {
+              setExpandedKeys((keys) =>
+                open ? keys.filter((key) => key !== record.id) : [...keys, record.id],
+              )
+            }}
+          >
+            {open ? '收起' : '展开'}
+          </span>
+        )
+      },
+    },
     /* 「版本」原来单独一列只放一个「V1」。并进单号下面一行小字，
        九列变八列，表格才收得进内容区。 */
     {
       title: '报价单号',
       dataIndex: 'quote_no',
       /* 175 放不下「箭头 + 单号 + 版本」一整行，版本被挤成「第 …」；190 刚好 */
-      width: 190,
+      width: 175,
       /* 原来单号与「第 N 版」是上下两行的块级 div —— 左边那个展开箭头是 inline 的，
          块级内容一定另起一行，于是箭头独占一行、单号再一行、版本第三行。
          改成同一行的两个 inline 片段：箭头 + 单号 + 小字版本，整行只占一行高。 */
@@ -122,12 +151,12 @@ export default function ApprovalPage() {
         </span>
       ),
     },
-    { title: '客户', dataIndex: 'customer_name', width: 215, ellipsis: true, render: (v: string | null) => v ?? '-' },
-    { title: '申请人', dataIndex: 'applicant_name', width: 110, render: (v: string | null) => v ?? '-' },
+    { title: '客户', dataIndex: 'customer_name', width: 200, ellipsis: true, render: (v: string | null) => v ?? '-' },
+    { title: '申请人', dataIndex: 'applicant_name', width: 100, render: (v: string | null) => v ?? '-' },
     {
       title: '报价总额',
       dataIndex: 'total_amount',
-      width: 150,
+      width: 130,
       // 报价总额是业务单据上的钱，按全站口径必须两位小数（¥84,030.00），
       // 不能像统计卡那样取整。
       render: (v: number | null) => (v === null || v === undefined ? '-' : formatMoney(toTwoDecimals(v), 'CNY')),
@@ -135,7 +164,7 @@ export default function ApprovalPage() {
     {
       title: '状态',
       dataIndex: 'status_label',
-      width: 155,
+      width: 130,
       render: (value: string, record: ApprovalRow) => {
         // 规则加签的单子：本级通过后停在会签节点，要让人一眼看出现在轮到谁
         const coSign = record.current_node === 'co_sign' ? record.summary?.co_sign : null
@@ -159,7 +188,7 @@ export default function ApprovalPage() {
     },
     {
       title: '操作',
-      width: 215,
+      width: 200,
       // 「看报价 通过 拒绝 转交」四个动作挤在 10px 间距里，字号又小，读起来是
       // 一串没断开的字。间距拉到 16，四个动作才分得开（2026-11-16）。
       render: (_: unknown, record: ApprovalRow) => (
@@ -242,10 +271,10 @@ export default function ApprovalPage() {
                  右边一直被裁。它本质是「一行一段说明」，不是能横向对照的字段，
                  挪进点行展开：列表留六个对照列，想细看的点左边箭头。
                  信息一点没丢。 */
-              // 同上：小三角换成文字，减少"这行能点吗"的犹豫
-              expandIcon={(expanded?: boolean) => (
-                <span className="expand-toggle">{expanded ? '收起' : '展开'}</span>
-              )}
+              /* 展开按钮已挪进最前面那一列（见 columns[0]），Semi 自带的
+                 expandIcon 关掉，避免同一行出现两个入口。 */
+              expandIcon={() => <span />}
+              expandedRowKeys={expandedKeys}
               expandedRowRender={(record?: ApprovalRow) => {
                 if (!record) return null
                 const reason = record.summary?.reason
