@@ -351,32 +351,34 @@ a:not([href]) {
 /* 分组标题：把「这页分几块」写到界面上，而不是只写在代码注释里。
    组与组之间靠 32px 上留白拉开；组内间距仍由 Row / 卡片自己的 16px 负责。
    primary 只给最该先看的一组，用主色边条拉出主次。 */
+  /* 分组标题的设计（2026-11-18 重做）
+     ------------------------------------------------------------
+     原来是一枚「01」灰底小方块 + 左侧一条灰竖线。问题有两个：
+       1. 灰底小方块一排下来像调试标记，"不是目录也不是编号"；
+       2. 它和紧跟其后的子标题（成交与转化 / 回款与应收）几乎贴在一起，
+          两层标题挤成一坨，看不出谁管谁。
+     现在：不显示序号；分组之间用一条整宽的细线切开，线上方留 18px、
+     下方留 14px —— 一眼能看出"这是新的一块"，标题也不再两行挤在一起。 */
 .section-group-head {
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
-  gap: var(--crm-space-2);
-  margin-top: var(--crm-space-6);
-  padding-left: 10px;
-  border-left: 3px solid var(--crm-surface-high);
+  gap: 10px;
+  margin-top: 26px;
+  padding-top: 16px;
+  border-top: 1px solid var(--crm-border);
+  margin-bottom: 14px;
 }
+/* 页首那一组不画顶线，否则页面标题下面立刻一条横线，像断页 */
 .section-group-head.primary {
   margin-top: 0;
-  border-left-color: var(--crm-primary);
-}
-.section-group-index {
-  flex: 0 0 auto;
-  padding: 1px 6px;
-  border-radius: var(--crm-radius-sm);
-  background: var(--crm-surface-mid);
-  color: var(--crm-text-3);
-  font-size: 11px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
+  padding-top: 0;
+  border-top: 0;
 }
 .section-group-title {
-  /* 分组标题比卡片标题小一号（14 vs 16）：它是"目录级"，不能和卡片标题打架 */
-  font-size: 14px;
+  /* 分组标题比卡片标题大一号（15 vs 14）：它是"这一块的标题"，
+     要比下面的子标题（成交与转化 13px）明显一点，层级才立得住。 */
+  font-size: 15px;
   font-weight: 600;
   color: var(--crm-text);
   letter-spacing: 0.2px;
@@ -384,10 +386,6 @@ a:not([href]) {
 .section-group-note {
   color: var(--crm-text-3);
   font-size: 12px;
-}
-.section-group-head.primary .section-group-index {
-  background: var(--crm-primary-soft);
-  color: var(--crm-primary);
 }
 
 /* 核心指标内部再分三堆：组名比卡片小一号，组间 16px，组内不留额外下边距。 */
@@ -688,7 +686,11 @@ a:not([href]) {
 /* 卡中卡：外层已经是白卡 + 阴影，内层再叠一层白卡 + 阴影，两层边界同时出现，
    看着像贴了两张贴纸。内层改成浅灰底、不投影，当"分段"用，不当"又一张卡"。 */
 .card-block .kpi-card {
-  background: var(--crm-surface-low);
+  /* 卡中卡别叠两张白卡，但也别用一整块灰 —— 灰底在大片白卡里读起来像
+     "禁用 / 未加载"（主人 2026-11-18 说这里丑）。改成白底 + 一圈细边：
+     和白卡区分开，又不像第二张贴纸。 */
+  background: var(--crm-surface);
+  border: 1px solid var(--crm-border);
   box-shadow: none;
 }
 
