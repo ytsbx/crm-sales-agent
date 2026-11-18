@@ -89,7 +89,7 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
       else if(result?.status==='pending'&&result.instance_id)Toast.success('已提交同序 OA 打样审批')
       else Toast.warning('请查看审批状态；结果不明时先核对同序 OA，不要重复发起')
       setEdited(null)
-      void query.refetch();void client.invalidateQueries({queryKey:['samples']});void client.invalidateQueries({queryKey:['sample',sampleId]})
+      void query.refetch();void client.invalidateQueries({queryKey:['samples']});void client.invalidateQueries({queryKey:['sample-detail',sampleId]})
     },onError:(error:Error)=>Toast.error(error.message),
   })
   const withdraw=useMutation({
@@ -235,8 +235,8 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
         {/* 打开这个弹窗就先向同序 OA 对一次（仍在审批中再每 10 秒对一次）。
             原来只靠 5 秒轮询 CRM 快照 + 手动「立即同步」，OA 批完了这边还挂着"待审"，
             用户以为卡住了。AutoOaSync 自己会判 provider/instance/status，非自建 OA 不触发。 */}
-        <AutoOaSync row={row} invalidateKeys={[['sample-dingtalk',sampleId],['samples'],['sample',sampleId]]} />
-        {row.instance_id&&<SyncOaButton oaId={row.id} invalidateKeys={[[ 'sample-dingtalk',sampleId ],['samples'],['sample',sampleId]]}/>}
+        <AutoOaSync row={row} invalidateKeys={[['sample-dingtalk',sampleId],['samples'],['sample-detail',sampleId]]} />
+        {row.instance_id&&<SyncOaButton oaId={row.id} invalidateKeys={[[ 'sample-dingtalk',sampleId ],['samples'],['sample-detail',sampleId]]}/>}
         {row.sync_notice&&<div>{row.sync_notice}</div>}
         <OaFormSnapshot result={row.result}/>
         {row.error&&<div style={{color:'var(--crm-error)'}}>{row.error}</div>}
@@ -246,14 +246,14 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
         {/* 「结果待人工核对」的三个出口（认领/重发/作废）。按钮由服务端的
             allowed_actions 决定 —— 打样这条链原先一个都没有，超时后单据彻底卡死。 */}
         <div style={{marginTop:8,display:'flex',gap:12}}>
-          <ResolveOaActions row={row} invalidateKeys={[['sample-dingtalk',sampleId],['samples'],['sample',sampleId]]}
+          <ResolveOaActions row={row} invalidateKeys={[['sample-dingtalk',sampleId],['samples'],['sample-detail',sampleId]]}
             onAdopt={target=>{setAdoptTarget(target);setAdoptKey(newRequestKey())}}
             onDone={()=>void query.refetch()}/>
         </div>
       </div>)}
       {query.data&&!query.data.records.length&&<div>{submitted?'尚未返回可查看的审批记录，请核对原同序 OA 单或稍后刷新。':'尚未提交或关联同序 OA 审批。'}</div>}
       <AdoptOaInstanceModal target={adoptTarget} requestKey={adoptKey}
-        invalidateKeys={[['sample-dingtalk',sampleId],['samples'],['sample',sampleId]]}
+        invalidateKeys={[['sample-dingtalk',sampleId],['samples'],['sample-detail',sampleId]]}
         onClose={()=>{setAdoptTarget(null);setAdoptKey(null)}}/>
     </div>
   </Modal>

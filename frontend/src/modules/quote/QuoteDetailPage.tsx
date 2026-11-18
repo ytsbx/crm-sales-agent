@@ -59,6 +59,7 @@ import { useAuthStore } from '../../shared/store/auth'
 import { listCustomInquiries } from '../../shared/api/inquiry'
 import { listInquiryApprovals } from '../../shared/api/dingtalk'
 import AutoOaSync from '../../shared/components/AutoOaSync'
+import { approvalProgress } from '../knowledge/approval-progress'
 import SyncOaButton from '../../shared/components/SyncOaButton'
 import { listSkusForPricing } from '../../shared/api/pricing'
 import { usePermissions } from '../../shared/hooks/permissions'
@@ -446,7 +447,23 @@ export default function QuoteDetailPage() {
   const inquiryApprovalRows = (inquiryApprovalsQuery.data ?? []).map(({ inquiry, instances }) => {
     // 同一条需求可能被驳回重提多次：最新一轮先看轮次号，再看记录 id
     const latest = [...instances].sort((a, b) => (b.submit_round ?? 0) - (a.submit_round ?? 0) || b.id - a.id)[0]
-    return { key: inquiry.id, inquiry, latest }
+    /**
+     * 这一层到底走到哪个阶段：核价、报价复核是同序 OA 询价单里的**节点**，
+     * 不单独占一张审批实例。所以阶段名从同步回来的 tasks 里取，
+     * 不去按模板猜顺序 —— 模板改了，猜的那套就错。
+     *   · 待审：还没办完的节点（待处理/处理中）；
+     *   · 已通过：走完的节点全列出来；
+     *   · 没同步过结果：留空，不编。
+     */
+    const stageText = (() => {
+      if (!latest?.result) return ''
+      const tasks = approvalProgress(latest.result).filter((entry) => entry.kind === 'task')
+      if (tasks.length === 0) return ''
+      const open = tasks.filter((entry) => entry.status.includes('待处理') || entry.status.includes('处理中'))
+      const nodes = (open.length > 0 ? open : tasks).map((entry) => entry.node)
+      return [...new Set(nodes)].join(' / ')
+    })()
+    return { key: inquiry.id, inquiry, latest, stageText }
   })
 
   const isCurrentVersion = Boolean(version && quote?.current_version_id === version.id)
@@ -2171,6 +2188,10 @@ export default function QuoteDetailPage() {
                   <span className="oa-cell-label">轮次</span>
                   <span className="oa-cell-value">{row.latest ? `第 ${row.latest.submit_round ?? 1} 轮` : '—'}</span>
                 </div>
+                <div className="oa-cell oa-cell-stage">
+                  <span className="oa-cell-label">当前阶段</span>
+                  <span className="oa-cell-value">{row.stageText || (row.latest?.status === 'pending' ? '同步后可见' : '—')}</span>
+                </div>
                 <div className="oa-cell">
                   <span className="oa-cell-label">最近同步</span>
                   <span className="oa-cell-value">
@@ -2178,11 +2199,27 @@ export default function QuoteDetailPage() {
                   </span>
                 </div>
                 <div className="oa-inquiry-action">
-                  {row.latest && (
+                  {/* 同步是有权限动作：只读用户点了只会拿到 403，所以按钮和自动轮询都不给
+                      （「无权查看」和「查看但没权限同步」是两件事，后者不该假装有动作）。 */}
+                  {row.latest && canManage && (
                     <>
                       {/* 待审时打开页面就先对一次，之后每 10 秒对一次 —— 别让用户看见过期的"待审批" */}
-                      <AutoOaSync row={row.latest} invalidateKeys={[['quote-linked-inquiry-approvals', linkedInquiryKey], ['quote-detail', quoteId]]} />
-                      <SyncOaButton oaId={row.latest.id} invalidateKeys={[['quote-linked-inquiry-approvals', linkedInquiryKey], ['quote-detail', quoteId]]} />
+                      <AutoOaSync
+                        row={row.latest}
+                        invalidateKeys={[
+                          ['quote-linked-inquiry-approvals', linkedInquiryKey],
+                          ['quote-version', versionId],
+                          ['quote-versions', quoteId],
+                        ]}
+                      />
+                      <SyncOaButton
+                        oaId={row.latest.id}
+                        invalidateKeys={[
+                          ['quote-linked-inquiry-approvals', linkedInquiryKey],
+                          ['quote-version', versionId],
+                          ['quote-versions', quoteId],
+                        ]}
+                      />
                     </>
                   )}
                 </div>
