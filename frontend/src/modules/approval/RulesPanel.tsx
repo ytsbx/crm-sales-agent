@@ -161,6 +161,11 @@ export default function RulesPanel() {
   const columns = [
     {
       title: '规则',
+      // 六列里只有「规则」是可以伸缩的：其余五列按内容定死（100/240/60/150/170），
+      // 剩下的全给规则名 + 说明。原来不写宽度时 Semi 把多出来的 100 多像素
+      // 又摊给第一列，整张表 1188 > 卡片 1172，「操作」整列被推到卡片外
+      // （2026-11-18 实拍：只剩横向滚动条，看不到「版本」）。
+      width: '100%',
       render: (_: unknown, row: ApprovalRuleRow) => (
         <div>
           <div style={{ fontWeight: 600, fontSize: 13 }}>{row.name}</div>
@@ -173,13 +178,14 @@ export default function RulesPanel() {
     {
       title: '类型',
       dataIndex: 'kind',
-      width: 110,
+      width: 80,
       render: (kind: string) => (
         <Tag color={(KIND_TONE[kind] ?? 'grey') as TagColor}>{RULE_KIND_LABEL[kind] ?? kind}</Tag>
       ),
     },
     {
       title: '触发条件',
+      width: 220,
       render: (_: unknown, row: ApprovalRuleRow) => (
         <div style={{ fontSize: 12, color: 'var(--crm-text-2)', display: 'grid', gap: 2 }}>
           {(row.conditions ?? []).map((cond, index) => {
@@ -195,10 +201,10 @@ export default function RulesPanel() {
         </div>
       ),
     },
-    { title: '优先级', dataIndex: 'priority', width: 80 },
+    { title: '优先级', dataIndex: 'priority', width: 60 },
     {
       title: '生效状态',
-      width: 170,
+      width: 130,
       render: (_: unknown, row: ApprovalRuleRow) => (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <Switch
@@ -227,9 +233,11 @@ export default function RulesPanel() {
     },
     {
       title: '操作',
-      width: 190,
+      // 四个链接（编辑/发布/版本/删除）在 150 里正好排满，gap 从 10 收到 6；
+      // 再宽一点整张表就会顶出卡片，右侧「版本」被切掉（2026-11-18 实测）。
+      width: 140,
       render: (_: unknown, row: ApprovalRuleRow) => (
-        <div style={{ display: 'flex', gap: 10, fontSize: 13 }}>
+        <div style={{ display: 'flex', gap: 4, fontSize: 12 }}>
           <a style={{ color: 'var(--crm-primary)' }} onClick={() => toEdit(row)}>
             编辑
           </a>
@@ -288,6 +296,12 @@ export default function RulesPanel() {
           rowKey="id"
           pagination={false}
           empty="还没有规则"
+          // 默认是 auto 布局：写死的列宽只是"起步宽度"，长文案会把列顶开，
+          // 「操作」整列被推到卡片外、只剩横向滚动条（2026-11-18）。
+          // 固定布局让表格按卡片宽度摊平；不要再挂 scroll.x，
+          // 那会让 Semi 常驻一条空滚动条，看着像没对齐（2026-11-18）。
+          tableLayout="fixed"
+          className="rules-table"
         />
       </SectionCard>
 
@@ -481,7 +495,7 @@ export default function RulesPanel() {
         )}
       </Modal>
 
-      <VersionDrawer rule={versionTarget} onClose={() => setVersionTarget(null)} />
+      <VersionDrawer rule={versionTarget} fields={fields} onClose={() => setVersionTarget(null)} />
     </>
   )
 }
@@ -494,7 +508,17 @@ const labelStyle: React.CSSProperties = {
 
 // ---------------------------------------------------------------- 版本历史
 
-function VersionDrawer({ rule, onClose }: { rule: ApprovalRuleRow | null; onClose: () => void }) {
+function VersionDrawer({
+  rule,
+  fields,
+  onClose,
+}: {
+  rule: ApprovalRuleRow | null
+  // 字段中文名来自同一个字段元数据接口 —— 版本快照里只存 `field` 代码，
+  // 不把代码翻成中文就会变成"给人看的 JSON"，和"不显示原始 JSON"的要求冲突。
+  fields: ConditionFieldMeta[]
+  onClose: () => void
+}) {
   const versionsQuery = useQuery({
     queryKey: ['approval-rule-versions', rule?.id],
     queryFn: () => listApprovalRuleVersions(rule!.id),
@@ -512,13 +536,48 @@ function VersionDrawer({ rule, onClose }: { rule: ApprovalRuleRow | null; onClos
                 {version.is_current && <Tag color="cyan" size="small" style={{ marginLeft: 8 }}>当前生效</Tag>}
               </span>
             </div>
-            <pre style={preStyle}>
-              {JSON.stringify(
-                { 优先级: version.payload.priority, 条件: version.payload.conditions, 动作: version.payload.action },
-                null,
-                2,
-              )}
-            </pre>
+            {/* 原来是 `<pre>{JSON.stringify(payload)}</pre>`：键是英文代码、值是嵌套对象，
+                主人看到的就是一坨花括号（也违反交接文档第 8 条"不显示原始 JSON"）。
+                改成三行中文说明：条件、命中后果、附加节点。 */}
+            <div style={{ fontSize: 13, lineHeight: 1.9, color: 'var(--crm-text-1)' }}>
+              <div>
+                <span style={{ color: 'var(--crm-text-3)' }}>规则类型：</span>
+                {RULE_KIND_LABEL[version.payload.kind] ?? '审批规则'}
+                <span style={{ color: 'var(--crm-text-3)', marginLeft: 12 }}>优先级：</span>
+                {version.payload.priority}（数字小的先算）
+              </div>
+              <div>
+                <span style={{ color: 'var(--crm-text-3)' }}>触发条件：</span>
+                {(version.payload.conditions ?? []).length === 0
+                  ? '没有条件，整单适用'
+                  : (version.payload.conditions ?? []).map((cond, index) => {
+                      const meta = fields.find((f) => f.field === cond.field)
+                      const symbol =
+                        cond.op === 'gte' ? '≥' : cond.op === 'lte' ? '≤' : cond.op === 'eq' ? '=' : '属于'
+                      const value =
+                        typeof cond.value === 'boolean'
+                          ? cond.value
+                            ? '是'
+                            : '否'
+                          : String(cond.value ?? '-')
+                      return (
+                        <span key={index} style={{ marginRight: 10 }}>
+                          {index > 0 && <span style={{ color: 'var(--crm-text-3)' }}>且 </span>}
+                          {meta?.label ?? '未命名字段'} {symbol} {value}
+                        </span>
+                      )
+                    })}
+              </div>
+              <div>
+                <span style={{ color: 'var(--crm-text-3)' }}>命中后：</span>
+                {KIND_HINT[version.payload.kind] ?? '按规则执行'}
+                {version.payload.kind === 'exception_route' && (
+                  <span>
+                    （会签节点：{String(version.payload.action?.add_node_label ?? '财务会签')}）
+                  </span>
+                )}
+              </div>
+            </div>
           </SectionCard>
         ))}
         {(versionsQuery.data ?? []).length === 0 && (
@@ -682,13 +741,4 @@ function SandboxPanel({ fields: _fields }: { fields: ConditionFieldMeta[] }) {
       )}
     </SectionCard>
   )
-}
-
-const preStyle: React.CSSProperties = {
-  fontSize: 12,
-  background: 'var(--crm-surface-low)',
-  borderRadius: 6,
-  padding: 10,
-  whiteSpace: 'pre-wrap',
-  margin: 0,
 }
