@@ -1859,6 +1859,69 @@ a:not([href]) {
   word-break: break-word;
 }
 
+/* ≤900px：规则表改成"一条规则一张卡"。
+   六列固定宽加起来 540px，手机宽度下规则列只剩几十像素，
+   说明文字会被压成一字一行的竖排（主人明令禁止的"文字倒转"）。
+   表格骨架整个拆成块级：表头藏掉，每行一张圆角卡，
+   各字段用 ::before 贴上中文标签，读起来和详情页一个语感。 */
+@media (max-width: 900px) {
+  .rules-table .semi-table-thead,
+  .rules-table colgroup {
+    display: none;
+  }
+  .rules-table table,
+  .rules-table .semi-table-tbody,
+  .rules-table .semi-table-row,
+  .rules-table .semi-table-row-cell {
+    /* !important：Semi 自己的 display:table-cell 与本文件同级特异性，
+       谁后加载谁赢；不加重就压不住（2026-11-18 实拍单元格仍横排）。 */
+    display: block !important;
+    width: auto !important;
+  }
+  .rules-table .semi-table-row {
+    border: 1px solid #e5e6eb;
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    background: #fff !important;
+  }
+  .rules-table .semi-table-row-cell {
+    padding: 3px 0 !important;
+    border-bottom: none !important;
+    white-space: normal;
+    overflow: visible;
+    background: transparent !important;
+  }
+  /* 全站居中那条是三层选择器 + !important（.semi-table-tbody > .semi-table-row >
+     .semi-table-row-cell），两层压不住；这里加到四层，卡片内才真的左对齐。 */
+  .rules-table .semi-table-tbody > .semi-table-row > .semi-table-row-cell {
+    text-align: left !important;
+  }
+  .rules-table .rules-col-kind::before,
+  .rules-table .rules-col-cond::before,
+  .rules-table .rules-col-prio::before,
+  .rules-table .rules-col-state::before,
+  .rules-table .rules-col-ops::before {
+    color: var(--crm-text-3);
+    font-size: 12px;
+    margin-right: 6px;
+  }
+  .rules-table .rules-col-kind::before { content: '类型'; }
+  .rules-table .rules-col-cond::before { content: '触发条件'; }
+  .rules-table .rules-col-prio::before { content: '优先级'; }
+  .rules-table .rules-col-state::before { content: '生效状态'; }
+  .rules-table .rules-col-ops::before { content: '操作'; }
+  /* 卡片里状态/操作不再居中，跟标签左对齐 */
+  .rules-table .rules-col-state > div,
+  .rules-table .rules-col-ops > div {
+    display: inline-flex !important;
+    justify-content: flex-start !important;
+  }
+  .rules-table .rules-col-cond > div {
+    display: inline-grid !important;
+  }
+}
+
 /* 规则沙盒那一行：搜索 / 报价 / 版本 / 试算。
    四列按内容比例分，报价下拉最宽（单号 + 客户名要能一行放下）；
    窄屏（≤1100）拆成两行两列，按钮靠左，不撑出横向滚动。 */

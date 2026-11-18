@@ -191,6 +191,7 @@ export default function RulesPanel() {
   const columns = [
     {
       title: '规则',
+      className: 'rules-col-name',
       // 六列里只有「规则」伸缩：**不写 width**。固定布局下没写宽度的列
       // 自动吃掉剩余空间。原来写 width:'100%' 是错的 —— 那等于"这一列就要
       // 整张表那么宽"，再加上其余五列的固定宽，总宽必然超卡片：
@@ -208,6 +209,7 @@ export default function RulesPanel() {
     },
     {
       title: '类型',
+      className: 'rules-col-kind',
       dataIndex: 'kind',
       width: 80,
       render: (kind: string) => (
@@ -216,6 +218,7 @@ export default function RulesPanel() {
     },
     {
       title: '触发条件',
+      className: 'rules-col-cond',
       // 180 够放最长的一条「较上一版让价金额 ≤ 1000元」；再宽就是浪费，
       // 窄屏下多出来的每一像素都是从规则名那里抢的。
       width: 180,
@@ -234,9 +237,10 @@ export default function RulesPanel() {
         </div>
       ),
     },
-    { title: '优先级', dataIndex: 'priority', width: 56 },
+    { title: '优先级', className: 'rules-col-prio', dataIndex: 'priority', width: 56 },
     {
       title: '生效状态',
+      className: 'rules-col-state',
       // 100：开关 + V1 胶囊一行放下；「草稿待发布」出现时换到第二行，
       // 不为了一个偶尔出现的标签把整列常驻加宽 30px。
       width: 100,
@@ -268,6 +272,7 @@ export default function RulesPanel() {
     },
     {
       title: '操作',
+      className: 'rules-col-ops',
       // 四个链接 4×24 + 3×4 间隙 = 108，加左右 8px 内边距（.rules-table）
       // 124 正好；内容居中，和表头同一条中线。
       width: 124,
@@ -307,7 +312,8 @@ export default function RulesPanel() {
       <Modal
         visible={conflictNotice !== null}
         title={conflictNotice?.title ?? '规则冲突'}
-        width={560}
+        // 小屏不超出视口：与报价/样品详情弹窗同一写法（2026-11-18）
+        width={Math.min(560, window.innerWidth - 24)}
         onCancel={() => setConflictNotice(null)}
         footer={
           <Button type="primary" onClick={() => setConflictNotice(null)}>
@@ -380,7 +386,7 @@ export default function RulesPanel() {
           saveMutation.mutate(editing)
         }}
         confirmLoading={saveMutation.isPending}
-        width={680}
+        width={Math.min(680, window.innerWidth - 24)}
         okText="保存草稿"
       >
         {editing && (
