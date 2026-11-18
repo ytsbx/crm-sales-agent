@@ -384,7 +384,7 @@ export default function WeComPage() {
           下面又接着三栏卡片 —— 中间多出一条断掉的半行。
           这页正好五项，直接给五列，一行收完。 */}
       <KpiStrip
-        className="kpi-grid kpi-cols-5"
+        className="kpi-grid kpi-cols-5 wecom-kpi"
         items={[
           {
             label: '企微成员',

@@ -2360,6 +2360,7 @@ table:not(.semi-table) td {
 .kpi-cols-5 {
   grid-template-columns: repeat(5, minmax(0, 1fr));
 }
+
 /* 分析页的指标分组：一行最多四张，卡宽**全页固定**。
    上一版是"不足四张就平分放大铺满"（3 张各 33%、2 张各 50%），
    结果同一页四组指标出现三种卡宽，从上往下看一列比一列宽，反而更乱。
@@ -2431,6 +2432,55 @@ table:not(.semi-table) td {
   .kpi-cols-5,
   .kpi-cols-4 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* 企业微信的五项指标（.wecom-kpi）：只有 5 张，落到 2 列时必然剩一张孤零零
+   占半行 —— 左边一张卡、右边一片空（主人 2026-11-18："企业微信这里有点丑"）。
+   中间宽度用 6 列栅格：前三张各占 2（一行 3 张）、后两张各占 3（一行 2 张），
+   两行都填满，没有空格。 */
+@media (max-width: 1370px) {
+  .wecom-kpi {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+  .wecom-kpi > :nth-child(-n + 3) {
+    grid-column: span 2;
+  }
+  .wecom-kpi > :nth-child(n + 4) {
+    grid-column: span 3;
+  }
+}
+
+/* 再窄一档（≤900）：三张并排每张只剩一百多像素，数字会顶出卡外。
+   改成五行"标签在左、数字在右"的紧凑条，说明小字落到第二行 ——
+   同样的信息，高度只多几十像素，也不会出现半张空卡。 */
+@media (max-width: 900px) {
+  .wecom-kpi {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  .wecom-kpi > .kpi-card {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    column-gap: 12px;
+    row-gap: 2px;
+    padding: 12px 16px;
+  }
+  .wecom-kpi .kpi-label {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .wecom-kpi .kpi-value {
+    grid-column: 2;
+    grid-row: 1;
+    margin-top: 0;
+    font-size: 22px;
+  }
+  .wecom-kpi > .kpi-card > div:nth-child(3) {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    margin-top: 2px !important;
   }
 }
 
