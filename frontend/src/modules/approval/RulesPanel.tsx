@@ -525,29 +525,85 @@ function VersionDrawer({
     enabled: Boolean(rule),
   })
   return (
-    <Modal title={rule ? `版本历史：${rule.name}` : ''} visible={Boolean(rule)} onCancel={onClose} footer={null} width={680}>
-      <div style={{ display: 'grid', gap: 10, maxHeight: 420, overflow: 'auto' }}>
+    <Modal
+      title={rule ? `版本历史：${rule.name}` : ''}
+      visible={Boolean(rule)}
+      onCancel={onClose}
+      footer={null}
+      width={640}
+    >
+      {/* 原来每条版本都包一张 SectionCard：外层弹窗一层内边距、卡片再一层，
+          左空右空、三个「标签：值」挤在一条线里，看着就是没排版的灰字（主人
+          2026-11-18："这弹窗太丑了"）。现在改成：版本号做徽标、公布时间靠右、
+          中间一条极淡的分隔线，下面四行按「标签列 + 值列」两栏对齐。 */}
+      <div style={{ display: 'grid', gap: 12, maxHeight: 440, overflow: 'auto', paddingRight: 2 }}>
         {(versionsQuery.data ?? []).map((version) => (
-          <SectionCard key={version.id}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-              <span style={{ fontWeight: 600, fontSize: 13 }}>V{version.version_no}</span>
-              <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+          <div
+            key={version.id}
+            style={{
+              border: '1px solid var(--crm-border)',
+              borderRadius: 10,
+              overflow: 'hidden',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '10px 14px',
+                background: 'var(--crm-surface-low)',
+                borderBottom: '1px solid var(--crm-border)',
+              }}
+            >
+              <span
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  height: 22,
+                  padding: '0 9px',
+                  borderRadius: 11,
+                  background: 'var(--crm-primary-soft)',
+                  color: 'var(--crm-primary)',
+                  fontSize: 12,
+                  fontWeight: 600,
+                }}
+              >
+                V{version.version_no}
+              </span>
+              {version.is_current && (
+                <Tag color="cyan" size="small">
+                  当前生效
+                </Tag>
+              )}
+              <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--crm-text-3)' }}>
                 {formatBeijingTime(version.published_at)}
-                {version.is_current && <Tag color="cyan" size="small" style={{ marginLeft: 8 }}>当前生效</Tag>}
               </span>
             </div>
-            {/* 原来是 `<pre>{JSON.stringify(payload)}</pre>`：键是英文代码、值是嵌套对象，
-                主人看到的就是一坨花括号（也违反交接文档第 8 条"不显示原始 JSON"）。
-                改成三行中文说明：条件、命中后果、附加节点。 */}
-            <div style={{ fontSize: 13, lineHeight: 1.9, color: 'var(--crm-text-1)' }}>
-              <div>
-                <span style={{ color: 'var(--crm-text-3)' }}>规则类型：</span>
-                {RULE_KIND_LABEL[version.payload.kind] ?? '审批规则'}
-                <span style={{ color: 'var(--crm-text-3)', marginLeft: 12 }}>优先级：</span>
-                {version.payload.priority}（数字小的先算）
-              </div>
-              <div>
-                <span style={{ color: 'var(--crm-text-3)' }}>触发条件：</span>
+            {/* 三行改四行：规则类型、优先级、触发条件、命中后，标签列固定 76px，
+                值列左对齐 —— 眼睛竖着扫一遍就能对上，不用在句子里找冒号。 */}
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '76px minmax(0,1fr)',
+                rowGap: 9,
+                columnGap: 10,
+                padding: '12px 14px',
+                fontSize: 13,
+                lineHeight: 1.7,
+              }}
+            >
+              <span style={{ color: 'var(--crm-text-3)' }}>规则类型</span>
+              <span>{RULE_KIND_LABEL[version.payload.kind] ?? '审批规则'}</span>
+              <span style={{ color: 'var(--crm-text-3)' }}>优先级</span>
+              <span>
+                {version.payload.priority}
+                <span style={{ color: 'var(--crm-text-3)', fontSize: 12, marginLeft: 6 }}>
+                  数字小的先算
+                </span>
+              </span>
+              <span style={{ color: 'var(--crm-text-3)' }}>触发条件</span>
+              <span>
                 {(version.payload.conditions ?? []).length === 0
                   ? '没有条件，整单适用'
                   : (version.payload.conditions ?? []).map((cond, index) => {
@@ -561,24 +617,26 @@ function VersionDrawer({
                             : '否'
                           : String(cond.value ?? '-')
                       return (
-                        <span key={index} style={{ marginRight: 10 }}>
-                          {index > 0 && <span style={{ color: 'var(--crm-text-3)' }}>且 </span>}
+                        <span key={index}>
+                          {index > 0 && (
+                            <span style={{ color: 'var(--crm-text-3)', margin: '0 6px' }}>且</span>
+                          )}
                           {meta?.label ?? '未命名字段'} {symbol} {value}
                         </span>
                       )
                     })}
-              </div>
-              <div>
-                <span style={{ color: 'var(--crm-text-3)' }}>命中后：</span>
+              </span>
+              <span style={{ color: 'var(--crm-text-3)' }}>命中后</span>
+              <span>
                 {KIND_HINT[version.payload.kind] ?? '按规则执行'}
                 {version.payload.kind === 'exception_route' && (
-                  <span>
+                  <span style={{ color: 'var(--crm-text-3)' }}>
                     （会签节点：{String(version.payload.action?.add_node_label ?? '财务会签')}）
                   </span>
                 )}
-              </div>
+              </span>
             </div>
-          </SectionCard>
+          </div>
         ))}
         {(versionsQuery.data ?? []).length === 0 && (
           <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>还没有发布过版本</div>
