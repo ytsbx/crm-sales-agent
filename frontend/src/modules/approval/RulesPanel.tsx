@@ -191,11 +191,12 @@ export default function RulesPanel() {
   const columns = [
     {
       title: '规则',
-      // 六列里只有「规则」是可以伸缩的：其余五列按内容定死（100/240/60/150/170），
-      // 剩下的全给规则名 + 说明。原来不写宽度时 Semi 把多出来的 100 多像素
-      // 又摊给第一列，整张表 1188 > 卡片 1172，「操作」整列被推到卡片外
-      // （2026-11-18 实拍：只剩横向滚动条，看不到「版本」）。
-      width: '100%',
+      // 六列里只有「规则」伸缩：**不写 width**。固定布局下没写宽度的列
+      // 自动吃掉剩余空间。原来写 width:'100%' 是错的 —— 那等于"这一列就要
+      // 整张表那么宽"，再加上其余五列的固定宽，总宽必然超卡片：
+      // 1440 下浏览器勉强摊平看不出来，1024 下「优先级/生效状态/操作」
+      // 整段被推出卡片、只剩横向滚动条（2026-11-18 实拍）。
+      // 说明文字允许换行（见 index.css .rules-table），窄屏折两行不丢字。
       render: (_: unknown, row: ApprovalRuleRow) => (
         <div>
           <div style={{ fontWeight: 600, fontSize: 13 }}>{row.name}</div>
@@ -215,7 +216,9 @@ export default function RulesPanel() {
     },
     {
       title: '触发条件',
-      width: 220,
+      // 180 够放最长的一条「较上一版让价金额 ≤ 1000元」；再宽就是浪费，
+      // 窄屏下多出来的每一像素都是从规则名那里抢的。
+      width: 180,
       render: (_: unknown, row: ApprovalRuleRow) => (
         <div style={{ fontSize: 12, color: 'var(--crm-text-2)', display: 'grid', gap: 2 }}>
           {(row.conditions ?? []).map((cond, index) => {
@@ -231,12 +234,14 @@ export default function RulesPanel() {
         </div>
       ),
     },
-    { title: '优先级', dataIndex: 'priority', width: 60 },
+    { title: '优先级', dataIndex: 'priority', width: 56 },
     {
       title: '生效状态',
-      width: 130,
+      // 100：开关 + V1 胶囊一行放下；「草稿待发布」出现时换到第二行，
+      // 不为了一个偶尔出现的标签把整列常驻加宽 30px。
+      width: 100,
       render: (_: unknown, row: ApprovalRuleRow) => (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flexWrap: 'wrap', gap: 6 }}>
           <Switch
             checked={row.enabled}
             size="small"
@@ -263,11 +268,11 @@ export default function RulesPanel() {
     },
     {
       title: '操作',
-      // 四个链接（编辑/发布/版本/删除）在 150 里正好排满，gap 从 10 收到 6；
-      // 再宽一点整张表就会顶出卡片，右侧「版本」被切掉（2026-11-18 实测）。
-      width: 140,
+      // 四个链接 4×24 + 3×4 间隙 = 108，加左右 8px 内边距（.rules-table）
+      // 124 正好；内容居中，和表头同一条中线。
+      width: 124,
       render: (_: unknown, row: ApprovalRuleRow) => (
-        <div style={{ display: 'flex', gap: 4, fontSize: 12 }}>
+        <div style={{ display: 'flex', gap: 4, fontSize: 12, justifyContent: 'center', whiteSpace: 'nowrap' }}>
           <a style={{ color: 'var(--crm-primary)' }} onClick={() => toEdit(row)}>
             编辑
           </a>

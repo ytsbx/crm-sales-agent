@@ -1841,6 +1841,24 @@ a:not([href]) {
   table-layout: fixed;
 }
 
+/* 规则配置表：六列在 1024 宽也要完整可见，不许出横向滚动条。
+   全站默认单元格左右 16px 内边距 + 单行省略号，对这张表太奢侈：
+   「操作」四个链接 108px，加 32px 内边距就要 140；这里收到 8px，
+   列宽就能整体收紧，把省出来的宽度还给规则名。
+   规则列（第一列）例外地允许换行 —— 名称下面那行说明是配置依据，
+   截成省略号等于把"为什么这么配"藏掉了；窄屏折两行比丢字好。 */
+.rules-table .semi-table-thead .semi-table-row-head,
+.rules-table .semi-table-tbody .semi-table-row-cell {
+  padding-left: 8px !important;
+  padding-right: 8px !important;
+}
+.rules-table .semi-table-tbody .semi-table-row-cell:first-child {
+  white-space: normal;
+}
+.rules-table .semi-table-tbody .semi-table-row-cell:first-child > div {
+  word-break: break-word;
+}
+
 /* 规则沙盒那一行：搜索 / 报价 / 版本 / 试算。
    四列按内容比例分，报价下拉最宽（单号 + 客户名要能一行放下）；
    窄屏（≤1100）拆成两行两列，按钮靠左，不撑出横向滚动。 */
