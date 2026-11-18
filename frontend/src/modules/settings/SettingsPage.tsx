@@ -3,7 +3,7 @@ import PersonalAccountPanel from './PersonalAccountPanel'
 import PersonalProfilePanel from './PersonalProfilePanel'
 import UnratedRulesPanel from './UnratedRulesPanel'
 import { customerLevelLabel } from '../../shared/customer-level'
-import { useState, type CSSProperties } from 'react'
+import { useState, useEffect, type CSSProperties } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Table, Tabs, Tag, Typography } from '@douyinfe/semi-ui'
@@ -87,6 +87,16 @@ export default function SettingsPage() {
   const { isAdmin, can } = usePermissions()
   // 个人账号向全部登录人开放；管理与公海复核仍分别按权限开放。
   const canReviewPool = can('customer:pool_review')
+  // 回收复核表在 1024 下六列排不开（会横向滚动），窄屏把「原负责人」列收起来：
+  // 复核时主要看客户、最近有效联系、最早可回收，负责人不是必看项（2026-11-18）。
+  const [narrowLayout, setNarrowLayout] = useState(
+    () => typeof window !== 'undefined' && window.innerWidth <= 1280,
+  )
+  useEffect(() => {
+    const onResize = () => setNarrowLayout(window.innerWidth <= 1280)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
   // 第一个页签改叫「我的」而不是「个人账号」：它现在不只有登录名/密码，
   // 还挂着「我的信息」和「我的权限」—— 叫「个人账号」的话，想看自己有哪些
   // 权限的人根本不会往这里点。
@@ -1421,13 +1431,13 @@ export default function SettingsPage() {
                   批准时还会再检查一遍这期间有没有新的跟进、报价、订单或回款。
                   客户手上还有在途订单、未结应收、有效正式报价或在途打样时会被保护。
                 </Typography.Paragraph>
-                <Table<PublicPoolRuleRow> className="table-center"
+                <Table<PublicPoolRuleRow> className="table-center pool-rule-table"
                   columns={[
-                    { title: '客户等级', dataIndex: 'level', width: 110, render: (v: string) => customerLevelLabel(v) },
+                    { title: '客户等级', dataIndex: 'level', width: 104, render: (v: string) => customerLevelLabel(v) },
                     {
                       title: '未跟进天数',
                       dataIndex: 'days',
-                      width: 220,
+                      width: 160,
                       render: (days: number, record: PublicPoolRuleRow) => (
                         <Input
                           defaultValue={String(days)}
@@ -1449,7 +1459,7 @@ export default function SettingsPage() {
                     {
                       title: '启用',
                       dataIndex: 'enabled',
-                      width: 100,
+                      width: 90,
                       render: (enabled: boolean, record: PublicPoolRuleRow) => (
                         <Switch
                           checked={enabled}
@@ -1459,7 +1469,9 @@ export default function SettingsPage() {
                         />
                       ),
                     },
-                    { title: '说明', dataIndex: 'remark', render: (v: string | null) => v ?? '-' },
+                    // 「说明」这一列写的是「A 级客户 30 天未跟进回收」，和前三列完全重复。
+                    // 1024 下它只剩 30px，把表撑出横向滚动、右侧还被裁，所以整列去掉
+                    // （2026-11-18）。
                   ]}
                   dataSource={(poolRulesQuery.data ?? []).filter((row) => row.level !== 'UNRATED')}
                   loading={poolRulesQuery.isLoading}
@@ -1480,8 +1492,10 @@ export default function SettingsPage() {
               {isAdmin && (
                 <div className="rule-block">
                   <div className="rule-block-title">回收节奏与恢复权限</div>
-                  <Typography.Paragraph
-                    ellipsis={{ rows: 2, expandable: true }}
+                  {/* 原来用 Typography ellipsis 折叠两行 —— 这段里带 <b>，
+                      折叠模式把元素串成 [object Object] 显示出来（1024 下亲眼看到）。
+                      说明本身不长，直接整段铺开，不再折叠。 */}
+                  <div
                     style={{ color: 'var(--crm-text-2)', fontSize: 12, lineHeight: 1.65, marginBottom: 12 }}
                   >
                     <b>预告期与暂缓期现在跑的是开发默认值（7 天 / 30 天），还没经过业务确认</b>
@@ -1489,20 +1503,13 @@ export default function SettingsPage() {
                     （待复核 / 已暂缓）会按新天数<b>一起重算到期时间</b>，不会新旧两套天数
                     并存；已回收 / 已驳回 / 已作废的不动。三项的改动都会记进审计
                     （含修改前后值、以及同步重算了几条候选）。
-                  </Typography.Paragraph>
+                  </div>
                   {/* 三项原来横排成三列，每列下面挂一段三四行的灰色说明 ——
                       三段说明离得远、又都压在下沿，读起来像三张便签贴在一起。
                       改成一行一项：名称 200px、控件 200 上下、说明右对齐占剩下的宽度，
                       每项一行或两行，纵向是一条干净的左边缘。 */}
                   <div style={{ display: 'grid', gap: 18 }}>
-                    <div
-                      style={{
-                        display: 'grid',
-                        gridTemplateColumns: '210px 240px minmax(0, 1fr)',
-                        gap: 16,
-                        alignItems: 'start',
-                      }}
-                    >
+                    <div className="recycle-pace-row">
                       <FormLabel>回收预告期（天）</FormLabel>
                       <Input
                         key={`notice-${noticeSetting?.value?.days ?? ''}`}
@@ -1529,14 +1536,7 @@ export default function SettingsPage() {
                         {noticeSetting?.is_default ? '（当前为开发默认值）' : ''}
                       </div>
                     </div>
-                    <div
-                      style={{
-                        display: 'grid',
-                        gridTemplateColumns: '210px 240px minmax(0, 1fr)',
-                        gap: 16,
-                        alignItems: 'start',
-                      }}
-                    >
+                    <div className="recycle-pace-row">
                       <FormLabel>主管暂缓等待期（天）</FormLabel>
                       <Input
                         key={`defer-${deferSetting?.value?.days ?? ''}`}
@@ -1563,14 +1563,7 @@ export default function SettingsPage() {
                         {deferSetting?.is_default ? '（当前为开发默认值）' : ''}
                       </div>
                     </div>
-                    <div
-                      style={{
-                        display: 'grid',
-                        gridTemplateColumns: '210px 240px minmax(0, 1fr)',
-                        gap: 16,
-                        alignItems: 'start',
-                      }}
-                    >
+                    <div className="recycle-pace-row">
                       <FormLabel>恢复已回收客户所需权限</FormLabel>
                       <Select
                         value={String(restoreSetting?.value?.text ?? 'customer:assign')}
@@ -1601,15 +1594,16 @@ export default function SettingsPage() {
 
               <div className="rule-block">
                 <div className="rule-block-title">回收复核</div>
-                <Typography.Paragraph
-                  ellipsis={{ rows: 2, expandable: true }}
+                {/* 同「回收节奏」那块：ellipsis 折叠把 <b> 串成了 [object Object]，
+                    改成整段铺开，不再折叠（2026-11-18）。 */}
+                <div
                   style={{ color: 'var(--crm-text-2)', fontSize: 12, lineHeight: 1.65, marginBottom: 12 }}
                 >
                   扫描只「提名」；批准后才真的回收，并且<b>必须等预告期/暂缓期满了</b>才能批
                   —— 没满要走「提前回收」这个例外动作，得填原因。
                   「驳回」不受等待期限制（表示不用回收了，随时可结案）。
                   客户手上还有在途订单、未结应收、有效正式报价或在途打样时，批准会被拦下。
-                </Typography.Paragraph>
+                </div>
                 <Tabs
                   type="button"
                   activeKey={candidateStatus}
@@ -1704,6 +1698,7 @@ export default function SettingsPage() {
                 )}
                 <Table<RecycleCandidateRow>
                   rowKey="id"
+                  className="recycle-cand-table"
                   loading={candidatesQuery.isLoading}
                   dataSource={candidatesQuery.data?.items ?? []}
                   pagination={{
@@ -1748,29 +1743,46 @@ export default function SettingsPage() {
                     {
                       title: '客户',
                       dataIndex: 'customer_name',
+                      // 1024 下收起「原负责人 / 最近有效联系 / 保护事项」三列后，
+                      // 剩下的宽度给客户名和日期 —— 客户名常带「【演示造数】」，要留够。
+                      width: narrowLayout ? 236 : 236,
+                      // 客户名带「【演示造数】」这类长后缀，加上「A 级 · 超 30 天未跟进」
+                      // 挤在同一行会把整张表撑出横向滚动条（1440 下操作列直接被切掉，
+                      // 2026-11-18 复验）。副信息单独一行，客户列就能收窄。
                       render: (v: string | null, r: RecycleCandidateRow) => (
-                        <span>
-                          {v ?? `客户编号 ${r.customer_id}`}
-                          <span style={{ color: 'var(--crm-text-3)', fontSize: 12, marginLeft: 6 }}>
+                        <div style={{ lineHeight: 1.5 }}>
+                          <div className="recycle-cand-name">{v ?? `客户编号 ${r.customer_id}`}</div>
+                          <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
                             {r.level ? `${r.level} 级` : ''}
                             {r.rule_days ? ` · 超 ${r.rule_days} 天未跟进` : ''}
-                          </span>
-                        </span>
+                          </div>
+                        </div>
                       ),
                     },
-                    {
-                      title: '原负责人',
-                      dataIndex: 'owner_name',
-                      width: 100,
-                      render: (v: string | null) => v ?? '-',
-                    },
-                    {
-                      // 复核要看得到"是按哪个时间判它冷落的"，不是只给一句"已超 N 天"
-                      title: '最近有效联系',
-                      dataIndex: 'last_active_at',
-                      width: 140,
-                      render: (v: string | null) => fmtDay(v),
-                    },
+                    ...(narrowLayout
+                      ? []
+                      : [
+                          {
+                            title: '原负责人',
+                            dataIndex: 'owner_name',
+                            width: 80,
+                            render: (v: string | null) => v ?? '-',
+                          },
+                        ]),
+                    // 1024 下（内容区约 675）这一列和三个操作链接放不在一行，
+                    // 最右的「驳回」永远差十几像素被裁。窄屏收起它：
+                    // 复核的关键是客户、最早可回收和三个动作，最近联系在宽屏仍完整显示。
+                    ...(narrowLayout
+                      ? []
+                      : [
+                          {
+                            // 复核要看得到"是按哪个时间判它冷落的"，不是只给一句"已超 N 天"
+                            title: '最近有效联系',
+                            dataIndex: 'last_active_at',
+                            width: 150,
+                            render: (v: string | null) => fmtDay(v),
+                          },
+                        ]),
                     ...(candidateStatus === 'executed' || candidateStatus === 'rejected'
                       ? [
                           {
@@ -1786,9 +1798,13 @@ export default function SettingsPage() {
                           },
                         ]
                       : [
+                          ...(narrowLayout
+                            ? []
+                            : [
                           {
                             title: '保护事项',
                             dataIndex: 'protection',
+                            width: 72,
                             render: (list: string[], r: RecycleCandidateRow) =>
                               (list ?? []).length === 0 ? (
                                 <span style={{ color: 'var(--crm-text-3)' }}>无</span>
@@ -1809,35 +1825,41 @@ export default function SettingsPage() {
                                 </>
                               ),
                           },
+                            ]),
                           {
                             // 到了这个点才能批；没到就只能走「提前回收」例外
+                            // 「（预告期中）」原来跟在日期后面，把列撑到 170+ 宽，
+                            // 现在换到第二行，列宽收窄到 132，整表不再横向滚动。
                             title: '最早可回收',
                             dataIndex: 'earliest_action_at',
-                            width: 140,
+                            width: narrowLayout ? 130 : 132,
                             render: (v: string | null, r: RecycleCandidateRow) =>
                               v ? (
-                                <span
+                                <div
                                   style={{
                                     color: isDue(r)
                                       ? 'var(--crm-text-2)'
                                       : 'var(--crm-caution, #b26a00)',
+                                    lineHeight: 1.5,
                                   }}
                                 >
-                                  {fmtDay(v)}
+                                  <div>{fmtDay(v)}</div>
                                   {!isDue(r) && (
-                                    <span style={{ fontSize: 11, marginLeft: 4 }}>
+                                    <div style={{ fontSize: 11 }}>
                                       （{r.status === 'deferred' ? '暂缓期' : '预告期'}中）
-                                    </span>
+                                    </div>
                                   )}
-                                </span>
+                                </div>
                               ) : (
                                 '-'
                               ),
                           },
                         ]),
                     {
+                      // 最多「提前回收 / 暂缓 / 驳回」三个链接，190 够用；
+                      // 原来给 230，占掉的宽度是从「客户」列抢来的
                       title: '操作',
-                      width: candidateStatus === 'executed' ? 90 : 230,
+                      width: candidateStatus === 'executed' ? 90 : 172,
                       render: (_: unknown, r: RecycleCandidateRow) => {
                         if (candidateStatus === 'executed') {
                           return (

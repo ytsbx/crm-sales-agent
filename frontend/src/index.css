@@ -3172,8 +3172,10 @@ table:not(.semi-table) td {
 .settings-content .semi-table-wrapper {
   overflow-x: auto;
 }
-/* 窄屏：左侧竖排变一组可换行的横排标签，分组标题收起（组本身不丢） */
-@media (max-width: 900px) {
+/* 窄屏：左侧竖排变一组可换行的横排标签，分组标题收起（组本身不丢）。
+   断点从 900 提到 1180：1024 下列若还是竖排 168px 二级导航，右侧内容区只剩
+   500px，回收复核表怎么排都会溢出、说明列被挤成竖排（2026-11-18 复验）。 */
+@media (max-width: 1180px) {
   .settings-shell {
     flex-direction: column;
     /* 基础样式里有 align-items: flex-start（竖排时给左栏用），
@@ -4301,4 +4303,88 @@ table:not(.semi-table) td {
   background: var(--crm-surface-low);
   border-left: 2px solid var(--crm-primary);
   border-radius: var(--crm-radius-sm);
+}
+
+/* 回收复核候选表（设置 › 业务规则 › 回收复核）
+   1440 下原来会横向滚动：客户名带「【演示造数】」+「A 级 · 超 30 天未跟进」挤一行，
+   把「最早可回收」和「操作」推到卡片外。现在副信息换行、列宽收紧，
+   再用固定布局兜底 —— 宽度永远等于容器，不出现横向滚动条（2026-11-18）。 */
+.recycle-cand-table .semi-table {
+  width: 100% !important;
+  table-layout: fixed;
+}
+.recycle-cand-table .semi-table-row-head .semi-table-row-cell,
+.recycle-cand-table .semi-table-row .semi-table-row-cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.recycle-cand-table .recycle-cand-name {
+  /* 客户名允许折两行：名称里带「【演示造数】」这类长后缀，
+     强行单行 + 省略号等于把客户名截成「天津建材48厂【演示...」，
+     复核时认不出是谁（2026-11-18）。 */
+  white-space: normal;
+  word-break: break-all;
+}
+
+/* 回收节奏与恢复权限：三行「名称 210 / 控件 240 / 说明自适应」。
+   1024 下二级导航吃掉一半宽度，剩给说明列不到 50px，文字被挤成一列竖排。
+   窄屏改成单列堆叠：名称一行、控件一行、说明一行（2026-11-18）。 */
+.recycle-pace-row {
+  display: grid;
+  grid-template-columns: 210px 240px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 1280px) {
+  .recycle-pace-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+}
+
+/* 公海回收规则表（设置 › 业务规则）
+   最后一列「说明」写的是「A 级客户 30 天未跟进回收」——和前两列完全重复。
+   1024 下前两列固定宽一占，说明列只剩 30px，把表撑出横向滚动条、右侧还被裁。
+   窄屏直接隐藏这一列：信息没丢（等级 + 天数 + 开关都在），表格也不再滚。 */
+.pool-rule-table .semi-table {
+  width: 100% !important;
+  table-layout: fixed;
+}
+/* 未分级客户规则：名称 200 / 天数 130 / 开关 / 右侧说明。
+   1024 下说明被挤成 40px 宽、逐字换行，天数输入框也被压成「未...」。
+   窄屏把说明整行下移，输入框固定不收缩。 */
+.unrated-rule-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.unrated-rule-name {
+  flex: 0 0 200px;
+  font-size: 13px;
+}
+.unrated-rule-note {
+  flex: 1 1 200px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--crm-text-3);
+}
+@media (max-width: 1280px) {
+  .unrated-rule-row {
+    gap: 8px;
+  }
+  .unrated-rule-name {
+    flex: 0 0 116px;
+  }
+  .unrated-rule-note {
+    flex: 1 1 100%;
+  }
+}
+
+/* 回收复核表窄屏（1024）字号收一档：客户名两行、日期 16 字符、三个操作链接，
+   12px 下才塞得进内容区，避免最右列被裁（2026-11-18）。 */
+@media (max-width: 1280px) {
+  .recycle-cand-table .semi-table-row .semi-table-row-cell {
+    font-size: 12px;
+  }
 }

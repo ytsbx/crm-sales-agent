@@ -53,19 +53,19 @@ export default function UnratedRulesPanel() {
         名称固定 200px 宽，输入和开关从同一列开始对齐；
         保存按钮单独一行靠右 —— 它是这一块的总操作，不该挤在规则中间。 */}
     <div style={{ display: 'grid', gap: 10 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <span style={{ flex: '0 0 200px', fontSize: 13 }}>未联系提醒</span>
-        <Input aria-label="未分级跟进提醒天数" placeholder="未设置天数" value={reminderDays} disabled={mutation.isPending} onChange={(value) => setDraft({ ...current, reminderDays: value })} style={{ width: 130 }} />
+      <div className="unrated-rule-row">
+        <span className="unrated-rule-name">未联系提醒</span>
+        <Input aria-label="未分级跟进提醒天数" placeholder="未设置天数" value={reminderDays} disabled={mutation.isPending} onChange={(value) => setDraft({ ...current, reminderDays: value })} style={{ width: 130, flex: '0 0 130px' }} />
         <span style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>天</span>
         <Switch aria-label="启用未分级跟进提醒" checked={reminderEnabled} disabled={mutation.isPending} onChange={(value) => setDraft({ ...current, reminderEnabled: value })} />
-        <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>开启后，超过这个天数没联系的未分级客户会进提醒</span>
+        <span className="unrated-rule-note">开启后，超过这个天数没联系的未分级客户会进提醒</span>
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <span style={{ flex: '0 0 200px', fontSize: 13 }}>未跟进回收候选</span>
-        <Input aria-label="未分级公海回收天数" placeholder="未设置天数" value={recycleDays} disabled={mutation.isPending} onChange={(value) => setDraft({ ...current, recycleDays: value })} style={{ width: 130 }} />
+      <div className="unrated-rule-row">
+        <span className="unrated-rule-name">未跟进回收候选</span>
+        <Input aria-label="未分级公海回收天数" placeholder="未设置天数" value={recycleDays} disabled={mutation.isPending} onChange={(value) => setDraft({ ...current, recycleDays: value })} style={{ width: 130, flex: '0 0 130px' }} />
         <span style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>天</span>
         <Switch aria-label="启用未分级公海回收" checked={recycleEnabled} disabled={mutation.isPending} onChange={(value) => setDraft({ ...current, recycleEnabled: value })} />
-        <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>开启后，超过这个天数没跟进会被提单为回收候选</span>
+        <span className="unrated-rule-note">开启后，超过这个天数没跟进会被提单为回收候选</span>
       </div>
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
         <Button onClick={save} loading={mutation.isPending} disabled={pools.isPending || tasks.isPending || pools.isError || tasks.isError}>保存未分级规则</Button>

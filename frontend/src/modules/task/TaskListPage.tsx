@@ -1,5 +1,5 @@
 import { formatBeijingTime } from '../../shared/beijing-time'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import PageHeader from '../../shared/components/PageHeader'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -187,6 +187,15 @@ export default function TaskListPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  /* 1024 宽内容区约 700px，任务表七列合计 909px+，「截止时间」右半截
+     「状态 / 操作」整列被裁，底部还挂横向滚动条。窄屏切紧凑档。 */
+  const [compact, setCompact] = useState(() => window.innerWidth < 1200)
+  useEffect(() => {
+    const onResize = () => setCompact(window.innerWidth < 1200)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
   const columns = [
     {
       title: '',
@@ -206,10 +215,27 @@ export default function TaskListPage() {
         />
       ),
     },
-    { title: '任务', dataIndex: 'title' },
+    {
+      title: '任务',
+      dataIndex: 'title',
+      width: compact ? 152 : 206,
+      render: (text: string) => (
+        <span
+          title={text}
+          style={{
+            display: 'block',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {text}
+        </span>
+      ),
+    },
     {
       title: '关联',
-      width: 220,
+      width: compact ? 108 : 182,
       render: (_: unknown, record: Task) => {
         // 一张任务可能同时挂着客户、商机、报价、订单、打样、合同。这一列只显示
         // **最具体的那一个**并直接跳过去；全铺出来会挤成六行，而用户要找的通常
@@ -218,7 +244,7 @@ export default function TaskListPage() {
         const link = primaryTaskLink(record)
         if (!link) return record.customer_id ? '客户不可查看' : '-'
         return (
-          <Link to={link.to} style={{ color: 'var(--crm-primary)' }}>
+          <Link to={link.to} title={link.label} style={{ color: 'var(--crm-primary)' }}>
             {link.label}
           </Link>
         )
@@ -227,7 +253,7 @@ export default function TaskListPage() {
     {
       title: '优先级',
       dataIndex: 'priority',
-      width: 90,
+      width: compact ? 76 : 90,
       render: (value: string, record: Task) => (
         <StatusDot label={record.priority_label} tone={(PRIORITY_COLOR[value] ?? 'grey') as TagTone} />
       ),
@@ -237,7 +263,7 @@ export default function TaskListPage() {
       dataIndex: 'due_at',
       /* 190 放不下「2026/11/2 09:28 + 逾期标签」，日期被折成了两行；
          日期和标签必须待在同一行，否则整表的行高参差不齐。 */
-      width: 215,
+      width: compact ? 94 : 202,
       // 逾期别拼成括号跟在日期后面（「2026/11/2 09:28:47（已逾期）」又长又糊）：
       // 日期一个色、状态一个小标签，扫一眼就分得出来
       render: (value: string | null, record: Task) =>
@@ -245,7 +271,8 @@ export default function TaskListPage() {
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             {/* 精确到分钟就够：任务截止时间带秒既没用、又把这一列撑得很长 */}
             <span style={{ color: record.overdue ? 'var(--crm-error)' : undefined }}>
-              {formatBeijingTime(value).slice(0, 16)}
+              {/* 窄屏省掉年份：94px 只放得下「11-20 15:21」，逾期标签另起一行 */}
+              {compact ? formatBeijingTime(value).slice(5, 16) : formatBeijingTime(value).slice(0, 16)}
             </span>
             {record.overdue && (
               <StatusDot label="逾期" tone="red" bold />
@@ -258,24 +285,36 @@ export default function TaskListPage() {
     {
       title: '状态',
       dataIndex: 'status_label',
-      width: 100,
+      width: compact ? 92 : 100,
       // 状态一列也统一成圆点：只有「已完成」上绿点，其余保持灰点，
       // 和「优先级」列的写法对齐，整行不会一半是色块一半是裸文字。
       render: (value: string) => (
         <StatusDot label={value} tone={value === '已完成' ? 'green' : value === '逾期' ? 'red' : 'grey'} />
       ),
     },
-    { title: '负责人', dataIndex: 'owner_name', width: 100, render: (v: string | null) => v ?? '-' },
+    ...(compact
+      ? []
+      : [{ title: '负责人', dataIndex: 'owner_name', width: 100, render: (v: string | null) => v ?? '-' }]),
     {
       title: '操作',
-      width: 140,
+      width: compact ? 132 : 192,
       render: (_: unknown, record: Task) =>
         record.status === 'done' || record.status === 'cancelled' ? (
           '-'
         ) : record.task_type === 'contract_signed_upload' ? (
-          <Link to={`/documents?contract=${record.source_business_id}`}>去登记回签（归档后自动完成）</Link>
+          // 文案只留动作，说明放进 title：宽屏那 12 个字的括号注释会把操作列撑出表格
+          // （2026-11-18 截图：1440 下这张表出现横向滚动条，右边「去登记回签」被切）
+          <Link to={`/documents?contract=${record.source_business_id}`} title="归档后自动完成">
+              {'去登记回签'}
+            </Link>
         ) : (
-          <div style={{ display: 'flex', gap: 10 }}>
+          <div
+            style={
+              compact
+                ? { display: 'flex', gap: 8, whiteSpace: 'nowrap', fontSize: 13 }
+                : { display: 'flex', gap: 10 }
+            }
+          >
             <Popconfirm
               title="确认完成这条任务？"
               content="完成后任务会从未完成列表中移除。"
@@ -369,6 +408,7 @@ export default function TaskListPage() {
         </div>
 
         <Table<Task>
+          className="tasks-table"
           columns={columns}
           dataSource={query.data?.items ?? []}
           loading={query.isLoading}
