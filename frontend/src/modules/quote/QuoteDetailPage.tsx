@@ -1550,79 +1550,66 @@ export default function QuoteDetailPage() {
       />
 
       <Modal
-        title="接入主数据：会变什么"
         visible={masterPreviewOpen}
         footer={null}
         onCancel={() => setMasterPreviewOpen(false)}
         width={680}
         style={{ maxWidth: 'calc(100vw - 48px)' }}
+        header={
+          <div className="crm-mp-header">
+            <span className="crm-mp-icon" aria-hidden="true">⟳</span>
+            <div>
+              <div className="crm-mp-title">接入主数据：会变什么</div>
+              <div className="crm-mp-sub">只换名称 / 规格 / 单位和引用的版本；手工价不动</div>
+            </div>
+          </div>
+        }
       >
-        {masterPreviewQuery.isLoading && <div>正在比对…</div>}
+        {masterPreviewQuery.isLoading && <div className="crm-mp-loading">正在比对…</div>}
         {masterPreviewQuery.data && (
-          <div style={{ display: 'grid', gap: 16, paddingBottom: 20 }}>
-            <div style={{ fontSize: 14, lineHeight: 1.8 }}>{masterPreviewQuery.data.message}</div>
+          <div className="crm-mp-body">
+            <div className="crm-mp-summary">
+              <span className="crm-mp-count">
+                {masterPreviewQuery.data.changed_count > 0
+                  ? `${masterPreviewQuery.data.changed_count} 条明细会因刷新而改变`
+                  : '没有需要变化的明细'}
+              </span>
+              <span className="crm-mp-summary-hint">{masterPreviewQuery.data.message}</span>
+            </div>
             {!masterPreviewQuery.data.refreshable && (
-              <div
-                style={{
-                  padding: '12px 16px',
-                  borderRadius: 'var(--crm-radius)',
-                  background: 'var(--crm-warning-bg, #FFF7E6)',
-                  border: '1px solid var(--crm-warning-border, #FFD591)',
-                  fontSize: 13,
-                  lineHeight: 1.7,
-                }}
-              >
-                {masterPreviewQuery.data.blocked_reason}
+              <div className="crm-mp-blocked">
+                <span className="crm-mp-blocked-icon" aria-hidden="true">!</span>
+                <span>{masterPreviewQuery.data.blocked_reason}</span>
               </div>
             )}
             {masterPreviewQuery.data.items
               .filter((it) => it.changes.length > 0 || it.never_referenced)
-              .map((it) => (
+              .map((it, index) => (
                 <div
                   key={it.item_id}
-                  style={{
-                    border: '1px solid var(--semi-color-border)',
-                    borderRadius: 'var(--crm-radius)',
-                    padding: '16px 20px',
-                    display: 'grid',
-                    gap: 12,
-                    background: 'var(--crm-surface)',
-                  }}
+                  className="crm-mp-item"
+                  style={{ animationDelay: `${index * 60}ms` }}
                 >
-                  <div style={{ fontWeight: 600, fontSize: 14 }}>{it.sku_code}</div>
+                  <div className="crm-mp-item-head">
+                    <span className="crm-mp-sku">{it.sku_code}</span>
+                    <span className="crm-mp-item-tag">明细</span>
+                  </div>
                   {it.never_referenced && (
-                    <div
-                      style={{
-                        padding: '8px 12px',
-                        borderRadius: 'var(--crm-radius-sm)',
-                        background: 'var(--crm-warning-bg, #FFF7E6)',
-                        fontSize: 12,
-                        lineHeight: 1.7,
-                        color: 'var(--semi-color-warning)',
-                      }}
-                    >
+                    <div className="crm-mp-note">
                       这条明细还没有引用过任何已确认版本（刷新会引用最新已确认版本）
                     </div>
                   )}
                   {it.changes.length > 0 && (
-                    <div style={{ display: 'grid', gap: 10 }}>
+                    <div className="crm-mp-rows">
                       {it.changes.map((c) => (
-                        <div
-                          key={c.field}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'baseline',
-                            gap: 12,
-                            fontSize: 13,
-                            lineHeight: 1.7,
-                          }}
-                        >
-                          <span style={{ flex: '0 0 64px', color: 'var(--crm-text-2)' }}>
-                            {c.label}
+                        <div key={c.field} className="crm-mp-row">
+                          <span className="crm-mp-label">{c.label}</span>
+                          {/* 旧值划一道线，新值用主色 + 一次高亮扫过：一眼看出"换成什么" */}
+                          <span className={c.before ? 'crm-mp-before crm-mp-strike' : 'crm-mp-before'}>
+                            {c.before ?? '（空）'}
                           </span>
-                          <span style={{ color: 'var(--crm-text-3)' }}>{c.before ?? '（空）'}</span>
-                          <span style={{ color: 'var(--crm-text-3)' }}>→</span>
-                          <span style={{ fontWeight: 600 }}>{c.after ?? '（空）'}</span>
+                          <span className="crm-mp-arrow" aria-hidden="true">→</span>
+                          <span className="crm-mp-after">{c.after ?? '（空）'}</span>
                         </div>
                       ))}
                     </div>
@@ -1630,11 +1617,9 @@ export default function QuoteDetailPage() {
                 </div>
               ))}
             {masterPreviewQuery.data.changed_count === 0 && (
-              <div style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>
-                没有需要变化的明细。
-              </div>
+              <div className="crm-mp-empty">没有需要变化的明细。</div>
             )}
-            <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end', marginTop: 4 }}>
+            <div className="crm-mp-footer">
               <Button onClick={() => setMasterPreviewOpen(false)}>取消</Button>
               <Popconfirm
                 title="确认接入？"
@@ -1644,8 +1629,8 @@ export default function QuoteDetailPage() {
                   setMasterPreviewOpen(false)
                 }}
               >
-                <Button type="primary"
-                  theme="outline"
+                <Button
+                  type="primary"
                   disabled={!masterPreviewQuery.data.refreshable}
                   loading={refreshMutation.isPending}
                 >

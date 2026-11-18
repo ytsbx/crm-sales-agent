@@ -143,7 +143,7 @@ export function ConfirmRequiredModal(props: {
           <span className="crm-confirm-icon" aria-hidden="true">!</span>
           {/* 标题写成"要你确认的是什么事"，不是系统口吻的"这个操作需要确认" */}
           <span className="crm-confirm-title">请确认这次操作</span>
-          <span className="crm-confirm-sub">这一步会立刻生效，确认后无法自动撤回</span>
+          <span className="crm-confirm-sub">确认后立即生效</span>
         </div>
       }
     >
