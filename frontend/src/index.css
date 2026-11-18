@@ -1763,6 +1763,21 @@ a:not([href]) {
 
 .semi-table-row-head,
 .semi-table-row-cell {
+/* ============================================================
+   全站表格：内容一律居中（2026-11-18 统一）
+   ------------------------------------------------------------
+   主人 2026-11-17 定过硬规则「表格内容一律居中」，但此前只逐张表挂
+   .table-center，95 张表里挂到的不到十张，于是同一屏里有的列居中、
+   有的列左贴，来回切页面就能看出两套排版。
+   这里改成全局默认居中。**金额列不受影响**：列上声明了 align:'right' 的，
+   Semi 会往单元格写 inline style（金额要按小数点对齐才好读），
+   CSS 的 text-align 盖不掉 inline style，所以数字仍然右对齐。
+   ============================================================ */
+.semi-table-tbody .semi-table-row-cell,
+.semi-table-thead .semi-table-row-head {
+  text-align: center;
+}
+
   /* 行线压到极淡：#e3e6eb 逐条画满，表格就回到"网格纸"。留一线只是暗示行的边界 */
   border-bottom: 1px solid #f0f2f6 !important;
 }
