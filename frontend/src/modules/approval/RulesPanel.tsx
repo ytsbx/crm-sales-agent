@@ -645,13 +645,19 @@ function SandboxPanel({ fields: _fields }: { fields: ConditionFieldMeta[] }) {
 
   return (
     <SectionCard style={{ marginTop: 16 }}>
-      <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10 }}>规则沙盒（发布前先试算，不动任何数据）</div>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+      {/* 原来标题后面挂一句括注、下面一行四个控件挤在一起：报价下拉只有 280
+          宽、长客户名被截成「【演…」，试算的灰字还被塞进按钮那一列、折成三行
+          （2026-11-18 主人："太丑了"）。改成：标题一行、说明另起一行小字，
+          控件按「搜索 / 报价 / 版本 / 按钮」四列排，说明落到整行下面。 */}
+      <div style={{ fontWeight: 600, fontSize: 14 }}>规则沙盒</div>
+      <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 4, marginBottom: 12 }}>
+        发布前先试算这套规则会命中哪几条，不动任何数据
+      </div>
+      <div className="sandbox-row">
         <Input
           value={keyword}
           onChange={setKeyword}
           placeholder="搜报价单号/客户"
-          style={{ width: 200 }}
           showClear
         />
         <Select
@@ -662,7 +668,6 @@ function SandboxPanel({ fields: _fields }: { fields: ConditionFieldMeta[] }) {
             setResult(null)
           }}
           placeholder="选报价单"
-          style={{ width: 280 }}
           filter={optionMatcher}
           optionList={(quotesQuery.data?.items ?? []).map((q) => ({
             value: q.id,
@@ -676,7 +681,6 @@ function SandboxPanel({ fields: _fields }: { fields: ConditionFieldMeta[] }) {
             setResult(null)
           }}
           placeholder="选版本"
-          style={{ width: 140 }}
           optionList={(versionsQuery.data ?? []).map((v) => ({
             value: v.id,
             label: `V${v.version_no}（¥${Number(v.total_amount).toLocaleString('zh-CN')}）`,
@@ -686,6 +690,8 @@ function SandboxPanel({ fields: _fields }: { fields: ConditionFieldMeta[] }) {
             按钮对点击透明，落点变成外层容器，容器上的 onClick 才接得住、才弹得出原因。 */}
         <GuardedButton
           theme="solid"
+          // hintBelow：说明落到整行下面占满宽，不再挤在按钮那一列里折三行
+          hintBelow
           disabled={sandboxBlocked}
           blockedReasons={sandboxBlockedReasons}
           action="试算"

@@ -1841,6 +1841,24 @@ a:not([href]) {
   table-layout: fixed;
 }
 
+/* 规则沙盒那一行：搜索 / 报价 / 版本 / 试算。
+   四列按内容比例分，报价下拉最宽（单号 + 客户名要能一行放下）；
+   窄屏（≤1100）拆成两行两列，按钮靠左，不撑出横向滚动。 */
+.sandbox-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 0.8fr) minmax(260px, 1.6fr) minmax(140px, 0.8fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+@media (max-width: 1100px) {
+  .sandbox-row {
+    grid-template-columns: 1fr 1fr;
+  }
+  .sandbox-row > :nth-child(4) {
+    justify-self: start;
+  }
+}
+
 /* 审批表也有可展开行（申请说明/超权限点行展开）。和报价明细同一个毛病：
    展开箭头是 inline 的 span，首列内容是块级 div → 箭头被顶到单独一行，
    「报价单号」被挤成第二行、下面还有「第 N 版」，一行变三行高。
