@@ -1841,6 +1841,65 @@ a:not([href]) {
   table-layout: fixed;
 }
 
+/* 报价中心列表：Semi 的 tableLayout 属性在本版本没生效（实测还是 auto），
+   商机第二行会把客户列按内容撑到 327px，整表 804px 溢出 699px 的容器，
+   右列「有效期 / 负责人」被裁。用 CSS 强制 fixed + 单行截断，列宽才按
+   columns 里写的数字分配。 */
+.quotes-table .semi-table {
+  width: 100% !important;
+  table-layout: fixed;
+}
+
+/* 客户中心列表：九列合计 975px > 1024 宽的内容区 699px，
+   「标签 / 负责人 / 状态」被裁在卡片外。窄屏已并列，这里再强制
+   固定布局 + 单行截断，保证列宽按 columns 数字分配、不出横向滚动条。 */
+
+/* 订单中心销售订单列表：八列合计 1114px > 1024 宽的内容区 699px，
+   右侧「待回款 / 交期 / 负责人」被裁、底部常驻横向滚动条。
+   窄屏已并列，这里强制固定布局 + 单行截断。 */
+
+/* 订单中心「应收计划」：七列合计 920px，1024 宽同样溢出。
+   窄屏已把「已收 / 未收」并两行，这里强制固定布局。 */
+
+/* 订单中心「回款记录」：八列合计 1130px，1024 宽只露出五列。
+   窄屏已并列，这里强制固定布局。 */
+.payments-table .semi-table {
+  width: 100% !important;
+  table-layout: fixed;
+}
+.payments-table .semi-table-row-head,
+.payments-table .semi-table-row-cell {
+  overflow: hidden;
+}
+.receivables-table .semi-table {
+  width: 100% !important;
+  table-layout: fixed;
+}
+.receivables-table .semi-table-row-head,
+.receivables-table .semi-table-row-cell {
+  overflow: hidden;
+}
+.orders-table .semi-table {
+  width: 100% !important;
+  table-layout: fixed;
+}
+.orders-table .semi-table-row-head,
+.orders-table .semi-table-row-cell {
+  overflow: hidden;
+}
+.customers-table .semi-table {
+  width: 100% !important;
+  table-layout: fixed;
+}
+.customers-table .semi-table-row-head,
+.customers-table .semi-table-row-cell {
+  overflow: hidden;
+}
+.quotes-table .semi-table-row-head,
+.quotes-table .semi-table-row-cell {
+  overflow: hidden;
+}
+
 /* 规则配置表：六列在 1024 宽也要完整可见，不许出横向滚动条。
    全站默认单元格左右 16px 内边距 + 单行省略号，对这张表太奢侈：
    「操作」四个链接 108px，加 32px 内边距就要 140；这里收到 8px，

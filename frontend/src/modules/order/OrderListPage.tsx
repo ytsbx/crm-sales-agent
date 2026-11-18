@@ -1,5 +1,5 @@
 import { skuLabel } from '../../shared/sku-label'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import PageHeader from '../../shared/components/PageHeader'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -63,6 +63,15 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
   const { can } = usePermissions()
   const currentUser = useAuthStore((state) => state.user)
   const [activeKey, setActiveKey] = useState(initialTab)
+  /* 1024 宽内容区约 700px，销售订单八列合计 1114px，右侧「待回款 / 交期 /
+     负责人」被裁、底部常驻横向滚动条。窄屏切紧凑档：交期并进订单号第二行、
+     负责人并进客户第二行、「已回款 + 待回款」并成一列两行。 */
+  const [compact, setCompact] = useState(() => window.innerWidth < 1200)
+  useEffect(() => {
+    const onResize = () => setCompact(window.innerWidth < 1200)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
   const [keywordInput, setKeywordInput] = useState('')
   const [keyword, setKeyword] = useState('')
   const [status, setStatus] = useState<string | undefined>()
@@ -211,68 +220,118 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
     {
       title: '订单号',
       dataIndex: 'order_no',
-      width: 170,
+      width: compact ? 158 : 170,
       render: (text: string, record: Order) => (
-        <Link to={`/orders/${record.id}`} style={{ color: 'var(--crm-primary)' }}>
-          {text}
-        </Link>
+        <div>
+          <Link to={`/orders/${record.id}`} style={{ color: 'var(--crm-primary)' }}>
+            {text}
+          </Link>
+          {compact && (
+            <div style={{ marginTop: 2, fontSize: 12, color: 'var(--crm-text-3)' }}>
+              交期 {record.delivery_date ?? '-'}
+            </div>
+          )}
+        </div>
       ),
     },
-    { title: '客户', dataIndex: 'customer_name', width: 220, render: (v: string | null) => v ?? '-' },
+    {
+      title: '客户',
+      dataIndex: 'customer_name',
+      width: compact ? 190 : 220,
+      render: (v: string | null, record: Order) => (
+        <div style={{ minWidth: 0 }}>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={v ?? '-'}>
+            {v ?? '-'}
+          </div>
+          {compact && (
+            <div style={{ marginTop: 2, fontSize: 12, color: 'var(--crm-text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              负责人 {record.owner_name ?? '-'}
+            </div>
+          )}
+        </div>
+      ),
+    },
     {
       title: '订单金额',
       dataIndex: 'total_amount',
       // 140 → 124：8 列合计本来正好 1130，但列表一长出现纵向滚动条，
       // 它占掉 15px，body 只剩 1115 → 横向滚动条又冒出来（2026-11-16 实测）。
-      width: 124,
+      width: compact ? 108 : 124,
       render: (v: number, record: Order) =>
         formatMoney(toTwoDecimals(record.total_amount_exact ?? v), record.currency),
     },
     {
-      title: '已回款',
+      title: compact ? '回款' : '已回款',
       dataIndex: 'received_amount',
-      width: 130,
+      width: compact ? 116 : 130,
       /* 这一列原来混着两种写法：有的行取到库里的精确字符串（¥2,100.00），
          有的行只有后端给的 number（¥0）—— 同一列里一半带两位小数、一半不带。
          没有精确字符串时把 number 补成两位小数再交给 formatMoney。 */
-      render: (v: number, record: Order) => (
-        <span style={{ color: record.unreceived_amount <= 0 ? 'var(--crm-success)' : undefined }}>
-          {formatMoney(toTwoDecimals(record.received_amount_exact ?? v), record.currency)}
-        </span>
-      ),
+      render: (v: number, record: Order) => {
+        const received = (
+          <span style={{ color: record.unreceived_amount <= 0 ? 'var(--crm-success)' : undefined }}>
+            {formatMoney(toTwoDecimals(record.received_amount_exact ?? v), record.currency)}
+          </span>
+        )
+        if (!compact) return received
+        /* 窄屏：上一行「已回」、下一行「待回」，省掉一列 */
+        return (
+          <div style={{ display: 'grid', gap: 2, justifyItems: 'center' }}>
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>已回 {received}</span>
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+              待回 {formatMoney(toTwoDecimals(record.unreceived_amount_exact ?? record.unreceived_amount), record.currency)}
+            </span>
+          </div>
+        )
+      },
     },
-    {
-      title: '待回款',
-      dataIndex: 'unreceived_amount',
-      width: 130,
-      render: (v: number, record: Order) =>
-        formatMoney(toTwoDecimals(record.unreceived_amount_exact ?? v), record.currency),
-    },
+    ...(compact
+      ? []
+      : [{
+          title: '待回款',
+          dataIndex: 'unreceived_amount',
+          width: 130,
+          render: (v: number, record: Order) =>
+            formatMoney(toTwoDecimals(record.unreceived_amount_exact ?? v), record.currency),
+        }]),
     {
       title: '履约状态',
       dataIndex: 'status_label',
-      width: 120,
+      width: compact ? 96 : 120,
       render: (value: string, record: Order) => (
         <StatusDot label={value} tone={ORDER_TONE[record.status] ?? 'grey'} />
       ),
     },
-    {
-      title: '交期',
-      dataIndex: 'delivery_date',
-      width: 120,
-      render: (v: string | null) => v ?? '-',
-    },
-    { title: '负责人', dataIndex: 'owner_name', width: 100, render: (v: string | null) => v ?? '-' },
+    ...(compact
+      ? []
+      : [{
+          title: '交期',
+          dataIndex: 'delivery_date',
+          width: 120,
+          render: (v: string | null) => v ?? '-',
+        }]),
+    ...(compact
+      ? []
+      : [{ title: '负责人', dataIndex: 'owner_name', width: 100, render: (v: string | null) => v ?? '-' }]),
   ]
 
   const receivableColumns = [
-    { title: '订单号', dataIndex: 'order_no', width: 170, render: (v: string | null) => v ?? '-' },
-    { title: '节点', dataIndex: 'plan_name', width: 120 },
-    { title: '应收日期', dataIndex: 'due_date', width: 130 },
+    { title: '订单号', dataIndex: 'order_no', width: compact ? 154 : 170, render: (v: string | null) => v ?? '-' },
+    {
+      title: '节点',
+      dataIndex: 'plan_name',
+      width: compact ? 130 : 120,
+      render: (v: string | null) => (
+        <span title={v ?? ''} style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {v ?? '-'}
+        </span>
+      ),
+    },
+    { title: '应收日期', dataIndex: 'due_date', width: compact ? 112 : 130 },
     {
       title: '应收金额',
       dataIndex: 'amount',
-      width: 130,
+      width: compact ? 100 : 130,
       /* 同一行里「已收/未收」走的是库里的精确十进制字符串（900.00），
          这里原来传的是 number（900）—— 一行里一半带两位小数、一半不带，
          看着像两个系统拼起来的。统一成精确值。 */
@@ -280,21 +339,36 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
         formatMoney(toTwoDecimals(record.amount_exact ?? v), record.currency),
     },
     {
-      title: '已收',
+      title: compact ? '已收 / 未收' : '已收',
       dataIndex: 'received_amount',
-      width: 130,
-      render: (v: number, record: Receivable) => formatMoney(record.received_amount_exact ?? v, record.currency),
+      width: compact ? 110 : 130,
+      render: (v: number, record: Receivable) => {
+        const received = formatMoney(record.received_amount_exact ?? v, record.currency)
+        if (!compact) return received
+        /* 窄屏：上一行已收、下一行未收，两张钱合并一列 */
+        return (
+          <div style={{ display: 'grid', gap: 2, justifyItems: 'center' }}>
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>已收 {received}</span>
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+              未收 {formatMoney(record.remaining_amount_exact ?? record.remaining_amount, record.currency)}
+            </span>
+          </div>
+        )
+      },
     },
-    {
-      title: '未收',
-      dataIndex: 'remaining_amount',
-      width: 130,
-      render: (v: number, record: Receivable) => formatMoney(record.remaining_amount_exact ?? v, record.currency),
-    },
+    ...(compact
+      ? []
+      : [{
+          title: '未收',
+          dataIndex: 'remaining_amount',
+          width: 130,
+          render: (v: number, record: Receivable) =>
+            formatMoney(record.remaining_amount_exact ?? v, record.currency),
+        }]),
     {
       title: '状态',
       dataIndex: 'status_label',
-      width: 110,
+      width: compact ? 92 : 110,
       render: (value: string, record: Receivable) => (
         <StatusDot label={value} tone={PLAN_TONE[record.status] ?? 'grey'} bold={record.status === 'overdue'} />
       ),
@@ -302,43 +376,81 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
   ]
 
   const paymentColumns = [
-    { title: '订单号', dataIndex: 'order_no', width: 170, render: (v: string | null) => v ?? '-' },
-    { title: '应收节点', dataIndex: 'plan_name', width: 120, render: (v: string | null) => v ?? '-' },
-    { title: '收款日期', dataIndex: 'received_date', width: 130 },
+    {
+      title: '订单号',
+      dataIndex: 'order_no',
+      width: compact ? 150 : 160,
+      render: (v: string | null, record: Payment) => (
+        <div style={{ minWidth: 0 }}>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={v ?? '-'}>
+            {v ?? '-'}
+          </div>
+          {compact && (
+            <div style={{ marginTop: 2, fontSize: 12, color: 'var(--crm-text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {record.plan_name ?? '-'}
+            </div>
+          )}
+        </div>
+      ),
+    },
+    ...(compact
+      ? []
+      : [{ title: '应收节点', dataIndex: 'plan_name', width: 120, render: (v: string | null) => v ?? '-' }]),
+    { title: '收款日期', dataIndex: 'received_date', width: compact ? 108 : 118 },
     {
       title: '金额',
       dataIndex: 'received_amount',
-      width: 130,
+      width: compact ? 104 : 118,
       render: (v: number, record: Payment) => formatMoney(record.received_amount_exact ?? v, record.currency),
     },
-    { title: '方式', dataIndex: 'payment_method', width: 120, render: (v: string | null) => v ?? '-' },
+    ...(compact
+      ? []
+      : [{ title: '方式', dataIndex: 'payment_method', width: 100, render: (v: string | null) => v ?? '-' }]),
     {
       title: '回款凭证',
-      width: 220,
+      width: compact ? 120 : 170,
       render: (_: unknown, record: Payment) => (
-        <PaymentVoucherControl
-          payment={record}
-          onChanged={() => void queryClient.invalidateQueries({ queryKey: ['payments'] })}
-        />
+        <div style={{ display: 'grid', gap: 2, justifyItems: 'center', minWidth: 0 }}>
+          <PaymentVoucherControl
+            payment={record}
+            onChanged={() => void queryClient.invalidateQueries({ queryKey: ['payments'] })}
+          />
+          {compact && (
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{record.payment_method ?? '-'}</span>
+          )}
+        </div>
       ),
     },
     {
-      title: '状态',
+      title: compact ? '状态 / 确认人' : '状态',
       dataIndex: 'status_label',
-      width: 130,
-      render: (value: string) => (
-        <StatusDot label={value} tone={value === '已确认' ? 'green' : value === '已驳回' ? 'red' : 'orange'} />
-      ),
+      width: compact ? 96 : 110,
+      render: (value: string, record: Payment) => {
+        const dot = (
+          <StatusDot label={value} tone={value === '已确认' ? 'green' : value === '已驳回' ? 'red' : 'orange'} />
+        )
+        if (!compact) return dot
+        return (
+          <div style={{ display: 'grid', gap: 2, justifyItems: 'center' }}>
+            {dot}
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+              确认人 {record.confirmed_by_name ?? '-'}
+            </span>
+          </div>
+        )
+      },
     },
-    {
-      title: '确认人',
-      dataIndex: 'confirmed_by_name',
-      width: 110,
-      render: (v: string | null) => v ?? '-',
-    },
+    ...(compact
+      ? []
+      : [{
+          title: '确认人',
+          dataIndex: 'confirmed_by_name',
+          width: 100,
+          render: (v: string | null) => v ?? '-',
+        }]),
     {
       title: '操作',
-      width: 150,
+      width: compact ? 100 : 130,
       render: (_: unknown, record: Payment) =>
         record.status === 'pending' && can('payment:manage') ? (
           <div style={{ display: 'flex', gap: 10 }}>
@@ -438,6 +550,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
                 )}
               </div>
               <Table<Order>
+                className="orders-table"
                 columns={orderColumns}
                 dataSource={ordersQuery.data?.items ?? []}
                 loading={ordersQuery.isLoading}
@@ -460,6 +573,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
 
           {activeKey === 'receivables' && (
             <Table<Receivable>
+              className="receivables-table"
               columns={receivableColumns}
               dataSource={receivablesQuery.data?.items ?? []}
               loading={receivablesQuery.isLoading}
@@ -471,6 +585,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
 
           {activeKey === 'payments' && (
             <Table<Payment>
+              className="payments-table"
               columns={paymentColumns}
               dataSource={paymentsQuery.data?.items ?? []}
               loading={paymentsQuery.isLoading}

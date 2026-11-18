@@ -1,5 +1,5 @@
 import { UNRATED_OPTION, customerLevelValue, customerLevelPayload } from '../../shared/customer-level'
-import { useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import PageHeader from '../../shared/components/PageHeader'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -102,6 +102,16 @@ export default function CustomerListPage() {
   const currentUser = useAuthStore((state) => state.user)
   // 批量转移需要 customer:assign，前端先隐藏按钮，避免点了才吃 403
   const { can } = usePermissions()
+
+  /* 1024 宽内容区只有约 700px，九列合计 975px，「标签 / 负责人 / 状态」
+     全被推到卡片外。窄屏切紧凑档：负责人并进客户名称第二行，
+     「近12月项目 + 历史有效订单」并成一列两行，其余列宽收紧。 */
+  const [compact, setCompact] = useState(() => window.innerWidth < 1200)
+  useEffect(() => {
+    const onResize = () => setCompact(window.innerWidth < 1200)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
 
   const [keywordInput, setKeywordInput] = useState('')
   const [keyword, setKeyword] = useState('')
@@ -421,21 +431,32 @@ export default function CustomerListPage() {
       // 顺带把横向滚动条也去掉（14 列 → 10 列）。
       // 260 → 210：实测这一列 268 时整表 1180 > 内容区 1130，横向滚动条又回来了
       // （2026-11-16 全站表格扫描）。210 仍够放「宁波家电01厂【演示造数】」。
-      width: 210,
+      width: compact ? 215 : 210,
       render: (text: string, record: Customer) => (
         <div>
-          <a style={{ color: 'var(--crm-primary)' }} onClick={() => navigate(`/customers/${record.id}`)} title={text}>
+          <a
+            style={{ color: 'var(--crm-primary)', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+            onClick={() => navigate(`/customers/${record.id}`)}
+            title={text}
+          >
             {text}
           </a>
-          <div style={{ marginTop: 2, color: 'var(--crm-text-3)', fontSize: 12 }}>
+          <div
+            title={[record.region, record.source, activityLabel(record.activity_status), compact ? `负责人 ${record.owner_name ?? '公海'}` : ''].filter(Boolean).join(' · ')}
+            style={{ marginTop: 2, color: 'var(--crm-text-3)', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          >
+            {compact ? `${record.level ?? '未分级'} · ` : ''}
             {[record.region, record.source, activityLabel(record.activity_status)]
               .filter(Boolean)
               .join(' · ')}
+            {compact ? ` · 负责人 ${record.owner_name ?? '公海'}` : ''}
           </div>
         </div>
       ),
     },
-    {
+    ...(compact
+      ? []
+      : [{
       title: '等级',
       dataIndex: 'level',
       // 96 而不是 80：描边标签（未分级）比实心标签宽，80 时末尾会多出一个省略号
@@ -461,12 +482,12 @@ export default function CustomerListPage() {
           // 「未分级」是**还没评**，不是一种等级：灰字即可
           <span style={{ color: 'var(--crm-text-3)' }}>未分级</span>
         ),
-    },
+    }]),
     {
       // 领导六阶段：由订单/打样/报价事实自动推导（customer/stage.py），不占销售一分钟
       title: '阶段',
       dataIndex: 'stage',
-      width: 70,
+      width: compact ? 96 : 70,
       render: (_: unknown, record: Customer) =>
         record.stage ? (
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -488,29 +509,44 @@ export default function CustomerListPage() {
     // 三个计数列共用：**有值才上色加粗**，0 保持浅灰。
     // 全是同一种灰时，一列扫过去分不出「这家有 3 个商机」和「这家啥也没有」。
     {
-      title: '当前商机',
+      title: compact ? '商机' : '当前商机',
       dataIndex: 'current_opportunity_count',
-      width: 90,
+      width: compact ? 76 : 90,
       render: (value: number | undefined) => countCell(value),
     },
+    ...(compact
+      ? []
+      : [{
+          title: '近12月项目',
+          dataIndex: 'recent_order_count',
+          width: 90,
+          render: (value: number | undefined) => countCell(value),
+        }]),
     {
-      title: '近12月项目',
-      dataIndex: 'recent_order_count',
-      width: 90,
-      render: (value: number | undefined) => countCell(value),
-    },
-    {
-      title: '历史有效订单',
+      title: compact ? '项目 / 订单' : '历史有效订单',
       dataIndex: 'historical_order_count',
-      width: 105,
-      render: (value: number | undefined) => countCell(value),
+      width: compact ? 96 : 105,
+      render: (value: number | undefined, record: Customer) =>
+        compact ? (
+          /* 窄屏把「近12月项目」并到这一列：上一行近12月、下一行历史 */
+          <div style={{ display: 'grid', gap: 2, justifyItems: 'center' }}>
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+              近12月 {countCell(record.recent_order_count)}
+            </span>
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+              历史 {countCell(value)}
+            </span>
+          </div>
+        ) : (
+          countCell(value)
+        ),
     },
     {
       // PRD §6.1：客户列表要能直接看到标签
       title: '标签',
       dataIndex: 'tags',
       // 180 → 140：标签本来就会折行，收窄后空间让给客户名称
-      width: 140,
+      width: compact ? 110 : 140,
       render: (tags: Customer['tags']) => {
         const list = tags ?? []
         if (list.length === 0) {
@@ -519,7 +555,10 @@ export default function CustomerListPage() {
         // 标签不再一个个套灰胶囊：两个胶囊就折成两行，行高被撑、整表节奏被拉乱。
         // 改成一行灰字、「·」分隔，最多两个，多出来的收成「+N」。
         return (
-          <span style={{ fontSize: 12, color: 'var(--crm-text-2)', whiteSpace: 'nowrap' }}>
+          <span
+            title={list.map((tag) => tag.name).join('·')}
+            style={{ fontSize: 12, color: 'var(--crm-text-2)', whiteSpace: 'nowrap' }}
+          >
             {list
               .slice(0, 2)
               .map((tag) => tag.name)
@@ -529,16 +568,18 @@ export default function CustomerListPage() {
         )
       }
     },
-    {
-      title: '负责人',
-      dataIndex: 'owner_name',
-      width: 110,
-      render: (v: string | null) => v ?? '公海',
-    },
+    ...(compact
+      ? []
+      : [{
+          title: '负责人',
+          dataIndex: 'owner_name',
+          width: 110,
+          render: (v: string | null) => v ?? '公海',
+        }]),
     {
       title: '状态',
       dataIndex: 'status',
-      width: 90,
+      width: compact ? 66 : 90,
       render: (v: string) => (v === 'active' ? '正常' : v),
     },
   ]
@@ -693,7 +734,7 @@ export default function CustomerListPage() {
         )}
 
         <Table<Customer>
-          className="table-center"
+          className="table-center customers-table"
           columns={columns}
           dataSource={query.data?.items ?? []}
           loading={query.isLoading}

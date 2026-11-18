@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
@@ -42,6 +42,17 @@ export default function ApprovalPage() {
   const [transferTarget, setTransferTarget] = useState<ApprovalRow | null>(null)
   const [transferUserId, setTransferUserId] = useState<number | null>(null)
   const [transferComment, setTransferComment] = useState('')
+
+  /* 1024 宽时内容区只剩约 700px，七个固定列合计 1007px，右侧「状态 / 操作」
+     直接被推到卡片外，出现横向滚动条（2026-11-18 主人要求全站禁止横向滚动）。
+     这里按窗口宽度切一档「紧凑列宽」：列宽整体收紧，并把「申请人」并进客户单元格
+     的第二行小字——信息不丢，只是不再单独占一列。 */
+  const [compact, setCompact] = useState(() => window.innerWidth < 1200)
+  useEffect(() => {
+    const onResize = () => setCompact(window.innerWidth < 1200)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
 
   // 规则配置只有管理员可见（后端写接口也是 settings:manage 把门）
   const TABS_WITH_RULES = [
@@ -111,7 +122,7 @@ export default function ApprovalPage() {
     {
       title: '',
       dataIndex: '_expand',
-      width: 72,
+      width: compact ? 72 : 72,
       // 展开 / 收起做成文字按钮：横排、永远一行，点一下切换这一行的展开状态
       render: (_: unknown, record: ApprovalRow) => {
         const open = expandedKeys.includes(record.id)
@@ -136,27 +147,59 @@ export default function ApprovalPage() {
       title: '报价单号',
       dataIndex: 'quote_no',
       /* 175 放不下「箭头 + 单号 + 版本」一整行，版本被挤成「第 …」；190 刚好 */
-      width: 175,
+      width: compact ? 150 : 175,
       /* 原来单号与「第 N 版」是上下两行的块级 div —— 左边那个展开箭头是 inline 的，
          块级内容一定另起一行，于是箭头独占一行、单号再一行、版本第三行。
          改成同一行的两个 inline 片段：箭头 + 单号 + 小字版本，整行只占一行高。 */
+      render: (v: string | null, record: ApprovalRow) =>
+        compact ? (
+          /* 紧凑档把版本号掉到第二行：单号 17 位字符 + 「V1」并排要塞进 156px，
+             单号会被截成省略号。拆两行后单号完整可读，行高由客户列的第二行兜住。 */
+          <div style={{ display: 'grid', gap: 2, justifyItems: 'center' }}>
+            <span>{v ?? '-'}</span>
+            {record.version_no ? (
+              <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>V{record.version_no}</span>
+            ) : null}
+          </div>
+        ) : (
+          <span>
+            {v ?? '-'}
+            {record.version_no ? (
+              <span style={{ fontSize: 12, color: 'var(--crm-text-3)', marginLeft: 6 }}>
+                V{record.version_no}
+              </span>
+            ) : null}
+          </span>
+        ),
+    },
+    {
+      title: '客户',
+      dataIndex: 'customer_name',
+      width: compact ? 150 : 200,
+      // 紧凑档把申请人并进这一格第二行，省掉一列，避免 1024 宽溢出
       render: (v: string | null, record: ApprovalRow) => (
-        <span>
-          {v ?? '-'}
-          {record.version_no ? (
-            <span style={{ fontSize: 12, color: 'var(--crm-text-3)', marginLeft: 6 }}>
-              V{record.version_no}
+        <div style={{ display: 'grid', gap: 2, justifyItems: 'center', minWidth: 0 }}>
+          <span
+            title={v ?? '-'}
+            style={{ maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          >
+            {v ?? '-'}
+          </span>
+          {compact && (
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+              申请人：{record.applicant_name ?? '-'}
             </span>
-          ) : null}
-        </span>
+          )}
+        </div>
       ),
     },
-    { title: '客户', dataIndex: 'customer_name', width: 200, ellipsis: true, render: (v: string | null) => v ?? '-' },
-    { title: '申请人', dataIndex: 'applicant_name', width: 100, render: (v: string | null) => v ?? '-' },
+    ...(compact
+      ? []
+      : [{ title: '申请人', dataIndex: 'applicant_name', width: 100, render: (v: string | null) => v ?? '-' }]),
     {
       title: '报价总额',
       dataIndex: 'total_amount',
-      width: 130,
+      width: compact ? 112 : 130,
       // 报价总额是业务单据上的钱，按全站口径必须两位小数（¥84,030.00），
       // 不能像统计卡那样取整。
       render: (v: number | null) => (v === null || v === undefined ? '-' : formatMoney(toTwoDecimals(v), 'CNY')),
@@ -164,7 +207,7 @@ export default function ApprovalPage() {
     {
       title: '状态',
       dataIndex: 'status_label',
-      width: 130,
+      width: compact ? 96 : 130,
       render: (value: string, record: ApprovalRow) => {
         // 规则加签的单子：本级通过后停在会签节点，要让人一眼看出现在轮到谁
         const coSign = record.current_node === 'co_sign' ? record.summary?.co_sign : null
@@ -188,18 +231,17 @@ export default function ApprovalPage() {
     },
     {
       title: '操作',
-      width: 200,
+      width: compact ? 122 : 200,
       // 「看报价 通过 拒绝 转交」四个动作挤在 10px 间距里，字号又小，读起来是
       // 一串没断开的字。间距拉到 16，四个动作才分得开（2026-11-16）。
       render: (_: unknown, record: ApprovalRow) => (
         <div
           style={{
-            display: 'flex',
-            gap: 16,
-            flexWrap: 'wrap',
-            alignItems: 'center',
-            // 同上：flex 容器默认靠左，补 justifyContent 才和表头「操作」同一条中线
-            justifyContent: 'center',
+            // 宽屏四个动作横排一行；紧凑档 158px 放不下，改成 2×2 网格，
+            // 比 flexWrap 自然折成「3 + 1」整齐。
+            ...(compact
+              ? { display: 'grid', gridTemplateColumns: 'repeat(2, auto)', justifyItems: 'center', columnGap: 12, rowGap: 4 }
+              : { display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center' }),
           }}
         >
           {record.version_id && (

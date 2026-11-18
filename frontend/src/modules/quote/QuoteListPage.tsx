@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import PageHeader from '../../shared/components/PageHeader'
 import { formatMoney } from '../../shared/components/money'
 import SectionCard from '../../shared/components/SectionCard'
@@ -52,6 +52,16 @@ export default function QuoteListPage() {
   // 弱网重试会换一把新键，服务端仍会建出第二条报价 —— 幂等就白做了。
   const createRequestKeyRef = useRef('')
 
+  /* 1024 宽时内容区约 704px，七列固定宽度合计 825px，「有效期 / 负责人」
+     两列被裁到卡片外（2026-11-18）。窄屏切紧凑档：列宽收紧，负责人并进
+     客户/商机的第二行小字，七列变六列 —— 不出现横向滚动条。 */
+  const [compact, setCompact] = useState(() => window.innerWidth < 1200)
+  useEffect(() => {
+    const onResize = () => setCompact(window.innerWidth < 1200)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
   const query = useQuery({
     queryKey: ['quotes', { keyword, status, page, pageSize }],
     queryFn: () => listQuotes({ keyword, status, page, page_size: pageSize }),
@@ -91,13 +101,26 @@ export default function QuoteListPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  /* 审批状态点：宽屏单独一列，窄屏并进「状态」列第二行 */
+  const approvalDot = (value: string | null | undefined) =>
+    value === 'approved' ? (
+      <StatusDot label="已通过" tone="green" />
+    ) : value === 'pending' ? (
+      <StatusDot label="审批中" tone="orange" />
+    ) : value === 'rejected' ? (
+      <StatusDot label="被拒" tone="red" />
+    ) : (
+      <StatusDot label="未提交" tone="grey" />
+    )
+
   const columns = [
+
     {
       // 版本号并到单号下面一行小字：V1/V2 单独占一整列（100px 放两个字）太奢侈，
       // 而看单子又必须知道是第几版 —— 和单号放一起最省地方
       title: '报价单号',
       dataIndex: 'quote_no',
-      width: 145,
+      width: compact ? 135 : 145,
       render: (text: string, record: Quote) => (
         <div>
           <Link to={`/quotes/${record.id}`} style={{ color: 'var(--crm-primary)' }}>
@@ -113,12 +136,25 @@ export default function QuoteListPage() {
       // 商机名同理：并到客户名下面做小字，省掉一整个自适应列
       title: '客户 / 商机',
       dataIndex: 'customer_name',
-      width: 175,
+      width: compact ? 190 : 175,
       render: (v: string | null, record: Quote) => (
-        <div>
-          <div>{v ?? '-'}</div>
-          <div style={{ marginTop: 2, fontSize: 12, color: 'var(--crm-text-3)' }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={v ?? '-'}>
+            {v ?? '-'}
+          </div>
+          <div
+            title={`${record.opportunity_title ?? '未关联商机'}${compact ? ` · 负责人 ${record.owner_name ?? '-'}` : ''}`}
+            style={{
+              marginTop: 2,
+              fontSize: 12,
+              color: 'var(--crm-text-3)',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
             {record.opportunity_title ?? '未关联商机'}
+            {compact ? ` · 负责人 ${record.owner_name ?? '-'}` : ''}
           </div>
         </div>
       ),
@@ -126,40 +162,42 @@ export default function QuoteListPage() {
     {
       title: '报价总额',
       dataIndex: 'current_version_amount',
-      width: 115,
+      width: compact ? 108 : 115,
       render: (v: number | null, record: Quote) =>
         formatMoney(record.current_version_amount_exact ?? v, record.currency),
     },
     {
-      title: '报价状态',
+      title: compact ? '状态 / 审批' : '报价状态',
       dataIndex: 'status_label',
-      width: 100,
-      render: (value: string, record: Quote) => (
-        <StatusDot label={value} tone={(STATUS_TONE[record.status] ?? 'grey') as TagTone} />
-      ),
-    },
-    {
-      title: '审批',
-      dataIndex: 'approval_status',
-      width: 95,
-      render: (value: string | null) =>
-        value === 'approved' ? (
-          <StatusDot label="已通过" tone="green" />
-        ) : value === 'pending' ? (
-          <StatusDot label="审批中" tone="orange" />
-        ) : value === 'rejected' ? (
-          <StatusDot label="被拒" tone="red" />
+      width: compact ? 120 : 100,
+      render: (value: string, record: Quote) =>
+        compact ? (
+          /* 窄屏把「审批状态」并进这一列的第二行，省掉一列宽度 */
+          <div style={{ display: 'grid', gap: 2, justifyItems: 'center' }}>
+            <StatusDot label={value} tone={(STATUS_TONE[record.status] ?? 'grey') as TagTone} />
+            {approvalDot(record.approval_status)}
+          </div>
         ) : (
-          <StatusDot label="未提交" tone="grey" />
+          <StatusDot label={value} tone={(STATUS_TONE[record.status] ?? 'grey') as TagTone} />
         ),
     },
+    ...(compact
+      ? []
+      : [{
+          title: '审批',
+          dataIndex: 'approval_status',
+          width: 95,
+          render: (value: string | null) => approvalDot(value),
+        }]),
     {
       title: '有效期',
       dataIndex: 'valid_until',
-      width: 105,
+      width: compact ? 104 : 105,
       render: (v: string | null) => v ?? '-',
     },
-    { title: '负责人', dataIndex: 'owner_name', width: 90, render: (v: string | null) => v ?? '-' },
+    ...(compact
+      ? []
+      : [{ title: '负责人', dataIndex: 'owner_name', width: 90, render: (v: string | null) => v ?? '-' }]),
   ]
 
   return (
@@ -217,6 +255,10 @@ export default function QuoteListPage() {
         </div>
 
         <Table<Quote>
+          /* 固定列宽：不设的话表格按内容撑宽，商机那行小字会把客户列顶到 220px，
+             「审批 / 有效期」被挤出卡片（1024 宽）。 */
+          tableLayout="fixed"
+          className="quotes-table"
           columns={columns}
           dataSource={query.data?.items ?? []}
           loading={query.isLoading}
