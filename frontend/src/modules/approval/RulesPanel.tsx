@@ -97,6 +97,10 @@ export default function RulesPanel() {
   const [conflictNotice, setConflictNotice] = useState<{ title: string; message: string } | null>(
     null,
   )
+  /* 保存草稿失败（409 冲突 / 422 校验）时，错误要贴在编辑弹窗里，
+     而不是只闪一下 Toast —— 用户正在改的就是这张表单，原因得和输入框放在一起。
+     同时不关弹窗、不动 drafts，用户按提示改完可以直接再保存。 */
+  const [editorError, setEditorError] = useState<string | null>(null)
   const notifyConflict = (error: Error, verb: string): boolean => {
     const status = (error as ApiError).status
     const code = (error as ApiError).code
@@ -136,7 +140,10 @@ export default function RulesPanel() {
       setEditing(null)
       refresh()
     },
-    onError: (error: Error) => Toast.error(error.message),
+    onError: (error: Error) => {
+      // 保留 editing / 表单输入，只在弹窗顶部回显后端原文
+      setEditorError(error.message)
+    },
   })
 
   const toggleMutation = useMutation({
@@ -296,6 +303,7 @@ export default function RulesPanel() {
   ]
 
   const toEdit = (row: ApprovalRuleRow) => {
+    setEditorError(null)
     setEditing({
       id: row.id,
       name: row.name,
@@ -351,7 +359,14 @@ export default function RulesPanel() {
             报价提交审批时按优先级逐条求值，第一条命中的规则决定走向；
             草稿发布后才生效，启停立即生效
           </div>
-          <Button type="primary" theme="outline" onClick={() => setEditing(emptyDraft())}>
+          <Button
+            type="primary"
+            theme="outline"
+            onClick={() => {
+              setEditorError(null)
+              setEditing(emptyDraft())
+            }}
+          >
             新建规则
           </Button>
         </div>
@@ -383,6 +398,7 @@ export default function RulesPanel() {
             Toast.warning('请填写规则名称')
             return
           }
+          setEditorError(null)
           saveMutation.mutate(editing)
         }}
         confirmLoading={saveMutation.isPending}
@@ -391,6 +407,26 @@ export default function RulesPanel() {
       >
         {editing && (
           <div style={{ display: 'grid', gap: 14 }}>
+            {editorError && (
+              <div
+                style={{
+                  background: '#fff1f0',
+                  border: '1px solid #ffccc7',
+                  borderRadius: 6,
+                  padding: '8px 12px',
+                }}
+              >
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#cf1322', marginBottom: 2 }}>
+                  保存失败，未写入
+                </div>
+                <div style={{ fontSize: 13, lineHeight: 1.7, color: '#a8071a', whiteSpace: 'pre-wrap' }}>
+                  {editorError}
+                </div>
+                <div style={{ fontSize: 12, color: '#a8071a', marginTop: 4, opacity: 0.85 }}>
+                  表单内容已保留，按上面提示改完再保存。
+                </div>
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 12 }}>
               <div style={{ flex: 1 }}>
                 <div style={labelStyle}>规则名称</div>

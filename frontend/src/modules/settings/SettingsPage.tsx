@@ -2535,6 +2535,9 @@ function ApprovalLevelsEditor({
       return
     }
     const next: Array<Record<string, unknown>> = []
+    /* 上一档的金额上限，用来判「逐档递增」；null = 还没出现过上限（第一档或前面不限）。 */
+    let prevMax: number | null = null
+    let prevLabel = ''
     for (let i = 0; i < drafts.length; i += 1) {
       const row = drafts[i]
       const label = row.label.trim()
@@ -2564,6 +2567,18 @@ function ApprovalLevelsEditor({
       }
       // 正则已保证是合法数字串，这里不会再是 NaN
       const parsed = Number(text)
+      /* 表格顺序就是判定顺序（后端从上往下找第一个没超上限的档），
+         所以上限必须一档比一档大；相等或倒挂会让某一档永远轮不到。
+         前端先提示，最终仍以后端校验为准。 */
+      if (prevMax !== null && parsed <= prevMax) {
+        Toast.warning(
+          `第 ${i + 1} 档的金额上限（${text}）必须大于第 ${i} 档「${prevLabel}」的 ${prevMax}：` +
+            '审批是从上往下比金额的，相等或倒挂会让上面那档永远轮不到。',
+        )
+        return
+      }
+      prevMax = parsed
+      prevLabel = label
       next.push({ node: row.node, label, max_amount: parsed, role_codes: row.roleCodes })
     }
     onSave(next)
