@@ -1492,20 +1492,27 @@ a:not([href]) {
 .quote-money-block {
   display: grid;
   /* 左列宽一点：附加费用表有 4 列；右列金额汇总只有"标签 + 数字" */
-  grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr);
+  /* 右栏给一个下限：金额汇总里「应付合计 + 数字」必须一行放得下，
+     给 0 下限时窄屏会被压成"标签一行、数字贴右边缘"甚至折行。 */
+  grid-template-columns: minmax(0, 1.6fr) minmax(320px, 1fr);
   gap: 28px;
   background: var(--crm-surface);
   border: 1px solid var(--crm-border);
   border-radius: var(--crm-radius);
-  padding: 20px;
+  /* 外圈再松一点：数字与表格原来离卡片边只有 20px，1024 下看着贴框 */
+  padding: 22px 26px;
 }
 
 /* 窄屏塌成单列：两栏并排时各只剩约 180px，「应付合计」这类标签会被压成
    逐字竖排（461px 实测）。上下叠不会更丑，只是要滚。 */
-@media (max-width: 760px) {
+/* 1200 以下就塌成单列：1024 实测内容区只有约 740px，两栏时左栏剩 424px，
+   附加费用表 475 放不下 → 表内横滚 + 操作列被切；右栏 250px →
+   「预计利润合计」和说明挤成两行互相压。上下叠之后两边都够宽。
+   461px 这类极窄屏同样走这一条。 */
+@media (max-width: 1200px) {
   .quote-money-block {
     grid-template-columns: minmax(0, 1fr);
-    gap: 16px;
+    gap: 20px;
   }
 }
 

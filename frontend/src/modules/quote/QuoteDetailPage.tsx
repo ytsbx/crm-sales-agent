@@ -2101,12 +2101,12 @@ export default function QuoteDetailPage() {
                 <span>应付合计</span>
                 <span style={{ color: 'var(--crm-primary)' }}>{cny(version.total_amount_exact ?? summary.total_amount)}</span>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: 'var(--crm-text-3)' }}>预计利润合计</span>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                <span style={{ color: 'var(--crm-text-3)', flexShrink: 0 }}>预计利润合计</span>
                 {/* ⚠️ 无 `price:manage` 时后端会把 `total_profit` 置 null
                     （2026-10-14 审查修）—— 原来写 `?? 0` 会显示成「¥0.00」，
                     看着像"这单不赚钱"，而不是"你没权限看"。 */}
-                <span>
+                <span style={{ textAlign: 'right', minWidth: 0, flex: '1 1 auto' }}>
                   {version.total_profit == null
                     ? can('price:manage') && (detail.cost_problems ?? []).length > 0
                       ? '成本未完整确认，暂不能计算利润'
