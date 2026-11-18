@@ -2134,7 +2134,7 @@ export default function QuoteDetailPage() {
       {/* 关联询价的审批：只有明细里带 inquiry_id 才出现，纯现货报价看不到这张卡 */}
       {linkedInquiries.length > 0 && (
         <SectionCard title="关联询价的审批进度" style={{ marginTop: 16 }}>
-          <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 8 }}>
+          <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 12 }}>
             「核价 / 报价复核」在同序 OA 的询价单上办理；这一层没通过时，正式对外发送仍会被拦。
           </div>
           {inquiryApprovalsQuery.isError && (

@@ -3156,18 +3156,19 @@ table:not(.semi-table) td {
 .oa-inquiry-list {
   display: flex;
   flex-direction: column;
+  gap: 8px;
+  /* 顶部再空一点：说明文字与第一行之间不能贴在一起 */
+  margin-top: 4px;
 }
 .oa-inquiry-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 20px;
-  padding: 14px 0;
-  border-top: 1px solid var(--crm-border);
-}
-.oa-inquiry-row:first-child {
-  border-top: 0;
-  padding-top: 4px;
+  /* 一整条浅底 + 自身留白：内容离卡片边再退 16px，不再"顶格" */
+  padding: 14px 16px;
+  border-radius: 8px;
+  background: var(--crm-surface-low);
 }
 .oa-inquiry-main {
   min-width: 0;
