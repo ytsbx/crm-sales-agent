@@ -256,7 +256,6 @@ export default function AppLayout() {
               }
             >
               <div className="header-user-trigger" title="个人设置与退出">
-                <div className="header-avatar">{user?.name?.slice(0, 1) ?? '?'}</div>
                 <div className="header-user-meta" style={{ lineHeight: 1.25 }}>
                   <div style={{ fontSize: 13, fontWeight: 600 }}>{user?.name ?? '未登录'}</div>
                   <div style={{ fontSize: 11, color: 'var(--crm-text-3)' }}>

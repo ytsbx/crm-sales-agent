@@ -1059,18 +1059,9 @@ a:not([href]) {
   background: var(--crm-secondary);
 }
 
-.header-avatar {
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  background: var(--crm-primary);
-  color: #fff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 13px;
-  font-weight: 600;
-}
+/* 顶栏头像已删（2026-11-18）：34px 蓝底圆里只放姓名首字，既不是真头像，
+   又在浅色顶栏上多出一块纯色圆点。姓名和角色就写在旁边，头像不提供任何信息。
+   客户详情、动态列表里的同款首字母圆框此前已一并去掉，现在全站没有这种"假头像"。 */
 
 .tab-strip {
   display: flex;
