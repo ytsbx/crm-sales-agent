@@ -3533,6 +3533,8 @@ table:not(.semi-table) td {
   display: flex;
   align-items: flex-start;
   gap: 10px;
+  /* 自定义 header 同样不进 .semi-modal-header，顶部补 22px，标题不再贴边。 */
+  padding-top: 22px;
 }
 .crm-mp-icon {
   width: 28px;
@@ -3667,8 +3669,8 @@ table:not(.semi-table) td {
   display: flex;
   gap: 12px;
   justify-content: flex-end;
-  margin-top: 6px;
-  padding-top: 14px;
+  margin-top: 2px;
+  padding-top: 12px;
   border-top: 1px solid var(--crm-border);
 }
 
@@ -3712,4 +3714,92 @@ table:not(.semi-table) td {
 .semi-modal-content:has(.crm-confirm-body) .semi-modal-footer .semi-button:not(.semi-button-primary):hover {
   background: rgba(15, 23, 42, .04);
   border-color: rgba(15, 23, 42, .18);
+}
+
+/* ===== 报价详情页头：右侧关键数字 =====
+   原来页头右半只有「删除报价」贴着最右边，中间近千像素空白；左边的单号、
+   客户、商机全挤在 700 宽里。这里把总额 / 毛利率 / 明细条数做成右侧摘要，
+   左右各占一半，空白变成信息。 */
+.quote-head-aside {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.quote-head-kpi {
+  display: flex;
+  align-items: flex-start;
+  gap: 24px;
+  padding-right: 20px;
+  border-right: 1px solid var(--crm-border);
+}
+.qhk-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  align-items: flex-end;
+}
+.qhk-label {
+  font-size: 11px;
+  letter-spacing: .4px;
+  color: var(--crm-text-3);
+  white-space: nowrap;
+}
+.qhk-value {
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--crm-text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+@media (max-width: 1280px) {
+  .quote-head-kpi { padding-right: 0; border-right: 0; }
+}
+
+/* ===== 主数据警告条：说明在左、入口在右 =====
+   原来是"标题 + 一条长警告 + 按钮另起一行"，整条又扁又长，右边一大块空地。
+   改成两列：左侧说明（可换行），右侧按钮垂直居中，视线一眼落到下一步动作。 */
+.quote-master-warning {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+  padding: 14px 18px;
+  border-radius: 10px;
+  background: var(--crm-warning-bg, #FFF8EC);
+  border: 1px solid var(--crm-warning-border, #F6D9A8);
+}
+.qmw-main { flex: 1 1 420px; min-width: 0; }
+.qmw-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.7;
+  color: #8A5300;
+}
+.qmw-item {
+  position: relative;
+  margin-top: 4px;
+  padding-left: 12px;
+  font-size: 13px;
+  line-height: 1.8;
+  color: #8A5300;
+  overflow-wrap: anywhere;
+}
+.qmw-item::before {
+  content: "·";
+  position: absolute;
+  left: 2px;
+}
+.qmw-side { flex: 0 0 auto; }
+.qmw-side .semi-button {
+  background: #fff;
+  border-color: rgba(180, 83, 9, .32);
+  color: #8A5300;
+}
+.qmw-side .semi-button:hover {
+  background: #FFFDF7;
+  border-color: rgba(180, 83, 9, .5);
 }

@@ -967,12 +967,39 @@ export default function QuoteDetailPage() {
       {/* 与客户/商机详情页同排布：标题 + 标签一行，关键信息行在标题下方左对齐 */}
       <DetailHeader
         title={quote.quote_no}
-        extra={canManage && (
-          // 删除是低频且不可逆的动作，红框按钮摆页头最显眼的位置会抢掉
-          // 「转销售订单」的注意力。改成无边框次级按钮，仍可点、仍二次确认。
-          <Button theme="borderless" type="danger" onClick={() => setDeleteVisible(true)}>
-            删除报价
-          </Button>
+        extra={(
+          // 页头右半原来是空的：信息行左对齐、删除按钮贴最右，中间一大片白。
+          // 把这一版的三个关键数字（总额 / 毛利率 / 明细条数）放在右侧当"摘要"，
+          // 视线从左边的身份信息自然滑到右边的钱，空白变成了信息位。
+          <div className="quote-head-aside">
+            <div className="quote-head-kpi">
+              <div className="qhk-item">
+                <span className="qhk-label">报价总额</span>
+                <span className="qhk-value">
+                  {formatMoney(version?.total_amount_exact ?? version?.total_amount ?? 0, 'CNY')}
+                </span>
+              </div>
+              <div className="qhk-item">
+                <span className="qhk-label">毛利率</span>
+                <span className="qhk-value">
+                  {version?.total_profit == null || !version?.subtotal_amount
+                    ? '-'
+                    : `${((version.total_profit / version.subtotal_amount) * 100).toFixed(2)}%`}
+                </span>
+              </div>
+              <div className="qhk-item">
+                <span className="qhk-label">明细</span>
+                <span className="qhk-value">{(detail?.items ?? []).length} 条</span>
+              </div>
+            </div>
+            {canManage && (
+              // 删除是低频且不可逆的动作，红框按钮摆页头最显眼的位置会抢掉
+              // 「转销售订单」的注意力。改成无边框次级按钮，仍可点、仍二次确认。
+              <Button theme="borderless" type="danger" onClick={() => setDeleteVisible(true)}>
+                删除报价
+              </Button>
+            )}
+          </div>
         )}
         tags={
           <>
@@ -1452,26 +1479,16 @@ export default function QuoteDetailPage() {
           数据来自版本详情接口附带的 `master_warnings`（后端按"明细引用的那一版
           快照里有没有名称/规格/单位"算出来的）。 */}
       {(detail.master_warnings ?? []).length > 0 && (
-        <div
-          style={{
-            marginBottom: 16,
-            padding: '10px 14px',
-            borderRadius: 6,
-            background: 'var(--crm-warning-bg, #FFF7E6)',
-            border: '1px solid var(--crm-warning-border, #FFD591)',
-            fontSize: 13,
-            lineHeight: 1.8,
-          }}
-        >
-          <div style={{ fontWeight: 600, marginBottom: 2 }}>
-            这几条明细的主数据还没确认，不能用来做正式报价
+        <div className="quote-master-warning">
+          <div className="qmw-main">
+            <div className="qmw-title">这几条明细的主数据还没确认，不能用来做正式报价</div>
+            {(detail.master_warnings ?? []).map((warning) => (
+              <div className="qmw-item" key={warning}>{warning}</div>
+            ))}
           </div>
-          {(detail.master_warnings ?? []).map((warning) => (
-            <div key={warning}>· {warning}</div>
-          ))}
-          {/* 刷新入口就放在这条提示里：用户看到"不能用做正式报价"时，
-              下一步动作就在眼前，不用去别处找。 */}
-          <div style={{ marginTop: 8 }}>
+          {/* 入口放到右侧垂直居中：原来按钮压在文案最后一行下面，整条看着又长又挤。
+              现在"说明在左、动作在右"，一眼知道下一步点哪儿。 */}
+          <div className="qmw-side">
             <Button type="primary" size="small" theme="outline" onClick={() => setMasterPreviewOpen(true)}>
               已确认？重新核价接入
             </Button>
@@ -1574,7 +1591,14 @@ export default function QuoteDetailPage() {
                   ? `${masterPreviewQuery.data.changed_count} 条明细会因刷新而改变`
                   : '没有需要变化的明细'}
               </span>
-              <span className="crm-mp-summary-hint">{masterPreviewQuery.data.message}</span>
+              {/* 后端 message 和上面这条胶囊是同一句话（"1 条明细会因刷新而改变"），
+                  两遍并排出现，看起来像重复渲染。只有 message 说了别的事才显示，
+                  口径不变、只是不重复。 */}
+              {masterPreviewQuery.data.message
+                && !masterPreviewQuery.data.message.includes('会因刷新而改变')
+                && (
+                  <span className="crm-mp-summary-hint">{masterPreviewQuery.data.message}</span>
+                )}
             </div>
             {!masterPreviewQuery.data.refreshable && (
               <div className="crm-mp-blocked">
