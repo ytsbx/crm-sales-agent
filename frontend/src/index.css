@@ -3104,7 +3104,9 @@ table:not(.semi-table) td {
   color: #3f6fd8;
 }
 .nav-group[data-group='1'] .nav-icon {
-  color: #17877a;
+  /* 深墨绿 (#17877a) 在浅色侧栏里偏重，像文档里的"已停用"标记；
+     换成偏浅的绿，仍然是绿系，但和其他两组一样轻。 */
+  color: #5cb87e;
 }
 .nav-group[data-group='2'] .nav-icon {
   color: #6f5bd0;
