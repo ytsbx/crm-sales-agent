@@ -120,9 +120,14 @@ export default function BizDocPanel({
     <div>
       <div
         style={{
+          // 紧凑空态（归档区那一列 310px 宽）：原来按钮和说明并排，
+          // 说明只剩 ~210px，一句话被拆成四行、还挤在按钮左边。
+          // 空态没有表格要并排，改成"说明在上、按钮在下"，
+          // 说明能用满整列宽（两行），和旁边「合同文档」那列的排法一致。
           display: 'flex',
-          alignItems: 'center',
-          gap: 12,
+          flexDirection: compactEmpty ? 'column' : 'row',
+          alignItems: compactEmpty ? 'flex-start' : 'center',
+          gap: compactEmpty ? 10 : 12,
           marginBottom: compactEmpty ? 0 : 10,
           fontSize: 12,
           color: 'var(--crm-text-2)',

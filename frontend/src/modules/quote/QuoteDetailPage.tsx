@@ -811,7 +811,10 @@ export default function QuoteDetailPage() {
     {
       title: '产品名称 / 需求',
       dataIndex: 'sku_code',
-      width: 190,
+      // 1024 下七列合计 870px，卡内只有 699px：表格只能横向滚动，
+      // 右端「审批 / 操作」被切成半个字。七列按"够用"重排为
+      // 145/60/105/85/110/85/100 = 690，1024 正好放下。
+      width: 145,
       // Semi 的单元格默认 `nowrap + ellipsis + overflow:hidden`：文案超过列宽就被裁成
       // 一个「…」，只在 render 里写 whiteSpace 不够（格子自己的 nowrap 仍会接管）。
       // 这一列是识别列，宁可折成两行也不能只剩省略号（2026-11-17 视觉审视 V2-06）。
@@ -849,7 +852,7 @@ export default function QuoteDetailPage() {
         </div>
       ),
     },
-    { title: '数量', dataIndex: 'quantity', width: 90, render: (v: number) => v.toLocaleString('zh-CN') },
+    { title: '数量', dataIndex: 'quantity', width: 60, render: (v: number) => v.toLocaleString('zh-CN') },
     {
       // 单价口径必须在列头写清"不含运费"：运费分离之后，客户与业务员都容易
       // 按含运费的旧口径理解，列头不写就会各理解一套。
@@ -860,7 +863,10 @@ export default function QuoteDetailPage() {
       // `pricing_basis`（版本上冻结的），不在前端猜。
       title: legacyBasis ? '实际报价（含运费）' : '实际报价（不含运费）',
       dataIndex: 'quoted_price',
-      width: 150,
+      // 这一列的表头最长（「实际报价（不含运费）」约 154px），但 1024 下七列
+      // 只剩 699px 可用。110 宽 + 表头允许折两行：口径不丢，列也不再被裁。
+      width: 105,
+      onHeaderCell: () => ({ style: { whiteSpace: 'normal', lineHeight: 1.35 } }),
       render: (value: number, record: QuoteItemRow) => {
         // 方案 §4.1"显示价格来源"：拟报价的依据（客户专属价/等级价/通用指导价/手工）
         const sourceLabel =
@@ -901,19 +907,21 @@ export default function QuoteDetailPage() {
     {
       title: '利润率',
       dataIndex: 'profit_rate_snapshot',
-      width: 100,
+      width: 85,
       render: (v: number | null) => v == null ? '-' : `${(v * 100).toFixed(2)}%`,
     },
     {
       title: '金额',
       dataIndex: 'amount',
-      width: 130,
+      width: 110,
       render: (v: number, record: QuoteItemRow) => formatMoney(record.amount_exact ?? v, 'CNY'),
     },
     {
       title: '审批',
       dataIndex: 'approval_required',
-      width: 90,
+      // 80 时「权限内」连状态点一起只剩约 62px，尾字被省略号吃掉；
+      // 85 才能在 1024 下完整显示，所以从首列让 5px 过来。
+      width: 85,
       render: (v: boolean) => (
         <StatusDot label={v ? '需审批' : '权限内'} tone={v ? 'orange' : 'green'} bold={v} />
       ),
@@ -923,7 +931,7 @@ export default function QuoteDetailPage() {
       // 明细行的「核算依据」触发器（展开/收起）挪到这一列：
       // Semi 自带的图标位只有十几像素宽，两个字塞不进去（2026-11-17 实拍被切成一条竖线）；
       // 放在操作列里和其他动作同高同字号，「改价 · 展开」一眼就能看到。
-      width: 120,
+      width: 100,
       render: (_: unknown, record: QuoteItemRow) => {
         const open = expandedItemIds.includes(record.id)
         const toggle = () =>
@@ -1366,7 +1374,15 @@ export default function QuoteDetailPage() {
           /* 这块原来是橙底 + 项目符号 + 内边距的整块警示，在页头占掉整整一行高。
              它本质是一句「为什么改不了」，压成一行灰字就够了 —— 放在工具栏下面，
              不抢「现在这一步」的注意力。 */
-          <BlockedHint compact reasons={[versionEditBlockedReason]} action="改这一版报价" />
+          <BlockedHint
+            compact
+            reasons={[versionEditBlockedReason]}
+            action="改这一版报价"
+            // 紧凑模式默认封顶 260px（那是给表单行、弹窗底部这种窄地方定的），
+            // 放在页头这条整宽的分隔线上就把一句话压成两行、右边空一大片。
+            // 这里不封顶：整宽一行说完。
+            style={{ maxWidth: 'none' }}
+          />
         )}
 
       {/*
