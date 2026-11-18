@@ -57,6 +57,9 @@ import {
 import { listContacts } from '../../shared/api/customer'
 import { useAuthStore } from '../../shared/store/auth'
 import { listCustomInquiries } from '../../shared/api/inquiry'
+import { listInquiryApprovals } from '../../shared/api/dingtalk'
+import AutoOaSync from '../../shared/components/AutoOaSync'
+import SyncOaButton from '../../shared/components/SyncOaButton'
 import { listSkusForPricing } from '../../shared/api/pricing'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { TagTone } from '../../shared/types'
@@ -415,6 +418,36 @@ export default function QuoteDetailPage() {
     value: contact.name,
     label: [contact.name, contact.title].filter(Boolean).join(' · '),
   }))
+
+  /**
+   * 关联询价的同序 OA 审批。
+   *
+   * 定制明细上记着 `inquiry_id`，那层「核价 / 报价复核」是在询价单上走的。
+   * 报价页只说自己这版"还没批"，用户会以为流程卡死；把询价那层的轮次和状态
+   * 摆出来，才知道到底堵在哪一层。只读展示 + 各自一个「立即同步」，
+   * 判断权仍在后端，前端不替任何人放行。
+   */
+  const linkedInquiries = (() => {
+    const seen = new Map<number, string | null>()
+    for (const item of detail?.items ?? []) {
+      if (item.inquiry_id) seen.set(item.inquiry_id, item.inquiry_no ?? null)
+    }
+    return Array.from(seen, ([id, inquiryNo]) => ({ id, inquiryNo }))
+  })()
+  const linkedInquiryKey = linkedInquiries.map((row) => row.id).join(',')
+  const inquiryApprovalsQuery = useQuery({
+    queryKey: ['quote-linked-inquiry-approvals', linkedInquiryKey],
+    queryFn: async () => Promise.all(linkedInquiries.map(async (row) => ({
+      inquiry: row,
+      instances: await listInquiryApprovals(row.id),
+    }))),
+    enabled: linkedInquiries.length > 0,
+  })
+  const inquiryApprovalRows = (inquiryApprovalsQuery.data ?? []).map(({ inquiry, instances }) => {
+    // 同一条需求可能被驳回重提多次：最新一轮先看轮次号，再看记录 id
+    const latest = [...instances].sort((a, b) => (b.submit_round ?? 0) - (a.submit_round ?? 0) || b.id - a.id)[0]
+    return { key: inquiry.id, inquiry, latest }
+  })
 
   const isCurrentVersion = Boolean(version && quote?.current_version_id === version.id)
   const editable = isCurrentVersion && version?.approval_status === 'not_submitted' && !version?.sent_at
@@ -2093,6 +2126,67 @@ export default function QuoteDetailPage() {
             ]}
             dataSource={detail.approval.records}
             rowKey="id"
+            pagination={false}
+          />
+        </SectionCard>
+      )}
+
+      {/* 关联询价的审批：只有明细里带 inquiry_id 才出现，纯现货报价看不到这张卡 */}
+      {linkedInquiries.length > 0 && (
+        <SectionCard title="关联询价的审批进度" style={{ marginTop: 16 }}>
+          <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 8 }}>
+            「核价 / 报价复核」在同序 OA 的询价单上办理；这一层没通过时，正式对外发送仍会被拦。
+          </div>
+          {inquiryApprovalsQuery.isError && (
+            <div className="inline-note" role="status">
+              暂时无法确认关联询价的审批进度；这不影响保存草稿，请稍后重试。
+            </div>
+          )}
+          <Table
+            columns={[
+              {
+                title: '需求编号',
+                dataIndex: 'inquiryNo',
+                width: 150,
+                render: (_: unknown, row: (typeof inquiryApprovalRows)[number]) => row.inquiry.inquiryNo ?? '-',
+              },
+              {
+                title: '轮次',
+                width: 80,
+                render: (_: unknown, row: (typeof inquiryApprovalRows)[number]) =>
+                  row.latest ? `第 ${row.latest.submit_round ?? 1} 轮` : '-',
+              },
+              {
+                title: '状态',
+                width: 130,
+                render: (_: unknown, row: (typeof inquiryApprovalRows)[number]) => {
+                  if (!row.latest) return <Tag color="grey" type="light">未发起</Tag>
+                  const tone = row.latest.status === 'approved' ? 'green'
+                    : row.latest.status === 'pending' ? 'orange'
+                      : row.latest.status === 'rejected' ? 'red' : 'grey'
+                  return <Tag color={tone} type="light">{row.latest.status_label}</Tag>
+                },
+              },
+              {
+                title: '最近同步',
+                width: 170,
+                render: (_: unknown, row: (typeof inquiryApprovalRows)[number]) =>
+                  row.latest?.synced_at ? formatBeijingTime(row.latest.synced_at) : '-',
+              },
+              {
+                title: '操作',
+                width: 160,
+                render: (_: unknown, row: (typeof inquiryApprovalRows)[number]) => row.latest ? (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                    {/* 待审时打开页面就先对一次，之后每 10 秒对一次 —— 别让用户看见过期的"待审批" */}
+                    <AutoOaSync row={row.latest} invalidateKeys={[['quote-linked-inquiry-approvals', linkedInquiryKey], ['quote-detail', quoteId]]} />
+                    <SyncOaButton oaId={row.latest.id} invalidateKeys={[['quote-linked-inquiry-approvals', linkedInquiryKey], ['quote-detail', quoteId]]} />
+                  </span>
+                ) : '—',
+              },
+            ]}
+            dataSource={inquiryApprovalRows}
+            rowKey="key"
             pagination={false}
           />
         </SectionCard>
