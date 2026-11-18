@@ -350,11 +350,18 @@ export default function WeComPage() {
                   onClick={() => importPreviewMutation.mutate()}>导入客户中心</Button>
               )}
               <Button onClick={() => setTransferVisible(true)}>离职继承</Button>
-              {SYNC_BUTTONS.map((item) => (
-                <Popconfirm key={item.key} title={`确认${item.label}？`} content="将读取企业微信数据并更新本地同步记录。" disabled={syncMutation.isPending} onConfirm={() => syncMutation.mutate(item.run)}>
-                  <Button loading={syncMutation.isPending}>{item.label}</Button>
-                </Popconfirm>
-              ))}
+              {/* 四颗按钮共用一个 mutation，所以不能都挂 syncMutation.isPending：
+                  那样点「同步部门」时四颗一起转圈，像四个任务同时开跑
+                  （主人 2026-11-18："点一个所有都转圈圈什么意思"）。
+                  只有 variables 等于自己 run 的那颗转圈；其余置灰防重复点。 */}
+              {SYNC_BUTTONS.map((item) => {
+                const running = syncMutation.isPending && syncMutation.variables === item.run
+                return (
+                  <Popconfirm key={item.key} title={`确认${item.label}？`} content="将读取企业微信数据并更新本地同步记录。" disabled={syncMutation.isPending} onConfirm={() => syncMutation.mutate(item.run)}>
+                    <Button loading={running} disabled={syncMutation.isPending && !running}>{item.label}</Button>
+                  </Popconfirm>
+                )
+              })}
             </>
           )
         }
