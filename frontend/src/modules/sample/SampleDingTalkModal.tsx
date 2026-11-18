@@ -1,4 +1,5 @@
 import OaFormSnapshot from '../../shared/components/OaFormSnapshot'
+import AutoOaSync from '../../shared/components/AutoOaSync'
 import SyncOaButton from '../../shared/components/SyncOaButton'
 import type { ReactNode } from 'react'
 import { useEffect, useState } from 'react'
@@ -231,6 +232,10 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
       <div style={{fontWeight:600}}>同序 OA 审批过程与结果</div>
       {query.data?.records.map(row=><div key={row.id} style={{border:'1px solid var(--crm-border)',padding:12}}>
         <div>第{row.submit_round??1}轮 · {row.status_label} · 最近同步：{time(row.synced_at)}</div>
+        {/* 打开这个弹窗就先向同序 OA 对一次（仍在审批中再每 10 秒对一次）。
+            原来只靠 5 秒轮询 CRM 快照 + 手动「立即同步」，OA 批完了这边还挂着"待审"，
+            用户以为卡住了。AutoOaSync 自己会判 provider/instance/status，非自建 OA 不触发。 */}
+        <AutoOaSync row={row} invalidateKeys={[['sample-dingtalk',sampleId],['samples'],['sample',sampleId]]} />
         {row.instance_id&&<SyncOaButton oaId={row.id} invalidateKeys={[[ 'sample-dingtalk',sampleId ],['samples'],['sample',sampleId]]}/>}
         {row.sync_notice&&<div>{row.sync_notice}</div>}
         <OaFormSnapshot result={row.result}/>
