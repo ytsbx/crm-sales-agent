@@ -21,7 +21,8 @@ export default function EChart({
   ariaLabel,
 }: {
   option: EChartsOption
-  height?: number
+  /** 像素值或百分比：放在 flex 里"撑满剩余高度"时传 '100%' */
+  height?: number | string
   ariaLabel: string
 }) {
   const boxRef = useRef<HTMLDivElement | null>(null)

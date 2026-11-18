@@ -76,7 +76,10 @@ function TrendChart({ data }: { data: TrendRow[] }) {
   }
   return (
     <EChart
-      height={240}
+      // 卡片会被同一行的「阶段分布」拉着等高，固定 240 就会在下面留一大块白。
+      // 这里交给父级的 flex 决定：图表吃掉剩余高度，图会跟着变高，
+      // 而不是留一块空白（2026-11-18）。
+      height="100%"
       ariaLabel="近 6 个月订单金额与回款金额趋势图"
       option={comboBarLineOption({
         categories: data.map((row) => row.label),
@@ -446,14 +449,16 @@ export default function WorkbenchPage() {
           </div>
         </SectionCard>
 
-        <SectionCard>
+        <SectionCard className="card-fill">
           {/* 标题右边原来手写了一份图例（■ 订单金额 / ● 回款金额）——那是给
               老的手写 SVG 补的（它自己画不出图例）。换成 ECharts 之后图例由图表
               自己出、还能点选隐藏，留着这份就成了两行重复的图例。 */}
           <div style={{ marginBottom: 8 }}>
             <span className="card-title">订单与回款趋势</span>
           </div>
-          <TrendChart data={trend} />
+          <div className="card-fill-body">
+            <TrendChart data={trend} />
+          </div>
           <div
             style={{
               display: 'flex',
@@ -478,7 +483,9 @@ export default function WorkbenchPage() {
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
             <span className="card-title">团队与业务动态</span>
           </div>
-          <div style={{ display: 'grid', gap: 12 }}>
+          {/* 动态卡在两个断点下会横跨整行，一行一条会剩半张白纸。
+              网格按 280px 最小列宽自动分列：宽时三列、三栏布局时一列。 */}
+          <div className="activity-list">
             {activities.map((row) => (
               <div key={row.id} style={{ display: 'flex', gap: 10 }}>
                 {/* 头像方块去掉了（2026-11-17）：26px 灰色小方块里放操作人姓名的第一个字，

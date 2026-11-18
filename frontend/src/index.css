@@ -2390,6 +2390,28 @@ table:not(.semi-table) td {
   grid-template-columns: 1.05fr 1.35fr 0.95fr;
   gap: 16px;
 }
+
+/* 同一行的卡片会被最高的一张拉着等高（grid 默认 stretch）。
+   内容比邻居矮的那张就会在底部留一大块白 —— 阶段分布 9 行、趋势图固定 240px，
+   差 100px 就正好是一块"什么都没画"的区域。
+   给这类卡加 card-fill：卡片改成纵向 flex，中间那层 .card-fill-body 吃掉剩余高度，
+   图表跟着变高，而不是留白。 */
+.card-block.card-fill {
+  display: flex;
+  flex-direction: column;
+}
+.activity-list {
+  display: grid;
+  gap: 12px 24px;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+
+.card-block.card-fill > .card-fill-body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 240px;
+}
 /* 三栏同理：内容区塞不下三栏时先降到两栏，再降到一栏 */
 @media (max-width: 1200px) {
   .wb-tri-grid {
