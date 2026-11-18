@@ -3159,44 +3159,51 @@ table:not(.semi-table) td {
 .oa-inquiry-card {
   padding: 26px 28px;
 }
+/* 询价审批行：用"标签 + 值"的等宽栏把整行铺开。
+   之前要么贴边、要么中间空一长条 —— 根因都是"内容少却要占满一条"。
+   分栏后每一栏都有标签撑住，左右两端不再是孤零零的一个词。 */
 .oa-inquiry-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  /* 顶部再空一点：说明文字与第一行之间不能贴在一起 */
-  margin-top: 4px;
+  margin-top: 6px;
 }
 .oa-inquiry-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(140px, 1.1fr) minmax(96px, 0.7fr) minmax(80px, 0.6fr) minmax(150px, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-  /* 一整条浅底 + 自身留白：内容离卡片边再退 16px，不再"顶格" */
-  padding: 14px 18px;
+  column-gap: 24px;
+  padding: 12px 20px;
   border-radius: 8px;
   background: var(--crm-surface-low);
 }
-.oa-inquiry-main {
+.oa-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   min-width: 0;
 }
-.oa-inquiry-title {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.oa-inquiry-no {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--crm-text);
-}
-.oa-inquiry-meta {
-  margin-top: 4px;
-  font-size: 12px;
+.oa-cell-label {
+  font-size: 11px;
+  line-height: 1;
   color: var(--crm-text-3);
 }
-.oa-inquiry-side {
+.oa-cell-value {
+  font-size: 13px;
+  color: var(--crm-text);
+}
+.oa-inquiry-no {
+  font-weight: 600;
+}
+/* Semi 的 Tag 在 flex 列里会被拉成整栏宽，绿的变成一条长条 —— 只按文字宽 */
+.oa-cell > .semi-tag {
+  align-self: flex-start;
+}
+.oa-inquiry-action {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  flex-shrink: 0;
+  justify-self: end;
 }
+
+

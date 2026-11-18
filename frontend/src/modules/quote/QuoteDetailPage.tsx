@@ -2148,29 +2148,36 @@ export default function QuoteDetailPage() {
           <div className="oa-inquiry-list">
             {inquiryApprovalRows.map((row) => (
               <div className="oa-inquiry-row" key={row.key}>
-                <div className="oa-inquiry-main">
-                  <div className="oa-inquiry-title">
-                    <span className="oa-inquiry-no">{row.inquiry.inquiryNo ?? '未编号需求'}</span>
-                    {row.latest ? (
-                      <Tag
-                        color={row.latest.status === 'approved' ? 'green'
-                          : row.latest.status === 'pending' ? 'orange'
-                            : row.latest.status === 'rejected' ? 'red' : 'grey'}
-                        type="light"
-                      >
-                        {row.latest.status_label}
-                      </Tag>
-                    ) : (
-                      <Tag color="grey" type="light">未发起</Tag>
-                    )}
-                  </div>
-                  <div className="oa-inquiry-meta">
-                    {row.latest
-                      ? `第 ${row.latest.submit_round ?? 1} 轮 · 最近同步 ${row.latest.synced_at ? formatBeijingTime(row.latest.synced_at) : '从未同步'}`
-                      : '该需求还没有发起同序 OA 审批'}
-                  </div>
+                <div className="oa-cell">
+                  <span className="oa-cell-label">需求编号</span>
+                  <span className="oa-cell-value oa-inquiry-no">{row.inquiry.inquiryNo ?? '未编号需求'}</span>
                 </div>
-                <div className="oa-inquiry-side">
+                <div className="oa-cell">
+                  <span className="oa-cell-label">审批状态</span>
+                  {row.latest ? (
+                    <Tag
+                      color={row.latest.status === 'approved' ? 'green'
+                        : row.latest.status === 'pending' ? 'orange'
+                          : row.latest.status === 'rejected' ? 'red' : 'grey'}
+                      type="light"
+                    >
+                      {row.latest.status_label}
+                    </Tag>
+                  ) : (
+                    <Tag color="grey" type="light">未发起</Tag>
+                  )}
+                </div>
+                <div className="oa-cell">
+                  <span className="oa-cell-label">轮次</span>
+                  <span className="oa-cell-value">{row.latest ? `第 ${row.latest.submit_round ?? 1} 轮` : '—'}</span>
+                </div>
+                <div className="oa-cell">
+                  <span className="oa-cell-label">最近同步</span>
+                  <span className="oa-cell-value">
+                    {row.latest?.synced_at ? formatBeijingTime(row.latest.synced_at) : '从未同步'}
+                  </span>
+                </div>
+                <div className="oa-inquiry-action">
                   {row.latest && (
                     <>
                       {/* 待审时打开页面就先对一次，之后每 10 秒对一次 —— 别让用户看见过期的"待审批" */}
