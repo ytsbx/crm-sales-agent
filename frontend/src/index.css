@@ -2430,7 +2430,12 @@ table:not(.semi-table) td {
   gap: 24px;
 }
 .detail-split > .split-main {
-  flex: 1 1 360px;
+  /* 基准从 360 提到 460（2026-11-19）：客户详情「联系人」tab 的左栏是一张
+     五列表（姓名/职位/手机/邮箱/操作），并排时左栏被压到 396，表里 422 宽的
+     列装不下，底部冒出一条横向滚动条。460 是这张表不横滚的最小值；
+     1024 视口内容区约 700，460 + 280 + 24 = 764 排不下 → 右栏自动落到下方通栏，
+     1440 照旧并排。 */
+  flex: 1 1 460px;
   min-width: 0;
 }
 .detail-split > .split-side {
@@ -4557,4 +4562,33 @@ table:not(.semi-table) td.cell-right {
 .cust-pano-tile.tone-success .cust-pano-value,
 .cust-pano-tile.tone-teal .cust-pano-value {
   color: color-mix(in srgb, var(--tile-accent) 78%, #181c23);
+}
+
+
+/* ============================================================
+   联系方式打码：默认只露前 3 后 4，点一下展开（2026-11-19）
+   ------------------------------------------------------------
+   打码态用正文次级色、字距略松，看上去是"遮住了"而不是"少了几位"；
+   悬停才染主色 + 极淡底，暗示这是可以点开的，不点也不抢注意。
+   展开后回到正文色，再点一下收回原样。
+   ============================================================ */
+.masked-contact {
+  cursor: pointer;
+  color: var(--crm-text-2);
+  border-radius: 3px;
+  padding: 0 2px;
+  letter-spacing: 0.4px;
+  transition: color var(--crm-dur-fast) var(--crm-ease),
+    background var(--crm-dur-fast) var(--crm-ease);
+}
+
+.masked-contact:hover {
+  color: var(--crm-primary);
+  background: var(--crm-primary-soft);
+}
+
+.masked-contact.is-open {
+  color: var(--crm-text-1);
+  letter-spacing: 0;
+  background: transparent;
 }

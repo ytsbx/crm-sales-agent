@@ -22,6 +22,7 @@ import {
   type TrendRow,
 } from '../../shared/api/analytics'
 import { getFunnel, listOpportunities } from '../../shared/api/opportunity'
+import MaskedContact from '../../shared/components/MaskedContact'
 import PageHeader from '../../shared/components/PageHeader'
 import GroupHead from '../../shared/components/SectionGroupHead'
 import KpiStrip, { type KpiItem } from '../../shared/components/KpiStrip'
@@ -760,9 +761,14 @@ export default function WorkbenchPage() {
                 </div>
                 <div style={{ marginTop: 4, fontSize: 12, color: 'var(--crm-text-2)' }}>
                   负责人：{row.owner_name ?? '（无）'}
-                  {row.contact_name
-                    ? ` · 主联系人：${row.contact_name}${row.contact_phone ? `（${row.contact_phone}）` : ''}`
-                    : ''}
+                  {/* 主联系人电话也要打码：这行在"待跟进"卡片里，一屏能看到几十条 */}
+                  {row.contact_name ? ' · 主联系人：' : ''}
+                  {row.contact_name}
+                  {row.contact_name && row.contact_phone ? (
+                    <>
+                      （<MaskedContact value={row.contact_phone} />）
+                    </>
+                  ) : null}
                   {row.next_followup_at
                     ? ` · 约定下次跟进：${formatBeijingDate(row.next_followup_at)}`
                     : ''}

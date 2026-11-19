@@ -21,6 +21,7 @@ import { emptyText } from '../../shared/hooks/emptyText'
 import { api } from '../../shared/api/client'
 import { listSamples, restoreSample, type SampleRequestRow } from '../../shared/api/sample'
 import type { PageResult } from '../../shared/types'
+import MaskedContact from '../../shared/components/MaskedContact'
 import FormLabel from '../../shared/components/FormLabel'
 import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
@@ -178,7 +179,7 @@ function LeadsPanel() {
     ...(compact
       ? []
       : [{ title: '联系人', dataIndex: 'contact_name', render: (v: string | null) => v ?? '-' }]),
-    { title: '手机', dataIndex: 'mobile', width: compact ? 112 : undefined, render: (v: string | null) => v ?? '-' },
+    { title: '手机', dataIndex: 'mobile', width: compact ? 112 : undefined, render: (v: string | null) => <MaskedContact value={v} /> },
     { title: '负责人', dataIndex: 'owner_name', width: compact ? 84 : 110, render: (v: string | null) => v ?? '未分配' },
     {
       title: '原状态',

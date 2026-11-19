@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Button, Tag, Toast } from '@douyinfe/semi-ui'
 
+import MaskedContact from '../../shared/components/MaskedContact'
 import { listContacts } from '../../shared/api/customer'
 import type { Contact } from '../../shared/types'
 
@@ -170,7 +171,8 @@ export default function DecisionMakerCard({
                 {[primary.title, primary.department].filter(Boolean).join(' · ') || '未填职位'}
               </div>
               <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginTop: 4 }}>
-                {primary.email ?? '无邮箱'}　{primary.mobile ?? primary.phone ?? '无电话'}
+                <MaskedContact value={primary.email} kind="email" empty="无邮箱" />　
+                <MaskedContact value={primary.mobile ?? primary.phone} empty="无电话" />
               </div>
             </div>
           </div>
@@ -217,18 +219,42 @@ export default function DecisionMakerCard({
               <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginBottom: 8 }}>
                 决策链其他联系人
               </div>
-              <div style={{ display: 'grid', gap: 8 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 8, minWidth: 0 }}>
                 {contacts.slice(1).map((contact, index) => (
                   <div
                     key={contact.id}
-                    style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}
+                    /* minWidth:0 + overflow:hidden：不加这两条，名字的 nowrap 会一路撑出去，
+                       整行冲出右栏、连页面都跟着横向溢出（2026-11-19 第一版实测）。 */
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      fontSize: 13,
+                      minWidth: 0,
+                      overflow: 'hidden',
+                    }}
                   >
-                    <Tag color={toneFor(index)} size="small">
+                    {/* 右栏只有 340 宽，三个东西并排时原来 Tag 被压成「技…」、
+                        名字被挤成两行（2026-11-19 实拍）。
+                        现在 Tag 和号码都不让位，中间的名字自己截断 ——
+                        职位和号码都是"看一眼就要用的"，名字截了还能悬停看全。 */}
+                    <Tag color={toneFor(index)} size="small" style={{ flexShrink: 0 }}>
                       {contact.title ?? contact.department ?? '联系人'}
                     </Tag>
-                    <span>{contact.name}</span>
-                    <span style={{ color: 'var(--crm-text-3)', fontSize: 12, marginLeft: 'auto' }}>
-                      {contact.mobile ?? contact.email ?? '-'}
+                    <span
+                      title={contact.name}
+                      style={{
+                        minWidth: 0,
+                        flex: 1,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {contact.name}
+                    </span>
+                    <span style={{ color: 'var(--crm-text-3)', fontSize: 12, flexShrink: 0 }}>
+                      <MaskedContact value={contact.mobile ?? contact.email} kind={contact.mobile ? 'phone' : 'email'} />
                     </span>
                   </div>
                 ))}

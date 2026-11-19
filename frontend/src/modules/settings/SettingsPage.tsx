@@ -27,6 +27,7 @@ import {
 } from '../../shared/api/system'
 import { createTag, deleteTag, listTags, updateTag, type TagRow } from '../../shared/api/customer'
 import { syncDingTalkUsers, type DingTalkSyncResult, type DingTalkUnmatched } from '../../shared/api/dingtalk'
+import MaskedContact from '../../shared/components/MaskedContact'
 import PageHeader from '../../shared/components/PageHeader'
 import PermissionPicker from '../../shared/components/PermissionPicker'
 import {
@@ -763,7 +764,7 @@ export default function SettingsPage() {
           </span>
         ),
     },
-    { title: '手机', dataIndex: 'mobile', width: 120, render: (v: string | null) => v ?? '-' },
+    { title: '手机', dataIndex: 'mobile', width: 120, render: (v: string | null) => <MaskedContact value={v} /> },
     {
       // 钉钉：**有值才能用钉钉登录**。列上只显示"绑没绑"，编号放进 title 里
       // （管理员平时不需要看那串号，要排查时鼠标一停就能看见）。
@@ -2127,7 +2128,7 @@ export default function SettingsPage() {
                 <Table<DingTalkUnmatched>
                   columns={[
                     { title: '姓名', dataIndex: 'name', width: 120 },
-                    { title: '手机', dataIndex: 'mobile', width: 150 },
+                    { title: '手机', dataIndex: 'mobile', width: 150, render: (v: string | null) => <MaskedContact value={v} /> },
                     { title: '原因', dataIndex: 'reason_label' },
                   ]}
                   dataSource={dtSyncResult?.unmatched ?? []}

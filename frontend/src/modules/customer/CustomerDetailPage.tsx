@@ -40,6 +40,7 @@ import { usePermissions } from '../../shared/hooks/permissions'
 import { useTabLabel } from '../../shared/hooks/useTabLabel'
 import { useAuthStore } from '../../shared/store/auth'
 import type { Contact } from '../../shared/types'
+import MaskedContact from '../../shared/components/MaskedContact'
 import DetailHeader from '../../shared/components/DetailHeader'
 import SectionCard from '../../shared/components/SectionCard'
 import ContractDocsPanel from '../../shared/components/ContractDocsPanel'
@@ -465,11 +466,17 @@ export default function CustomerDetailPage() {
     (can('customer:delete_own') &&
       customer.owner_id != null &&
       customer.owner_id === currentUser?.id)
+  /* 联系人表在「左表 + 右决策人卡」的窄容器里（1440 时左栏约 830），
+     2026-11-19 实拍底部多出一条横向滚动条：列宽是写的，但 auto 布局下
+     邮箱那列按内容自然宽度撑开、外加单元格边距，五列合起来超了容器。
+     改成 fixed 布局（按写的宽度分配，不再让内容反推），并把手机列从 150
+     收到 132 —— 打码后 `138****3633` 只需要 88，展开的 11 位也只要 88。
+     1024 再隐掉「职位」：职位在右边决策人卡里本来就写着，不必占一列位置。 */
   const contactColumns = [
     {
       title: '姓名',
       dataIndex: 'name',
-      width: 140,
+      width: 150,
       render: (v: string, row: Contact) => (
         <>
           {v}
@@ -478,22 +485,27 @@ export default function CustomerDetailPage() {
         </>
       ),
     },
-    { title: '职位', dataIndex: 'title', width: 130, render: (v: string | null) => v ?? '-' },
+    ...(narrowScreen
+      ? []
+      : [{ title: '职位', dataIndex: 'title', width: 112, render: (v: string | null) => v ?? '-' }]),
     // 脱敏时**照原样显示**（星号）并给一句话，别让用户以为库里存的就是星号
     {
       title: '手机',
       dataIndex: 'mobile',
-      width: 150,
-      render: (v: string | null, row: Contact) => (
-        <span title={row.contact_masked ? '你对这条联系人的联系方式没有完整查看权限' : undefined}>
-          {v ?? '-'}
-        </span>
-      ),
+      width: 132,
+      render: (v: string | null, row: Contact) => <MaskedContact value={v} masked={row.contact_masked} />,
     },
-    { title: '邮箱', dataIndex: 'email', render: (v: string | null) => v ?? '-' },
+    {
+      title: '邮箱',
+      dataIndex: 'email',
+      render: (v: string | null, row: Contact) => <MaskedContact value={v} kind="email" masked={row.contact_masked} />,
+    },
     {
       title: '操作',
-      width: 170,
+      /* 桌面 196：主联系人那行有「设为主联系人 / 编辑 / 删除」三个链接并排，
+         实测 84 + 26 + 26 + 两处 10 的间距 = 156，加左右单元格边距 32 → 188，
+         留 8 给"主"标签行；窄屏只有「编辑 / 删除」，收到 140。 */
+      width: narrowScreen ? 140 : 196,
       render: (_: unknown, row: Contact) =>
         canEditContact ? (
           <span style={{ display: 'inline-flex', gap: 10, alignItems: 'center' }}>
@@ -921,6 +933,9 @@ export default function CustomerDetailPage() {
                   loading={contactsQuery.isLoading}
                   rowKey="id"
                   pagination={false}
+                  /* fixed + 上面那组写死的列宽：列不会再被长邮箱内容撑开。
+                     邮箱列没给固定宽，fixed 布局下它拿剩下的空间，长邮箱这里截断。 */
+                  tableLayout="fixed"
                   empty="这家客户还没有登记联系人（加的是对方公司的人）"
                   // 行上带出联系人 id：UI 取证脚本要能**精确定位某一行**去点
                   // 编辑/删除（按"第一条"或按姓名找会误伤别人的数据，实测踩过）
@@ -1336,7 +1351,14 @@ export default function CustomerDetailPage() {
                       {/* 脱敏时不回显号码：只保留「手机号一致」这类证据。
                           知道"为什么判它疑似"是有用的，看到号码本身不是
                           （2026-10-14 审查修）。 */}
-                      {match.mobile && !match.contact_masked ? ` · ${match.mobile}` : ''}
+                      {match.mobile && !match.contact_masked ? (
+                        <>
+                          {' · '}
+                          <MaskedContact value={match.mobile} />
+                        </>
+                      ) : (
+                        ''
+                      )}
                       {match.reasons.length ? `（${match.reasons.join('、')}）` : ''}
                     </div>
                   ))}

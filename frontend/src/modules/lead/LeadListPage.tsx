@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { parseOptionalNumber } from '../../shared/number-input'
+import MaskedContact from '../../shared/components/MaskedContact'
 import PageHeader from '../../shared/components/PageHeader'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -275,7 +276,7 @@ export default function LeadListPage() {
     // 手机号 11 位：130（2026-11-19 复测）—— 118 时公司列刚加到 150、操作列加到 240，
     // 整表被压，11 位数字又截成「138269363…」。130 减掉单元格左右 32 的内边距，
     // 剩 98 刚好装下 11 位等宽数字。
-    { title: '手机', dataIndex: 'mobile', width: compact ? 126 : 130, render: (v: string | null) => v ?? '-' },
+    { title: '手机', dataIndex: 'mobile', width: compact ? 126 : 130, render: (v: string | null) => <MaskedContact value={v} /> },
     /* 「来源」和「地区」各占一列、内容都只有两三个字。并成一列「来源 · 地区」：
        两列 190 变一列 150，信息一点没少，正好把表格从 1150 收回到内容区里。 */
     {
