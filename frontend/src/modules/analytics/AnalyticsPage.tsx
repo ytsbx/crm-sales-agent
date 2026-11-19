@@ -118,13 +118,12 @@ function Donut({
   if (!data.length) return <NoData />
   const total = data.reduce((sum, item) => sum + item.value, 0)
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', minWidth: 0 }}>
-      {/* 环形图原来是写死的 146：四列卡只有 278 宽、卡内只剩 238，
-          「146 + 间距 + 图例最小宽」正好撑破卡片，把整页顶出一条横向滚动条。
-          改成跟着卡片宽度走（最窄 96、最宽 146），四列卡里自动收到 105。 */}
-      <div style={{ width: '46%', minWidth: 96, maxWidth: 146, flex: 'none' }}>
+    /* 环图与图例左右并排：这个区改成 2 列后卡宽 570，图例有 400 可用，
+       名字 / 数量 / 占比三样都放得下，不需要再堆成上下两块（那会把卡撑高）。 */
+    <div style={{ display: 'flex', alignItems: 'center', gap: 18, minWidth: 0 }}>
+      <div style={{ width: 150, flex: 'none' }}>
         <EChart
-          height={146}
+          height={150}
           ariaLabel={`占比环形图，共 ${format(total)}`}
           option={donutChartOption({
             data,
@@ -682,7 +681,11 @@ export default function AnalyticsPage() {
 
       {/* ── ② 占比：看"各占几成"，环形比横条直观 ───────────────────────── */}
       <GroupHead index="03" title="占比" note="看各占几成，环形比横条直观" />
-      <Row columns={4}>
+      {/* 2×2 而不是一行四张（2026-11-19）：四列时卡内只有 232 宽，
+          环图吃掉 107 后图例只剩 115，名字全被省略号截成「官...」「电...」；
+          而"回款方式分布"只有两项，卡被行高拉到 380、下面空两百多像素。
+          两列后卡宽 570，环图与图例左右并排各有余量，四张卡也紧凑成两行。 */}
+      <Row columns={2}>
         <Card title="客户来源分布">
           <Donut data={customer?.by_source ?? []} format={asCount('家')} centerLabel="家客户" />
         </Card>

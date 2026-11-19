@@ -380,7 +380,9 @@ export function donutChartOption({
     series: [
       {
         type: 'pie',
-        radius: ['62%', '88%'],
+        /* 内径 62% → 66%：环再细一点，中间放 `¥11,080` 这种 7 个字时
+           数字两侧才不至于贴到环内壁（2026-11-19 实拍贴边）。 */
+        radius: ['66%', '88%'],
         center: ['50%', '50%'],
         avoidLabelOverlap: true,
         label: { show: false },
