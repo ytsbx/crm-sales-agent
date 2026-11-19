@@ -269,8 +269,10 @@ export default function TaskListPage() {
       render: (value: string | null, record: Task) =>
         value ? (
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
-            {/* 精确到分钟就够：任务截止时间带秒既没用、又把这一列撑得很长 */}
-            <span style={{ color: record.overdue ? 'var(--crm-error)' : undefined }}>
+            {/* 精确到分钟就够：任务截止时间带秒既没用、又把这一列撑得很长。
+                逾期时**只有**后面的红点标「逾期」，日期本身不再染红 ——
+                一屏十条里九条逾期时，整列红字会连成一片红墙，反而看不出最急的是哪条。 */}
+            <span>
               {/* 窄屏省掉年份：94px 只放得下「11-20 15:21」，逾期标签另起一行 */}
               {compact ? formatBeijingTime(value).slice(5, 16) : formatBeijingTime(value).slice(0, 16)}
             </span>
