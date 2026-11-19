@@ -1201,7 +1201,8 @@ export default function SettingsPage() {
           </span>
         ),
     },
-    { title: '手机', dataIndex: 'mobile', width: 120, render: (v: string | null) => <MaskedContact value={v} /> },
+    // 「手机」列也摘掉了（2026-11-19 主人：「手机邮箱是根本就不用填呀」）。
+    // 这套系统是账号密码登录，不发短信、不找回密码，手机号对管理员没有读的价值。
     // 「同步账号」（旧「钉钉」）这一列摘掉了（2026-11-19）。
     // 主人问「同步账号是什么意思，同序 oa 那个吗」—— 它不是同序 OA 的模板编号，
     // 而是钉钉 / 企业微信里的 userid（决定这个人能不能扫码登录）。但这套登录
@@ -2298,26 +2299,9 @@ export default function SettingsPage() {
               </div>
             )}
           </div>
-          <div style={{ display: 'flex', gap: 12 }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>
-                手机<span style={{ color: 'var(--crm-text-4, #c9cdd4)' }}> · 选填</span>
-              </div>
-              <Input
-                value={userForm.mobile}
-                onChange={(value) => setUserForm({ ...userForm, mobile: value })}
-              />
-            </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>
-                邮箱<span style={{ color: 'var(--crm-text-4, #c9cdd4)' }}> · 选填</span>
-              </div>
-              <Input
-                value={userForm.email}
-                onChange={(value) => setUserForm({ ...userForm, email: value })}
-              />
-            </div>
-          </div>
+          {/* 手机 / 邮箱两格删了（2026-11-19）：登录走账号密码，不发短信、不发邮件，
+              填了也没人看。userForm 里这两个字段留着，编辑时按原值回传，
+              不会把库里已有的手机号顺手清空。 */}
           <div>
             <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>部门</div>
             <Select
