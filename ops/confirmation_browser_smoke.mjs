@@ -311,7 +311,9 @@ try {
   assert.equal(restored,1)
   console.log('BROWSER_RESTORE_CANCEL_NO_WRITE_CONFIRM_ONCE=true')
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/tasks?mine=false&status=active`})
-  const finishLink=`Array.from(document.querySelectorAll('.semi-table-tbody a')).find(a=>a.innerText.trim()==='完成')`
+  // 8b2a1ce3 把行内动作从 <a> 升成 Button（完成=主按钮）——验的是确认纪律
+  // 不是元素形态，a/button 兼收，产品再换壳也不翻脸。
+  const finishLink=`Array.from(document.querySelectorAll('.semi-table-tbody a, .semi-table-tbody button')).find(a=>a.innerText.trim()==='完成')`
   await waitFor(finishLink)
   assert.equal(await evaluate(`Array.from(document.querySelectorAll('.semi-table-tbody a')).find(a=>a.innerText.trim()==='隔离任务客户')?.getAttribute('href')`),'/customers/2')
   assert.equal(await evaluate(`document.querySelector('.semi-table-tbody').innerText.includes('客户编号')`),false)
@@ -384,7 +386,7 @@ try {
   assert.deepEqual(claimedCustomers,[9])
   console.log('BROWSER_CUSTOMER_CLAIM_CANCEL_NO_WRITE_CONFIRM_CORRECT_ID=true')
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/approvals`})
-  const approveLink=`Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes('隔离审批-52')) && Array.from(Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes('隔离审批-52')).querySelectorAll('a')).find(a=>a.innerText.trim()==='通过')`
+  const approveLink=`Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes('隔离审批-52')) && Array.from(Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes('隔离审批-52')).querySelectorAll('a, button')).find(a=>a.innerText.trim()==='通过')`
   await waitFor(approveLink)
   await evaluate(`${approveLink}.click()`)
   await waitFor(`document.body.innerText.includes('通过这份报价的审批')`)
@@ -399,7 +401,7 @@ try {
   assert.deepEqual(approvalsApproved,[52])
   console.log('BROWSER_APPROVE_CANCEL_NO_WRITE_CONFIRM_CORRECT_ID=true')
   await sleep(250)
-  const rejectLink=`Array.from(Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes('隔离审批-51')).querySelectorAll('a')).find(a=>a.innerText.trim()==='拒绝')`
+  const rejectLink=`Array.from(Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes('隔离审批-51')).querySelectorAll('a, button')).find(a=>a.innerText.trim()==='拒绝')`
   await evaluate(`${rejectLink}.click()`)
   const reasonInput=`document.querySelector('input[placeholder="拒绝原因，例如：低于成本，不可让价"]')`
   await waitFor(reasonInput)
@@ -455,8 +457,18 @@ try {
   const openSyncMenu=async()=>{
     const trigger=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim().startsWith('数据同步'))`
     await waitFor(trigger)
-    await evaluate(`${trigger}.click()`)
-    await waitFor(`Array.from(document.querySelectorAll('.semi-dropdown-item div')).some(d=>d.innerText.trim()==='同步部门')`)
+    const menuOpen=`Array.from(document.querySelectorAll('.semi-dropdown-item div')).some(d=>d.innerText.trim()==='同步部门')`
+    // 关闭动画期间菜单 DOM 还在，单次采样会把「正在关」当成「开着」（偶发
+    // 超时的真凶）；而点触发器是 toggle，开着点一下反而关上。所以不猜状态：
+    // 每轮点一下就查，最长试 6 轮——开着（且空闲标签）就返回，toggle 总会
+    // 在两轮内走到「开」。同步未落定时项标签带「（同步中…）」，精确匹配不
+    // 会误收，等它落定自然就中了。
+    for(let attempt=0;attempt<6;attempt+=1){
+      if(await evaluate(`Boolean(${menuOpen})`))return
+      await evaluate(`${trigger}.click()`)
+      for(let i=0;i<15;i+=1){if(await evaluate(`Boolean(${menuOpen})`))return;await sleep(100)}
+    }
+    await waitFor(menuOpen)
   }
   for(const [label,endpoint] of [
     ['同步部门','sync-departments'],['同步成员','sync-users'],
@@ -470,6 +482,9 @@ try {
     assert.equal(wecomRequests.length,before+1)
     assert.equal(wecomRequests.at(-1),endpoint,'sync must call its own endpoint')
     console.log(`BROWSER_WECOM_${endpoint}_MENU_ITEM_CALLS_OWN_ENDPOINT=true`)
+    // 等同步 mutation 落定（「同步完成」toast）再开下一轮——否则按钮还在
+    // loading、菜单项标签是「xx（同步中…）」，下一轮精确匹配白等到超时
+    await waitFor(`document.body.innerText.includes('同步完成')`)
   }
   rejectWecomSync=true
   await openSyncMenu()
