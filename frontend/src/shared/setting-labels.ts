@@ -81,14 +81,6 @@ export const SETTING_NOTES: Record<string, { tag: string; text: string }> = {
     tag: '历史配置',
     text: '保留历史贸易模式设置；当前核价只支持人民币，这项只在订单草稿页影响出口相关字段的显隐。',
   },
-  dingtalk_oa: {
-    tag: '待配置',
-    text: '审批模板编号还是空的；业务定了用哪个同序 OA 模板后填上即生效，不用改代码。',
-  },
-  dingtalk_contract_oa: {
-    tag: '待配置',
-    text: '合同签署审批模板编号和控件映射还是空的；没配之前，客户起草合同点「提交同序 OA 签署」会被明确拒绝，不会发出审批。',
-  },
   notification_channels: {
     tag: '企微默认关闭',
     text: '站内通知始终发送；企业微信要先在服务端把企微对接配好再打开，否则每次投递都会失败。',
@@ -102,9 +94,6 @@ export const SETTING_NOTES: Record<string, { tag: string; text: string }> = {
   // 挂在业务规则上只会让人以为"这项还没定、先别动"。
 }
 
-/** 同序 OA 三项的"待配置"只该在模板编号真的空着时出现（2026-11-19）。 */
-const DINGTALK_KEYS = ['dingtalk_oa', 'dingtalk_contract_oa', 'dingtalk_sample_oa']
-
 /**
  * 这一项当前为什么看不出效果；没有话要说时返回 null（不编说明）。
  *
@@ -112,15 +101,6 @@ const DINGTALK_KEYS = ['dingtalk_oa', 'dingtalk_contract_oa', 'dingtalk_sample_o
  * `dingtalk_oa` 已经接上了模板和字段映射，文案却还写着"审批模板编号还是
  * 空的"，等于给对的东西贴错标签 —— 管理员会照着这句去重配一遍。
  */
-export function settingNote(
-  key: string,
-  value?: unknown,
-): { tag: string; text: string } | null {
-  if (DINGTALK_KEYS.includes(key)) {
-    const raw = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>
-    const code = String(raw.process_code ?? '').trim()
-    // 有模板编号 = 已经接通，不需要再挂"待配置"
-    if (code) return null
-  }
+export function settingNote(key: string): { tag: string; text: string } | null {
   return SETTING_NOTES[key] ?? null
 }

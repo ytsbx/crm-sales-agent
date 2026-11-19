@@ -151,14 +151,10 @@ const SETTING_GROUPS: Array<{
     note: '判定逻辑在上方的「公海回收规则」，这里只放天数与恢复权限',
     keys: ['pool_recycle_notice_days', 'pool_recycle_defer_days', 'pool_recycle_max_protect_days','pool_recycle_restore_permission'],
   },
-  {
-    id: 'approval',
-    hint: '同序 OA 未配置时不会发出审批单；报价审批分级在下方单独编辑，按金额判定。',
-    title: '审批与外部系统',
-    color: '#8f5cf7',
-    note: '同序 OA 的模板与字段映射；未配置时不会发出审批，报价审批分级在下方单独编辑',
-    keys: ['dingtalk_oa', 'dingtalk_contract_oa', 'dingtalk_sample_oa'],
-  },
+  // 「审批与外部系统」这一组删掉了（2026-11-19 主人：「是根本就不需要显示呀，
+  // 显示这个给用户看做什么」）。组里只有同序 OA 三个模板编号（PROC-…），
+  // 它们是接入后台的东西，业务管理员既看不懂也用不上；配错了反而会"看着配好了、
+  // 实际发不出单"。报价审批分级仍在「审批与外部」页签里单独编辑，不受影响。
   {
     id: 'notify',
     hint: '导出上限按行数算；通知渠道关掉之后不再推送，历史记录仍保留。',
@@ -299,41 +295,6 @@ function objectConfigInfo(key: string, value: unknown): { configured: boolean; d
   return { configured: count > 0, detail: `${count} 项` }
 }
 
-const DINGTALK_KEYS = ['dingtalk_oa', 'dingtalk_contract_oa', 'dingtalk_sample_oa']
-
-/**
- * 同序 OA 三行的值单元格：只读状态 + 模板编号。
- *
- * 2026-11-19 主人：「这种不是用户来配置的吧」—— 说得对。
- * PROC-XXXX… 是同序 OA 里流程的机器编号，业务管理员手上没有、也不该去
- * 同序后台翻地址栏；就算让他填，填错了也只是"看起来配好了、实际发不出单"。
- * 上一版我给它做了「换模板」的就地编辑，等于把这个坑转给了用户。
- *
- * 现在只显示状态与编号前段（悬停看全码，便于排查），不做任何输入。
- * 真的要换模板，走实施对接（后端 PATCH /api/v1/settings 的 dingtalk_* ，
- * 或接入后台的授权配置），那是研发/实施的动作，不是这里的业务配置。
- */
-function DingTalkCodeField({ rowKey, value }: { rowKey: string; value: unknown }) {
-  const raw = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>
-  const current = String(raw.process_code ?? '')
-  const info = objectConfigInfo(rowKey, value)
-  return (
-    <div className="setting-code-field">
-      <div className="setting-object-value">
-        <Tag color={info.configured ? 'blue' : 'orange'} size="small">
-          {info.configured ? '已配置' : '未配置'}
-        </Tag>
-        {info.configured && (
-          <span className="setting-code-mono" title={`模板编号 ${current}`}>
-            {current.length > 16 ? `${current.slice(0, 16)}…` : current}
-          </span>
-        )}
-      </div>
-      {/* 说明放右侧那一列（组里的 description / 待配置注），不在这里再压两行小字：
-          值这一列只有 110 宽，塞进去会被折成两行，和左右两列的垂直节奏都错位。 */}
-    </div>
-  )
-}
 
 function SettingValueField({
   rowKey,
@@ -398,10 +359,6 @@ function SettingValueField({
   }
 
   if (kind === 'object') {
-    // 同序 OA 三件：模板编号可改（见 DingTalkCodeField 的说明）
-    if (DINGTALK_KEYS.includes(rowKey)) {
-      return <DingTalkCodeField rowKey={rowKey} value={value} />
-    }
     const info = objectConfigInfo(rowKey, value)
     // "已配置 0 项"自相矛盾（同序 OA 这几项的字段映射就是空对象）：
     // 没配就写"未配置"，并明确"在哪配"，别让人以为这行坏了。
@@ -2079,7 +2036,7 @@ export default function SettingsPage() {
                           {rows.map((row) => {
                             // 传上当前值：同序 OA 那三条"待配置"是写死的文案，
                             // 实际配好了还挂着，等于给对的东西贴错标签。
-                            const note = settingNote(row.key, row.value)
+                            const note = settingNote(row.key)
                             // 多行文本（交货条款）独占一整行：塞在 240 宽的列里会被挤成
                             // 三行字、把这一行撑到 180px 高，上下全是空白。
                             const kind = SETTING_FIELD_META[row.key]?.kind
@@ -2089,14 +2046,6 @@ export default function SettingsPage() {
                                 <div className="setting-field-value">{renderSettingValue(row)}</div>
                                 <div className="setting-field-desc">
                                   <span>{settingDescription(row.key, row.description)}</span>
-                                  {DINGTALK_KEYS.includes(row.key) && (() => {
-                                    const info = objectConfigInfo(row.key, row.value)
-                                    return info.configured ? (
-                                      <span className="setting-code-detail" title={info.detailFull}>
-                                        当前：{info.detail}
-                                      </span>
-                                    ) : null
-                                  })()}
                                   {note && (
                                     <span className="setting-field-tag">
                                       <Tag color="orange" size="small">{note.tag}</Tag>
@@ -2116,14 +2065,17 @@ export default function SettingsPage() {
 
                 {/* 报价审批分级：从上面那张表里拿出来的独立区块。
                     它本来就是"一张会改的子表格"，跟上面那些"一行一个键值"的
-                    配置项不是同一类东西，硬塞进一格只会把行高顶爆。 */}
+                    配置项不是同一类东西，硬塞进一格只会把行高顶爆。
+                    2026-11-19 挂在「报价与定价」页签下（原来那个「审批与外部」页签
+                    只装同序 OA 三个模板号，整页已经删了，这块得跟过去——
+                    它本来就是"按报价金额定谁能批"，放报价页更贴题）。 */}
                 {(() => {
                   const approvalRow = (settingsQuery.data ?? []).find((row) => row.key === 'approval_levels')
                   const levels = approvalRow?.value?.levels
                   if (!approvalRow || !Array.isArray(levels)) return null
                   return (
                     <div
-                      className={panelKey === 'g-approval' ? undefined : 'panel-hidden'}
+                      className={panelKey === 'g-pricing' ? undefined : 'panel-hidden'}
                       style={{
                         marginTop: 24,
                         paddingTop: 20,
