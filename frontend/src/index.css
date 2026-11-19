@@ -5516,3 +5516,111 @@ table:not(.semi-table) td.cell-right {
 
 /* 展开时就地给说明，不必再把右侧那行描述顶在脸上 */
 .setting-field:has(.setting-code-field.is-open) .setting-field-desc { display: none; }
+
+/* ============================================================
+   值单元格：静止态只是一行字（2026-11-19）
+   主人：现在全是框框，没有美感，按最适合的做。
+   所以把"每一行顶一个输入框"改成"点一下才长控件"。
+   ============================================================ */
+.setting-value-cell { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+
+/* 静止态：值本身就是按钮，底下一条极淡虚线暗示"可改" */
+.setting-value-view {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  margin-left: -6px;
+  padding: 1px 6px 2px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--crm-text);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px dashed rgba(17, 24, 39, .18);
+  border-radius: 7px;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: color .15s, background .15s, border-color .15s;
+}
+.setting-value-view:hover {
+  color: var(--crm-primary);
+  background: rgba(47, 109, 246, .055);
+  border-bottom-color: rgba(47, 109, 246, .45);
+}
+.setting-value-view.is-empty { color: var(--crm-text-3); font-weight: 400; }
+.setting-value-view.is-select { font-weight: 600; }
+.setting-value-caret {
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 4px solid var(--crm-text-3);
+  opacity: .7;
+}
+.setting-value-view:hover .setting-value-caret { border-top-color: var(--crm-primary); opacity: 1; }
+
+/* 编辑态：只在点开那一刻出现 */
+.setting-value-actions { display: flex; align-items: center; gap: 6px; }
+.setting-value-cell.is-editing { gap: 8px; }
+.setting-value-cell.is-editing .setting-value-input.is-num { flex: 0 0 132px; width: 132px; }
+
+.setting-preset-row, .setting-option-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.setting-preset, .setting-option-chip {
+  padding: 3px 10px;
+  font-size: 11.5px;
+  line-height: 18px;
+  color: var(--crm-text-2);
+  background: #fff;
+  border: 1px solid rgba(17, 24, 39, .12);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color .15s, border-color .15s, background .15s;
+}
+.setting-preset:hover, .setting-option-chip:hover {
+  color: var(--crm-primary);
+  border-color: rgba(47, 109, 246, .45);
+  background: rgba(47, 109, 246, .04);
+}
+.setting-preset.is-on {
+  color: var(--crm-primary);
+  border-color: rgba(47, 109, 246, .42);
+  background: rgba(47, 109, 246, .10);
+  font-weight: 600;
+}
+.setting-option-chip.is-on {
+  color: #fff;
+  background: var(--crm-primary);
+  border-color: var(--crm-primary);
+  font-weight: 600;
+}
+
+/* 编辑时把说明列让出来：输入框 + 两个按钮在 236 宽里会挤成两行 */
+.setting-field:has(.setting-value-cell.is-editing) { grid-template-columns: 112px minmax(0, 1fr); }
+.setting-field:has(.setting-value-cell.is-editing) .setting-field-value { grid-column: 2; grid-row: 1; }
+.setting-field:has(.setting-value-cell.is-editing) .setting-field-desc { grid-column: 2; grid-row: 2; }
+
+@media (max-width: 1180px) {
+  .setting-field:has(.setting-value-cell.is-editing) { grid-template-columns: 96px minmax(0, 1fr); }
+}
+
+/* 编辑态：名称顶对齐（否则名称被垂直居中到整块中间，看着"沉"下去） */
+.setting-field:has(.setting-value-cell.is-editing) { align-items: start; }
+.setting-field:has(.setting-value-cell.is-editing) .setting-field-label { padding-top: 3px; }
+
+/* 长文本（交货条款）静止态只露两行，末尾省略；要看全就点开 */
+.setting-value-view.is-long {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  text-align: left;
+  line-height: 1.55;
+}

@@ -88,6 +88,11 @@ type SettingFieldMeta = {
   placeholder?: string
   /** 一句话交代"这个值怎么填"，挂在输入框下面 */
   hint?: string
+  /** 常见取值：点开就能选，不必敲键盘（天数、百分比这类） */
+  presets?: number[]
+  /** 数值范围（前端先拦一道，别等后端 422 才说填错了） */
+  min?: number
+  max?: number
 }
 
 /**
@@ -192,18 +197,18 @@ const RULE_PANELS: Array<{ key: string; label: string; color: string }> = [
 
 const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
   company_name: { kind: 'text', placeholder: '例如：杭州天初科技有限公司' },
-  customer_active_days: { unit: '天' },
-  customer_stale_days: { unit: '天' },
-  opportunity_risk_days: { unit: '天' },
-  opportunity_stale_days: { unit: '天' },
-  quote_valid_days: { unit: '天' },
-  pool_recycle_defer_days: { unit: '天' },
-  pool_recycle_notice_days: { unit: '天' },
-  pool_recycle_max_protect_days: { unit: '天' },
-  default_min_margin: { kind: 'percent', hint: '填 15 表示最低毛利 15%' },
-  default_target_margin: { kind: 'percent', hint: '填 30 表示目标毛利 30%' },
-  price_range_ratio: { kind: 'percent', hint: '报价区间宽度，填 4 表示 ±4%' },
-  export_tax_refund_rate: { kind: 'percent', hint: '退税率，填 13 表示 13%' },
+  customer_active_days: { unit: '天', presets: [7, 15, 30] },
+  customer_stale_days: { unit: '天', presets: [30, 60, 90] },
+  opportunity_risk_days: { unit: '天', presets: [7, 14, 30] },
+  opportunity_stale_days: { unit: '天', presets: [15, 30, 60] },
+  quote_valid_days: { unit: '天', presets: [7, 15, 30, 60] },
+  pool_recycle_defer_days: { unit: '天', presets: [15, 30, 60], min: 0, max: 365 },
+  pool_recycle_notice_days: { unit: '天', presets: [0, 3, 7, 15], min: 0, max: 365 },
+  pool_recycle_max_protect_days: { unit: '天', presets: [30, 60, 90] },
+  default_min_margin: { kind: 'percent', hint: '填 15 表示最低毛利 15%' , presets: [10, 15, 20, 25] },
+  default_target_margin: { kind: 'percent', hint: '填 30 表示目标毛利 30%' , presets: [20, 25, 30, 35] },
+  price_range_ratio: { kind: 'percent', hint: '报价区间宽度，填 4 表示 ±4%' , presets: [3, 4, 5] },
+  export_tax_refund_rate: { kind: 'percent', hint: '退税率，填 13 表示 13%' , presets: [0, 9, 13] },
   default_currency: {
     kind: 'select',
     options: [
@@ -230,11 +235,8 @@ const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
   },
   default_delivery_terms: { kind: 'multiline', placeholder: '新报价默认带上的交货与运费说明' },
   default_payment_terms: { kind: 'text', placeholder: '例如：款到发货' },
-  pool_recycle_restore_permission: {
-    kind: 'text',
-    placeholder: 'customer:assign',
-    hint: '谁能把客户恢复给原负责人（权限码）',
-  },
+  /** 权限码这一项：选项在页面里按权限清单现取，所以这里只声明"是选择类" */
+  pool_recycle_restore_permission: { kind: 'select' },
   logistics_volumetric_ratio: { unit: 'kg/m³', hint: '体积重换算系数，0 表示不折算' },
   dedup_scoring: { unit: '分', hint: '命中阈值（权重在「客户查重规则」里配）' },
   export: { unit: '行', hint: '单次导出上限；超阈值提醒在下面几项单独配' },
@@ -390,23 +392,29 @@ function SettingValueField({
   field,
   value,
   onSave,
+  options,
 }: {
   rowKey: string
   field: string
   value: unknown
   onSave: (next: Record<string, unknown>) => Promise<unknown>
+  /** 选项由页面现取时用（例如权限码清单），优先于 meta.options */
+  options?: Array<{ value: string; label: string }>
 }) {
   const meta = SETTING_FIELD_META[rowKey] ?? {}
   const kind = meta.kind ?? 'number'
+  const choices = options ?? meta.options
   const initial = kind === 'percent' ? ratioToText(value) : value === null || value === undefined ? '' : String(value)
   const [text, setText] = useState(initial)
   const [status, setStatus] = useState<SettingSaveStatus>('idle')
+  /** 静止态 / 编辑态：页面静止时只有一个值，点开才长控件 */
+  const [open, setOpen] = useState(false)
 
   // 服务器回了新值（别处改的 / 保存成功）就同步回来；正在编辑或报错时不动，
   // 免得把用户手上没提交的字冲掉。
   useEffect(() => {
-    if (status === 'idle') setText(initial)
-  }, [initial, status])
+    if (status === 'idle' && !open) setText(initial)
+  }, [initial, status, open])
 
   const finish = (next: SettingSaveStatus) => {
     setStatus(next)
@@ -420,16 +428,19 @@ function SettingValueField({
       if (!Number.isFinite(num)) { finish('error'); return }
       parsed = num / 100
     } else if (kind === 'number') {
-      if (raw.trim() === '') { finish('error'); return }
+      if (raw.trim() === '') { setStatus('error'); return }
       const num = Number(raw)
-      if (!Number.isFinite(num)) { finish('error'); return }
+      if (!Number.isFinite(num)) { setStatus('error'); return }
+      if (meta.min !== undefined && num < meta.min) { setStatus('error'); return }
+      if (meta.max !== undefined && num > meta.max) { setStatus('error'); return }
       parsed = num
     }
     const before = kind === 'percent' ? ratioToText(value) : String(value ?? '')
-    if (raw === before) { setStatus('idle'); return }
+    if (raw === before) { setOpen(false); setStatus('idle'); return }
     setStatus('saving')
     try {
       await onSave({ [field]: parsed })
+      setOpen(false)
       finish('saved')
     } catch {
       finish('error')
@@ -460,26 +471,91 @@ function SettingValueField({
     )
   }
 
-  if (kind === 'select') {
+  // ---- 值单元格（2026-11-19 重做）----
+  // 主人：现在全是框框，没有美感，按最适合的做，不用统一。
+  // 所以不再给每一项都摆一个输入框：静止时它只是一行字（带单位），
+  // 点一下才出现"这一类最合适"的编辑方式 ——
+  //   选项类 → 一排可点的胶囊，点完就生效；
+  //   天数/百分比 → 先给常见取值，想填别的再落到数字框；
+  //   长文本 → 才铺开文本框。
+  // 页面上真正混着框的感觉，正是"每一行都顶着一个输入框"造成的。
+  const readText = () => {
+    if (kind === 'select') return choices?.find((option) => option.value === text)?.label ?? text
+    if (kind === 'percent') return text.trim() === '' ? '' : `${text}%`
+    return `${text}${meta.unit ?? ''}`
+  }
+  const cancel = () => {
+    setText(initial)
+    setOpen(false)
+    setStatus('idle')
+  }
+
+  if (!open) {
+    const empty = kind === 'select' ? false : text.trim() === ''
     return (
-      <div className="setting-value-row">
-        <Select
-          style={{ width: '100%' }}
-          value={text}
-          onChange={(next) => {
-            setText(String(next ?? ''))
-            setStatus('saving')
-            void onSave({ [field]: next }).then(() => finish('saved')).catch(() => finish('error'))
+      <div className="setting-value-cell">
+        <button
+          type="button"
+          className={`setting-value-view${empty ? ' is-empty' : ''}${kind === 'select' ? ' is-select' : ''}`}
+          title={meta.hint ?? '点击可修改'}
+          onClick={() => {
+            setOpen(true)
+            setStatus('dirty')
           }}
-          optionList={meta.options}
-        />
+        >
+          {empty ? '未填写' : readText()}
+          {kind === 'select' && <i className="setting-value-caret" />}
+        </button>
+        {status !== 'idle' && <span className={`setting-save-state is-${status}`}>{SAVE_STATE_TEXT[status]}</span>}
       </div>
     )
   }
 
+  const actions = (
+    <div className="setting-value-actions">
+      <Button size="small" theme="solid" loading={status === 'saving'} onClick={() => void commit(text)}>
+        保存
+      </Button>
+      <Button size="small" theme="borderless" onClick={cancel}>
+        取消
+      </Button>
+    </div>
+  )
+
+  // 选项类：一排胶囊，选中即保存，不用再点"保存"
+  if (kind === 'select') {
+    return (
+      <div className="setting-value-cell is-editing">
+        <div className="setting-option-chips">
+          {(choices ?? []).map((option) => (
+            <button
+              type="button"
+              key={option.value}
+              className={`setting-option-chip${option.value === text ? ' is-on' : ''}`}
+              onClick={() => {
+                if (option.value === text) { cancel(); return }
+                setText(option.value)
+                setStatus('saving')
+                void onSave({ [field]: option.value })
+                  .then(() => { setOpen(false); finish('saved') })
+                  .catch(() => finish('error'))
+              }}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+        <div className="setting-value-actions">
+          <Button size="small" theme="borderless" onClick={cancel}>取消</Button>
+        </div>
+      </div>
+    )
+  }
+
+  // 长文本：这里才真的需要一块文本域
   if (kind === 'multiline') {
     return (
-      <div className="setting-value-stack">
+      <div className="setting-value-cell is-editing">
         <TextArea
           // 定高 3 行，不用 autosize：autosize 的外层容器比可见框高出 40px，
           // 说明文字被顶出一条空白，看着像这一段没填。
@@ -487,18 +563,33 @@ function SettingValueField({
           value={text}
           placeholder={meta.placeholder}
           onChange={(next) => { setText(next); setStatus('dirty') }}
-          onBlur={() => void commit(text)}
         />
-        {/* 空态不渲染：留一个空 span 会让文本框下面永远多出一条 16px 空白 */}
-        {status !== 'idle' && (
-          <span className={`setting-save-state is-${status}`}>{SAVE_STATE_TEXT[status]}</span>
-        )}
+        {actions}
       </div>
     )
   }
 
+  // 数字 / 百分比 / 短文本：先给常见取值，想填别的再落到输入框
   return (
-    <div className="setting-value-stack">
+    <div className="setting-value-cell is-editing">
+      {meta.presets && (
+        <div className="setting-preset-row">
+          {meta.presets.map((preset) => (
+            <button
+              type="button"
+              key={preset}
+              className={`setting-preset${String(preset) === text ? ' is-on' : ''}`}
+              onClick={() => {
+                setText(String(preset))
+                void commit(String(preset))
+              }}
+            >
+              {preset}
+              {kind === 'percent' ? '%' : meta.unit ?? ''}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="setting-value-row">
         <Input
           className={meta.unit || kind === 'number' || kind === 'percent' ? 'setting-value-input is-num' : 'setting-value-input'}
@@ -506,14 +597,10 @@ function SettingValueField({
           placeholder={meta.placeholder}
           suffix={meta.unit ?? (kind === 'percent' ? '%' : undefined)}
           onChange={(next) => { setText(next); setStatus('dirty') }}
-          onBlur={() => void commit(text)}
           onEnterPress={() => void commit(text)}
         />
-        <span className={`setting-save-state is-${status}`}>
-          {status === 'error' ? '需填数字' : SAVE_STATE_TEXT[status]}
-        </span>
+        {actions}
       </div>
-      {meta.hint && status !== 'error' && <span className="setting-field-hint">{meta.hint}</span>}
     </div>
   )
 }
@@ -1856,24 +1943,11 @@ export default function SettingsPage() {
                   <div style={{ display: 'grid', gap: 18 }}>
                     <div className="recycle-pace-row">
                       <FormLabel>回收预告期（天）</FormLabel>
-                      <Input
-                        key={`notice-${noticeSetting?.value?.days ?? ''}`}
-                        defaultValue={String(noticeSetting?.value?.days ?? 7)}
-                        style={{ width: 220 }}
-                        onBlur={(event) => {
-                          const raw = (event.target as HTMLInputElement).value.trim()
-                          const next = Number(raw)
-                          if (!raw || !Number.isInteger(next) || next < 0 || next > 365) {
-                            Toast.warning('回收预告期须是 0–365 的整数天')
-                            return
-                          }
-                          if (next !== Number(noticeSetting?.value?.days ?? 7)) {
-                            settingMutation.mutate({
-                              key: 'pool_recycle_notice_days',
-                              value: { days: next },
-                            })
-                          }
-                        }}
+                      <SettingValueField
+                        rowKey="pool_recycle_notice_days"
+                        field="days"
+                        value={noticeSetting?.value?.days}
+                        onSave={(next) => settingMutation.mutateAsync({ key: 'pool_recycle_notice_days', value: next, silent: true })}
                       />
                       <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginTop: 4 }}>
                         扫描命中后先预告这么多天，期间业务员仍可跟进自救；
@@ -1883,24 +1957,11 @@ export default function SettingsPage() {
                     </div>
                     <div className="recycle-pace-row">
                       <FormLabel>主管暂缓等待期（天）</FormLabel>
-                      <Input
-                        key={`defer-${deferSetting?.value?.days ?? ''}`}
-                        defaultValue={String(deferSetting?.value?.days ?? 30)}
-                        style={{ width: 220 }}
-                        onBlur={(event) => {
-                          const raw = (event.target as HTMLInputElement).value.trim()
-                          const next = Number(raw)
-                          if (!raw || !Number.isInteger(next) || next < 0 || next > 365) {
-                            Toast.warning('主管暂缓等待期须是 0–365 的整数天')
-                            return
-                          }
-                          if (next !== Number(deferSetting?.value?.days ?? 30)) {
-                            settingMutation.mutate({
-                              key: 'pool_recycle_defer_days',
-                              value: { days: next },
-                            })
-                          }
-                        }}
+                      <SettingValueField
+                        rowKey="pool_recycle_defer_days"
+                        field="days"
+                        value={deferSetting?.value?.days}
+                        onSave={(next) => settingMutation.mutateAsync({ key: 'pool_recycle_defer_days', value: next, silent: true })}
                       />
                       <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginTop: 4 }}>
                         主管点「暂缓」之后要等这么多天才能再批准回收
@@ -1910,21 +1971,15 @@ export default function SettingsPage() {
                     </div>
                     <div className="recycle-pace-row">
                       <FormLabel>恢复已回收客户所需权限</FormLabel>
-                      <Select
-                        value={String(restoreSetting?.value?.text ?? 'customer:assign')}
-                        /* 240 而不是 220：下拉里是「分配客户（customer:assign）」这种
-                           "中文名 + 权限码"，220 会把尾巴截掉。 */
-                        style={{ width: 240 }}
-                        onChange={(value) =>
-                          settingMutation.mutate({
-                            key: 'pool_recycle_restore_permission',
-                            value: { text: String(value) },
-                          })
-                        }
-                        optionList={(recyclePermsQuery.data ?? []).map((item) => ({
+                      <SettingValueField
+                        rowKey="pool_recycle_restore_permission"
+                        field="text"
+                        value={restoreSetting?.value?.text}
+                        options={(recyclePermsQuery.data ?? []).map((item) => ({
                           value: item.code,
                           label: `${item.name}（${item.code}）`,
                         }))}
+                        onSave={(next) => settingMutation.mutateAsync({ key: 'pool_recycle_restore_permission', value: next, silent: true })}
                       />
                       <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginTop: 4 }}>
                         默认 <code>customer:assign</code>（指派客户）：销售主管能恢复本团队客户、
