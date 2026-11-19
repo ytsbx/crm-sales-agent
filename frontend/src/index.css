@@ -6268,3 +6268,20 @@ table:not(.semi-table) td.cell-right {
 .semi-button-tertiary.semi-button-borderless:hover {
   background: rgba(47, 109, 246, .08) !important;
 }
+/* ─────────────── 表格里的"名称链接"：不再整列蓝（2026-11-19）───────────────
+   产品中心的「产品名称」整列 14 行全是蓝色粗体链接，一眼看上去是一列蓝字海，
+   扫读时反而找不到重点；客户/报价/订单列表同一种写法。
+   改成：常态用主文本色 + 500 字重（它仍然可点），悬停才变主色并加下划线。
+   判据：表格里的 <a> 基本只有"主标识"（名称/单号），操作列已经是文字按钮，
+   所以这样写不会把真正的操作链接压掉。 */
+.semi-table-tbody .semi-table-row-cell a {
+  color: var(--crm-text-1, #1d2129) !important;
+  font-weight: 500;
+  text-decoration: none;
+  transition: color .14s ease;
+}
+.semi-table-tbody .semi-table-row-cell a:hover {
+  color: var(--crm-primary) !important;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
