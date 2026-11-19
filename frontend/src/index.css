@@ -5786,3 +5786,7 @@ table:not(.semi-table) td.cell-right {
   letter-spacing: .2px;
 }
 .setting-code-empty { font-size: 12px; color: var(--crm-text-3); }
+/* 只读设置项：值是一句人话，不给编辑入口（2026-11-19 恢复「通知与导出」组时定的） */
+.setting-readonly-value { font-size: 13px; color: var(--crm-text-2); line-height: 1.65; }
+/* 选项类末尾的「更多权限…」：虚线胶囊，跟「自定义…」同一套语言，不抢主选项的颜色 */
+.setting-option-chip.is-more { border-style: dashed; color: var(--crm-text-2); background: transparent; }

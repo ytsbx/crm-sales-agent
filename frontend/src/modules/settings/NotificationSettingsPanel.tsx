@@ -237,47 +237,30 @@ export default function NotificationSettingsPanel() {
         )}
       </SectionCard>
 
+      {/* 原来这里是一排五个数字（主管通知待生成 0 / 待投递 297 / 投递失败 0 /
+          未投递 52 / 累计已投递 0）。主人看到只会问「这一块我就不知道什么鬼东西」——
+          因为企微没接通时这堆数字只会一直涨，看着像系统坏了。2026-11-19 改成
+          一句人话：没开企微就说"只在站内发、不用管"，开了企微且有积压才给补投按钮。 */}
       <SectionCard>
-        <div style={{ fontWeight: 600, marginBottom: 4 }}>投递失败与补投</div>
-        <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 12 }}>
-          企微投递失败会保留业务记录并按退避自动重试（最多 {failures?.max_attempts ?? 3} 次
-          {failures && !failures.auto_retry_enabled ? '，当前自动重试已关闭' : ''}
-          ），超过后停在失败等人工处理。补投走的是原通知——不会重跑业务动作，
-          也不会在客户时间线里多出一条记录。
-        </div>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>投递情况</div>
         {failuresQuery.isLoading ? (
           <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>加载中…</div>
         ) : (
           <>
-            <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap', marginBottom: 14 }}>
-              {[
-                { label: '主管通知待生成', value: failures?.business_pending ?? 0, hint: '可点击补投处理待办' },
-                { label: '待投递', value: failures?.pending ?? 0, hint: '等下一次投递' },
-                {
-                  label: '投递失败',
-                  value: failures?.failed ?? 0,
-                  hint:
-                    failures && !failures.auto_retry_enabled
-                      ? '自动重试已关闭，等人工补投'
-                      : `${failures?.retrying ?? 0} 条会自动重试`,
-                },
-                {
-                  label: '未投递',
-                  value: failures?.skipped ?? 0,
-                  hint: '对方未绑企微或渠道未配',
-                },
-                { label: '累计已投递', value: failures?.sent ?? 0, hint: '含补投成功' },
-              ].map((stat) => (
-                <div key={stat.label}>
-                  <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{stat.label}</div>
-                  <div style={{ fontSize: 20, fontWeight: 600 }}>{stat.value}</div>
-                  <div style={{ fontSize: 11, color: 'var(--crm-text-3)' }}>{stat.hint}</div>
-                </div>
-              ))}
+            <div style={{ fontSize: 12.5, color: 'var(--crm-text-2)', lineHeight: 1.8 }}>
+              {!form.wecom_enabled
+                ? '企业微信渠道没开，通知只在站内发 —— 这里不用处理什么。想让通知也进企微，把上面的开关打开再保存。'
+                : stuck > 0
+                  ? `有 ${stuck} 条通知没送到（多半是对方还没在企微绑定 CRM 账号）。补投走的是原通知，不会重跑业务动作，也不会在客户时间线里多一条记录。`
+                  : '通知都已送达，没有积压。'}
             </div>
-            <Popconfirm title="确认补投失败与未投递的通知？" content="将尝试向接收人重新发送通知。" disabled={stuck === 0 || retryMutation.isPending} onConfirm={() => retryMutation.mutate()}>
-              <Button loading={retryMutation.isPending} disabled={stuck === 0}>补投失败与未投递的通知</Button>
-            </Popconfirm>
+            {form.wecom_enabled && stuck > 0 && (
+              <div style={{ marginTop: 12 }}>
+                <Popconfirm title="确认补投这些通知？" content="将尝试向接收人重新发送通知。" disabled={retryMutation.isPending} onConfirm={() => retryMutation.mutate()}>
+                  <Button loading={retryMutation.isPending}>补投这些通知</Button>
+                </Popconfirm>
+              </div>
+            )}
           </>
         )}
       </SectionCard>

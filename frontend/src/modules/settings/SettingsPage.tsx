@@ -51,6 +51,7 @@ import { Button, Input, Modal, Popconfirm, Select, Switch, TextArea, Toast } fro
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { SystemDepartment, SystemRole, SystemUser } from '../../shared/api/system'
 import AuditLogPanel from './AuditLogPanel'
+import NotificationSettingsPanel from './NotificationSettingsPanel'
 import SectionCard from '../../shared/components/SectionCard'
 import EmptyState from '../../shared/components/EmptyState'
 import FormLabel from '../../shared/components/FormLabel'
@@ -64,12 +65,11 @@ const TABS = [
   { tab: '部门', itemKey: 'departments' },
   { tab: '客户标签', itemKey: 'tags' },
   { tab: '数据字典', itemKey: 'dictionaries' },
-  // 「通知」页签下线（2026-11-19 主人指着「投递失败与补投」说「这一块我就不知道
-  // 什么鬼东西」）。那一页是技术排障台：主管通知待生成 / 待投递 297 / 未投递 52
-  // 这种数字对业务管理员没有意义 —— 企微没接通时它只会在那里一直堆着，
-  // 看着像系统坏了。而通知的实际行为由后端默认值兜着（站内全发、企微关、
-  // 失败自动退避重试 3 次，还有定时补投任务），业务侧不需要在这儿管。
-  // NotificationSettingsPanel.tsx 文件保留：真接企微那天把它接回 TABS 即可。
+  // 「通知」页签恢复（2026-11-19 主人：「按你建议恢复」）。
+  // 这一页是企微接通后唯一的开关入口，之前因为"排障数字看不懂"整页下线属于
+  // 拆功能，已撤回；改为把那张五个数字的统计卡收成一句人话（见
+  // NotificationSettingsPanel 的「投递情况」），开关、事件、分级都留着。
+  { tab: '通知', itemKey: 'notifications' },
   { tab: '审计日志', itemKey: 'audit' },
   { tab: '业务规则', itemKey: 'rules' },
 ]
@@ -159,14 +159,19 @@ const SETTING_GROUPS: Array<{
   // 显示这个给用户看做什么」）。组里只有同序 OA 三个模板编号（PROC-…），
   // 它们是接入后台的东西，业务管理员既看不懂也用不上；配错了反而会"看着配好了、
   // 实际发不出单"。报价审批分级仍在「审批与外部」页签里单独编辑，不受影响。
-  /* 「通知与导出」整组下线（2026-11-19 主人：「我都不知道导出限制是在限制什么」）。
-     剩下这两行都不是业务规则：
-     - export = {limit: 5000, alert_rows: 20000, alert_window_hours: 24}，
-       是**防数据外泄的闸门**（单次导出最多 5000 行；24 小时内导出超过 2 万行
-       会在审计里告警）。业务管理员调大它，等于把闸门拆了；
-     - logistics_volumetric_ratio 是物流计费口径（体积重系数，0 = 不折算、
-       只按实际重量计费）。国内普通件业务用不上，将来真按体积计价由实施来定。
-     两项都保持默认值跑，页面上不再露出。后端值与读取逻辑不动。 */
+  {
+    id: 'notify',
+    hint: '这两项是安全阈值和计费口径，改由实施来定；页面上只读，值随时看得见。',
+    title: '通知与导出',
+    color: '#00b42a',
+    /* 2026-11-19 主人：「按你建议恢复」—— 组回来了，但两行改只读：
+       export 是防数据外泄的闸门（单次最多 5000 行、24 小时超 2 万行记审计告警），
+       让管理员在页面上调大它等于拆闸门；logistics_volumetric_ratio 是物流计费
+       口径（体积重系数，0 = 不折算）。两个都只展示、不提供编辑入口，
+       真要改走实施（后端 PATCH /api/v1/settings）。 */
+    note: '导出上限与告警阈值、物流体积重系数；只读展示，改动由实施处理',
+    keys: ['export', 'logistics_volumetric_ratio'],
+  },
 ]
 
 /**
@@ -337,6 +342,8 @@ function SettingValueField({
   value,
   onSave,
   options,
+  moreOptions,
+  moreLabel,
 }: {
   rowKey: string
   field: string
@@ -344,6 +351,9 @@ function SettingValueField({
   onSave: (next: Record<string, unknown>) => Promise<unknown>
   /** 选项由页面现取时用（例如权限码清单），优先于 meta.options */
   options?: Array<{ value: string; label: string }>
+  /** 首屏只给常用项，点「更多…」才展开的其余选项（2026-11-19） */
+  moreOptions?: Array<{ value: string; label: string }>
+  moreLabel?: string
 }) {
   const meta = SETTING_FIELD_META[rowKey] ?? {}
   const kind = meta.kind ?? 'number'
@@ -355,6 +365,8 @@ function SettingValueField({
   const [open, setOpen] = useState(false)
   /** 有预设取值的项：默认只给胶囊，点「自定义」才露出输入框 */
   const [custom, setCustom] = useState(false)
+  /** 选项类：首屏只给常用项，点「更多…」把剩下的摊开（权限有 42 项） */
+  const [showMore, setShowMore] = useState(false)
 
   // 服务器回了新值（别处改的 / 保存成功）就同步回来；正在编辑或报错时不动，
   // 免得把用户手上没提交的字冲掉。
@@ -430,6 +442,7 @@ function SettingValueField({
     setText(initial)
     setOpen(false)
     setCustom(false)
+    setShowMore(false)
     setStatus('idle')
   }
 
@@ -467,10 +480,16 @@ function SettingValueField({
 
   // 选项类：一排胶囊，选中即保存，不用再点"保存"
   if (kind === 'select') {
+    const baseChoices = choices ?? []
+    // 「更多…」里的项不重复：已经在常用项里出现的跳过
+    const extraChoices = (moreOptions ?? []).filter(
+      (option) => !baseChoices.some((item) => item.value === option.value),
+    )
+    const visible = showMore ? [...baseChoices, ...extraChoices] : baseChoices
     return (
       <div className="setting-value-cell is-editing">
         <div className="setting-option-chips">
-          {(choices ?? []).map((option) => (
+          {visible.map((option) => (
             <button
               type="button"
               key={option.value}
@@ -487,6 +506,15 @@ function SettingValueField({
               {option.label}
             </button>
           ))}
+          {!showMore && extraChoices.length > 0 && (
+            <button
+              type="button"
+              className="setting-option-chip is-more"
+              onClick={() => setShowMore(true)}
+            >
+              {moreLabel ?? '更多选项…'}
+            </button>
+          )}
         </div>
         <div className="setting-value-actions">
           <Button size="small" theme="borderless" onClick={cancel}>取消</Button>
@@ -603,7 +631,7 @@ export default function SettingsPage() {
     { title: '个人', keys: ['profile'] },
     { title: '组织与权限', keys: ['users', 'roles', 'departments'] },
     { title: '业务配置', keys: ['tags', 'dictionaries', 'rules'] },
-    { title: '系统', keys: ['audit'] },
+    { title: '系统', keys: ['notifications', 'audit'] },
   ]
     .map((group) => ({
       title: group.title,
@@ -798,6 +826,29 @@ export default function SettingsPage() {
 
   const renderSettingValue = (record: SystemSettingRow) => {
     const raw = record.value ?? {}
+    // 这两项只读（2026-11-19 恢复该组时定的口径）：
+    // 不是不给看，是不给在页面上改 —— 一个是防外泄的行数闸门，一个是物流计费口径，
+    // 调错了要么导不出、要么算错运费，都由实施确认后再改。
+    if (record.key === 'export') {
+      const box = (raw ?? {}) as Record<string, unknown>
+      const limit = Number(box.limit ?? 5000)
+      const alertRows = Number(box.alert_rows ?? 20000)
+      const windowHours = Number(box.alert_window_hours ?? 24)
+      return (
+        <span className="setting-readonly-value">
+          单次最多导出 {limit.toLocaleString()} 行；{windowHours} 小时内导出超过{' '}
+          {alertRows.toLocaleString()} 行会记一条审计告警
+        </span>
+      )
+    }
+    if (record.key === 'logistics_volumetric_ratio') {
+      const ratio = Number(raw?.number ?? 0)
+      return (
+        <span className="setting-readonly-value">
+          {ratio === 0 ? '未启用 —— 计费重量只按实际重量算' : `1 立方米按 ${ratio} kg 折算`}
+        </span>
+      )
+    }
     if (record.key === 'approval_levels' && Array.isArray(raw.levels)) {
       // 审批分档改成"就地编辑表格"（2026-10-14 主人拍板）。
       // 旧写法是一张只读小表格 + 一个让你**手写整段 JSON** 的输入框：
@@ -854,6 +905,15 @@ export default function SettingsPage() {
               )
             : undefined
         }
+        moreOptions={
+          record.key === 'pool_recycle_restore_permission'
+            ? (recyclePermsQuery.data ?? []).map((item) => ({
+                value: item.code,
+                label: `${item.name}（${item.code}）`,
+              }))
+            : undefined
+        }
+        moreLabel="更多权限…"
         onSave={(next) => settingMutation.mutateAsync({ key: record.key, value: next, silent: true })}
       />
     )
@@ -1774,6 +1834,7 @@ export default function SettingsPage() {
               />
             </>
           )}
+          {activeKey === 'notifications' && <NotificationSettingsPanel />}
           {activeKey === 'audit' && (
             /* 审计日志：搜索 / 筛选 / 分页 + 变更明细（2026-10-15）。
                原来这里是一个写死 `{page:1, page_size:50}`、`pagination={false}` 的表格 ——
