@@ -6,7 +6,6 @@ import { updatePaymentAllocations, type Payment, type Receivable } from '../../s
 import { fillPaymentByDueDate, paymentCents, paymentMoney } from '../../shared/payment-allocation'
 import { formatMoney } from '../../shared/components/money'
 import BlockedHint from '../../shared/components/BlockedHint'
-import FormLabel from '../../shared/components/FormLabel'
 
 /**
  * 人工调整一笔回款的**分配**（第十批，主人 2026-10-13 拍板）。
@@ -143,7 +142,17 @@ function initialAmounts(payment: Payment | null): Record<number, string> {
 
   return (
     <Modal
-      title={`调整回款分配${payment ? `：${formatMoney(payment.received_amount_exact ?? payment.received_amount, currency)}` : ''}`}
+      title={
+        <div className="modal-head">
+          <span className="modal-head-icon" aria-hidden>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><path d="M4 8h16v10H4z" /><path d="M12 8v10" /><path d="M7 12h2" /><path d="M15 12h2" /></svg>
+          </span>
+          <div>
+            调整回款分配{payment ? `：${formatMoney(payment.received_amount_exact ?? payment.received_amount, currency)}` : ''}
+            <div className="modal-subtitle">把这一笔钱分到它实际覆盖的几期；改完要留一句原因</div>
+          </div>
+        </div>
+      }
       visible={visible}
       onCancel={onClose}
       width={680}
@@ -167,10 +176,10 @@ function initialAmounts(payment: Payment | null): Record<number, string> {
         下面填的是「这笔钱实际覆盖哪几期、各多少」。没填的期即不分配。
       </div>
 
-      <div style={{ marginBottom: 8 }}>
-        <FormLabel hint="按到期日从早到晚填各期空缺，与系统自动分配的规则一致">
-          本单各期
-        </FormLabel>
+      <div className="form-section-head">
+        <span className="form-section-title">本单各期</span>
+        <span className="form-section-hint">按到期日从早到晚填各期空缺，与系统自动分配的规则一致</span>
+        <div style={{ flex: 1 }} />
         <Button size="small" onClick={fillByDueDate} disabled={!canEdit}>
           按到期日自动铺一遍
         </Button>
@@ -241,10 +250,10 @@ function initialAmounts(payment: Payment | null): Record<number, string> {
         )}
       </div>
 
-      <div>
-        <FormLabel required hint="会写进审计的 after，事后要能回答为什么这么分">
-          调整原因
-        </FormLabel>
+      <div className="form-rows">
+        <div className="form-row is-textarea">
+          <label className="form-row-label">调整原因<span className="req">*</span></label>
+          <div className="form-row-control">
         <Select
           style={{ width: '100%', marginBottom: 6 }}
           placeholder="常见原因（也可以直接在下面写）"
@@ -259,13 +268,18 @@ function initialAmounts(payment: Payment | null): Record<number, string> {
         />
         {/* 用 Semi 的 TextArea（与全站一致），不要手写 textarea ——
             我第一版手写了一个，还多留了一个隐藏的 InputNumber 占位，都是废件。 */}
-        <TextArea
-          rows={2}
-          value={reason}
-          disabled={!canEdit}
-          placeholder="例如：客户实际付的是二期，登记时点成了一期"
-          onChange={(value) => setReason(value)}
-        />
+            <TextArea
+              rows={2}
+              value={reason}
+              disabled={!canEdit}
+              placeholder="例如：客户实际付的是二期，登记时点成了一期"
+              onChange={(value) => setReason(value)}
+            />
+            <div className="form-row-hint">
+              会写进审计的 after，事后要能回答为什么这么分。
+            </div>
+          </div>
+        </div>
       </div>
 
       {blockedReasons.length > 0 && (
