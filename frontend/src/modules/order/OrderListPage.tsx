@@ -374,7 +374,13 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
         return (
           <div style={{ display: 'grid', gap: 2, justifyItems: 'end' }}>
             <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>已收 {received}</span>
-            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+            <span
+              style={{
+                fontSize: 12,
+                color: record.status === 'overdue' ? '#f53f3f' : 'var(--crm-text-3)',
+                fontWeight: record.status === 'overdue' ? 600 : undefined,
+              }}
+            >
               未收 {formatMoney(record.remaining_amount_exact ?? record.remaining_amount, record.currency)}
             </span>
           </div>
@@ -392,8 +398,22 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
          所以金额仍被居中；补一个 class 由下面 CSS 用 !important 兜住。 */
       className: 'cell-right',
           width: 130,
-          render: (v: number, record: Receivable) =>
-            formatMoney(record.remaining_amount_exact ?? v, record.currency),
+          /* 逾期行把"未收"标红加粗：这是这一行唯一还没回来的钱，
+             原来和已回款行的未收 ¥0.00 长得一样，扫一遍看不出哪笔真欠着。 */
+          render: (v: number, record: Receivable) => {
+            const overdue = record.status === 'overdue'
+            return (
+              <span
+                style={
+                  overdue
+                    ? { color: '#f53f3f', fontWeight: 600 }
+                    : undefined
+                }
+              >
+                {formatMoney(record.remaining_amount_exact ?? v, record.currency)}
+              </span>
+            )
+          },
         }]),
     {
       title: '状态',
