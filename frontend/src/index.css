@@ -6268,23 +6268,27 @@ table:not(.semi-table) td.cell-right {
 .semi-button-tertiary.semi-button-borderless:hover {
   background: rgba(47, 109, 246, .08) !important;
 }
-/* ─────────────── 表格里的"名称链接"：不再整列蓝（2026-11-19）───────────────
-   产品中心的「产品名称」整列 14 行全是蓝色粗体链接，一眼看上去是一列蓝字海，
-   扫读时反而找不到重点；客户/报价/订单列表同一种写法。
-   改成：常态用主文本色 + 500 字重（它仍然可点），悬停才变主色并加下划线。
-   判据：表格里的 <a> 基本只有"主标识"（名称/单号），操作列已经是文字按钮，
-   所以这样写不会把真正的操作链接压掉。 */
+/* ─────────────── 表格里的"名称链接"（2026-11-19 二稿）───────────────
+   一稿把它改成深色，结果整张表"一片黑"，看不出哪些名字能点进去。
+   二稿：能跳转的仍是主色，但**去掉粗体**（一稿前的"蓝字海"主要怪 600 字重），
+   再压到 13px 的常规字重；不能跳转的普通文本保持深色。于是：
+   蓝 = 可点，黑 = 纯信息；悬停才出现下划线。 */
 .semi-table-tbody .semi-table-row-cell a {
-  color: var(--crm-text-1, #1d2129) !important;
-  font-weight: 500;
+  color: #2c62d9 !important;
+  font-weight: 400;
   text-decoration: none;
   transition: color .14s ease;
 }
 .semi-table-tbody .semi-table-row-cell a:hover {
-  color: var(--crm-primary) !important;
+  color: #1f4fc4 !important;
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+/* 名称列的两个字副标题（如"华东复购 · 待补核"）保持灰，别被链接色带跑 */
+.semi-table-tbody .semi-table-row-cell a span {
+  color: inherit;
+}
+
 /* 表格行内操作：Semi 的 theme="borderless" 对 primary / danger 仍然带一层浅底 + 圆角，
    于是「详情 / 删除」变成一白一红的小药丸（样品管理整张表 12 行都是）。
    表格里一律按文字按钮处理：透明底、无边框、无投影，悬停才浮浅色。 */
@@ -6305,6 +6309,7 @@ table:not(.semi-table) td.cell-right {
 .semi-table-tbody .semi-button.semi-button-borderless.semi-button-danger:hover {
   background: rgba(245, 63, 63, .08) !important;
 }
+
 /* 物流试算左卡的三段小标题：一小段蓝竖条 + 12.5px 灰字，
    把"算什么 / 从哪到哪 / 可选"顺序立起来（原来六个字段平铺，看不出先后）。 */
 .calc-step {
