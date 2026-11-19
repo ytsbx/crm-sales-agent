@@ -535,10 +535,12 @@ export default function AnalyticsPage() {
           <div className="kpi-group-head">成交与转化</div>
           <KpiStrip
             tintValues={false}
-            /* 7 张卡在 4 列网格里排成 4 + 3，第二行右边空一整格（1440 实拍）。
-               补 kpi-fill-last：index.css 里那条 4n+3 规则让最后一张跨两列，
-               末行正好铺满，不留空洞。 */
-            className="kpi-grid kpi-grid-fixed kpi-fill-last"
+            /* 7 张卡在 4 列网格里排成 4 + 3，第二行右边空一格。
+               曾经补过 kpi-fill-last 让末张跨两列去补洞 —— 主人 2026-11-19 说
+               「不要让那一个卡片适应窗口呀，三个一起更好看吧」：一张 770 宽的卡
+               夹在三张 390 宽的卡中间，量级和字号都被拉变形了。
+               现在不补洞：第二行三张等宽，右边就空一格背景色。 */
+            className="kpi-grid kpi-grid-fixed"
             items={[
               {
                 label: '商机成交率',
