@@ -5816,3 +5816,52 @@ table:not(.semi-table) td.cell-right {
   height: 1px;
   background: rgba(17, 24, 39, 0.06);
 }
+/* ─────────────────────────────────────────────────────────────────────────
+   弹窗质感（2026-11-19 主人：「这种弹窗一片白，有什么办法弄好看一点吗」）
+   原因不是配色，是**层次缺失**：标题区、表单区、按钮区全是一个白，输入框也是
+   白底 + 浅灰描边，一眼看过去只有一堆线框，没有"块"。
+   做法（只在弹窗内生效，列表页的筛选框/内联编辑不受影响）：
+   1) 输入框静止态改成浅灰底、无描边 —— 控件从"白纸上的线框"变成"纸上的凹槽"；
+   2) 聚焦时变白底 + 主色描边 + 3px 光晕，编辑中的那个格子才亮起来；
+   3) 标题区一层极淡的主色（4% → 0 的竖向渐变），跟正文拉开；
+   4) 底部按钮区浅灰底 + 一条上边线，按钮"落"在弹窗底上，不再悬着。
+   ───────────────────────────────────────────────────────────────────────── */
+.semi-modal .semi-input-wrapper,
+.semi-modal .semi-input-textarea-wrapper,
+.semi-modal .semi-select,
+.semi-modal .semi-datepicker {
+  background: #f3f5f7;
+  border: 1px solid transparent;
+  transition: background .16s ease, border-color .16s ease, box-shadow .16s ease;
+}
+.semi-modal .semi-input-wrapper:hover,
+.semi-modal .semi-input-textarea-wrapper:hover,
+.semi-modal .semi-select:hover,
+.semi-modal .semi-datepicker:hover {
+  background: #eceff2;
+}
+.semi-modal .semi-input-wrapper-focus,
+.semi-modal .semi-input-wrapper-error,
+.semi-modal .semi-input-textarea-wrapper-focus,
+.semi-modal .semi-select-focus,
+.semi-modal .semi-select-open,
+.semi-modal .semi-datepicker-focus {
+  background: #fff !important;
+  border-color: var(--crm-primary) !important;
+  box-shadow: 0 0 0 3px rgba(47, 109, 246, .12);
+}
+/* 输入框里的实际 input 要透明，否则灰底被它盖住 */
+.semi-modal .semi-input,
+.semi-modal .semi-select-selection,
+.semi-modal .semi-datepicker-input {
+  background: transparent;
+}
+.semi-modal-header {
+  background: linear-gradient(180deg, rgba(47, 109, 246, .045), rgba(47, 109, 246, 0));
+  border-bottom: 1px solid rgba(17, 24, 39, .06);
+  padding-bottom: 14px;
+}
+.semi-modal-footer {
+  background: #fafbfc;
+  border-top: 1px solid rgba(17, 24, 39, .06);
+}
