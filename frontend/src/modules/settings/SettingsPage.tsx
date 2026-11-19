@@ -108,10 +108,13 @@ const SETTING_GROUPS: Array<{
   /** 每个业务域一个色相：只在标题前那 6px 圆点、和顶部药丸上用它，
       整页还是白 + 发丝线 —— 有颜色，但不"花"。 */
   color: string
+  /** 组尾的一句"这组影响什么"：不是填充文案，是把卡片底部收住的那一行。 */
+  hint: string
   keys: string[]
 }> = [
   {
     id: 'company',
+    hint: '这些值会印在报价单、合同和业务单据上；改动立即生效，已发出的单据不受影响。',
     title: '公司与单据',
     color: '#2f6df6',
     note: '打印在报价单、合同上的信息，以及报价默认带上的条款',
@@ -119,6 +122,7 @@ const SETTING_GROUPS: Array<{
   },
   {
     id: 'pricing',
+    hint: '核价时按这里算；角色专属规则优先于这里的默认值。',
     title: '报价与定价',
     color: '#6b5ce7',
     note: '核价时的默认口径；绝对底价是最后一道闸',
@@ -126,6 +130,7 @@ const SETTING_GROUPS: Array<{
   },
   {
     id: 'customer',
+    hint: '用于自动标记沉睡 / 停滞和查重打分；「自动任务」里那几条提醒用的也是这组天数。',
     title: '客户与商机节奏',
     color: '#12b5a0',
     note: '多少天没动静算沉睡 / 停滞，查重多少分算重复',
@@ -133,6 +138,7 @@ const SETTING_GROUPS: Array<{
   },
   {
     id: 'poolcfg',
+    hint: '天数与上方「公海回收规则」配套：保护期内不会被提名，预告期满主管才能批。',
     title: '公海回收参数',
     color: '#ff7d00',
     note: '判定逻辑在上方的「公海回收规则」，这里只放天数与恢复权限',
@@ -140,6 +146,7 @@ const SETTING_GROUPS: Array<{
   },
   {
     id: 'approval',
+    hint: '同序 OA 未配置时不会发出审批单；报价审批分级在下方单独编辑，按金额判定。',
     title: '审批与外部系统',
     color: '#8f5cf7',
     note: '同序 OA 的模板与字段映射；未配置时不会发出审批，报价审批分级在下方单独编辑',
@@ -147,6 +154,7 @@ const SETTING_GROUPS: Array<{
   },
   {
     id: 'notify',
+    hint: '导出上限按行数算；通知渠道关掉之后不再推送，历史记录仍保留。',
     title: '通知与导出',
     color: '#00b42a',
     note: '导出上限、体积重折算、通知渠道与重试',
@@ -1153,9 +1161,7 @@ export default function SettingsPage() {
             : '改自己的登录名和密码，看自己的资料与权限'
         }
       />
-      {/* rules 页一次只显示一块：内容短的那几组撑不满整屏，
-          卡再被 flex 拉满，下半截就是一大片白 —— 交给页面底色更自然。 */}
-      <SectionCard className={activeKey === 'rules' ? 'auto-height' : undefined}>
+      <SectionCard>
         <div className="settings-shell">
           <nav className="settings-nav" aria-label="设置分类">
             {tabGroups.map((group) => (
@@ -1908,6 +1914,7 @@ export default function SettingsPage() {
                             )
                           })}
                         </div>
+                        <div className="settings-group-foot">{group.hint}</div>
                       </section>
                     )
                   })}

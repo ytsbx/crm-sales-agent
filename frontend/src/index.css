@@ -5056,7 +5056,19 @@ table:not(.semi-table) td.cell-right {
 }
 
 .settings-group-body {
-  padding: 6px 20px 10px;
+  padding: 4px 20px 8px;
+}
+
+/* 组尾注：这组值影响哪些地方。视觉上把卡片底部收住 ——
+   没有它，卡内最后一行下面就是一截没有内容的空白，看着"没填完"。 */
+.settings-group-foot {
+  margin: 0;
+  padding: 11px 20px 12px;
+  border-top: 1px solid rgba(17, 24, 39, .055);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--crm-text-3);
+  background: color-mix(in srgb, var(--group-color, var(--crm-primary)) 3%, #fff);
 }
 
 .setting-field {
@@ -5066,7 +5078,7 @@ table:not(.semi-table) td.cell-right {
   grid-template-columns: 128px minmax(0, 232px) minmax(0, 1fr);
   column-gap: 18px;
   align-items: center;
-  padding: 11px 10px;
+  padding: 13px 10px;
   margin: 0 -10px;
   border-radius: 9px;
   /* 虚线分隔换成"整行浮起来"：虚线是表格的语法，设置面板靠留白和 hover 区分 */
