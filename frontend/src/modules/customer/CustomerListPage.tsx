@@ -1119,9 +1119,18 @@ export default function CustomerListPage() {
 
       <Modal
         title={
-          <div>
-            新建客户
-            <div className="modal-subtitle">只填名称就能建，其余可以后补</div>
+          <div className="modal-head">
+            <span className="modal-head-icon" aria-hidden>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
+                <path d="M3 21h18" />
+                <path d="M5 21V8l7-5 7 5v13" />
+                <path d="M9.5 21v-5.5h5V21" />
+              </svg>
+            </span>
+            <div>
+              新建客户
+              <div className="modal-subtitle">只填名称就能建，其余可以后补</div>
+            </div>
           </div>
         }
         // 不写 width 时 Semi 用 448，表单挤成一条竖线、八个字段拉出一屏半高。
@@ -1143,7 +1152,7 @@ export default function CustomerListPage() {
         cancelText="取消"
       >
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px 16px' }}>
-          <div className="form-block-title">基础信息</div>
+          <div className="form-block-title"><span>基础信息</span></div>
           <div style={{ gridColumn: '1 / -1' }}>
             <FormLabel required>客户名称</FormLabel>
             <Input
@@ -1237,7 +1246,7 @@ export default function CustomerListPage() {
             />
           </div>
 
-          <div className="form-block-title">归属</div>
+          <div className="form-block-title"><span>归属</span></div>
           {/* 归属：**可以指定**（主人 2026-10-13：「为啥只能谁创建谁是负责人，
               不能指定吗，没有指定再是自己」）。后端一直支持（`CustomerCreate.owner_id`
               + `create_customer` 里"为空才归创建人"），缺的只是这个入口 + 前端类型字段。
@@ -1273,7 +1282,7 @@ export default function CustomerListPage() {
           </div>
 
 
-          <div className="form-block-title">补充</div>
+          <div className="form-block-title"><span>补充</span></div>
           <div style={{ gridColumn: '1 / -1' }}>
             <FormLabel>备注</FormLabel>
             <TextArea

@@ -362,9 +362,18 @@ export default function OpportunityListPage() {
 
       <Modal
         title={
-          <div>
-            新建商机
-            <div className="modal-subtitle">客户和名称必填；金额、日期可以后补</div>
+          <div className="modal-head">
+            <span className="modal-head-icon" aria-hidden>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
+                <path d="M3 20h18" />
+                <path d="M6 16l5-5 3.5 3.5L21 8" />
+                <path d="M15 8h6v6" />
+              </svg>
+            </span>
+            <div>
+              新建商机
+              <div className="modal-subtitle">客户和名称必填；金额、日期可以后补</div>
+            </div>
           </div>
         }
         width={520}
@@ -385,7 +394,7 @@ export default function OpportunityListPage() {
         okText="创建"
       >
         <div style={{ display: 'grid', gap: 16 }}>
-          <div className="form-block-title">要什么</div>
+          <div className="form-block-title"><span>要什么</span></div>
           <div>
             <FormLabel required>客户</FormLabel>
             <Select
@@ -427,7 +436,7 @@ export default function OpportunityListPage() {
               />
             </div>
           </div>
-          <div className="form-block-title">怎么推</div>
+          <div className="form-block-title"><span>怎么推</span></div>
           <div>
             <FormLabel>竞争对手</FormLabel>
             <Input
