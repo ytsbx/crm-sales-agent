@@ -5073,12 +5073,15 @@ table:not(.semi-table) td.cell-right {
 
 .setting-field {
   display: grid;
-  /* 三列：名字对齐成一列，控件封顶 232，剩下全给说明。
-     名字列固定宽度是为了让同组里的"30 天"竖着对齐。 */
-  grid-template-columns: 128px minmax(0, 232px) minmax(0, 1fr);
-  column-gap: 18px;
+  /* 三列：名字对齐成一列，控件封顶 236，剩下全给说明。
+     名字列固定宽度是为了让同组里的"30 天"竖着对齐；
+     112 是这一页最长那批标签（"建议报价浮动范围" 8 字）刚好放下的宽度 ——
+     原来 128 时，五字标签和输入框之间空出一截，整行看过去是"散"的
+     （对比「报价审批分级」那种"标签紧挨控件"的密度）。 */
+  grid-template-columns: 112px minmax(0, 236px) minmax(0, 1fr);
+  column-gap: 14px;
   align-items: center;
-  padding: 13px 10px;
+  padding: 11px 10px;
   margin: 0 -10px;
   border-radius: 9px;
   /* 虚线分隔换成"整行浮起来"：虚线是表格的语法，设置面板靠留白和 hover 区分 */
@@ -5139,7 +5142,7 @@ table:not(.semi-table) td.cell-right {
 
 .setting-field-desc {
   /* 说明比标题淡一档、小一档：层次靠这个，不靠分隔线 */
-  font-size: 11px;
+  font-size: 11.5px;
   line-height: 1.65;
   color: var(--crm-text-3);
   min-width: 0;

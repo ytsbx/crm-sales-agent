@@ -225,7 +225,7 @@ const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
     kind: 'select',
     options: [
       { value: '', label: '跟随角色规则' },
-      { value: 'strict', label: '强制底价（低于底价直接拦）' },
+      { value: 'strict', label: '强制底价（直接拦截）' },
     ],
   },
   default_delivery_terms: { kind: 'multiline', placeholder: '新报价默认带上的交货与运费说明' },
