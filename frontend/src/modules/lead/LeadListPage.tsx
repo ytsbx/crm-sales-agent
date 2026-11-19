@@ -39,7 +39,6 @@ import FollowUpModal from '../common/FollowUpModal'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { TagTone } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
-import FormLabel from '../../shared/components/FormLabel'
 import StatusDot from '../../shared/components/StatusDot'
 
 const STATUS_OPTIONS = [
@@ -469,8 +468,18 @@ export default function LeadListPage() {
       </SectionCard>
 
       <Modal
-        title="新建线索"
-        width={520}
+        title={
+          <div className="modal-head">
+            <span className="modal-head-icon" aria-hidden>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><path d="M5 21V4" /><path d="M5 4h10l-1.6 3L15 10H5" /><path d="M9 14h4v7h-4z" /></svg>
+            </span>
+            <div>
+              新建线索
+              <div className="modal-subtitle">名称必填；公司、联系人可以后补</div>
+            </div>
+          </div>
+        }
+        width={600}
         visible={createVisible}
         onCancel={() => setCreateVisible(false)}
         onOk={() => {
@@ -487,32 +496,38 @@ export default function LeadListPage() {
         confirmLoading={createMutation.isPending}
         okText="创建"
       >
-        <div style={{ display: 'grid', gap: 12 }}>
-          <div>
-            <FormLabel required>线索名称</FormLabel>
-            <Input
-              value={form.name}
-              onChange={(v) => setForm({ ...form, name: v })}
-              placeholder="例如：杭州电商仓周转箱需求"
-            />
+                <div className="form-rows">
+          <div className="form-row">
+            <label className="form-row-label">线索名称<span className="req">*</span></label>
+            <div className="form-row-control">
+              <Input
+                value={form.name}
+                onChange={(v) => setForm({ ...form, name: v })}
+                placeholder="例如：杭州电商仓周转箱需求"
+              />
+            </div>
           </div>
-          <div>
-            <div style={{ marginBottom: 4 }}>公司名称</div>
-            <Input value={form.company_name} onChange={(v) => setForm({ ...form, company_name: v })} />
+          <div className="form-row">
+            <label className="form-row-label">公司名称</label>
+            <div className="form-row-control">
+              <Input value={form.company_name} onChange={(v) => setForm({ ...form, company_name: v })} />
+            </div>
           </div>
-          <div style={{ display: 'flex', gap: 12 }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>联系人</div>
+          <div className="form-row">
+            <label className="form-row-label">联系人</label>
+            <div className="form-row-control">
               <Input value={form.contact_name} onChange={(v) => setForm({ ...form, contact_name: v })} />
             </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>手机</div>
+          </div>
+          <div className="form-row">
+            <label className="form-row-label">手机</label>
+            <div className="form-row-control">
               <Input value={form.mobile} onChange={(v) => setForm({ ...form, mobile: v })} />
             </div>
           </div>
-          <div style={{ display: 'flex', gap: 12 }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>来源</div>
+          <div className="form-row">
+            <label className="form-row-label">来源</label>
+            <div className="form-row-control">
               <Select
                 value={form.source}
                 onChange={(v) => setForm({
@@ -524,24 +539,30 @@ export default function LeadListPage() {
                 style={{ width: '100%' }}
               />
             </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>省份 / 地区</div>
-              <Input value={form.region} onChange={(v) => setForm({ ...form, region: v })} />
-            </div>
           </div>
           {form.source === '其他渠道' && (
-            <div>
-              <FormLabel required>其他渠道说明</FormLabel>
-              <Input
-                value={form.source_detail}
-                onChange={(v) => setForm({ ...form, source_detail: v })}
-                placeholder="请填写具体来源，例如：合作伙伴推荐、线下拜访"
-              />
+            <div className="form-row">
+              <label className="form-row-label">渠道说明<span className="req">*</span></label>
+              <div className="form-row-control">
+                <Input
+                  value={form.source_detail}
+                  onChange={(v) => setForm({ ...form, source_detail: v })}
+                  placeholder="请填写具体来源，例如：合作伙伴推荐、线下拜访"
+                />
+              </div>
             </div>
           )}
-          <div>
-            <div style={{ marginBottom: 4 }}>备注</div>
-            <TextArea value={form.remark} onChange={(v) => setForm({ ...form, remark: v })} rows={2} />
+          <div className="form-row">
+            <label className="form-row-label">省份 / 地区</label>
+            <div className="form-row-control">
+              <Input value={form.region} onChange={(v) => setForm({ ...form, region: v })} placeholder="浙江" />
+            </div>
+          </div>
+          <div className="form-row is-textarea">
+            <label className="form-row-label">备注</label>
+            <div className="form-row-control">
+              <TextArea value={form.remark} onChange={(v) => setForm({ ...form, remark: v })} rows={2} />
+            </div>
           </div>
         </div>
       </Modal>

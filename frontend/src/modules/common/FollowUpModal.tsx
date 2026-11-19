@@ -3,7 +3,6 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { DatePicker, Input, Modal, Select, TextArea, Toast } from '@douyinfe/semi-ui'
 
 import { createFollowUp } from '../../shared/api/followup'
-import FormLabel from '../../shared/components/FormLabel'
 import { otherOption } from '../../shared/components/otherOption'
 
 // 跟进方式。值是中文本身（后端 `followup_type` 是自由文本），
@@ -89,7 +88,17 @@ export default function FollowUpModal({ visible, onClose, target, onCreated }: P
 
   return (
     <Modal
-      title="记录跟进"
+      title={
+          <div className="modal-head">
+            <span className="modal-head-icon" aria-hidden>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><path d="M4 5h16v11H9l-4 4v-4H4z" /><path d="M8 10h8" /></svg>
+            </span>
+            <div>
+              记录跟进
+              <div className="modal-subtitle">写完这次沟通，顺手把下次跟进定下来</div>
+            </div>
+          </div>
+        }
       visible={visible}
       onCancel={onClose}
       onOk={() => {
@@ -105,74 +114,94 @@ export default function FollowUpModal({ visible, onClose, target, onCreated }: P
       }}
       confirmLoading={mutation.isPending}
       okText="保存"
-      width={520}
+      width={600}
     >
-      <div style={{ display: 'grid', gap: 12 }}>
-        <div>
-          <FormLabel>跟进方式</FormLabel>
-          {/* 原来固定 180px：一张 520 宽的弹窗里，别的控件都通栏，只有它缩在左边，
-              看着像没对齐。改成通栏，整列左边缘一条线。 */}
-          <Select
-            value={typeOption.selectValue}
-            onChange={typeOption.onSelect}
-            optionList={TYPES}
-            style={{ width: '100%' }}
-          />
-          {typeOption.showInput && (
-            <Input
-              style={{ marginTop: 8 }}
-              value={typeOption.inputValue}
-              onChange={typeOption.onInput}
-              placeholder="请说明是什么方式（可不填）"
-            />
-          )}
-        </div>
-        <div>
-          <FormLabel required>跟进内容</FormLabel>
-          <TextArea
-            value={content}
-            onChange={setContent}
-            rows={3}
-            placeholder="今天沟通了什么？"
-          />
-        </div>
-        <div>
-          <FormLabel>客户反馈</FormLabel>
-          <TextArea value={feedback} onChange={setFeedback} rows={2} />
-        </div>
-        <div>
-          <FormLabel>后续安排</FormLabel>
-          <Select
-            value={exemptionReason ?? 'plan'}
-            onChange={(value) => setExemptionReason(value === 'plan' ? null : String(value))}
-            optionList={[
-              { value: 'plan', label: '安排下一次跟进' },
-              { value: 'customer_declined', label: '免填：客户明确拒绝' },
-              { value: 'business_closed', label: '免填：业务已关闭' },
-              { value: 'waiting_external', label: '免填：等待外部固定节点' },
-            ]}
-            style={{ width: '100%' }}
-          />
-        </div>
-        {!exemptionReason && <>
-          <div>
-            <FormLabel required>下一步动作</FormLabel>
-            <Input value={nextAction} maxLength={200} onChange={setNextAction} placeholder="例如：整理报价并回访客户" />
-          </div>
-          <div>
-            <FormLabel required>下次跟进时间</FormLabel>
-            <DatePicker
-              type="dateTime"
-              value={taskDue ?? undefined}
-              onChange={(date) => setTaskDue((date as Date) ?? null)}
-              placeholder="选择下次跟进时间"
+      <div className="form-rows">
+        <div className="form-row">
+          <label className="form-row-label">跟进方式</label>
+          <div className="form-row-control">
+            <Select
+              value={typeOption.selectValue}
+              onChange={typeOption.onSelect}
+              optionList={TYPES}
               style={{ width: '100%' }}
             />
-            <div style={{ marginTop: 6, color: 'var(--semi-color-text-2)', fontSize: 12 }}>保存后自动生成后续待办。</div>
+            {typeOption.showInput && (
+              <Input
+                style={{ marginTop: 8 }}
+                value={typeOption.inputValue}
+                onChange={typeOption.onInput}
+                placeholder="请说明是什么方式（可不填）"
+              />
+            )}
+          </div>
+        </div>
+
+        <div className="form-row is-textarea">
+          <label className="form-row-label">跟进内容<span className="req">*</span></label>
+          <div className="form-row-control">
+            <TextArea
+              value={content}
+              onChange={setContent}
+              rows={3}
+              placeholder="今天沟通了什么？"
+            />
+          </div>
+        </div>
+
+        <div className="form-row is-textarea">
+          <label className="form-row-label">客户反馈</label>
+          <div className="form-row-control">
+            <TextArea value={feedback} onChange={setFeedback} rows={2} />
+          </div>
+        </div>
+
+        <div className="form-row">
+          <label className="form-row-label">后续安排</label>
+          <div className="form-row-control">
+            <Select
+              value={exemptionReason ?? 'plan'}
+              onChange={(value) => setExemptionReason(value === 'plan' ? null : String(value))}
+              optionList={[
+                { value: 'plan', label: '安排下一次跟进' },
+                { value: 'customer_declined', label: '免填：客户明确拒绝' },
+                { value: 'business_closed', label: '免填：业务已关闭' },
+                { value: 'waiting_external', label: '免填：等待外部固定节点' },
+              ]}
+              style={{ width: '100%' }}
+            />
+          </div>
+        </div>
+
+        {!exemptionReason && <>
+          <div className="form-row">
+            <label className="form-row-label">下一步<span className="req">*</span></label>
+            <div className="form-row-control">
+              <Input value={nextAction} maxLength={200} onChange={setNextAction} placeholder="例如：整理报价并回访客户" />
+            </div>
+          </div>
+          <div className="form-row">
+            <label className="form-row-label">下次跟进</label>
+            <div className="form-row-control">
+              <DatePicker
+                type="dateTime"
+                value={taskDue ?? undefined}
+                onChange={(date) => setTaskDue((date as Date) ?? null)}
+                placeholder="选择下次跟进时间"
+                style={{ width: '100%' }}
+              />
+              <div className="form-row-hint">保存后自动生成后续待办。</div>
+            </div>
           </div>
         </>}
-        {exemptionReason && <div style={{ color: 'var(--semi-color-text-2)', fontSize: 12 }}>保存免填原因，本次不创建后续待办。</div>}
-
+        {exemptionReason && (
+          <div className="form-row">
+            <label className="form-row-label">后续</label>
+            <div className="form-row-control">
+              <div className="form-row-hint" style={{ marginTop: 0 }}>已选免填原因，本次不创建后续待办。</div>
+            </div>
+          </div>
+        )}
       </div>
     </Modal>
   )
