@@ -265,6 +265,34 @@ type SettingSaveStatus = 'idle' | 'dirty' | 'saving' | 'saved' | 'error'
  *    改了哪一行、存没存上，心里没数；
  * 3) 填错了 —— 数字项填了汉字当场标红，不要等提交回来才报错。
  */
+/**
+ * 「这一项到底配没配」的判据。
+ *
+ * 不能数对象里有几个 key：同序 OA 的配置对象里 `field_map`、`content_component`
+ * 这些空壳字段永远存在，数出来是"已配置 10 项"；反过来只挑一个标量看，
+ * 又会把配好的项判成空。所以按业务上的"关键字段"逐项判：
+ * 同序 OA 三件看审批模板编号（process_code），有编号才算接通。
+ */
+function objectConfigInfo(key: string, value: unknown): { configured: boolean; detail: string; detailFull?: string } {
+  const raw = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>
+  if (key === 'dingtalk_oa' || key === 'dingtalk_contract_oa' || key === 'dingtalk_sample_oa') {
+    const code = String(raw.process_code ?? '').trim()
+    if (!code) return { configured: false, detail: '' }
+    const mapCount = raw.field_map && typeof raw.field_map === 'object'
+      ? Object.keys(raw.field_map as Record<string, unknown>).length
+      : 0
+    const owners = Array.isArray(raw.quote_owners) ? raw.quote_owners.length : 0
+    const bits = [mapCount ? `映射 ${mapCount} 项` : '', owners ? `发起人 ${owners} 人` : ''].filter(Boolean)
+    return {
+      configured: true,
+      detail: bits.length ? bits.join(' · ') : '模板已接',
+      detailFull: `${code}${bits.length ? ` · ${bits.join(' · ')}` : ''}`,
+    }
+  }
+  const count = Array.isArray(value) ? value.length : Object.keys(raw).length
+  return { configured: count > 0, detail: `${count} 项` }
+}
+
 function SettingValueField({
   rowKey,
   field,
@@ -317,10 +345,10 @@ function SettingValueField({
   }
 
   if (kind === 'object') {
-    const count = Array.isArray(value) ? value.length : value && typeof value === 'object' ? Object.keys(value as object).length : 0
+    const info = objectConfigInfo(rowKey, value)
     // "已配置 0 项"自相矛盾（同序 OA 这几项的字段映射就是空对象）：
-    // 0 就写"未配置"，并明确"在哪配"，别让人以为这行坏了。
-    if (count === 0) {
+    // 没配就写"未配置"，并明确"在哪配"，别让人以为这行坏了。
+    if (!info.configured) {
       return (
         <div className="setting-object-value">
           <Tag color="orange" size="small">未配置</Tag>
@@ -331,7 +359,7 @@ function SettingValueField({
     return (
       <div className="setting-object-value">
         <Tag color="blue" size="small">已配置</Tag>
-        <span>{count} 项</span>
+        <span title={info.detailFull}>{info.detail}</span>
       </div>
     )
   }
@@ -642,6 +670,21 @@ export default function SettingsPage() {
     // 同序 OA 的模板号 + 字段映射）。取第一个标量来就地编辑，其余交给
     // 专门的区块（「客户查重规则」「同序 OA 审批配置」）；
     // 整个都是对象的那几个（通知渠道 / 重试策略）则由组件渲染成"已配置 N 项"。
+    // ⚠️ kind === 'object' 的项必须把**整个对象**传下去。
+    // 以前这里统一"取第一个标量字段"再传，而 object 那几项（同序 OA 三件）
+    // 传下去的其实是一串 process_code —— 组件拿字符串去数 key，永远是 0 项，
+    // 于是明明配好了模板和字段映射，页面上却写「未配置」（2026-11-19 主人问：
+    // "这个我没配置吗"，实测后端有 process_code + field_map + 发起人）。
+    if ((SETTING_FIELD_META[record.key]?.kind) === 'object') {
+      return (
+        <SettingValueField
+          rowKey={record.key}
+          field={record.key}
+          value={raw}
+          onSave={(next) => settingMutation.mutateAsync({ key: record.key, value: next, silent: true })}
+        />
+      )
+    }
     const scalarKey = Object.keys(raw).find((name) => {
       const candidate = raw[name]
       return candidate === null || candidate === undefined || typeof candidate !== 'object'
@@ -1893,7 +1936,9 @@ export default function SettingsPage() {
                         </header>
                         <div className="settings-group-body">
                           {rows.map((row) => {
-                            const note = settingNote(row.key)
+                            // 传上当前值：同序 OA 那三条"待配置"是写死的文案，
+                            // 实际配好了还挂着，等于给对的东西贴错标签。
+                            const note = settingNote(row.key, row.value)
                             // 多行文本（交货条款）独占一整行：塞在 240 宽的列里会被挤成
                             // 三行字、把这一行撑到 180px 高，上下全是空白。
                             const kind = SETTING_FIELD_META[row.key]?.kind

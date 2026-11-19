@@ -107,7 +107,25 @@ export const SETTING_NOTES: Record<string, { tag: string; text: string }> = {
   },
 }
 
-/** 这一项当前为什么看不出效果；没有话要说时返回 null（不编说明）。 */
-export function settingNote(key: string): { tag: string; text: string } | null {
+/** 同序 OA 三项的"待配置"只该在模板编号真的空着时出现（2026-11-19）。 */
+const DINGTALK_KEYS = ['dingtalk_oa', 'dingtalk_contract_oa', 'dingtalk_sample_oa']
+
+/**
+ * 这一项当前为什么看不出效果；没有话要说时返回 null（不编说明）。
+ *
+ * 传 `value` 是为了让"待配置"这类话跟着真实状态走：同序 OA 的
+ * `dingtalk_oa` 已经接上了模板和字段映射，文案却还写着"审批模板编号还是
+ * 空的"，等于给对的东西贴错标签 —— 管理员会照着这句去重配一遍。
+ */
+export function settingNote(
+  key: string,
+  value?: unknown,
+): { tag: string; text: string } | null {
+  if (DINGTALK_KEYS.includes(key)) {
+    const raw = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>
+    const code = String(raw.process_code ?? '').trim()
+    // 有模板编号 = 已经接通，不需要再挂"待配置"
+    if (code) return null
+  }
   return SETTING_NOTES[key] ?? null
 }
