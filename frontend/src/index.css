@@ -5778,3 +5778,11 @@ table:not(.semi-table) td.cell-right {
 .task-rule-table .semi-table-tbody > tr > td + td {
   border-left: 1px solid rgba(17, 24, 39, .06) !important;
 }
+/* 同序 OA 模板编号：只读展示，等宽小字，长码截断（全码在 title 里） */
+.setting-code-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  color: var(--crm-text-2);
+  letter-spacing: .2px;
+}
+.setting-code-empty { font-size: 12px; color: var(--crm-text-3); }
