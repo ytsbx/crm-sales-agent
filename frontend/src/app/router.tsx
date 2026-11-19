@@ -39,6 +39,7 @@ const WeComPage = lazyPage(() => import('../modules/wecom/WeComPage'))
 const ProductListPage = lazyPage(() => import('../modules/product/ProductListPage'))
 const ProductDetailPage = lazyPage(() => import('../modules/product/ProductDetailPage'))
 const RecycleBinPage = lazyPage(() => import('../modules/recycle/RecycleBinPage'))
+const PoolRecyclePage = lazyPage(() => import('../modules/recycle/PoolRecyclePage'))
 const PriceCenterPage = lazyPage(() => import('../modules/pricing/PriceCenterPage'))
 const PricingPage = lazyPage(() => import('../modules/pricing/PricingPage'))
 const LogisticsPage = lazyPage(() => import('../modules/logistics/LogisticsPage'))
@@ -118,6 +119,7 @@ export const router = createBrowserRouter([
       },
       { path: 'products/:id', element: <ProductDetailPage /> },
       { path: 'recycle-bin', element: <RecycleBinPage /> },
+      { path: 'pool-recycle', element: <PoolRecyclePage /> },
       {
         path: 'prices',
         element: <PriceCenterPage />,

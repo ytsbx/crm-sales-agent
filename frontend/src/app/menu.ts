@@ -71,6 +71,18 @@ export const MENU_GROUPS: MenuGroup[] = [
       { key: 'workbench', path: '/workbench', label: '工作台', icon: IconHome, ready: true },
       { key: 'leads', path: '/leads', label: '线索中心', icon: IconFilter, ready: true, permission: 'lead:view' },
       { key: 'customers', path: '/customers', label: '客户中心', icon: IconUserGroup, ready: true, permission: 'customer:view' },
+      // 公海回收（2026-11-19 从系统设置里独立出来）：复核是**日常作业**，
+      // 和线索中心、客户中心同一层。原来它缩在「系统设置 · 业务规则」里，
+      // 靠给 /settings 加 `customer:pool_review` 再把菜单改名「公海回收复核」
+      // 掩盖过去 —— 主管要进配置页才干日常活儿。
+      {
+        key: 'pool-recycle',
+        path: '/pool-recycle',
+        label: '公海回收',
+        icon: IconCheckList,
+        ready: true,
+        permission: ['customer:pool_review', 'settings:manage'],
+      },
       { key: 'duplicate-cases', path: '/duplicate-cases', label: '撞单裁定', icon: IconVerify, ready: true, permission: 'customer:view' },
       {
         key: 'opportunities',
@@ -138,13 +150,11 @@ export const MENU_GROUPS: MenuGroup[] = [
         // 但不同身份进去看到的东西完全不同，所以菜单名要跟着身份换（否则
         // 主管会以为自己拿到了整个系统设置、业务员会以为自己点错了地方）。
         //
-        // 销售主管拿的是 `customer:pool_review`（公海回收复核），**不是**
-        // `settings:manage`。原来这条只认 settings:manage，于是主管**常规菜单里
-        // 根本没有入口**，只能靠回收预告的通知链接撞进去（返修单 R12）。
-        // 现在两种权限任一命中都给入口，且**不给他系统设置权限本身**；
-        // 没有 settings:manage 时菜单改名 —— 他进去本来就只看得到复核那一块。
-        permission: ['settings:manage', 'customer:pool_review'],
-        altLabel: { when: 'customer:pool_review', label: '公海回收复核' },
+        // 只认 `settings:manage`。销售主管拿的是 `customer:pool_review`
+        // （公海回收复核）—— 那件事已经搬到「销售作业 › 公海回收」独立页，
+        // 不再需要靠给系统设置加权限、再把菜单改名来伪装（2026-11-19）。
+        // 没有 settings:manage 的人进来看不到规则页签；普通成员只剩「我的」。
+        permission: 'settings:manage',
         // 两种权限都没有的普通成员：进去只有「我的」那一页。
         plainLabel: '我的',
         icon: IconSetting,

@@ -1,12 +1,11 @@
-import { formatBeijingDateTime } from '../../shared/beijing-time'
 import PersonalAccountPanel from './PersonalAccountPanel'
 import PersonalProfilePanel from './PersonalProfilePanel'
 import UnratedRulesPanel from './UnratedRulesPanel'
 import { customerLevelLabel } from '../../shared/customer-level'
 import { useState, useEffect, type CSSProperties } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Table, Tabs, Tag, Typography } from '@douyinfe/semi-ui'
+import { Table, Tag, Typography } from '@douyinfe/semi-ui'
 
 import {
   createDepartment,
@@ -32,24 +31,18 @@ import { useNotePrompt } from '../../shared/components/NotePromptModal'
 import PageHeader from '../../shared/components/PageHeader'
 import PermissionPicker from '../../shared/components/PermissionPicker'
 import {
-  batchDecideRecycleCandidates,
-  decideRecycleCandidate,
   listPublicPoolRules,
   listDictionaries,
   createDictionary,
   updateDictionary,
-  listRecycleCandidates,
   listSettings,
   listTaskRules,
-  restoreRecycleCandidate,
   runAutoTaskRules,
   runPublicPoolRecycle,
   saveSetting,
   updatePublicPoolRule,
   updateTaskRule,
   type PublicPoolRuleRow,
-  type RecycleCandidateRow,
-  type RecycleStatus,
   type SystemSettingRow,
   type TaskRuleRow,
   type DictionaryItemRow,
@@ -76,12 +69,6 @@ const TABS = [
   { tab: '审计日志', itemKey: 'audit' },
   { tab: '业务规则', itemKey: 'rules' },
 ]
-
-/** 时间显示成"2026-10-06 12:30"（回收复核要看具体哪天）。空值给个短横。
- *  原来传 options 走 zh-CN，出来是 `2026/10/06 12:30`（斜杠，2026-11-17 复验 R-02）。 */
-function fmtDay(value: string | null | undefined): string {
-  return formatBeijingDateTime(value)
-}
 
 /**
  * 系统配置「值」这一列的字段形态（2026-11-19）。
@@ -365,23 +352,14 @@ export default function SettingsPage() {
   const notePrompt = useNotePrompt()
   // 支持深链：/settings?tab=rules
   const [searchParams, setSearchParams] = useSearchParams()
-  const { isAdmin, can } = usePermissions()
-  // 个人账号向全部登录人开放；管理与公海复核仍分别按权限开放。
-  const canReviewPool = can('customer:pool_review')
-  // 回收复核表在 1024 下六列排不开（会横向滚动），窄屏把「原负责人」列收起来：
-  // 复核时主要看客户、最近有效联系、最早可回收，负责人不是必看项（2026-11-18）。
-  const [narrowLayout, setNarrowLayout] = useState(
-    () => typeof window !== 'undefined' && window.innerWidth <= 1280,
-  )
-  useEffect(() => {
-    const onResize = () => setNarrowLayout(window.innerWidth <= 1280)
-    window.addEventListener('resize', onResize)
-    return () => window.removeEventListener('resize', onResize)
-  }, [])
+  const navigate = useNavigate()
+  const { isAdmin } = usePermissions()
+  // 个人账号向全部登录人开放；管理与规则配置按 settings:manage 开放。
+  // 公海回收的**复核**已经搬成独立页（/pool-recycle），这里不再有复核页签。
   // 第一个页签改叫「我的」而不是「个人账号」：它现在不只有登录名/密码，
   // 还挂着「我的信息」和「我的权限」—— 叫「个人账号」的话，想看自己有哪些
   // 权限的人根本不会往这里点。
-  const visibleTabs = [{ tab: '我的', itemKey: 'profile' }, ...(isAdmin ? TABS : canReviewPool ? TABS.filter((item) => item.itemKey === 'rules') : [])]
+  const visibleTabs = [{ tab: '我的', itemKey: 'profile' }, ...(isAdmin ? TABS : [])]
   const activeKey = visibleTabs.some((item) => item.itemKey === searchParams.get('tab'))
     ? searchParams.get('tab')! : (isAdmin ? 'users' : 'profile')
 
@@ -442,26 +420,6 @@ export default function SettingsPage() {
     queryKey: ['public-pool-rules'],
     queryFn: listPublicPoolRules,
     enabled: isAdmin && activeKey === 'rules',
-  })
-  // 回收候选（预告）：主管逐条复核的对象（返工单 6.3）
-  //
-  // 返修单第六批第 10 条：此前页面**只查 pending**，于是"暂缓"一点记录就从
-  // 页面上消失（其实还在等期满）、已回收的也找不回来（恢复入口无处可点）。
-  // 现在按状态分页签：待复核 / 已暂缓 / 已回收 / 已驳回。
-  const [candidatePage, setCandidatePage] = useState(1)
-  const [candidatePageSize, setCandidatePageSize] = useState(20)
-  const [candidateStatus, setCandidateStatus] = useState<RecycleStatus>('pending')
-  const [selectedCandidateIds, setSelectedCandidateIds] = useState<number[]>([])
-  const candidatesQuery = useQuery({
-    queryKey: ['recycle-candidates', candidateStatus, candidatePage, candidatePageSize],
-    queryFn: () =>
-      listRecycleCandidates({
-        status: candidateStatus,
-        page: candidatePage,
-        page_size: candidatePageSize,
-      }),
-    // 有回收复核权（主管）或管理员都能看，不再限死管理员
-    enabled: (isAdmin || canReviewPool) && activeKey === 'rules',
   })
   const taskRulesQuery = useQuery({
     queryKey: ['task-rules'],
@@ -654,124 +612,6 @@ export default function SettingsPage() {
     },
     onError: (error: Error) => Toast.error(error.message),
   })
-
-  const decideMutation = useMutation({
-    mutationFn: ({ id, decision, note, early }: {
-      id: number
-      decision: 'approve' | 'reject' | 'defer'
-      note?: string
-      early?: boolean
-    }) => decideRecycleCandidate(id, decision, note, early),
-    onSuccess: (row) => {
-      Toast.success(`已${row.status_label}`)
-      void queryClient.invalidateQueries({ queryKey: ['recycle-candidates'] })
-    },
-    onError: (error: Error) => Toast.error(error.message),
-  })
-
-  /**
-   * 批量复核结果：**逐条**记住哪条成、哪条为什么没成。
-   * 只弹一句"已处理 N 条"是不够的 —— 被拦下的那条还留在待复核里，
-   * 页面不列出来，主管会以为都办完了（返修单第六批第 10 条）。
-   */
-  const [batchResult, setBatchResult] = useState<{
-    done: { candidate_id: number; status: string }[]
-    failed: { candidate_id: number; reason: string; code: number }[]
-  } | null>(null)
-  const batchMutation = useMutation({
-    mutationFn: (payload: {
-      decision: 'approve' | 'reject' | 'defer'
-      note?: string
-      early?: boolean
-    }) =>
-      batchDecideRecycleCandidates({ candidateIds: selectedCandidateIds, ...payload }),
-    onSuccess: (data) => {
-      setBatchResult(data)
-      setSelectedCandidateIds([])
-      if (data.failed.length) {
-        Toast.warning(
-          `已处理 ${data.done.length} 条，${data.failed.length} 条未处理（下方逐条列了原因）`,
-        )
-      } else {
-        Toast.success(`已处理 ${data.done.length} 条`)
-      }
-      void queryClient.invalidateQueries({ queryKey: ['recycle-candidates'] })
-    },
-    onError: (error: Error) => Toast.error(error.message),
-  })
-
-  const restoreMutation = useMutation({
-    mutationFn: ({ id, note }: { id: number; note?: string }) =>
-      restoreRecycleCandidate(id, note),
-    onSuccess: () => {
-      Toast.success('客户已恢复给原负责人')
-      void queryClient.invalidateQueries({ queryKey: ['recycle-candidates'] })
-      void queryClient.invalidateQueries({ queryKey: ['customers'] })
-    },
-    onError: (error: Error) => Toast.error(error.message),
-  })
-
-  /** 这条到「最早可回收时间」了吗？没到就只能走「提前回收」例外。 */
-  const isDue = (row: RecycleCandidateRow) => {
-    if (!row.earliest_action_at) return true
-    const at = new Date(row.earliest_action_at).getTime()
-    return Number.isNaN(at) || Date.now() >= at
-  }
-
-  /** 批准/驳回/暂缓。批准和暂缓可能要填说明（尤其"仍有保护但确需回收"时必须填）。 */
-  const decide = async (
-    decision: 'approve' | 'reject' | 'defer',
-    row: RecycleCandidateRow,
-    options?: { early?: boolean },
-  ) => {
-    const early = options?.early ?? false
-    const label = early
-      ? '提前回收'
-      : { approve: '批准回收', reject: '驳回', defer: '暂缓' }[decision]
-    const protected_ = (row.protection ?? []).length > 0
-    const needNote = decision !== 'approve' || protected_ || early
-    if (!needNote) {
-      Modal.confirm({
-        title: `确认回收客户「${row.customer_name ?? '客户编号 ' + row.customer_id}」？`,
-        content: '执行后客户将进入公海，原负责人将不再负责该客户。',
-        okText: '确认回收',
-        onOk: () => decideMutation.mutate({ id: row.id, decision }),
-      })
-      return
-    }
-    const note = await notePrompt.ask({
-      title: `${label}「${row.customer_name ?? `客户 ${row.customer_id}`}」`,
-      label: `${label}原因`,
-      // 说明只讲"为什么要问你这一句"，不重复标题里的动作名
-      description: early
-        ? `提前回收会让预告 / 暂缓等待期失效（最早可回收时间 ${fmtDay(row.earliest_action_at)}），所以需要你写清原因。`
-        : decision === 'approve' && protected_
-          ? `该客户仍有履约事项：${(row.protection ?? []).join('；')}。确需例外回收，请说明依据。`
-          : undefined,
-      placeholder: early
-        ? '例如：客户已确认终止合作，无需再等预告期'
-        : '例如：客户明确表示需要延长跟进周期',
-      required: true,
-      tone: early || (decision === 'approve' && protected_) ? 'warning' : 'normal',
-      okText: early ? '确认提前回收' : '确认',
-    })
-    if (note === null) return
-    decideMutation.mutate({ id: row.id, decision, note, early })
-  }
-
-  /** 单条恢复：把已回收的客户还给原负责人（已被别人领走时会报冲突）。 */
-  const restore = async (row: RecycleCandidateRow) => {
-    const note = await notePrompt.ask({
-      title: `恢复「${row.customer_name ?? `客户 ${row.customer_id}`}」给原负责人`,
-      label: '恢复原因',
-      description: '客户会从公海回到原负责人名下，其他同事不再能领取。',
-      placeholder: '例如：客户回访后确认继续合作',
-      required: true,
-      okText: '确认恢复',
-    })
-    if (note === null) return
-    restoreMutation.mutate({ id: row.id, note: note || undefined })
-  }
 
   const autoTaskMutation = useMutation({
     mutationFn: runAutoTaskRules,
@@ -1256,19 +1096,11 @@ export default function SettingsPage() {
         // 主管只有公海回收复核权，他翻到那一页时标题必须写「公海回收复核」，
         // 否则他会以为自己拿到了整个系统设置、跑去点用户和角色。
         // 翻到「我的」时同理 —— 那是他自己的东西，不叫「系统设置」。
-        title={
-          isAdmin
-            ? '系统设置'
-            : activeKey === 'rules'
-              ? '公海回收复核'
-              : '我的'
-        }
+        title={isAdmin ? '系统设置' : '我的'}
         subtitle={
           isAdmin
-            ? '用户、角色、部门可在此维护；业务规则、自动任务与系统配置可直接修改'
-            : activeKey === 'rules'
-              ? '复核本团队客户的回收候选：批准 / 驳回 / 暂缓。看得见哪些候选由你的数据范围决定'
-              : '改自己的登录名和密码，看自己的资料与权限'
+            ? '用户、角色、部门可在此维护；业务规则、自动任务与系统配置可直接修改。公海回收的复核在「公海回收」页'
+            : '改自己的登录名和密码，看自己的资料与权限'
         }
       />
       <SectionCard>
@@ -1885,316 +1717,11 @@ export default function SettingsPage() {
                 </div>
               )}
 
-              <div className="rule-block">
-                <div className="rule-block-title">回收复核</div>
-                {/* 同「回收节奏」那块：ellipsis 折叠把 <b> 串成了 [object Object]，
-                    改成整段铺开，不再折叠（2026-11-18）。 */}
-                <div
-                  style={{ color: 'var(--crm-text-2)', fontSize: 12, lineHeight: 1.65, marginBottom: 12 }}
-                >
-                  扫描只「提名」；批准后才真的回收，并且<b>必须等预告期/暂缓期满了</b>才能批
-                  —— 没满要走「提前回收」这个例外动作，得填原因。
-                  「驳回」不受等待期限制（表示不用回收了，随时可结案）。
-                  客户手上还有在途订单、未结应收、有效正式报价或在途打样时，批准会被拦下。
-                </div>
-                <Tabs
-                  type="button"
-                  activeKey={candidateStatus}
-                  onChange={(key) => {
-                    setCandidateStatus(key as RecycleStatus)
-                    setCandidatePage(1)
-                    setSelectedCandidateIds([])
-                    setBatchResult(null)
-                  }}
-                  tabList={[
-                    { tab: '待复核', itemKey: 'pending' },
-                    { tab: '已暂缓', itemKey: 'deferred' },
-                    { tab: '已回收', itemKey: 'executed' },
-                    { tab: '已驳回', itemKey: 'rejected' },
-                  ]}
-                  style={{ marginBottom: 12 }}
-                />
-                {(candidateStatus === 'pending' || candidateStatus === 'deferred') && (
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      marginBottom: 8,
-                    }}
-                  >
-                    <span style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
-                      已选 {selectedCandidateIds.length} 条
-                    </span>
-                    <div style={{ flex: 1 }} />
-                    {/* 批量决定一次影响多个人/多个客户，点一下立刻生效太轻
-                        （主人 2026-10-06 定的范围：批量与不可逆的动作都要确认）。 */}
-                    <Popconfirm
-                      title={`批准选中的 ${selectedCandidateIds.length} 条回收候选？`}
-                      content="批准后进入待执行；到期仍未恢复的客户会被真正回收（归属清空）。"
-                      onConfirm={() => batchMutation.mutate({ decision: 'approve' })}
-                    >
-                      <Button
-                        size="small"
-                        disabled={!selectedCandidateIds.length}
-                        loading={batchMutation.isPending}
-                      >
-                        批量批准
-                      </Button>
-                    </Popconfirm>
-                    <Popconfirm
-                      title={`暂缓选中的 ${selectedCandidateIds.length} 条回收候选？`}
-                      content="暂缓后这些客户这一轮不会被回收，过一阵会重新进入候选。"
-                      onConfirm={() => batchMutation.mutate({ decision: 'defer' })}
-                    >
-                      <Button
-                        size="small"
-                        disabled={!selectedCandidateIds.length}
-                        loading={batchMutation.isPending}
-                      >
-                        批量暂缓
-                      </Button>
-                    </Popconfirm>
-                    <Popconfirm
-                      title={`驳回选中的 ${selectedCandidateIds.length} 条回收候选？`}
-                      content="驳回后本轮不再回收这些客户，需要重新提名才会再进候选。"
-                      onConfirm={() => batchMutation.mutate({ decision: 'reject' })}
-                    >
-                      <Button
-                        size="small"
-                        type="danger"
-                        disabled={!selectedCandidateIds.length}
-                        loading={batchMutation.isPending}
-                      >
-                        批量驳回
-                      </Button>
-                    </Popconfirm>
-                  </div>
-                )}
-                {batchResult && (
-                  <div
-                    style={{
-                      fontSize: 12,
-                      marginBottom: 8,
-                      padding: '8px 10px',
-                      background: 'var(--crm-surface-low)',
-                      borderRadius: 6,
-                    }}
-                  >
-                    <div>成功 {batchResult.done.length} 条；未处理 {batchResult.failed.length} 条。</div>
-                    {batchResult.failed.map((row) => (
-                      <div key={row.candidate_id} style={{ color: 'var(--crm-danger, #d45)' }}>
-                        候选 #{row.candidate_id}：{row.reason}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <Table<RecycleCandidateRow>
-                  rowKey="id"
-                  className="recycle-cand-table"
-                  loading={candidatesQuery.isLoading}
-                  dataSource={candidatesQuery.data?.items ?? []}
-                  pagination={{
-                    currentPage: candidatePage,
-                    pageSize: candidatePageSize,
-                    total: candidatesQuery.data?.total ?? 0,
-                    onPageChange: setCandidatePage,
-                    showSizeChanger: true,
-                    pageSizeOpts: [10, 20, 50, 100],
-                    onPageSizeChange: (size: number) => { setCandidatePageSize(size); setCandidatePage(1) },
-                  }}
-                  rowSelection={
-                    candidateStatus === 'pending' || candidateStatus === 'deferred'
-                      ? {
-                          selectedRowKeys: selectedCandidateIds,
-                          onChange: (keys) => setSelectedCandidateIds((keys ?? []) as number[]),
-                        }
-                      : undefined
-                  }
-                  empty={
-                    // 空表格只有一行灰字，看着像"页面坏了"。待复核为空其实是**正常且好**的
-                    // 状态（说明没客户该被回收），得把这句话说出来，再给个能动的入口
-                    // （2026-11-16）。
-                    <div style={{ padding: '20px 0 10px' }}>
-                      <div style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>
-                        {candidateStatus === 'pending'
-                          ? '没有待复核的候选'
-                          : `没有${
-                              { pending: '待复核', deferred: '已暂缓', executed: '已回收', rejected: '已驳回' }[
-                                candidateStatus
-                              ]
-                            }的候选`}
-                      </div>
-                      <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 6 }}>
-                        {candidateStatus === 'pending'
-                          ? '当前没有客户达到回收条件 —— 这是正常状态。想现在就看有没有能回收的，点上面的「扫描并生成回收预告」。'
-                          : '按上面的标签切回「待复核」可以看到现在需要处理的候选。'}
-                      </div>
-                    </div>
-                  }
-                  columns={[
-                    {
-                      title: '客户',
-                      dataIndex: 'customer_name',
-                      // 1024 下收起「原负责人 / 最近有效联系 / 保护事项」三列后，
-                      // 剩下的宽度给客户名和日期 —— 客户名常带「【演示造数】」，要留够。
-                      width: narrowLayout ? 236 : 236,
-                      // 客户名带「【演示造数】」这类长后缀，加上「A 级 · 超 30 天未跟进」
-                      // 挤在同一行会把整张表撑出横向滚动条（1440 下操作列直接被切掉，
-                      // 2026-11-18 复验）。副信息单独一行，客户列就能收窄。
-                      render: (v: string | null, r: RecycleCandidateRow) => (
-                        <div style={{ lineHeight: 1.5 }}>
-                          <div className="recycle-cand-name">{v ?? `客户编号 ${r.customer_id}`}</div>
-                          <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
-                            {r.level ? `${r.level} 级` : ''}
-                            {r.rule_days ? ` · 超 ${r.rule_days} 天未跟进` : ''}
-                          </div>
-                        </div>
-                      ),
-                    },
-                    ...(narrowLayout
-                      ? []
-                      : [
-                          {
-                            title: '原负责人',
-                            dataIndex: 'owner_name',
-                            width: 80,
-                            render: (v: string | null) => v ?? '-',
-                          },
-                        ]),
-                    // 1024 下（内容区约 675）这一列和三个操作链接放不在一行，
-                    // 最右的「驳回」永远差十几像素被裁。窄屏收起它：
-                    // 复核的关键是客户、最早可回收和三个动作，最近联系在宽屏仍完整显示。
-                    ...(narrowLayout
-                      ? []
-                      : [
-                          {
-                            // 复核要看得到"是按哪个时间判它冷落的"，不是只给一句"已超 N 天"
-                            title: '最近有效联系',
-                            dataIndex: 'last_active_at',
-                            width: 150,
-                            render: (v: string | null) => fmtDay(v),
-                          },
-                        ]),
-                    ...(candidateStatus === 'executed' || candidateStatus === 'rejected'
-                      ? [
-                          {
-                            title: '处理时间',
-                            dataIndex: 'decided_at',
-                            width: 140,
-                            render: (v: string | null) => fmtDay(v),
-                          },
-                          {
-                            title: '说明',
-                            dataIndex: 'decision_note',
-                            render: (v: string | null) => v ?? '-',
-                          },
-                        ]
-                      : [
-                          ...(narrowLayout
-                            ? []
-                            : [
-                          {
-                            title: '保护事项',
-                            dataIndex: 'protection',
-                            width: 72,
-                            render: (list: string[], r: RecycleCandidateRow) =>
-                              (list ?? []).length === 0 ? (
-                                <span style={{ color: 'var(--crm-text-3)' }}>无</span>
-                              ) : (
-                                <>
-                                  {/* 有保护却仍被提名 = 保护已过最长有效期（后端下发标记）。
-                                      单独点出来，主管复核时重点看，别当成"没保护"。 */}
-                                  {r.protection_overridden && (
-                                    <div style={{ marginBottom: 4 }}>
-                                      <Tag color="orange" size="small">
-                                        有履约事项仍被提名，请重点看
-                                      </Tag>
-                                    </div>
-                                  )}
-                                  <span style={{ color: 'var(--crm-caution, #b26a00)' }}>
-                                    {(list ?? []).join('；')}
-                                  </span>
-                                </>
-                              ),
-                          },
-                            ]),
-                          {
-                            // 到了这个点才能批；没到就只能走「提前回收」例外
-                            // 「（预告期中）」原来跟在日期后面，把列撑到 170+ 宽，
-                            // 现在换到第二行，列宽收窄到 132，整表不再横向滚动。
-                            title: '最早可回收',
-                            dataIndex: 'earliest_action_at',
-                            width: narrowLayout ? 130 : 132,
-                            render: (v: string | null, r: RecycleCandidateRow) =>
-                              v ? (
-                                <div
-                                  style={{
-                                    color: isDue(r)
-                                      ? 'var(--crm-text-2)'
-                                      : 'var(--crm-caution, #b26a00)',
-                                    lineHeight: 1.5,
-                                  }}
-                                >
-                                  <div>{fmtDay(v)}</div>
-                                  {!isDue(r) && (
-                                    <div style={{ fontSize: 11 }}>
-                                      （{r.status === 'deferred' ? '暂缓期' : '预告期'}中）
-                                    </div>
-                                  )}
-                                </div>
-                              ) : (
-                                '-'
-                              ),
-                          },
-                        ]),
-                    {
-                      // 最多「提前回收 / 暂缓 / 驳回」三个链接，190 够用；
-                      // 原来给 230，占掉的宽度是从「客户」列抢来的
-                      title: '操作',
-                      width: candidateStatus === 'executed' ? 90 : 172,
-                      render: (_: unknown, r: RecycleCandidateRow) => {
-                        if (candidateStatus === 'executed') {
-                          return (
-                            <span>
-                              {r.restored_at ? (
-                                <Tag color="green" type="light" size="small">
-                                  已恢复
-                                </Tag>
-                              ) : (
-                                <a onClick={() => restore(r)}>恢复</a>
-                              )}
-                            </span>
-                          )
-                        }
-                        if (candidateStatus === 'rejected') {
-                          return <span style={{ color: 'var(--crm-text-3)' }}>已结案</span>
-                        }
-                        return (
-                          <span style={{ display: 'inline-flex', gap: 10 }}>
-                            {isDue(r) ? (
-                              <a onClick={() => decide('approve', r)}>批准回收</a>
-                            ) : (
-                              <a
-                                style={{ color: 'var(--crm-danger, #d45)' }}
-                                onClick={() => decide('approve', r, { early: true })}
-                              >
-                                提前回收
-                              </a>
-                            )}
-                            <a onClick={() => decide('defer', r)}>暂缓</a>
-                            <a
-                              style={{ color: 'var(--crm-danger, #d45)' }}
-                              onClick={() => decide('reject', r)}
-                            >
-                              驳回
-                            </a>
-                          </span>
-                        )
-                      },
-                    },
-                  ]}
-                />
+              {/* 复核已经搬成独立页（/pool-recycle）。这里只留一句指路：
+                  规则页改的是"多少天算冷落、保护多久"，批不批是另一件事。 */}
+              <div className="rule-block-hint">
+                <span>候选的复核在「公海回收」页处理，这里只改规则。</span>
+                <a onClick={() => navigate('/pool-recycle')}>去公海回收 →</a>
               </div>
 
               {isAdmin && (

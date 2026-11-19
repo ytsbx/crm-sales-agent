@@ -4895,6 +4895,28 @@ table:not(.semi-table) td.cell-right {
   white-space: normal;
 }
 
+/* 规则页里"复核不在这里"的指路条（2026-11-19 复核搬去 /pool-recycle） */
+.rule-block-hint {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--crm-primary) 4%, #fff);
+  border: 1px solid color-mix(in srgb, var(--crm-primary) 12%, #fff);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--crm-text-2);
+}
+
+.rule-block-hint a {
+  color: var(--crm-primary);
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
 /* ============================================================
    系统配置：分组卡片（设置页 · 业务规则）
    ------------------------------------------------------------
