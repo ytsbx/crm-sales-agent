@@ -355,6 +355,10 @@ export default function DocumentsPage() {
   // 已选签署件的文件名：确认前要让用户看清"签的是哪份文件"，光给内部编号看不懂
   const selectedSignFile = (signFilesQuery.data ?? []).find((row) => row.id === signFileId)
   const documents = documentsQuery.data?.items ?? []
+  /* 「到期日」这一列在真实数据里几乎是空的（草稿合同一律没有到期日）。
+     空着的 80px 一直占着首屏，把「标题」挤到只剩 12 个字、整列省略号。
+     有值才出这一列，没值就把宽度还给标题 —— 而不是固定留一列横杠。 */
+  const hasExpiry = documents.some((row) => Boolean(row.expiry_date))
 
   const canUploadSignFile = can('file:manage')
   const noFileManageReason =
@@ -408,7 +412,8 @@ export default function DocumentsPage() {
               {
                 title: '合同编号',
                 dataIndex: 'doc_no',
-                width: compact ? 128 : 156,
+                /* 148 刚够 14 位的 CT202611180001（13px 约 133），原来 156 多给了 8px。 */
+                width: compact ? 128 : 148,
                 render: (v: string, record: ContractDocument) => (
                   <div>
                     <div>{v}</div>
@@ -424,7 +429,9 @@ export default function DocumentsPage() {
               {
                 title: '标题',
                 dataIndex: 'title',
-                width: compact ? 160 : 205,
+                /* 205 只够 12–13 个字；「【验收】非正式合同 202611180001」被截成
+                   「【验收】非正式合同 20261…」。没有到期日列时把省下的 80px 给它。 */
+                width: compact ? 160 : hasExpiry ? 205 : 288,
                 // 标题超过列宽会被省略成「【全场景演示】销售…」，悬停要看得到全文
                 // （2026-11-17 视觉审视 V-03）。同时给 title 属性，键盘/读屏也能读到。
                 render: (v: string, record: ContractDocument) => (
@@ -491,7 +498,7 @@ export default function DocumentsPage() {
                 // 「依据」= 这份合同是照哪一版报价 / 哪张订单签的。
                 // 报价能出 V2/V3，不写清版本，台账上光看单号证明不了金额依据。
                 title: compact ? '依据' : '依据 / 来源',
-                width: compact ? 170 : 160,
+                width: compact ? 170 : 150,
                 render: (_: unknown, record: ContractDocument) => {
                   const header = record.header_snapshot
                   const basis = record.quote_version_no
@@ -519,7 +526,9 @@ export default function DocumentsPage() {
                             whiteSpace: 'nowrap',
                           }}
                         >
-                          {compact ? basis.replace(/^(订单|报价) /, '') : basis}
+                          {/* 宽屏也去掉「订单 / 报价」前缀：SO / Q 开头本来就认得出，
+                              5 个字的前缀换 5 个字的单号，150px 才放得下完整单号。 */}
+                          {basis.replace(/^(订单|报价) /, '')}
                         </span>
                       ) : (
                         <span style={{ color: 'var(--crm-text-3)' }}>未绑定</span>
@@ -537,14 +546,18 @@ export default function DocumentsPage() {
               // 到期日 / 签署时间是两个**经常为空**的列（草稿合同一律是横杠），
               // 却排在首屏位置上，把真正有内容的「依据」挤到了滚动区。
               // 有值的往前、空着的往后 —— 用户不用横滑就能看见这段合同照哪版报价签的。
-              ...(compact
+              /* 整列都是 "-" 的列不上（见上面 hasExpiry）：一排横杠不是信息，
+                 还占着首屏最值钱的一段宽度。有一条带到期日就正常显示。 */
+              ...(compact || !hasExpiry
                 ? []
-                : [{ title: '到期日', dataIndex: 'expiry_date', width: 80, render: (v: string | null) => v ?? '-' }]),
+                : [{ title: '到期日', dataIndex: 'expiry_date', width: 92, render: (v: string | null) => v ?? '-' }]),
               // ⚠️ 原来是 `.slice(0, 10)`（UTC 取日）；签署时间是 UTC 瞬时，
               // 北京时间凌晨签的会显示成前一天。
               ...(compact
                 ? []
-                : [{ title: '签署时间', dataIndex: 'signed_at', width: 112, render: (v: string | null) => (v ? formatBeijingDate(v) : '-') }]),
+                /* 100 时实测被 Semi 压成「2026-11…」：2026-11-18 是 10 个字符 ≈ 96px，
+                   108 才是"不省略"的线。 */
+                : [{ title: '签署时间', dataIndex: 'signed_at', width: 108, render: (v: string | null) => (v ? formatBeijingDate(v) : '-') }]),
               {
                 // 「下载」不跟管理操作挤在一起：下载接口要的是 order:view，
                 // 原来整列挂在 canManage 下，只读用户连下载入口都看不见。
@@ -553,7 +566,7 @@ export default function DocumentsPage() {
                 // 从「到期日」和「操作」各让一点：到期日 90 够放 2026-11-16。
                 // 165 不变：加宽会把整张表撑出横向滚动条（2026-11-17 实拍到 200 就滚了）。
                 // 所以这里靠"每个词只占该占的字数"来省地方：下载、签署都是两个字的动作词。
-                width: compact ? 144 : 165,
+                width: compact ? 144 : 160,
                 // 这一列原来是 260 宽、还排在最后：整张表 1400、容器只有 1130，
                 // 结果「下载 / 详情 / 登记签署」全被推到屏幕外，必须横向拖才能点 ——
                 // 高频操作用户最不该找不着。固定在右侧，横滑时它始终在。
