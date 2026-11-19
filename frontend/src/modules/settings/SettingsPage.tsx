@@ -51,7 +51,6 @@ import { Button, Input, Modal, Popconfirm, Select, Switch, TextArea, Toast } fro
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { SystemDepartment, SystemRole, SystemUser } from '../../shared/api/system'
 import AuditLogPanel from './AuditLogPanel'
-import NotificationSettingsPanel from './NotificationSettingsPanel'
 import SectionCard from '../../shared/components/SectionCard'
 import EmptyState from '../../shared/components/EmptyState'
 import FormLabel from '../../shared/components/FormLabel'
@@ -65,7 +64,12 @@ const TABS = [
   { tab: '部门', itemKey: 'departments' },
   { tab: '客户标签', itemKey: 'tags' },
   { tab: '数据字典', itemKey: 'dictionaries' },
-  { tab: '通知', itemKey: 'notifications' },
+  // 「通知」页签下线（2026-11-19 主人指着「投递失败与补投」说「这一块我就不知道
+  // 什么鬼东西」）。那一页是技术排障台：主管通知待生成 / 待投递 297 / 未投递 52
+  // 这种数字对业务管理员没有意义 —— 企微没接通时它只会在那里一直堆着，
+  // 看着像系统坏了。而通知的实际行为由后端默认值兜着（站内全发、企微关、
+  // 失败自动退避重试 3 次，还有定时补投任务），业务侧不需要在这儿管。
+  // NotificationSettingsPanel.tsx 文件保留：真接企微那天把它接回 TABS 即可。
   { tab: '审计日志', itemKey: 'audit' },
   { tab: '业务规则', itemKey: 'rules' },
 ]
@@ -574,7 +578,7 @@ export default function SettingsPage() {
     { title: '个人', keys: ['profile'] },
     { title: '组织与权限', keys: ['users', 'roles', 'departments'] },
     { title: '业务配置', keys: ['tags', 'dictionaries', 'rules'] },
-    { title: '系统', keys: ['notifications', 'audit'] },
+    { title: '系统', keys: ['audit'] },
   ]
     .map((group) => ({
       title: group.title,
@@ -1745,7 +1749,6 @@ export default function SettingsPage() {
               />
             </>
           )}
-          {activeKey === 'notifications' && <NotificationSettingsPanel />}
           {activeKey === 'audit' && (
             /* 审计日志：搜索 / 筛选 / 分页 + 变更明细（2026-10-15）。
                原来这里是一个写死 `{page:1, page_size:50}`、`pagination={false}` 的表格 ——
