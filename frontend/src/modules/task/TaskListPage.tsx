@@ -1,18 +1,16 @@
-import { formatBeijingDate, formatBeijingTime } from '../../shared/beijing-time'
+import { formatBeijingTime } from '../../shared/beijing-time'
 import { useEffect, useState } from 'react'
 import PageHeader from '../../shared/components/PageHeader'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { emptyNode } from '../../shared/components/EmptyState'
-import { Banner, Button, Checkbox, DatePicker, Input, Modal, Popconfirm, Select, Table, Toast } from '@douyinfe/semi-ui'
+import { Button, Checkbox, DatePicker, Input, Modal, Popconfirm, Select, Table, Toast } from '@douyinfe/semi-ui'
 
 import {
   batchCompleteTasks,
-  batchHandoverTasks,
   completeTask,
   createTask,
-  listHandoverCandidates,
   listTasks,
   postponeTask,
   transferTask,
@@ -23,8 +21,6 @@ import type { TagTone } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
 import StatusDot from '../../shared/components/StatusDot'
-import { formatMoney } from '../../shared/components/money'
-import { usePermissions } from '../../shared/hooks/permissions'
 
 const PRIORITY_COLOR: Record<string, TagTone> = { high: 'red', normal: 'blue', low: 'grey' }
 
@@ -74,10 +70,7 @@ function primaryTaskLink(record: Task): { label: string; to: string } | null {
 
 export default function TaskListPage() {
   const queryClient = useQueryClient()
-  const { can, isReviewer } = usePermissions()
-  const canHandover = isReviewer && can('task:manage')
   const [searchParams, setSearchParams] = useSearchParams()
-  const handover = canHandover && searchParams.get('handover') === 'true'
   const mine = searchParams.get('mine') !== 'false'
   const status = searchParams.has('status') ? searchParams.get('status') || undefined : 'pending'
   const overdue = searchParams.get('overdue') === 'true'
@@ -103,16 +96,10 @@ export default function TaskListPage() {
   const [transferOwner, setTransferOwner] = useState<number | null>(null)
   // 批量完成（审查 B2-06）：勾选 + 批量操作入口
   const [selectedIds, setSelectedIds] = useState<number[]>([])
-  const [handoverVisible, setHandoverVisible] = useState(false)
-  const [candidateKeyword, setCandidateKeyword] = useState('')
 
   const query = useQuery({
-    queryKey: ['tasks', { handover, mine, status, overdue, page, pageSize }],
-    queryFn: () => listTasks({
-      ...(handover ? { handover: true } : { mine, status, overdue: overdue || undefined }),
-      page,
-      page_size: pageSize,
-    }),
+    queryKey: ['tasks', { mine, status, overdue, page, pageSize }],
+    queryFn: () => listTasks({ mine, status, overdue: overdue || undefined, page, page_size: pageSize }),
   })
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['tasks'] })
@@ -122,11 +109,6 @@ export default function TaskListPage() {
     queryKey: ['users', { status: 'active' }],
     queryFn: () => listUsers({ status: 'active', page_size: 200 }),
     enabled: transferTarget !== null,
-  })
-  const candidatesQuery = useQuery({
-    queryKey: ['task-handover-candidates', candidateKeyword],
-    queryFn: () => listHandoverCandidates(candidateKeyword),
-    enabled: handoverVisible,
   })
 
   const createMutation = useMutation({
@@ -180,16 +162,6 @@ export default function TaskListPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
-  const handoverMutation = useMutation({
-    mutationFn: () => batchHandoverTasks(selectedIds, transferOwner!),
-    onSuccess: ({ task_ids }) => {
-      Toast.success(`已交接 ${task_ids.length} 条待办`)
-      setHandoverVisible(false)
-      setSelectedIds([])
-      void refresh()
-    },
-  })
-
   const completeMutation = useMutation({
     // 版本取**列表里这一行**的 `updated_at` —— 那正是用户点按钮时屏幕上那一版
     mutationFn: (id: number) => {
@@ -232,9 +204,8 @@ export default function TaskListPage() {
       render: (_: unknown, record: Task) => (
         <Checkbox
           checked={selectedIds.includes(record.id)}
-          aria-label={`选择任务 ${record.title}`}
-          disabled={record.status === 'done' || record.status === 'cancelled' || (!handover && record.task_type === 'contract_signed_upload')}
-          title={!handover && record.task_type === 'contract_signed_upload' ? '上传回签件归档后自动完成' : undefined}
+          disabled={record.status === 'done' || record.status === 'cancelled' || record.task_type === 'contract_signed_upload'}
+          title={record.task_type === 'contract_signed_upload' ? '上传回签件归档后自动完成' : undefined}
           onChange={(e) => {
             const on = (e.target as HTMLInputElement).checked
             setSelectedIds((prev) =>
@@ -248,36 +219,18 @@ export default function TaskListPage() {
       title: '任务',
       dataIndex: 'title',
       width: compact ? 152 : 206,
-      /* 这一列 206px，长任务会被省略成「【全场景演示】客户需求确…」。
-         试过两种改法都不成：（1）放开两行 —— 中文按字断行把末尾编号甩到第二行，
-         一行只剩一个「1」，比截断更难看；（2）加宽到 244 —— 八列合计超出内容区，
-         表格底下立刻冒出横向滚动条。
-         所以保持单行省略，长任务靠悬停看全文（这一格已带 title）。 */
-      render: (text: string, record: Task) => (
-        <>
-          <span
-            title={text}
-            style={{
-              display: 'block',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {text}
-          </span>
-          {!!record.receivable_plans?.length && (
-            <details style={{ marginTop: 4, fontSize: 12, color: 'var(--crm-text-2)' }}>
-              <summary>查看 {record.receivable_plans.length} 期应收</summary>
-              {record.receivable_plans.map((plan) => (
-                <div key={plan.id} style={{ marginTop: 4 }}>
-                  <div>{plan.plan_name} · {formatBeijingDate(plan.due_date)}</div>
-                  应收 {formatMoney(plan.amount_exact, 'CNY')} · 未收 {formatMoney(plan.remaining_amount_exact, 'CNY')}
-                </div>
-              ))}
-            </details>
-          )}
-        </>
+      render: (text: string) => (
+        <span
+          title={text}
+          style={{
+            display: 'block',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {text}
+        </span>
       ),
     },
     {
@@ -358,8 +311,6 @@ export default function TaskListPage() {
           <div
             style={
               compact
-                /* 8 → 12：三个动作词（完成 / 延期 / 转交）贴着排像一串，
-                   和线索中心同批调整（2026-11-19）。 */
                 ? { display: 'flex', gap: 12, whiteSpace: 'nowrap', fontSize: 13 }
                 : { display: 'flex', gap: 10 }
             }
@@ -405,29 +356,6 @@ export default function TaskListPage() {
       {/* 只有几行任务时，卡片不该被拉满整屏（详见 .card-block.auto-height） */}
       <SectionCard className={(query.data?.items?.length ?? 0) <= 8 ? 'auto-height' : undefined}>
         <div className="toolbar">
-          {canHandover && (
-            <Button theme={handover ? 'outline' : 'light'} onClick={() => {
-              setSelectedIds([])
-              setFilter('handover', String(!handover))
-            }}>
-              {handover ? '返回任务列表' : '待办交接'}
-            </Button>
-          )}
-          {handover ? (
-            <>
-              <span>停用员工的未完成待办</span>
-              <div style={{ flex: 1 }} />
-              <Button type="primary" theme="outline" disabled={selectedIds.length === 0} onClick={() => {
-                setTransferOwner(null)
-                setCandidateKeyword('')
-                handoverMutation.reset()
-                setHandoverVisible(true)
-              }}>
-                批量交接{selectedIds.length ? `（已选 ${selectedIds.length}）` : ''}
-              </Button>
-            </>
-          ) : (
-          <>
           <Checkbox
             checked={mine}
             onChange={(event) => {
@@ -477,82 +405,31 @@ export default function TaskListPage() {
           <Button type="primary" theme="outline" onClick={() => setCreateVisible(true)}>
             新建任务
           </Button>
-          </>
-          )}
         </div>
 
         <Table<Task>
-          key={handover ? 'handover' : 'tasks'}
           className="tasks-table"
-          columns={handover ? columns.filter(({ title }) => title !== '操作' && title !== '负责人') : columns}
-          groupBy={handover ? (row) => `employee-${row?.handover_from_user_id}` : undefined}
-          expandAllGroupRows={handover}
-          renderGroupSection={handover ? (key) => {
-            const employee = query.data?.items.find((row) => `employee-${row.handover_from_user_id}` === key)
-            return <span>原负责人 · {employee?.handover_from_user_name ?? `员工 #${employee?.handover_from_user_id}`}</span>
-          } : undefined}
+          columns={columns}
           dataSource={query.data?.items ?? []}
           loading={query.isLoading}
           rowKey="id"
           empty={emptyNode(query, {
-            title: handover ? '没有待交接的任务' : '没有任务',
-            hint: handover ? undefined : '点右上角「新建任务」，把「接下来要做什么」记下来 —— 任务记将来，跟进记过去。',
+            title: '没有任务',
+            hint: '点右上角「新建任务」，把「接下来要做什么」记下来 —— 任务记将来，跟进记过去。',
           })}
           pagination={{
             currentPage: page,
             pageSize,
             total: query.data?.total ?? 0,
             showSizeChanger: true,
-            onPageChange: (next: number) => {
-              if (handover) setSelectedIds([])
-              setPage(next)
-            },
+            onPageChange: (next: number) => setPage(next),
             onPageSizeChange: (size: number) => {
-              if (handover) setSelectedIds([])
               setPageSize(size)
               setPage(1)
             },
           }}
         />
       </SectionCard>
-
-      <Modal
-        width={520}
-        title={`交接 ${selectedIds.length} 条待办`}
-        visible={handoverVisible}
-        onCancel={() => setHandoverVisible(false)}
-        onOk={() => handoverMutation.mutate()}
-        okButtonProps={{ disabled: !transferOwner }}
-        confirmLoading={handoverMutation.isPending}
-        okText="确认交接"
-      >
-        <FormLabel required>接手人</FormLabel>
-        <Select
-          placeholder="输入姓名搜索在职同事"
-          value={transferOwner ?? undefined}
-          onChange={(value) => setTransferOwner(value as number)}
-          onSearch={setCandidateKeyword}
-          remote
-          filter
-          loading={candidatesQuery.isFetching}
-          style={{ width: '100%' }}
-          optionList={(candidatesQuery.data?.items ?? []).map((user) => ({
-            value: user.id, label: `${user.name}（${user.username}）`,
-          }))}
-        />
-        {(handoverMutation.error || candidatesQuery.error) && (
-          <Banner type="danger" closeIcon={null} style={{ marginTop: 12 }}
-            description={(handoverMutation.error ?? candidatesQuery.error)?.message}
-            icon={null} />
-        )}
-        {handoverMutation.isError && (
-          <Button theme="borderless" onClick={() => {
-            setHandoverVisible(false)
-            setSelectedIds([])
-            void refresh()
-          }}>刷新交接清单</Button>
-        )}
-      </Modal>
 
       <Modal
         width={600}
@@ -603,9 +480,8 @@ export default function TaskListPage() {
                 ]}
                 style={{ width: 140 }}
               />
-              {/* 「优先级」这句说明必须如实：查过全库，priority **不参与任何**
-                  排序、筛选、提醒或统计（任务列表是按「状态 → 截止时间」排的）。
-                  它唯一的去处是列表里那个彩色标签。 */}
+              {/* 「优先级」这句说明必须如实：priority 不参与任何排序、筛选、提醒或统计，
+                  唯一的去处是列表里那个彩色标签。 */}
               <div className="form-row-hint">仅作轻重标记，不影响排序和提醒。</div>
             </div>
           </div>
