@@ -1,5 +1,5 @@
 import { formatBeijingTime } from '../../shared/beijing-time'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Input, Modal, Popconfirm, Select, Table, Tag, Toast, TextArea } from '@douyinfe/semi-ui'
@@ -101,6 +101,15 @@ function fmtValue(value: unknown): string {
 
 /** 新品洞察（§3.3 第三类：运营日常选品 → 评审 → 转需求）。 */
 export default function ProductInsightsPage() {
+  /* 1024 宽内容区约 700px，新品洞察七列合计 770px+（产品方向还是自适应），
+     「状态 / 操作」被裁到卡片外。窄屏切紧凑档：列宽收紧，负责人收掉。 */
+  const [compact, setCompact] = useState(() => window.innerWidth < 1200)
+  useEffect(() => {
+    const onResize = () => setCompact(window.innerWidth < 1200)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
   const queryClient = useQueryClient()
   const { can } = usePermissions()
   const canManage = can('product:manage')
@@ -348,15 +357,36 @@ export default function ProductInsightsPage() {
           )}
         </div>
         <Table<ProductInsightRow>
+          className="insights-table"
           columns={[
             {
               title: '产品方向',
               dataIndex: 'title',
+              width: compact ? 200 : undefined,
               render: (text: string, record: ProductInsightRow) => (
-                <div>
-                  <div style={{ fontWeight: 600 }}>{text}</div>
+                <div style={{ minWidth: 0 }}>
+                  <div
+                    title={text}
+                    style={{
+                      fontWeight: 600,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {text}
+                  </div>
                   {record.selling_points && (
-                    <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                    <div
+                      title={record.selling_points}
+                      style={{
+                        fontSize: 12,
+                        color: 'var(--crm-text-3)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
                       假设卖点：{record.selling_points}
                     </div>
                   )}
@@ -380,27 +410,34 @@ export default function ProductInsightsPage() {
                 </div>
               ),
             },
-            { title: '来源', dataIndex: 'source', width: 100, render: (v: string | null) => v ?? '-' },
+            ...(compact
+              ? []
+              : [{ title: '来源', dataIndex: 'source', width: 100, render: (v: string | null) => v ?? '-' }]),
             {
               title: '目标客户',
               dataIndex: 'target_customer',
-              width: 120,
+              width: compact ? 124 : 120,
               render: (v: string | null) => v ?? '-',
             },
             {
               title: '价格假设',
               dataIndex: 'price_assumption',
-              width: 100,
+              width: compact ? 92 : 100,
+              // 金额右对齐（全站口径 .cell-right）：¥2.30 / ¥86.00 / ¥12.50
+              // 长短不一，居中时小数点各在一处，比不出量级。
+              className: 'cell-right',
               // 每行都挂"（假设）"是纯噪音：表头已经写着「价格假设」，
               // 一列四行重复同样四个字，反而把数字本身压得看不出来。
               // 单价保真（2026-11-17）：最少两位、最多 4 位，不截断。
               // ¥2.3 / ¥86 / ¥4.8 统一成 ¥2.30 / ¥86.00 / ¥4.80，但 3.3333 仍是 3.3333。
               render: (v: number | null) => (v == null ? '-' : formatUnitPrice(v, 'CNY')),
             },
-            { title: '负责人', dataIndex: 'owner_name', width: 80, render: (v: string | null) => v ?? '-' },
+            ...(compact
+              ? []
+              : [{ title: '负责人', dataIndex: 'owner_name', width: 80, render: (v: string | null) => v ?? '-' }]),
             {
               title: '状态',
-              width: 170,
+              width: compact ? 110 : 170,
               render: (_: unknown, record: ProductInsightRow) => (
                 /* 这一格原来塞三行：状态 / 第 N 轮 / 意见（还被截成"…"），
                    于是同一张表里这行比别的行高出一截，节奏全乱。
@@ -422,7 +459,7 @@ export default function ProductInsightsPage() {
             },
             {
               title: '操作',
-              width: 200,
+              width: compact ? 170 : 200,
               render: (_: unknown, record: ProductInsightRow) => {
                 // 逐条可操作性（R08）：后端随每一行下发"这条归不归我管""我现在能不能评"。
                 // 原来只按权限码判，于是**数据范围外**的那几条也长着「编辑 / 提交评审 /
@@ -459,9 +496,10 @@ export default function ProductInsightsPage() {
                     {/* 审核历史：能看见这一页的人就能看它的评审史（后端读入口同权限） */}
                     <a
                       style={{ color: 'var(--crm-text-2)' }}
+                      title="审核历史"
                       onClick={() => setHistoryTarget(record)}
                     >
-                      审核历史
+                      {compact ? '历史' : '审核历史'}
                     </a>
                     {/* 已转：给得出去的深链，不是一串死编号（§6.1(7)） */}
                     {record.converted_inquiry_id && (

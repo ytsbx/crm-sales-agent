@@ -1,5 +1,5 @@
 import { formatBeijingDate, formatBeijingTime } from '../../shared/beijing-time'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -81,6 +81,16 @@ const EMPTY_FORM = {
 }
 
 export default function CasesPage() {
+  /* 1024 宽内容区约 700px，案例表七列合计 1026px，「作者 / 行业/产品线 / 操作」
+     整块被裁到卡片外、底部常驻横向滚动条。窄屏切紧凑档：作者和行业/产品线
+     并到标题第二行小字。 */
+  const [compact, setCompact] = useState(() => window.innerWidth < 1200)
+  useEffect(() => {
+    const onResize = () => setCompact(window.innerWidth < 1200)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
   const queryClient = useQueryClient()
   const { can, isReviewer } = usePermissions()
   // 「开修订稿」后端只放行**作者或主管**（其余人 403）。前端据此显隐按钮，
@@ -357,14 +367,17 @@ export default function CasesPage() {
         className={(casesQuery.data?.items?.length ?? 0) <= 8 ? 'auto-height' : undefined}
       >
         <div className="toolbar" style={{ marginBottom: 10 }}>
+          {/* 七个筛选控件原来宽度参差（190 / 105 / 100 / 105 / 100 / 100 / 100），
+              一线排开像随手摆的；统一成 210 + 6×108 后左边缘对齐、节奏一致
+              （2026-11-19 巡检）。 */}
           <Input
-            style={{ width: 190 }}
+            style={{ width: 210 }}
             placeholder="搜标题 / 做法 / 关键动作"
             value={filters.keyword}
             onChange={(v) => applyFilter({ keyword: v })}
           />
           <Select
-            style={{ width: 105 }}
+            style={{ width: 108 }}
             placeholder="状态"
             value={filters.status}
             onChange={(v) => applyFilter({ status: v as string | undefined })}
@@ -378,7 +391,7 @@ export default function CasesPage() {
           />
           {/* 行业/产品线是自由文本，用输入框（后端按包含匹配，不用打全称） */}
           <Input
-            style={{ width: 100 }}
+            style={{ width: 108 }}
             placeholder="行业"
             value={filters.industry ?? ''}
             onChange={(v) => applyFilter({ industry: v || undefined })}
@@ -386,7 +399,7 @@ export default function CasesPage() {
           {/* 客户类型：企业 / 个人。取自关联客户档案，
               与上面那个「行业」是两件事（一个企业客户可以属于任何行业）。 */}
           <Select
-            style={{ width: 105 }}
+            style={{ width: 108 }}
             placeholder="客户类型"
             value={filters.customer_type}
             showClear
@@ -397,13 +410,13 @@ export default function CasesPage() {
             ]}
           />
           <Input
-            style={{ width: 100 }}
+            style={{ width: 108 }}
             placeholder="产品线"
             value={filters.product_line ?? ''}
             onChange={(v) => applyFilter({ product_line: v || undefined })}
           />
           <Select
-            style={{ width: 100 }}
+            style={{ width: 108 }}
             placeholder="阶段"
             value={filters.stage}
             onChange={(v) => applyFilter({ stage: v as string | undefined })}
@@ -411,7 +424,7 @@ export default function CasesPage() {
             showClear
           />
           <Input
-            style={{ width: 100 }}
+            style={{ width: 108 }}
             placeholder="问题标签"
             value={filters.problem_tags ?? ''}
             onChange={(v) => applyFilter({ problem_tags: v || undefined })}
@@ -431,6 +444,7 @@ export default function CasesPage() {
           </div>
         </div>
         <Table<CaseRow>
+          className="cases-table"
           columns={[
             {
               title: '标题',
@@ -439,17 +453,41 @@ export default function CasesPage() {
                  字宽一变就切得多余或不够；标题短一点明明放得下也被切。
                  改成给这一列定宽 + CSS 省略号 —— 有多少空间就显示多少，
                  悬停看全文。 */
-              width: 316,
-              /* 标题是这份案例的主体，原来卡在 300px 单行、一律省略成
-                 「…毛利只…」，看不出讲的是什么。宽屏放开成最多两行：
-                 316px 一列两行就能装下，悬停仍可看全文。 */
-              render: (v: string) => (
-                <span
-                  title={v}
-                  style={{ display: 'block', overflow: 'hidden', whiteSpace: 'normal', lineHeight: 1.45 }}
-                >
-                  {v}
-                </span>
+              width: compact ? 232 : 316,
+              render: (v: string, record: CaseRow) => (
+                <div style={{ minWidth: 0 }}>
+                  <span
+                    title={v}
+                    /* 标题是这份案例的主体，原来卡在 300px 单行、一律省略成
+                       「…毛利只…」，看不出讲的是什么。宽屏放开成最多两行：
+                       316px 一列大概两行就能装下，悬停仍可看全文。 */
+                    style={{
+                      display: 'block',
+                      overflow: 'hidden',
+                      textOverflow: compact ? 'ellipsis' : 'clip',
+                      whiteSpace: compact ? 'nowrap' : 'normal',
+                      lineHeight: 1.45,
+                    }}
+                  >
+                    {v}
+                  </span>
+                  {compact && (
+                    <div
+                      style={{
+                        marginTop: 2,
+                        fontSize: 11,
+                        color: 'var(--crm-text-3)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {[record.author_name, record.industry, record.product_line]
+                        .filter(Boolean)
+                        .join(' · ') || '-'}
+                    </div>
+                  )}
+                </div>
               ),
             },
             // 列顺序按「看这份案例时要先判断什么」排：给哪个客户做的、审到哪一步了，
@@ -457,13 +495,13 @@ export default function CasesPage() {
             // 一屏扫过去先看到作者名，而不是能不能用。
             {
               title: '客户',
-              width: 146,
+              width: compact ? 108 : 146,
               render: (_: unknown, record: CaseRow) => record.customer_name ?? record.customer_label ?? '-',
             },
             {
               title: '状态',
               dataIndex: 'status_label',
-              width: 108,
+              width: compact ? 100 : 108,
               render: (v: string, record: CaseRow) => (
                 <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
                   <Tag color={STATUS_TONE[record.status] ?? 'grey'}>{v}</Tag>
@@ -479,23 +517,25 @@ export default function CasesPage() {
             {
               title: '阶段',
               dataIndex: 'stage_reached',
-              width: 86,
+              width: compact ? 92 : 86,
               render: (v: string | null) => (v ? STAGE_LABEL[v] ?? v : '-'),
             },
-            { title: '作者', dataIndex: 'author_name', width: 78 },
+            ...(compact ? [] : [{ title: '作者', dataIndex: 'author_name', width: 78 }]),
             // 行业 / 产品线合成一列：两者都是"这条经验适合什么场景"的分类标签，
             // 分开占两列各 100 宽，把标题挤得只剩 300；合并成一列省下 100。
-            {
-              title: '行业 / 产品线',
-              width: 132,
-              render: (_: unknown, record: CaseRow) => {
-                const parts = [record.industry, record.product_line].filter(Boolean)
-                return parts.length ? parts.join(' · ') : '-'
-              },
-            },
+            ...(compact
+              ? []
+              : [{
+                  title: '行业 / 产品线',
+                  width: 132,
+                  render: (_: unknown, record: CaseRow) => {
+                    const parts = [record.industry, record.product_line].filter(Boolean)
+                    return parts.length ? parts.join(' · ') : '-'
+                  },
+                }]),
             {
               title: '操作',
-              width: 160,
+              width: compact ? 166 : 160,
               render: (_: unknown, record: CaseRow) => (
                 /* 原来 inline-flex 贴左、表头居中，一行三个动作时表头和数据错开。
                    改成占满整格 + 居中，动作组始终压在「操作」下面。 */
