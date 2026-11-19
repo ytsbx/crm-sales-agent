@@ -482,7 +482,10 @@ export default function AnalyticsPage() {
           <div className="kpi-group-head">成交与转化</div>
           <KpiStrip
             tintValues={false}
-            className="kpi-grid kpi-grid-fixed"
+            /* 7 张卡在 4 列网格里排成 4 + 3，第二行右边空一整格（1440 实拍）。
+               补 kpi-fill-last：index.css 里那条 4n+3 规则让最后一张跨两列，
+               末行正好铺满，不留空洞。 */
+            className="kpi-grid kpi-grid-fixed kpi-fill-last"
             items={[
               {
                 label: '商机成交率',

@@ -622,9 +622,19 @@ export default function SampleListPage() {
     onError,
   })
 
+  /* 1024 宽内容区约 700px，样品表七列合计 780px+（两列还是自适应），
+     表头「客户 / 商机」和「样品明细」被压到互相重叠、操作列挤成两行。 */
+  const [compact, setCompact] = useState(() => window.innerWidth < 1200)
+  useEffect(() => {
+    const onResize = () => setCompact(window.innerWidth < 1200)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
   const columns = [
     {
       title: '客户 / 商机',
+      width: compact ? 186 : undefined,
       dataIndex: 'customer_name',
       render: (value: string | null, record: SampleRequestRow) => (
         <div>
@@ -638,7 +648,7 @@ export default function SampleListPage() {
     {
       title: '状态',
       dataIndex: 'status_label',
-      width: 100,
+      width: compact ? 96 : 100,
       render: (value: string, record: SampleRequestRow) => (
         <Tag size="small" color={STATUS_COLOR[record.status] ?? 'grey'}>
           {value}
@@ -646,25 +656,57 @@ export default function SampleListPage() {
       ),
     },
     {
-      title: '样品明细',
+      title: compact ? '样品明细 / 快递' : '样品明细',
       dataIndex: 'items',
-      render: (items: SampleRequestRow['items']) =>
+      width: compact ? 186 : undefined,
+      render: (items: SampleRequestRow['items'], record: SampleRequestRow) =>
         items.length === 0 ? (
           <span style={{ color: 'var(--crm-text-3)' }}>无明细</span>
         ) : (
           // 列宽固定后长明细会省略号截断；把全文挂到 title，
-          // 鼠标停下能看全，不用为此再开一列
+          // 鼠标停下能看全，不用为此再开一列。
+          // 2026-11-19：改「最多两行」—— 单行时整列都是「【验收草稿】预计工时提示 202…」，
+          // 一列全是省略号；两行能把产品名和编码都露出来，悬停仍可看全。
           <span
-            style={{ fontSize: 12 }}
+            style={{
+              fontSize: 12,
+              display: '-webkit-box',
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: 'vertical',
+              overflow: 'hidden',
+              /* 必须显式 normal：全站给表格文字挂了 nowrap，
+                 不覆盖掉的话 line-clamp 根本不换行（实测两行不生效）。 */
+              whiteSpace: 'normal',
+              lineHeight: 1.5,
+            }}
             title={items
-              .map((item) => `${skuLabel({ name: item.sku_name, sku_code: item.sku_code ?? String(item.sku_id) })} ×${item.quantity}`)
+              .map((item) => `${skuLabel({ name: item.sku_name, sku_code: item.sku_code ?? (item.sku_id != null ? String(item.sku_id) : undefined) })} ×${item.quantity}`)
               .join('、')}
           >
-            {items.map((item) => `${skuLabel({ name: item.sku_name, sku_code: item.sku_code ?? String(item.sku_id) })} ×${item.quantity}`).join('、')}
+            {/* 编码缺失时不要拼出「（编码：null）」：旧写法拿 String(sku_id) 兜底，
+                而演示数据里 sku_id 也是空的，于是列表上明晃晃写着 null（2026-11-19 实拍）。 */}
+            {items.map((item) => `${skuLabel({ name: item.sku_name, sku_code: item.sku_code ?? (item.sku_id != null ? String(item.sku_id) : undefined) })} ×${item.quantity}`).join('、')}
+            {compact && record.shipments[0] && (
+              <div
+                title={`${record.shipments[0].carrier ?? '-'} ${record.shipments[0].tracking_no ?? ''}`}
+                style={{
+                  marginTop: 2,
+                  color: 'var(--crm-text-3)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {record.shipments[0].carrier ?? '-'}
+                {record.shipments[0].tracking_no ? ` · ${record.shipments[0].tracking_no}` : ''}
+              </div>
+            )}
           </span>
         ),
     },
-    {
+    ...(compact
+      ? []
+      : [{
       title: '快递',
       width: 170,
       render: (_: unknown, record: SampleRequestRow) => {
@@ -678,12 +720,32 @@ export default function SampleListPage() {
           </span>
         )
       },
+    }]),
+    ...(compact
+      ? []
+      : [{ title: '负责人', dataIndex: 'owner_name', width: 100, render: (v: string | null) => v ?? '-' }]),
+    {
+      title: '申请时间',
+      dataIndex: 'requested_at',
+      width: compact ? 78 : 170,
+      /* 窄屏拆两行：上行「11-18」、下行「14:14」，78px 才放得下整套时分 */
+      render: compact
+        ? (v: string) =>
+            v ? (
+              <span title={formatBeijingTime(v)} style={{ display: 'grid', gap: 2, justifyItems: 'center' }}>
+                <span>{formatBeijingTime(v).slice(5, 10)}</span>
+                <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                  {formatBeijingTime(v).slice(11, 16)}
+                </span>
+              </span>
+            ) : (
+              '-'
+            )
+        : fmt,
     },
-    { title: '负责人', dataIndex: 'owner_name', width: 100, render: (v: string | null) => v ?? '-' },
-    { title: '申请时间', dataIndex: 'requested_at', width: 170, render: fmt },
     {
       title: '操作',
-      width: 140,
+      width: compact ? 140 : 140,
       render: (_: unknown, record: SampleRequestRow) => {
         // 已删除的行只给「恢复」：后端对已删的单子查详情一律 404，
         // 摆一个「详情」也是死的，点了只会报错。
