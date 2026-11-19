@@ -2056,10 +2056,30 @@ async function main() {
       }
 
       if (item.ruleSave) {
-        for (const [heading, endpoint, toast] of [
-          ['自动任务规则', '/task-rules', '自动任务规则已保存'],
-          ['公海回收规则', '/public-pool/rules', '公海规则已保存'],
+        // 业务规则页 2026-11-19 改成药丸切换（一次只显示一块，默认「公海回收」）：
+        // 每测一块前先点药丸把面板亮出来，否则标题藏在 panel-hidden 里找不到。
+        // 顺序：公海回收（默认面板）在前、自动任务在后 —— 收尾停在「自动任务」
+        // 面板，下面的 expect 两条文案（自动任务规则 / 业务规则）正好同屏。
+        for (const [heading, pill, endpoint, toast] of [
+          ['公海回收规则', '公海回收', '/public-pool/rules', '公海规则已保存'],
+          ['自动任务规则', '自动任务', '/task-rules', '自动任务规则已保存'],
         ]) {
+          const switched = await client.send('Runtime.evaluate', {
+            expression: `(() => {
+              const tab = [...document.querySelectorAll('.rule-tab')].find((el) => el.innerText.trim() === ${JSON.stringify(pill)});
+              if (!tab) return null;
+              tab.click();
+              return true;
+            })()`, returnByValue: true,
+          })
+          if (!switched.result.value) {
+            problems.push(`${heading}：找不到「${pill}」切换药丸`)
+            continue
+          }
+          if (!await waitForText(client, heading, 3000)) {
+            problems.push(`${heading}：切到「${pill}」后仍看不到标题`)
+            continue
+          }
           const beforeResponse = await fetch(`${API_BASE}/api/v1${endpoint}`, { headers: { Authorization: `Bearer ${auth.token}` } })
           const before = (await beforeResponse.json()).data[0]
           const changed = await client.send('Runtime.evaluate', {
