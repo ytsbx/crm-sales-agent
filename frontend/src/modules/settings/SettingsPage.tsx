@@ -103,6 +103,50 @@ type SettingFieldMeta = {
   hint?: string
 }
 
+/**
+ * 系统配置的分组（2026-11-19）。
+ *
+ * 原来 29 项平铺在一张表里：没有分类，从"公司名称"一路排到"通知重试"；
+ * 每行一个占满整格的大输入框，说明挤在最右边一列 —— 主人原话
+ * 「很乱，根本没有分类，还有一个框改一个设置，没有丝毫美感」。
+ *
+ * 分组按**业务域**切：改报价的人不用滚过客户沉睡天数。
+ * 顺序也是信息：公司与单据 → 报价定价 → 客户节奏 → 公海 → 审批 → 通知导出。
+ * 这里只放分组，字段形态仍在 SETTING_FIELD_META。
+ */
+const SETTING_GROUPS: Array<{ title: string; note?: string; keys: string[] }> = [
+  {
+    title: '公司与单据',
+    note: '打印在报价单、合同上的信息，以及报价默认带上的条款',
+    keys: ['company_name', 'default_currency', 'trade_mode', 'default_payment_terms', 'default_delivery_terms', 'quote_valid_days'],
+  },
+  {
+    title: '报价与定价',
+    note: '核价时的默认口径；绝对底价是最后一道闸',
+    keys: ['default_min_margin', 'default_target_margin', 'price_range_ratio', 'hard_floor', 'export_tax_refund_rate'],
+  },
+  {
+    title: '客户与商机节奏',
+    note: '多少天没动静算沉睡 / 停滞，查重多少分算重复',
+    keys: ['customer_active_days', 'customer_stale_days', 'dedup_scoring', 'opportunity_risk_days', 'opportunity_stale_days'],
+  },
+  {
+    title: '公海回收参数',
+    note: '判定逻辑在上方的「公海回收规则」，这里只放天数与恢复权限',
+    keys: ['pool_recycle_notice_days', 'pool_recycle_defer_days', 'pool_recycle_max_protect_days','pool_recycle_restore_permission'],
+  },
+  {
+    title: '审批与外部系统',
+    note: '同序 OA 的模板与字段映射；未配置时不会发出审批，报价审批分级在下方单独编辑',
+    keys: ['dingtalk_oa', 'dingtalk_contract_oa', 'dingtalk_sample_oa'],
+  },
+  {
+    title: '通知与导出',
+    note: '导出上限、体积重折算、通知渠道与重试',
+    keys: ['export', 'logistics_volumetric_ratio', 'notification_channels', 'notification_levels', 'notification_retry'],
+  },
+]
+
 const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
   company_name: { kind: 'text', placeholder: '例如：杭州天初科技有限公司' },
   customer_active_days: { unit: '天' },
@@ -270,13 +314,18 @@ function SettingValueField({
     return (
       <div className="setting-value-stack">
         <TextArea
-          autosize={{ minRows: 2, maxRows: 4 }}
+          // 定高 3 行，不用 autosize：autosize 的外层容器比可见框高出 40px，
+          // 说明文字被顶出一条空白，看着像这一段没填。
+          rows={3}
           value={text}
           placeholder={meta.placeholder}
           onChange={(next) => { setText(next); setStatus('dirty') }}
           onBlur={() => void commit(text)}
         />
-        <span className={`setting-save-state is-${status}`}>{SAVE_STATE_TEXT[status]}</span>
+        {/* 空态不渲染：留一个空 span 会让文本框下面永远多出一条 16px 空白 */}
+        {status !== 'idle' && (
+          <span className={`setting-save-state is-${status}`}>{SAVE_STATE_TEXT[status]}</span>
+        )}
       </div>
     )
   }
@@ -2212,63 +2261,48 @@ export default function SettingsPage() {
               {isAdmin && (
               <div className="rule-block">
                 <div className="rule-block-title">系统配置</div>
-                <Table<SystemSettingRow>
-                  className="settings-table"
-                  columns={[
-                    {
-                      title: '配置项',
-                      dataIndex: 'key',
-                      width: 200,
-                      // 只显示中文名。原来中文名下面还挂着一行灰色小字「内部标识：hard_floor」，
-                      // 那是给排查问题/对文档用的开发术语，摆在每一行下面 99% 的时候是噪音。
-                      // 主人 2026-10-14 决定删掉；要查标识看《09-业务参数配置说明》。
-                      render: (key: string) => <div className="setting-key-name">{settingLabel(key)}</div>,
-                    },
-                    {
-                      // 「值」**挪到第二列**（2026-11-19）：原来是「配置项 | 说明 | 值」，
-                      // 说明列 360 宽 + 表格摊列宽，把值一路顶到卡片最右边（1 公里外），
-                      // 改一项要横跨整个屏幕；而且说明有 40 字的长段落，占着中间最宽的位置。
-                      // 现在：配置项 200 | 值 340 | 说明 自适应，眼睛从名字往右扫一格就到值。
-                      title: '值',
-                      key: 'value',
-                      width: 340,
-                      render: (_: unknown, record: SystemSettingRow) => renderSettingValue(record),
-                    },
-                    {
-                      title: '说明',
-                      render: (_: unknown, record: SystemSettingRow) => {
-                        // 一批配置**默认就取最保守的值**（关着 / 0 / 留空），
-                        // 因为底价口径、体积重系数、同序 OA 模板号这些属于业务口径，
-                        // 开发不替业务拍板。它们光看说明跟"坏了"一样，
-                        // 所以这里单独挂一条"当前为什么看不出效果"（文案单点在
-                        // `setting-labels.ts` 的 SETTING_NOTES，只登记这类项）。
-                        const note = settingNote(record.key)
-                        return (
-                          <div className="setting-desc">
-                            <span>{settingDescription(record.key, record.description)}</span>
-                            {note && (
-                              <div style={{ marginTop: 6 }}>
-                                <Tag color="orange" size="small">
-                                  {note.tag}
-                                </Tag>
-                                <span style={{ color: 'var(--crm-text-2)', fontSize: 12, marginLeft: 6 }}>
-                                  {note.text}
-                                </span>
+                {/* 分组卡片（2026-11-19）：29 项铺一张表 → 按业务域分六组、
+                    每组一张卡，组内是「名称 | 控件 | 一句话说明」的表单行，
+                    控件宽度封顶 240，不再横跨整行。 */}
+                <div className="settings-groups">
+                  {SETTING_GROUPS.map((group) => {
+                    const rows = group.keys
+                      .map((key) => settingRow(key))
+                      .filter((row): row is SystemSettingRow => Boolean(row))
+                    if (!rows.length) return null
+                    return (
+                      <section className="settings-group" key={group.title}>
+                        <header className="settings-group-head">
+                          <span className="settings-group-title">{group.title}</span>
+                          {group.note && <span className="settings-group-note">{group.note}</span>}
+                        </header>
+                        <div className="settings-group-body">
+                          {rows.map((row) => {
+                            const note = settingNote(row.key)
+                            // 多行文本（交货条款）独占一整行：塞在 240 宽的列里会被挤成
+                            // 三行字、把这一行撑到 180px 高，上下全是空白。
+                            const kind = SETTING_FIELD_META[row.key]?.kind
+                            return (
+                              <div className={`setting-field${kind === 'multiline' ? ' is-multiline' : ''}`} key={row.key}>
+                                <span className="setting-field-label">{settingLabel(row.key)}</span>
+                                <div className="setting-field-value">{renderSettingValue(row)}</div>
+                                <div className="setting-field-desc">
+                                  <span>{settingDescription(row.key, row.description)}</span>
+                                  {note && (
+                                    <span className="setting-field-tag">
+                                      <Tag color="orange" size="small">{note.tag}</Tag>
+                                      {note.text}
+                                    </span>
+                                  )}
+                                </div>
                               </div>
-                            )}
-                          </div>
-                        )
-                      },
-                    },
-                  ]}
-                  // 「报价审批分级」在下面单独成块，不混进这张表 ——
-                  // 它是多档编辑器（每档有上限输入框、角色多选、删除按钮），
-                  // 塞进「值」列的一个单元格里，整行会被撑到 180px。
-                  dataSource={(settingsQuery.data ?? []).filter((row) => row.key !== 'approval_levels')}
-                  loading={settingsQuery.isLoading}
-                  rowKey="key"
-                  pagination={false}
-                />
+                            )
+                          })}
+                        </div>
+                      </section>
+                    )
+                  })}
+                </div>
 
                 {/* 报价审批分级：从上面那张表里拿出来的独立区块。
                     它本来就是"一张会改的子表格"，跟上面那些"一行一个键值"的

@@ -4896,6 +4896,139 @@ table:not(.semi-table) td.cell-right {
 }
 
 /* ============================================================
+   系统配置：分组卡片（设置页 · 业务规则）
+   ------------------------------------------------------------
+   原来 29 项挤在一张表里，没有分类、每行一个横跨整格的大输入框。
+   现在按业务域分六组，每组一张卡；组内每一行是
+   「名称 118 | 控件 ≤240 | 一句话说明」——控件不再撑满整行。
+   ============================================================ */
+.settings-groups {
+  display: grid;
+  gap: 14px;
+  margin-top: 4px;
+}
+
+.settings-group {
+  border: 1px solid var(--crm-border);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(17, 24, 39, .03);
+  overflow: hidden;
+}
+
+.settings-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 11px 18px;
+  background: color-mix(in srgb, var(--crm-primary) 3.5%, #fff);
+  border-bottom: 1px solid color-mix(in srgb, var(--crm-primary) 10%, #fff);
+}
+
+.settings-group-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--crm-text-1);
+  letter-spacing: .2px;
+}
+
+.settings-group-note {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--crm-text-3);
+}
+
+.settings-group-body {
+  padding: 2px 18px 6px;
+}
+
+.setting-field {
+  display: grid;
+  /* 三列：名字对齐成一列，控件封顶 240，剩下全给说明。
+     名字列固定宽度是为了让同组里的"30 天"竖着对齐。 */
+  grid-template-columns: 128px minmax(0, 240px) minmax(0, 1fr);
+  column-gap: 18px;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px dashed rgba(17, 24, 39, .07);
+}
+
+.setting-field:last-child {
+  border-bottom: 0;
+}
+
+.setting-field-label {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--crm-text-1);
+  line-height: 1.4;
+}
+
+.setting-field-value {
+  min-width: 0;
+}
+
+.setting-field-value .setting-value-stack {
+  gap: 3px;
+}
+
+.setting-field-desc {
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--crm-text-3);
+  min-width: 0;
+}
+
+/* "当前用不上""历史遗留"这类橙色说明：单独占一行。
+   原来 inline 跟在描述后面，说明一长就把 Tag 压成"历史…"三个字。 */
+.setting-field-tag {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 5px;
+  line-height: 1.55;
+}
+
+.setting-field-tag .semi-tag {
+  flex: 0 0 auto;
+}
+
+/* 多行文本（默认交货条款）：值占满整行，说明落到值下面。
+   塞在 240 宽的列里会被压成三行、整行高度飙到 180px。 */
+.setting-field.is-multiline {
+  /* 两列：名字 | 文本框（封顶 560），说明落到文本框下面。
+     千万别写成三列：1024 下容器只有 620，560 的文本框把说明列挤成 0 宽，
+     中文会一个字一行竖着排下去。 */
+  grid-template-columns: 128px minmax(0, 1fr);
+  row-gap: 2px;
+  align-items: start;
+  padding: 12px 0 14px;
+}
+
+.setting-field.is-multiline .setting-field-value {
+  max-width: 560px;
+}
+
+.setting-field.is-multiline .setting-field-desc {
+  grid-column: 2;
+  max-width: 560px;
+}
+
+.setting-field.is-multiline .setting-field-label {
+  padding-top: 5px;
+}
+
+
+
+@media (max-width: 1180px) {
+  .setting-field {
+    grid-template-columns: 104px minmax(0, 200px) minmax(0, 1fr);
+    column-gap: 14px;
+  }
+}
+
+/* ============================================================
    系统配置表（设置页 · 业务规则 · 系统配置）
    ------------------------------------------------------------
    原来 20 多项配置共用同一个裸输入框：30 是天？还是次？
