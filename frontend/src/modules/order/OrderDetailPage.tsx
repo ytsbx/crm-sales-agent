@@ -1,6 +1,6 @@
 import { formatBeijingTime } from '../../shared/beijing-time'
 import { useTabLabel } from '../../shared/hooks/useTabLabel'
-import { useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -104,7 +104,7 @@ function ShipmentVerdict({ summary }: { summary?: ShipmentOverview['summary'] })
   if (!summary.all_shipped) {
     return (
       <div style={box}>
-        <Tag color="orange">未完成</Tag>
+        <Tag color="orange" style={{ flex: 'none' }}>未完成</Tag>
         <span>
           整单还没发完，还剩 <strong>{shipmentQuantity(summary.remaining_exact ?? summary.remaining)}</strong> 件未发
           {summary.remaining > 0 && summary.pending_batch_count === 0
@@ -119,7 +119,7 @@ function ShipmentVerdict({ summary }: { summary?: ShipmentOverview['summary'] })
   const days = summary.last_batch_vs_delivery_days
   return (
     <div style={box}>
-      <Tag color="green">已发完</Tag>
+      <Tag color="green" style={{ flex: 'none' }}>已发完</Tag>
       <span>
         {days === null ? (
           '这单没有可比的交期或发货日，算不出偏差。'
@@ -187,6 +187,16 @@ export default function OrderDetailPage() {
   const canPayment = can('payment:manage')
 
   const [activeKey, setActiveKey] = useState('items')
+  // 订单详情的几个 tab 都是宽表（回款记录 10 列、跟单节点 8 列）：1024 卡内只有 699，
+  // 不做窄屏分档就会顶出横向滚动条、最后一两列整列被切（2026-11-19 实拍）。
+  const [viewportWidth, setViewportWidth] = useState(() => (typeof window === 'undefined' ? 1440 : window.innerWidth))
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const onResize = () => setViewportWidth(window.innerWidth)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+  const narrowScreen = viewportWidth < 1200
   const [statusVisible, setStatusVisible] = useState(false)
   const [targetStatus, setTargetStatus] = useState<string | null>(null)
   //: 取消订单是**不可逆的终态动作**，单独一个确认弹窗把影响讲清楚
@@ -707,8 +717,8 @@ export default function OrderDetailPage() {
     { title: '应收日期', dataIndex: 'due_date', width: 130 },
     // 行自带币种就优先用它（历史数据里可能与订单币种不一致），没有才退回订单币种
     { title: '应收金额', dataIndex: 'amount', width: 130, className: 'cell-right', render: (v: number, r: Receivable) => formatMoney(toTwoDecimals(r.amount_exact ?? v), r.currency ?? order.currency) },
-    { title: '已收', dataIndex: 'received_amount', width: 130, className: 'cell-right', render: (v: number, r: Receivable) => formatMoney(toTwoDecimals(r.received_amount_exact ?? v), r.currency ?? order.currency) },
-    { title: '未收', dataIndex: 'remaining_amount', width: 130, className: 'cell-right', render: (v: number, r: Receivable) => formatMoney(toTwoDecimals(r.remaining_amount_exact ?? v), r.currency ?? order.currency) },
+    { title: '已收', dataIndex: 'received_amount', width: 130, className: 'cell-right col-hide-narrow', render: (v: number, r: Receivable) => formatMoney(toTwoDecimals(r.received_amount_exact ?? v), r.currency ?? order.currency) },
+    { title: '未收', dataIndex: 'remaining_amount', width: 130, className: 'cell-right col-hide-narrow', render: (v: number, r: Receivable) => formatMoney(toTwoDecimals(r.remaining_amount_exact ?? v), r.currency ?? order.currency) },
     {
       title: '状态',
       dataIndex: 'status_label',
@@ -1166,16 +1176,17 @@ export default function OrderDetailPage() {
 
           {activeKey === 'payments' && (
             <Table<Payment>
+              className="order-tab-table"
               columns={[
-                { title: '应收节点', dataIndex: 'plan_name', width: 120, render: (v: string | null) => v ?? '-' },
-                { title: '收款日期', dataIndex: 'received_date', width: 130 },
-                { title: '整笔到账', dataIndex: 'received_amount', width: 130, render: (v: number, r: Payment) => formatMoney(r.received_amount_exact ?? v, r.currency ?? order.currency) },
-                { title: '已分配', dataIndex: 'allocated_amount', width: 120, render: (v: number, r: Payment) => r.status === 'confirmed' ? formatMoney(r.allocated_amount_exact ?? v, r.currency ?? order.currency) : '-' },
-                { title: '待分配', dataIndex: 'unallocated_amount', width: 120, render: (v: number, r: Payment) => r.status === 'confirmed' ? formatMoney(r.unallocated_amount_exact ?? v, r.currency ?? order.currency) : '-' },
-                { title: '方式', dataIndex: 'payment_method', width: 120, render: (v: string | null) => v ?? '-' },
+                { title: '应收节点', dataIndex: 'plan_name', width: narrowScreen ? 100 : 110, render: (v: string | null) => v ?? '-' },
+                { title: '收款日期', dataIndex: 'received_date', width: narrowScreen ? 118 : 120 },
+                { title: '整笔到账', dataIndex: 'received_amount', width: narrowScreen ? 118 : 120, render: (v: number, r: Payment) => formatMoney(r.received_amount_exact ?? v, r.currency ?? order.currency) },
+                { title: '已分配', dataIndex: 'allocated_amount', width: 110, className: 'cell-right col-hide-narrow', render: (v: number, r: Payment) => r.status === 'confirmed' ? formatMoney(r.allocated_amount_exact ?? v, r.currency ?? order.currency) : '-' },
+                { title: '待分配', dataIndex: 'unallocated_amount', width: 110, className: 'cell-right col-hide-narrow', render: (v: number, r: Payment) => r.status === 'confirmed' ? formatMoney(r.unallocated_amount_exact ?? v, r.currency ?? order.currency) : '-' },
+                { title: '方式', dataIndex: 'payment_method', width: 100, className: 'col-hide-narrow', render: (v: string | null) => v ?? '-' },
                 {
                   title: '回款凭证',
-                  width: 220,
+                  width: narrowScreen ? 140 : 190,
                   render: (_: unknown, record: Payment) => (
                     <PaymentVoucherControl
                       payment={record}
@@ -1189,7 +1200,7 @@ export default function OrderDetailPage() {
                 {
                   title: '状态',
                   dataIndex: 'status_label',
-                  width: 130,
+                  width: narrowScreen ? 110 : 120,
                   render: (value: string) => (
                     <Tag color={value === '已确认' ? 'green' : value === '已驳回' ? 'red' : 'orange'}>{value}</Tag>
                   ),
@@ -1197,12 +1208,14 @@ export default function OrderDetailPage() {
                 {
                   title: '确认人',
                   dataIndex: 'confirmed_by_name',
-                  width: 110,
+                  width: 90,
+                  className: 'col-hide-narrow',
+                  onHeaderCell: () => ({ className: 'col-hide-narrow' }),
                   render: (v: string | null) => v ?? '-',
                 },
                 {
                   title: '操作',
-                  width: 90,
+                  width: 80,
                   render: (_: unknown, record: Payment) => (
                     <div style={{ display: 'flex', gap: 10 }}>
                       {record.status === 'pending' && canPayment && (
@@ -1349,6 +1362,9 @@ export default function OrderDetailPage() {
                 </div>
               )}
               <Table<OrderMilestoneRow>
+                /* 八列在 1024 装不下（卡内 699，实测顶出横向滚动条、「操作」整列被切）。
+                   fixed 布局 + 窄屏隐藏「责任人」「逾期原因」两列（.col-hide-narrow）。 */
+                className="order-tab-table"
                 columns={[
                   { title: '节点', dataIndex: 'label', width: 140 },
                   {
@@ -1377,6 +1393,8 @@ export default function OrderDetailPage() {
                     title: '责任人',
                     dataIndex: 'owner_id',
                     width: 100,
+                    className: 'col-hide-narrow',
+                    onHeaderCell: () => ({ className: 'col-hide-narrow' }),
                     render: (v: number | null) =>
                       // 查不到人就显示 `-`：内部编号在这里帮不上忙 —— 用户不认识
                       // 那个号，也没法拿它去找人（下单人是去用户列表里找人）
@@ -1389,6 +1407,8 @@ export default function OrderDetailPage() {
                     title: '逾期原因',
                     dataIndex: 'overdue_reason',
                     width: 180,
+                    className: 'col-hide-narrow',
+                    onHeaderCell: () => ({ className: 'col-hide-narrow' }),
                     render: (v: string | null) => v ?? '-',
                   },
                   ...(canManage
@@ -1433,6 +1453,7 @@ export default function OrderDetailPage() {
               {/* 整单交期结论（§9.8 复审）：发完才给最终数字；没发完如实说"未完成 · 还剩几件" */}
               <ShipmentVerdict summary={shipmentsQuery.data?.summary} />
               <Table<ShipmentBatchRow>
+                className="order-tab-table"
                 columns={[
                   { title: '批次', dataIndex: 'batch_no', width: 80, render: (v: number) => `第 ${v} 批` },
                   {
@@ -1448,12 +1469,16 @@ export default function OrderDetailPage() {
                   {
                     title: '物流',
                     width: 170,
+                    className: 'col-hide-narrow',
+                    onHeaderCell: () => ({ className: 'col-hide-narrow' }),
                     render: (_: unknown, record: ShipmentBatchRow) =>
                       record.tracking_no ? `${record.logistics_company ?? ''} ${record.tracking_no}` : '-',
                   },
                   {
                     title: '本批偏差',
                     width: 110,
+                    className: 'col-hide-narrow',
+                    onHeaderCell: () => ({ className: 'col-hide-narrow' }),
                     render: (_: unknown, record: ShipmentBatchRow) => {
                       const d = record.deviation_days
                       if (d === null || d === undefined) return '-'

@@ -4441,3 +4441,16 @@ table:not(.semi-table) td {
     display: none !important;
   }
 }
+
+/* 订单详情各 tab（跟单节点 / 发货批次 / 应收计划 / 回款记录 / 对外单据）：
+   这些表列多、每列内容又长，Semi 默认 auto 布局会把列按内容撑开，1024 就顶出
+   横向滚动条、最后一两列整列被切。fixed 之后列宽按定义走；
+   窄屏再隐藏 .col-hide-narrow 标记的次要列。 */
+.order-tab-table table {
+  table-layout: fixed !important;
+}
+@media (max-width: 1199px) {
+  .col-hide-narrow {
+    display: none !important;
+  }
+}
