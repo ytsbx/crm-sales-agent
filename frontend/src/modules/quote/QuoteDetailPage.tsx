@@ -851,10 +851,17 @@ export default function QuoteDetailPage() {
           {(record.specification || (v && record.sku_name)) && (
             /* 副行（规格 · 编码）在 1024 下会跟着名称一起折，把行高撑到五行：
                143px 的首列放不下「来源未记录采购数量 - XQ202610120002」。
-               名称照旧折行（识别列不能只剩省略号），副行改为单行省略 + 悬停看全。 */
+               名称照旧折行（识别列不能只剩省略号），副行改为单行省略 + 悬停看全，
+               行高回落到三行（2026-11-19）。 */
             <div
               title={[record.specification || '', v && record.sku_name ? v : ''].filter(Boolean).join(' · ')}
-              style={{ fontSize: 12, color: 'var(--crm-text-3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+              style={{
+                fontSize: 12,
+                color: 'var(--crm-text-3)',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
             >
               {[record.specification || '', v && record.sku_name ? v : ''].filter(Boolean).join(' · ')}
             </div>
@@ -862,7 +869,9 @@ export default function QuoteDetailPage() {
         </div>
       ),
     },
-    { title: '数量', dataIndex: 'quantity', width: 52, render: (v: number) => v.toLocaleString('zh-CN') },
+    /* 52 → 72：52 那会儿实测单元格只剩三十来像素，数量「1」被渲染成「1...」，
+       一个数字后面挂省略号（2026-11-19 实拍）。72 够放四位数量加千分位逗号。 */
+    { title: '数量', dataIndex: 'quantity', width: 72, render: (v: number) => v.toLocaleString('zh-CN') },
     {
       // 单价口径必须在列头写清"不含运费"：运费分离之后，客户与业务员都容易
       // 按含运费的旧口径理解，列头不写就会各理解一套。
@@ -917,7 +926,9 @@ export default function QuoteDetailPage() {
     {
       title: '利润率',
       dataIndex: 'profit_rate_snapshot',
-      /* 85 装不下「100.00%」（实测被裁成「100.0...」）。96 才够，产品名称是弹性列。 */
+      /* 85 装不下「100.00%」（实测被裁成「100.0...」）——
+         明细表七列合计超出内容区时各列一起被压，这一列正好压到小数点后。
+         96 才够，产品名称是弹性列，会自然让出这 11px。 */
       width: 96,
       render: (v: number | null) => v == null ? '-' : `${(v * 100).toFixed(2)}%`,
     },
@@ -2058,6 +2069,10 @@ export default function QuoteDetailPage() {
                 title: '金额',
                 dataIndex: 'amount',
                 width: 120,
+                // 金额右对齐（与明细表、报价列表同一口径）：这一列漏了 .cell-right，
+                // ¥30.00 与 ¥1,200.00 各站在格子中间，两行比不出大小（2026-11-19）。
+                align: 'right' as const,
+                className: 'cell-right',
                 // 「（代收代付）」原来跟在金额后面一行写：「¥30.00（代收代付）」要 154px，
                 // 把 120 的列宽撑到 154，整张表超出卡片、底下挂滚动条，
                 // 「删除」按钮被推到卡片外面看不见。拆成两行，口径说明用灰色小字放下面。

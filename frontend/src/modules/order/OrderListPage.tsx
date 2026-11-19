@@ -301,6 +301,11 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
           title: '待回款',
           dataIndex: 'unreceived_amount',
           width: 130,
+          /* 这一列原来漏了右对齐（同一行的「订单金额 / 已回款」都挂了
+             .cell-right，只有它没有），¥1.00 和 ¥930.00 在格子中间各站各的，
+             三列金额凑不成一条竖线（2026-11-19 实拍）。 */
+          align: 'right' as const,
+          className: 'cell-right',
           render: (v: number, record: Order) =>
             formatMoney(toTwoDecimals(record.unreceived_amount_exact ?? v), record.currency),
         }]),
