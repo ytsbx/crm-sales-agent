@@ -243,7 +243,7 @@ function LeadsPanel() {
         loading={query.isLoading}
         rowKey="id"
         empty={emptyText(query, '回收站里没有线索', '被删除的线索会落在这里，随时能取回；客户类只读、不能恢复。')}
-        pagination={{
+        pagination={(query.data?.total ?? 0) === 0 ? false : {
           currentPage: pager.page,
           pageSize: pager.pageSize,
           total: query.data?.total ?? 0,
@@ -459,7 +459,7 @@ function ProductsPanel() {
           loading={productQuery.isLoading}
           rowKey="id"
           empty={emptyText(productQuery, '回收站里没有产品')}
-          pagination={{
+          pagination={(productQuery.data?.total ?? 0) === 0 ? false : {
             currentPage: productPager.page,
             pageSize: productPager.pageSize,
             total: productQuery.data?.total ?? 0,
@@ -478,7 +478,7 @@ function ProductsPanel() {
           loading={skuQuery.isLoading}
           rowKey="id"
           empty={emptyText(skuQuery, '回收站里没有 SKU')}
-          pagination={{
+          pagination={(skuQuery.data?.total ?? 0) === 0 ? false : {
             currentPage: skuPager.page,
             pageSize: skuPager.pageSize,
             total: skuQuery.data?.total ?? 0,
@@ -772,7 +772,7 @@ function CustomersPanel() {
           loading={query.isLoading}
           rowKey="id"
           empty={emptyText(query, '回收站里没有客户')}
-          pagination={{
+          pagination={(query.data?.total ?? 0) === 0 ? false : {
             currentPage: pager.page,
             pageSize: pager.pageSize,
             total: query.data?.total ?? 0,
@@ -853,7 +853,7 @@ function SamplesPanel() {
         { title: '负责人', dataIndex: 'owner_name' }, { title: '原状态', dataIndex: 'status_label' },
         { title: '删除时间', dataIndex: 'deleted_at', render: fmt },
         ...(can('sample:manage') ? [{ title: '操作', render: (_: unknown, row: SampleRequestRow) => <Popconfirm title="确认恢复这张样品申请？" onConfirm={() => restore.mutate(row.id)}><a>恢复</a></Popconfirm> }] : [])]}
-      pagination={{ currentPage: pager.page, pageSize: pager.pageSize, total: query.data?.total ?? 0, showSizeChanger: true,
+      pagination={(query.data?.total ?? 0) === 0 ? false : { currentPage: pager.page, pageSize: pager.pageSize, total: query.data?.total ?? 0, showSizeChanger: true,
         onPageChange: pager.setPage, onPageSizeChange: pager.changePageSize }} />
   </SectionCard>
 }
@@ -876,7 +876,7 @@ function ContractsPanel() {
       { title: '客户', dataIndex: 'customer_name' }, { title: '原状态', dataIndex: 'status_label' },
       { title: '删除时间', dataIndex: 'deleted_at', render: fmt },
       ...(can('order:manage') ? [{ title: '操作', render: (_: unknown, row: RecycleContract) => <Popconfirm title="确认恢复这份合同？相关自动待办可能随之恢复。" onConfirm={() => restore.mutate(row.id)}><a>恢复</a></Popconfirm> }] : []),
-    ]} pagination={{ currentPage: pager.page, pageSize: pager.pageSize, total: query.data?.total ?? 0, showSizeChanger: true, onPageChange: pager.setPage, onPageSizeChange: pager.changePageSize }} /></SectionCard>
+    ]} pagination={(query.data?.total ?? 0) === 0 ? false : { currentPage: pager.page, pageSize: pager.pageSize, total: query.data?.total ?? 0, showSizeChanger: true, onPageChange: pager.setPage, onPageSizeChange: pager.changePageSize }} /></SectionCard>
 }
 
 export default function RecycleBinPage() {

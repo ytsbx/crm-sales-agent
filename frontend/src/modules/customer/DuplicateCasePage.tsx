@@ -107,7 +107,9 @@ export default function DuplicateCasePage() {
 
         <Table<DuplicateCase>
           rowKey="id"
-          pagination={{
+          /* 一条记录都没有时不摆分页条：分页在 total=0 时全是灰的、点不动，
+             只剩一条空杠白占 56px，让空态下面多出一条白带（2026-11-19）。 */
+          pagination={(query.data?.total ?? 0) === 0 ? false : {
             currentPage: page,
             pageSize,
             total: query.data?.total ?? 0,
