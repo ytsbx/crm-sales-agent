@@ -652,11 +652,12 @@ export default function CustomerListPage() {
               if (file) void handleImport(file)
             }}
           />
-          <Button onClick={() => downloadCsv('/api/v1/customers/import-template', '客户导入模板.csv')}>
+          <Button type="tertiary" onClick={() => downloadCsv('/api/v1/customers/import-template', '客户导入模板.csv')}>
             下载模板
           </Button>
           {/* 导出独立授权；提示统一由 GuardedButton 渲染，整行显示在按钮下方。 */}
           <GuardedButton
+            type="tertiary"
             hintBelow
             disabled={!canExport}
             blockedReasons={[CUSTOMER_EXPORT_PERMISSION_REASON]}
@@ -665,11 +666,11 @@ export default function CustomerListPage() {
           >
             导出
           </GuardedButton>
-          <Button loading={importing} onClick={() => fileInputRef.current?.click()}>
+          <Button type="tertiary" loading={importing} onClick={() => fileInputRef.current?.click()}>
             批量导入
           </Button>
           <Button type="primary"
-            theme="outline"
+            theme="solid"
             onClick={() => {
               // 每次打开"新建客户"都是一次新表单 → 换一把新的幂等键
               createRequestKeyRef.current = newRequestKey()

@@ -6194,14 +6194,15 @@ table:not(.semi-table) td.cell-right {
 /* 只有实心款（.semi-button-solid）是主操作；Semi 的 Button 默认 type=primary，
    早先按 type 判断会把「新建版本 / 下载 PDF」也刷成实心蓝块。 */
 .quote-actions .semi-button-solid {
-  background: #2f6df6 !important;
-  border-color: #2f6df6 !important;
-  color: #fff !important;
-  box-shadow: 0 6px 16px -8px rgba(47, 109, 246, .7);
+  background: #fff !important;
+  border: 1px solid rgba(47, 109, 246, .5) !important;
+  color: #2f6df6 !important;
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(47, 109, 246, .12);
 }
 .quote-actions .semi-button-solid:hover {
-  background: #2560e6 !important;
-  border-color: #2560e6 !important;
+  background: #f3f7ff !important;
+  border-color: #2f6df6 !important;
 }
 .quote-actions .semi-button:not(.semi-button-solid):not(.semi-button-danger) {
   background: transparent !important;
@@ -6221,4 +6222,33 @@ table:not(.semi-table) td.cell-right {
    这边单独压低成文字按钮（Dropdown 触发器，点击区不变）。 */
 .dh-actions .semi-button-tertiary {
   color: var(--crm-text-2, #4e5969);
+}
+/* ─────────────── 全站主按钮：不要"蓝色整块填充"（2026-11-19 主人）
+   「我并不喜欢蓝色全底的这种，有这种的都要改」。
+   凡是 .semi-button-primary.semi-button-solid（真·实心蓝）统一成
+   「白底 + 主色描边 + 主色文字 + 一道极轻投影」：
+   仍然是页面上唯一"有形"的按钮，但不再是一整块蓝。
+   —— 这条放在最后，优先级压过前面所有给 solid 加底的规则。 */
+.semi-button-primary.semi-button-solid {
+  background: #fff !important;
+  background-image: none !important;
+  color: #2f6df6 !important;
+  border: 1px solid rgba(47, 109, 246, .5) !important;
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(47, 109, 246, .12) !important;
+  transition: background-color .14s ease, border-color .14s ease, box-shadow .14s ease;
+}
+.semi-button-primary.semi-button-solid:hover {
+  background: #f3f7ff !important;
+  border-color: #2f6df6 !important;
+  box-shadow: 0 2px 6px -2px rgba(47, 109, 246, .22) !important;
+}
+.semi-button-primary.semi-button-solid:active {
+  background: #eaf1ff !important;
+  transform: none !important;
+  box-shadow: 0 1px 2px rgba(47, 109, 246, .12) !important;
+}
+/* 弹窗底部的确定按钮跟着同一条规则走（它也是 solid primary） */
+.semi-modal-footer .semi-button-primary.semi-button-solid {
+  color: #2f6df6 !important;
 }
