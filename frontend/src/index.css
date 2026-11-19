@@ -5624,6 +5624,7 @@ table:not(.semi-table) td.cell-right {
   text-align: left;
   line-height: 1.55;
 }
+
 /* ============================================================
    商机转化台阶：改成四列清单（2026-11-19 重排）
    上一版挤在中间、落差写成缩进行，读不出主次 ——
@@ -5749,3 +5750,16 @@ table:not(.semi-table) td.cell-right {
 /* 四列清单的右对齐（上一版写了 is-right 却没给规则，数字全挤在列左） */
 .deal-table-head .is-right,
 .deal-table-row .is-right { text-align: right; }
+
+/* 「自定义」这枚胶囊要和预设区分开：虚线，表示"这里还能填别的" */
+.setting-preset.is-custom {
+  border-style: dashed;
+  color: var(--crm-text-3);
+}
+.setting-preset.is-custom:hover { color: var(--crm-primary); border-color: rgba(47, 109, 246, .45); }
+.setting-preset.is-custom.is-on {
+  color: var(--crm-primary);
+  border-style: solid;
+  border-color: rgba(47, 109, 246, .42);
+  background: rgba(47, 109, 246, .10);
+}

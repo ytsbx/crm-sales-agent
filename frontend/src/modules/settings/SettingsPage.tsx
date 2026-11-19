@@ -409,6 +409,8 @@ function SettingValueField({
   const [status, setStatus] = useState<SettingSaveStatus>('idle')
   /** 静止态 / 编辑态：页面静止时只有一个值，点开才长控件 */
   const [open, setOpen] = useState(false)
+  /** 有预设取值的项：默认只给胶囊，点「自定义」才露出输入框 */
+  const [custom, setCustom] = useState(false)
 
   // 服务器回了新值（别处改的 / 保存成功）就同步回来；正在编辑或报错时不动，
   // 免得把用户手上没提交的字冲掉。
@@ -487,6 +489,7 @@ function SettingValueField({
   const cancel = () => {
     setText(initial)
     setOpen(false)
+    setCustom(false)
     setStatus('idle')
   }
 
@@ -569,7 +572,10 @@ function SettingValueField({
     )
   }
 
-  // 数字 / 百分比 / 短文本：先给常见取值，想填别的再落到输入框
+  // 数字 / 百分比 / 短文本：先给常见取值，想填别的点「自定义」
+  // （主人 2026-11-19：「该有自定义的要能自定义」—— 原来胶囊旁边直接摆一个
+  //   没说明的输入框，既不知道它是"兜底"，也说不清什么时候该用它。）
+  const needCustom = !meta.presets || custom
   return (
     <div className="setting-value-cell is-editing">
       {meta.presets && (
@@ -578,8 +584,9 @@ function SettingValueField({
             <button
               type="button"
               key={preset}
-              className={`setting-preset${String(preset) === text ? ' is-on' : ''}`}
+              className={`setting-preset${!custom && String(preset) === text ? ' is-on' : ''}`}
               onClick={() => {
+                setCustom(false)
                 setText(String(preset))
                 void commit(String(preset))
               }}
@@ -588,19 +595,38 @@ function SettingValueField({
               {kind === 'percent' ? '%' : meta.unit ?? ''}
             </button>
           ))}
+          {/* 预设只是"最常见的几个"，不是全部取值 —— 留一个明确的出口 */}
+          <button
+            type="button"
+            className={`setting-preset is-custom${custom ? ' is-on' : ''}`}
+            onClick={() => {
+              setCustom(true)
+              setStatus('dirty')
+            }}
+          >
+            {custom ? '自定义中' : '自定义…'}
+          </button>
         </div>
       )}
-      <div className="setting-value-row">
-        <Input
-          className={meta.unit || kind === 'number' || kind === 'percent' ? 'setting-value-input is-num' : 'setting-value-input'}
-          value={text}
-          placeholder={meta.placeholder}
-          suffix={meta.unit ?? (kind === 'percent' ? '%' : undefined)}
-          onChange={(next) => { setText(next); setStatus('dirty') }}
-          onEnterPress={() => void commit(text)}
-        />
-        {actions}
-      </div>
+      {needCustom && (
+        <div className="setting-value-row">
+          <Input
+            autoFocus={meta.presets ? true : undefined}
+            className={meta.unit || kind === 'number' || kind === 'percent' ? 'setting-value-input is-num' : 'setting-value-input'}
+            value={text}
+            placeholder={meta.placeholder ?? (meta.min !== undefined ? `${meta.min}–${meta.max ?? '不限'}` : '填一个数')}
+            suffix={meta.unit ?? (kind === 'percent' ? '%' : undefined)}
+            onChange={(next) => { setText(next); setStatus('dirty') }}
+            onEnterPress={() => void commit(text)}
+          />
+          {actions}
+        </div>
+      )}
+      {meta.presets && !custom && (
+        <div className="setting-value-actions">
+          <Button size="small" theme="borderless" onClick={cancel}>取消</Button>
+        </div>
+      )}
     </div>
   )
 }
