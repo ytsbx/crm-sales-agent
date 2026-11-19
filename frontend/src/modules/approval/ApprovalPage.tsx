@@ -200,6 +200,9 @@ export default function ApprovalPage() {
       title: '报价总额',
       dataIndex: 'total_amount',
       width: compact ? 112 : 130,
+      // 金额走全站口径右对齐（.cell-right）：全站表格默认居中，
+      // 一列 ¥84,030.00 / ¥1.00 长短不一时居中读不出量级。
+      className: 'cell-right',
       // 报价总额是业务单据上的钱，按全站口径必须两位小数（¥84,030.00），
       // 不能像统计卡那样取整。
       render: (v: number | null) => (v === null || v === undefined ? '-' : formatMoney(toTwoDecimals(v), 'CNY')),

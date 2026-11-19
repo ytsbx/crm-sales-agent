@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { parseOptionalNumber } from '../../shared/number-input'
 import PageHeader from '../../shared/components/PageHeader'
 import { useNavigate } from 'react-router-dom'
@@ -223,44 +223,87 @@ export default function LeadListPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  /* 1024 宽内容区约 700px，线索表八列合计 1066px，「状态 / 负责人 / 操作」
+     整块被裁到卡片外。窄屏切紧凑档：联系人 + 负责人并到线索名称第二行，
+     其余列宽收紧，操作列改两列网格，五个文字链才排得下。 */
+  const [compact, setCompact] = useState(() => window.innerWidth < 1200)
+  useEffect(() => {
+    const onResize = () => setCompact(window.innerWidth < 1200)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
   const columns = [
     // 名称列收窄并允许省略：9 列加起来 1350，比内容区还宽，表格内部多出一条横向滚动条。
     // 170 → 200：12 字的线索名（「天津线索30【演示造数】」）实测要 178，
     // 170 时有 5px 溢出（2026-11-16 全站表格扫描）。
-    { title: '线索名称', dataIndex: 'name', width: 200, ellipsis: true },
+    {
+      title: '线索名称',
+      dataIndex: 'name',
+      width: compact ? 140 : 200,
+      ellipsis: !compact,
+      render: (text: string, record: Lead) =>
+        compact ? (
+          <div style={{ minWidth: 0 }}>
+            <div
+              title={text}
+              style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+            >
+              {text}
+            </div>
+            <div style={{ marginTop: 2, fontSize: 12, color: 'var(--crm-text-3)' }}>
+              {(record.contact_name ?? '-')} · {(record.owner_name ?? '未分配')}
+            </div>
+          </div>
+        ) : (
+          text
+        ),
+    },
     {
       title: '公司',
       dataIndex: 'company_name',
-      width: 130,
+      /* 130 → 150：企业名叫「青岛电子有限公司」这种七到九字是常态，
+         130 下整列全是「天津电子有限公…」，一列省略号等于没有这一列。
+         从操作列里让出来的空间（见下）补给这里。 */
+      width: compact ? 100 : 150,
       ellipsis: true,
       render: (v: string | null) => v ?? '-',
     },
-    { title: '联系人', dataIndex: 'contact_name', width: 80, render: (v: string | null) => v ?? '-' },
-    // 手机号 11 位：118 刚好放满（120 那会儿是先被整表压缩才截断的，不是列宽的锅）
-    { title: '手机', dataIndex: 'mobile', width: 118, render: (v: string | null) => v ?? '-' },
+    ...(compact
+      ? []
+      : [{ title: '联系人', dataIndex: 'contact_name', width: 80, render: (v: string | null) => v ?? '-' }]),
+    // 手机号 11 位：130（2026-11-19 复测）—— 118 时公司列刚加到 150、操作列加到 240，
+    // 整表被压，11 位数字又截成「138269363…」。130 减掉单元格左右 32 的内边距，
+    // 剩 98 刚好装下 11 位等宽数字。
+    { title: '手机', dataIndex: 'mobile', width: compact ? 126 : 130, render: (v: string | null) => v ?? '-' },
     /* 「来源」和「地区」各占一列、内容都只有两三个字。并成一列「来源 · 地区」：
        两列 190 变一列 150，信息一点没少，正好把表格从 1150 收回到内容区里。 */
     {
-      title: '来源 · 地区',
+      title: compact ? '来源' : '来源 · 地区',
       dataIndex: 'source',
-      width: 126,
+      /* 126 是实测的刚好值（2026-11-19）：内容是「客户介绍 · 华东」这种 4+3 字
+         外加两个空格，约 103px，再减掉单元格左右 32 的内边距 —— 120 会截成
+         「客户介绍 · 华…」，136 才完整。多出来的 16px 从名称列（弹性）让。 */
+      width: compact ? 84 : 136,
       render: (_: string | null, record: Lead) =>
         [record.source, record.region].filter((v) => v && v !== '-').join(' · ') || '-',
     },
     {
       title: '状态',
       dataIndex: 'status',
-      width: 96,
+      width: compact ? 96 : 96,
       render: (value: string, record: Lead) => (
         <StatusDot label={record.status_label} tone={(STATUS_COLOR[value] ?? 'grey') as TagTone} />
       ),
     },
-    {
-      title: '负责人',
-      dataIndex: 'owner_name',
-      width: 100,
-      render: (v: string | null) => v ?? '未分配',
-    },
+    ...(compact
+      ? []
+      : [{
+          title: '负责人',
+          dataIndex: 'owner_name',
+          width: 100,
+          render: (v: string | null) => v ?? '未分配',
+        }]),
     {
       title: '操作',
       // 操作最多同时出现五个文字链（领取/跟进/分配/转客户/释放/废弃里取五）。
@@ -268,9 +311,28 @@ export default function LeadListPage() {
       // 于是「释放/废弃」折到第二行、行高一格一格不一样。
       // 现在把 公司 150→130、联系人 90→80、来源 150→110、状态 100→96 让出 74px，
       // 操作列仍是 220，五个链接一行放完、横滚条也不出现了（合计 1066 < 内容区 1070）。
-      width: 220,
+      /* 220 → 240、链接间距 8 → 12：五个动作词（跟进 / 分配 / 转客户 / 释放 / 废弃）
+         挤在 8px 里读成一串，"转客户"和"释放"尤其容易看混（2026-11-19 巡检）。 */
+      width: compact ? 154 : 240,
       render: (_: unknown, record: Lead) => (
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'nowrap', whiteSpace: 'nowrap', fontSize: 13 }}>
+        <div
+          style={
+            compact
+              ? {
+                  /* 2 列 → 3 列（2026-11-19）：五个动作在 2 列里排成 2+2+1，
+                     "废弃"孤零零占第三行，那一行的行高比别人高出一截；
+                     改成 3 列正好两行（3+2），行高一致。154 宽放三列每列 51，
+                     最长的是「转客户」三字（36px），够。 */
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+                  gap: '2px 6px',
+                  fontSize: 12,
+                  lineHeight: 1.7,
+                  whiteSpace: 'nowrap',
+                }
+              : { display: 'flex', gap: 12, flexWrap: 'nowrap', whiteSpace: 'nowrap', fontSize: 13 }
+          }
+        >
           {!record.owner_id && (
             <Popconfirm
               title={`确认领取线索「${record.name}」？`}
@@ -381,6 +443,7 @@ export default function LeadListPage() {
         </div>
 
         <Table<Lead>
+          className="leads-table"
           columns={columns}
           dataSource={query.data?.items ?? []}
           loading={query.isLoading}
