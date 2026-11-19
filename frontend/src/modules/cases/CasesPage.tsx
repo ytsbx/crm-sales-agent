@@ -456,8 +456,17 @@ export default function CasesPage() {
               width: compact ? 232 : 316,
               render: (v: string, record: CaseRow) => (
                 <div style={{ minWidth: 0 }}>
-                  <span
+                  {/* 标题本身就是进详情的入口：原来标题是死的，要读到它讲什么
+                      得先跑到最右边点「详情」——同一个动作两个位置。
+                      现在标题可点（蓝色 = 可跳转，与全站表格链接一致），
+                      操作列里的「详情」随之去掉，那里只留真正的动作。 */}
+                  <a
+                    href="#"
                     title={v}
+                    onClick={(e) => {
+                      e.preventDefault()
+                      void openDetail(record)
+                    }}
                     /* 标题是这份案例的主体，原来卡在 300px 单行、一律省略成
                        「…毛利只…」，看不出讲的是什么。宽屏放开成最多两行：
                        316px 一列大概两行就能装下，悬停仍可看全文。 */
@@ -470,7 +479,7 @@ export default function CasesPage() {
                     }}
                   >
                     {v}
-                  </span>
+                  </a>
                   {compact && (
                     <div
                       style={{
@@ -535,16 +544,21 @@ export default function CasesPage() {
                 }]),
             {
               title: '操作',
-              width: compact ? 166 : 160,
+              width: compact ? 150 : 190,
+              /* 原来是一排蓝色小字（详情 / 编辑 / 提交审核 / 开修订稿 / 通过 / 驳回 / 撤下），
+                 七个动作同重量，只有提交和通过点了之后会改变状态，却和"编辑"长得一模一样。
+                 现在：标题已经可点（详情去掉）；会推进状态的两个动作走主按钮（提交审核 / 通过），
+                 驳回与撤下走红色文字按钮，编辑和开修订稿走普通文字按钮。 */
               render: (_: unknown, record: CaseRow) => (
-                /* 原来 inline-flex 贴左、表头居中，一行三个动作时表头和数据错开。
-                   改成占满整格 + 居中，动作组始终压在「操作」下面。 */
-                <span style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
-                  <a onClick={() => void openDetail(record)}>详情</a>
+                <span style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'center' }}>
                   {(record.status === 'draft' || record.status === 'rejected') && (
                     <>
-                      <a onClick={() => openEdit(record)}>编辑</a>
-                      <Popconfirm title="确认提交这份案例审核？" onConfirm={() => submitMutation.mutate(record.id)}><a>提交审核</a></Popconfirm>
+                      <Button theme="borderless" size="small" onClick={() => openEdit(record)}>
+                        编辑
+                      </Button>
+                      <Popconfirm title="确认提交这份案例审核？" onConfirm={() => submitMutation.mutate(record.id)}>
+                        <Button theme="solid" type="primary" size="small">提交审核</Button>
+                      </Popconfirm>
                     </>
                   )}
                   {/* 只有**当前发布版**能开修订稿。
@@ -554,9 +568,11 @@ export default function CasesPage() {
                       旧版仍然读得到（见上面的详情弹窗），只是不能从它派生新版本。 */}
                   {record.status === 'published' &&
                     (isReviewer || record.author_id === currentUserId) && (
-                      <Popconfirm title="确认从当前发布版创建修订稿？" onConfirm={() => reviseMutation.mutate(record.id)}><a>开修订稿</a></Popconfirm>
+                      <Popconfirm title="确认从当前发布版创建修订稿？" onConfirm={() => reviseMutation.mutate(record.id)}>
+                        <Button theme="borderless" size="small">开修订稿</Button>
+                      </Popconfirm>
                     )}
-                  {isReviewer && record.status === 'pending_review' && (
+                  {isReviewer && record.status === 'pending_review' && record.author_id !== currentUserId && (
                     <>
                       {/* 审核通过会把案例发布出去、成为别人能引用的基线，不可逆，须确认。
                           「驳回」本来就走原因弹窗，那条不用加。 */}
@@ -565,19 +581,37 @@ export default function CasesPage() {
                         content="通过后案例立即发布，会成为可被引用的基线，只能靠开修订稿再改。"
                         onConfirm={() => reviewMutation.mutate({ id: record.id, approve: true })}
                       >
-                        <a style={{ color: 'var(--crm-success)' }}>通过</a>
+                        <Button theme="solid" type="primary" size="small">通过</Button>
                       </Popconfirm>
-                      <a
-                        style={{ color: 'var(--crm-danger, #d45)' }}
+                      <Button
+                        type="danger"
+                        theme="borderless"
+                        size="small"
                         onClick={() => {
                           setReviewNote('')
                           setReviewModal({ visible: true, id: record.id })
                         }}
                       >
                         驳回
-                      </a>
+                      </Button>
                     </>
                   )}
+                  {isReviewer && (record.status === 'published' || record.status === 'superseded') && (
+                    <Popconfirm
+                      title="撤下这个案例版本？"
+                      content="撤下后退出学习列表，作者和审核人仍可查看历史版本与审核记录。"
+                      onConfirm={() => withdrawMutation.mutate(record.id)}
+                    >
+                      <Button type="danger" theme="borderless" size="small">撤下</Button>
+                    </Popconfirm>
+                  )}
+                  {/* 「待审核」但当前用户既不是审核人、也不是能给这条做决定的人时，
+                      操作列原来是整格空白，看着像页面没加载出来。写一句状态，
+                      说清"不是没按钮，是轮不到你点"。 */}
+                  {record.status === 'pending_review' &&
+                    !(isReviewer && record.author_id !== currentUserId) && (
+                      <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>等待审核</span>
+                    )}
                 </span>
               ),
             },
