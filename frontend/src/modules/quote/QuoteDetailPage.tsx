@@ -911,13 +911,16 @@ export default function QuoteDetailPage() {
     {
       title: '利润率',
       dataIndex: 'profit_rate_snapshot',
-      width: 85,
+      /* 85 装不下「100.00%」（实测被裁成「100.0...」）。96 才够，产品名称是弹性列。 */
+      width: 96,
       render: (v: number | null) => v == null ? '-' : `${(v * 100).toFixed(2)}%`,
     },
     {
       title: '金额',
       dataIndex: 'amount',
       width: 110,
+      /* 金额右对齐，与列表页、回款中心同一口径（.cell-right 见 index.css）。 */
+      className: 'cell-right',
       render: (v: number, record: QuoteItemRow) => formatMoney(record.amount_exact ?? v, 'CNY'),
     },
     {

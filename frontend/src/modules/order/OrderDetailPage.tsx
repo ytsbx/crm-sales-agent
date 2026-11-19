@@ -685,12 +685,14 @@ export default function OrderDetailPage() {
       title: '单价',
       dataIndex: 'unit_price',
       width: 110,
+      className: 'cell-right',
       render: (v: number, row: OrderItem) => formatUnitPrice(row.unit_price_exact ?? v, order.currency),
     },
     {
       title: '金额',
       dataIndex: 'amount',
       width: 140,
+      className: 'cell-right',
       render: (v: number, row: OrderItem) => formatMoney(row.amount_exact ?? v, order.currency),
     },
     { title: '备注', dataIndex: 'remark', render: (v: string | null) => v ?? '-' },
@@ -702,9 +704,9 @@ export default function OrderDetailPage() {
     { title: '节点', dataIndex: 'plan_name', width: 110 },
     { title: '应收日期', dataIndex: 'due_date', width: 130 },
     // 行自带币种就优先用它（历史数据里可能与订单币种不一致），没有才退回订单币种
-    { title: '应收金额', dataIndex: 'amount', width: 130, render: (v: number, r: Receivable) => formatMoney(toTwoDecimals(r.amount_exact ?? v), r.currency ?? order.currency) },
-    { title: '已收', dataIndex: 'received_amount', width: 130, render: (v: number, r: Receivable) => formatMoney(toTwoDecimals(r.received_amount_exact ?? v), r.currency ?? order.currency) },
-    { title: '未收', dataIndex: 'remaining_amount', width: 130, render: (v: number, r: Receivable) => formatMoney(toTwoDecimals(r.remaining_amount_exact ?? v), r.currency ?? order.currency) },
+    { title: '应收金额', dataIndex: 'amount', width: 130, className: 'cell-right', render: (v: number, r: Receivable) => formatMoney(toTwoDecimals(r.amount_exact ?? v), r.currency ?? order.currency) },
+    { title: '已收', dataIndex: 'received_amount', width: 130, className: 'cell-right', render: (v: number, r: Receivable) => formatMoney(toTwoDecimals(r.received_amount_exact ?? v), r.currency ?? order.currency) },
+    { title: '未收', dataIndex: 'remaining_amount', width: 130, className: 'cell-right', render: (v: number, r: Receivable) => formatMoney(toTwoDecimals(r.remaining_amount_exact ?? v), r.currency ?? order.currency) },
     {
       title: '状态',
       dataIndex: 'status_label',
