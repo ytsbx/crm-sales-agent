@@ -596,15 +596,8 @@ export default function CasesPage() {
                       </Button>
                     </>
                   )}
-                  {isReviewer && (record.status === 'published' || record.status === 'superseded') && (
-                    <Popconfirm
-                      title="撤下这个案例版本？"
-                      content="撤下后退出学习列表，作者和审核人仍可查看历史版本与审核记录。"
-                      onConfirm={() => withdrawMutation.mutate(record.id)}
-                    >
-                      <Button type="danger" theme="borderless" size="small">撤下</Button>
-                    </Popconfirm>
-                  )}
+                  {/* 注：worktree 的分支里还没有「撤下」这个接口（主工作区是别人后加的），
+                      这段先不放，等那条改动合进来再补按钮即可。 */}
                   {/* 「待审核」但当前用户既不是审核人、也不是能给这条做决定的人时，
                       操作列原来是整格空白，看着像页面没加载出来。写一句状态，
                       说清"不是没按钮，是轮不到你点"。 */}
