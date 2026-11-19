@@ -1786,7 +1786,9 @@ export default function SettingsPage() {
               )}
 
               {isAdmin && (
-              <div className="rule-block">
+              // is-plain：这一块不再套白卡 —— 六个分组本身就是卡片，
+              // 卡中卡（白底套白底、只靠一条描边区分）正是"廉价感"的来源。
+              <div className="rule-block is-plain">
                 <div className="rule-block-title">系统配置</div>
                 {/* 分组卡片（2026-11-19）：29 项铺一张表 → 按业务域分六组、
                     每组一张卡，组内是「名称 | 控件 | 一句话说明」的表单行，

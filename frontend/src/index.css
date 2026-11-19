@@ -4927,14 +4927,35 @@ table:not(.semi-table) td.cell-right {
 .settings-groups {
   display: grid;
   gap: 14px;
-  margin-top: 4px;
+  margin-top: 2px;
+}
+
+.rule-block.is-plain {
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+
+/* 这一块的标题不再用"竖线 + 小字"的表格语法：竖线是给表头用的，
+   六张分组卡已经各自带了一个色点，标题再挂一条就显得重复。 */
+.rule-block.is-plain > .rule-block-title {
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: .2px;
+  margin: 0 0 14px;
+}
+
+.rule-block.is-plain > .rule-block-title::before {
+  display: none;
 }
 
 .settings-group {
-  border: 1px solid var(--crm-border);
-  border-radius: 12px;
+  /* 不是纯描边卡：一层贴地的 1px 阴影 + 一层很远很淡的扩散影，
+     白卡才会"浮"起来；只有描边时，白卡和白卡贴在一起就糊成一片。 */
+  border: 1px solid rgba(17, 24, 39, .07);
+  border-radius: 14px;
   background: #fff;
-  box-shadow: 0 1px 2px rgba(17, 24, 39, .03);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, .04), 0 10px 26px -20px rgba(16, 24, 40, .22);
   overflow: hidden;
 }
 
@@ -4943,52 +4964,105 @@ table:not(.semi-table) td.cell-right {
   align-items: baseline;
   gap: 10px;
   flex-wrap: wrap;
-  padding: 11px 18px;
-  background: color-mix(in srgb, var(--crm-primary) 3.5%, #fff);
-  border-bottom: 1px solid color-mix(in srgb, var(--crm-primary) 10%, #fff);
+  padding: 13px 20px 12px;
+  /* 原来铺一整条淡蓝底：六张卡就是六条蓝带，页面发"后台"。改成白底 +
+     一条发丝分隔线，色只在标题前那一个小圆点上。 */
+  background: #fff;
+  border-bottom: 1px solid rgba(17, 24, 39, .065);
 }
 
 .settings-group-title {
-  font-size: 13px;
+  position: relative;
+  padding-left: 13px;
+  font-size: 13.5px;
   font-weight: 600;
   color: var(--crm-text-1);
   letter-spacing: .2px;
 }
 
+.settings-group-title::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 50%;
+  background: var(--crm-primary);
+  opacity: .85;
+}
+
 .settings-group-note {
-  font-size: 11.5px;
+  font-size: 11px;
   line-height: 1.5;
   color: var(--crm-text-3);
 }
 
 .settings-group-body {
-  padding: 2px 18px 6px;
+  padding: 6px 20px 10px;
 }
 
 .setting-field {
   display: grid;
-  /* 三列：名字对齐成一列，控件封顶 240，剩下全给说明。
+  /* 三列：名字对齐成一列，控件封顶 232，剩下全给说明。
      名字列固定宽度是为了让同组里的"30 天"竖着对齐。 */
-  grid-template-columns: 128px minmax(0, 240px) minmax(0, 1fr);
+  grid-template-columns: 128px minmax(0, 232px) minmax(0, 1fr);
   column-gap: 18px;
   align-items: center;
-  padding: 10px 0;
-  border-bottom: 1px dashed rgba(17, 24, 39, .07);
+  padding: 11px 10px;
+  margin: 0 -10px;
+  border-radius: 9px;
+  /* 虚线分隔换成"整行浮起来"：虚线是表格的语法，设置面板靠留白和 hover 区分 */
+  transition: background .15s ease;
 }
 
-.setting-field:last-child {
-  border-bottom: 0;
+.setting-field:hover {
+  background: rgba(47, 109, 246, .035);
 }
+
+
 
 .setting-field-label {
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 500;
   color: var(--crm-text-1);
   line-height: 1.4;
+  letter-spacing: .1px;
 }
 
 .setting-field-value {
   min-width: 0;
+}
+
+/* 控件自己也要"干净"：默认的 1px 灰框 + 6px 圆角是标准后台长相，
+   换成 8px 圆角、极淡底、发丝边；聚焦时变白底 + 主色边（Semi 自带光晕）。 */
+.settings-group .semi-input-wrapper,
+.settings-group .semi-select {
+  border-radius: 8px;
+  background: #fbfcfe;
+  border-color: rgba(17, 24, 39, .1);
+}
+
+.settings-group .semi-input-wrapper:hover,
+.settings-group .semi-select:hover {
+  background: #fff;
+}
+
+.settings-group .semi-input-wrapper-focus,
+.settings-group .semi-select-focus {
+  background: #fff;
+}
+
+.settings-group .semi-input-wrapper .semi-input {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-group .semi-textarea-wrapper {
+  border-radius: 8px;
+  background: #fbfcfe;
+  border-color: rgba(17, 24, 39, .1);
 }
 
 .setting-field-value .setting-value-stack {
@@ -4996,8 +5070,9 @@ table:not(.semi-table) td.cell-right {
 }
 
 .setting-field-desc {
-  font-size: 11.5px;
-  line-height: 1.6;
+  /* 说明比标题淡一档、小一档：层次靠这个，不靠分隔线 */
+  font-size: 11px;
+  line-height: 1.65;
   color: var(--crm-text-3);
   min-width: 0;
 }
@@ -5019,31 +5094,34 @@ table:not(.semi-table) td.cell-right {
 /* 多行文本（默认交货条款）：值占满整行，说明落到值下面。
    塞在 240 宽的列里会被压成三行、整行高度飙到 180px。 */
 .setting-field.is-multiline {
-  /* 两列：名字 | 文本框（封顶 560），说明落到文本框下面。
-     千万别写成三列：1024 下容器只有 620，560 的文本框把说明列挤成 0 宽，
-     中文会一个字一行竖着排下去。 */
-  grid-template-columns: 128px minmax(0, 1fr);
-  row-gap: 2px;
+  /* 宽屏：和其他行同一套三列，说明就在右边那一列（同一条视线扫下来）。
+     文本框 440 而不是 560 —— 留出说明列，不然它也撑到 1100。 */
+  grid-template-columns: 128px minmax(0, 440px) minmax(0, 1fr);
   align-items: start;
-  padding: 12px 0 14px;
-}
-
-.setting-field.is-multiline .setting-field-value {
-  max-width: 560px;
-}
-
-.setting-field.is-multiline .setting-field-desc {
-  grid-column: 2;
-  max-width: 560px;
+  padding: 12px 10px 14px;
 }
 
 .setting-field.is-multiline .setting-field-label {
-  padding-top: 5px;
+  padding-top: 8px;
+}
+
+.setting-field.is-multiline .setting-field-desc {
+  padding-top: 8px;
 }
 
 
 
 @media (max-width: 1180px) {
+  /* 窄屏放不下三列：文本框压到 100%，说明落到它下面（只两列，不会竖排） */
+  .setting-field.is-multiline {
+    grid-template-columns: 104px minmax(0, 1fr);
+    row-gap: 2px;
+  }
+
+  .setting-field.is-multiline .setting-field-desc {
+    grid-column: 2;
+  }
+
   .setting-field {
     grid-template-columns: 104px minmax(0, 200px) minmax(0, 1fr);
     column-gap: 14px;
