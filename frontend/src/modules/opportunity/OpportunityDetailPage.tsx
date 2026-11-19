@@ -468,8 +468,11 @@ export default function OpportunityDetailPage() {
         }
         extra={
           <>
-            <Button onClick={() => setFollowupVisible(true)}>记录跟进</Button>
+            <Button type="tertiary" onClick={() => setFollowupVisible(true)}>
+              记录跟进
+            </Button>
             <Button
+              type="tertiary"
               onClick={() => {
                 // 深链预填核价页：带上客户；有需求明细时带首条 SKU 与数量
                 const query = new URLSearchParams({ customer_id: String(opportunity.customer_id) })
@@ -486,6 +489,7 @@ export default function OpportunityDetailPage() {
             {canManage && (
               <>
                 <Button
+                  type="tertiary"
                   onClick={() => {
                     setTargetStage(null)
                     setStageVisible(true)
@@ -493,11 +497,13 @@ export default function OpportunityDetailPage() {
                 >
                   推进阶段
                 </Button>
-                <Button onClick={() => setTaskVisible(true)}>新建任务</Button>
+                <Button type="tertiary" onClick={() => setTaskVisible(true)}>
+                  新建任务
+                </Button>
                 {opportunity.status === 'open' && (
                   <>
                     <Button type="primary"
-                      theme="outline"
+                      theme="solid"
                       loading={confirmWinMutation.isPending}
                       onClick={() => {
                         setPlanMode('full')
@@ -507,7 +513,7 @@ export default function OpportunityDetailPage() {
                     >
                       确认成交并建单
                     </Button>
-                    <Button type="danger" onClick={() => setLoseVisible(true)}>
+                    <Button type="danger" theme="borderless" onClick={() => setLoseVisible(true)}>
                       标记失单
                     </Button>
                   </>

@@ -591,6 +591,7 @@ export default function CustomerDetailPage() {
             {/* 台面只留日常最高频的三个动作 */}
             {can('customer:update') && (
               <Button
+                type="tertiary"
                 onClick={() => {
                   setEditForm({
                     name: customer.name,
@@ -618,14 +619,14 @@ export default function CustomerDetailPage() {
               </Button>
             )}
             {can('agent:use') && (
-              <Button theme="outline" type="primary" onClick={() => navigate(`/agent?context=customer&id=${customerId}`)}>
+              <Button type="primary" theme="borderless" onClick={() => navigate(`/agent?context=customer&id=${customerId}`)}>
                 问 Agent
               </Button>
             )}
             {/* 公海客户的主动作就是「领取」，不能藏进菜单 */}
             {customer.pool_status === 'public' && (
               <Button type="primary"
-                theme="outline"
+                theme="solid"
                 loading={poolMutation.isPending}
                 onClick={() =>
                   Modal.confirm({

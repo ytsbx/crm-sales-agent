@@ -6153,3 +6153,37 @@ table:not(.semi-table) td.cell-right {
 .semi-spin-children > .semi-spin {
   color: #2f6df6;
 }
+/* 详情页顶部的一排按钮：现在全是同款描边（"记录跟进 / 去核价 / 推进阶段 / 新建任务"
+   四个长得一样，真正要点的那个反而看不出来）。
+   次级动作统一成文字按钮，只有 1 个实心主操作；文字按钮悬停才浮出浅底。 */
+.page-header .semi-button-borderless,
+.page-header-actions .semi-button-borderless,
+.detail-head .semi-button-borderless {
+  border-color: transparent;
+  background: transparent;
+  padding-left: 8px;
+  padding-right: 8px;
+  transition: background-color .14s ease;
+}
+.page-header .semi-button-borderless:hover {
+  background: rgba(47, 109, 246, .08);
+}
+
+/* 详情页头部（DetailHeader 的 .dh-actions）：总目录的前几项动作都是"次要动作"，
+   统一成无底无边的文字按钮；只有实心主操作（.semi-button-primary.semi-button-solid）
+   保留色块。Semi 的 borderless 在当前主题下仍带一层浅底，这里一并抹掉。 */
+.dh-actions .semi-button-borderless,
+.dh-actions .semi-button-tertiary {
+  background: transparent !important;
+  border-color: transparent !important;
+  padding-left: 8px;
+  padding-right: 8px;
+  transition: background-color .14s ease;
+}
+.dh-actions .semi-button-borderless:hover,
+.dh-actions .semi-button-tertiary:hover {
+  background: rgba(47, 109, 246, .08) !important;
+}
+.dh-actions .semi-button-danger:hover {
+  background: rgba(245, 63, 63, .08) !important;
+}
