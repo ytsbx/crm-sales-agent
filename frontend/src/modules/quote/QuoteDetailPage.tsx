@@ -2385,9 +2385,13 @@ export default function QuoteDetailPage() {
             </span>
           </div>
           {/* 输入框只有 placeholder 自我介绍，点进去字就没了 —— 补固定标签 */}
-          <div>
-            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>实际报价</div>
-            <Input value={newPrice} onChange={setNewPrice} placeholder="填数字，单位元" />
+          <div className="form-rows">
+            <div className="form-row">
+              <label className="form-row-label">实际报价</label>
+              <div className="form-row-control">
+                <Input value={newPrice} onChange={setNewPrice} placeholder="填数字，单位元" />
+              </div>
+            </div>
           </div>
           <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
             保存后会按你的价格权限重新判断是否需要审批。
@@ -2539,8 +2543,18 @@ export default function QuoteDetailPage() {
       </Modal>
 
       <Modal
-        width={520}
-        title={editable ? '添加附加费用' : '补填运费'}
+        width={600}
+        title={
+          <div className="modal-head">
+            <span className="modal-head-icon" aria-hidden>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><path d="M4 7h16v10H4z" /><path d="M4 11h16" /><path d="M8 15h3" /></svg>
+            </span>
+            <div>
+              {editable ? '添加附加费用' : '补填运费'}
+              <div className="modal-subtitle">{editable ? '费用会加进这份报价的总额' : '运费不进产品价，补它不用重走审批'}</div>
+            </div>
+          </div>
+        }
         visible={chargeVisible}
         onCancel={() => setChargeVisible(false)}
         onOk={() => chargeMutation.mutate()}
@@ -2582,45 +2596,52 @@ export default function QuoteDetailPage() {
               三个空格子长得一模一样，填完也看不出这格是"说明"还是"金额"。
               每格上面配一个固定小标签（和数据字典、回收节奏同一套做法），
               placeholder 只留"怎么填"的例子。 */}
-          <div>
-            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>类型</div>
-            <Select
-              value={chargeForm.charge_type}
-              onChange={(value) => setChargeForm({ ...chargeForm, charge_type: value as string })}
-              optionList={editable ? CHARGE_TYPES : CHARGE_TYPES.filter((item) => item.value === 'logistics')}
-              disabled={!editable}
-              style={{ width: '100%' }}
-            />
-          </div>
-          <div>
-            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>说明</div>
-            <Input
-              value={chargeForm.description}
-              onChange={(value) => setChargeForm({ ...chargeForm, description: value })}
-              placeholder="例如：宁波到苏州运费"
-              disabled={!editable && Boolean(existingFreight)}
-            />
-          </div>
-          <div>
-            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>金额</div>
-            <Input
-              value={chargeForm.amount}
-              onChange={(value) => setChargeForm({ ...chargeForm, amount: value })}
-              placeholder={
-                chargeForm.charge_type === 'discount'
-                  ? '填正数，系统自动扣减'
-                  : '确属零运费请显式填 0，不要留空'
-              }
-              disabled={!editable && Boolean(existingFreight)}
-            />
-          </div>
-          {chargeForm.charge_type === 'logistics' && (
-            <div style={{ color: 'var(--crm-text-3)', fontSize: 12, lineHeight: 1.6 }}>
-              运费的支出金额与向客户收取的金额<b>共用这一份数据</b>：客户全额承担、
-              公司原额代收代付，不赚不赔。填进来即视为已确认的实际运费；
-              <b>留空不等于零运费</b>——确实没有运费请显式填 0。
+          <div className="form-rows">
+            <div className="form-row">
+              <label className="form-row-label">类型</label>
+              <div className="form-row-control">
+                <Select
+                  value={chargeForm.charge_type}
+                  onChange={(value) => setChargeForm({ ...chargeForm, charge_type: value as string })}
+                  optionList={editable ? CHARGE_TYPES : CHARGE_TYPES.filter((item) => item.value === 'logistics')}
+                  disabled={!editable}
+                  style={{ width: '100%' }}
+                />
+              </div>
             </div>
-          )}
+            <div className="form-row">
+              <label className="form-row-label">说明</label>
+              <div className="form-row-control">
+                <Input
+                  value={chargeForm.description}
+                  onChange={(value) => setChargeForm({ ...chargeForm, description: value })}
+                  placeholder="例如：宁波到苏州运费"
+                  disabled={!editable && Boolean(existingFreight)}
+                />
+              </div>
+            </div>
+            <div className="form-row">
+              <label className="form-row-label">金额</label>
+              <div className="form-row-control">
+                <Input
+                  value={chargeForm.amount}
+                  onChange={(value) => setChargeForm({ ...chargeForm, amount: value })}
+                  placeholder={
+                    chargeForm.charge_type === 'discount'
+                      ? '填正数，系统自动扣减'
+                      : '确属零运费请显式填 0，不要留空'
+                  }
+                  disabled={!editable && Boolean(existingFreight)}
+                />
+                {chargeForm.charge_type === 'logistics' && (
+                  <div className="form-row-hint" style={{ lineHeight: 1.6 }}>
+                    运费的支出与向客户收取<b>共用这一份数据</b>：客户全额承担、公司原额代收代付，
+                    <b>留空不等于零运费</b> —— 确实没有运费请显式填 0。
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
       </Modal>
 
