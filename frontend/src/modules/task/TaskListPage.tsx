@@ -456,47 +456,46 @@ export default function TaskListPage() {
         confirmLoading={createMutation.isPending}
         okText="创建"
       >
-                <div className="form-rows">
-          <div className="form-row">
-            <label className="form-row-label">任务标题<span className="req">*</span></label>
-            <div className="form-row-control">
-              <Input
-                value={form.title}
-                onChange={(v) => setForm({ ...form, title: v })}
-                placeholder="例如：周五前回复客户报价"
-              />
+                <div className="form-cards">
+          <section className="form-card">
+            <div className="form-card-title">要做的事</div>
+            <div className="form-card-grid">
+              <div className="full">
+                <div className="form-field-label">任务标题<span className="req">*</span></div>
+                <Input
+                  value={form.title}
+                  onChange={(v) => setForm({ ...form, title: v })}
+                  placeholder="例如：周五前回复客户报价"
+                />
+              </div>
+              <div>
+                <div className="form-field-label">优先级</div>
+                <Select
+                  value={form.priority}
+                  onChange={(value) => setForm({ ...form, priority: value as string })}
+                  optionList={[
+                    { value: 'high', label: '高' },
+                    { value: 'normal', label: '中' },
+                    { value: 'low', label: '低' },
+                  ]}
+                  style={{ width: '100%' }}
+                />
+              </div>
+              <div>
+                <div className="form-field-label">截止时间</div>
+                <DatePicker
+                  type="dateTime"
+                  value={form.due_at ?? undefined}
+                  onChange={(date) => setForm({ ...form, due_at: (date as Date) ?? null })}
+                  placeholder="选择时间"
+                  style={{ width: '100%' }}
+                />
+              </div>
+              <div className="full form-tip">
+                优先级只是轻重标记，不影响排序和提醒；列表按「状态 → 截止时间」排。
+              </div>
             </div>
-          </div>
-          <div className="form-row">
-            <label className="form-row-label">优先级</label>
-            <div className="form-row-control">
-              <Select
-                value={form.priority}
-                onChange={(value) => setForm({ ...form, priority: value as string })}
-                optionList={[
-                  { value: 'high', label: '高' },
-                  { value: 'normal', label: '中' },
-                  { value: 'low', label: '低' },
-                ]}
-                style={{ width: 140 }}
-              />
-              {/* 「优先级」这句说明必须如实：priority 不参与任何排序、筛选、提醒或统计，
-                  唯一的去处是列表里那个彩色标签。 */}
-              <div className="form-row-hint">仅作轻重标记，不影响排序和提醒。</div>
-            </div>
-          </div>
-          <div className="form-row">
-            <label className="form-row-label">截止时间</label>
-            <div className="form-row-control">
-              <DatePicker
-                type="dateTime"
-                value={form.due_at ?? undefined}
-                onChange={(date) => setForm({ ...form, due_at: (date as Date) ?? null })}
-                placeholder="选择时间"
-                style={{ width: '100%' }}
-              />
-            </div>
-          </div>
+          </section>
         </div>
       </Modal>
 

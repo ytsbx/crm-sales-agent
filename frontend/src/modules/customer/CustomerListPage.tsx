@@ -1150,146 +1150,133 @@ export default function CustomerListPage() {
         okText="创建"
         cancelText="取消"
       >
-        <div className="form-rows">
-          <div className="form-block-title first"><span>基础信息</span></div>
-
-          <div className="form-row">
-            <label className="form-row-label">客户名称<span className="req">*</span></label>
-            <div className="form-row-control">
-              <Input
-                value={form.name}
-                onChange={(value) => {
-                  setForm({ ...form, name: value })
-                  // 名称改了，旧的查重结果就失效了
-                  if (dupMatches.length) setDupMatches([])
-                }}
-                onBlur={() => {
-                  if (form.name.trim().length >= 2) dedupMutation.mutate()
-                }}
-                placeholder="公司全称，例如：宁波宏远包装制品有限公司"
-              />
-            </div>
-          </div>
-
-          {/* PRD §6.3：新建时就提示疑似重复，而不是等导入时才拦 */}
-          {dupMatches.length > 0 && (
-            <div className="form-row-note">
-              <div style={{ fontWeight: 600, marginBottom: 4 }}>
-                发现 {dupMatches.length} 个疑似重复客户
-              </div>
-              {dupMatches.map((match) => (
-                <div key={match.id} style={{ fontSize: 12, lineHeight: 1.7 }}>
-                  · {match.name}（相似度 {match.score}%：{match.reasons.join('、')}）
-                </div>
-              ))}
-              <div style={{ fontSize: 12, marginTop: 4 }}>
-                如确认是同一家，建议先取消，去已有客户里补资料；确实不同再继续创建。
-              </div>
-            </div>
-          )}
-
-          <div className="form-row">
-            <label className="form-row-label">客户简称</label>
-            <div className="form-row-control">
-              <Input
-                value={form.short_name ?? ''}
-                onChange={(value) => setForm({ ...form, short_name: value })}
-              />
-            </div>
-          </div>
-
-          <div className="form-row">
-            <label className="form-row-label">客户等级</label>
-            <div className="form-row-control">
-              <Select
-                value={customerLevelValue(form.level)}
-                onChange={(value) => setForm({ ...form, level: customerLevelPayload(value) })}
-                optionList={LEVEL_OPTIONS}
-                style={{ width: '100%' }}
-              />
-            </div>
-          </div>
-
-          <div className="form-row">
-            <label className="form-row-label">省份 / 地区</label>
-            <div className="form-row-control">
-              <Input
-                value={form.region ?? ''}
-                onChange={(value) => setForm({ ...form, region: value })}
-                placeholder="浙江"
-              />
-            </div>
-          </div>
-
-          <div className="form-row">
-            <label className="form-row-label">客户来源</label>
-            <div className="form-row-control">
-              <Select
-                value={form.source ?? undefined}
-                onChange={(value) => setForm({ ...form, source: value as string })}
-                optionList={SOURCE_OPTIONS}
-                style={{ width: '100%' }}
-              />
-              {form.source === '其他' && (
+        <div className="form-cards">
+          <section className="form-card">
+            <div className="form-card-title">客户档案</div>
+            <div className="form-card-grid">
+              <div className="full">
+                <div className="form-field-label">客户名称<span className="req">*</span></div>
                 <Input
-                  aria-label="其他客户来源"
-                  value={otherSource}
-                  onChange={setOtherSource}
-                  maxLength={32}
-                  placeholder="请输入具体来源，例如：抖音、小红书（最多32字）"
-                  style={{ marginTop: 8 }}
+                  value={form.name}
+                  onChange={(value) => {
+                    setForm({ ...form, name: value })
+                    // 名称改了，旧的查重结果就失效了
+                    if (dupMatches.length) setDupMatches([])
+                  }}
+                  onBlur={() => {
+                    if (form.name.trim().length >= 2) dedupMutation.mutate()
+                  }}
+                  placeholder="公司全称，例如：宁波宏远包装制品有限公司"
                 />
-              )}
-            </div>
-          </div>
+              </div>
 
-          <div className="form-row">
-            <label className="form-row-label">详细地址</label>
-            <div className="form-row-control">
-              <Input
-                value={form.address ?? ''}
-                onChange={(value) => setForm({ ...form, address: value })}
-                placeholder="省市区 + 街道门牌，收货地址以订单为准"
-              />
-            </div>
-          </div>
-
-          <div className="form-block-title"><span>归属</span></div>
-
-          <div className="form-row">
-            <label className="form-row-label">负责人</label>
-            <div className="form-row-control">
-              <UserSearchSelect
-                queryScope="customer-create"
-                enabled={modalVisible && can('customer:assign')}
-                className="owner-picker"
-                style={{ width: '100%' }}
-                placeholder="按姓名或登录账号搜索，不选就归你自己"
-                disabled={!can('customer:assign')}
-                value={form.owner_id ?? undefined}
-                onChange={(value) => setForm({ ...form, owner_id: value ?? null })}
-              />
-              {!can('customer:assign') && (
-                <div className="form-row-hint">
-                  没有分配权限时新客户归你；要指定别人请联系管理员。
+              {/* PRD §6.3：新建时就提示疑似重复，而不是等导入时才拦 */}
+              {dupMatches.length > 0 && (
+                <div
+                  className="full form-tip"
+                  style={{ display: 'block', background: 'var(--crm-warning-soft)', color: 'var(--crm-warning)' }}
+                >
+                  <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                    发现 {dupMatches.length} 个疑似重复客户
+                  </div>
+                  {dupMatches.map((match) => (
+                    <div key={match.id} style={{ fontSize: 12, lineHeight: 1.7 }}>
+                      · {match.name}（相似度 {match.score}%：{match.reasons.join('、')}）
+                    </div>
+                  ))}
+                  <div style={{ fontSize: 12, marginTop: 4 }}>
+                    如确认是同一家，建议先取消，去已有客户里补资料；确实不同再继续创建。
+                  </div>
                 </div>
               )}
-            </div>
-          </div>
 
-          <div className="form-block-title"><span>补充说明</span></div>
-
-          <div className="form-row is-textarea">
-            <label className="form-row-label">备注</label>
-            <div className="form-row-control">
-              <TextArea
-                rows={2}
-                value={form.remark ?? ''}
-                onChange={(value) => setForm({ ...form, remark: value })}
-                placeholder="偏好、忌讳、结算习惯……"
-              />
+              <div>
+                <div className="form-field-label">客户简称</div>
+                <Input
+                  value={form.short_name ?? ''}
+                  onChange={(value) => setForm({ ...form, short_name: value })}
+                  placeholder="日常叫法，例如：宏远"
+                />
+              </div>
+              <div>
+                <div className="form-field-label">客户等级</div>
+                <Select
+                  value={customerLevelValue(form.level)}
+                  onChange={(value) => setForm({ ...form, level: customerLevelPayload(value) })}
+                  optionList={LEVEL_OPTIONS}
+                  style={{ width: '100%' }}
+                />
+              </div>
+              <div>
+                <div className="form-field-label">省份 / 地区</div>
+                <Input
+                  value={form.region ?? ''}
+                  onChange={(value) => setForm({ ...form, region: value })}
+                  placeholder="浙江"
+                />
+              </div>
+              <div>
+                <div className="form-field-label">客户来源</div>
+                <Select
+                  value={form.source ?? undefined}
+                  onChange={(value) => setForm({ ...form, source: value as string })}
+                  optionList={SOURCE_OPTIONS}
+                  style={{ width: '100%' }}
+                />
+                {form.source === '其他' && (
+                  <Input
+                    aria-label="其他客户来源"
+                    value={otherSource}
+                    onChange={setOtherSource}
+                    maxLength={32}
+                    placeholder="请输入具体来源，例如：抖音、小红书（最多32字）"
+                    style={{ marginTop: 8 }}
+                  />
+                )}
+              </div>
+              <div className="full">
+                <div className="form-field-label">详细地址</div>
+                <Input
+                  value={form.address ?? ''}
+                  onChange={(value) => setForm({ ...form, address: value })}
+                  placeholder="省市区 + 街道门牌，收货地址以订单为准"
+                />
+              </div>
+              <div className="full">
+                <div className="form-field-label">备注</div>
+                <TextArea
+                  rows={2}
+                  value={form.remark ?? ''}
+                  onChange={(value) => setForm({ ...form, remark: value })}
+                  placeholder="偏好、忌讳、结算习惯……"
+                />
+              </div>
             </div>
-          </div>
+          </section>
+
+          <section className="form-card">
+            <div className="form-card-title">谁来跟这个客户</div>
+            <div className="form-card-grid">
+              <div>
+                <div className="form-field-label">负责人</div>
+                <UserSearchSelect
+                  queryScope="customer-create"
+                  enabled={modalVisible && can('customer:assign')}
+                  className="owner-picker"
+                  style={{ width: '100%' }}
+                  placeholder="按姓名或登录账号搜索"
+                  disabled={!can('customer:assign')}
+                  value={form.owner_id ?? undefined}
+                  onChange={(value) => setForm({ ...form, owner_id: value ?? null })}
+                />
+              </div>
+              <div className="form-tip">
+                {can('customer:assign')
+                  ? '不选就归你自己，之后也能在列表里转移。'
+                  : '没有分配权限时新客户归你；要指定别人请联系管理员。'}
+              </div>
+            </div>
+          </section>
         </div>
       </Modal>
     </div>

@@ -496,74 +496,81 @@ export default function LeadListPage() {
         confirmLoading={createMutation.isPending}
         okText="创建"
       >
-                <div className="form-rows">
-          <div className="form-row">
-            <label className="form-row-label">线索名称<span className="req">*</span></label>
-            <div className="form-row-control">
-              <Input
-                value={form.name}
-                onChange={(v) => setForm({ ...form, name: v })}
-                placeholder="例如：杭州电商仓周转箱需求"
-              />
-            </div>
-          </div>
-          <div className="form-row">
-            <label className="form-row-label">公司名称</label>
-            <div className="form-row-control">
-              <Input value={form.company_name} onChange={(v) => setForm({ ...form, company_name: v })} />
-            </div>
-          </div>
-          <div className="form-row">
-            <label className="form-row-label">联系人</label>
-            <div className="form-row-control">
-              <Input value={form.contact_name} onChange={(v) => setForm({ ...form, contact_name: v })} />
-            </div>
-          </div>
-          <div className="form-row">
-            <label className="form-row-label">手机</label>
-            <div className="form-row-control">
-              <Input value={form.mobile} onChange={(v) => setForm({ ...form, mobile: v })} />
-            </div>
-          </div>
-          <div className="form-row">
-            <label className="form-row-label">来源</label>
-            <div className="form-row-control">
-              <Select
-                value={form.source}
-                onChange={(v) => setForm({
-                  ...form,
-                  source: v as string,
-                  source_detail: v === '其他渠道' ? form.source_detail : '',
-                })}
-                optionList={SOURCE_OPTIONS}
-                style={{ width: '100%' }}
-              />
-            </div>
-          </div>
-          {form.source === '其他渠道' && (
-            <div className="form-row">
-              <label className="form-row-label">渠道说明<span className="req">*</span></label>
-              <div className="form-row-control">
+                <div className="form-cards">
+          <section className="form-card">
+            <div className="form-card-title">这条线索</div>
+            <div className="form-card-grid">
+              <div className="full">
+                <div className="form-field-label">线索名称<span className="req">*</span></div>
                 <Input
-                  value={form.source_detail}
-                  onChange={(v) => setForm({ ...form, source_detail: v })}
-                  placeholder="请填写具体来源，例如：合作伙伴推荐、线下拜访"
+                  value={form.name}
+                  onChange={(v) => setForm({ ...form, name: v })}
+                  placeholder="客户要什么，例如：杭州电商仓周转箱需求"
+                />
+              </div>
+              <div className="full">
+                <div className="form-field-label">公司名称</div>
+                <Input
+                  value={form.company_name}
+                  onChange={(v) => setForm({ ...form, company_name: v })}
+                  placeholder="还没问到就先空着"
+                />
+              </div>
+              <div className="full">
+                <div className="form-field-label">备注</div>
+                <TextArea
+                  value={form.remark}
+                  onChange={(v) => setForm({ ...form, remark: v })}
+                  rows={2}
+                  placeholder="需求细节、预算、时间点……"
                 />
               </div>
             </div>
-          )}
-          <div className="form-row">
-            <label className="form-row-label">省份 / 地区</label>
-            <div className="form-row-control">
-              <Input value={form.region} onChange={(v) => setForm({ ...form, region: v })} placeholder="浙江" />
+          </section>
+
+          <section className="form-card">
+            <div className="form-card-title">从哪来、找谁</div>
+            <div className="form-card-grid">
+              <div>
+                <div className="form-field-label">来源</div>
+                <Select
+                  value={form.source}
+                  onChange={(v) => setForm({
+                    ...form,
+                    source: v as string,
+                    source_detail: v === '其他渠道' ? form.source_detail : '',
+                  })}
+                  optionList={SOURCE_OPTIONS}
+                  style={{ width: '100%' }}
+                />
+              </div>
+              <div>
+                <div className="form-field-label">省份 / 地区</div>
+                <Input value={form.region} onChange={(v) => setForm({ ...form, region: v })} placeholder="浙江" />
+              </div>
+              {form.source === '其他渠道' && (
+                <div className="full">
+                  <div className="form-field-label">渠道说明<span className="req">*</span></div>
+                  <Input
+                    value={form.source_detail}
+                    onChange={(v) => setForm({ ...form, source_detail: v })}
+                    placeholder="请填写具体来源，例如：合作伙伴推荐、线下拜访"
+                  />
+                </div>
+              )}
+              <div>
+                <div className="form-field-label">联系人</div>
+                <Input value={form.contact_name} onChange={(v) => setForm({ ...form, contact_name: v })} />
+              </div>
+              <div>
+                <div className="form-field-label">手机</div>
+                <Input value={form.mobile} onChange={(v) => setForm({ ...form, mobile: v })} />
+              </div>
+              <div className="full form-tip">
+                联系人和手机可以先记个大概，后面进到客户中心再补全。
+              </div>
             </div>
-          </div>
-          <div className="form-row is-textarea">
-            <label className="form-row-label">备注</label>
-            <div className="form-row-control">
-              <TextArea value={form.remark} onChange={(v) => setForm({ ...form, remark: v })} rows={2} />
-            </div>
-          </div>
+          </section>
         </div>
       </Modal>
 
