@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { emptyText } from '../../shared/hooks/emptyText'
-import { Input, Modal, Popconfirm, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
+import { Button, Input, Modal, Popconfirm, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
 
 import {
   approveApproval,
@@ -234,22 +234,25 @@ export default function ApprovalPage() {
     },
     {
       title: '操作',
-      width: compact ? 122 : 200,
-      // 「看报价 通过 拒绝 转交」四个动作挤在 10px 间距里，字号又小，读起来是
-      // 一串没断开的字。间距拉到 16，四个动作才分得开（2026-11-16）。
+      width: compact ? 150 : 240,
+      /* 原来是四个 <a>：看报价蓝、通过绿、拒绝红、转交深灰，字重一样、间距一样，
+         读起来是"一排同重量的小字"。审批页真正的决策只有两个（通过 / 拒绝），
+         看报价和转交只是配角。
+         改成按钮层级：通过 = 主按钮（白底主色描边，见全局规则），拒绝 = 红色文字按钮，
+         看报价 / 转交 = 普通文字按钮。同一屏里一眼看出"该点哪个"。 */
       render: (_: unknown, record: ApprovalRow) => (
         <div
           style={{
-            // 宽屏四个动作横排一行；紧凑档 158px 放不下，改成 2×2 网格，
-            // 比 flexWrap 自然折成「3 + 1」整齐。
-            ...(compact
-              ? { display: 'grid', gridTemplateColumns: 'repeat(2, auto)', justifyItems: 'center', columnGap: 12, rowGap: 4 }
-              : { display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center' }),
+            display: 'flex',
+            gap: 4,
+            flexWrap: 'wrap',
+            alignItems: 'center',
+            justifyContent: 'center',
           }}
         >
           {record.version_id && (
-            <Link to={`/quotes/${record.quote_id}?version=${record.version_id}`} style={{ color: 'var(--crm-primary)' }}>
-              看报价
+            <Link to={`/quotes/${record.quote_id}?version=${record.version_id}`}>
+              <Button theme="borderless" size="small">看报价</Button>
             </Link>
           )}
           {record.can_approve && (
@@ -261,21 +264,24 @@ export default function ApprovalPage() {
                 content="通过后报价即可对客发送，请确认金额与优惠幅度都核对过。"
                 onConfirm={() => approveMutation.mutate(record.id)}
               >
-                <a style={{ color: 'var(--crm-success)' }}>通过</a>
+                <Button theme="solid" type="primary" size="small">通过</Button>
               </Popconfirm>
-              <a style={{ color: 'var(--crm-error)' }} onClick={() => setRejectTarget(record)}>
+              <Button type="danger" theme="borderless" size="small" onClick={() => setRejectTarget(record)}>
                 拒绝
-              </a>
-              {(can('quote:approve') || can('quote:finance_approve')) && <a
-                style={{ color: 'var(--crm-text-2)' }}
-                onClick={() => {
-                  setTransferTarget(record)
-                  setTransferUserId(null)
-                  setTransferComment('')
-                }}
-              >
-                转交
-              </a>}
+              </Button>
+              {(can('quote:approve') || can('quote:finance_approve')) && (
+                <Button
+                  theme="borderless"
+                  size="small"
+                  onClick={() => {
+                    setTransferTarget(record)
+                    setTransferUserId(null)
+                    setTransferComment('')
+                  }}
+                >
+                  转交
+                </Button>
+              )}
             </>
           )}
         </div>
