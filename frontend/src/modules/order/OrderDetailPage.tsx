@@ -1004,12 +1004,12 @@ export default function OrderDetailPage() {
                 return (
                   <>
                     {primary === 'push_erp' && (
-                      <Button type="primary" onClick={() => syncMutation.mutate(false)} loading={syncMutation.isPending}>
+                      <Button type="primary" theme="solid" onClick={() => syncMutation.mutate(false)} loading={syncMutation.isPending}>
                         推送 ERP/MES
                       </Button>
                     )}
                     {primary === 'update_status' && (
-                      <Button type="primary" onClick={() => setStatusVisible(true)}>
+                      <Button type="primary" theme="solid" onClick={() => setStatusVisible(true)}>
                         人工更新履约状态
                       </Button>
                     )}
@@ -1020,7 +1020,7 @@ export default function OrderDetailPage() {
                         disabled={repurchaseMutation.isPending}
                         onConfirm={() => repurchaseMutation.mutate()}
                       >
-                        <Button type="primary" loading={repurchaseMutation.isPending}>
+                        <Button type="primary" theme="solid" loading={repurchaseMutation.isPending}>
                           复购开新商机
                         </Button>
                       </Popconfirm>
@@ -1040,7 +1040,7 @@ export default function OrderDetailPage() {
                           </Dropdown.Menu>
                         }
                       >
-                        <Button theme="borderless" style={{ marginLeft: 8 }}>
+                        <Button type="tertiary" style={{ marginLeft: 8 }}>
                           更多操作 ▾
                         </Button>
                       </Dropdown>

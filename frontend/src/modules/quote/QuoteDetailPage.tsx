@@ -1780,12 +1780,22 @@ export default function QuoteDetailPage() {
         title="报价明细"
         style={{ marginBottom: 16 }}
         extra={
-          <div style={{ display: 'flex', gap: 8 }}>
-          {can('order:manage') && <Button size="small" onClick={() => setDraftVisible(true)}>按此版本建订单草稿</Button>}
-          {can('sample:manage') && <Button size="small" onClick={() => setSampleVisible(true)}>按此版本申请打样</Button>}
+          <div className="quote-actions" style={{ display: 'flex', gap: 8 }}>
+          {/* 明细这块的推进动作是「按此版本建订单草稿」，给它实心；
+              打样、批量录入是并列入口，收成文字按钮（2026-11-19）。 */}
+          {can('order:manage') && (
+            <Button theme="solid" size="small" onClick={() => setDraftVisible(true)}>
+              按此版本建订单草稿
+            </Button>
+          )}
+          {can('sample:manage') && (
+            <Button size="small" type="tertiary" onClick={() => setSampleVisible(true)}>
+              按此版本申请打样
+            </Button>
+          )}
           {canManage &&
           editable && (
-            <Button size="small" onClick={openItemsEditor}>
+            <Button size="small" type="tertiary" onClick={openItemsEditor}>
               批量录入
             </Button>
           )}

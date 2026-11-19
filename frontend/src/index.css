@@ -6217,3 +6217,8 @@ table:not(.semi-table) td.cell-right {
   background: transparent !important;
   border-color: transparent !important;
 }
+/* 订单详情页头的「更多操作 ▾」：原来是带浅底的 borderless，和旁边的主操作抢注意力。
+   这边单独压低成文字按钮（Dropdown 触发器，点击区不变）。 */
+.dh-actions .semi-button-tertiary {
+  color: var(--crm-text-2, #4e5969);
+}
