@@ -6,7 +6,10 @@ import test from 'node:test'
 
 const require=createRequire(new URL('../frontend/package.json',import.meta.url))
 const ts=require('typescript')
-const source=ts.createSourceFile('SettingsPage.tsx',readFileSync(new URL('../frontend/src/modules/settings/SettingsPage.tsx',import.meta.url),'utf8'),ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX)
+// 2026-11-19 公海回收复核从系统设置独立成页（d25683a6），decide 搬到
+// recycle/PoolRecyclePage.tsx；理由表单也从 window.prompt 换成共用件
+// useNotePrompt（notePrompt.ask）——抠取路径与替身一起跟上。
+const source=ts.createSourceFile('PoolRecyclePage.tsx',readFileSync(new URL('../frontend/src/modules/recycle/PoolRecyclePage.tsx',import.meta.url),'utf8'),ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX)
 let decision
 function visit(node) {
   if(ts.isVariableDeclaration(node) && node.name.getText(source)==='decide') decision=node.initializer
@@ -20,6 +23,7 @@ function load(note=null) {
   runInNewContext(compiled,{exports,Modal:{confirm:options=>gates.push(options)},
     decideMutation:{mutate:payload=>calls.push(payload)},
     window:{prompt:message=>{prompts.push(message);return note}},
+    notePrompt:{ask:async options=>{prompts.push(options);return note},node:null},
     Toast:{error:message=>errors.push(message)},fmtDay:value=>value,
   })
   return {...exports,calls,gates,prompts,errors}

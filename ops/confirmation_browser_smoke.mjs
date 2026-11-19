@@ -446,43 +446,42 @@ try {
     console.log(`BROWSER_SAMPLE_${id}_${action}_CANCEL_NO_WRITE_CONFIRM_CORRECT_ID=true`)
   }
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/wecom`})
+  // 产品 740dc620：四个同步收进「数据同步 ▾」下拉，且**有意去掉二次确认**
+  // （只读拉企微数据、更新本地同步记录，不动业务数据，成功/失败都有 Toast；
+  // 主人 2026-11-19 拍板，同 high_risk_confirmation 的 syncMutation 口径）。
+  // 这里改成测「菜单项各点各的 endpoint、失败落痕可重试」；确认弹窗纪律
+  // 由下面 bind 段（关联客户=写业务数据，仍有 Popconfirm）继续守。
+  // 菜单项的 onClick 挂在 Dropdown.Item 内层 div 上，点外层 li 不触发——要 div。
+  const openSyncMenu=async()=>{
+    const trigger=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim().startsWith('数据同步'))`
+    await waitFor(trigger)
+    await evaluate(`${trigger}.click()`)
+    await waitFor(`Array.from(document.querySelectorAll('.semi-dropdown-item div')).some(d=>d.innerText.trim()==='同步部门')`)
+  }
   for(const [label,endpoint] of [
     ['同步部门','sync-departments'],['同步成员','sync-users'],
     ['同步外部联系人','sync-external-contacts'],['同步跟进关系','sync-follow-relations'],
   ]) {
-    const button=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()===${JSON.stringify(label)})`
-    await waitFor(button)
+    await openSyncMenu()
+    const item=`Array.from(document.querySelectorAll('.semi-dropdown-item div')).find(d=>d.innerText.trim()===${JSON.stringify(label)})`
     const before=wecomRequests.length
-    await evaluate(`${button}.click()`)
-    await waitFor(`document.body.innerText.includes(${JSON.stringify('确认'+label+'？')})`)
-    assert.equal(wecomRequests.length,before,'opening sync confirmation must not submit')
-    await evaluate(`Array.from(${popup}.querySelectorAll('button')).find(b=>b.innerText.trim()==='取消').click()`)
-    await sleep(250)
-    assert.equal(wecomRequests.length,before,'cancel sync must not submit')
-    await evaluate(`${button}.click()`)
-    await waitFor(`document.body.innerText.includes(${JSON.stringify('确认'+label+'？')})`)
-    await evaluate(`Array.from(${popup}.querySelectorAll('button')).find(b=>b.innerText.trim()==='确定').click()`)
+    await evaluate(`${item}.click()`)
     for(let i=0;wecomRequests.length===before && i<30;i++)await sleep(100)
     assert.equal(wecomRequests.length,before+1)
     assert.equal(wecomRequests.at(-1),endpoint,'sync must call its own endpoint')
-    await waitFor(`!${popup}`)
-    console.log(`BROWSER_WECOM_${endpoint}_CANCEL_NO_WRITE_CONFIRM_CORRECT_ENDPOINT=true`)
+    console.log(`BROWSER_WECOM_${endpoint}_MENU_ITEM_CALLS_OWN_ENDPOINT=true`)
   }
   rejectWecomSync=true
-  await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()==='同步部门').click()`)
-  await waitFor(`document.body.innerText.includes('确认同步部门？')`)
-  await evaluate(`Array.from(${popup}.querySelectorAll('button')).find(b=>b.innerText.trim()==='确定').click()`)
+  await openSyncMenu()
+  await evaluate(`Array.from(document.querySelectorAll('.semi-dropdown-item div')).find(d=>d.innerText.trim()==='同步部门').click()`)
   await waitFor(`document.body.innerText.includes('隔离失败任务')`)
   assert.equal(failedWecomJobs.length,1)
-  await waitFor(`!${popup}`)
   rejectWecomSync=false
   const beforeRetry=wecomRequests.length
-  await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()==='同步部门').click()`)
-  await waitFor(`document.body.innerText.includes('确认同步部门？')`)
-  await evaluate(`Array.from(${popup}.querySelectorAll('button')).find(b=>b.innerText.trim()==='确定').click()`)
+  await openSyncMenu()
+  await evaluate(`Array.from(document.querySelectorAll('.semi-dropdown-item div')).find(d=>d.innerText.trim()==='同步部门').click()`)
   for(let i=0;wecomRequests.length===beforeRetry && i<30;i++)await sleep(100)
   assert.equal(wecomRequests.length,beforeRetry+1)
-  await waitFor(`!${popup}`)
   console.log('BROWSER_WECOM_FAILURE_REFRESH_AND_RETRY=true')
   const bindButton=`Array.from(document.querySelectorAll('button')).filter(b=>b.innerText.trim()==='关联已有客户')[1]`
   await waitFor(bindButton)
@@ -636,7 +635,9 @@ try {
   assert.equal(recycleRequests.length,beforeReassign+1,await evaluate('document.body.innerText.slice(-2400)'))
   assert.deepEqual(recycleRequests.at(-1),{path:'/api/v1/customers/106/restore',body:{owner_id:311}})
   console.log('BROWSER_RECYCLE_INACTIVE_OWNER_CANCEL_AND_REQUIRED_SELECTION_CORRECT_ID=true')
-  await send('Page.navigate',{url:`http://127.0.0.1:${port}/settings?tab=rules`})
+  // 回收候选批量决定：d25683a6 起从设置页搬到「/pool-recycle」（也复用在客户中心
+  // 「回收复核」页签），endpoint 与确认弹窗纪律不变，只挪了窝。
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/pool-recycle`})
   for(const [label,decision,title] of [
     ['批量批准','approve','批准选中的 2 条回收候选'],
     ['批量暂缓','defer','暂缓选中的 2 条回收候选'],
@@ -666,6 +667,8 @@ try {
     await waitFor(`!${popup}`)
     console.log(`BROWSER_SETTINGS_BATCH_${decision}_CANCEL_NO_WRITE_CONFIRM_EXACT_IDS=true`)
   }
+  // 自动任务两个按钮仍在系统设置（批量决定搬走后这里只剩规则配置）——导航回来。
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/settings?tab=rules`})
   for(const [label,title,path] of [
     ['扫描并生成回收预告','确认扫描并生成回收预告','/api/v1/public-pool/run-recycle'],
     ['立即执行一次','确认立即执行自动任务规则','/api/v1/tasks/run-auto-rules'],

@@ -23,8 +23,12 @@ for (const note of [null, '', '停止从旧系统导入']) {
   test(`stop source: ${note === null ? 'cancel leaves data unchanged' : 'confirm submits optional note'}`, async () => {
     const calls = [], messages = [], refreshes = []
     const exports = {}
+    // 产品 2026-11-19 起从 window.prompt 换成共用件 useNotePrompt（notePrompt.ask，
+    // 见 ProductDetailPage「三处原来都是 window.prompt」注释）——替身跟上：
+    // ask 与原 prompt 同形状（null=取消、字符串=填写内容），window.prompt 留着兜底。
     runInNewContext(compiled, { exports,
       window: { prompt: () => note },
+      notePrompt: { ask: async () => note, node: null },
       stopSkuIdentity: async (...args) => { calls.push(args); return { id: 7 } },
       Toast: { success: message => messages.push(message), error: message => messages.push(message) },
       queryClient: { invalidateQueries: args => refreshes.push(args) }, masterSku: { id: 3 },

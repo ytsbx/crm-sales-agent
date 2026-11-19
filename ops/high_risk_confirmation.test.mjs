@@ -29,7 +29,10 @@ for (const [file, mutation, action] of [
   ['settings/SettingsPage.tsx', 'userStatusMutation'],
   ['settings/NotificationSettingsPanel.tsx', 'retryMutation'],
   ['common/NotificationBell.tsx', 'redispatchMutation'],
-  ['wecom/WeComPage.tsx', 'syncMutation'],
+  // wecom syncMutation 不在此列（主人 2026-11-19 拍板按产品口径）：同步是只读拉
+  // 企微数据、更新本地同步记录，不动业务数据，产品有意去掉二次确认（740dc620），
+  // 且成功/部分失败/失败都有 Toast 反馈、失败任务留痕可重试。bindMutation
+  // （关联客户=写业务数据）仍是高危，保留。
   ['wecom/WeComPage.tsx', 'bindMutation'],
   ['cases/CasesPage.tsx', 'submitMutation'],
   ['cases/CasesPage.tsx', 'reviseMutation'],
