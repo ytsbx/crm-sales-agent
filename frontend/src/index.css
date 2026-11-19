@@ -2559,6 +2559,30 @@ table:not(.semi-table) td {
   max-width: 100%;
 }
 
+/* 分析页「成交与转化」的 7 张指标：一个网格装 4 + 3（2026-11-19）
+   ------------------------------------------------------------
+   上一版把它拆成「4 列 flex」+「3 列 flex」两个容器：
+   - 第二行三张 flex-grow 撑到 378 宽，比第一行 280 宽出一整圈，一列比一列宽；
+   - 两个容器之间没有行间距，上下两行卡片直接贴住。
+   主人原话「布局怎么变丑了，这样设计更丑」。
+   现在合成一个 CSS 网格：4 列、行距列距都 12，7 张自然排成 4 + 3，
+   第二行三张与第一行**同宽**（右端空出一格背景色），高度由网格拉齐。 */
+.kpi-group .kpi-grid.kpi-grid-fixed {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--crm-space-3);
+}
+@media (max-width: 1370px) {
+  .kpi-group .kpi-grid.kpi-grid-fixed {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  /* 7 张在 2 列下会剩最后一张独占左边、右下空一整格（1024 实拍很难看）。
+     奇数张时让最后一张跨满整行，把它变成一条"末行横幅"，不留空洞。 */
+  .kpi-group .kpi-grid.kpi-grid-fixed > .kpi-card:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+}
+
 /* 7 张指标卡用 4 列（4+3）比自动排的 5+2 平衡，第二行不会只剩两张孤零零 */
 .kpi-cols-4 {
   grid-template-columns: repeat(4, minmax(0, 1fr));

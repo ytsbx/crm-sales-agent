@@ -483,7 +483,7 @@ export default function AnalyticsPage() {
           <div className="kpi-group-head">成交与转化</div>
           <KpiStrip
             tintValues={false}
-            className="kpi-grid kpi-cols-4"
+            className="kpi-grid kpi-grid-fixed"
             items={[
               {
                 label: '商机成交率',
@@ -509,14 +509,7 @@ export default function AnalyticsPage() {
                 value: `${((quote?.approval_rate ?? 0) * 100).toFixed(0)}%`,
                 hint: `需审批 ${quote?.approval_required_count ?? 0} 次`,
               },
-            ]}
-          />
-          {/* 7 张卡拆成 4 + 3 两行：第一行四张、第二行三张各自平分整行，
-              不留"右边空一格"（主人反复说的"右边留白"）。 */}
-          <KpiStrip
-            tintValues={false}
-            className="kpi-grid kpi-cols-3"
-            items={[
+
               {
                 label: '线索转化率',
                 tone: 'primary',
