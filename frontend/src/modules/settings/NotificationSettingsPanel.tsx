@@ -4,6 +4,7 @@ import { Banner, Button, Popconfirm, Select, Switch, Toast } from '@douyinfe/sem
 
 import SectionCard from '../../shared/components/SectionCard'
 import { getDeliveryFailures, retryFailedNotifications } from '../../shared/api/analytics'
+import { listSettings, saveSetting } from '../../shared/api/settings'
 import {
   getLevelPolicy,
   getNotificationSettings,
@@ -81,6 +82,32 @@ export default function NotificationSettingsPanel() {
   const failuresQuery = useQuery({
     queryKey: ['delivery-failures'],
     queryFn: getDeliveryFailures,
+  })
+
+  // 投递重试（2026-11-19 主人：「要么用户选择器改」）。
+  // 这一项原来躺在「业务规则」的键值行里，值是 {enabled, max_attempts,
+  // backoff_minutes:[5,30,120]} —— 三个机器键，没人看得懂。这里补成四档选择器：
+  // 不重试 / 1 次 / 3 次（默认）/ 5 次，退避间隔沿用后端默认（5 分钟 → 30 分钟 → 2 小时）。
+  const retryQuery = useQuery({
+    queryKey: ['setting', 'notification_retry'],
+    queryFn: async () => (await listSettings()).find((row) => row.key === 'notification_retry'),
+  })
+  const retryRaw = (retryQuery.data?.value ?? {}) as Record<string, unknown>
+  const retryEnabled = Boolean(retryRaw.enabled ?? true)
+  const retryAttempts = Number(retryRaw.max_attempts ?? 3)
+  const retryPolicyMutation = useMutation({
+    mutationFn: (next: { enabled: boolean; max_attempts: number }) =>
+      saveSetting('notification_retry', {
+        ...retryRaw,
+        enabled: next.enabled,
+        max_attempts: next.max_attempts,
+        backoff_minutes: (retryRaw.backoff_minutes as number[] | undefined) ?? [5, 30, 120],
+      }),
+    onSuccess: () => {
+      Toast.success('重试策略已保存')
+      void queryClient.invalidateQueries({ queryKey: ['setting', 'notification_retry'] })
+    },
+    onError: (error: Error) => Toast.error(error.message),
   })
   const retryMutation = useMutation({
     mutationFn: () => retryFailedNotifications(),
@@ -263,6 +290,32 @@ export default function NotificationSettingsPanel() {
             )}
           </>
         )}
+      </SectionCard>
+
+      {/* 投递重试：只给四档，不给 max_attempts / backoff_minutes 这种机器键 */}
+      <SectionCard>
+        <div style={{ fontWeight: 600, marginBottom: 4 }}>投递重试</div>
+        <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 12 }}>
+          企微没发出去时，会按 5 分钟 → 30 分钟 → 2 小时的间隔自动再试；到上限就停在失败，等你补投。
+        </div>
+        <Select
+          value={retryEnabled ? String(retryAttempts) : 'off'}
+          optionList={[
+            { value: '3', label: '最多重试 3 次（默认）' },
+            { value: '1', label: '只重试 1 次' },
+            { value: '5', label: '最多重试 5 次' },
+            { value: 'off', label: '不再自动重试，直接等人工补投' },
+          ]}
+          style={{ width: 280 }}
+          disabled={retryQuery.isLoading || retryPolicyMutation.isPending}
+          onChange={(value) => {
+            if (value === 'off') {
+              retryPolicyMutation.mutate({ enabled: false, max_attempts: retryAttempts })
+              return
+            }
+            retryPolicyMutation.mutate({ enabled: true, max_attempts: Number(value) })
+          }}
+        />
       </SectionCard>
 
       <div style={{ display: 'flex', gap: 10 }}>
