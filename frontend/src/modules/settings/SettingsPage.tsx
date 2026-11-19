@@ -2350,12 +2350,6 @@ type ApprovalLevelDraft = {
 }
 
 /** 每档里字段名的小字样式。宽度固定，「第 1 档」「第 2 档」的输入框左边才对得齐。 */
-const LEVEL_FIELD_LABEL: CSSProperties = {
-  width: 56,
-  flexShrink: 0,
-  fontSize: 12,
-  color: 'var(--crm-text-3)',
-}
 
 /**
  * 金额上限的**唯一合法写法**：非负数字，最多两位小数。
@@ -2481,91 +2475,84 @@ function ApprovalLevelsEditor({
   }
 
   return (
-    // width 写死 310，不是 minWidth：这一列是"内容多宽、列就多宽"的自动布局，
-    // 内层内容会按自身固有宽度把「值」列往外撑。实测不管住它，「值」列会涨到
-    // 462px，加上前两列就把整张配置表顶出内容区、横向滚起来，最右边的操作
-    // 直接被推出视口点不到。收在 310 之后这一列约 342px，三列合计约 1002px，
-    // 正好落在内容区内（改前是 1052px，要横滚 50px 才看得到右边缘）。
-    //
-    // 为什么不是一行四列的表格：被前两列挤完之后这一列只剩 340 出头，再扣掉
-    // 单元格左右内边距，并排的输入框每个只有 50~60px，连 50000 都显示不全、
-    // 「删除」两个字会被压成上下两行。所以每档改成一个小块、字段分两行排。
-    <div style={{ display: 'grid', gap: 8, width: 310 }}>
+    // 一档一行（2026-11-19 重做）。原来一档是一张卡、卡里再挤两行：
+    // 「级别 + 金额上限」一行、「角色」一行，右边留一截空，删除飘在右上角 ——
+    // 一档两张行看不出"这是一条链上的一环"，三档就开始糊。
+    // 现在：序号徽章定性（01/02/03），横着一行把 级别 / 金额上限 / 审批角色 排开，
+    // 上下用同一套小标签对齐，删除压到最右、默认半透明。
+    <div className="approval-chain">
       {drafts.map((row, index) => (
-        <div
-          key={row.node}
-          style={{
-            border: '1px solid var(--crm-surface-high)',
-            borderRadius: 'var(--crm-radius)',
-            padding: '8px 10px',
-            display: 'grid',
-            gap: 6,
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>第 {index + 1} 档</span>
-            <a onClick={() => removeRow(index)}>删除</a>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={LEVEL_FIELD_LABEL}>级别</span>
-            {/* 级别名是中文字、比数字长，所以宽度按 1.3 : 1 分 —— 平分会把
-                「销售主管」裁掉一个字 */}
+        <div className="approval-level" key={row.node}>
+          <span className="approval-level-index">{String(index + 1).padStart(2, '0')}</span>
+
+          <label className="approval-cell">
+            <span className="approval-cell-label">级别名称</span>
             <Input
               size="small"
-              style={{ flex: 1.3 }}
               value={row.label}
-              placeholder="级别名"
+              placeholder="例如：销售主管"
               onChange={(value) => patch(index, { label: value })}
             />
-            <span style={LEVEL_FIELD_LABEL}>金额上限</span>
-            <Input
-              size="small"
-              style={{ flex: 1 }}
-              value={row.maxText}
-              placeholder="不限"
-              // ⚠️ 原样收下用户敲的每一个字符，**不许在这里删字符**（2026-10-14 修）。
-              // 以前写的是 `value.replace(/[^\d.]/g, '')`，本意是防呆，实际是静默篡改：
-              // 「5万」被洗成「5」、「1e5」被洗成「15」、「-50000」被洗成「50000」，
-              // 洗完全都变成合法数字串，保存时那道校验再也拦不住 —— 用户看到的
-              // 和最终存进库的不是一个值，而且**全程没有任何提示**。
-              // 现在非法就保持非法、当场标红，由用户自己改对。
-              onChange={(value) => patch(index, { maxText: value })}
-              validateStatus={
-                row.maxText.trim() !== '' && !AMOUNT_TEXT_PATTERN.test(row.maxText.trim())
-                  ? 'error'
-                  : 'default'
-              }
-            />
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={LEVEL_FIELD_LABEL}>角色</span>
+          </label>
+
+          <label className="approval-cell">
+            <span className="approval-cell-label">金额上限（含）</span>
+            <div className="approval-amount">
+              {/* 口令写"≤"：这一档的意思是"报价不超过这个数就落到本档"，
+                  一个符号比"金额上限"四个字更快看懂 */}
+              <span className="approval-amount-op">≤</span>
+              <Input
+                size="small"
+                value={row.maxText}
+                placeholder="不限"
+                // ⚠️ 原样收下用户敲的每一个字符，**不许在这里删字符**（2026-10-14 修）。
+                // 静默洗字符会让「5万」变成「5」、用户看到的和存进库的不是一个值。
+                onChange={(value) => patch(index, { maxText: value })}
+                validateStatus={
+                  row.maxText.trim() !== '' && !AMOUNT_TEXT_PATTERN.test(row.maxText.trim())
+                    ? 'error'
+                    : 'default'
+                }
+              />
+              <span className="approval-amount-unit">元</span>
+            </div>
+          </label>
+
+          <label className="approval-cell">
+            <span className="approval-cell-label">审批角色</span>
             <Select
               multiple
               size="small"
-              style={{ flex: 1 }}
               value={row.roleCodes}
-              placeholder="留空不限"
-              maxTagCount={1}
+              placeholder="留空 = 不限"
+              maxTagCount={2}
               optionList={roleOptions}
               onChange={(value) =>
                 patch(index, { roleCodes: ((value as Array<string | number>) ?? []).map(String) })
               }
             />
-          </div>
+          </label>
+
+          <a className="approval-level-del" onClick={() => removeRow(index)}>
+            删除
+          </a>
         </div>
       ))}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <Button size="small" onClick={addRow}>
-          增加一档
+
+      <div className="approval-chain-actions">
+        <button type="button" className="approval-add" onClick={addRow}>
+          <span aria-hidden>+</span> 增加一档
+        </button>
+        <Button theme="solid" loading={saving} onClick={submit}>
+          保存分档
         </Button>
-        <Button type="primary" size="small" theme="outline" loading={saving} onClick={submit}>
-          保存
-        </Button>
+        <span className="approval-chain-tip">从上往下匹配，先命中先结束</span>
       </div>
-      <div style={{ fontSize: 12, color: 'var(--crm-text-3)', lineHeight: 1.6 }}>
-        审批按顺序匹配：从上往下找第一个「报价金额不超过本档上限」的档，
-        所以每档上限必须大于上一档 —— 上限相等或倒挂时，当前这一档先命中，上面那档永远用不到。
-        「不限」只能放最后一档（上限留空即不限）。角色留空不是「没人能批」，
+
+      <div className="approval-chain-hint">
+        <b>怎么匹配：</b>从第一档往下找，第一个「报价金额 ≤ 上限」的档就是它。
+        所以上限必须逐档递增 —— 相等或倒挂时当前这档会先命中，上面那档永远用不到。
+        <b>两档留空规则：</b>「不限」只能放最后一档；角色留空不是没人能批，
         而是有报价审批权限的人都能批。
       </div>
     </div>

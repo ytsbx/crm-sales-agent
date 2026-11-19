@@ -5287,3 +5287,165 @@ table:not(.semi-table) td.cell-right {
   font-size: 12px;
   color: var(--crm-text-3);
 }
+/* ============================================================
+   报价审批分级：一档一行（2026-11-19 重做）
+   ------------------------------------------------------------
+   原来是"一档一张卡、卡里两行"：级别+上限挤第一行、角色第二行，
+   右边留一截空、删除飘在右上角。一档看不出是一条链上的一环，
+   三档就开始糊。
+
+   现在一档一行：序号徽章 + 级别名称 + 金额上限 + 审批角色 + 删除，
+   四段共用一套上下小标签，竖着看是整齐的四列，横着看是一条判定链。
+   ============================================================ */
+.approval-chain {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.approval-level {
+  display: grid;
+  /* 序号 34 / 级别 168 / 上限 196 / 角色吃剩下的 / 删除 40 */
+  grid-template-columns: 34px 168px 196px minmax(0, 1fr) 40px;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(17, 24, 39, .07);
+  border-radius: 12px;
+  background: #fff;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+
+.approval-level:hover {
+  border-color: rgba(47, 109, 246, .26);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, .05);
+}
+
+.approval-level-index {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--crm-primary) 8%, #fff);
+  color: var(--crm-primary);
+  font-size: 12px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.approval-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.approval-cell-label {
+  font-size: 11px;
+  color: var(--crm-text-3);
+  line-height: 1.2;
+  letter-spacing: .2px;
+}
+
+.approval-amount {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.approval-amount-op {
+  font-size: 13px;
+  color: var(--crm-text-3);
+  flex: 0 0 auto;
+}
+
+.approval-amount-unit {
+  font-size: 12px;
+  color: var(--crm-text-3);
+  flex: 0 0 auto;
+}
+
+.approval-level-del {
+  font-size: 12px;
+  color: var(--crm-text-3);
+  cursor: pointer;
+  text-align: right;
+  transition: color .15s ease, opacity .15s ease;
+  opacity: .55;
+}
+
+.approval-level-del:hover {
+  color: var(--crm-danger, #d4380d);
+  opacity: 1;
+}
+
+.approval-chain-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 2px;
+  flex-wrap: wrap;
+}
+
+/* 虚线"增加一档"：这是补一条规则，不是主操作，所以不跟保存争主色 */
+.approval-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 14px;
+  border-radius: 9px;
+  border: 1px dashed rgba(47, 109, 246, .35);
+  background: #fff;
+  color: var(--crm-primary);
+  font-size: 12.5px;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease;
+}
+
+.approval-add:hover {
+  background: color-mix(in srgb, var(--crm-primary) 4%, #fff);
+  border-color: rgba(47, 109, 246, .55);
+}
+
+.approval-chain-tip {
+  font-size: 11.5px;
+  color: var(--crm-text-3);
+}
+
+.approval-chain-hint {
+  margin-top: 2px;
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: #f7f8fa;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--crm-text-3);
+}
+
+.approval-chain-hint b {
+  color: var(--crm-text-2);
+  font-weight: 600;
+}
+
+@media (max-width: 1180px) {
+  /* 窄屏：四段排不下，压成两行（序号 + 级别 / 上限 / 角色），删除换到行尾 */
+  .approval-level {
+    grid-template-columns: 28px minmax(0, 1fr) minmax(0, 1fr) 34px;
+    grid-template-areas:
+      'idx label amount del'
+      'idx role  role   role';
+    row-gap: 8px;
+  }
+
+  .approval-level-index { grid-area: idx; }
+  .approval-level-del { grid-area: del; }
+
+  .approval-level > .approval-cell:nth-of-type(1) { grid-area: label; }
+  .approval-level > .approval-cell:nth-of-type(2) { grid-area: amount; }
+  .approval-level > .approval-cell:nth-of-type(3) { grid-area: role; }
+}
