@@ -1894,7 +1894,11 @@ export default function SettingsPage() {
                       render: (days: number, record: PublicPoolRuleRow) => (
                         <Input
                           defaultValue={String(days)}
-                          style={{ width: 120 }}
+                          /* 单位补上（2026-11-19）：原来只有 30 / 60 / 90 三个数字，
+                             表头写「未跟进天数」还算能猜到，但和自动任务表并排放时
+                             一边有天一边没天，看着就是两套标准。 */
+                          suffix="天"
+                          style={{ width: 104 }}
                           onBlur={(event) => {
                             const raw = (event.target as HTMLInputElement).value.trim()
                             const next = Number(raw)

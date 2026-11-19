@@ -31,6 +31,9 @@ export default function UnratedRulesPanel() {
   const save = () => {
     const readDays = (raw: string, enabled: boolean, label: string) => {
       if (!raw.trim() && !enabled) return null
+      // 开了开关却没填天数：原来只报「天数须为 1～36500 的整数」，用户看不出
+      // 病根在哪（他刚点的是开关，不是天数）。这里把病根直说（2026-11-19）。
+      if (!raw.trim()) throw new Error(`「${label}」已打开，但还没填天数 —— 先填 1～36500 的整数再保存`)
       const value = Number(raw)
       if (!Number.isInteger(value) || value < 1 || value > 36500) throw new Error(`${label}天数须为 1～36500 的整数`)
       return value
@@ -57,14 +60,38 @@ export default function UnratedRulesPanel() {
         <span className="unrated-rule-name">未联系提醒</span>
         <Input aria-label="未分级跟进提醒天数" placeholder="未设置天数" value={reminderDays} disabled={mutation.isPending} onChange={(value) => setDraft({ ...current, reminderDays: value })} style={{ width: 130, flex: '0 0 130px' }} />
         <span style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>天</span>
-        <Switch aria-label="启用未分级跟进提醒" checked={reminderEnabled} disabled={mutation.isPending} onChange={(value) => setDraft({ ...current, reminderEnabled: value })} />
+        <Switch
+          aria-label="启用未分级跟进提醒"
+          checked={reminderEnabled}
+          disabled={mutation.isPending}
+          onChange={(value) => {
+            // 没填天数就打开开关，等于给自己埋一个"保存必失败"的坑。
+            // 这里先拦住并说清原因，比让他点完保存再看红字强（2026-11-19）。
+            if (value && !reminderDays.trim()) {
+              Toast.warning('先填「未联系提醒」的天数，再打开开关')
+              return
+            }
+            setDraft({ ...current, reminderEnabled: value })
+          }}
+        />
         <span className="unrated-rule-note">开启后，超过这个天数没联系的未分级客户会进提醒</span>
       </div>
       <div className="unrated-rule-row">
         <span className="unrated-rule-name">未跟进回收候选</span>
         <Input aria-label="未分级公海回收天数" placeholder="未设置天数" value={recycleDays} disabled={mutation.isPending} onChange={(value) => setDraft({ ...current, recycleDays: value })} style={{ width: 130, flex: '0 0 130px' }} />
         <span style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>天</span>
-        <Switch aria-label="启用未分级公海回收" checked={recycleEnabled} disabled={mutation.isPending} onChange={(value) => setDraft({ ...current, recycleEnabled: value })} />
+        <Switch
+          aria-label="启用未分级公海回收"
+          checked={recycleEnabled}
+          disabled={mutation.isPending}
+          onChange={(value) => {
+            if (value && !recycleDays.trim()) {
+              Toast.warning('先填「未跟进回收候选」的天数，再打开开关')
+              return
+            }
+            setDraft({ ...current, recycleEnabled: value })
+          }}
+        />
         <span className="unrated-rule-note">开启后，超过这个天数没跟进会被提单为回收候选</span>
       </div>
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
