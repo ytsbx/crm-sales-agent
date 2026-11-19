@@ -353,7 +353,10 @@ export default function WorkbenchPage() {
                   <th style={{ textAlign: 'right', padding: '6px 12px', fontWeight: 500, width: 120 }}>
                     待跟进客户
                   </th>
-                  <th style={{ textAlign: 'right', padding: '6px 12px', fontWeight: 500, width: 160 }}>
+                  {/* 金额列挂 .cell-right：index.css 里「原生表格一律居中」那条
+                      !important 会把这里的内联右对齐压掉（实测 computed 仍是 center），
+                      靠同名豁免拿回右对齐（2026-11-19）。 */}
+                  <th className="cell-right" style={{ textAlign: 'right', padding: '6px 12px', fontWeight: 500, width: 160 }}>
                     本月成交额
                   </th>
                 </tr>
@@ -381,7 +384,7 @@ export default function WorkbenchPage() {
                     >
                       {member.stale_customer_count}
                     </td>
-                    <td style={{ textAlign: 'right', padding: '8px 12px' }}>
+                    <td className="cell-right" style={{ textAlign: 'right', padding: '8px 12px' }}>
                       ¥{Math.round(member.won_amount_this_month).toLocaleString('zh-CN')}
                     </td>
                   </tr>

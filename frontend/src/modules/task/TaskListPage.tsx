@@ -268,7 +268,7 @@ export default function TaskListPage() {
       // 日期一个色、状态一个小标签，扫一眼就分得出来
       render: (value: string | null, record: Task) =>
         value ? (
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
             {/* 精确到分钟就够：任务截止时间带秒既没用、又把这一列撑得很长 */}
             <span style={{ color: record.overdue ? 'var(--crm-error)' : undefined }}>
               {/* 窄屏省掉年份：94px 只放得下「11-20 15:21」，逾期标签另起一行 */}
@@ -311,7 +311,7 @@ export default function TaskListPage() {
           <div
             style={
               compact
-                ? { display: 'flex', gap: 8, whiteSpace: 'nowrap', fontSize: 13 }
+                ? { display: 'flex', gap: 12, whiteSpace: 'nowrap', fontSize: 13 }
                 : { display: 'flex', gap: 10 }
             }
           >

@@ -4455,6 +4455,14 @@ table:not(.semi-table) td {
   text-align: right !important;
 }
 
+/* 同一把钥匙要开手写的原生表（工作台「成员明细」那种）。
+   「原生表格一律居中」那条 !important 同时把金额列也压成居中 ——
+   下面这条选择器多一个类、优先级更高，只给明确挂了 .cell-right 的格子放行。 */
+table:not(.semi-table) th.cell-right,
+table:not(.semi-table) td.cell-right {
+  text-align: right !important;
+}
+
 /* 客户详情「跟进」tab：
    1) 表格强制 fixed —— auto 布局下长文本会把列撑开（1440 实测 1221 > 1130、
       1024 714 > 699），底部就多一条横向滚动条；
