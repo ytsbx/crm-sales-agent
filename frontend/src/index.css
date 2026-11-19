@@ -4685,22 +4685,80 @@ table:not(.semi-table) td.cell-right {
 /* ============================================================
    商机转化台阶（分析页 05）
    ------------------------------------------------------------
-   四段"包含关系"横条：累计创建 → 有过报价 → 成交 → 已转订单。
+   四段"包含关系"：累计创建 → 有过报价 → 成交 → 已转订单。
    取代原来的漏斗图 —— 那个图形暗示"越往下越窄"，可数据是按
    "阶段历史里出现过"算的，商机跳级时会倒挂（29 > 13）。
-   颜色用主色四档深浅（越往下越实），不做大红大绿。
+
+   视觉上有三处刻意：条限宽 780（不铺满整卡，否则像进度条不像漏斗）、
+   同一条色系按透明度分层、段与段之间写明"这一段落掉 N 单"。
    ============================================================ */
+.deal-steps-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 28px;
+  flex-wrap: wrap;
+}
+
 .deal-steps {
   display: flex;
   flex-direction: column;
-  gap: 11px;
+  gap: 3px;
+  padding-top: 2px;
+  flex: 1 1 640px;
+  min-width: 0;
+}
+
+/* 整体转化：一句话的结论，放在台阶右边。
+   台阶只回答"每一段掉多少"，这块回答"一共成了多少"。 */
+.deal-summary {
+  flex: 0 0 176px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 14px 16px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--crm-primary) 4%, #fff);
+  border: 1px solid color-mix(in srgb, var(--crm-primary) 12%, #fff);
+  margin-top: 2px;
+}
+
+.deal-summary-label {
+  font-size: 11px;
+  letter-spacing: .4px;
+  color: var(--crm-text-3);
+}
+
+.deal-summary-value {
+  font-size: 28px;
+  font-weight: 650;
+  line-height: 1.2;
+  color: var(--crm-text-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.deal-summary-value i {
+  font-style: normal;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--crm-text-3);
+  margin-left: 1px;
+}
+
+.deal-summary-foot {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--crm-text-3);
 }
 
 .deal-step {
   display: grid;
-  grid-template-columns: 84px minmax(0, 1fr) 78px 58px;
+  /* 第二列就 620：原来写 1fr，列宽吃满剩余空间，数字被推到条尾 300px 之外，
+     一块内容横跨整张卡，读着"稀"。 */
+  grid-template-columns: 84px minmax(0, 620px) 82px 52px;
   align-items: center;
   column-gap: 14px;
+  margin-top: 7px;
 }
 
 .deal-step-name {
@@ -4710,30 +4768,34 @@ table:not(.semi-table) td.cell-right {
   white-space: nowrap;
 }
 
+/* 条不铺满整行：1157 宽的卡里拉满 1100px 就变成"进度条"了，
+   限到 780 之后，右侧数字与百分比才和条挨得近，眼睛不用横跨屏幕。 */
 .deal-step-track {
   position: relative;
-  height: 14px;
-  border-radius: 999px;
-  background: rgba(17, 24, 39, .045);
-  box-shadow: inset 0 1px 2px rgba(17, 24, 39, .05);
+  height: 16px;
+  border-radius: 5px;
+  background: rgba(17, 24, 39, .05);
+  box-shadow: inset 0 1px 2px rgba(17, 24, 39, .045);
   overflow: hidden;
 }
 
 .deal-step-fill {
   display: block;
   height: 100%;
-  border-radius: 999px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .35);
+  border-radius: 5px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .28);
   transition: width .45s cubic-bezier(.22, .61, .36, 1);
 }
 
-.deal-step-fill-0 { background: linear-gradient(90deg, #C9DCFD, #AECBFB); }
-.deal-step-fill-1 { background: linear-gradient(90deg, #9BBCF9, #7FA8F3); }
-.deal-step-fill-2 { background: linear-gradient(90deg, #6B94EE, #4A78E3); }
-.deal-step-fill-3 { background: linear-gradient(90deg, #3F6FDC, #2653C7); }
+/* 同一色系四档透明度：越往下越实，读起来是"同一条路走到底"，
+   而不是四根不一样颜色的条 */
+.deal-step-fill-0 { background: color-mix(in srgb, var(--crm-primary) 30%, #fff); }
+.deal-step-fill-1 { background: color-mix(in srgb, var(--crm-primary) 50%, #fff); }
+.deal-step-fill-2 { background: color-mix(in srgb, var(--crm-primary) 72%, #fff); }
+.deal-step-fill-3 { background: var(--crm-primary); }
 
 .deal-step-count {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--crm-text-1);
   text-align: right;
@@ -4757,13 +4819,30 @@ table:not(.semi-table) td.cell-right {
   white-space: nowrap;
 }
 
-/* 100% 及以上的那格单独标一下：这不是"厉害"，是"这一段没人掉" */
+/* 100% 那格：不是"厉害"，是"这一段没人掉" */
 .deal-step-rate.is-full {
   color: var(--crm-success);
 }
 
+/* 落差：整块唯一的琥珀色。它回答的是"到底掉了多少"，比百分比更有信息量 */
+.deal-step-drop {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 620px);
+  column-gap: 14px;
+  margin-top: -1px;
+  padding-left: 1px;
+}
+
+.deal-step-drop span {
+  grid-column: 2;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--crm-warning);
+  letter-spacing: .2px;
+}
+
 .deal-steps-note {
-  margin: 15px 0 0;
+  margin: 16px 0 0;
   font-size: 12px;
   line-height: 1.8;
   color: var(--crm-text-3);
@@ -4781,12 +4860,17 @@ table:not(.semi-table) td.cell-right {
 
 @media (max-width: 720px) {
   .deal-step {
-    grid-template-columns: 72px minmax(0, 1fr) 66px;
+    grid-template-columns: 72px minmax(0, 1fr) 68px;
     column-gap: 10px;
   }
   .deal-step-rate {
     display: none;
   }
+  .deal-step-drop {
+    grid-template-columns: 72px minmax(0, 1fr);
+    column-gap: 10px;
+  }
+}
 }
 
 /* 分析页卡片头：标题一行、注释一行（原来是「标题（注释）」拼一起，

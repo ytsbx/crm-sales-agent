@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { Fragment, useMemo, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Banner, Button, Input, Modal, Select, Table, Toast } from '@douyinfe/semi-ui'
 
@@ -95,8 +95,10 @@ function Card({
          直接被截成「进行中商机的阶段分布（顺序即…」，连标题本身都读不全。
          改成标题一行、note 一行 11px 小灰字，标题始终完整。 */
       title={(
-        <span className="an-card-head">
-          <span className="card-title" title={title}>{title}</span>
+        <span style={{ display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0 }}>
+          <span className="card-title" title={title} style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {title}
+          </span>
           {note && <span className="an-card-note">{note}</span>}
         </span>
       )}
@@ -787,31 +789,56 @@ export default function AnalyticsPage() {
             <NoData />
           ) : (
             <>
+              <div className="deal-steps-body">
               <div className="deal-steps">
                 {dealSteps.steps.map((step, index) => {
                   const prev = index === 0 ? null : dealSteps.steps[index - 1].count
                   const rate = prev === null || prev === 0
                     ? null
                     : Math.round((step.count / prev) * 100)
+                  // 段与段之间"掉了多少单"才是漏斗真正的信息：光看 37% 不知道是
+                  // 掉了 50 个还是 5 个。这里显式写出来，缩进到下一段的条起点上。
+                  const drop = prev === null ? null : prev - step.count
                   return (
-                    <div className="deal-step" key={step.key}>
-                      <span className="deal-step-name">{step.name}</span>
-                      <span className="deal-step-track">
-                        <span
-                          className={`deal-step-fill deal-step-fill-${Math.min(index, 3)}`}
-                          style={{ width: `${Math.max(1.5, (step.count / dealSteps.max) * 100)}%` }}
-                        />
-                      </span>
-                      <span className="deal-step-count">
-                        {step.count}
-                        <i>单</i>
-                      </span>
-                      <span className={`deal-step-rate${rate !== null && rate >= 100 ? ' is-full' : ''}`}>
-                        {prev === null ? '起点' : rate === null ? '-' : `${rate}%`}
-                      </span>
-                    </div>
+                    <Fragment key={step.key}>
+                      {/* 落差写在**上一段之后、这一段之前**：78 → 29 少了 50 单，
+                          这句要落在 79 和 29 中间，放在 29 下面就变成"29 → 11 少了 50"。 */}
+                      {drop !== null && drop > 0 && (
+                        <div className="deal-step-drop">
+                          <span>↓ 少了 {drop} 单</span>
+                        </div>
+                      )}
+                      <div className="deal-step">
+                        <span className="deal-step-name">{step.name}</span>
+                        <span className="deal-step-track">
+                          <span
+                            className={`deal-step-fill deal-step-fill-${Math.min(index, 3)}`}
+                            style={{ width: `${Math.max(1.5, (step.count / dealSteps.max) * 100)}%` }}
+                          />
+                        </span>
+                        <span className="deal-step-count">
+                          {step.count}
+                          <i>单</i>
+                        </span>
+                        <span className={`deal-step-rate${rate !== null && rate >= 100 ? ' is-full' : ''}`}>
+                          {prev === null ? '起点' : rate === null ? '-' : `${rate}%`}
+                        </span>
+                      </div>
+                    </Fragment>
                   )
                 })}
+              </div>
+              {/* 右边这块是把"所以呢"直接给出来：79 个进来，最后 11 张订单。
+                  原来这一整条内容只占到卡片 3/4，右边留 240px 空白。 */}
+              <div className="deal-summary">
+                <span className="deal-summary-label">整体转化</span>
+                <span className="deal-summary-value">
+                  {Math.round((dealSteps.steps[dealSteps.steps.length - 1].count / Math.max(1, dealSteps.steps[0].count)) * 100)}<i>%</i>
+                </span>
+                <span className="deal-summary-foot">
+                  {dealSteps.steps[0].count} 个商机 → {dealSteps.steps[dealSteps.steps.length - 1].count} 张订单
+                </span>
+              </div>
               </div>
               <p className="deal-steps-note">
                 「有过报价」= 阶段记录里出现过报价的商机；「成交」= 已赢单；
