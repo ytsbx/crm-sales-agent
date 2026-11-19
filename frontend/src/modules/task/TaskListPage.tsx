@@ -320,27 +320,31 @@ export default function TaskListPage() {
               content="完成后任务会从未完成列表中移除。"
               onConfirm={() => completeMutation.mutate(record.id)}
             >
-              <a style={{ color: 'var(--crm-primary)' }}>完成</a>
+              {/* 一条任务只有一个"了结"的动作（完成），延期和转交只是把它推给别处，
+                  三个词原来一样重，看不出该点哪个。完成走主按钮，其余文字按钮。 */}
+              <Button theme="solid" type="primary" size="small">完成</Button>
             </Popconfirm>
-            <a
-              style={{ color: 'var(--crm-primary)' }}
+            <Button
+              theme="borderless"
+              size="small"
               onClick={() => {
                 setPostponeTarget(record)
                 setPostponeDue(null)
               }}
             >
               延期
-            </a>
+            </Button>
             {/* 转交（审查 B2-06）：接口与 api 函数一直有，此前没有页面入口 */}
-            <a
-              style={{ color: 'var(--crm-primary)' }}
+            <Button
+              theme="borderless"
+              size="small"
               onClick={() => {
                 setTransferTarget(record)
                 setTransferOwner(null)
               }}
             >
               转交
-            </a>
+            </Button>
           </div>
         ),
     },

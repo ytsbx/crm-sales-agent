@@ -466,24 +466,28 @@ export function PoolRecyclePanel() {
                     return <span style={{ color: 'var(--crm-text-3)' }}>已结案</span>
                   }
                   return (
-                    <span style={{ display: 'inline-flex', gap: 10 }}>
+                    <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+                      {/* 复核这条候选只有一个"放行"的主决定：到期了就批准回收（主按钮）；
+                          没到期只能走「提前回收」这个例外，它仍是放行方向，用普通文字按钮，
+                          红色留给真正的危险动作「驳回」。 */}
                       {isDue(r) ? (
-                        <a onClick={() => decide('approve', r)}>批准回收</a>
+                        <Button theme="solid" type="primary" size="small" onClick={() => decide('approve', r)}>
+                          批准回收
+                        </Button>
                       ) : (
-                        <a
-                          style={{ color: 'var(--crm-danger, #d45)' }}
+                        <Button
+                          theme="borderless"
+                          size="small"
+                          title="会让预告期 / 暂缓等待期失效"
                           onClick={() => decide('approve', r, { early: true })}
                         >
                           提前回收
-                        </a>
+                        </Button>
                       )}
-                      <a onClick={() => decide('defer', r)}>暂缓</a>
-                      <a
-                        style={{ color: 'var(--crm-danger, #d45)' }}
-                        onClick={() => decide('reject', r)}
-                      >
+                      <Button theme="borderless" size="small" onClick={() => decide('defer', r)}>暂缓</Button>
+                      <Button type="danger" theme="borderless" size="small" onClick={() => decide('reject', r)}>
                         驳回
-                      </a>
+                      </Button>
                     </span>
                   )
                 },
