@@ -24,7 +24,11 @@
 - 注释里的 `**` 是**正常的**（这个项目的注释大量用 `**强调**`），必须放过；
 - 字符串字面量里的 `**` **要报** —— 那种字符串基本都是文案
   （`placeholder="…"`、`Toast.success('…')`、`title={…}`）。
-  这个项目里没有哪处"字符串里含 `**` 是必要的"，所以不做例外清单。
+  ⚠️ 2026-11-19 判据精确化：只咬「前后都不是星的双星」（Markdown 加粗 `**文字**`
+  的形态）。连续 **3 个及以上星号是脱敏打码**（MaskedContact 的 138****3633 /
+  `***`，主人 2026-11-19「手机号默认不打开」那批），不是 Markdown ——
+  旧判据查任意 `**` 子串会把打码星号当加粗咬，故改为双星形态判断。
+  仍然**不做例外清单**：打码与加粗在形态上本就分得开。
 
 ⚠️ 顺带说明为什么不查 `.ts`：中文文案都在 `.tsx` 的 JSX 里，
 `.ts` 里出现的 `**` 基本都在注释中，扫它只会制造噪音。
@@ -32,8 +36,12 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
+
+#: Markdown 加粗的双星：前后都不是星（`**文字**`）。连续 3+ 星是脱敏打码，不算。
+MARKDOWN_BOLD = re.compile(r"(?<!\*)\*\*(?!\*)")
 
 REPO = Path(__file__).resolve().parent.parent
 SRC = REPO / 'frontend' / 'src'
@@ -99,7 +107,7 @@ def main() -> int:
         for lineno, (line, raw) in enumerate(
             zip(code.split('\n'), original.split('\n')), 1
         ):
-            if '**' in line:
+            if MARKDOWN_BOLD.search(line):
                 hits.append(f'{path.relative_to(REPO)}:{lineno}  {raw.strip()[:100]}')
 
     print(f'扫描 {scanned} 个 .tsx 文件')

@@ -89,6 +89,8 @@ EXEMPT: dict[str, str] = {
     "modules/sample/SampleDingTalkModal.tsx": "已提交后锁定（记录就列在弹窗里）或提交中的瞬时禁用；原来的灰按钮已改为可点+报错",
     # 任务列表：状态列与「（已选 N）」就在旁边
     "modules/task/TaskListPage.tsx": "状态列/已选计数就在控件旁",
+    # 公海回收（2026-11-19 从系统设置独立成页）：批量三钮空选禁用，同 TaskListPage 判例
+    "modules/recycle/PoolRecyclePage.tsx": "「已选 N 条」计数就在控件旁（同 TaskListPage 判例），空选禁用自解释",
     # 样品列表：勾选与数量框本身就是原因（本轮已按同一规则叙述）
     "modules/sample/SampleListPage.tsx": "禁用项旁边就是选择框/计数，且本轮已补空态说明",
     # 案例库：旁边有 FormLabel hint「可多选，选完点右侧「添加」」
