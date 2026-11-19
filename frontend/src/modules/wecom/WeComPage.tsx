@@ -2,7 +2,7 @@ import { formatBeijingTime, formatBeijingDate } from '../../shared/beijing-time'
 import { humanizeBackendText } from '../../shared/humanize-text'
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Banner, Button, Empty, Input, Modal, Popconfirm, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
+import { Banner, Button, Dropdown, Empty, Input, Modal, Popconfirm, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
 
 import { listUsers } from '../../shared/api/system'
 import KpiStrip from '../../shared/components/KpiStrip'
@@ -345,24 +345,54 @@ export default function WeComPage() {
         extra={
           canManage && (
             <>
+              {/* 主操作改实心（2026-11-19）：顶栏三件里它是"现在该做的"，
+                 实心蓝与详情页「记录跟进」同款；另两个保持白底描边，
+                 一眼就分得出主次，不用靠读字。 */}
               {can('customer:create') && can('customer:assign') && (
-                <Button type="primary" theme="outline" loading={importPreviewMutation.isPending}
+                <Button type="primary" theme="solid" loading={importPreviewMutation.isPending}
                   disabled={syncMutation.isPending || importCustomersMutation.isPending}
                   onClick={() => importPreviewMutation.mutate()}>导入客户中心</Button>
               )}
-              <Button onClick={() => setTransferVisible(true)}>离职继承</Button>
-              {/* 四颗按钮共用一个 mutation，所以不能都挂 syncMutation.isPending：
-                  那样点「同步部门」时四颗一起转圈，像四个任务同时开跑
-                  （主人 2026-11-18："点一个所有都转圈圈什么意思"）。
-                  只有 variables 等于自己 run 的那颗转圈；其余置灰防重复点。 */}
-              {SYNC_BUTTONS.map((item) => {
-                const running = syncMutation.isPending && syncMutation.variables === item.run
-                return (
-                  <Popconfirm key={item.key} title={`确认${item.label}？`} content="将读取企业微信数据并更新本地同步记录。" disabled={syncMutation.isPending} onConfirm={() => syncMutation.mutate(item.run)}>
-                    <Button loading={running} disabled={syncMutation.isPending && !running}>{item.label}</Button>
-                  </Popconfirm>
-                )
-              })}
+              <Button style={{ marginLeft: 8 }} onClick={() => setTransferVisible(true)}>离职继承</Button>
+              {/* 四个同步动作收进一个下拉（2026-11-19）。
+                 原来这里是六颗同款描边按钮排成一条：主操作「导入客户中心」
+                 和四个同步、一个离职继承长得一模一样，看不出该点哪个，
+                 整块顶栏读起来像一排工具栏（主人「企业微信这里有点丑」）。
+                 现在顶栏只剩三件东西：主操作 / 数据同步 / 离职继承，
+                 同步四个动作作为子项收进下拉，每个动作仍在、只是收了一级。
+
+                 下拉项里只有正在跑的那一条显示「同步中…」，其余禁用 ——
+                 沿用 2026-11-18 的处理：四颗共用一个 mutation，不能让它们
+                 一起转圈。原每颗按钮前的二次确认一并去掉：这一步只是
+                 读取企微数据、更新本地同步记录，不动业务数据，点一下即可。 */}
+              <Dropdown
+                trigger="click"
+                position="bottomRight"
+                clickToHide
+                render={
+                  <Dropdown.Menu>
+                    {SYNC_BUTTONS.map((item) => {
+                      const running = syncMutation.isPending && syncMutation.variables === item.run
+                      return (
+                        <Dropdown.Item key={item.key} disabled={syncMutation.isPending}>
+                          <div
+                            style={{ minWidth: 132, cursor: 'pointer' }}
+                            onClick={() => {
+                              if (!syncMutation.isPending) syncMutation.mutate(item.run)
+                            }}
+                          >
+                            {running ? `${item.label}（同步中…）` : item.label}
+                          </div>
+                        </Dropdown.Item>
+                      )
+                    })}
+                  </Dropdown.Menu>
+                }
+              >
+                <Button style={{ marginLeft: 8 }} loading={syncMutation.isPending}>
+                  数据同步 ▾
+                </Button>
+              </Dropdown>
             </>
           )
         }
