@@ -14,6 +14,7 @@ import {
   type LogisticsRouteRow,
 } from '../../shared/api/pricing'
 import PageHeader from '../../shared/components/PageHeader'
+import EmptyState from '../../shared/components/EmptyState'
 import SectionCard from '../../shared/components/SectionCard'
 import { optionMatcher } from '../../shared/components/optionMatch'
 
@@ -247,6 +248,9 @@ export default function LogisticsPage() {
               <div className="card-title">试算条件</div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 }}>
+                {/* 六个字段平铺时看不出"先填什么"，按试算的真实顺序分三段：
+                    算什么 → 从哪到哪 → 可选。 */}
+                <div className="calc-step">① 算什么、多少</div>
                 <div>
                   <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>SKU</div>
                   <Select
@@ -267,6 +271,7 @@ export default function LogisticsPage() {
                   <Input value={quantity} onChange={setQuantity} placeholder="1000" />
                 </div>
 
+                <div className="calc-step">② 从哪到哪</div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', gap: 12 }}>
                   <div>
                     <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>起运地</div>
@@ -292,6 +297,7 @@ export default function LogisticsPage() {
 
                 {overridesOpen && (
                   <>
+                    <div className="calc-step">③ 可选：影响计费重</div>
                     <div>
                       <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>包装方式</div>
                       <Input value={packageType} onChange={setPackageType} placeholder="仅作记录，如：纸箱" />
@@ -320,7 +326,7 @@ export default function LogisticsPage() {
                 </div>
 
                 <Button
-                  theme="outline"
+                  theme="solid"
                   type="primary"
                   block
                   loading={resultQuery.isFetching}
@@ -342,13 +348,11 @@ export default function LogisticsPage() {
                 // 原来是一行灰字缩在左上角，右边一大片空白，看着像页面没加载完。
                 // 居中安置，并且把「还要填数量」这半句补上 —— 原来只说"选择 SKU"，
                 // 可只选 SKU 点不动「试算」，用户会以为坏了。
-                <div style={{ padding: '90px 0', textAlign: 'center' }}>
-                  <div style={{ fontSize: 13, color: 'var(--crm-text-2)', marginBottom: 6 }}>
-                    还没有试算结果
-                  </div>
-                  <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                    选好 SKU 和数量，点「试算」后这里会显示计费重与各承运商方案
-                  </div>
+                <div style={{ padding: '56px 0' }}>
+                  <EmptyState
+                    title="还没有试算结果"
+                    hint="选好 SKU 和数量，点「试算」后这里会显示计费重与各承运商方案"
+                  />
                 </div>
               )}
 

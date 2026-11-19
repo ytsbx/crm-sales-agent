@@ -6305,3 +6305,27 @@ table:not(.semi-table) td.cell-right {
 .semi-table-tbody .semi-button.semi-button-borderless.semi-button-danger:hover {
   background: rgba(245, 63, 63, .08) !important;
 }
+/* 物流试算左卡的三段小标题：一小段蓝竖条 + 12.5px 灰字，
+   把"算什么 / 从哪到哪 / 可选"顺序立起来（原来六个字段平铺，看不出先后）。 */
+.calc-step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--crm-border, #f0f2f5);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--crm-text-2, #4e5969);
+}
+.calc-step::before {
+  content: '';
+  width: 3px;
+  height: 12px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #6b8cf7, #6b5ce7);
+}
+.calc-step:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
