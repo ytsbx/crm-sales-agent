@@ -18,7 +18,6 @@ import { usePermissions } from '../../shared/hooks/permissions'
 import { emptyNode } from '../../shared/components/EmptyState'
 import OpportunityBoard from './OpportunityBoard'
 import SectionCard from '../../shared/components/SectionCard'
-import FormLabel from '../../shared/components/FormLabel'
 import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
 import StatusDot from '../../shared/components/StatusDot'
 import { formatMoney, toTwoDecimals } from '../../shared/components/money'
@@ -376,7 +375,7 @@ export default function OpportunityListPage() {
             </div>
           </div>
         }
-        width={520}
+        width={600}
         visible={createVisible}
         onCancel={() => setCreateVisible(false)}
         onOk={() => {
@@ -393,66 +392,85 @@ export default function OpportunityListPage() {
         confirmLoading={createMutation.isPending}
         okText="创建"
       >
-        <div style={{ display: 'grid', gap: 16 }}>
-          <div className="form-block-title"><span>要什么</span></div>
-          <div>
-            <FormLabel required>客户</FormLabel>
-            <Select
-              placeholder="选择客户"
-              value={form.customer_id ?? undefined}
-              onChange={(value) => setForm({ ...form, customer_id: value as number })}
-              optionList={optionsWithCodeOnDuplicate(
-                customersQuery.data?.items ?? [],
-                (item) => item.name,
-                (item) => item.id,
-              )}
-              loading={customersQuery.isLoading}
-              filter={optionMatcher}
-              style={{ width: '100%' }}
-            />
+        <div className="form-rows">
+          <div className="form-block-title first"><span>商机信息</span></div>
+
+          <div className="form-row">
+            <label className="form-row-label">客户<span className="req">*</span></label>
+            <div className="form-row-control">
+              <Select
+                placeholder="选择客户"
+                value={form.customer_id ?? undefined}
+                onChange={(value) => setForm({ ...form, customer_id: value as number })}
+                optionList={optionsWithCodeOnDuplicate(
+                  customersQuery.data?.items ?? [],
+                  (item) => item.name,
+                  (item) => item.id,
+                )}
+                loading={customersQuery.isLoading}
+                filter={optionMatcher}
+                style={{ width: '100%' }}
+              />
+            </div>
           </div>
-          <div>
-            <FormLabel required>商机名称</FormLabel>
-            <Input
-              value={form.title}
-              onChange={(v) => setForm({ ...form, title: v })}
-              placeholder="例如：周转箱年度采购"
-            />
+
+          <div className="form-row">
+            <label className="form-row-label">商机名称<span className="req">*</span></label>
+            <div className="form-row-control">
+              <Input
+                value={form.title}
+                onChange={(v) => setForm({ ...form, title: v })}
+                placeholder="例如：周转箱年度采购"
+              />
+            </div>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-            <div>
-              <FormLabel>预计金额（元）</FormLabel>
+
+          <div className="form-row">
+            <label className="form-row-label">预计金额</label>
+            <div className="form-row-control">
               <Input
                 value={form.expected_amount}
                 onChange={(v) => setForm({ ...form, expected_amount: v })}
+                placeholder="元，例如 120000"
               />
             </div>
-            <div>
-              <FormLabel>预计成交日期</FormLabel>
+          </div>
+
+          <div className="form-row">
+            <label className="form-row-label">预计成交日</label>
+            <div className="form-row-control">
               <DatePicker
+                placeholder="不确定就空着"
                 value={form.expected_close_date ?? undefined}
                 onChange={(date) => setForm({ ...form, expected_close_date: (date as Date) ?? null })}
                 style={{ width: '100%' }}
               />
             </div>
           </div>
-          <div className="form-block-title"><span>怎么推</span></div>
-          <div>
-            <FormLabel>竞争对手</FormLabel>
-            <Input
-              value={form.competitor}
-              onChange={(v) => setForm({ ...form, competitor: v })}
-              placeholder="客户还在比的另一家；没有就空着"
-            />
+
+          <div className="form-block-title"><span>推进安排</span></div>
+
+          <div className="form-row">
+            <label className="form-row-label">竞争对手</label>
+            <div className="form-row-control">
+              <Input
+                value={form.competitor}
+                onChange={(v) => setForm({ ...form, competitor: v })}
+                placeholder="客户还在比的另一家；没有就空着"
+              />
+            </div>
           </div>
-          <div>
-            <FormLabel>下一步动作</FormLabel>
-            <TextArea
-              rows={2}
-              value={form.next_action}
-              onChange={(v) => setForm({ ...form, next_action: v })}
-              placeholder="例如：下周带样箱去客户仓库试装"
-            />
+
+          <div className="form-row is-textarea">
+            <label className="form-row-label">下一步</label>
+            <div className="form-row-control">
+              <TextArea
+                rows={2}
+                value={form.next_action}
+                onChange={(v) => setForm({ ...form, next_action: v })}
+                placeholder="例如：下周带样箱去客户仓库试装"
+              />
+            </div>
           </div>
         </div>
       </Modal>

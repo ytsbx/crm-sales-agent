@@ -27,7 +27,6 @@ import { useAuthStore } from '../../shared/store/auth'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { Customer } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
-import FormLabel from '../../shared/components/FormLabel'
 import BlockedHint, { useBlockedNotify } from '../../shared/components/BlockedHint'
 import GuardedButton from '../../shared/components/GuardedButton'
 import { getPersistedAuthToken } from '../../shared/auth-token'
@@ -1135,7 +1134,7 @@ export default function CustomerListPage() {
         }
         // 不写 width 时 Semi 用 448，表单挤成一条竖线、八个字段拉出一屏半高。
         visible={modalVisible}
-        width={520}
+        width={600}
         onCancel={() => setModalVisible(false)}
         onOk={() => {
           if (!form.name.trim()) {
@@ -1151,36 +1150,30 @@ export default function CustomerListPage() {
         okText="创建"
         cancelText="取消"
       >
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px 16px' }}>
-          <div className="form-block-title"><span>基础信息</span></div>
-          <div style={{ gridColumn: '1 / -1' }}>
-            <FormLabel required>客户名称</FormLabel>
-            <Input
-              value={form.name}
-              onChange={(value) => {
-                setForm({ ...form, name: value })
-                // 名称改了，旧的查重结果就失效了
-                if (dupMatches.length) setDupMatches([])
-              }}
-              onBlur={() => {
-                if (form.name.trim().length >= 2) dedupMutation.mutate()
-              }}
-              placeholder="公司全称，例如：宁波宏远包装制品有限公司"
-            />
+        <div className="form-rows">
+          <div className="form-block-title first"><span>基础信息</span></div>
+
+          <div className="form-row">
+            <label className="form-row-label">客户名称<span className="req">*</span></label>
+            <div className="form-row-control">
+              <Input
+                value={form.name}
+                onChange={(value) => {
+                  setForm({ ...form, name: value })
+                  // 名称改了，旧的查重结果就失效了
+                  if (dupMatches.length) setDupMatches([])
+                }}
+                onBlur={() => {
+                  if (form.name.trim().length >= 2) dedupMutation.mutate()
+                }}
+                placeholder="公司全称，例如：宁波宏远包装制品有限公司"
+              />
+            </div>
           </div>
 
           {/* PRD §6.3：新建时就提示疑似重复，而不是等导入时才拦 */}
           {dupMatches.length > 0 && (
-            <div
-              style={{
-                gridColumn: '1 / -1',
-                background: 'var(--crm-warning-soft)',
-                color: 'var(--crm-warning)',
-                padding: 10,
-                borderRadius: 8,
-                fontSize: 13,
-              }}
-            >
+            <div className="form-row-note">
               <div style={{ fontWeight: 600, marginBottom: 4 }}>
                 发现 {dupMatches.length} 个疑似重复客户
               </div>
@@ -1195,102 +1188,107 @@ export default function CustomerListPage() {
             </div>
           )}
 
-          <div>
-            <FormLabel>客户简称</FormLabel>
-            <Input
-              value={form.short_name ?? ''}
-              onChange={(value) => setForm({ ...form, short_name: value })}
-            />
-          </div>
-          <div>
-            <FormLabel>客户等级</FormLabel>
-            <Select
-              value={customerLevelValue(form.level)}
-              onChange={(value) => setForm({ ...form, level: customerLevelPayload(value) })}
-              optionList={LEVEL_OPTIONS}
-              style={{ width: '100%' }}
-            />
-          </div>
-          <div>
-            <FormLabel>省份 / 地区</FormLabel>
-            <Input
-              value={form.region ?? ''}
-              onChange={(value) => setForm({ ...form, region: value })}
-              placeholder="浙江"
-            />
-          </div>
-          <div>
-            <FormLabel>客户来源</FormLabel>
-            <Select
-              value={form.source ?? undefined}
-              onChange={(value) => setForm({ ...form, source: value as string })}
-              optionList={SOURCE_OPTIONS}
-              style={{ width: '100%' }}
-            />
-            {form.source === '其他' && (
+          <div className="form-row">
+            <label className="form-row-label">客户简称</label>
+            <div className="form-row-control">
               <Input
-                aria-label="其他客户来源"
-                value={otherSource}
-                onChange={setOtherSource}
-                maxLength={32}
-                placeholder="请输入具体来源，例如：抖音、小红书（最多32字）"
-                style={{ marginTop: 8 }}
+                value={form.short_name ?? ''}
+                onChange={(value) => setForm({ ...form, short_name: value })}
               />
-            )}
+            </div>
           </div>
-          <div style={{ gridColumn: '1 / -1' }}>
-            <FormLabel>详细地址</FormLabel>
-            <Input
-              value={form.address ?? ''}
-              onChange={(value) => setForm({ ...form, address: value })}
-            />
+
+          <div className="form-row">
+            <label className="form-row-label">客户等级</label>
+            <div className="form-row-control">
+              <Select
+                value={customerLevelValue(form.level)}
+                onChange={(value) => setForm({ ...form, level: customerLevelPayload(value) })}
+                optionList={LEVEL_OPTIONS}
+                style={{ width: '100%' }}
+              />
+            </div>
+          </div>
+
+          <div className="form-row">
+            <label className="form-row-label">省份 / 地区</label>
+            <div className="form-row-control">
+              <Input
+                value={form.region ?? ''}
+                onChange={(value) => setForm({ ...form, region: value })}
+                placeholder="浙江"
+              />
+            </div>
+          </div>
+
+          <div className="form-row">
+            <label className="form-row-label">客户来源</label>
+            <div className="form-row-control">
+              <Select
+                value={form.source ?? undefined}
+                onChange={(value) => setForm({ ...form, source: value as string })}
+                optionList={SOURCE_OPTIONS}
+                style={{ width: '100%' }}
+              />
+              {form.source === '其他' && (
+                <Input
+                  aria-label="其他客户来源"
+                  value={otherSource}
+                  onChange={setOtherSource}
+                  maxLength={32}
+                  placeholder="请输入具体来源，例如：抖音、小红书（最多32字）"
+                  style={{ marginTop: 8 }}
+                />
+              )}
+            </div>
+          </div>
+
+          <div className="form-row">
+            <label className="form-row-label">详细地址</label>
+            <div className="form-row-control">
+              <Input
+                value={form.address ?? ''}
+                onChange={(value) => setForm({ ...form, address: value })}
+                placeholder="省市区 + 街道门牌，收货地址以订单为准"
+              />
+            </div>
           </div>
 
           <div className="form-block-title"><span>归属</span></div>
-          {/* 归属：**可以指定**（主人 2026-10-13：「为啥只能谁创建谁是负责人，
-              不能指定吗，没有指定再是自己」）。后端一直支持（`CustomerCreate.owner_id`
-              + `create_customer` 里"为空才归创建人"），缺的只是这个入口 + 前端类型字段。
 
-              位置：**必须独立成一格、排在客户名称之后**。原来它被塞在
-              「客户名称」的标签与输入框之间，界面上就成了「客户名称*」→「负责人」
-              →一个没有标签的输入框，看着像客户名称没地方填（主人 2026-10-15 截图）；
-              错位是 `fd3eb24` 引入的。这一格原来还有 `marginTop: 12`，那是为了跟
-              上面的标签拉开距离用的；现在它是独立一格，网格的 `gap: 12` 已经负责间距，
-              再用就会变成 24、跟其它字段不一致。 */}
-          <div style={{ gridColumn: '1 / -1' }}>
-            <FormLabel hint="不选就归你自己，之后也能转移">负责人</FormLabel>
-            <UserSearchSelect
-              queryScope="customer-create"
-              enabled={modalVisible && can('customer:assign')}
-              className="owner-picker"
-              style={{ width: '100%' }}
-              placeholder="按姓名或登录账号搜索"
-              disabled={!can('customer:assign')}
-              value={form.owner_id ?? undefined}
-              onChange={(value) => setForm({ ...form, owner_id: value ?? null })}
-            />
-            {/* 这段原来是三行灰字（"不指定就归你；指定给别人时…放进公海请创建后用列表里的…"），
-                在 520 宽的弹窗里折成三行、把弹窗又撑高一大截。规则本身没变，
-                只是压成一行；细节（转移、放公海）列表页里都有入口。 */}
-            {/* 有权限时这句话跟标签后的 hint（"不选就归你自己，之后也能转移"）完全重复，
-                在 520 宽的弹窗里白占 24px 高度，去掉；没权限时的解释留着。 */}
-            {!can('customer:assign') && (
-              <div style={{ marginTop: 6, fontSize: 12, color: 'var(--crm-text-3)' }}>
-                没有分配权限时新客户归你；要指定别人请联系管理员。
-              </div>
-            )}
+          <div className="form-row">
+            <label className="form-row-label">负责人</label>
+            <div className="form-row-control">
+              <UserSearchSelect
+                queryScope="customer-create"
+                enabled={modalVisible && can('customer:assign')}
+                className="owner-picker"
+                style={{ width: '100%' }}
+                placeholder="按姓名或登录账号搜索，不选就归你自己"
+                disabled={!can('customer:assign')}
+                value={form.owner_id ?? undefined}
+                onChange={(value) => setForm({ ...form, owner_id: value ?? null })}
+              />
+              {!can('customer:assign') && (
+                <div className="form-row-hint">
+                  没有分配权限时新客户归你；要指定别人请联系管理员。
+                </div>
+              )}
+            </div>
           </div>
 
+          <div className="form-block-title"><span>补充说明</span></div>
 
-          <div className="form-block-title"><span>补充</span></div>
-          <div style={{ gridColumn: '1 / -1' }}>
-            <FormLabel>备注</FormLabel>
-            <TextArea
-              rows={2}
-              value={form.remark ?? ''}
-              onChange={(value) => setForm({ ...form, remark: value })}
-              placeholder="偏好、忌讳、结算习惯……"
-            />
+          <div className="form-row is-textarea">
+            <label className="form-row-label">备注</label>
+            <div className="form-row-control">
+              <TextArea
+                rows={2}
+                value={form.remark ?? ''}
+                onChange={(value) => setForm({ ...form, remark: value })}
+                placeholder="偏好、忌讳、结算习惯……"
+              />
+            </div>
           </div>
         </div>
       </Modal>
