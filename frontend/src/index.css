@@ -6100,3 +6100,56 @@ table:not(.semi-table) td.cell-right {
 .semi-popconfirm .semi-button {
   border-radius: 6px;
 }
+/* ─────────────── 表格：行的"存在感"与行内操作的主次（2026-11-19）───────────────
+   现状：鼠标扫过一行只有极淡的灰（#f5f7fa），选中行同色系、看不出选了谁；
+   行内操作是一排同款描边小按钮，四个动作长得一样，没有主次。 */
+/* 1) 悬停：淡主色底 + 左边缘 2px 主色指示条（整行的"我在哪"一眼可见） */
+.semi-table-tbody > .semi-table-row:hover > .semi-table-row-cell {
+  background: #f2f6ff;
+}
+.semi-table-tbody > .semi-table-row:hover > .semi-table-row-cell:first-child {
+  box-shadow: inset 2px 0 0 0 #2f6df6;
+}
+/* 2) 选中行：明确的一层蓝，和 hover 区分开 */
+.semi-table-tbody > .semi-table-row.semi-table-row-selected > .semi-table-row-cell,
+.semi-table-tbody > .semi-table-row.semi-table-row-selected:hover > .semi-table-row-cell {
+  background: #eaf1ff !important;
+}
+.semi-table-tbody > .semi-table-row.semi-table-row-selected > .semi-table-row-cell:first-child {
+  box-shadow: inset 2px 0 0 0 #2f6df6;
+}
+/* 3) 行内操作：描边小按钮 → 文字按钮（悬停才出浅底），一排动作不再像四个框 */
+.semi-table-tbody .semi-button {
+  border-radius: 6px;
+  font-size: 12.5px;
+  padding-left: 6px;
+  padding-right: 6px;
+  transition: background-color .14s ease, color .14s ease;
+}
+.semi-table-tbody .semi-button:not(.semi-button-primary):not(.semi-button-danger):not(.semi-button-warning) {
+  border-color: transparent !important;
+  background: transparent !important;
+  color: #2f6df6;
+}
+.semi-table-tbody .semi-button:not(.semi-button-primary):not(.semi-button-danger):hover {
+  background: rgba(47, 109, 246, .08) !important;
+}
+.semi-table-tbody .semi-button-danger {
+  border-color: transparent !important;
+  background: transparent !important;
+}
+.semi-table-tbody .semi-button-danger:hover {
+  background: rgba(245, 63, 63, .08) !important;
+}
+
+/* Toast：默认那版是一块直角黑边卡片，跟这套语言差得远 */
+.semi-toast-content {
+  border-radius: 10px;
+  box-shadow: 0 12px 32px -12px rgba(15, 23, 42, .3), 0 2px 6px rgba(15, 23, 42, .06);
+  padding: 10px 14px;
+  font-size: 13px;
+}
+/* 加载：Semi 的转圈默认是灰的，换成主色，和按钮/进度一致 */
+.semi-spin-children > .semi-spin {
+  color: #2f6df6;
+}
