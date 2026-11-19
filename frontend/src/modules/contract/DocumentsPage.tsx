@@ -473,7 +473,7 @@ export default function DocumentsPage() {
                 {
                   title: '客户',
                   dataIndex: 'customer_name',
-                  width: 140,
+                  width: 116,
                   // 140px 只放得下七八个字，「【全场景演示】华东复购采购客户」这
                   // 类名字照样截。改成最多两行：一行装不下的往下走，行的总高
                   // 只多一行，比整列显示成「【全场景演示】…」有用得多。
@@ -489,7 +489,8 @@ export default function DocumentsPage() {
               {
                 title: '状态',
                 dataIndex: 'status_label',
-                width: compact ? 96 : 100,
+                /* 88 会把「待签草稿」压成「待签草稿…」：四个字 ≈56 + 圆点 8 + 间距 6 + 内边距 24。 */
+                width: compact ? 96 : 96,
                 render: (v: string, record: ContractDocument) => (
                   <StatusDot label={v} tone={(STATUS_TONE[record.status] ?? 'grey') as TagTone} />
                 ),
@@ -498,7 +499,9 @@ export default function DocumentsPage() {
                 // 「依据」= 这份合同是照哪一版报价 / 哪张订单签的。
                 // 报价能出 V2/V3，不写清版本，台账上光看单号证明不了金额依据。
                 title: compact ? '依据' : '依据 / 来源',
-                width: compact ? 170 : 150,
+                /* 130：13 位的 SO202611180001（13px 约 101）+ 内边距 24 = 125，刚好放下；
+                   再宽就是白占，不够就是「Q202610120001 …」。 */
+                width: compact ? 170 : 134,
                 render: (_: unknown, record: ContractDocument) => {
                   const header = record.header_snapshot
                   const basis = record.quote_version_no
@@ -550,7 +553,9 @@ export default function DocumentsPage() {
                  还占着首屏最值钱的一段宽度。有一条带到期日就正常显示。 */
               ...(compact || !hasExpiry
                 ? []
-                : [{ title: '到期日', dataIndex: 'expiry_date', width: 92, render: (v: string | null) => v ?? '-' }]),
+                /* 92 时实测被压成「2027-0…」；和签署时间同一个日期格式，
+                   108 才是"不省略"的线。 */
+                : [{ title: '到期日', dataIndex: 'expiry_date', width: 108, render: (v: string | null) => v ?? '-' }]),
               // ⚠️ 原来是 `.slice(0, 10)`（UTC 取日）；签署时间是 UTC 瞬时，
               // 北京时间凌晨签的会显示成前一天。
               ...(compact
@@ -566,7 +571,8 @@ export default function DocumentsPage() {
                 // 从「到期日」和「操作」各让一点：到期日 90 够放 2026-11-16。
                 // 165 不变：加宽会把整张表撑出横向滚动条（2026-11-17 实拍到 200 就滚了）。
                 // 所以这里靠"每个词只占该占的字数"来省地方：下载、签署都是两个字的动作词。
-                width: compact ? 144 : 160,
+                /* 三个动作词（详情 / 下载 / 更多）实测 140，142 留一点余量。 */
+                width: compact ? 144 : 142,
                 // 这一列原来是 260 宽、还排在最后：整张表 1400、容器只有 1130，
                 // 结果「下载 / 详情 / 登记签署」全被推到屏幕外，必须横向拖才能点 ——
                 // 高频操作用户最不该找不着。固定在右侧，横滑时它始终在。
