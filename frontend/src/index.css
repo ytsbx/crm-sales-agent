@@ -4592,3 +4592,92 @@ table:not(.semi-table) td.cell-right {
   letter-spacing: 0;
   background: transparent;
 }
+
+
+/* ============================================================
+   填写说明弹窗（NotePromptModal）—— 替掉浏览器原生的 window.prompt
+   ------------------------------------------------------------
+   外壳直接复用确认弹窗那套（圆角 14、软阴影、头身脚三段的细线），
+   只补三样：头部图标的颜色变体、输入框的呼吸位、下方"必填/字数"那行小字。
+   ============================================================ */
+/* 普通填写用主色，不用确认弹窗那套琥珀 —— 琥珀在这套系统里是"有风险"的语义，
+   问一句原因不该带风险暗示。⚠️ 必须带 .note-prompt-modal 前缀：
+   不带的话会连 ConfirmRequiredModal 的琥珀头一起染蓝（2026-11-19 差点踩）。 */
+.note-prompt-modal .crm-confirm-icon:not(.is-warning):not(.is-danger) {
+  background: linear-gradient(180deg, #E8F0FE, #DBE8FD);
+  color: var(--crm-primary);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .9);
+}
+
+.note-prompt-body {
+  line-height: 1.6;
+}
+
+.note-prompt-field > label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--crm-text-2);
+  letter-spacing: .2px;
+}
+
+/* 默认 32px 高的一行输入框，在"填原因"这件事上太窄：写两句就看不见上下文。
+   96 是四行的高度，够写清"履约未完成，客户已确认下周付款"。 */
+.note-prompt-field .semi-textarea {
+  min-height: 96px !important;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.note-prompt-field .semi-textarea:focus-within {
+  box-shadow: 0 0 0 3px var(--crm-primary-soft);
+}
+
+/* 下面这行左边是"必填 / 选填 / 红字报错"，右边是字数 —— 两件事并排，
+   不再各自占一行把弹窗撑高。 */
+.note-prompt-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--crm-text-3);
+}
+
+.note-prompt-error {
+  color: var(--crm-error);
+  font-weight: 500;
+}
+
+/* 危险动作的确认键：浅红底 + 红字，不用实心大红块（一整块红在浅色页面里最刺眼） */
+.note-prompt-danger-btn.semi-button {
+  color: var(--crm-error);
+  background: rgba(220, 38, 38, .08);
+  border: 1px solid rgba(220, 38, 38, .24);
+}
+
+.note-prompt-danger-btn.semi-button:hover {
+  background: rgba(220, 38, 38, .14);
+}
+
+.note-prompt-modal .crm-confirm-icon.is-warning {
+  background: linear-gradient(180deg, #FEF3C7, #FDE68A);
+  color: #B45309;
+}
+
+.note-prompt-modal .crm-confirm-icon.is-danger {
+  background: linear-gradient(180deg, #FEE2E2, #FECACA);
+  color: #B91C1C;
+}
+
+/* 标题带客户名时可能很长（"暂缓「天津建材48厂【演示造数】」"）：
+   给它留出右上角那句说明的位置，超出就截断，别把"会记入审计记录"挤成两行。 */
+.note-prompt-modal .crm-confirm-title {
+  min-width: 0;
+  max-width: calc(100% - 132px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

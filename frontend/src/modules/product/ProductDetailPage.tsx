@@ -42,6 +42,7 @@ import {
 } from '../../shared/api/product'
 import { usePermissions } from '../../shared/hooks/permissions'
 import DetailHeader from '../../shared/components/DetailHeader'
+import { useNotePrompt } from '../../shared/components/NotePromptModal'
 import AttachmentPanel from '../common/AttachmentPanel'
 import ImageGallery from '../../shared/components/ImageGallery'
 import SkuImageCell from './SkuImageCell'
@@ -150,6 +151,9 @@ const FREIGHT_FIELD_NAMES: readonly string[] = [
 ]
 
 export default function ProductDetailPage() {
+  /* 三处原来都是 window.prompt（改来源编码、停用来源、填权威来源）：
+     浏览器原生弹窗没法做必填、也不能解释"改的是哪条来源"。 */
+  const notePrompt = useNotePrompt()
   const params = useParams()
   const navigate = useNavigate()
   const productId = Number(params.id)
@@ -308,11 +312,26 @@ export default function ProductDetailPage() {
     mutationFn: async ({ action, source }: { action: 'replay' | 'rename' | 'stop'; source: SkuIdentitySource }) => {
       if (action === 'replay') return replaySkuIdentity(source.id)
       if (action === 'rename') {
-        const next = window.prompt('请输入来源的新编码', source.external_code)?.trim()
+        const next = await notePrompt.ask({
+          title: '修改来源编码',
+          label: '新编码',
+          description: `改的是「${source.system_type}」这条台账的编码（当前：${source.external_code}），改完按新编码对齐主数据。`,
+          defaultValue: source.external_code,
+          required: true,
+          okText: '保存',
+        })
         if (!next) throw new Error('未填写新编码')
         return renameSkuIdentity(source.id, next)
       }
-      const note = window.prompt('确认停用此来源？填写停用说明（可选），取消则不执行。')
+      const note = await notePrompt.ask({
+        title: '停用这个编码来源',
+        label: '停用说明',
+        description: '停用后这条来源不再参与编码对齐，历史记录保留；之后想恢复要重新登记。',
+        placeholder: '例如：对方已更换编码规则，改用新供应商编码',
+        required: false,
+        tone: 'warning',
+        okText: '停用',
+      })
       if (note === null) return { cancelled: true } as const
       return stopSkuIdentity(source.id, note)
     },
@@ -442,9 +461,17 @@ export default function ProductDetailPage() {
             <Button
               size="small"
               theme="borderless"
-              onClick={() => {
-                const next = window.prompt('填写权威来源（留空表示未拍板）', record.authority ?? record.source_system ?? '')
-                if (next !== null) authorityMutation.mutate({ fieldName: record.field_name, authority: next.trim() || null })
+              onClick={async () => {
+                const next = await notePrompt.ask({
+                  title: '填写权威来源',
+                  label: '权威来源',
+                  description: '这个字段以谁的值为准（例如「供应商官网」「采购确认单」）；留空表示还没拍板。',
+                  defaultValue: record.authority ?? record.source_system ?? '',
+                  required: false,
+                  maxLength: 60,
+                  okText: '保存',
+                })
+                if (next !== null) authorityMutation.mutate({ fieldName: record.field_name, authority: next || null })
               }}
             >
               设置
@@ -675,6 +702,7 @@ export default function ProductDetailPage() {
 
   return (
     <div className="page-container">
+      {notePrompt.node}
       <DetailHeader
         title={product.name}
         tags={

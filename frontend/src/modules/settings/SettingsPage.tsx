@@ -28,6 +28,7 @@ import {
 import { createTag, deleteTag, listTags, updateTag, type TagRow } from '../../shared/api/customer'
 import { syncDingTalkUsers, type DingTalkSyncResult, type DingTalkUnmatched } from '../../shared/api/dingtalk'
 import MaskedContact from '../../shared/components/MaskedContact'
+import { useNotePrompt } from '../../shared/components/NotePromptModal'
 import PageHeader from '../../shared/components/PageHeader'
 import PermissionPicker from '../../shared/components/PermissionPicker'
 import {
@@ -83,6 +84,9 @@ function fmtDay(value: string | null | undefined): string {
 }
 
 export default function SettingsPage() {
+  /* 填原因的弹窗（2026-11-19）：原来这里三处都是 window.prompt，
+     浏览器原生灰框、顶着"127.0.0.1:5275 显示"，没法做必填和字数提示。 */
+  const notePrompt = useNotePrompt()
   // 支持深链：/settings?tab=rules
   const [searchParams, setSearchParams] = useSearchParams()
   const { isAdmin, can } = usePermissions()
@@ -446,7 +450,7 @@ export default function SettingsPage() {
   }
 
   /** 批准/驳回/暂缓。批准和暂缓可能要填说明（尤其"仍有保护但确需回收"时必须填）。 */
-  const decide = (
+  const decide = async (
     decision: 'approve' | 'reject' | 'defer',
     row: RecycleCandidateRow,
     options?: { early?: boolean },
@@ -466,28 +470,38 @@ export default function SettingsPage() {
       })
       return
     }
-    const note = window.prompt(
-      early
-        ? `提前回收会让预告/暂缓等待期失效（最早可回收时间 ${fmtDay(row.earliest_action_at)}）。`
-          + '请填写原因（会记入审计）：'
+    const note = await notePrompt.ask({
+      title: `${label}「${row.customer_name ?? `客户 ${row.customer_id}`}」`,
+      label: `${label}原因`,
+      // 说明只讲"为什么要问你这一句"，不重复标题里的动作名
+      description: early
+        ? `提前回收会让预告 / 暂缓等待期失效（最早可回收时间 ${fmtDay(row.earliest_action_at)}），所以需要你写清原因。`
         : decision === 'approve' && protected_
-          ? `该客户仍有履约事项（${(row.protection ?? []).join('；')}）。`
-            + '确需例外回收，请填写原因（会记入审计）：'
-          : `请填写${label}原因（会记入审计）：`,
-    )
+          ? `该客户仍有履约事项：${(row.protection ?? []).join('；')}。确需例外回收，请说明依据。`
+          : undefined,
+      placeholder: early
+        ? '例如：客户已确认终止合作，无需再等预告期'
+        : '例如：客户明确表示需要延长跟进周期',
+      required: true,
+      tone: early || (decision === 'approve' && protected_) ? 'warning' : 'normal',
+      okText: early ? '确认提前回收' : '确认',
+    })
     if (note === null) return
-    if (!note.trim()) {
-      Toast.error(`请填写${label}原因`)
-      return
-    }
-    decideMutation.mutate({ id: row.id, decision, note: note.trim(), early })
+    decideMutation.mutate({ id: row.id, decision, note, early })
   }
 
   /** 单条恢复：把已回收的客户还给原负责人（已被别人领走时会报冲突）。 */
-  const restore = (row: RecycleCandidateRow) => {
-    const note = window.prompt('恢复给原负责人，请填写原因（会记入审计）：', '')
+  const restore = async (row: RecycleCandidateRow) => {
+    const note = await notePrompt.ask({
+      title: `恢复「${row.customer_name ?? `客户 ${row.customer_id}`}」给原负责人`,
+      label: '恢复原因',
+      description: '客户会从公海回到原负责人名下，其他同事不再能领取。',
+      placeholder: '例如：客户回访后确认继续合作',
+      required: true,
+      okText: '确认恢复',
+    })
     if (note === null) return
-    restoreMutation.mutate({ id: row.id, note: note.trim() || undefined })
+    restoreMutation.mutate({ id: row.id, note: note || undefined })
   }
 
   const autoTaskMutation = useMutation({
@@ -967,6 +981,7 @@ export default function SettingsPage() {
 
   return (
     <div className="page-container">
+      {notePrompt.node}
       <PageHeader
         // 标题跟着**当前页签**走，不能一律写「系统设置」（返修单 R12 的口径）：
         // 主管只有公海回收复核权，他翻到那一页时标题必须写「公海回收复核」，
@@ -1361,8 +1376,16 @@ export default function SettingsPage() {
                           theme="borderless"
                           size="small"
                           loading={dictionaryUpdateMutation.isPending}
-                          onClick={() => {
-                            const label = window.prompt('修改显示名称', record.label)?.trim()
+                          onClick={async () => {
+                            const label = await notePrompt.ask({
+                              title: '修改显示名称',
+                              label: '显示名称',
+                              description: `改的是业务表单里看到的名字（当前：${record.label}），不影响编码。`,
+                              defaultValue: record.label,
+                              required: true,
+                              maxLength: 40,
+                              okText: '保存',
+                            })
                             if (label) dictionaryUpdateMutation.mutate({ id: record.id, changes: { label } })
                           }}
                         >

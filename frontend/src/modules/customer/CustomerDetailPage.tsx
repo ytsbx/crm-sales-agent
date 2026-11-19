@@ -41,6 +41,7 @@ import { useTabLabel } from '../../shared/hooks/useTabLabel'
 import { useAuthStore } from '../../shared/store/auth'
 import type { Contact } from '../../shared/types'
 import MaskedContact from '../../shared/components/MaskedContact'
+import { useNotePrompt } from '../../shared/components/NotePromptModal'
 import DetailHeader from '../../shared/components/DetailHeader'
 import SectionCard from '../../shared/components/SectionCard'
 import ContractDocsPanel from '../../shared/components/ContractDocsPanel'
@@ -107,6 +108,8 @@ export default function CustomerDetailPage() {
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
   }, [])
+  /* 公海「释放」被履约拦住时那次例外释放，原来用 window.prompt 追问原因 */
+  const notePrompt = useNotePrompt()
   const narrowScreen = viewportWidth < 1200
   const [contactModal, setContactModal] = useState(false)
   const [contactForm, setContactForm] = useState<Partial<Contact>>({ name: '', is_primary: false })
@@ -323,15 +326,21 @@ export default function CustomerDetailPage() {
       Toast.success(action === 'release' ? '已放入公海' : '领取成功')
       invalidateCustomer()
     },
-    onError: (error: Error, { action }) => {
+    onError: async (error: Error, { action }) => {
       // 还在履约中会被后端拦下（返工单 6.3）：提示里已经说清是哪张单拦住的。
       // 这里再加一步引导 —— 主管确需释放就填原因走例外，而不是让人卡住。
       if (action === 'release' && error.message.includes('履约中')) {
-        const reason = window.prompt(
-          `${error.message}\n\n确需例外释放请填写原因（会记入审计）：`,
-        )
-        if (reason && reason.trim()) {
-          poolMutation.mutate({ action: 'release', reason: reason.trim() })
+        const reason = await notePrompt.ask({
+          title: '例外释放这个客户',
+          description: error.message,
+          label: '释放原因',
+          placeholder: '例如：合同已终止，剩余应收改走线下结算',
+          required: true,
+          tone: 'warning',
+          okText: '确认释放',
+        })
+        if (reason) {
+          poolMutation.mutate({ action: 'release', reason })
           return
         }
         return
@@ -547,6 +556,7 @@ export default function CustomerDetailPage() {
 
   return (
     <div className="page-container">
+      {notePrompt.node}
       {/* 头部按设计稿排：标题 + 状态标签一行，关键信息行在标题下方左对齐，按钮贴右 */}
       <DetailHeader
         title={customer.name}
