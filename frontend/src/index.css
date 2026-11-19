@@ -4427,3 +4427,17 @@ table:not(.semi-table) td {
 .semi-table-thead .semi-table-row-head.cell-right {
   text-align: right !important;
 }
+
+/* 客户详情「跟进」tab：
+   1) 表格强制 fixed —— auto 布局下长文本会把列撑开（1440 实测 1221 > 1130、
+      1024 714 > 699），底部就多一条横向滚动条；
+   2) 窄屏隐藏「方式」「记录时约定」两列，五列才能落进 699。 */
+.followup-table table {
+  table-layout: fixed !important;
+}
+@media (max-width: 1199px) {
+  .followup-col-due,
+  .followup-col-minor {
+    display: none !important;
+  }
+}

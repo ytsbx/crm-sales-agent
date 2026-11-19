@@ -1,6 +1,6 @@
 import { formatBeijingTime } from '../../shared/beijing-time'
 import { UNRATED_OPTION, customerLevelValue, customerLevelPayload, customerLevelLabel } from '../../shared/customer-level'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Checkbox, Dropdown, Input, Modal, Popconfirm, Select, Table, Tabs, Tag, TextArea, Toast } from '@douyinfe/semi-ui'
@@ -97,6 +97,16 @@ export default function CustomerDetailPage() {
   const { can } = usePermissions()
   const currentUser = useAuthStore((state) => state.user)
   const [activeKey, setActiveKey] = useState(searchParams.get('tab') ?? 'overview')
+  // 跟进表是这套详情页里最宽的一张表：1440 卡内 1130 放得下，1024 卡内 699 放不下，
+  // 不做窄屏分档就会在 1024 弹横向滚动条（2026-11-19 实拍）。只做"读窗口宽度"。
+  const [viewportWidth, setViewportWidth] = useState(() => (typeof window === 'undefined' ? 1440 : window.innerWidth))
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const onResize = () => setViewportWidth(window.innerWidth)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+  const narrowScreen = viewportWidth < 1200
   const [contactModal, setContactModal] = useState(false)
   const [contactForm, setContactForm] = useState<Partial<Contact>>({ name: '', is_primary: false })
   /** 正在编辑的联系人；null = 新建。标题与提交目标都按它切换。 */
@@ -959,21 +969,59 @@ export default function CustomerDetailPage() {
                 <Button onClick={() => setFollowupVisible(true)}>记录跟进</Button>
               </div>
               <Table<FollowUp>
+                /* 这张表列多、每列内容又长：Semi 默认 table-layout:auto 会按内容撑开列宽，
+                   1440 实测 1221 > 卡内 1130、1024 714 > 699，都多出一条横向滚动条。
+                   .followup-table 强制 fixed（见 index.css），列宽才真的按写的值走。 */
+                className="followup-table"
                 columns={[
                   {
                     title: '跟进时间',
                     dataIndex: 'created_at',
-                    width: 180,
+                    width: narrowScreen ? 149 : 153,
                     render: (v: string) => formatBeijingTime(v),
                   },
-                  { title: '方式', dataIndex: 'followup_type', width: 100 },
-                  { title: '内容', dataIndex: 'content' },
-                  { title: '客户反馈', dataIndex: 'customer_feedback', render: (v: string | null) => v ?? '-' },
-                  { title: '下一步', dataIndex: 'next_action', render: (v: string | null, row: FollowUp) => v ?? (({ customer_declined: '客户明确拒绝', business_closed: '业务已关闭', waiting_external: '等待外部固定节点' } as Record<string, string>)[row.exemption_reason ?? ''] ?? '-') },
-                  { title: '记录时约定', dataIndex: 'task_due_at', width: 170, render: (v: string | null) => v ? formatBeijingTime(v) : '-' },
+                  {
+                    title: '方式',
+                    dataIndex: 'followup_type',
+                    width: 82,
+                    /* 窄屏整列隐藏（.followup-col-minor）：1024 五列才装得下，
+                       「方式」「记录时约定」是附加元信息，先让位。 */
+                    className: 'followup-col-minor',
+                    onHeaderCell: () => ({ className: 'followup-col-minor' }),
+                  },
+                  {
+                    title: '内容',
+                    dataIndex: 'content',
+                    width: narrowScreen ? 144 : 308,
+                    /* 只写 width 不够：auto 布局下长文本会把列撑开；
+                       单元格显式允许折行，窄屏列宽才守得住。 */
+                    onCell: () => ({ style: { whiteSpace: 'normal' as const, overflowWrap: 'anywhere' as const } }),
+                  },
+                  {
+                    title: '客户反馈',
+                    dataIndex: 'customer_feedback',
+                    width: narrowScreen ? 159 : 195,
+                    onCell: () => ({ style: { whiteSpace: 'normal' as const, overflowWrap: 'anywhere' as const } }),
+                    render: (v: string | null) => v ?? '-',
+                  },
+                  {
+                    title: '下一步',
+                    dataIndex: 'next_action',
+                    width: narrowScreen ? 115 : 154,
+                    onCell: () => ({ style: { whiteSpace: 'normal' as const, overflowWrap: 'anywhere' as const } }),
+                    render: (v: string | null, row: FollowUp) => v ?? (({ customer_declined: '客户明确拒绝', business_closed: '业务已关闭', waiting_external: '等待外部固定节点' } as Record<string, string>)[row.exemption_reason ?? ''] ?? '-'),
+                  },
+                  {
+                    title: '记录时约定',
+                    dataIndex: 'task_due_at',
+                    width: 154,
+                    className: 'followup-col-due',
+                    onHeaderCell: () => ({ className: 'followup-col-due' }),
+                    render: (v: string | null) => v ? formatBeijingTime(v) : '-',
+                  },
                   {
                     title: '附件',
-                    width: 90,
+                    width: 84,
                     render: (_: unknown, record: FollowUp) => (
                       <FollowUpAttachmentsButton followupId={record.id} />
                     ),
@@ -1015,6 +1063,7 @@ export default function CustomerDetailPage() {
                   title: '金额',
                   dataIndex: 'current_version_amount',
                   width: 140,
+                  className: 'cell-right',
                   render: (v: number | null, record: Quote) => formatMoney(record.current_version_amount_exact ?? v, record.currency),
                 },
                 { title: '状态', dataIndex: 'status_label', width: 110 },
@@ -1045,6 +1094,7 @@ export default function CustomerDetailPage() {
                   title: '订单金额',
                   dataIndex: 'total_amount',
                   width: 140,
+                  className: 'cell-right',
                   render: (v: number, record: Order) => formatMoney(record.total_amount_exact ?? v, record.currency),
                 },
                 {
