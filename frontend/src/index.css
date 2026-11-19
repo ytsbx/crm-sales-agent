@@ -4681,3 +4681,132 @@ table:not(.semi-table) td.cell-right {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ============================================================
+   商机转化台阶（分析页 05）
+   ------------------------------------------------------------
+   四段"包含关系"横条：累计创建 → 有过报价 → 成交 → 已转订单。
+   取代原来的漏斗图 —— 那个图形暗示"越往下越窄"，可数据是按
+   "阶段历史里出现过"算的，商机跳级时会倒挂（29 > 13）。
+   颜色用主色四档深浅（越往下越实），不做大红大绿。
+   ============================================================ */
+.deal-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+}
+
+.deal-step {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr) 78px 58px;
+  align-items: center;
+  column-gap: 14px;
+}
+
+.deal-step-name {
+  font-size: 12.5px;
+  color: var(--crm-text-2);
+  letter-spacing: .2px;
+  white-space: nowrap;
+}
+
+.deal-step-track {
+  position: relative;
+  height: 14px;
+  border-radius: 999px;
+  background: rgba(17, 24, 39, .045);
+  box-shadow: inset 0 1px 2px rgba(17, 24, 39, .05);
+  overflow: hidden;
+}
+
+.deal-step-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .35);
+  transition: width .45s cubic-bezier(.22, .61, .36, 1);
+}
+
+.deal-step-fill-0 { background: linear-gradient(90deg, #C9DCFD, #AECBFB); }
+.deal-step-fill-1 { background: linear-gradient(90deg, #9BBCF9, #7FA8F3); }
+.deal-step-fill-2 { background: linear-gradient(90deg, #6B94EE, #4A78E3); }
+.deal-step-fill-3 { background: linear-gradient(90deg, #3F6FDC, #2653C7); }
+
+.deal-step-count {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--crm-text-1);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.deal-step-count i {
+  margin-left: 2px;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 400;
+  color: var(--crm-text-3);
+}
+
+.deal-step-rate {
+  font-size: 11.5px;
+  color: var(--crm-text-3);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 100% 及以上的那格单独标一下：这不是"厉害"，是"这一段没人掉" */
+.deal-step-rate.is-full {
+  color: var(--crm-success);
+}
+
+.deal-steps-note {
+  margin: 15px 0 0;
+  font-size: 12px;
+  line-height: 1.8;
+  color: var(--crm-text-3);
+}
+
+.deal-steps-toggle {
+  margin-top: 4px;
+  margin-left: -6px;
+}
+
+/* 原始明细里"跳过上一级 N 单"：用琥珀而不是红，它不是错误 */
+.deal-skip {
+  color: var(--crm-warning);
+}
+
+@media (max-width: 720px) {
+  .deal-step {
+    grid-template-columns: 72px minmax(0, 1fr) 66px;
+    column-gap: 10px;
+  }
+  .deal-step-rate {
+    display: none;
+  }
+}
+
+/* 分析页卡片头：标题一行、注释一行（原来是「标题（注释）」拼一起，
+   四列布局卡宽 210 时整句被截，连标题都读不全） */
+.an-card-head {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.an-card-head .card-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.an-card-note {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--crm-text-3);
+  white-space: normal;
+}

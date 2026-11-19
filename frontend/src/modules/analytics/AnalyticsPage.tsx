@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Banner, Button, Input, Modal, Select, Table, Toast } from '@douyinfe/semi-ui'
 
@@ -18,7 +18,6 @@ import {
   comboBarLineOption,
   compactMoney,
   donutChartOption,
-  funnelChartOption,
   lineChartOption,
   plainNumber,
   rankBarChartOption,
@@ -52,6 +51,8 @@ import {
   type SalesUserStat,
 } from '../../shared/api/analytics'
 import { listDepartments, listUsers } from '../../shared/api/system'
+import { listOpportunities } from '../../shared/api/opportunity'
+import { listOrders } from '../../shared/api/order'
 import { usePermissions } from '../../shared/hooks/permissions'
 import { optionMatcher } from '../../shared/components/optionMatch'
 
@@ -90,7 +91,15 @@ function Card({
 }) {
   return (
     <SectionCard
-      title={note ? `${title}（${note}）` : title}
+      /* note 原来是括号拼在标题后面的：四列布局卡宽只有 210，标题缝上括号注释
+         直接被截成「进行中商机的阶段分布（顺序即…」，连标题本身都读不全。
+         改成标题一行、note 一行 11px 小灰字，标题始终完整。 */
+      title={(
+        <span className="an-card-head">
+          <span className="card-title" title={title}>{title}</span>
+          {note && <span className="an-card-note">{note}</span>}
+        </span>
+      )}
       extra={extra}
       style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
     >
@@ -209,6 +218,9 @@ export default function AnalyticsPage() {
     expected_updated_at?: string | null
     remark?: string | null
   }>({ visible: false })
+  /* 9 个阶段的原始明细默认收起：默认展示的是"包一层"的四段台阶，
+     跳级明细是给自己核对用的，不该占主视线。 */
+  const [showStageDetail, setShowStageDetail] = useState(false)
   const [targetForm, setTargetForm] = useState<{ user_id?: number | null; department_id?: number | null; period: string; new_customer_target: string; sales_target: string; repeat_customer_target: string }>({
     user_id: undefined,
     department_id: undefined,
@@ -219,6 +231,17 @@ export default function AnalyticsPage() {
   })
 
   const opportunityQuery = useQuery({ queryKey: ['an-opportunities'], queryFn: getOpportunityStats })
+  /* 台阶的第一段（累计创建）与最后一段（已转订单）analytics 接口没给，
+     用列表接口的 total 取：数据量小（几十到几百），一次拿全比让后端加字段快。 */
+  const createdTotalQuery = useQuery({
+    queryKey: ['an-created-total'],
+    queryFn: () => listOpportunities({ page: 1, page_size: 1 }),
+  })
+  const ordersAllQuery = useQuery({
+    queryKey: ['an-orders-all'],
+    // 后端 page_size 上限就是 200（传 500 直接 400），超出这个量就退回三段
+    queryFn: () => listOrders({ page: 1, page_size: 200 }),
+  })
   const quoteQuery = useQuery({ queryKey: ['an-quotes'], queryFn: getQuoteStats })
   const customerQuery = useQuery({ queryKey: ['an-customers'], queryFn: getCustomerStats })
   const productQuery = useQuery({ queryKey: ['an-products'], queryFn: getProductStats })
@@ -419,6 +442,34 @@ export default function AnalyticsPage() {
   }
 
   const opportunity = opportunityQuery.data
+
+  /* 「漂亮且递减」的四段台阶（2026-11-19）。
+     原来 05 卡画的是漏斗 + 「逐级递减」+ 印 223%，可数据是按"阶段历史里出现过"算的：
+     商机会跳级（16 单没走核价直接进已报价），所以越往后反而越大。
+     倒挂不是算错，是"顺序关系"套了个"漏斗形状"。
+
+     换成四段"包含关系"就不会再倒挂：后一段的人一定属于前一段的人。
+     这也正是老板要看的转化率：进来多少 → 报过价多少 → 成交多少 → 落单多少。 */
+  const dealSteps = useMemo(() => {
+    const created = createdTotalQuery.data?.total ?? 0
+    const quoted = (opportunity?.stage_conversion ?? [])
+      .filter((row) => row.stage_name.includes('报价'))
+      .reduce((max, row) => Math.max(max, row.reached_count), 0)
+    const won = opportunity?.won_count ?? 0
+    // 订单里带商机号 = 由商机转出来的单；列表超过 500 条时这个数不可信，干脆不显示
+    const orders = ordersAllQuery.data
+    const ordered = orders && orders.total <= orders.items.length
+      ? orders.items.filter((order) => order.opportunity_id).length
+      : null
+
+    const steps = [
+      { key: 'created', name: '累计创建', count: created },
+      { key: 'quoted', name: '有过报价', count: quoted },
+      { key: 'won', name: '成交', count: won },
+      ...(ordered === null ? [] : [{ key: 'ordered', name: '已转订单', count: ordered }]),
+    ]
+    return { steps, max: Math.max(0, ...steps.map((step) => step.count)) }
+  }, [opportunity, createdTotalQuery.data, ordersAllQuery.data])
   const quote = quoteQuery.data
   const customer = customerQuery.data
   const receivable = receivableQuery.data
@@ -725,53 +776,89 @@ export default function AnalyticsPage() {
         </Card>
       </Row>
 
-      {/* ── ④ 漏斗：只有"到达过"才是逐级减少，才配画成漏斗 ───────────────── */}
-      <GroupHead index="05" title="漏斗" note="累计到达过该阶段，逐级递减" />
+      {/* ── ④ 成交台阶：四段"包含关系"，天生只会变短，不再倒挂 ────────────── */}
+      <GroupHead index="05" title="从进来到成交" note="每段都是上一段的子集，所以只会变短" />
       <Row columns={1}>
-        <Card title="商机阶段转化" note="到达过该阶段的商机数（累计，逐级递减）">
-          {(opportunity?.stage_conversion ?? []).length === 0 ? (
+        <Card
+          title="商机转化台阶"
+          note="四段都是真发生过的商机：报过价的必然创建过，成交的必然报过价"
+        >
+          {dealSteps.max === 0 ? (
             <NoData />
           ) : (
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 360px), 1fr))',
-                gap: 16,
-                alignItems: 'start',
-              }}
-            >
-              <EChart
-                height={Math.max(240, (opportunity?.stage_conversion ?? []).length * 38)}
-                ariaLabel="商机阶段转化漏斗图"
-                option={funnelChartOption({
-                  data: (opportunity?.stage_conversion ?? []).map((row) => ({
-                    name: row.stage_name,
-                    value: row.reached_count,
-                  })),
-                  format: asCount('个'),
+            <>
+              <div className="deal-steps">
+                {dealSteps.steps.map((step, index) => {
+                  const prev = index === 0 ? null : dealSteps.steps[index - 1].count
+                  const rate = prev === null || prev === 0
+                    ? null
+                    : Math.round((step.count / prev) * 100)
+                  return (
+                    <div className="deal-step" key={step.key}>
+                      <span className="deal-step-name">{step.name}</span>
+                      <span className="deal-step-track">
+                        <span
+                          className={`deal-step-fill deal-step-fill-${Math.min(index, 3)}`}
+                          style={{ width: `${Math.max(1.5, (step.count / dealSteps.max) * 100)}%` }}
+                        />
+                      </span>
+                      <span className="deal-step-count">
+                        {step.count}
+                        <i>单</i>
+                      </span>
+                      <span className={`deal-step-rate${rate !== null && rate >= 100 ? ' is-full' : ''}`}>
+                        {prev === null ? '起点' : rate === null ? '-' : `${rate}%`}
+                      </span>
+                    </div>
+                  )
                 })}
-              />
-              <Table
-                size="small"
-                pagination={false}
-                rowKey="stage_id"
-                dataSource={opportunity?.stage_conversion ?? []}
-                columns={[
-                  { title: '阶段', dataIndex: 'stage_name', width: 130 },
-                  { title: '到达', dataIndex: 'reached_count', width: 80 },
-                  {
-                    title: '较上一阶段转化',
-                    dataIndex: 'conversion_from_previous',
-                    render: (v: number | null) =>
-                      v === null ? (
-                        <span style={{ color: 'var(--crm-text-3)' }}>-</span>
-                      ) : (
-                        `${(v * 100).toFixed(0)}%`
-                      ),
-                  },
-                ]}
-              />
-            </div>
+              </div>
+              <p className="deal-steps-note">
+                「有过报价」= 阶段记录里出现过报价的商机；「成交」= 已赢单；
+                「已转订单」= 订单里带着商机号的单子。
+                这条线只会往下走，跳级只会让某一格变小，不会让后一格变大。
+              </p>
+              <div className="deal-steps-toggle">
+                <Button
+                  theme="borderless"
+                  size="small"
+                  onClick={() => setShowStageDetail((open) => !open)}
+                >
+                  {showStageDetail ? '收起 9 个阶段的原始明细' : '展开 9 个阶段的原始明细（可跳级，不单调）'}
+                </Button>
+              </div>
+              {showStageDetail && (
+                <Table
+                  size="small"
+                  pagination={false}
+                  rowKey="stage_id"
+                  dataSource={opportunity?.stage_conversion ?? []}
+                  columns={[
+                    { title: '阶段', dataIndex: 'stage_name', width: 130 },
+                    { title: '到达过', dataIndex: 'reached_count', width: 90 },
+                    {
+                      title: '较上一阶段',
+                      dataIndex: 'conversion_from_previous',
+                      render: (value: number | null, _record, index) => {
+                        if (value === null) return <span className="muted">-</span>
+                        // >100% 不印百分比：那只会让人以为系统算崩了。
+                        // 真实含义是"有商机跳过了上一阶段"，直接把它写出来。
+                        if (value > 1) {
+                          const rows = opportunity?.stage_conversion ?? []
+                          const prevReached = rows[index - 1]?.reached_count ?? 0
+                          return (
+                            <span className="deal-skip">
+                              跳过上一级 {Math.max(0, _record.reached_count - prevReached)} 单
+                            </span>
+                          )
+                        }
+                        return `${(value * 100).toFixed(0)}%`
+                      },
+                    },
+                  ]}
+                />
+              )}
+            </>
           )}
         </Card>
       </Row>
