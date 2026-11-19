@@ -83,6 +83,233 @@ function fmtDay(value: string | null | undefined): string {
   return formatBeijingDateTime(value)
 }
 
+/**
+ * 系统配置「值」这一列的字段形态（2026-11-19）。
+ *
+ * 原来所有配置项共用同一个裸 Input：30 是什么？0.15 是 15% 还是 0.15%？
+ * CNY 该填什么？"未分级怎么处理"填 mode 还是中文？全靠猜。
+ * 表格里 13 行长得一模一样，也确实"草率"。
+ *
+ * 这里按 key 给每项定死：单位、输入类型、可选项。配置项增删时跟着改这张表。
+ */
+type SettingFieldMeta = {
+  /** 数字后面的单位：天 / 分 / 行 / kg/m³ */
+  unit?: string
+  /** percent：库里存的是小数（0.15），界面上写 15%，提交时换算回去 */
+  kind?: 'text' | 'number' | 'percent' | 'select' | 'multiline' | 'object'
+  options?: Array<{ value: string; label: string }>
+  placeholder?: string
+  /** 一句话交代"这个值怎么填"，挂在输入框下面 */
+  hint?: string
+}
+
+const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
+  company_name: { kind: 'text', placeholder: '例如：杭州天初科技有限公司' },
+  customer_active_days: { unit: '天' },
+  customer_stale_days: { unit: '天' },
+  opportunity_risk_days: { unit: '天' },
+  opportunity_stale_days: { unit: '天' },
+  quote_valid_days: { unit: '天' },
+  pool_recycle_defer_days: { unit: '天' },
+  pool_recycle_notice_days: { unit: '天' },
+  pool_recycle_max_protect_days: { unit: '天' },
+  default_min_margin: { kind: 'percent', hint: '填 15 表示最低毛利 15%' },
+  default_target_margin: { kind: 'percent', hint: '填 30 表示目标毛利 30%' },
+  price_range_ratio: { kind: 'percent', hint: '报价区间宽度，填 4 表示 ±4%' },
+  export_tax_refund_rate: { kind: 'percent', hint: '退税率，填 13 表示 13%' },
+  default_currency: {
+    kind: 'select',
+    options: [
+      { value: 'CNY', label: 'CNY 人民币' },
+      { value: 'USD', label: 'USD 美元' },
+      { value: 'EUR', label: 'EUR 欧元' },
+      { value: 'HKD', label: 'HKD 港币' },
+      { value: 'JPY', label: 'JPY 日元' },
+    ],
+  },
+  trade_mode: {
+    kind: 'select',
+    options: [
+      { value: 'domestic', label: '内销' },
+      { value: 'export', label: '外销' },
+    ],
+  },
+  hard_floor: {
+    kind: 'select',
+    options: [
+      { value: '', label: '跟随角色规则' },
+      { value: 'strict', label: '强制底价（低于底价直接拦）' },
+    ],
+  },
+  default_delivery_terms: { kind: 'multiline', placeholder: '新报价默认带上的交货与运费说明' },
+  default_payment_terms: { kind: 'text', placeholder: '例如：款到发货' },
+  pool_recycle_restore_permission: {
+    kind: 'text',
+    placeholder: 'customer:assign',
+    hint: '谁能把客户恢复给原负责人（权限码）',
+  },
+  logistics_volumetric_ratio: { unit: 'kg/m³', hint: '体积重换算系数，0 表示不折算' },
+  dedup_scoring: { unit: '分', hint: '命中阈值（权重在「客户查重规则」里配）' },
+  export: { unit: '行', hint: '单次导出上限；超阈值提醒在下面几项单独配' },
+  dingtalk_oa: { kind: 'object' },
+  dingtalk_sample_oa: { kind: 'object' },
+  dingtalk_contract_oa: { kind: 'object' },
+  notification_channels: { kind: 'object' },
+  notification_levels: { kind: 'object' },
+  notification_retry: { kind: 'object' },
+  approval_levels: { kind: 'object' },
+}
+
+/** 库里的小数比例 ↔ 界面上的整数百分比。0.15 → "15"，填 "15" → 0.15。 */
+function ratioToText(value: unknown): string {
+  const num = Number(value)
+  if (!Number.isFinite(num)) return ''
+  return String(Math.round(num * 1000) / 10)
+}
+
+type SettingSaveStatus = 'idle' | 'dirty' | 'saving' | 'saved' | 'error'
+
+/**
+ * 一个配置项的「值」：输入框 + 单位 + 保存状态。
+ *
+ * 三件事必须让用户看见：
+ * 1) 单位 —— 30 是 30 天，不是 30 个；
+ * 2) 未保存 / 已保存 —— 原来是"移开焦点就静默提交 + 全表弹一个 toast"，
+ *    改了哪一行、存没存上，心里没数；
+ * 3) 填错了 —— 数字项填了汉字当场标红，不要等提交回来才报错。
+ */
+function SettingValueField({
+  rowKey,
+  field,
+  value,
+  onSave,
+}: {
+  rowKey: string
+  field: string
+  value: unknown
+  onSave: (next: Record<string, unknown>) => Promise<unknown>
+}) {
+  const meta = SETTING_FIELD_META[rowKey] ?? {}
+  const kind = meta.kind ?? 'number'
+  const initial = kind === 'percent' ? ratioToText(value) : value === null || value === undefined ? '' : String(value)
+  const [text, setText] = useState(initial)
+  const [status, setStatus] = useState<SettingSaveStatus>('idle')
+
+  // 服务器回了新值（别处改的 / 保存成功）就同步回来；正在编辑或报错时不动，
+  // 免得把用户手上没提交的字冲掉。
+  useEffect(() => {
+    if (status === 'idle') setText(initial)
+  }, [initial, status])
+
+  const finish = (next: SettingSaveStatus) => {
+    setStatus(next)
+    if (next === 'saved') window.setTimeout(() => setStatus((current) => (current === 'saved' ? 'idle' : current)), 1400)
+  }
+
+  const commit = async (raw: string) => {
+    let parsed: unknown = raw
+    if (kind === 'percent') {
+      const num = Number(raw)
+      if (!Number.isFinite(num)) { finish('error'); return }
+      parsed = num / 100
+    } else if (kind === 'number') {
+      if (raw.trim() === '') { finish('error'); return }
+      const num = Number(raw)
+      if (!Number.isFinite(num)) { finish('error'); return }
+      parsed = num
+    }
+    const before = kind === 'percent' ? ratioToText(value) : String(value ?? '')
+    if (raw === before) { setStatus('idle'); return }
+    setStatus('saving')
+    try {
+      await onSave({ [field]: parsed })
+      finish('saved')
+    } catch {
+      finish('error')
+    }
+  }
+
+  if (kind === 'object') {
+    const count = Array.isArray(value) ? value.length : value && typeof value === 'object' ? Object.keys(value as object).length : 0
+    // "已配置 0 项"自相矛盾（同序 OA 这几项的字段映射就是空对象）：
+    // 0 就写"未配置"，并明确"在哪配"，别让人以为这行坏了。
+    if (count === 0) {
+      return (
+        <div className="setting-object-value">
+          <Tag color="orange" size="small">未配置</Tag>
+          <span>在下方对应区块填写后生效</span>
+        </div>
+      )
+    }
+    return (
+      <div className="setting-object-value">
+        <Tag color="blue" size="small">已配置</Tag>
+        <span>{count} 项</span>
+      </div>
+    )
+  }
+
+  if (kind === 'select') {
+    return (
+      <div className="setting-value-row">
+        <Select
+          style={{ width: '100%' }}
+          value={text}
+          onChange={(next) => {
+            setText(String(next ?? ''))
+            setStatus('saving')
+            void onSave({ [field]: next }).then(() => finish('saved')).catch(() => finish('error'))
+          }}
+          optionList={meta.options}
+        />
+      </div>
+    )
+  }
+
+  if (kind === 'multiline') {
+    return (
+      <div className="setting-value-stack">
+        <TextArea
+          autosize={{ minRows: 2, maxRows: 4 }}
+          value={text}
+          placeholder={meta.placeholder}
+          onChange={(next) => { setText(next); setStatus('dirty') }}
+          onBlur={() => void commit(text)}
+        />
+        <span className={`setting-save-state is-${status}`}>{SAVE_STATE_TEXT[status]}</span>
+      </div>
+    )
+  }
+
+  return (
+    <div className="setting-value-stack">
+      <div className="setting-value-row">
+        <Input
+          className={meta.unit || kind === 'number' || kind === 'percent' ? 'setting-value-input is-num' : 'setting-value-input'}
+          value={text}
+          placeholder={meta.placeholder}
+          suffix={meta.unit ?? (kind === 'percent' ? '%' : undefined)}
+          onChange={(next) => { setText(next); setStatus('dirty') }}
+          onBlur={() => void commit(text)}
+          onEnterPress={() => void commit(text)}
+        />
+        <span className={`setting-save-state is-${status}`}>
+          {status === 'error' ? '需填数字' : SAVE_STATE_TEXT[status]}
+        </span>
+      </div>
+      {meta.hint && status !== 'error' && <span className="setting-field-hint">{meta.hint}</span>}
+    </div>
+  )
+}
+
+const SAVE_STATE_TEXT: Record<SettingSaveStatus, string> = {
+  idle: '',
+  dirty: '未保存',
+  saving: '保存中',
+  saved: '已保存',
+  error: '填错了',
+}
+
 export default function SettingsPage() {
   /* 填原因的弹窗（2026-11-19）：原来这里三处都是 window.prompt，
      浏览器原生灰框、顶着"127.0.0.1:5275 显示"，没法做必填和字数提示。 */
@@ -293,10 +520,12 @@ export default function SettingsPage() {
   })
 
   const settingMutation = useMutation({
-    mutationFn: ({ key, value }: { key: string; value: Record<string, unknown> }) =>
+    mutationFn: ({ key, value }: { key: string; value: Record<string, unknown>; silent?: boolean }) =>
       saveSetting(key, value),
-    onSuccess: () => {
-      Toast.success('配置已保存')
+    onSuccess: (_data, variables) => {
+      // silent：系统配置表每一行都有自己的"已保存"提示，再弹一个全表 toast
+      // 就变成"改一项弹一次"，反而看不清是哪行存的。
+      if (!variables?.silent) Toast.success('配置已保存')
       refreshRules()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -344,29 +573,20 @@ export default function SettingsPage() {
         />
       )
     }
-    const first = Object.values(raw)[0]
-    const key = Object.keys(raw)[0] ?? 'text'
-    // 有些配置项的值不是标量而是对象（同序 OA 审批配置里 template_id / 字段映射装在
-    // 一层对象里），直接 String(它) 出来就是 `[object Object]` —— 既看不懂也改不了，
-    // 还占着一个输入框。这种就显示"已配置（N 项）"，并写明在哪改。
-    if (first !== null && typeof first === 'object') {
-      const count = Array.isArray(first) ? first.length : Object.keys(first as object).length
-      return (
-        <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-          已配置（{count} 项）
-        </span>
-      )
-    }
+    // 一条配置的值可能是个对象（threshold + 若干权重、limit + 提醒阈值、
+    // 同序 OA 的模板号 + 字段映射）。取第一个标量来就地编辑，其余交给
+    // 专门的区块（「客户查重规则」「同序 OA 审批配置」）；
+    // 整个都是对象的那几个（通知渠道 / 重试策略）则由组件渲染成"已配置 N 项"。
+    const scalarKey = Object.keys(raw).find((name) => {
+      const candidate = raw[name]
+      return candidate === null || candidate === undefined || typeof candidate !== 'object'
+    }) ?? Object.keys(raw)[0] ?? 'text'
     return (
-      <Input
-        defaultValue={first === undefined || first === null ? '' : String(first)}
-        // 宽度跟着列走，不写死 260：列宽 263 的时候 260 会把输入框顶出卡片右边。
-        style={{ width: '100%' }}
-        onBlur={(event) => {
-          const next = (event.target as HTMLInputElement).value
-          if (next === String(first ?? '')) return
-          settingMutation.mutate({ key: record.key, value: { [key]: next } })
-        }}
+      <SettingValueField
+        rowKey={record.key}
+        field={scalarKey}
+        value={raw[scalarKey]}
+        onSave={(next) => settingMutation.mutateAsync({ key: record.key, value: next, silent: true })}
       />
     )
   }
@@ -1993,19 +2213,29 @@ export default function SettingsPage() {
               <div className="rule-block">
                 <div className="rule-block-title">系统配置</div>
                 <Table<SystemSettingRow>
+                  className="settings-table"
                   columns={[
                     {
                       title: '配置项',
                       dataIndex: 'key',
-                      width: 240,
+                      width: 200,
                       // 只显示中文名。原来中文名下面还挂着一行灰色小字「内部标识：hard_floor」，
                       // 那是给排查问题/对文档用的开发术语，摆在每一行下面 99% 的时候是噪音。
                       // 主人 2026-10-14 决定删掉；要查标识看《09-业务参数配置说明》。
-                      render: (key: string) => <div style={{ fontWeight: 600 }}>{settingLabel(key)}</div>,
+                      render: (key: string) => <div className="setting-key-name">{settingLabel(key)}</div>,
+                    },
+                    {
+                      // 「值」**挪到第二列**（2026-11-19）：原来是「配置项 | 说明 | 值」，
+                      // 说明列 360 宽 + 表格摊列宽，把值一路顶到卡片最右边（1 公里外），
+                      // 改一项要横跨整个屏幕；而且说明有 40 字的长段落，占着中间最宽的位置。
+                      // 现在：配置项 200 | 值 340 | 说明 自适应，眼睛从名字往右扫一格就到值。
+                      title: '值',
+                      key: 'value',
+                      width: 340,
+                      render: (_: unknown, record: SystemSettingRow) => renderSettingValue(record),
                     },
                     {
                       title: '说明',
-                      width: 360,
                       render: (_: unknown, record: SystemSettingRow) => {
                         // 一批配置**默认就取最保守的值**（关着 / 0 / 留空），
                         // 因为底价口径、体积重系数、同序 OA 模板号这些属于业务口径，
@@ -2014,36 +2244,14 @@ export default function SettingsPage() {
                         // `setting-labels.ts` 的 SETTING_NOTES，只登记这类项）。
                         const note = settingNote(record.key)
                         return (
-                          // 必须显式打开换行：Semi 单元格默认 nowrap，"同序 OA 合同签署审批"
-                          // 那条说明有 40 多个字，不换行就把整列撑到 738px，
-                          // 第三列「值」直接被推到卡片外面看不见（2026-11-16 发现：
-                          // 系统配置表只剩两个表头，值根本改不了）。
-                          // textAlign: left —— 表格行内容全局居中，单行数字居中好看，
-                          // 但「说明」是多行段落，居中之后每行都从中间开始，
-                          // 读起来像一排标题（2026-11-16 截图里"只有客户起草的合同能发起。"
-                          // 就缩在中间一小条）。
-                          <div
-                            style={{
-                              whiteSpace: 'normal',
-                              wordBreak: 'break-word',
-                              overflowWrap: 'anywhere',
-                              textAlign: 'left',
-                              lineHeight: 1.6,
-                            }}
-                          >
+                          <div className="setting-desc">
                             <span>{settingDescription(record.key, record.description)}</span>
                             {note && (
-                              <div style={{ marginTop: 4 }}>
+                              <div style={{ marginTop: 6 }}>
                                 <Tag color="orange" size="small">
                                   {note.tag}
                                 </Tag>
-                                <span
-                                  style={{
-                                    color: 'var(--crm-text-2)',
-                                    fontSize: 12,
-                                    marginLeft: 6,
-                                  }}
-                                >
+                                <span style={{ color: 'var(--crm-text-2)', fontSize: 12, marginLeft: 6 }}>
                                   {note.text}
                                 </span>
                               </div>
@@ -2052,29 +2260,12 @@ export default function SettingsPage() {
                         )
                       },
                     },
-                    {
-                      title: '值',
-                      key: 'value',
-                      // 这一列原来只写 render、不写 key/width，Semi 摊列宽时把它压成了 0，
-                      // 界面上就只剩「配置项」「说明」两个表头，「值」整列消失（2026-11-16 发现）。
-                      // 300 才够放「曼德拉（示例，请替换为公司全称）」这类长值。
-                      width: 300,
-                      render: (_: unknown, record: SystemSettingRow) => renderSettingValue(record),
-                    },
                   ]}
                   // 「报价审批分级」在下面单独成块，不混进这张表 ——
                   // 它是多档编辑器（每档有上限输入框、角色多选、删除按钮），
-                  // 塞进「值」列的一个单元格里，整行会被撑到 180px，
-                  // 中间一大片空白，子表格还顶出 738px 的格子。
+                  // 塞进「值」列的一个单元格里，整行会被撑到 180px。
                   dataSource={(settingsQuery.data ?? []).filter((row) => row.key !== 'approval_levels')}
                   loading={settingsQuery.isLoading}
-                  // 用 key 而不是 id 当行标识（2026-10-06 修）：
-                  // `/settings` 返回的行里有一批是**代码内置默认项**，库里没有对应
-                  // 记录，id 是 null。Semi 对 null 的 rowKey 会**退回数组下标**，
-                  // 于是下标 2/10/11/13/14/15 跟同一张表里真实存在的 id 撞车，
-                  // 控制台刷 36 条 "two children with the same key"，
-                  // 界面上则可能认错行（保存后不刷新/串行）。配置项的 key 唯一且
-                  // 必填，保存接口本来就是按 key 走的，用它当行标识天然不会撞。
                   rowKey="key"
                   pagination={false}
                 />

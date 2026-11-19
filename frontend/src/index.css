@@ -4810,3 +4810,84 @@ table:not(.semi-table) td.cell-right {
   color: var(--crm-text-3);
   white-space: normal;
 }
+
+/* ============================================================
+   系统配置表（设置页 · 业务规则 · 系统配置）
+   ------------------------------------------------------------
+   原来 20 多项配置共用同一个裸输入框：30 是天？还是次？
+   0.15 是 15% 还是 0.15%？CNY 该填什么？全靠猜。
+   现在每项带单位、按类型用对控件，并且每行自己有保存状态。
+   ============================================================ */
+.setting-key-name {
+  text-align: left;
+  font-weight: 600;
+}
+
+.setting-desc {
+  text-align: left;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  line-height: 1.65;
+}
+
+.setting-value-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.setting-value-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.setting-value-row .setting-value-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* 天数 / 比例 / 分数：一列数字左对齐读不出量级，右对齐才像账 */
+.setting-value-input.is-num .semi-input {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 单位挂成输入框里的后缀（灰字），不额外占一列，也不会被误当成值的一部分 */
+.setting-value-input .semi-input-suffix {
+  color: var(--crm-text-3);
+  font-size: 12px;
+}
+
+.setting-save-state {
+  flex: 0 0 46px;
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: right;
+  white-space: nowrap;
+  color: transparent;
+  transition: color .2s ease;
+}
+
+.setting-save-state.is-dirty { color: var(--crm-warning); }
+.setting-save-state.is-saving { color: var(--crm-text-3); }
+.setting-save-state.is-saved { color: var(--crm-success); }
+.setting-save-state.is-error { color: var(--crm-error); }
+
+.setting-field-hint {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--crm-text-3);
+  text-align: left;
+}
+
+.setting-object-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--crm-text-3);
+}
