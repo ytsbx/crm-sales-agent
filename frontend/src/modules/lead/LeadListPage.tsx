@@ -330,9 +330,13 @@ export default function LeadListPage() {
                   lineHeight: 1.7,
                   whiteSpace: 'nowrap',
                 }
-              : { display: 'flex', gap: 12, flexWrap: 'nowrap', whiteSpace: 'nowrap', fontSize: 13 }
+              : { display: 'flex', gap: 4, flexWrap: 'nowrap', whiteSpace: 'nowrap', alignItems: 'center' }
           }
         >
+          {/* 五个动作原来一样重（全是主色小字），扫一行看不出该点哪个。
+              规则：一条线索当下只有一个"推进"动作 —— 还没人领就「领取」，
+              已经在你名下就「跟进」；分配 / 转客户 / 释放是旁支，走文字按钮；
+              「废弃」是终止动作，单独红色。 */}
           {!record.owner_id && (
             <Popconfirm
               title={`确认领取线索「${record.name}」？`}
@@ -340,48 +344,58 @@ export default function LeadListPage() {
               onConfirm={() => claimMutation.mutate(record.id)}
               disabled={claimMutation.isPending}
             >
-              <a style={{ color: 'var(--crm-primary)' }}>{claimMutation.isPending ? '领取中…' : '领取'}</a>
+              <Button theme="solid" type="primary" size="small">
+                {claimMutation.isPending ? '领取中…' : '领取'}
+              </Button>
             </Popconfirm>
           )}
-          <a style={{ color: 'var(--crm-primary)' }} onClick={() => setFollowupTarget(record)}>
+          <Button
+            theme={record.owner_id ? 'solid' : 'borderless'}
+            type={record.owner_id ? 'primary' : undefined}
+            size="small"
+            onClick={() => setFollowupTarget(record)}
+          >
             跟进
-          </a>
+          </Button>
           {can('lead:assign') && (
-            <a
-              style={{ color: 'var(--crm-primary)' }}
+            <Button
+              theme="borderless"
+              size="small"
               onClick={() => {
                 setAssignTarget(record)
                 setAssignTo(record.owner_id ?? null)
               }}
             >
               分配
-            </a>
+            </Button>
           )}
           {record.status !== 'converted' && can('lead:convert') && (
-            <a style={{ color: 'var(--crm-primary)' }} onClick={() => {
-              setOpportunityTitle('')
-              setExpectedAmount('')
-              setExpectedCloseDate(null)
-              setConvertTarget(record)
-            }}>
+            <Button
+              theme="borderless"
+              size="small"
+              onClick={() => {
+                setOpportunityTitle('')
+                setExpectedAmount('')
+                setExpectedCloseDate(null)
+                setConvertTarget(record)
+              }}
+            >
               转客户
-            </a>
+            </Button>
           )}
           {record.owner_id && can('lead:assign') && (
-            /* 释放会丢掉归属（线索回到池子里、别人可以领走），点一下生效太轻。
-               「领取」故意不加确认：抢线索本来就图快，加一步反而添麻烦
-               （主人 2026-10-06 定：只给会丢归属/不可逆的动作加确认）。 */
+            /* 释放会丢掉归属（线索回到池子里、别人可以领走），点一下生效太轻。 */
             <Popconfirm
               title="释放这条线索回线索池？"
               content="释放后你不再是负责人，其他人可以领取。"
               onConfirm={() => releaseMutation.mutate(record.id)}
             >
-              <a style={{ color: 'var(--crm-primary)' }}>释放</a>
+              <Button theme="borderless" size="small">释放</Button>
             </Popconfirm>
           )}
           {can('lead:assign') && (
             <Popconfirm title="确认废弃这条线索？" onConfirm={() => setDiscardTarget(record)}>
-              <a style={{ color: 'var(--crm-error)' }}>废弃</a>
+              <Button type="danger" theme="borderless" size="small">废弃</Button>
             </Popconfirm>
           )}
         </div>

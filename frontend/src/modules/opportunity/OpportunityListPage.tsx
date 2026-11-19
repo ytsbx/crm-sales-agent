@@ -125,6 +125,14 @@ export default function OpportunityListPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  /* 「金额 / 需求」和「成交日 / 风险」这两列，演示库里几乎每条都是空的（只画一条淡灰横线）。
+     460px 的宽度常年摆着一排横杠，把商机名和阶段挤窄。
+     和文档页的到期日一样处理：本次结果里一个值都没有就不出这一列，
+     有一条带值就照常显示 —— 不删信息，只删"一排空位"。（2026-11-19 巡检） */
+  const rows = (query.data?.items ?? []) as Opportunity[]
+  const hasAmountCol = rows.some((r) => Boolean(r.expected_amount) || Boolean(r.item_count))
+  const hasCloseCol = rows.some((r) => Boolean(r.expected_close_date) || Boolean(r.risk_level))
+
   const columns = [
     {
       title: '商机名称',
@@ -181,7 +189,7 @@ export default function OpportunityListPage() {
     // 演示库里这四列几乎全是 `-` 和 `0`，一行里四个空位并排 ——
     // 视觉噪音比信息多（2026-11-16 巡检）。两两并成一列：
     // 「有值就显示、没值就一条淡灰横线」，空的时候一行只剩一个占位符。
-    {
+    ...(hasAmountCol ? [{
       title: '金额 / 需求',
       width: compact ? 120 : 260,
       render: (_: unknown, record: Opportunity) => {
@@ -202,8 +210,8 @@ export default function OpportunityListPage() {
         const parts = [amount, items].filter(Boolean) as string[]
         return parts.length ? parts.join(' · ') : <EmptyMark />
       },
-    },
-    {
+    }] : []),
+    ...(hasCloseCol ? [{
       title: '成交日 / 风险',
       width: compact ? 116 : 200,
       render: (_: unknown, record: Opportunity) => {
@@ -221,7 +229,7 @@ export default function OpportunityListPage() {
         const parts = [date, risk].filter(Boolean) as string[]
         return parts.length ? parts.join(' · ') : <EmptyMark />
       },
-    },
+    }] : []),
     ...(compact
       ? []
       : [{ title: '负责人', dataIndex: 'owner_name', width: 100, render: (v: string | null) => v ?? <EmptyMark /> }]),
