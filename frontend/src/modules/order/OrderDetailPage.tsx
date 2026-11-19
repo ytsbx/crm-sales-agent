@@ -675,27 +675,29 @@ export default function OrderDetailPage() {
   // 一个**裸金额** —— 而列表页早就用 `formatMoney`（空币种会写「币种待核实」）。
   // 同一个数在两个页面口径不同，这里统一成 formatMoney。
   const itemColumns = [
-    { title: '产品名称 / 需求', dataIndex: 'sku_code', width: 180, render: (code: string | null, row: OrderItem) => <div>{row.sku_snapshot || code || row.inquiry_no_snapshot || '未命名产品'}<div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{row.sku_snapshot ? code || row.inquiry_no_snapshot : ''}</div></div> },
-    { title: '规格', dataIndex: 'specification', width: 200, render: (v: string | null) => v ?? '-' },
-    { title: '数量', dataIndex: 'quantity', width: 100, render: (v: number) => v.toLocaleString('zh-CN') },
+    /* 1024 下六列合计 787 > 卡内 699，订单明细一进来就顶出横向滚动条。
+       首列改成吃剩余宽度，其余列收窄；备注 116（120 时表宽 700，差 1px 也弹滚动条）。 */
+    { title: '产品名称 / 需求', dataIndex: 'sku_code', width: '100%', render: (code: string | null, row: OrderItem) => <div>{row.sku_snapshot || code || row.inquiry_no_snapshot || '未命名产品'}<div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{row.sku_snapshot ? code || row.inquiry_no_snapshot : ''}</div></div> },
+    { title: '规格', dataIndex: 'specification', width: 170, render: (v: string | null) => v ?? '-' },
+    { title: '数量', dataIndex: 'quantity', width: 64, render: (v: number) => v.toLocaleString('zh-CN') },
     // 单价走 formatUnitPrice：保真（最多 4 位）、最少两位、尾零去掉。
      // 曾经在这里截成两位，结果 33.3333 变成 33.33，"单价×数量" 和金额对不上，
      // CI 的 confirmation_browser_smoke 直接红了（2026-11-17）。
     {
       title: '单价',
       dataIndex: 'unit_price',
-      width: 110,
+      width: 104,
       className: 'cell-right',
       render: (v: number, row: OrderItem) => formatUnitPrice(row.unit_price_exact ?? v, order.currency),
     },
     {
       title: '金额',
       dataIndex: 'amount',
-      width: 140,
+      width: 124,
       className: 'cell-right',
       render: (v: number, row: OrderItem) => formatMoney(row.amount_exact ?? v, order.currency),
     },
-    { title: '备注', dataIndex: 'remark', render: (v: string | null) => v ?? '-' },
+    { title: '备注', dataIndex: 'remark', width: 116, render: (v: string | null) => v ?? '-' },
   ]
 
   // 应收计划属于「要跟财务对账」的单据数据 → 金额一律两位小数（主人 2026-11-17 口径）。

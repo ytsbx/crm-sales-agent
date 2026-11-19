@@ -849,14 +849,20 @@ export default function QuoteDetailPage() {
           {/* 规格并进这一格，不再单占一列：它和产品是「同一条东西」的两行字，
               分两列反而要多横着看一次（十二列挤在 1130 里就是这个代价）。 */}
           {(record.specification || (v && record.sku_name)) && (
-            <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+            /* 副行（规格 · 编码）在 1024 下会跟着名称一起折，把行高撑到五行：
+               143px 的首列放不下「来源未记录采购数量 - XQ202610120002」。
+               名称照旧折行（识别列不能只剩省略号），副行改为单行省略 + 悬停看全。 */
+            <div
+              title={[record.specification || '', v && record.sku_name ? v : ''].filter(Boolean).join(' · ')}
+              style={{ fontSize: 12, color: 'var(--crm-text-3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+            >
               {[record.specification || '', v && record.sku_name ? v : ''].filter(Boolean).join(' · ')}
             </div>
           )}
         </div>
       ),
     },
-    { title: '数量', dataIndex: 'quantity', width: 60, render: (v: number) => v.toLocaleString('zh-CN') },
+    { title: '数量', dataIndex: 'quantity', width: 52, render: (v: number) => v.toLocaleString('zh-CN') },
     {
       // 单价口径必须在列头写清"不含运费"：运费分离之后，客户与业务员都容易
       // 按含运费的旧口径理解，列头不写就会各理解一套。
