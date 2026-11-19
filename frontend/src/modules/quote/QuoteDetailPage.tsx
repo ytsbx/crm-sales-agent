@@ -1254,7 +1254,9 @@ export default function QuoteDetailPage() {
 
           const rendered: ReactElement[] = []
           const used = new Set<string>()
-          const take = (label: string): ReactElement | null => {
+          // solid=true 才给实心：这一阶段**唯一**的主推动作。其余一律无底文字按钮，
+          // 否则一排按钮全是实心块，等于没有主操作（新建版本/下载 PDF 就是踩过的坑）。
+          const take = (label: string, solid = false): ReactElement | null => {
             // `标记已发送` / `登记再次发送` 是同一个位置的两副文案：
             // 发送过就显示"登记再次发送"，否则"标记已发送"
             if (label === '登记再次发送' && !byLabel.has('登记再次发送')) return null
@@ -1264,7 +1266,17 @@ export default function QuoteDetailPage() {
             // ⚠️ 这些元素是**放进数组**渲染的，必须有 key ——
             // 少了它会报 "Each child in a list should have a unique key prop"，
             // CI 的 UI 冒烟把控制台报错当失败（我第一版就漏了）。
-            return cloneElement(item.element, { key: label })
+            // 主操作实心；危险动作保留红色、只去掉描边；其余统一成 type=tertiary
+            // （Semi 里 theme="borderless" 对 primary 型按钮仍带一层浅底，tertiary 才是纯文字）。
+            const isDanger = (item.element.props as { type?: string }).type === 'danger'
+            return cloneElement(
+              item.element as ReactElement<{ theme?: 'solid' | 'borderless'; type?: string }>,
+              solid
+                ? { key: label, theme: 'solid' }
+                : isDanger
+                  ? { key: label, theme: 'borderless' }
+                  : { key: label, type: 'tertiary' },
+            )
           }
 
           // ⚠️ 阶段由待办列表第一条决定。主数据/运费没确认时，第一条是"准备明细"
@@ -1280,7 +1292,7 @@ export default function QuoteDetailPage() {
               ? (primary.handler === 'markSent' && version.sent_at ? '登记再次发送' : primary.label)
               : null
           if (primaryLabel) {
-            const element = take(primaryLabel)
+            const element = take(primaryLabel, true)
             if (element) rendered.push(element)
           }
           for (const item of secondary) {
@@ -1318,7 +1330,10 @@ export default function QuoteDetailPage() {
           const hasMore = more.length > 0 || moreNotes.length > 0
 
           return (
-            <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <div
+              className="quote-actions"
+              style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}
+            >
               {rendered}
               {hasMore && (
                 <Dropdown

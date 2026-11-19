@@ -6187,3 +6187,33 @@ table:not(.semi-table) td.cell-right {
 .dh-actions .semi-button-danger:hover {
   background: rgba(245, 63, 63, .08) !important;
 }
+/* 报价详情页头部的动作排（.quote-actions）：这里本来就按 quoteActions() 分了
+   primary / secondary，但所有按钮都是描边款，分完还是"一排一样重的框"。
+   现在：primary 组用实心主色（这一阶段就该点的那一个），secondary 组收成文字按钮，
+   危险动作（客户拒绝）留红字。 */
+/* 只有实心款（.semi-button-solid）是主操作；Semi 的 Button 默认 type=primary，
+   早先按 type 判断会把「新建版本 / 下载 PDF」也刷成实心蓝块。 */
+.quote-actions .semi-button-solid {
+  background: #2f6df6 !important;
+  border-color: #2f6df6 !important;
+  color: #fff !important;
+  box-shadow: 0 6px 16px -8px rgba(47, 109, 246, .7);
+}
+.quote-actions .semi-button-solid:hover {
+  background: #2560e6 !important;
+  border-color: #2560e6 !important;
+}
+.quote-actions .semi-button:not(.semi-button-solid):not(.semi-button-danger) {
+  background: transparent !important;
+  border-color: transparent !important;
+  color: #2f6df6;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+.quote-actions .semi-button:not(.semi-button-solid):not(.semi-button-danger):hover {
+  background: rgba(47, 109, 246, .08) !important;
+}
+.quote-actions .semi-button-danger {
+  background: transparent !important;
+  border-color: transparent !important;
+}
