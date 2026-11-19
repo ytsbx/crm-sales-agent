@@ -4,7 +4,7 @@ import { calendarDay } from '../../shared/calendar-day'
 import PageHeader from '../../shared/components/PageHeader'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, DatePicker, Input, Modal, Select, Table, Toast } from '@douyinfe/semi-ui'
+import { Button, DatePicker, Input, Modal, Select, Table, TextArea, Toast } from '@douyinfe/semi-ui'
 
 import { listCustomers } from '../../shared/api/customer'
 import {
@@ -361,7 +361,12 @@ export default function OpportunityListPage() {
       </SectionCard>
 
       <Modal
-        title="新建商机"
+        title={
+          <div>
+            新建商机
+            <div className="modal-subtitle">客户和名称必填；金额、日期可以后补</div>
+          </div>
+        }
         width={520}
         visible={createVisible}
         onCancel={() => setCreateVisible(false)}
@@ -379,7 +384,8 @@ export default function OpportunityListPage() {
         confirmLoading={createMutation.isPending}
         okText="创建"
       >
-        <div style={{ display: 'grid', gap: 12 }}>
+        <div style={{ display: 'grid', gap: 16 }}>
+          <div className="form-block-title">要什么</div>
           <div>
             <FormLabel required>客户</FormLabel>
             <Select
@@ -404,16 +410,16 @@ export default function OpportunityListPage() {
               placeholder="例如：周转箱年度采购"
             />
           </div>
-          <div style={{ display: 'flex', gap: 12 }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>预计金额（元）</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+            <div>
+              <FormLabel>预计金额（元）</FormLabel>
               <Input
                 value={form.expected_amount}
                 onChange={(v) => setForm({ ...form, expected_amount: v })}
               />
             </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>预计成交日期</div>
+            <div>
+              <FormLabel>预计成交日期</FormLabel>
               <DatePicker
                 value={form.expected_close_date ?? undefined}
                 onChange={(date) => setForm({ ...form, expected_close_date: (date as Date) ?? null })}
@@ -421,13 +427,23 @@ export default function OpportunityListPage() {
               />
             </div>
           </div>
+          <div className="form-block-title">怎么推</div>
           <div>
-            <div style={{ marginBottom: 4 }}>竞争对手</div>
-            <Input value={form.competitor} onChange={(v) => setForm({ ...form, competitor: v })} />
+            <FormLabel>竞争对手</FormLabel>
+            <Input
+              value={form.competitor}
+              onChange={(v) => setForm({ ...form, competitor: v })}
+              placeholder="客户还在比的另一家；没有就空着"
+            />
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>下一步动作</div>
-            <Input value={form.next_action} onChange={(v) => setForm({ ...form, next_action: v })} />
+            <FormLabel>下一步动作</FormLabel>
+            <TextArea
+              rows={2}
+              value={form.next_action}
+              onChange={(v) => setForm({ ...form, next_action: v })}
+              placeholder="例如：下周带样箱去客户仓库试装"
+            />
           </div>
         </div>
       </Modal>

@@ -5790,3 +5790,29 @@ table:not(.semi-table) td.cell-right {
 .setting-readonly-value { font-size: 13px; color: var(--crm-text-2); line-height: 1.65; }
 /* 选项类末尾的「更多权限…」：虚线胶囊，跟「自定义…」同一套语言，不抢主选项的颜色 */
 .setting-option-chip.is-more { border-style: dashed; color: var(--crm-text-2); background: transparent; }
+/* 弹窗副标题：一句话交代"最少填什么"，放在标题下面、12px 灰（2026-11-19） */
+.modal-subtitle {
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--crm-text-3);
+  line-height: 1.5;
+}
+/* 表单分段标题：小字 + 一条淡线，把"基础信息 / 归属 / 补充"这些段落分开。
+   一堆字段平铺在 520 宽的弹窗里时，人看不出哪几项是一组。 */
+.form-block-title {
+  grid-column: 1 / -1;   /* 两列栅格的弹窗里也要占满一整行（否则那条淡线只画到一半） */
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--crm-text-3);
+  letter-spacing: .5px;
+  margin-top: 2px;
+}
+.form-block-title::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(17, 24, 39, 0.06);
+}
