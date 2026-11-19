@@ -43,6 +43,8 @@ export function PoolRecyclePanel() {
 
   // 1024 下六列排不开（会横向滚动），窄屏把「原负责人 / 最近有效联系 / 保护事项」
   // 三列收起来：复核时主要看客户、最早可回收、以及三个动作。
+  /* 规则说明默认收起（见下方注释） */
+  const [rulesOpen, setRulesOpen] = useState(false)
   const [narrowLayout, setNarrowLayout] = useState(
     () => typeof window !== 'undefined' && window.innerWidth <= 1280,
   )
@@ -199,13 +201,27 @@ export function PoolRecyclePanel() {
         <div>
           {/* 这段说明原来写在系统设置里，跟着搬过来：它讲的是"怎么干这个活"，
               不是"规则怎么配"。 */}
+          {/* 这段规则原来平铺三行、每天开场先占掉 60~70px，把真正要看的表格往下压。
+              规则是一次性看懂的，待办是每天都变的：默认只留一句「最常违反的那条」，
+              其余收进「规则说明」，点开才展开。（2026-11-19 巡检） */}
           <div
             style={{ color: 'var(--crm-text-2)', fontSize: 12, lineHeight: 1.65, marginBottom: 12 }}
           >
-            扫描只「提名」；批准后才真的回收，并且<b>必须等预告期/暂缓期满了</b>才能批
-            —— 没满要走「提前回收」这个例外动作，得填原因。
-            「驳回」不受等待期限制（表示不用回收了，随时可结案）。
-            客户手上还有在途订单、未结应收、有效正式报价或在途打样时，批准会被拦下。
+            扫描只提名，批准才真回收；未满等待期要走「提前回收」并填原因。
+            <a
+              role="button"
+              onClick={() => setRulesOpen((v) => !v)}
+              style={{ marginLeft: 6, color: 'var(--crm-primary)', cursor: 'pointer' }}
+            >
+              {rulesOpen ? '收起' : '规则说明'}
+            </a>
+            {rulesOpen && (
+              <div style={{ marginTop: 6, paddingLeft: 10, borderLeft: '2px solid var(--crm-surface-high)' }}>
+                · 批准前<b>必须等预告期 / 暂缓期满</b>；没满只能走「提前回收」（例外动作，要填原因）。<br />
+                · 「驳回」不受等待期限制 —— 表示不用回收了，随时可结案。<br />
+                · 客户手上还有在途订单、未结应收、有效正式报价或在途打样时，批准会被拦下。
+              </div>
+            )}
           </div>
           <Tabs
             type="button"

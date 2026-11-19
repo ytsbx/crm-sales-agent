@@ -150,14 +150,21 @@ export default function WorkbenchPage() {
     enabled: staleOpen,
   })
 
+  /* 「今日待办」原来取的是 summary.todo_count —— 那是**全团队** 11 个人的未完成待办
+     之和（实测 83），卡片却叫"今日待办"，看着像我一个人今天要干 83 件。
+     我自己其实只有 15 件（成员明细里那一行）。这里改成从成员明细里取"我"的那一行，
+     并改名叫「我的待办」；团队口径留在下面「团队概览 › 团队待办 83」，不再重复。
+     （2026-11-19 巡检，主人确认按这个改） */
+  const myRow = (team?.members ?? []).find((m) => m.user_id === user?.id)
+
   const cards: KpiItem[] = [
     {
-      label: '今日待办',
-      value: String(summary?.todo_count ?? '-'),
-      hint: `逾期 ${summary?.overdue_task_count ?? 0} 项`,
-      tone: (summary?.overdue_task_count ?? 0) > 0 ? 'error' : 'default',
-      onClick: () => navigate('/tasks?mine=false&status=active'),
-      href: '/tasks?mine=false&status=active&overdue=true',
+      label: '我的待办',
+      value: String(myRow?.todo_count ?? '-'),
+      hint: `逾期 ${myRow?.overdue_count ?? 0} 项`,
+      tone: (myRow?.overdue_count ?? 0) > 0 ? 'error' : 'default',
+      onClick: () => navigate('/tasks?mine=true&status=active'),
+      href: '/tasks?mine=true&status=active&overdue=true',
     },
     {
       label: '待跟进客户',
@@ -177,7 +184,9 @@ export default function WorkbenchPage() {
       onClick: () => navigate('/opportunities'),
     },
     {
-      label: '待审批报价',
+      // 名字从「待审批报价」改成「待我审批」：下面团队概览原来也有一张同名的 1，
+      // 两张卡摆在同一屏、数字一样，看着像重复计数。这里明确是"轮到我处理的"。
+      label: '待我审批',
       value: String(summary?.pending_approval_count ?? '-'),
       hint: '需要你处理',
       tone: (summary?.pending_approval_count ?? 0) > 0 ? 'warning' : 'default',
@@ -188,7 +197,7 @@ export default function WorkbenchPage() {
       // 统计卡金额走整数（主人 2026-11-17 拍板的口径）：概览大数字只用来看量级，
       // 加 .00 只会让六张卡显得啰嗦；带小数的账在单据页看。`money` 就是整数写法。
       value: money(summary?.month_won_amount),
-      hint: orderAmountBreakdown(summary),
+      hint: `订单签约额 · ${orderAmountBreakdown(summary)}`,
       tone: 'default',
       onClick: () => navigate('/orders'),
     },
@@ -299,7 +308,7 @@ export default function WorkbenchPage() {
           </div>
 
           <KpiStrip
-            className="kpi-grid kpi-cols-5"
+            className="kpi-grid kpi-cols-4"
             tintValues={false}
             items={[
               {
@@ -307,13 +316,6 @@ export default function WorkbenchPage() {
                 value: team.team_task_count ?? 0,
                 hint: `逾期 ${team.team_overdue_count ?? 0} 项`,
                 tone: (team.team_overdue_count ?? 0) > 0 ? 'error' : 'default',
-              },
-              {
-                label: '待审批报价',
-                value: team.pending_approval_count ?? 0,
-                hint: '需要你处理',
-                tone: (team.pending_approval_count ?? 0) > 0 ? 'warning' : 'default',
-                onClick: () => navigate('/approvals'),
               },
               {
                 label: '客户分配',
@@ -326,7 +328,7 @@ export default function WorkbenchPage() {
                 // 大数字给金额、小字给笔数：这张卡的名字是「成交」，一眼要能看出成交额；
                 // 原来大数字是笔数（10），旁边小字才是金额，读起来像「成交 10 元」。
                 value: money(team.team_won_amount_this_month),
-                hint: `${team.team_won_count_this_month ?? 0} 笔`,
+                hint: `商机成交额 · ${team.team_won_count_this_month ?? 0} 笔`,
               },
               {
                 label: '风险商机',
