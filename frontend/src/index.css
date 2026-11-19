@@ -6252,3 +6252,19 @@ table:not(.semi-table) td.cell-right {
 .semi-modal-footer .semi-button-primary.semi-button-solid {
   color: #2f6df6 !important;
 }
+/* type="tertiary" 的本质是"文字按钮"：Semi 默认再叠一层 theme=light，于是每个
+   文字按钮都带一块浅灰底（下载模板 / 导出 / 批量导入 三个看着像小卡片）。
+   全站抹掉这层底 —— 文字按钮就该只有字，悬停才浮一层浅主色。 */
+.semi-button-tertiary.semi-button-light,
+.semi-button-tertiary.semi-button-borderless {
+  background: transparent !important;
+  border-color: transparent !important;
+  color: var(--crm-primary) !important;
+  box-shadow: none !important;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+.semi-button-tertiary.semi-button-light:hover,
+.semi-button-tertiary.semi-button-borderless:hover {
+  background: rgba(47, 109, 246, .08) !important;
+}
