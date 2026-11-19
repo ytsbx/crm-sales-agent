@@ -1202,33 +1202,11 @@ export default function SettingsPage() {
         ),
     },
     { title: '手机', dataIndex: 'mobile', width: 120, render: (v: string | null) => <MaskedContact value={v} /> },
-    {
-      // 同步账号：有值才能用钉钉 / 企业微信登录。列上只显示"绑没绑"，
-      // 编号放进 title 里（管理员平时不需要看那串号，排查时鼠标一停就能看见）。
-      //
-      // 2026-11-19 主人问「怎么还有钉钉，还说已经绑定了」—— 查了接口：
-      // 演示库给 22 个用户全塞了 `demo-user-xxx` 这种占位编号（还有重复的，
-      // lisi 和 wangwu 都是 demo-user-zhou），于是这一列清一色"已绑定"。
-      // 占位值不是真绑定，不能这么报。现在把 `demo-` 开头的按"未接真实通讯录"显示。
-      title: '同步账号',
-      dataIndex: 'dingtalk_userid',
-      width: 96,
-      render: (v: string | null) => {
-        if (!v) return <StatusDot label="未绑定" tone="grey" />
-        if (v.startsWith('demo-')) {
-          return (
-            <span title={`演示数据占位编号 ${v}，接入真实钉钉通讯录后会被覆盖`}>
-              <StatusDot label="未绑定" tone="grey" />
-            </span>
-          )
-        }
-        return (
-          <span title={`钉钉 userid：${v}`}>
-            <StatusDot label="已绑定" tone="green" />
-          </span>
-        )
-      },
-    },
+    // 「同步账号」（旧「钉钉」）这一列摘掉了（2026-11-19）。
+    // 主人问「同步账号是什么意思，同序 oa 那个吗」—— 它不是同序 OA 的模板编号，
+    // 而是钉钉 / 企业微信里的 userid（决定这个人能不能扫码登录）。但这套登录
+    // 没启用，列里 11 个人清一色"未绑定"，占 96px 却没有任何可操作信息；
+    // 真要看谁没绑，「同步同序 OA 人员」那个弹窗已经把人名列出来了。
     {
       title: '状态',
       dataIndex: 'status',
@@ -2322,14 +2300,18 @@ export default function SettingsPage() {
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>手机</div>
+              <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>
+                手机<span style={{ color: 'var(--crm-text-4, #c9cdd4)' }}> · 选填</span>
+              </div>
               <Input
                 value={userForm.mobile}
                 onChange={(value) => setUserForm({ ...userForm, mobile: value })}
               />
             </div>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>邮箱</div>
+              <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>
+                邮箱<span style={{ color: 'var(--crm-text-4, #c9cdd4)' }}> · 选填</span>
+              </div>
               <Input
                 value={userForm.email}
                 onChange={(value) => setUserForm({ ...userForm, email: value })}
