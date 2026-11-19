@@ -3244,13 +3244,14 @@ table:not(.semi-table) td {
 .empty-state-icon {
   display: grid;
   place-items: center;
-  width: 56px;
-  height: 56px;
-  margin-bottom: var(--crm-space-2);
-  border-radius: 50%;
-  background: var(--crm-surface-low);
-  color: var(--crm-text-3);
+  width: 52px;
+  height: 52px;
+  margin-bottom: var(--crm-space-3);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(47, 109, 246, .14), rgba(107, 92, 231, .09));
+  color: #2f6df6;
   font-size: 24px;
+  box-shadow: inset 0 0 0 1px rgba(47, 109, 246, .12);
 }
 .empty-state-title {
   color: var(--crm-text);
@@ -6074,4 +6075,28 @@ table:not(.semi-table) td.cell-right {
 .semi-modal .form-card .semi-select:hover {
   background: #fff;
   border-color: rgba(47, 109, 246, .45);
+}
+
+/* 确认弹窗（Popconfirm）：全站几十处删除/停用确认都用它，原来是原生感很强的小白框 */
+.semi-popover-wrapper .semi-popover-content {
+  border-radius: 12px;
+  border: 1px solid rgba(17, 24, 39, .06);
+  box-shadow: 0 16px 40px -16px rgba(15, 23, 42, .32), 0 2px 6px rgba(15, 23, 42, .05);
+}
+.semi-popconfirm .semi-popconfirm-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--crm-text-1, #1d2129);
+  line-height: 1.5;
+  margin-bottom: 4px;
+}
+.semi-popconfirm .semi-popconfirm-inner {
+  padding: 14px 16px 12px;
+}
+.semi-popconfirm .semi-popconfirm-footer {
+  gap: 8px;
+  padding: 0 16px 14px;
+}
+.semi-popconfirm .semi-button {
+  border-radius: 6px;
 }
