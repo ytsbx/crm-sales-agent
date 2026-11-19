@@ -101,37 +101,85 @@ type SettingFieldMeta = {
  * 顺序也是信息：公司与单据 → 报价定价 → 客户节奏 → 公海 → 审批 → 通知导出。
  * 这里只放分组，字段形态仍在 SETTING_FIELD_META。
  */
-const SETTING_GROUPS: Array<{ title: string; note?: string; keys: string[] }> = [
+const SETTING_GROUPS: Array<{
+  id: string
+  title: string
+  note?: string
+  /** 每个业务域一个色相：只在标题前那 6px 圆点、和顶部药丸上用它，
+      整页还是白 + 发丝线 —— 有颜色，但不"花"。 */
+  color: string
+  keys: string[]
+}> = [
   {
+    id: 'company',
     title: '公司与单据',
+    color: '#2f6df6',
     note: '打印在报价单、合同上的信息，以及报价默认带上的条款',
     keys: ['company_name', 'default_currency', 'trade_mode', 'default_payment_terms', 'default_delivery_terms', 'quote_valid_days'],
   },
   {
+    id: 'pricing',
     title: '报价与定价',
+    color: '#6b5ce7',
     note: '核价时的默认口径；绝对底价是最后一道闸',
     keys: ['default_min_margin', 'default_target_margin', 'price_range_ratio', 'hard_floor', 'export_tax_refund_rate'],
   },
   {
+    id: 'customer',
     title: '客户与商机节奏',
+    color: '#12b5a0',
     note: '多少天没动静算沉睡 / 停滞，查重多少分算重复',
     keys: ['customer_active_days', 'customer_stale_days', 'dedup_scoring', 'opportunity_risk_days', 'opportunity_stale_days'],
   },
   {
+    id: 'poolcfg',
     title: '公海回收参数',
+    color: '#ff7d00',
     note: '判定逻辑在上方的「公海回收规则」，这里只放天数与恢复权限',
     keys: ['pool_recycle_notice_days', 'pool_recycle_defer_days', 'pool_recycle_max_protect_days','pool_recycle_restore_permission'],
   },
   {
+    id: 'approval',
     title: '审批与外部系统',
+    color: '#8f5cf7',
     note: '同序 OA 的模板与字段映射；未配置时不会发出审批，报价审批分级在下方单独编辑',
     keys: ['dingtalk_oa', 'dingtalk_contract_oa', 'dingtalk_sample_oa'],
   },
   {
+    id: 'notify',
     title: '通知与导出',
+    color: '#00b42a',
     note: '导出上限、体积重折算、通知渠道与重试',
     keys: ['export', 'logistics_volumetric_ratio', 'notification_channels', 'notification_levels', 'notification_retry'],
   },
+]
+
+/**
+ * 「业务规则」页顶部的药丸切换（2026-11-19）。
+ *
+ * 这一页原来是把九块内容从下往上摞：公海回收规则 → 回收节奏 → 指路条 →
+ * 自动任务 → 系统配置六组，一屏滚到底、白卡接白卡。主人说"布局设计质感都不行"。
+ * 现在每次只显示一块：先选"改哪件事"，再改。
+ *
+ * 药丸上的那一点颜色就是该组的色相（和组标题前的圆点同一个色），
+ * 选中时用该色 8% 的淡底 —— 有颜色，但整页仍是白底。
+ */
+/** 药丸上用的短名：长名会让九个药丸挤成两行，第二行只剩一个孤零零的。 */
+const GROUP_TAB_LABEL: Record<string, string> = {
+  customer: '商机节奏',
+  approval: '审批与外部',
+  poolcfg: '公海参数',
+}
+
+const RULE_PANELS: Array<{ key: string; label: string; color: string }> = [
+  { key: 'unrated', label: '未分级客户', color: '#86909c' },
+  { key: 'pool', label: '公海回收', color: '#ff7d00' },
+  { key: 'auto', label: '自动任务', color: '#2f6df6' },
+  ...SETTING_GROUPS.map((g) => ({
+    key: `g-${g.id}`,
+    label: GROUP_TAB_LABEL[g.id] ?? g.title,
+    color: g.color,
+  })),
 ]
 
 const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
@@ -385,6 +433,8 @@ export default function SettingsPage() {
   // 关键字分成两个状态：`userKeywordInput` 是输入框里的字、`userKeyword`
   // 是**已经提交给服务端**的那个（回车或点「查询」才更新）—— 否则每敲一个字
   // 就发一次请求，人还没打完列表已经翻腾好几轮了。
+  // 「业务规则」页当前显示哪一块（药丸切换）
+  const [panelKey, setPanelKey] = useState('pool')
   const [userKeywordInput, setUserKeywordInput] = useState('')
   const [userKeyword, setUserKeyword] = useState('')
   const [userStatus, setUserStatus] = useState<string>('')
@@ -1103,7 +1153,9 @@ export default function SettingsPage() {
             : '改自己的登录名和密码，看自己的资料与权限'
         }
       />
-      <SectionCard>
+      {/* rules 页一次只显示一块：内容短的那几组撑不满整屏，
+          卡再被 flex 拉满，下半截就是一大片白 —— 交给页面底色更自然。 */}
+      <SectionCard className={activeKey === 'rules' ? 'auto-height' : undefined}>
         <div className="settings-shell">
           <nav className="settings-nav" aria-label="设置分类">
             {tabGroups.map((group) => (
@@ -1534,15 +1586,38 @@ export default function SettingsPage() {
             // 必须写 gridTemplateColumns: 'minmax(0, 1fr)'：单列 grid 的默认列宽是 auto，
             // 会被子项的最小宽度撑开 —— 实测被撑到 1320（容器只有 923），
             // 于是整页出现横向滚动条、右边第三列输入框被裁到框外。
-            <div style={{ display: 'grid', gap: 20, gridTemplateColumns: 'minmax(0, 1fr)' }}>
-              {isAdmin && <UnratedRulesPanel />}
+            <>
+            {isAdmin && (
+              <div className="rule-tabs" role="tablist">
+                {RULE_PANELS.map((panel) => (
+                  <button
+                    key={panel.key}
+                    type="button"
+                    role="tab"
+                    aria-selected={panelKey === panel.key}
+                    className={`rule-tab${panelKey === panel.key ? ' is-on' : ''}`}
+                    style={{ '--tab-c': panel.color } as CSSProperties}
+                    onClick={() => setPanelKey(panel.key)}
+                  >
+                    <i className="rule-tab-dot" />
+                    {panel.label}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div style={{ display: 'grid', gap: 16, gridTemplateColumns: 'minmax(0, 1fr)' }}>
+              {isAdmin && (
+                <div className={panelKey === 'unrated' ? undefined : 'panel-hidden'}>
+                  <UnratedRulesPanel />
+                </div>
+              )}
               {/* ⚠️ 下面这三块（公海回收规则 / 自动任务规则 / 系统配置）都是**管理员**的活儿：
                   改规则、调参数、跑扫描，后端一律要 `settings:manage`。
                   主管只有 `customer:pool_review`，看到这些控件也点不动（会吃 403），
                   所以对非管理员**整块不渲染** —— 返修单 R12 要求"主管只进入本团队
                   复核功能"，露着不能用的按钮比藏起来更糟。 */}
               {isAdmin && (
-              <div className="rule-block">
+              <div className={`rule-block${panelKey === 'pool' ? '' : ' panel-hidden'}`}>
                 <div className="rule-block-title">公海回收规则</div>
                 {/* 说明收成两行 + 「展开」：这四句话合起来二十多行灰字，把下面那张表
                     压到屏幕外去了。默认两行够看明白"这规则干嘛的"，要抠细节再展开
@@ -1615,7 +1690,7 @@ export default function SettingsPage() {
               )}
 
               {isAdmin && (
-                <div className="rule-block">
+                <div className={`rule-block${panelKey === 'pool' ? '' : ' panel-hidden'}`}>
                   <div className="rule-block-title">回收节奏与恢复权限</div>
                   {/* 原来用 Typography ellipsis 折叠两行 —— 这段里带 <b>，
                       折叠模式把元素串成 [object Object] 显示出来（1024 下亲眼看到）。
@@ -1719,13 +1794,13 @@ export default function SettingsPage() {
 
               {/* 复核已经搬成独立页（/pool-recycle）。这里只留一句指路：
                   规则页改的是"多少天算冷落、保护多久"，批不批是另一件事。 */}
-              <div className="rule-block-hint">
+              <div className={`rule-block-hint${panelKey === 'pool' ? '' : ' panel-hidden'}`}>
                 <span>候选的复核在「客户中心 → 回收复核」页签里处理，这里只改规则。</span>
                 <a onClick={() => navigate('/customers')}>去客户中心 →</a>
               </div>
 
               {isAdmin && (
-              <div className="rule-block">
+              <div className={`rule-block${panelKey === 'auto' ? '' : ' panel-hidden'}`}>
                 <div className="rule-block-title">自动任务规则</div>
                 <Table<TaskRuleRow>
                   columns={[
@@ -1788,8 +1863,9 @@ export default function SettingsPage() {
               {isAdmin && (
               // is-plain：这一块不再套白卡 —— 六个分组本身就是卡片，
               // 卡中卡（白底套白底、只靠一条描边区分）正是"廉价感"的来源。
-              <div className="rule-block is-plain">
-                <div className="rule-block-title">系统配置</div>
+              /* 总标题去掉：一次只显示一个组，组自己就有组头，
+                 上面再压一个「系统配置」等于同一句话说两遍。 */
+              <div className={`rule-block is-plain${panelKey.startsWith('g-') ? '' : ' panel-hidden'}`}>
                 {/* 分组卡片（2026-11-19）：29 项铺一张表 → 按业务域分六组、
                     每组一张卡，组内是「名称 | 控件 | 一句话说明」的表单行，
                     控件宽度封顶 240，不再横跨整行。 */}
@@ -1800,7 +1876,11 @@ export default function SettingsPage() {
                       .filter((row): row is SystemSettingRow => Boolean(row))
                     if (!rows.length) return null
                     return (
-                      <section className="settings-group" key={group.title}>
+                      <section
+                        className={`settings-group${panelKey === `g-${group.id}` ? '' : ' panel-hidden'}`}
+                        key={group.title}
+                        style={{ '--group-color': group.color } as CSSProperties}
+                      >
                         <header className="settings-group-head">
                           <span className="settings-group-title">{group.title}</span>
                           {group.note && <span className="settings-group-note">{group.note}</span>}
@@ -1842,6 +1922,7 @@ export default function SettingsPage() {
                   if (!approvalRow || !Array.isArray(levels)) return null
                   return (
                     <div
+                      className={panelKey === 'g-approval' ? undefined : 'panel-hidden'}
                       style={{
                         marginTop: 24,
                         paddingTop: 20,
@@ -1868,6 +1949,7 @@ export default function SettingsPage() {
               </div>
               )}
             </div>
+            </>
           )}
           </div>
         </div>

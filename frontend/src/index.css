@@ -4930,6 +4930,62 @@ table:not(.semi-table) td.cell-right {
   margin-top: 2px;
 }
 
+/* 药丸切换（业务规则页顶部）：
+   一页九块从下往上摞是"堆料"，不是设计。改成先选"改哪件事"，再改。
+   药丸上那一点色 = 该组的色相，选中时只铺 8% 的淡底 —— 有颜色但不花。 */
+.rule-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.rule-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(17, 24, 39, .08);
+  background: #fff;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--crm-text-2);
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease, color .15s ease;
+}
+
+.rule-tab:hover {
+  border-color: color-mix(in srgb, var(--tab-c) 32%, #fff);
+  color: var(--crm-text-1);
+}
+
+.rule-tab.is-on {
+  background: color-mix(in srgb, var(--tab-c) 9%, #fff);
+  border-color: color-mix(in srgb, var(--tab-c) 34%, #fff);
+  color: var(--crm-text-1);
+  font-weight: 600;
+}
+
+.rule-tab-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tab-c);
+  opacity: .85;
+  flex: 0 0 auto;
+}
+
+.rule-tab.is-on .rule-tab-dot {
+  opacity: 1;
+}
+
+/* 一次只显示一块：用 class 控制而不是条件渲染 ——
+   六组配置共用一个 map，条件渲染得改它的结构，隐藏只会多一行 CSS。 */
+.panel-hidden {
+  display: none;
+}
+
 .rule-block.is-plain {
   background: transparent;
   border: 0;
@@ -4989,8 +5045,8 @@ table:not(.semi-table) td.cell-right {
   height: 6px;
   margin-top: -3px;
   border-radius: 50%;
-  background: var(--crm-primary);
-  opacity: .85;
+  background: var(--group-color, var(--crm-primary));
+  opacity: .9;
 }
 
 .settings-group-note {
@@ -5122,9 +5178,17 @@ table:not(.semi-table) td.cell-right {
     grid-column: 2;
   }
 
+  /* 1024 下三列会把说明列压到 ~150px，中文变成三四字一行的窄条 ——
+     说明改到控件下面，只留「名字 | 控件」两列。 */
   .setting-field {
-    grid-template-columns: 104px minmax(0, 200px) minmax(0, 1fr);
+    grid-template-columns: 104px minmax(0, 1fr);
+    row-gap: 3px;
     column-gap: 14px;
+    align-items: start;
+  }
+
+  .setting-field-desc {
+    grid-column: 2;
   }
 }
 
