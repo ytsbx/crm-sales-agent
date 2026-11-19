@@ -352,7 +352,9 @@ try {
   assert.deepEqual(batchBodies[0].task_ids,[7])
   console.log('BROWSER_BATCH_CANCEL_NO_WRITE_CONFIRM_EXACT_IDS=true')
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/leads`})
-  const claimLead=`Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes('线索乙'))?.querySelector('a')`
+  // 28b76571 把线索行动作全换成 Button（领取=主按钮）——同任务「完成」的
+  // 口径：验确认纪律不验元素形态，a/button 兼收。
+  const claimLead=`Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes('线索乙'))?.querySelector('a, button')`
   await waitFor(claimLead)
   await evaluate(`${claimLead}.click()`)
   await waitFor(`document.body.innerText.includes('确认领取线索「线索乙」')`)
@@ -458,15 +460,23 @@ try {
     const trigger=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim().startsWith('数据同步'))`
     await waitFor(trigger)
     const menuOpen=`Array.from(document.querySelectorAll('.semi-dropdown-item div')).some(d=>d.innerText.trim()==='同步部门')`
-    // 关闭动画期间菜单 DOM 还在，单次采样会把「正在关」当成「开着」（偶发
-    // 超时的真凶）；而点触发器是 toggle，开着点一下反而关上。所以不猜状态：
-    // 每轮点一下就查，最长试 6 轮——开着（且空闲标签）就返回，toggle 总会
-    // 在两轮内走到「开」。同步未落定时项标签带「（同步中…）」，精确匹配不
-    // 会误收，等它落定自然就中了。
+    // 关闭动画（约 200ms）期间菜单 DOM 还在——单次探测把「正在关」当成
+    // 「开着」，紧接着查菜单项就扑空（undefined.click）。所以判定「开着」
+    // 必须双读确认：隔 350ms 读两次都还在才算真开。点触发器是 toggle
+    // （开着点一下反而关），每轮点一下就查、最长 6 轮，toggle 总会走到开。
+    // 同步未落定时项标签带「（同步中…）」，精确匹配不会误收。
+    const settledOpen=async()=>{
+      if(!await evaluate(`Boolean(${menuOpen})`))return false
+      await sleep(350)
+      return await evaluate(`Boolean(${menuOpen})`)
+    }
     for(let attempt=0;attempt<6;attempt+=1){
-      if(await evaluate(`Boolean(${menuOpen})`))return
+      if(await settledOpen())return
       await evaluate(`${trigger}.click()`)
-      for(let i=0;i<15;i+=1){if(await evaluate(`Boolean(${menuOpen})`))return;await sleep(100)}
+      for(let i=0;i<15;i+=1){
+        if(await evaluate(`Boolean(${menuOpen})`)){if(await settledOpen())return;break}
+        await sleep(100)
+      }
     }
     await waitFor(menuOpen)
   }

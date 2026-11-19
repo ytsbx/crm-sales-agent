@@ -1174,7 +1174,7 @@ async function main() {
   if (!skuId) setupProblems.push('没有可用于核价/物流验收的 SKU')
   if (!orderId) setupProblems.push('没有可用于订单详情验收的订单')
   const PAGES = [
-    { path: '/workbench', name: '01-workbench', expectText: '今日待办' },
+    { path: '/workbench', name: '01-workbench', expectText: '我的待办' },
     { path: '/analytics', name: '02-analytics', expectText: '数据分析' },
     { path: '/leads', name: '03-leads', expectText: '线索中心' },
     { path: '/customers', name: '04-customers', expectText: '客户中心' },
