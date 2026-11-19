@@ -5449,3 +5449,71 @@ table:not(.semi-table) td.cell-right {
   .approval-level > .approval-cell:nth-of-type(2) { grid-area: amount; }
   .approval-level > .approval-cell:nth-of-type(3) { grid-area: role; }
 }
+/* ============================================================
+   同序 OA 模板编号：从"只读状态"变成能改（2026-11-19）
+   原来这里只有一个 Tag + "在下方对应区块填写后生效"，而
+   那个区块根本不存在 —— 主人：显示在一起有什么意义。
+   ============================================================ */
+.setting-code-field { display: flex; flex-direction: column; gap: 6px; }
+
+.setting-object-value .setting-code-brief {
+  font-size: 11.5px;
+  color: var(--crm-text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* 小号 chip，不用蓝字链接：这一行是"改一个参数"，不是主操作 */
+.setting-code-toggle {
+  flex: 0 0 auto;
+  margin-left: 6px;
+  padding: 1px 8px;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--crm-text-2);
+  background: #fff;
+  border: 1px solid var(--crm-border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color .15s, border-color .15s, background .15s;
+}
+.setting-code-toggle:hover {
+  color: var(--crm-primary);
+  border-color: color-mix(in srgb, var(--crm-primary) 45%, #fff);
+  background: color-mix(in srgb, var(--crm-primary) 4%, #fff);
+}
+
+/* 展开编辑：值列吃掉说明列的宽度，编号才看得全；说明挪到下一行 */
+.setting-field:has(.setting-code-field.is-open) {
+  grid-template-columns: 112px minmax(0, 1fr);
+}
+.setting-field:has(.setting-code-field.is-open) .setting-field-value { grid-column: 2; }
+.setting-field:has(.setting-code-field.is-open) .setting-field-desc { grid-column: 2; }
+
+.setting-code-edit { display: flex; flex-direction: column; gap: 6px; }
+.setting-code-actions { display: flex; align-items: center; gap: 8px; }
+.setting-code-error { font-size: 11px; color: var(--crm-danger, #f93920); }
+.setting-code-tip {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--crm-text-3);
+}
+
+@media (max-width: 1180px) {
+  .setting-field:has(.setting-code-field.is-open) { grid-template-columns: 96px minmax(0, 1fr); }
+}
+
+/* 值列里的 Tag 不许被挤扁（236 宽塞 Tag + 字 + chip 时先压 Tag） */
+.setting-object-value > .semi-tag { flex: 0 0 auto; }
+.setting-code-detail {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--crm-text-3);
+}
+
+/* 展开时就地给说明，不必再把右侧那行描述顶在脸上 */
+.setting-field:has(.setting-code-field.is-open) .setting-field-desc { display: none; }

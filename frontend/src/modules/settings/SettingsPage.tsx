@@ -293,6 +293,98 @@ function objectConfigInfo(key: string, value: unknown): { configured: boolean; d
   return { configured: count > 0, detail: `${count} 项` }
 }
 
+const DINGTALK_KEYS = ['dingtalk_oa', 'dingtalk_contract_oa', 'dingtalk_sample_oa']
+
+/**
+ * 同序 OA 三行的值单元格：状态 + 模板编号，编号可以就地改。
+ *
+ * 为什么给编辑入口：主人 2026-11-19 问"那我什么都改不了，显示在这里有
+ * 什么意义" —— 原来这三行只有一个只读 Tag，文案却写"在下方对应区块填写
+ * 后生效"，而页面上根本没有那个区块（前端全项目都搜不到 process_code 的
+ * 编辑界面）。要么别显示，要么让它真能改；这里选后者，但只放**模板编号**
+ * 一个输入：控件映射是研发按模板核对的，不该让管理员手填一串
+ * `TextField_GI2W3I92N340`。
+ *
+ * 保存时把原对象**整个带回去**再改 process_code（后端 PATCH 是整体替换，
+ * 只传 {process_code} 会把 field_map / quote_owners 全冲掉）。
+ */
+function DingTalkCodeField({
+  rowKey,
+  value,
+  onSave,
+}: {
+  rowKey: string
+  value: unknown
+  onSave: (next: Record<string, unknown>) => Promise<unknown>
+}) {
+  const raw = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>
+  const current = String(raw.process_code ?? '')
+  const info = objectConfigInfo(rowKey, value)
+  const [open, setOpen] = useState(false)
+  const [code, setCode] = useState(current)
+  const [status, setStatus] = useState<SettingSaveStatus>('idle')
+
+  useEffect(() => {
+    if (!open) setCode(current)
+  }, [current, open])
+
+  const save = async () => {
+    const next = code.trim()
+    if (!next) {
+      setStatus('error')
+      return
+    }
+    if (next === current) {
+      setOpen(false)
+      return
+    }
+    setStatus('saving')
+    try {
+      await onSave({ ...raw, process_code: next })
+      setStatus('saved')
+      setOpen(false)
+    } catch {
+      setStatus('error')
+    }
+  }
+
+  return (
+    <div className={`setting-code-field${open ? ' is-open' : ''}`}>
+      <div className="setting-object-value">
+        <Tag color={info.configured ? 'blue' : 'orange'} size="small">
+          {info.configured ? '已配置' : '未配置'}
+        </Tag>
+        {info.configured && <span className="setting-code-brief" title={info.detailFull}>模板在跑</span>}
+        {!open && (
+          <button type="button" className="setting-code-toggle" onClick={() => setOpen(true)}>
+            {info.configured ? '换模板' : '填模板编号'}
+          </button>
+        )}
+      </div>
+      {open && (
+        <div className="setting-code-edit">
+          <Input
+            size="small"
+            value={code}
+            placeholder="PROC-XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
+            onChange={(next) => setCode(next)}
+            onEnterPress={save}
+          />
+          <div className="setting-code-actions">
+            <Button size="small" theme="solid" loading={status === 'saving'} onClick={save}>保存</Button>
+            <Button size="small" theme="borderless" onClick={() => { setOpen(false); setStatus('idle') }}>取消</Button>
+            {status === 'error' && <span className="setting-code-error">编号不能为空</span>}
+          </div>
+          <p className="setting-code-tip">
+            编号在同序 OA 该流程的地址栏里（PROC- 开头）。改完只影响之后新发起的单据，
+            已经在跑的审批不会变；字段映射不动。
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function SettingValueField({
   rowKey,
   field,
@@ -345,6 +437,10 @@ function SettingValueField({
   }
 
   if (kind === 'object') {
+    // 同序 OA 三件：模板编号可改（见 DingTalkCodeField 的说明）
+    if (DINGTALK_KEYS.includes(rowKey)) {
+      return <DingTalkCodeField rowKey={rowKey} value={value} onSave={onSave} />
+    }
     const info = objectConfigInfo(rowKey, value)
     // "已配置 0 项"自相矛盾（同序 OA 这几项的字段映射就是空对象）：
     // 没配就写"未配置"，并明确"在哪配"，别让人以为这行坏了。
@@ -1948,6 +2044,14 @@ export default function SettingsPage() {
                                 <div className="setting-field-value">{renderSettingValue(row)}</div>
                                 <div className="setting-field-desc">
                                   <span>{settingDescription(row.key, row.description)}</span>
+                                  {DINGTALK_KEYS.includes(row.key) && (() => {
+                                    const info = objectConfigInfo(row.key, row.value)
+                                    return info.configured ? (
+                                      <span className="setting-code-detail" title={info.detailFull}>
+                                        当前：{info.detail}
+                                      </span>
+                                    ) : null
+                                  })()}
                                   {note && (
                                     <span className="setting-field-tag">
                                       <Tag color="orange" size="small">{note.tag}</Tag>
