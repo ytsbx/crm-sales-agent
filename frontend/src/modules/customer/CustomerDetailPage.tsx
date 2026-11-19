@@ -825,11 +825,14 @@ export default function CustomerDetailPage() {
                   </span>
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
+                  {/* 四张数字卡各给一个色带（蓝=联系人 / 紫=商机 / 橙=报价 / 绿=订单）：
+                      以前四块全是灰底，主人说"全是蓝白，太单调"。颜色只落在左边缘
+                      一条细线 + 极淡底，不铺满整块（那种"彩色块"上一版被否过）。 */}
                   {([
-                    { key: 'contacts', label: '联系人', value: (contactsQuery.data ?? []).length },
-                    { key: 'opportunities', label: '商机', value: opportunitiesQuery.data?.total },
-                    { key: 'quotes', label: '报价', value: quotesQuery.data?.total },
-                    { key: 'orders', label: '订单', value: ordersQuery.data?.total },
+                    { key: 'contacts', label: '联系人', value: (contactsQuery.data ?? []).length, tone: 'tone-primary' },
+                    { key: 'opportunities', label: '商机', value: opportunitiesQuery.data?.total, tone: 'tone-secondary' },
+                    { key: 'quotes', label: '报价', value: quotesQuery.data?.total, tone: 'tone-caution' },
+                    { key: 'orders', label: '订单', value: ordersQuery.data?.total, tone: 'tone-success' },
                   ] as const).map((tile) => {
                     const jump = () => {
                       setActiveKey(tile.key)
@@ -839,7 +842,7 @@ export default function CustomerDetailPage() {
                       <button
                         key={tile.key}
                         type="button"
-                        className="cust-pano-tile"
+                        className={`cust-pano-tile ${tile.tone}`}
                         onClick={jump}
                         title={`跳到「${tile.label}」页签`}
                       >
@@ -988,6 +991,21 @@ export default function CustomerDetailPage() {
                        「方式」「记录时约定」是附加元信息，先让位。 */
                     className: 'followup-col-minor',
                     onHeaderCell: () => ({ className: 'followup-col-minor' }),
+                    /* 方式给底色（电话蓝 / 微信绿 / 拜访紫 / 邮件橙）：整列原本都是黑字，
+                       一排跟进记录看起来"灰扑扑"，分类信息用颜色标出来才好扫。 */
+                    render: (v: string | null) => {
+                      if (!v) return '-'
+                      const tone = /电话|call/i.test(v)
+                        ? 'blue'
+                        : /微信|wechat|企微/i.test(v)
+                          ? 'green'
+                          : /拜访|上门|见面|visit/i.test(v)
+                            ? 'purple'
+                            : /邮件|mail/i.test(v)
+                              ? 'orange'
+                              : 'grey'
+                      return <Tag size="small" color={tone} type="light">{v}</Tag>
+                    },
                   },
                   {
                     title: '内容',

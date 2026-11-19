@@ -163,7 +163,10 @@ body,
 }
 
 body {
-  background: var(--crm-bg);
+  /* 底色不再是一块纯灰：极淡的四段渐变（冷灰 → 微蓝 → 冷灰），
+     大面积留白时页面也有层次，而不是"一张白纸"（2026-11-19 主人反馈"全是蓝白"）。
+     浓度只有 2~3%，不抢内容。 */
+  background: linear-gradient(160deg, #f4f5f8 0%, #eef2f9 34%, #f1f3f7 62%, #f4f5f8 100%) fixed;
   color: var(--crm-text);
   font-family: Inter, -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei',
     'Segoe UI', Roboto, sans-serif;
@@ -4453,4 +4456,73 @@ table:not(.semi-table) td {
   .col-hide-narrow {
     display: none !important;
   }
+}
+
+
+/* ============================================================
+   详情页配色（2026-11-19）
+   主人反馈「全是蓝白，太单调」。做法不是给整页刷底色（那会变成
+   "大色块"，之前明确否过），而是把颜色压在**结构和语义**上：
+   1) 四个详情页共用的头卡：顶部一条 3px 蓝→青→紫的细渐变线，
+      下面一层 5% 极淡同色渐变，卡片立刻从"白卡叠白卡"里立起来；
+   2) 详情页「业务全景 / 商机全景 / 订单全景」的数字卡各一条左边缘色线
+      （蓝/紫/橙/绿/青），颜色只标类别，不铺满整块；
+   3) 跟进记录「方式」按电话/微信/拜访/邮件给底色。
+   浓度都控制在 6%~12%，保证还是原来的浅色风格。
+   ============================================================ */
+.detail-header-card {
+  position: relative;
+  overflow: hidden;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--crm-primary) 5%, #ffffff) 0%,
+      #ffffff 46%
+    );
+}
+.detail-header-card::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3px;
+  background: linear-gradient(90deg, #2f6df6 0%, #2ea6d6 42%, #7431d3 100%);
+  opacity: 0.55;
+}
+
+/* 全景数字卡：左边缘色线 + 极淡底（悬停时略加深） */
+.cust-pano-tile.tone-primary   { --tile-accent: #2f6df6; --tile-wash: #eaf1fe; }
+.cust-pano-tile.tone-secondary { --tile-accent: #7431d3; --tile-wash: #f1e9fd; }
+.cust-pano-tile.tone-caution   { --tile-accent: #ff7d00; --tile-wash: #fff2e6; }
+.cust-pano-tile.tone-success   { --tile-accent: #00b42a; --tile-wash: #e9f9ed; }
+.cust-pano-tile.tone-teal      { --tile-accent: #0d9488; --tile-wash: #e6f6f2; }
+
+.cust-pano-tile.tone-primary,
+.cust-pano-tile.tone-secondary,
+.cust-pano-tile.tone-caution,
+.cust-pano-tile.tone-success,
+.cust-pano-tile.tone-teal {
+  background: var(--tile-wash);
+  border-left: 3px solid color-mix(in srgb, var(--tile-accent) 55%, #ffffff);
+}
+.cust-pano-tile.tone-primary:hover,
+.cust-pano-tile.tone-secondary:hover,
+.cust-pano-tile.tone-caution:hover,
+.cust-pano-tile.tone-success:hover,
+.cust-pano-tile.tone-teal:hover {
+  background: color-mix(in srgb, var(--tile-wash) 78%, var(--tile-accent) 8%);
+  border-color: color-mix(in srgb, var(--tile-accent) 45%, #ffffff);
+}
+.cust-pano-tile.tone-primary .cust-pano-label,
+.cust-pano-tile.tone-secondary .cust-pano-label,
+.cust-pano-tile.tone-caution .cust-pano-label,
+.cust-pano-tile.tone-success .cust-pano-label,
+.cust-pano-tile.tone-teal .cust-pano-label {
+  color: color-mix(in srgb, var(--tile-accent) 62%, #727687);
+}
+.cust-pano-tile.tone-primary .cust-pano-value,
+.cust-pano-tile.tone-secondary .cust-pano-value,
+.cust-pano-tile.tone-caution .cust-pano-value,
+.cust-pano-tile.tone-success .cust-pano-value,
+.cust-pano-tile.tone-teal .cust-pano-value {
+  color: color-mix(in srgb, var(--tile-accent) 78%, #181c23);
 }

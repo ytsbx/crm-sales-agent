@@ -1855,15 +1855,16 @@ export default function OrderDetailPage() {
       <SectionCard title="订单全景" style={{ marginTop: 16 }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
           {([
-            { key: 'items', label: '订单明细', value: itemsQuery.data?.length },
-            { key: 'receivables', label: '应收计划', value: receivablesQuery.data?.length },
-            { key: 'payments', label: '回款记录', value: paymentsQuery.data?.length },
-            { key: 'shipments', label: '发货批次', value: shipmentsQuery.data?.batches?.length },
+            /* 色带：明细蓝 / 应收橙 / 回款绿 / 发货紫 —— 和业务口径对齐（钱进来了是绿） */
+            { key: 'items', label: '订单明细', value: itemsQuery.data?.length, tone: 'tone-primary' },
+            { key: 'receivables', label: '应收计划', value: receivablesQuery.data?.length, tone: 'tone-caution' },
+            { key: 'payments', label: '回款记录', value: paymentsQuery.data?.length, tone: 'tone-success' },
+            { key: 'shipments', label: '发货批次', value: shipmentsQuery.data?.batches?.length, tone: 'tone-secondary' },
           ] as const).map((tile) => (
             <button
               key={tile.label}
               type="button"
-              className="cust-pano-tile"
+              className={`cust-pano-tile ${tile.tone}`}
               onClick={() => setActiveKey(tile.key)}
               title={`跳到「${TABS.find((t) => t.itemKey === tile.key)?.tab ?? tile.key}」页签`}
             >

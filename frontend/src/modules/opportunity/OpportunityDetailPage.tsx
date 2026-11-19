@@ -582,17 +582,18 @@ export default function OpportunityDetailPage() {
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
                 {([
-                  { key: 'items', label: '需求商品', value: itemsQuery.data?.length },
-                  { key: 'records', label: '报价', value: quoteCountQuery.data?.total },
-                  { key: 'records', label: '订单', value: orderCountQuery.data?.total },
-                  { key: 'followups', label: '跟进记录', value: followupsQuery.data?.total ?? followupsQuery.data?.items?.length },
-                  { key: 'tasks', label: '任务', value: tasksQuery.data?.total ?? tasksQuery.data?.items?.length },
+                  /* 色带：需求蓝 / 报价橙 / 订单绿 / 跟进紫 / 任务青 */
+                  { key: 'items', label: '需求商品', value: itemsQuery.data?.length, tone: 'tone-primary' },
+                  { key: 'records', label: '报价', value: quoteCountQuery.data?.total, tone: 'tone-caution' },
+                  { key: 'records', label: '订单', value: orderCountQuery.data?.total, tone: 'tone-success' },
+                  { key: 'followups', label: '跟进记录', value: followupsQuery.data?.total ?? followupsQuery.data?.items?.length, tone: 'tone-secondary' },
+                  { key: 'tasks', label: '任务', value: tasksQuery.data?.total ?? tasksQuery.data?.items?.length, tone: 'tone-teal' },
                   // 报价与订单都落在「关联单据」页签里，所以这两个格子跳同一个地方
                 ] as const).map((tile) => (
                   <button
                     key={tile.label}
                     type="button"
-                    className="cust-pano-tile"
+                    className={`cust-pano-tile ${tile.tone}`}
                     onClick={() => setActiveKey(tile.key)}
                     title={`跳到「${TABS.find((t) => t.itemKey === tile.key)?.tab ?? tile.key}」页签`}
                   >
