@@ -907,6 +907,17 @@ export default function SettingsPage() {
         rowKey={record.key}
         field={scalarKey}
         value={raw[scalarKey]}
+        // 权限码这一项的值是 `customer:assign` 这种机器码：不给选项的话，
+        // 静止态只能把码原样印出来（2026-11-19 截图里那一行显示的就是裸码，
+        // 点开还只有一颗「取消」）。这里把权限清单一起传下去。
+        options={
+          record.key === 'pool_recycle_restore_permission'
+            ? (recyclePermsQuery.data ?? []).map((item) => ({
+                value: item.code,
+                label: `${item.name}（${item.code}）`,
+              }))
+            : undefined
+        }
         onSave={(next) => settingMutation.mutateAsync({ key: record.key, value: next, silent: true })}
       />
     )
@@ -1955,10 +1966,9 @@ export default function SettingsPage() {
                   <div
                     style={{ color: 'var(--crm-text-2)', fontSize: 12, lineHeight: 1.65, marginBottom: 12 }}
                   >
-                    <b>预告期与暂缓期现在跑的是开发默认值（7 天 / 30 天），还没经过业务确认</b>
-                    —— 口径定了在这里改。改完<b>立刻生效</b>：已经提名、还没结案的候选
+                    这两项天数改完<b>立刻生效</b>：已经提名、还没结案的候选
                     （待复核 / 已暂缓）会按新天数<b>一起重算到期时间</b>，不会新旧两套天数
-                    并存；已回收 / 已驳回 / 已作废的不动。三项的改动都会记进审计
+                    并存；已回收 / 已驳回 / 已作废的不动。改动会记进审计
                     （含修改前后值、以及同步重算了几条候选）。
                   </div>
                   {/* 三项原来横排成三列，每列下面挂一段三四行的灰色说明 ——
@@ -1977,7 +1987,6 @@ export default function SettingsPage() {
                       <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginTop: 4 }}>
                         扫描命中后先预告这么多天，期间业务员仍可跟进自救；
                         没满之前主管只能走「提前回收」例外。0 = 不设缓冲。
-                        {noticeSetting?.is_default ? '（当前为开发默认值）' : ''}
                       </div>
                     </div>
                     <div className="recycle-pace-row">
@@ -1991,7 +2000,6 @@ export default function SettingsPage() {
                       <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginTop: 4 }}>
                         主管点「暂缓」之后要等这么多天才能再批准回收
                         （暂缓期内随时可以驳回结案）。
-                        {deferSetting?.is_default ? '（当前为开发默认值）' : ''}
                       </div>
                     </div>
                     <div className="recycle-pace-row">
