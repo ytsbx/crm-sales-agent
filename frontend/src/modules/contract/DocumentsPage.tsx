@@ -62,6 +62,16 @@ const DETAIL_LABEL = { fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 2
 const DETAIL_VALUE = { fontSize: 13 }
 
 export default function DocumentsPage() {
+  /* 1024 宽内容区约 700px，合同台账九列合计 1123px，整张表被裁在卡片外、
+     底部常驻横向滚动条。窄屏切紧凑档：类型并进合同编号第二行，
+     客户并进标题第二行，到期日 / 签署时间不在列表里占位，操作列收 3 个链接。 */
+  const [compact, setCompact] = useState(() => window.innerWidth < 1200)
+  useEffect(() => {
+    const onResize = () => setCompact(window.innerWidth < 1200)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
   const queryClient = useQueryClient()
   const { can, isReviewer } = usePermissions()
   const canManage = can('order:manage')
@@ -386,46 +396,93 @@ export default function DocumentsPage() {
               </Button>
             )}
           </div>
-          <Table<ContractDocument> className="table-center"
+          <Table<ContractDocument> className="table-center documents-table"
             columns={[
               // 140 放不下 12 位的合同编号（实测被截成「CT202610140…」）。
               // 156 是刚好够 + 又不把表格撑出横向滚动条的宽度。
-              { title: '合同编号', dataIndex: 'doc_no', width: 156 },
-              { title: '类型', dataIndex: 'doc_type_label', width: 85 },
+              // 类型并到编号下面第二行（2026-11-19，原宽屏档有独立「类型」列 85px）：
+              // 九列加起来 1118、容器约 1130，标题只分到 120（约 7 个字），
+              // 15 字的「【全场景演示】销售合同-甲」整列都是省略号。
+              // 把类型降级成 11px 小灰字挂在编号下，空出的 85px 全给标题（120→205）。
+              // 不丢信息、不多行高（客户列本来就是两行），宽屏窄屏从此同一套读法。
+              {
+                title: '合同编号',
+                dataIndex: 'doc_no',
+                width: compact ? 128 : 156,
+                render: (v: string, record: ContractDocument) => (
+                  <div>
+                    <div>{v}</div>
+                    <div style={{ marginTop: 2, fontSize: 11, color: 'var(--crm-text-3)' }}>
+                      {record.doc_type_label ?? '-'}
+                    </div>
+                  </div>
+                ),
+              },
               // 标题不给上限时它会吃掉所有剩余宽度（实测 270px），
-              // 把后面的列全顶到屏幕外；200 是"销售合同-甲"这类标题的实测上限再留些余量。
+              // 把后面的列全顶到屏幕外；205 是"销售合同-甲"这类标题的实测
+              // 上限（约 12–13 字）再留些余量。
               {
                 title: '标题',
                 dataIndex: 'title',
-                width: 160,
+                width: compact ? 160 : 205,
                 // 标题超过列宽会被省略成「【全场景演示】销售…」，悬停要看得到全文
                 // （2026-11-17 视觉审视 V-03）。同时给 title 属性，键盘/读屏也能读到。
-                render: (v: string) => (
-                  <span title={v} style={{ display: 'inline-block', maxWidth: '100%' }}>
-                    {v}
-                  </span>
+                render: (v: string, record: ContractDocument) => (
+                  <div style={{ minWidth: 0 }}>
+                    <span
+                      title={v}
+                      style={{
+                        display: 'block',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {v}
+                    </span>
+                    {compact && (
+                      <div
+                        title={record.customer_name ?? '-'}
+                        style={{
+                          marginTop: 2,
+                          fontSize: 11,
+                          color: 'var(--crm-text-3)',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {record.customer_name ?? '-'}
+                      </div>
+                    )}
+                  </div>
                 ),
               },
-              {
-                title: '客户',
-                dataIndex: 'customer_name',
-                width: 140,
-                // 客户名是台账的识别维度：95px 只放得下七八个字，满屏
-                // 「【全场景演示】…」等于没有客户列。放宽到 140 并允许两行，
-                // 从标题（160→120）和到期日（90→80）各让一点，总宽不变。
-                render: (v: string | null) => (
-                  <span
-                    title={v ?? ''}
-                    style={{ display: 'block', whiteSpace: 'normal', lineHeight: 1.45 }}
-                  >
-                    {v || '-'}
-                  </span>
-                ),
-              },
+              ...(compact
+                ? []
+                : [// 客户名是台账的识别维度：原来 95px 只够放五个字，
+                // 满屏「青岛包装…」「【全场景…」，一列全是省略号等于没有客户列。
+                // 从标题（160→120）和到期日（90→80）各让一点，整表总宽不变。
+                {
+                  title: '客户',
+                  dataIndex: 'customer_name',
+                  width: 140,
+                  // 140px 只放得下七八个字，「【全场景演示】华东复购采购客户」这
+                  // 类名字照样截。改成最多两行：一行装不下的往下走，行的总高
+                  // 只多一行，比整列显示成「【全场景演示】…」有用得多。
+                  render: (v: string | null) => (
+                    <span
+                      title={v ?? ''}
+                      style={{ display: 'block', whiteSpace: 'normal', lineHeight: 1.45 }}
+                    >
+                      {v || '-'}
+                    </span>
+                  ),
+                }]),
               {
                 title: '状态',
                 dataIndex: 'status_label',
-                width: 100,
+                width: compact ? 96 : 100,
                 render: (v: string, record: ContractDocument) => (
                   <StatusDot label={v} tone={(STATUS_TONE[record.status] ?? 'grey') as TagTone} />
                 ),
@@ -433,8 +490,8 @@ export default function DocumentsPage() {
               {
                 // 「依据」= 这份合同是照哪一版报价 / 哪张订单签的。
                 // 报价能出 V2/V3，不写清版本，台账上光看单号证明不了金额依据。
-                title: '依据 / 来源',
-                width: 160,
+                title: compact ? '依据' : '依据 / 来源',
+                width: compact ? 170 : 160,
                 render: (_: unknown, record: ContractDocument) => {
                   const header = record.header_snapshot
                   const basis = record.quote_version_no
@@ -451,7 +508,19 @@ export default function DocumentsPage() {
                   return (
                     <div style={{ display: 'grid', gap: 2 }}>
                       {basis ? (
-                        <span>{basis}</span>
+                        <span
+                          title={basis}
+                          /* 窄屏 170px 放不下「订单 + 15 位单号」：去掉前缀，
+                             单号本身 SO / Q 开头就能认出是订单还是报价 */
+                          data-compact={compact ? '1' : undefined}
+                          style={{
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {compact ? basis.replace(/^(订单|报价) /, '') : basis}
+                        </span>
                       ) : (
                         <span style={{ color: 'var(--crm-text-3)' }}>未绑定</span>
                       )}
@@ -468,10 +537,14 @@ export default function DocumentsPage() {
               // 到期日 / 签署时间是两个**经常为空**的列（草稿合同一律是横杠），
               // 却排在首屏位置上，把真正有内容的「依据」挤到了滚动区。
               // 有值的往前、空着的往后 —— 用户不用横滑就能看见这段合同照哪版报价签的。
-              { title: '到期日', dataIndex: 'expiry_date', width: 90, render: (v: string | null) => v ?? '-' },
+              ...(compact
+                ? []
+                : [{ title: '到期日', dataIndex: 'expiry_date', width: 80, render: (v: string | null) => v ?? '-' }]),
               // ⚠️ 原来是 `.slice(0, 10)`（UTC 取日）；签署时间是 UTC 瞬时，
               // 北京时间凌晨签的会显示成前一天。
-              { title: '签署时间', dataIndex: 'signed_at', width: 112, render: (v: string | null) => (v ? formatBeijingDate(v) : '-') },
+              ...(compact
+                ? []
+                : [{ title: '签署时间', dataIndex: 'signed_at', width: 112, render: (v: string | null) => (v ? formatBeijingDate(v) : '-') }]),
               {
                 // 「下载」不跟管理操作挤在一起：下载接口要的是 order:view，
                 // 原来整列挂在 canManage 下，只读用户连下载入口都看不见。
@@ -480,7 +553,7 @@ export default function DocumentsPage() {
                 // 从「到期日」和「操作」各让一点：到期日 90 够放 2026-11-16。
                 // 165 不变：加宽会把整张表撑出横向滚动条（2026-11-17 实拍到 200 就滚了）。
                 // 所以这里靠"每个词只占该占的字数"来省地方：下载、签署都是两个字的动作词。
-                width: 165,
+                width: compact ? 144 : 165,
                 // 这一列原来是 260 宽、还排在最后：整张表 1400、容器只有 1130，
                 // 结果「下载 / 详情 / 登记签署」全被推到屏幕外，必须横向拖才能点 ——
                 // 高频操作用户最不该找不着。固定在右侧，横滑时它始终在。
