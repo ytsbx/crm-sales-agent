@@ -37,7 +37,7 @@ const STATUS_LABEL: Record<RecycleStatus, string> = {
  *
  * 这里只做"看候选 + 做决定"，不改任何规则；规则改动仍在系统设置。
  */
-export default function PoolRecyclePage() {
+export function PoolRecyclePanel() {
   const notePrompt = useNotePrompt()
   const queryClient = useQueryClient()
 
@@ -191,15 +191,12 @@ export default function PoolRecyclePage() {
   }
 
   return (
-    <div className="page-container">
+    <>
       {notePrompt.node}
-      <PageHeader
-        title="公海回收"
-        subtitle="复核本团队客户的回收候选：批准 / 驳回 / 暂缓。看得见哪些候选由你的数据范围决定"
-      />
-      <SectionCard>
-        <div className="rule-block" style={{ marginTop: 0 }}>
-          <div className="rule-block-title">回收复核</div>
+      {/* 这里不再自带 SectionCard / 页头：这一块现在挂在「客户中心」的第二个页签里，
+          外层已经有一张卡（独立路由 /pool-recycle 也复用它，壳在外面补）。 */}
+      <div className="recycle-panel">
+        <div>
           {/* 这段说明原来写在系统设置里，跟着搬过来：它讲的是"怎么干这个活"，
               不是"规则怎么配"。 */}
           <div
@@ -494,7 +491,27 @@ export default function PoolRecyclePage() {
             ]}
           />
         </div>
+      </div>
+    </>
+  )
+}
+
+/**
+ * 独立路由 /pool-recycle 的壳：同一块复核，包一张卡 + 一个页头。
+ * 主入口在「客户中心」的页签里（菜单不再单列一项），这里只为老链接兜底。
+ */
+export function PoolRecyclePage() {
+  return (
+    <div className="page-container">
+      <PageHeader
+        title="公海回收"
+        subtitle="复核本团队客户的回收候选：批准 / 驳回 / 暂缓。看得见哪些候选由你的数据范围决定"
+      />
+      <SectionCard>
+        <PoolRecyclePanel />
       </SectionCard>
     </div>
   )
 }
+
+export default PoolRecyclePage

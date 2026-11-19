@@ -1720,8 +1720,8 @@ export default function SettingsPage() {
               {/* 复核已经搬成独立页（/pool-recycle）。这里只留一句指路：
                   规则页改的是"多少天算冷落、保护多久"，批不批是另一件事。 */}
               <div className="rule-block-hint">
-                <span>候选的复核在「公海回收」页处理，这里只改规则。</span>
-                <a onClick={() => navigate('/pool-recycle')}>去公海回收 →</a>
+                <span>候选的复核在「客户中心 → 回收复核」页签里处理，这里只改规则。</span>
+                <a onClick={() => navigate('/customers')}>去客户中心 →</a>
               </div>
 
               {isAdmin && (

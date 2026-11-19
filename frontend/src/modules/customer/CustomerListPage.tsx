@@ -1,11 +1,12 @@
 import { UNRATED_OPTION, customerLevelValue, customerLevelPayload } from '../../shared/customer-level'
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import PageHeader from '../../shared/components/PageHeader'
+import { PoolRecyclePanel } from '../recycle/PoolRecyclePage'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { emptyText } from '../../shared/hooks/emptyText'
-import { Button, Input, Modal, Select, Table, Toast, TextArea } from '@douyinfe/semi-ui'
+import { Button, Input, Modal, Select, Table, Tabs, Toast, TextArea } from '@douyinfe/semi-ui'
 
 import {
   batchTagCustomers,
@@ -123,6 +124,9 @@ export default function CustomerListPage() {
   )
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
+  // 第二个页签「回收复核」（2026-11-19 主人：公海回收不用单独做一个板块）。
+  // 复核本来就是公海池的下一步：同一张卡里先看池子，再看谁该被回收、直接批 / 驳。
+  const [view, setView] = useState<'list' | 'review'>('list')
 
   const [modalVisible, setModalVisible] = useState(false)
   const [form, setForm] = useState<CustomerPayload>(EMPTY_FORM)
@@ -195,6 +199,8 @@ export default function CustomerListPage() {
   //   ② 导出弹窗的确认键：没选用途 / 选了「其他」没填说明时灰着，弹窗底部列出缺什么。
   // 两条规矩见 shared/components/BlockedHint.tsx：看得见（常驻灰字）+ 点得动（点了有反应）。
   const canExport = can('customer:export')
+  // 回收复核只对能批回收的人开放（主管的 pool_review / 管理员的 settings:manage）
+  const canPoolReview = can('customer:pool_review') || can('settings:manage')
   const exportBlockedReasons = [
     ...(!exportPurpose ? ['请选择导出用途。'] : []),
     // 用途选「其他」时后端要求写清具体用途（schema 里有最小长度校验），
@@ -589,6 +595,23 @@ export default function CustomerListPage() {
       <PageHeader title="客户中心" subtitle="客户、联系人与归属都在这里统一管理" />
 
       <SectionCard>
+        {canPoolReview && (
+          <Tabs
+            type="line"
+            activeKey={view}
+            onChange={(key) => setView(key as 'list' | 'review')}
+            tabList={[
+              { tab: '客户列表', itemKey: 'list' },
+              { tab: '回收复核', itemKey: 'review' },
+            ]}
+          />
+        )}
+        {view === 'review' ? (
+          <div style={{ marginTop: 16 }}>
+            <PoolRecyclePanel />
+          </div>
+        ) : (
+        <div className="customer-list-body" style={canPoolReview ? { marginTop: 16 } : undefined}>
         <div className="toolbar customer-list-toolbar">
           <Input
             placeholder="搜索客户名称 / 简称 / 地址"
@@ -762,6 +785,8 @@ export default function CustomerListPage() {
             },
           }}
         />
+        </div>
+        )}
       </SectionCard>
 
       <Modal

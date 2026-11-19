@@ -71,18 +71,10 @@ export const MENU_GROUPS: MenuGroup[] = [
       { key: 'workbench', path: '/workbench', label: '工作台', icon: IconHome, ready: true },
       { key: 'leads', path: '/leads', label: '线索中心', icon: IconFilter, ready: true, permission: 'lead:view' },
       { key: 'customers', path: '/customers', label: '客户中心', icon: IconUserGroup, ready: true, permission: 'customer:view' },
-      // 公海回收（2026-11-19 从系统设置里独立出来）：复核是**日常作业**，
-      // 和线索中心、客户中心同一层。原来它缩在「系统设置 · 业务规则」里，
-      // 靠给 /settings 加 `customer:pool_review` 再把菜单改名「公海回收复核」
-      // 掩盖过去 —— 主管要进配置页才干日常活儿。
-      {
-        key: 'pool-recycle',
-        path: '/pool-recycle',
-        label: '公海回收',
-        icon: IconCheckList,
-        ready: true,
-        permission: ['customer:pool_review', 'settings:manage'],
-      },
+      // 公海回收复核不单列菜单项（2026-11-19 主人："不用单独做一个板块吧"）。
+      // 它本来就是「公海客户」的后续动作：谁该被回收、批不批，跟公海池是一件事。
+      // 现在挂在「客户中心」的「回收复核」页签里 —— 一处看池子、一处做决定。
+      // 路由 /pool-recycle 保留，只给老链接兜底，菜单上不再出现。
       { key: 'duplicate-cases', path: '/duplicate-cases', label: '撞单裁定', icon: IconVerify, ready: true, permission: 'customer:view' },
       {
         key: 'opportunities',
