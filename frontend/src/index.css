@@ -5763,3 +5763,18 @@ table:not(.semi-table) td.cell-right {
   border-color: rgba(47, 109, 246, .42);
   background: rgba(47, 109, 246, .10);
 }
+/* 自动任务规则表：规则名 + 触发条件合成一格的两行（2026-11-19） */
+.task-rule-cell { line-height: 1.5; }
+.task-rule-name { font-size: 13px; }
+.task-rule-trigger { font-size: 12px; color: var(--crm-text-3); margin-top: 2px; }
+/* 规则名长短不一，居中会参差成锯齿；这一列左对齐，三行左边缘齐 */
+.semi-table-thead .semi-table-row-head.task-rule-col,
+.semi-table-tbody .semi-table-row-cell.task-rule-col { text-align: left !important; padding-left: 22px; }
+
+/* 1440 下规则列有 650 宽，行内"名字在左、天数在右"，中间是一段空气。
+   加一条极淡的列分隔线，把空变成"格子"，视线顺着竖线就能从规则走到控件
+   （工作台「成员明细」用的是同一手法）。 */
+.task-rule-table .semi-table-thead > tr > th + th,
+.task-rule-table .semi-table-tbody > tr > td + td {
+  border-left: 1px solid rgba(17, 24, 39, .06) !important;
+}

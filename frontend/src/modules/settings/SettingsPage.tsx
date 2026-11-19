@@ -2024,26 +2024,39 @@ export default function SettingsPage() {
               <div className={`rule-block${panelKey === 'auto' ? '' : ' panel-hidden'}`}>
                 <div className="rule-block-title">自动任务规则</div>
                 <Table<TaskRuleRow>
+                  className="task-rule-table"
                   columns={[
-                    { title: '规则', dataIndex: 'name', width: 220 },
+                    /* 「触发条件」并进「规则」列的第二行（2026-11-19，主人选了 B）。
+                       原来两列——规则 220 / 触发条件 200——其实说的是同一句同义话
+                       （「报价后未跟进提醒」vs「报价发出后未跟进」），白占 200px，
+                       1024 下还溢出了 8px 把横滚条挤了出来。
+                       合成一行两句：规则名在上、触发条件在下（12px 灰字），
+                       规则列因此能撑满剩下的宽度，长规则名也不会溢出。 */
                     {
-                      title: '触发条件',
-                      dataIndex: 'trigger_type',
-                      width: 200,
-                      render: (v: string) =>
-                        ({
-                          quote_no_followup: '报价发出后未跟进',
-                          customer_silent: '重点客户久未联系',
-                          receivable_due: '应收即将到期',
-                        })[v] ?? v,
+                      title: '规则',
+                      dataIndex: 'name',
+                      className: 'task-rule-col',
+                      render: (_: string, record: TaskRuleRow) => (
+                        <div className="task-rule-cell">
+                          <div className="task-rule-name">{record.name}</div>
+                          <div className="task-rule-trigger">
+                            {({
+                              quote_no_followup: '报价发出后未跟进',
+                              customer_silent: '重点客户久未联系',
+                              receivable_due: '应收即将到期',
+                            } as Record<string, string>)[record.trigger_type] ?? record.trigger_type}
+                          </div>
+                        </div>
+                      ),
                     },
                     {
                       title: '天数',
-                      width: 160,
+                      width: 148,
                       render: (_: unknown, record: TaskRuleRow) => (
                         <Input
                           defaultValue={String(record.trigger_config?.days ?? 3)}
-                          style={{ width: 100 }}
+                          suffix="天"
+                          style={{ width: 104 }}
                           onBlur={(event) => {
                             const raw = (event.target as HTMLInputElement).value.trim()
                             const next = Number(raw)
@@ -2061,7 +2074,7 @@ export default function SettingsPage() {
                     {
                       title: '状态',
                       dataIndex: 'status',
-                      width: 100,
+                      width: 96,
                       render: (v: string) => (v === 'active' ? '启用' : '停用'),
                     },
                   ]}
