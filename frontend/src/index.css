@@ -6285,3 +6285,23 @@ table:not(.semi-table) td.cell-right {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+/* 表格行内操作：Semi 的 theme="borderless" 对 primary / danger 仍然带一层浅底 + 圆角，
+   于是「详情 / 删除」变成一白一红的小药丸（样品管理整张表 12 行都是）。
+   表格里一律按文字按钮处理：透明底、无边框、无投影，悬停才浮浅色。 */
+.semi-table-tbody .semi-button.semi-button-borderless {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  color: #2f6df6;
+  padding-left: 6px;
+  padding-right: 6px;
+}
+.semi-table-tbody .semi-button.semi-button-borderless.semi-button-danger {
+  color: #f53f3f;
+}
+.semi-table-tbody .semi-button.semi-button-borderless:hover {
+  background: rgba(47, 109, 246, .08) !important;
+}
+.semi-table-tbody .semi-button.semi-button-borderless.semi-button-danger:hover {
+  background: rgba(245, 63, 63, .08) !important;
+}
