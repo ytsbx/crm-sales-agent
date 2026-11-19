@@ -1465,10 +1465,12 @@ async function main() {
 
     if (FIXTURES_ENABLED) INTERACTIONS.push({
       name: '36-followup-required-plan', path: `/customers/${customerId}?tab=followups`,
-      // 星号现在是 FormLabel 里的**独立标签**（不再拼在标签文字里，
-      // 为了让必填标记能单独上色），innerText 里就没有那个空格了 ——
-      // 所以这里写「下一步动作*」而不是「下一步动作 *」。
-      clicks: ['记录跟进'], expect: ['下一步动作*', '下次跟进时间*', '保存后自动生成后续待办。'],
+      // 弹窗 2026-11-19 换行式表单后标签砍短了（下一步动作→下一步、
+      // 下次跟进时间→下次跟进），星号是 .req 独立 span（margin-left 只管
+      // 视觉、不进 innerText）——所以是「下一步*」没有空格。提示句也从
+      // 「保存后自动生成后续待办。」改成「保存后自动生成一条后续待办，
+      // 到期会出现在任务列表。」（3c797840/ccd6d5f8 弹窗改版）。
+      clicks: ['记录跟进'], expect: ['下一步*', '下次跟进*', '保存后自动生成一条后续待办，到期会出现在任务列表。'],
       expectAll: true, followupPlan: true,
     }, {
       name: '37-followup-exemption', path: `/customers/${customerId}?tab=followups`,
@@ -2032,7 +2034,7 @@ async function main() {
             })()`, returnByValue: true,
           })
           if (choice.result.value !== 'clicked') problems.push('跟进表单：没有选中免填原因')
-          if (!await waitForText(client, '保存免填原因，本次不创建后续待办。', 3000)) {
+          if (!await waitForText(client, '已选免填原因，本次不创建后续待办。', 3000)) {
             problems.push('跟进表单：免填说明没有显示')
           }
           // 记录操作前的同名条数。人工跟进**会留在库里**（收尾清扫只清系统留痕），
