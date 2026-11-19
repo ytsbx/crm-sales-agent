@@ -1199,19 +1199,31 @@ export default function SettingsPage() {
     },
     { title: '手机', dataIndex: 'mobile', width: 120, render: (v: string | null) => <MaskedContact value={v} /> },
     {
-      // 钉钉：**有值才能用钉钉登录**。列上只显示"绑没绑"，编号放进 title 里
-      // （管理员平时不需要看那串号，要排查时鼠标一停就能看见）。
-      title: '钉钉',
+      // 同步账号：有值才能用钉钉 / 企业微信登录。列上只显示"绑没绑"，
+      // 编号放进 title 里（管理员平时不需要看那串号，排查时鼠标一停就能看见）。
+      //
+      // 2026-11-19 主人问「怎么还有钉钉，还说已经绑定了」—— 查了接口：
+      // 演示库给 22 个用户全塞了 `demo-user-xxx` 这种占位编号（还有重复的，
+      // lisi 和 wangwu 都是 demo-user-zhou），于是这一列清一色"已绑定"。
+      // 占位值不是真绑定，不能这么报。现在把 `demo-` 开头的按"未接真实通讯录"显示。
+      title: '同步账号',
       dataIndex: 'dingtalk_userid',
-      width: 75,
-      render: (v: string | null) =>
-        v ? (
-          <span title={v}>
+      width: 96,
+      render: (v: string | null) => {
+        if (!v) return <StatusDot label="未绑定" tone="grey" />
+        if (v.startsWith('demo-')) {
+          return (
+            <span title={`演示数据占位编号 ${v}，接入真实钉钉通讯录后会被覆盖`}>
+              <StatusDot label="未绑定" tone="grey" />
+            </span>
+          )
+        }
+        return (
+          <span title={`钉钉 userid：${v}`}>
             <StatusDot label="已绑定" tone="green" />
           </span>
-        ) : (
-          <StatusDot label="未绑定" tone="grey" />
-        ),
+        )
+      },
     },
     {
       title: '状态',
