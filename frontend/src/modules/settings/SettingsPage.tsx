@@ -123,7 +123,9 @@ const SETTING_GROUPS: Array<{
     title: '公司与单据',
     color: '#2f6df6',
     note: '打印在报价单、合同上的信息，以及报价默认带上的条款',
-    keys: ['company_name', 'default_currency', 'trade_mode', 'default_payment_terms', 'default_delivery_terms', 'quote_valid_days'],
+    // 2026-11-19 主人：「币种和贸易可以直接删，只会是人民币，只会在国内，别搞那么复杂」。
+    // 这两项从页面摘掉（后端 key 仍留着，值恒为 CNY / domestic，业务单据按它算）。
+    keys: ['company_name', 'default_payment_terms', 'default_delivery_terms', 'quote_valid_days'],
   },
   {
     id: 'pricing',
@@ -209,6 +211,7 @@ const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
   default_target_margin: { kind: 'percent', hint: '填 30 表示目标毛利 30%' , presets: [20, 25, 30, 35] },
   price_range_ratio: { kind: 'percent', hint: '报价区间宽度，填 4 表示 ±4%' , presets: [3, 4, 5] },
   export_tax_refund_rate: { kind: 'percent', hint: '退税率，填 13 表示 13%' , presets: [0, 9, 13] },
+  // 已从页面移除（见 SETTING_GROUPS 的 company 组）：业务只做人民币，不再给选项
   default_currency: {
     kind: 'select',
     options: [
@@ -219,6 +222,7 @@ const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
       { value: 'JPY', label: 'JPY 日元' },
     ],
   },
+  // 已从页面移除（同上）：只做内销，出口字段的显隐由 OrderDraftsPage 直接判空
   trade_mode: {
     kind: 'select',
     options: [
