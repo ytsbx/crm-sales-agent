@@ -197,6 +197,37 @@ const RULE_PANELS: Array<{ key: string; label: string; color: string }> = [
   })),
 ]
 
+
+/**
+ * 「公海回收恢复权限」的候选（2026-11-19）。
+ *
+ * 权限表里有 42 项，全量铺开就是一屏七行白胶囊 —— 主人打开后只回了一句
+ * "这都啥呀"。真正和"把回收掉的客户还回去"有关的只有这四个：
+ * 分配客户（默认，主管的口径）、公海回收复核、系统设置与规则、用户管理。
+ * 其余 38 项（导出客户、新建线索、转移订单负责人…）跟恢复无关，列出来只会干扰。
+ *
+ * 如果库里存的是历史值、不在这四个里，仍然把它补进候选，否则静止态匹配不到
+ * 中文名、会又退回显示机器码。
+ */
+const RESTORE_PERMISSION_CANDIDATES = [
+  'customer:assign',
+  'customer:pool_review',
+  'settings:manage',
+  'user:manage',
+]
+
+function restorePermissionOptions(
+  all: Array<{ value: string; label: string }>,
+  current: string,
+): Array<{ value: string; label: string }> {
+  const keep = all.filter((option) => RESTORE_PERMISSION_CANDIDATES.includes(option.value))
+  if (current && !keep.some((option) => option.value === current)) {
+    const hit = all.find((option) => option.value === current)
+    if (hit) keep.unshift(hit)
+  }
+  return keep
+}
+
 const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
   company_name: { kind: 'text', placeholder: '例如：杭州天初科技有限公司' },
   customer_active_days: { unit: '天', presets: [7, 15, 30] },
@@ -812,15 +843,15 @@ export default function SettingsPage() {
         rowKey={record.key}
         field={scalarKey}
         value={raw[scalarKey]}
-        // 权限码这一项的值是 `customer:assign` 这种机器码：不给选项的话，
-        // 静止态只能把码原样印出来（2026-11-19 截图里那一行显示的就是裸码，
-        // 点开还只有一颗「取消」）。这里把权限清单一起传下去。
         options={
           record.key === 'pool_recycle_restore_permission'
-            ? (recyclePermsQuery.data ?? []).map((item) => ({
-                value: item.code,
-                label: `${item.name}（${item.code}）`,
-              }))
+            ? restorePermissionOptions(
+                (recyclePermsQuery.data ?? []).map((item) => ({
+                  value: item.code,
+                  label: `${item.name}（${item.code}）`,
+                })),
+                String((record.value as Record<string, unknown> | null)?.text ?? ''),
+              )
             : undefined
         }
         onSave={(next) => settingMutation.mutateAsync({ key: record.key, value: next, silent: true })}
