@@ -5624,3 +5624,128 @@ table:not(.semi-table) td.cell-right {
   text-align: left;
   line-height: 1.55;
 }
+/* ============================================================
+   商机转化台阶：改成四列清单（2026-11-19 重排）
+   上一版挤在中间、落差写成缩进行，读不出主次 ——
+   主人：「布局不够明了，让人有看不明白的感觉」。
+   ============================================================ */
+.deal-table { display: flex; flex-direction: column; }
+
+.deal-table-head,
+.deal-table-row {
+  display: grid;
+  /* 四列铺满整卡：上一版阶段列一个人吃掉剩余宽度，名字在左、数字全在右，
+     中间空出一大截，读起来像两块不相干的东西 —— 均匀分列更像一张表。 */
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: 18px;
+  align-items: center;
+}
+.deal-table-head {
+  padding: 0 10px 8px;
+  font-size: 11px;
+  color: var(--crm-text-3);
+  border-bottom: 1px solid rgba(17, 24, 39, .07);
+}
+.deal-table-row {
+  padding: 11px 10px;
+  border-bottom: 1px solid rgba(17, 24, 39, .05);
+  border-radius: 9px;
+  transition: background .15s;
+}
+.deal-table-row:hover { background: rgba(47, 109, 246, .035); }
+
+.deal-stage {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--crm-text);
+  min-width: 0;
+}
+.deal-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--crm-primary);
+  opacity: .35;
+}
+.deal-dot.is-1 { opacity: .55; }
+.deal-dot.is-2 { opacity: .78; }
+.deal-dot.is-3 { opacity: 1; }
+
+.deal-count {
+  font-size: 17px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--crm-text);
+}
+.deal-count i {
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--crm-text-3);
+  margin-left: 3px;
+}
+.deal-rate {
+  font-size: 12px;
+  color: var(--crm-text-2);
+  font-variant-numeric: tabular-nums;
+}
+.deal-rate.is-full { color: var(--crm-success); }
+.deal-drop {
+  font-size: 12px;
+  color: #ff7d00;
+  font-variant-numeric: tabular-nums;
+}
+.deal-drop.is-none { color: var(--crm-text-3); }
+
+/* 卡片右上角：整体转化 */
+.deal-total {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--crm-primary) 6%, #fff);
+  border: 1px solid color-mix(in srgb, var(--crm-primary) 14%, #fff);
+}
+.deal-total-label { font-size: 11px; color: var(--crm-text-3); }
+.deal-total-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--crm-primary);
+  font-variant-numeric: tabular-nums;
+}
+.deal-total-value i { font-style: normal; font-size: 12px; font-weight: 600; margin-left: 1px; }
+.deal-total-foot { font-size: 11px; color: var(--crm-text-3); }
+
+@media (max-width: 1180px) {
+  .deal-table-head, .deal-table-row { grid-template-columns: minmax(0, 1fr) 72px 96px 96px; gap: 12px; }
+  .deal-total-foot { display: none; }
+}
+
+/* 展开明细那只按钮：原来是蓝字链接，看着像"随手一句"，其实是个开关 */
+.deal-toggle-btn.semi-button {
+  padding: 3px 12px;
+  font-size: 12px;
+  border-radius: 999px;
+  border: 1px dashed rgba(47, 109, 246, .38);
+  background: rgba(47, 109, 246, .04);
+  color: var(--crm-primary);
+}
+.deal-toggle-btn.semi-button:hover { background: rgba(47, 109, 246, .09); }
+
+/* 明细表：三列右对齐，别再让"较上一阶段"被推到最右 */
+.deal-steps-detail .semi-table { margin-top: 4px; }
+
+/* 全站表格默认居中（index.css 开头的约定），明细这里要求数字右对齐 */
+.deal-detail-table .semi-table-thead > tr > th:nth-child(n + 2),
+.deal-detail-table .semi-table-tbody > tr > td:nth-child(n + 2) { text-align: right; }
+.deal-detail-table .semi-table-thead > tr > th:nth-child(1),
+.deal-detail-table .semi-table-tbody > tr > td:nth-child(1) { text-align: left; padding-left: 20px; }
+
+/* 四列清单的右对齐（上一版写了 is-right 却没给规则，数字全挤在列左） */
+.deal-table-head .is-right,
+.deal-table-row .is-right { text-align: right; }

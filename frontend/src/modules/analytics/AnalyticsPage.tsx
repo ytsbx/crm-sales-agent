@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState, type ReactNode } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Banner, Button, Input, Modal, Select, Table, Toast } from '@douyinfe/semi-ui'
 
@@ -569,10 +569,7 @@ export default function AnalyticsPage() {
                 label: '线索转化率',
                 tone: 'primary',
                 value: `${((lead?.conversion_rate ?? 0) * 100).toFixed(0)}%`,
-                hint:
-                  lead?.average_conversion_days != null
-                    ? `平均 ${lead.average_conversion_days} 天转化`
-                    : `线索 ${lead?.total ?? 0} 条`,
+                hint: `线索 ${lead?.total ?? 0} 条`,
               },
               {
                 label: '客户活跃 / 沉睡',
@@ -784,61 +781,59 @@ export default function AnalyticsPage() {
         <Card
           title="商机转化台阶"
           note="四段都是真发生过的商机：报过价的必然创建过，成交的必然报过价"
+          extra={dealSteps.max === 0 ? undefined : (
+            <span className="deal-total">
+              <span className="deal-total-label">整体转化</span>
+              <span className="deal-total-value">
+                {Math.round((dealSteps.steps[dealSteps.steps.length - 1].count / Math.max(1, dealSteps.steps[0].count)) * 100)}
+                <i>%</i>
+              </span>
+              <span className="deal-total-foot">
+                {dealSteps.steps[0].count} 商机 → {dealSteps.steps[dealSteps.steps.length - 1].count} 订单
+              </span>
+            </span>
+          )}
         >
           {dealSteps.max === 0 ? (
             <NoData />
           ) : (
             <>
-              <div className="deal-steps-body">
-              <div className="deal-steps">
+              {/* 逐项清单（2026-11-19 重排）。
+                  上一版把四段挤在中间一窄条、右边挂一个孤立的小方块，落差又写在
+                  两行之间的缩进行里 —— 主人原话「布局不够明了，让人有看不明白的感觉」。
+                  这一版改成一张真正的四列表：阶段 / 单量 / 较上一段 / 掉了多少，
+                  左边缘对齐、数字一律右对齐、落差单独占一列（−50 单 直接写出来），
+                  整卡铺满，不再有中间那截空。 */}
+              <div className="deal-table">
+                <div className="deal-table-head">
+                  <span>阶段</span>
+                  <span className="is-right">单量</span>
+                  <span className="is-right">较上一段</span>
+                  <span className="is-right">掉了多少</span>
+                </div>
                 {dealSteps.steps.map((step, index) => {
                   const prev = index === 0 ? null : dealSteps.steps[index - 1].count
-                  const rate = prev === null || prev === 0
-                    ? null
-                    : Math.round((step.count / prev) * 100)
-                  // 段与段之间"掉了多少单"才是漏斗真正的信息：光看 37% 不知道是
-                  // 掉了 50 个还是 5 个。这里显式写出来，缩进到下一段的条起点上。
+                  const rate = prev === null || prev === 0 ? null : Math.round((step.count / prev) * 100)
                   const drop = prev === null ? null : prev - step.count
                   return (
-                    <Fragment key={step.key}>
-                      {/* 落差写在**上一段之后、这一段之前**：78 → 29 少了 50 单，
-                          这句要落在 79 和 29 中间，放在 29 下面就变成"29 → 11 少了 50"。 */}
-                      {drop !== null && drop > 0 && (
-                        <div className="deal-step-drop">
-                          <span>↓ 少了 {drop} 单</span>
-                        </div>
-                      )}
-                      <div className="deal-step">
-                        <span className="deal-step-name">{step.name}</span>
-                        <span className="deal-step-track">
-                          <span
-                            className={`deal-step-fill deal-step-fill-${Math.min(index, 3)}`}
-                            style={{ width: `${Math.max(1.5, (step.count / dealSteps.max) * 100)}%` }}
-                          />
-                        </span>
-                        <span className="deal-step-count">
-                          {step.count}
-                          <i>单</i>
-                        </span>
-                        <span className={`deal-step-rate${rate !== null && rate >= 100 ? ' is-full' : ''}`}>
-                          {prev === null ? '起点' : rate === null ? '-' : `${rate}%`}
-                        </span>
-                      </div>
-                    </Fragment>
+                    <div className="deal-table-row" key={step.key}>
+                      <span className="deal-stage">
+                        <i className={`deal-dot is-${Math.min(index, 3)}`} />
+                        {step.name}
+                      </span>
+                      <span className="deal-count is-right">
+                        {step.count}
+                        <i>单</i>
+                      </span>
+                      <span className={`deal-rate is-right${rate !== null && rate >= 100 ? ' is-full' : ''}`}>
+                        {prev === null ? '起点' : rate === null ? '-' : `${rate}%`}
+                      </span>
+                      <span className={`deal-drop is-right${drop === null || drop === 0 ? ' is-none' : ''}`}>
+                        {drop === null ? '—' : drop === 0 ? '没掉' : `−${drop} 单`}
+                      </span>
+                    </div>
                   )
                 })}
-              </div>
-              {/* 右边这块是把"所以呢"直接给出来：79 个进来，最后 11 张订单。
-                  原来这一整条内容只占到卡片 3/4，右边留 240px 空白。 */}
-              <div className="deal-summary">
-                <span className="deal-summary-label">整体转化</span>
-                <span className="deal-summary-value">
-                  {Math.round((dealSteps.steps[dealSteps.steps.length - 1].count / Math.max(1, dealSteps.steps[0].count)) * 100)}<i>%</i>
-                </span>
-                <span className="deal-summary-foot">
-                  {dealSteps.steps[0].count} 个商机 → {dealSteps.steps[dealSteps.steps.length - 1].count} 张订单
-                </span>
-              </div>
               </div>
               <p className="deal-steps-note">
                 「有过报价」= 阶段记录里出现过报价的商机；「成交」= 已赢单；
@@ -847,6 +842,7 @@ export default function AnalyticsPage() {
               </p>
               <div className="deal-steps-toggle">
                 <Button
+                  className="deal-toggle-btn"
                   theme="borderless"
                   size="small"
                   onClick={() => setShowStageDetail((open) => !open)}
@@ -856,30 +852,39 @@ export default function AnalyticsPage() {
               </div>
               {showStageDetail && (
                 <Table
+                  className="deal-detail-table"
                   size="small"
                   pagination={false}
                   rowKey="stage_id"
                   dataSource={opportunity?.stage_conversion ?? []}
+                  // 明细表也铺成四列（2026-11-19）：原来三列、最后一列右对齐到最右，
+                  // 中间空出一大截，读起来又散。现在把"跳过上一级"单独成一列，
+                  // 每一列都有内容，也把"为什么会出现 >100%"讲在同一行里。
                   columns={[
-                    { title: '阶段', dataIndex: 'stage_name', width: 130 },
-                    { title: '到达过', dataIndex: 'reached_count', width: 90 },
+                    { title: '阶段', dataIndex: 'stage_name', width: 300 },
+                    { title: '到达过', dataIndex: 'reached_count', width: 240, className: 'cell-right' },
                     {
                       title: '较上一阶段',
                       dataIndex: 'conversion_from_previous',
-                      render: (value: number | null, _record, index) => {
+                      width: 280,
+                      className: 'cell-right',
+                      render: (value: number | null) => {
                         if (value === null) return <span className="muted">-</span>
-                        // >100% 不印百分比：那只会让人以为系统算崩了。
-                        // 真实含义是"有商机跳过了上一阶段"，直接把它写出来。
-                        if (value > 1) {
-                          const rows = opportunity?.stage_conversion ?? []
-                          const prevReached = rows[index - 1]?.reached_count ?? 0
-                          return (
-                            <span className="deal-skip">
-                              跳过上一级 {Math.max(0, _record.reached_count - prevReached)} 单
-                            </span>
-                          )
-                        }
+                        // >100% 不印百分比：那只会让人以为系统算崩了
+                        if (value > 1) return <span className="muted">—</span>
                         return `${(value * 100).toFixed(0)}%`
+                      },
+                    },
+                    {
+                      title: '跳过上一级',
+                      dataIndex: 'reached_count',
+                      className: 'cell-right',
+                      render: (_value: number, record, index) => {
+                        const rows = opportunity?.stage_conversion ?? []
+                        const prevReached = rows[index - 1]?.reached_count ?? 0
+                        const skipped = Math.max(0, record.reached_count - prevReached)
+                        if (index === 0 || skipped === 0) return <span className="muted">—</span>
+                        return <span className="deal-skip">{skipped} 单</span>
                       },
                     },
                   ]}
