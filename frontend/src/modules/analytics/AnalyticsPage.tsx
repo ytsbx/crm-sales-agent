@@ -543,6 +543,16 @@ export default function AnalyticsPage() {
             className="kpi-grid kpi-grid-fixed"
             items={[
               {
+                // 7 张卡排 4 + 3，右下永远空一格（主人 2026-11-19：
+                // 「加一个…空一个丑啊」）。补一张"总量"当分母放在最前：
+                // 后面五个都是率，率没有基数就说不清 —— 79 单里成交 11 单，
+                // 比单看 52% 更像一句人话。凑满 8 张，两行正好铺齐。
+                label: '累计商机',
+                tone: 'default',
+                value: `${createdTotalQuery.data?.total ?? 0} 单`,
+                hint: '含成交与失单的全部商机',
+              },
+              {
                 label: '商机成交率',
                 tone: 'primary',
                 value: `${((opportunity?.win_rate ?? 0) * 100).toFixed(0)}%`,
