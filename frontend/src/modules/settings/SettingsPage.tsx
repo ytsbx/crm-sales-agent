@@ -157,11 +157,17 @@ const SETTING_GROUPS: Array<{
   // 实际发不出单"。报价审批分级仍在「审批与外部」页签里单独编辑，不受影响。
   {
     id: 'notify',
-    hint: '导出上限按行数算；通知渠道关掉之后不再推送，历史记录仍保留。',
+    hint: '导出上限按行数算；体积重折算只影响物流计费重量。',
     title: '通知与导出',
     color: '#00b42a',
-    note: '导出上限、体积重折算、通知渠道与重试',
-    keys: ['export', 'logistics_volumetric_ratio', 'notification_channels', 'notification_levels', 'notification_retry'],
+    /* 通知渠道 / 通知分级 / 通知重试三项从这一组摘掉了（2026-11-19 主人：
+       「要么用户选择器改，要么就不需要这个东西，用户是没有任何代码基础的」）。
+       这三项的值都是嵌套对象（wecom_events / by_type / backoff_minutes），
+       摊在键值行里只能显示「已配置 N 项」，点开也只会露出机器键。
+       而「通知」页签里本来就有现成的选择器界面（开关 + 四类事件 + 分级 + 失败补投），
+       所以这里不需要重复：要改通知就去那里按开关点，不在这里碰 JSON。 */
+    note: '导出上限、体积重折算；通知渠道与分级在「通知」页签里按开关配',
+    keys: ['export', 'logistics_volumetric_ratio'],
   },
 ]
 
