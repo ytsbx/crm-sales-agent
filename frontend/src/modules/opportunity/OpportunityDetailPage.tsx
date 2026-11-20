@@ -551,7 +551,13 @@ export default function OpportunityDetailPage() {
                   // 收到 190 刚好 4 列，两行排满
                   gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))',
                   gap: 20,
-                  alignContent: 'start',
+                  /* 2026-11-20：原来是 alignContent:'start' —— 八个字段挤在左栏顶部，
+                     右栏卡片 + 三个按钮却一路垂到底，整块看着"左上高、右下低"（主人原话）。
+                     现在：左栏拉到右栏的高度（alignSelf:stretch），两行字段保持 20 的行距、
+                     整块垂直居中。字段不再顶在顶上，也不会被摊到上下两头。
+                     试过 1fr 等分两行：行距被拉到 126px，中间空一大块，比原样更难看。 */
+                  alignContent: 'center',
+                  alignSelf: 'stretch',
                 }}
               >
                 <DetailField label="客户" value={opportunity.customer_name} />

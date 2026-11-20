@@ -113,7 +113,7 @@ export default function DecisionMakerCard({
 
   return (
     <div className={boxed ? 'card-block' : undefined} style={boxed ? { marginTop } : undefined}>
-      <div className="toolbar" style={{ marginBottom: 12 }}>
+      <div className="toolbar" style={{ marginBottom: 8 }}>
         <div style={{ fontWeight: 600 }}>{title}</div>
         <div style={{ flex: 1 }} />
         <span style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
@@ -149,7 +149,9 @@ export default function DecisionMakerCard({
             style={{
               display: 'flex',
               gap: 12,
-              padding: '14px 16px',
+              /* 2026-11-20：14/16 → 12/14。右栏这张卡加三个按钮比左栏八字段高出 50px，
+                 商机详情的概览被撑成"左上高、右下低"；卡片自身先瘦一圈。 */
+              padding: '12px 14px',
               borderRadius: 'var(--crm-radius)',
               background: 'var(--crm-surface-low)',
               border: '1px solid var(--crm-surface-high)',
@@ -180,7 +182,7 @@ export default function DecisionMakerCard({
                 style={{
                   color: 'var(--crm-text-3)',
                   fontSize: 12,
-                  marginTop: 6,
+                  marginTop: 4,
                   display: 'flex',
                   flexWrap: 'wrap',
                   alignItems: 'center',
@@ -207,7 +209,7 @@ export default function DecisionMakerCard({
               ⚠️ Semi 的 Button 默认 type="primary"，只写 theme="borderless" 仍带浅蓝底，
               必须显式 type="tertiary"（全局 CSS 对 tertiary 做了透明兜底）。 */}
           {!compact && (
-            <div style={{ display: 'flex', gap: 4, marginTop: 12, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 4, marginTop: 10, flexWrap: 'wrap' }}>
               <Button
                 size="small"
                 type="primary"
