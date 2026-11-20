@@ -746,18 +746,32 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
                       setCreateForm({ ...createForm, items })
                     }}
                   />
-                  <Button
-                    type="danger"
-                    disabled={createForm.items.length === 1}
-                    onClick={() =>
-                      setCreateForm({
-                        ...createForm,
-                        items: createForm.items.filter((_, i) => i !== index),
-                      })
-                    }
-                  >
-                    删
-                  </Button>
+                  {createForm.items.length === 1 ? (
+                    /* 只剩一行时删不了，把原因直接写出来 —— 灰按钮不给理由、
+                       点下去也没反应（30-前端约定）。 */
+                    <span
+                      style={{
+                        alignSelf: 'center',
+                        fontSize: 12,
+                        color: 'var(--crm-text-3)',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      仅一行
+                    </span>
+                  ) : (
+                    <Button
+                      type="danger"
+                      onClick={() =>
+                        setCreateForm({
+                          ...createForm,
+                          items: createForm.items.filter((_, i) => i !== index),
+                        })
+                      }
+                    >
+                      删
+                    </Button>
+                  )}
                 </div>
               ))}
             </div>

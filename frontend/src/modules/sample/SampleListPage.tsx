@@ -1325,7 +1325,7 @@ export default function SampleListPage() {
 
                 {detail.status === 'shipped' && (
                   <Popconfirm title="确认登记客户已签收？" onConfirm={() => signMutation.mutate()}>
-                    <Button theme="outline" type="primary" loading={signMutation.isPending}>登记签收</Button>
+                    <Button theme="borderless" type="primary" style={{ alignSelf: 'flex-start' }} loading={signMutation.isPending}>登记签收</Button>
                   </Popconfirm>
                 )}
 
@@ -1340,10 +1340,16 @@ export default function SampleListPage() {
                     <Button
                       disabled={!feedback.trim()}
                       loading={feedbackMutation.isPending}
+                      style={{ alignSelf: 'flex-start' }}
                       onClick={() => feedbackMutation.mutate()}
                     >
                       登记反馈
                     </Button>
+                    {!feedback.trim() && (
+                      <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
+                        先在上面写一句客户怎么说，再登记反馈。
+                      </div>
+                    )}
                   </>
                 )}
 

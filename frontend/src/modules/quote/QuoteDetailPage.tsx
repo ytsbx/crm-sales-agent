@@ -1558,9 +1558,11 @@ export default function QuoteDetailPage() {
         <div className="quote-master-warning">
           <div className="qmw-main">
             <div className="qmw-title">这几条明细的主数据还没确认，不能用来做正式报价</div>
-            {(detail.master_warnings ?? []).map((warning) => (
-              <div className="qmw-item" key={warning}>{warning}</div>
-            ))}
+            {/* 每一条明细在这里原样复述一遍，和上方「现在这一步」第一条是一字不差的两段长句，
+                读完两遍才知道说的是同一件事（2026-11-20 截图）。这里只留处数和去哪看。 */}
+            <div className="qmw-item">
+              {(detail.master_warnings ?? []).length} 处不一致，逐条说明见上方「现在这一步」。
+            </div>
           </div>
           {/* 入口放到右侧垂直居中：原来按钮压在文案最后一行下面，整条看着又长又挤。
               现在"说明在左、动作在右"，一眼知道下一步点哪儿。 */}

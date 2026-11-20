@@ -258,9 +258,13 @@ export default function AgentPage() {
       <SectionCard style={{ display: 'flex', flexDirection: 'column' }}>
         {/* 原来是一块通栏的深蓝实心按钮，压在这一页最顶上，比右边的对话框还抢眼。
             换成浅色描边按钮：位置不变、还能点，但不再当色块用。 */}
+        {/* 通栏按钮在这栏里像一根长条，跟下面的会话列表分不出主次 ——
+            收成靠左的小按钮，位置不变、一眼能点。 */}
         <Button
-          block
-          style={{ marginBottom: 12, flexShrink: 0 }}
+          size="small"
+          theme="outline"
+          type="primary"
+          style={{ marginBottom: 12, flexShrink: 0, alignSelf: 'flex-start' }}
           disabled={streaming}
           onClick={() => {
             if (busyRef.current) return
