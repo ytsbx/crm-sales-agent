@@ -543,40 +543,45 @@ export default function OpportunityDetailPage() {
         <div style={{ marginTop: 16 }}>
           {activeKey === 'overview' && (
             <div className="detail-split" style={{ gap: 24 }}>
-              <div
-                className="split-main"
-                style={{
-                  display: 'grid',
-                  // 200px 时左栏只有 3 列，8 个字段排成 3+3+2、最后一行空一格；
-                  // 收到 190 刚好 4 列，两行排满
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))',
-                  gap: 20,
-                  /* 2026-11-20：原来是 alignContent:'start' —— 八个字段挤在左栏顶部，
-                     右栏卡片 + 三个按钮却一路垂到底，整块看着"左上高、右下低"（主人原话）。
-                     现在：左栏拉到右栏的高度（alignSelf:stretch），两行字段保持 20 的行距、
-                     整块垂直居中。字段不再顶在顶上，也不会被摊到上下两头。
-                     试过 1fr 等分两行：行距被拉到 126px，中间空一大块，比原样更难看。 */
-                  alignContent: 'center',
-                  alignSelf: 'stretch',
-                }}
-              >
-                <DetailField label="客户" value={opportunity.customer_name} />
-                <DetailField label="当前阶段" value={opportunity.stage_name} />
-                <DetailField
-                  label="预计金额"
-                  value={opportunity.expected_amount ? formatMoney(toTwoDecimals(opportunity.expected_amount), 'CNY') : '-'}
-                />
-                <DetailField label="预计成交日期" value={opportunity.expected_close_date ?? '-'} />
-                <DetailField label="竞争对手" value={opportunity.competitor ?? '-'} />
-                <DetailField label="下一步动作" value={opportunity.next_action ?? '-'} />
-                <DetailField label="来源" value={opportunity.source ?? '-'} />
-                <DetailField label="创建时间" value={formatBeijingTime(opportunity.created_at)} />
-                {opportunity.status === 'loss' && (
+              <div className="split-main" style={{ minWidth: 0 }}>
+                {/* 2026-11-20：左栏原来只有八个小字段贴在顶部，下面空一大截，
+                    右栏「决策卡 + 三个按钮」却一路垂到底 —— 主人原话"左上角高、右下角低"，
+                    后来改成居中又说"上下都空空的"。根子是左右两栏高度和密度都不匹配。
+                    现在左栏补一行和右栏同规格的标题（商机概览 / 共 N 项），
+                    字段从 4 列 2 行改成 3 列 3 行：版面长到跟右栏差不多高，
+                    中间不再留大片空白，两栏顶端也齐在同一行。 */}
+                <div className="toolbar" style={{ marginBottom: 8 }}>
+                  <div style={{ fontWeight: 600 }}>商机概览</div>
+                  <div style={{ flex: 1 }} />
+                  <span style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
+                    共 {opportunity.status === 'loss' ? 9 : 8} 项
+                  </span>
+                </div>
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+                    gap: '18px 24px',
+                  }}
+                >
+                  <DetailField label="客户" value={opportunity.customer_name} />
+                  <DetailField label="当前阶段" value={opportunity.stage_name} />
                   <DetailField
-                    label="失单原因"
-                    value={`${opportunity.loss_reason_name ?? '-'}${opportunity.loss_remark ? `（${opportunity.loss_remark}）` : ''}`}
+                    label="预计金额"
+                    value={opportunity.expected_amount ? formatMoney(toTwoDecimals(opportunity.expected_amount), 'CNY') : '-'}
                   />
-                )}
+                  <DetailField label="预计成交日期" value={opportunity.expected_close_date ?? '-'} />
+                  <DetailField label="竞争对手" value={opportunity.competitor ?? '-'} />
+                  <DetailField label="下一步动作" value={opportunity.next_action ?? '-'} />
+                  <DetailField label="来源" value={opportunity.source ?? '-'} />
+                  <DetailField label="创建时间" value={formatBeijingTime(opportunity.created_at)} />
+                  {opportunity.status === 'loss' && (
+                    <DetailField
+                      label="失单原因"
+                      value={`${opportunity.loss_reason_name ?? '-'}${opportunity.loss_remark ? `（${opportunity.loss_remark}）` : ''}`}
+                    />
+                  )}
+                </div>
               </div>
               {/* 客户决策关系图（设计稿商机详情右栏）：这单要打通谁一目了然。
                   窄屏时整块落到左栏下方，不会被压成一条 */}
