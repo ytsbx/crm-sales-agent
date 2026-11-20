@@ -1198,15 +1198,18 @@ export default function OrderDetailPage() {
             <Table<Payment>
               className="order-tab-table"
               columns={[
-                { title: '应收节点', dataIndex: 'plan_name', width: narrowScreen ? 100 : 110, render: (v: string | null) => v ?? '-' },
-                { title: '收款日期', dataIndex: 'received_date', width: narrowScreen ? 118 : 120 },
-                { title: '整笔到账', dataIndex: 'received_amount', width: narrowScreen ? 118 : 120, render: (v: number, r: Payment) => formatMoney(r.received_amount_exact ?? v, r.currency ?? order.currency) },
-                { title: '已分配', dataIndex: 'allocated_amount', width: 110, className: 'cell-right col-hide-narrow', render: (v: number, r: Payment) => r.status === 'confirmed' ? formatMoney(r.allocated_amount_exact ?? v, r.currency ?? order.currency) : '-' },
-                { title: '待分配', dataIndex: 'unallocated_amount', width: 110, className: 'cell-right col-hide-narrow', render: (v: number, r: Payment) => r.status === 'confirmed' ? formatMoney(r.unallocated_amount_exact ?? v, r.currency ?? order.currency) : '-' },
-                { title: '方式', dataIndex: 'payment_method', width: 100, className: 'col-hide-narrow', render: (v: string | null) => v ?? '-' },
+                /* 这一排列宽原来合计 1150，卡片只有 1130 —— 最后「操作」列被右边缘
+                   切掉一半；「应收节点」110 也放不下「尾款（70%）」被截成省略号。
+                   重新分：节点 150、凭证 190→160，金额列 108（¥94,500.00 不截）。 */
+                { title: '应收节点', dataIndex: 'plan_name', width: narrowScreen ? 130 : 150, render: (v: string | null) => v ?? '-' },
+                { title: '收款日期', dataIndex: 'received_date', width: narrowScreen ? 112 : 114 },
+                { title: '整笔到账', dataIndex: 'received_amount', width: narrowScreen ? 112 : 114, render: (v: number, r: Payment) => formatMoney(r.received_amount_exact ?? v, r.currency ?? order.currency) },
+                { title: '已分配', dataIndex: 'allocated_amount', width: 108, className: 'cell-right col-hide-narrow', render: (v: number, r: Payment) => r.status === 'confirmed' ? formatMoney(r.allocated_amount_exact ?? v, r.currency ?? order.currency) : '-' },
+                { title: '待分配', dataIndex: 'unallocated_amount', width: 108, className: 'cell-right col-hide-narrow', render: (v: number, r: Payment) => r.status === 'confirmed' ? formatMoney(r.unallocated_amount_exact ?? v, r.currency ?? order.currency) : '-' },
+                { title: '方式', dataIndex: 'payment_method', width: 90, className: 'col-hide-narrow', render: (v: string | null) => v ?? '-' },
                 {
                   title: '回款凭证',
-                  width: narrowScreen ? 140 : 190,
+                  width: narrowScreen ? 130 : 160,
                   render: (_: unknown, record: Payment) => (
                     <PaymentVoucherControl
                       payment={record}
@@ -1225,14 +1228,19 @@ export default function OrderDetailPage() {
                     <Tag color={value === '已确认' ? 'green' : value === '已驳回' ? 'red' : 'orange'}>{value}</Tag>
                   ),
                 },
-                {
-                  title: '确认人',
-                  dataIndex: 'confirmed_by_name',
-                  width: 90,
-                  className: 'col-hide-narrow',
-                  onHeaderCell: () => ({ className: 'col-hide-narrow' }),
-                  render: (v: string | null) => v ?? '-',
-                },
+                /* 全部回款都没确认人时整列挂「-」，白占 90 宽 —— 按「整列全空不渲染」收掉 */
+                ...((paymentsQuery.data ?? []).some((p: Payment) => p.confirmed_by_name)
+                  ? [
+                      {
+                        title: '确认人',
+                        dataIndex: 'confirmed_by_name',
+                        width: 90,
+                        className: 'col-hide-narrow',
+                        onHeaderCell: () => ({ className: 'col-hide-narrow' }),
+                        render: (v: string | null) => v ?? '-',
+                      },
+                    ]
+                  : []),
                 {
                   title: '操作',
                   width: 80,
