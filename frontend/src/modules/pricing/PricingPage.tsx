@@ -198,7 +198,9 @@ export default function PricingPage() {
               <div style={{ marginBottom: 4 }}>目标利润率（留空则用价格规则里的值）</div>
               <Input value={targetMargin} onChange={setTargetMargin} placeholder="例如 0.30" />
             </div>
-            <div>
+            {/* 拟报价跨两列：七个字段排三列，最后一行只剩它一个，
+                右边空两格看着像少填了东西 —— 给它宽一点，视觉上也收得齐 */}
+            <div style={{ gridColumn: 'span 2' }}>
               <div style={{ marginBottom: 4 }}>拟报价（元）</div>
               <Input value={quotedPrice} onChange={setQuotedPrice} placeholder="例如 25" />
               {/* 按钮灰着得有个说法，不然只会让人以为坏了。原来那句解释挂在标签上、
@@ -220,7 +222,8 @@ export default function PricingPage() {
             主人 2026-11-20 贴图说「这个布局设计有点太丑了」。
             没数据时只留一张引导卡，选完 SKU 再展开四块真内容。 */}
         {!result && (
-          <SectionCard title="核价结果">
+          // 空态这一张跨满两列：只占左半格的话右边又空一半
+          <SectionCard title="核价结果" style={{ gridColumn: '1 / -1' }}>
             <div style={{ padding: '18px 0 10px' }}>
               <EmptyState
                 title="选好产品、填上数量，这一栏就出数"
