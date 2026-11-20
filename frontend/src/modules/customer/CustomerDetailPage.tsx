@@ -1194,10 +1194,23 @@ export default function CustomerDetailPage() {
           style={{ marginTop: 16 }}
           extra={
             <>
-              <Button size="small" loading={aiMutation.isPending} onClick={() => aiMutation.mutate('summary')}>
+              {/* 这两个按钮原来是 Semi 默认浅灰底，看着像禁用态（2026-11-20 巡检）。
+                  现在：客户总结 = 白底描边主按钮，跟进建议 = 文字按钮。 */}
+              <Button
+                size="small"
+                type="primary"
+                theme="outline"
+                loading={aiMutation.isPending}
+                onClick={() => aiMutation.mutate('summary')}
+              >
                 客户总结
               </Button>
-              <Button size="small" loading={aiMutation.isPending} onClick={() => aiMutation.mutate('followup')}>
+              <Button
+                size="small"
+                theme="borderless"
+                loading={aiMutation.isPending}
+                onClick={() => aiMutation.mutate('followup')}
+              >
                 跟进建议
               </Button>
             </>

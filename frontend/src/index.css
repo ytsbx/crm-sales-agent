@@ -4534,35 +4534,40 @@ table:not(.semi-table) td.cell-right {
 .cust-pano-tile.tone-success   { --tile-accent: #00b42a; --tile-wash: #e9f9ed; }
 .cust-pano-tile.tone-teal      { --tile-accent: #0d9488; --tile-wash: #e6f6f2; }
 
+/* 2026-11-20：上一版整块浅色填充（wash），四/五张并排时像一排彩纸。
+   现在底色统一（不染色），颜色只留**左侧 3px 语义色线**。 */
 .cust-pano-tile.tone-primary,
 .cust-pano-tile.tone-secondary,
 .cust-pano-tile.tone-caution,
 .cust-pano-tile.tone-success,
 .cust-pano-tile.tone-teal {
-  background: var(--tile-wash);
-  border-left: 3px solid color-mix(in srgb, var(--tile-accent) 55%, #ffffff);
+  background: var(--crm-surface-low);
+  border-left: 3px solid var(--tile-accent);
 }
 .cust-pano-tile.tone-primary:hover,
 .cust-pano-tile.tone-secondary:hover,
 .cust-pano-tile.tone-caution:hover,
 .cust-pano-tile.tone-success:hover,
 .cust-pano-tile.tone-teal:hover {
-  background: color-mix(in srgb, var(--tile-wash) 78%, var(--tile-accent) 8%);
-  border-color: color-mix(in srgb, var(--tile-accent) 45%, #ffffff);
+  background: var(--crm-surface);
+  border-color: var(--crm-outline);
+  border-left-color: var(--tile-accent);
 }
 .cust-pano-tile.tone-primary .cust-pano-label,
 .cust-pano-tile.tone-secondary .cust-pano-label,
 .cust-pano-tile.tone-caution .cust-pano-label,
 .cust-pano-tile.tone-success .cust-pano-label,
 .cust-pano-tile.tone-teal .cust-pano-label {
-  color: color-mix(in srgb, var(--tile-accent) 62%, #727687);
+  /* 标签统一灰：颜色语义已由左侧色线表达 */
+  color: var(--crm-text-3);
 }
 .cust-pano-tile.tone-primary .cust-pano-value,
 .cust-pano-tile.tone-secondary .cust-pano-value,
 .cust-pano-tile.tone-caution .cust-pano-value,
 .cust-pano-tile.tone-success .cust-pano-value,
 .cust-pano-tile.tone-teal .cust-pano-value {
-  color: color-mix(in srgb, var(--tile-accent) 78%, #181c23);
+  /* 数字回到正文色：五种颜色并排时读数字更费眼 */
+  color: var(--crm-text);
 }
 
 
