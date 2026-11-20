@@ -777,7 +777,18 @@ export default function SampleListPage() {
             </Button>
             {/* 能不能删由后端下发（`can_delete`）：只有还没走流程的（待审批 / 已驳回）
                 才给「删除」—— 已批准之后的单子连着审批留痕与车间依据。判据别在前端再写一份。 */}
-            {canManage && !record.can_delete && <span title="已提交同序 OA 或已进入制作、寄送流程的样品不能直接删除"><Button theme="borderless" size="small" disabled>删除</Button></span>}
+            {/* 不能删的行原来摆的是一个**禁用的「删除」按钮**：禁用色没压住，
+                看着和旁边可点的「删除」一样是蓝字，同一列出现"一行红、其余蓝"
+                （主人 2026-11-20 追问"怎么有的删除是红色有的不是"）。
+                改成灰字「不可删」，title 里说原因 —— 这一列只剩能删的红、不能删的灰。 */}
+            {canManage && !record.can_delete && (
+              <span
+                title="已提交同序 OA，或已进入制作 / 寄送流程的样品不能直接删除"
+                style={{ color: 'var(--crm-text-3)', fontSize: 12, marginLeft: 10 }}
+              >
+                不可删
+              </span>
+            )}
             {canManage && record.can_delete && (
               <Popconfirm
                 title="这张打样单将移入回收站，可在“回收站 → 样品”中恢复。"

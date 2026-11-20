@@ -6516,3 +6516,17 @@ table:not(.semi-table) td.cell-right {
   transform: none !important;
   box-shadow: none !important;
 }
+
+/* ─────────────── 表格里禁用的按钮要真是灰的（2026-11-20）
+   样品管理里"不能删的行"原来摆一个禁用的「删除」，但禁用色没压住，
+   和旁边可点的「删除」一样是蓝字 —— 同一列出现"一行红、其余蓝"。
+   禁用态统一灰字、无底、无投影。 */
+.semi-table-tbody .semi-button.semi-button-disabled,
+.semi-table-tbody .semi-button:disabled {
+  color: #a9b1bd !important;
+  background: transparent !important;
+  background-image: none !important;
+  border: none !important;
+  box-shadow: none !important;
+  cursor: not-allowed !important;
+}
