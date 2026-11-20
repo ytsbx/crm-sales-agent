@@ -995,8 +995,17 @@ export default function AnalyticsPage() {
           )}
           <div style={{ marginTop: 14, fontSize: 13, color: 'var(--crm-text-2)', lineHeight: 2 }}>
             <div>低价审批率：{asPercent(pricing?.low_price_approval_rate ?? 0)}</div>
-            <div>平均让价：{((pricing?.average_discount_rate ?? 0) * 100).toFixed(2)}%</div>
-            <div>最大让价：{((pricing?.max_discount_rate ?? 0) * 100).toFixed(2)}%</div>
+            {/* 让价率是「推荐价 - 报单价 / 推荐价」，整体报高了就会是负数。
+                写成「平均让价：-0.20%」看着像算错了 —— 负的时候改成「加价」，
+                一看就懂是报得比推荐价还高（2026-11-20 实拍）。 */}
+            <div>
+              平均{(pricing?.average_discount_rate ?? 0) >= 0 ? '让价' : '加价'}：
+              {Math.abs((pricing?.average_discount_rate ?? 0) * 100).toFixed(2)}%
+            </div>
+            <div>
+              最大{(pricing?.max_discount_rate ?? 0) >= 0 ? '让价' : '加价'}：
+              {Math.abs((pricing?.max_discount_rate ?? 0) * 100).toFixed(2)}%
+            </div>
           </div>
         </Card>
 
