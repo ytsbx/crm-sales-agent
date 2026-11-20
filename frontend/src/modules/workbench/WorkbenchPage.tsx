@@ -307,8 +307,9 @@ export default function WorkbenchPage() {
             </div>
           </div>
 
+          {/* kpi-inline：这四格是"一张卡里的统计"，不是四张卡（2026-11-21 巡检） */}
           <KpiStrip
-            className="kpi-grid kpi-cols-4"
+            className="kpi-grid kpi-cols-4 kpi-inline"
             tintValues={false}
             items={[
               {
@@ -350,16 +351,16 @@ export default function WorkbenchPage() {
                 <tr style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
                   {/* 数字列给固定宽：整表只有 5 列，不给宽度就会五等分，
                       「待跟进客户」占 170px 只放一个数，中间空得厉害 */}
-                  <th style={{ textAlign: 'left', padding: '6px 12px', fontWeight: 500 }}>成员</th>
-                  <th style={{ textAlign: 'right', padding: '6px 12px', fontWeight: 500, width: 100 }}>待办</th>
-                  <th style={{ textAlign: 'right', padding: '6px 12px', fontWeight: 500, width: 100 }}>逾期</th>
-                  <th style={{ textAlign: 'right', padding: '6px 12px', fontWeight: 500, width: 120 }}>
+                  <th style={{ textAlign: 'left', padding: '6px 12px', fontWeight: 500, width: '32%' }}>成员</th>
+                  <th style={{ textAlign: 'right', padding: '6px 12px', fontWeight: 500, width: '17%' }}>待办</th>
+                  <th style={{ textAlign: 'right', padding: '6px 12px', fontWeight: 500, width: '17%' }}>逾期</th>
+                  <th style={{ textAlign: 'right', padding: '6px 12px', fontWeight: 500, width: '17%' }}>
                     待跟进客户
                   </th>
                   {/* 金额列挂 .cell-right：index.css 里「原生表格一律居中」那条
                       !important 会把这里的内联右对齐压掉（实测 computed 仍是 center），
                       靠同名豁免拿回右对齐（2026-11-19）。 */}
-                  <th className="cell-right" style={{ textAlign: 'right', padding: '6px 12px', fontWeight: 500, width: 160 }}>
+                  <th className="cell-right" style={{ textAlign: 'right', padding: '6px 12px', fontWeight: 500, width: '17%' }}>
                     本月成交额
                   </th>
                 </tr>

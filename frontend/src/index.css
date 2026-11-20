@@ -659,6 +659,26 @@ a:not([href]) {
   border-top: 2px solid color-mix(in srgb, var(--kpi-accent) 38%, #fff);
 }
 
+/* 卡中卡消除：工作台「团队概览」外面已经是一张 SectionCard，
+   里面再摆四张带阴影、带色带的卡片就是"卡中卡"，层次糊成一片（2026-11-21 巡检）。
+   传 .kpi-inline 之后：去底色去阴影去色带，靠竖分隔线和区块标题站在同一平面。 */
+.kpi-grid.kpi-inline .kpi-card {
+  background: transparent;
+  border: 0;
+  border-left: 1px solid var(--crm-surface-high);
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0 20px;
+}
+.kpi-grid.kpi-inline .kpi-card:first-child {
+  border-left: 0;
+  padding-left: 0;
+}
+.kpi-grid.kpi-inline .kpi-card:hover {
+  box-shadow: none;
+  transform: none;
+}
+
 .kpi-value {
   font-size: var(--crm-font-kpi);
   /* 数字用等宽字形（tabular-nums）：一排卡片里「60」「1」「¥30,300」的字符
@@ -4440,7 +4460,9 @@ table:not(.semi-table) td {
    「空」变成「格子」，视线能顺着列往下走。 */
 .team-table th + th,
 .team-table td + td {
-  border-left: 1px solid var(--crm-surface-high);
+  /* 五列数字表不需要竖分隔线：列宽按比例摊开后，一条条线正好压在数字旁边，
+    比数字本身还显眼（2026-11-21 巡检）。斑马纹已经足够分行。 */
+  border-left: 0;
 }
 .team-table tbody tr:nth-child(even) {
   background: var(--crm-surface-low);
