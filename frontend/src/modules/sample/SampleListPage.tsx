@@ -27,7 +27,9 @@ import {
   Tag,
   TextArea,
   Toast,
+  Tooltip,
 } from '@douyinfe/semi-ui'
+import { IconHelpCircle } from '@douyinfe/semi-icons'
 
 import { listCustomers } from '../../shared/api/customer'
 import { listCustomInquiries } from '../../shared/api/inquiry'
@@ -745,8 +747,17 @@ export default function SampleListPage() {
         : fmt,
     },
     {
-      title: '操作',
-      width: compact ? 140 : 140,
+      // 这一列十行里有九行是"不能删"：与其每行挂一句灰字「不可删」，把那条规则
+      // 收到表头一个问号上，行内只在真能删的时候出现红字「删除」。
+      title: (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          操作
+          <Tooltip content="只有待审批（且没提交过钉钉 OA）、已驳回的打样单能删；已批准 / 已寄出的连审批留痕，不能删">
+            <IconHelpCircle style={{ fontSize: 13, color: 'var(--crm-text-3)', cursor: 'help' }} />
+          </Tooltip>
+        </span>
+      ),
+      width: compact ? 108 : 118,
       render: (_: unknown, record: SampleRequestRow) => {
         // 已删除的行只给「恢复」：后端对已删的单子查详情一律 404，
         // 摆一个「详情」也是死的，点了只会报错。
@@ -777,18 +788,9 @@ export default function SampleListPage() {
             </Button>
             {/* 能不能删由后端下发（`can_delete`）：只有还没走流程的（待审批 / 已驳回）
                 才给「删除」—— 已批准之后的单子连着审批留痕与车间依据。判据别在前端再写一份。 */}
-            {/* 不能删的行原来摆的是一个**禁用的「删除」按钮**：禁用色没压住，
-                看着和旁边可点的「删除」一样是蓝字，同一列出现"一行红、其余蓝"
-                （主人 2026-11-20 追问"怎么有的删除是红色有的不是"）。
-                改成灰字「不可删」，title 里说原因 —— 这一列只剩能删的红、不能删的灰。 */}
-            {canManage && !record.can_delete && (
-              <span
-                title="已提交同序 OA，或已进入制作 / 寄送流程的样品不能直接删除"
-                style={{ color: 'var(--crm-text-3)', fontSize: 12, marginLeft: 10 }}
-              >
-                不可删
-              </span>
-            )}
+            {/* 不能删的行什么也不摆（主人 2026-11-21「这个难道没有删除的地方吗」：
+                十几行里十一行都是灰字「不可删」，远看像整列都被拒绝掉了）。
+                规则挪到表头问号，行内只剩「详情」，能删的加一个红字「删除」。 */}
             {canManage && record.can_delete && (
               <Popconfirm
                 title="这张打样单将移入回收站，可在“回收站 → 样品”中恢复。"
