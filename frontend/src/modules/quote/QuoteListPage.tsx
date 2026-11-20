@@ -299,11 +299,13 @@ export default function QuoteListPage() {
           createMutation.mutate()
         }}
         confirmLoading={createMutation.isPending}
+        /* 没选商机时按钮是灰的，缺什么写在按钮上方常驻一行 */
+        okButtonProps={{ disabled: !opportunityId }}
         okText="生成报价单"
       >
         <div style={{ marginBottom: 8 }}>选择商机（明细取自该商机的需求商品）</div>
         <div style={{ marginBottom: 12, fontSize: 12, color: 'var(--crm-text-3)' }}>
-          报价必须关联商机；还没有合适商机？去「查价」页选品下单，可一键新建快捷商机
+          报价必须关联商机。还没有合适商机？去「价格中心」搜 SKU 选品，那里能一键新建快捷商机。
         </div>
         <Select
           placeholder="选择商机"
@@ -318,6 +320,11 @@ export default function QuoteListPage() {
           loading={opportunitiesQuery.isLoading}
           style={{ width: '100%' }}
         />
+        {!opportunityId && (
+          <p className="workflow-guide" style={{ marginTop: 8 }}>
+            先在上面选一个商机，「生成报价单」才可用。
+          </p>
+        )}
       </Modal>
     </div>
   )
