@@ -249,8 +249,10 @@ export default function LogisticsPage() {
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 }}>
                 {/* 六个字段平铺时看不出"先填什么"，按试算的真实顺序分三段：
-                    算什么 → 从哪到哪 → 可选。 */}
-                <div className="calc-step">① 算什么、多少</div>
+                    运什么 → 从哪到哪 → 可选。
+                    2026-11-20：第一段原来写"算什么、多少"，"算多少"指数量但读起来像
+                    在问算法，改成"运什么、多少件"。 */}
+                <div className="calc-step">① 运什么、多少件</div>
                 <div>
                   <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>SKU</div>
                   <Select

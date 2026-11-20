@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, DatePicker, Input, Popconfirm, Select, Table, TextArea, Toast } from '@douyinfe/semi-ui'
+import { Button, DatePicker, Input, Popconfirm, Select, Table, Tag, TextArea, Toast } from '@douyinfe/semi-ui'
 import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
 import BlockedHint from '../../shared/components/BlockedHint'
@@ -14,7 +14,6 @@ import { listQuotes } from '../../shared/api/quote'
 import { downloadBizDoc, listBizDocs } from '../../shared/api/bizdoc'
 import { formatQuantityText } from '../../shared/number-input'
 import { newRequestKey } from '../../shared/api/requestKey'
-import { getPublicConfig } from '../../shared/api/settings'
 
 export default function OrderDraftsPage() {
   const { id } = useParams()
@@ -22,12 +21,6 @@ export default function OrderDraftsPage() {
   const navigate = useNavigate()
   const client = useQueryClient()
   const { can } = usePermissions()
-  // 业务口径决定要不要出现「币种」（2026-10-08 与主人确认：只做国内时界面不出现
-  // 外贸字段）。这一行此前**不看这个开关** —— 全前端就剩这一个还能把币种改成外币的
-  // 地方，其他入口早就藏了。后端也补了同一道闸（见 app/core/trade_mode.py），
-  // 这里藏起来只是别让人白填一次再被拒。
-  const configQuery = useQuery({ queryKey: ['public-config'], queryFn: getPublicConfig })
-  const exportEnabled = (configQuery.data?.trade_mode ?? 'domestic') !== 'domestic'
   const query = useQuery({ queryKey: ['order-draft', draftId], queryFn: () => getOrderDraft(draftId), enabled: !!id, refetchOnWindowFocus: false, refetchOnReconnect: false })
   // 页签标题带草稿号，避免多个「订单草稿详情」分不清（编号写法照 2026-10-12 口径：不用 #）
   useTabLabel(id && query.data ? `草稿编号 ${draftId}` : null)
@@ -115,10 +108,26 @@ export default function OrderDraftsPage() {
   if (!id) return <div className="page-container"><PageHeader title="订单草稿" subtitle="提前准备资料，不进入生产、应收或成交统计" extra={<Link to="/orders">返回订单中心</Link>} />
     {list.error && <p>{list.error.message}</p>}
     <SectionCard><Table<OrderDraft> dataSource={list.data?.items ?? []} loading={list.isPending} rowKey="id" pagination={{ currentPage: page, pageSize, total: list.data?.total ?? 0, onPageChange: setPage, showSizeChanger: true, pageSizeOpts: [10, 20, 50, 100], onPageSizeChange: (size: number) => { setPageSize(size); setPage(1) } }} columns={[
-      { title: '草稿', render: (_: unknown, row: OrderDraft) => <Link to={`/order-drafts/${row.id}`}>草稿 #{row.id}</Link> },
-      { title: '来源', render: (_: unknown, row: OrderDraft) => `${row.source_context.no} V${row.source_context.version}` },
-      { title: '状态', render: (_: unknown, row: OrderDraft) => row.status === 'converted' ? '已转正式订单' : '准备中' },
-      { title: '明细数', render: (_: unknown, row: OrderDraft) => row.items.length },
+      /* 2026-11-20：四列原来都不写 width，Semi 把 1170 宽平分成四格，
+         一行数据被摊在四个 290 宽的格子里、彼此隔着大半屏，像没排版。
+         现在按内容给宽度：草稿 / 状态 / 明细数窄，来源（报价号 + 版本）最宽，
+         操作列放"继续填写"，最末一列不设宽吃掉剩余。 */
+      { title: '草稿', width: 150, render: (_: unknown, row: OrderDraft) => <Link to={`/order-drafts/${row.id}`}>草稿 #{row.id}</Link> },
+      { title: '来源报价', width: 280, render: (_: unknown, row: OrderDraft) => `${row.source_context.no} V${row.source_context.version}` },
+      {
+        title: '状态',
+        width: 170,
+        render: (_: unknown, row: OrderDraft) => row.status === 'converted'
+          ? <Tag color="green" size="small">已转正式订单</Tag>
+          : <Tag color="orange" size="small">准备中</Tag>,
+      },
+      { title: '明细数', width: 130, render: (_: unknown, row: OrderDraft) => `${row.items.length} 项` },
+      {
+        title: '操作',
+        render: (_: unknown, row: OrderDraft) => (
+          <Link to={`/order-drafts/${row.id}`}>{row.status === 'converted' ? '查看' : '继续填写'}</Link>
+        ),
+      },
     ]} /></SectionCard></div>
   if (!query.data) return <div className="page-container">{query.error?.message ?? '读取草稿中…'}</div>
   const draft = query.data
@@ -142,7 +151,6 @@ export default function OrderDraftsPage() {
         {(row.specification ?? '') !== (row.source_snapshot.specification ?? '') && <p>原规格：{row.source_snapshot.specification || '未记录'}</p>}
         <p>本次备注</p><TextArea value={row.remark ?? ''} disabled={!editable} onChange={v => patch(index, { remark: v })} />
       </div>)}
-      {exportEnabled && (<><p>币种</p><Input value={form.currency} disabled={!editable} onChange={v => { markDirty(true); setForm({ ...form, currency: v.toUpperCase() }) }} /></>)}
       <p>计划交期</p><DatePicker type="date" format="yyyy-MM-dd" showClear style={{ width: '100%' }} placeholder="选择计划交期" value={form.delivery_date ? new Date(form.delivery_date) : undefined} disabled={!editable} onChange={(_, v) => { markDirty(true); setForm({ ...form, delivery_date: (v as string) || '' }) }} />
       <p>付款条件</p><Input value={form.payment_terms} disabled={!editable} onChange={v => { markDirty(true); setForm({ ...form, payment_terms: v }) }} />
       <p>备注</p><TextArea value={form.remark} disabled={!editable} onChange={v => { markDirty(true); setForm({ ...form, remark: v }) }} />

@@ -6382,3 +6382,22 @@ table:not(.semi-table) td.cell-right {
   color: var(--crm-text-3);
   font-size: 13px;
 }
+
+/* ─────────────── 表格里的小红字（2026-11-20）───────────────
+   上面 `.semi-table-row-cell a { color:#2c62d9 !important }` 把「能跳转的蓝」定死了，
+   代价是**危险动作也被染成蓝**：定制需求的「删除」本来写了
+   `style={{ color:'var(--crm-error)' }}`，inline style 撞不过 !important，
+   整张表里 20 多个红字删除全成了普通蓝链接 —— 主人一眼看不出哪个会删数据。
+   这里只给显式标了危险色的链接开一条口子（属性选择器认 inline style 原文），
+   其余链接不受影响。 */
+.semi-table-tbody .semi-table-row-cell a[style*="crm-error"],
+.semi-table-tbody .semi-table-row-cell a[style*="#f53f3f"],
+.semi-table-tbody .semi-table-row-cell a[style*="#ff4d4f"] {
+  color: var(--crm-error) !important;
+}
+.semi-table-tbody .semi-table-row-cell a[style*="crm-error"]:hover,
+.semi-table-tbody .semi-table-row-cell a[style*="#f53f3f"]:hover,
+.semi-table-tbody .semi-table-row-cell a[style*="#ff4d4f"]:hover {
+  color: var(--crm-error) !important;
+  text-decoration: underline;
+}
