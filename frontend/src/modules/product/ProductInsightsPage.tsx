@@ -359,6 +359,10 @@ export default function ProductInsightsPage() {
               { value: 'converted', label: '已转需求' },
             ]}
           />
+          {/* 一屏放得下就不摆分页条，条数用一句灰字交代（与订单草稿、审批中心同一规则）。 */}
+          {!query.isLoading && (query.data?.total ?? 0) > 0 && (
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>共 {query.data?.total} 条</span>
+          )}
         </div>
         <Table<ProductInsightRow>
           className="insights-table"
@@ -532,7 +536,7 @@ export default function ProductInsightsPage() {
           dataSource={query.data?.items ?? []}
           loading={query.isLoading}
           rowKey="id"
-          pagination={{
+          pagination={((query.data?.total ?? 0) <= pageSize) ? false : {
             currentPage: page,
             pageSize,
             total: query.data?.total ?? 0,

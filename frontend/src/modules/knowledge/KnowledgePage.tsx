@@ -534,7 +534,15 @@ export default function KnowledgePage() {
       // 超过 10 字截断，鼠标悬停看全称。
       render: (v: string | null) => v || '-',
     },
-    { title: '数量', dataIndex: 'quantity', width: 60, render: (v: number | null) => v ?? '-' },
+    {
+      title: '数量',
+      dataIndex: 'quantity',
+      /* 60px 连「3,000」都放不下，被裁成「3,...」——五位数直接「50...」。
+         加宽到 84（八列合计 1172，仍在 1224 内容区内，不会出横向滚动条），
+         数字补千分位，扫一眼就知道是 50 万还是 5 万。 */
+      width: 84,
+      render: (v: number | null) => (v == null ? '-' : v.toLocaleString()),
+    },
     {
       title: '目标价',
       dataIndex: 'target_price',
@@ -832,7 +840,7 @@ export default function KnowledgePage() {
           rowKey="id"
           size="middle"
           empty={emptyText(query, '还没有定制询价记录')}
-          pagination={{
+          pagination={((query.data?.total ?? 0) <= pageSize) ? false : {
             currentPage: page,
             pageSize,
             total: query.data?.total ?? 0,
