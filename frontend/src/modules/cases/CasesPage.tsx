@@ -370,14 +370,17 @@ export default function CasesPage() {
           {/* 七个筛选控件原来宽度参差（190 / 105 / 100 / 105 / 100 / 100 / 100），
               一线排开像随手摆的；统一成 210 + 6×108 后左边缘对齐、节奏一致
               （2026-11-19 巡检）。 */}
+          {/* 工具栏是 flex + wrap，子项默认可以被压：7 个控件设了 108 宽，
+              实际渲染成 95 / 115 / 78 / 80 / 64 / 74 —— 视觉上仍是参差
+              （2026-11-21 截图核对）。加 flexShrink:0，宽度才真是设定的宽度。 */}
           <Input
-            style={{ width: 210 }}
+            style={{ width: 210, flexShrink: 0 }}
             placeholder="搜标题 / 做法 / 关键动作"
             value={filters.keyword}
             onChange={(v) => applyFilter({ keyword: v })}
           />
           <Select
-            style={{ width: 108 }}
+            style={{ width: 108, flexShrink: 0 }}
             placeholder="状态"
             value={filters.status}
             onChange={(v) => applyFilter({ status: v as string | undefined })}
@@ -391,7 +394,7 @@ export default function CasesPage() {
           />
           {/* 行业/产品线是自由文本，用输入框（后端按包含匹配，不用打全称） */}
           <Input
-            style={{ width: 108 }}
+            style={{ width: 108, flexShrink: 0 }}
             placeholder="行业"
             value={filters.industry ?? ''}
             onChange={(v) => applyFilter({ industry: v || undefined })}
@@ -399,7 +402,7 @@ export default function CasesPage() {
           {/* 客户类型：企业 / 个人。取自关联客户档案，
               与上面那个「行业」是两件事（一个企业客户可以属于任何行业）。 */}
           <Select
-            style={{ width: 108 }}
+            style={{ width: 108, flexShrink: 0 }}
             placeholder="客户类型"
             value={filters.customer_type}
             showClear
@@ -410,13 +413,13 @@ export default function CasesPage() {
             ]}
           />
           <Input
-            style={{ width: 108 }}
+            style={{ width: 108, flexShrink: 0 }}
             placeholder="产品线"
             value={filters.product_line ?? ''}
             onChange={(v) => applyFilter({ product_line: v || undefined })}
           />
           <Select
-            style={{ width: 108 }}
+            style={{ width: 108, flexShrink: 0 }}
             placeholder="阶段"
             value={filters.stage}
             onChange={(v) => applyFilter({ stage: v as string | undefined })}
@@ -424,7 +427,7 @@ export default function CasesPage() {
             showClear
           />
           <Input
-            style={{ width: 108 }}
+            style={{ width: 108, flexShrink: 0 }}
             placeholder="问题标签"
             value={filters.problem_tags ?? ''}
             onChange={(v) => applyFilter({ problem_tags: v || undefined })}
