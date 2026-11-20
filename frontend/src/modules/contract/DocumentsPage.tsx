@@ -387,19 +387,18 @@ export default function DocumentsPage() {
         <PageHeader
           title="文档管理"
           subtitle="我方合同、客户合同均上传原文件；审批在同序 OA 办理，CRM 同步进度并跟催回签归档"
+          /* 2026-11-20：原来「上传合同」单独占卡片内左上角一行，右边一整排空白，
+             和其它列表页"新建类按钮在页头右上"（案例库「新建案例」）也不一致。
+             挪到页头 extra，卡片从表格直接开始。 */
+          extra={canManage && (
+            <Button type="primary" theme="outline" onClick={() => openUploadModal()}>
+              上传合同
+            </Button>
+          )}
         />
         <SectionCard
           className={(documents?.length ?? 0) <= 8 ? 'auto-height' : undefined}
         >
-          <div className="toolbar" style={{ marginBottom: 10 }}>
-            {/* 这里原来有个 flex:1 占位把工具栏全推到右边；全站其他列表页筛选从左边起头，
-                这一页孤零零靠右，看着像浮在卡上。去掉。 */}
-            {canManage && (
-              <Button type="primary" theme="outline" onClick={() => openUploadModal()}>
-                上传合同
-              </Button>
-            )}
-          </div>
           <Table<ContractDocument> className="table-center documents-table"
             columns={[
               // 140 放不下 12 位的合同编号（实测被截成「CT202610140…」）。

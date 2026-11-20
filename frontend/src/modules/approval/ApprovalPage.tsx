@@ -264,7 +264,9 @@ export default function ApprovalPage() {
                 content="通过后报价即可对客发送，请确认金额与优惠幅度都核对过。"
                 onConfirm={() => approveMutation.mutate(record.id)}
               >
-                <Button theme="solid" type="primary" size="small">通过</Button>
+                                {/* 2026-11-20：行内「通过」原来是白底描边，和同排的 看报价/拒绝/转交
+                    三个蓝字不是一套；列表行内的动作一律文字按钮。 */}
+                <Button type="tertiary" theme="borderless" size="small">通过</Button>
               </Popconfirm>
               <Button type="danger" theme="borderless" size="small" onClick={() => setRejectTarget(record)}>
                 拒绝

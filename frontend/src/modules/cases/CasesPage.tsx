@@ -557,7 +557,10 @@ export default function CasesPage() {
                         编辑
                       </Button>
                       <Popconfirm title="确认提交这份案例审核？" onConfirm={() => submitMutation.mutate(record.id)}>
-                        <Button theme="solid" type="primary" size="small">提交审核</Button>
+                                                {/* 2026-11-20：列表行内的动作不该有"主按钮"——
+                            一行里的「提交审核」白底描边，旁边三个是纯蓝字，
+                            看着像那一行只有这一个能点。整列统一文字按钮。 */}
+                        <Button type="tertiary" theme="borderless" size="small">提交审核</Button>
                       </Popconfirm>
                     </>
                   )}
@@ -581,7 +584,7 @@ export default function CasesPage() {
                         content="通过后案例立即发布，会成为可被引用的基线，只能靠开修订稿再改。"
                         onConfirm={() => reviewMutation.mutate({ id: record.id, approve: true })}
                       >
-                        <Button theme="solid" type="primary" size="small">通过</Button>
+                                                <Button type="tertiary" theme="borderless" size="small">通过</Button>
                       </Popconfirm>
                       <Button
                         type="danger"
