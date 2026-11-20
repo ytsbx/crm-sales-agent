@@ -226,6 +226,18 @@ export interface PricingResult {
     below_authorized_margin: boolean
   }
   warnings: string[]
+  /** 本次试算实际用到的输入（含 `target_profit_price` = 达标试算价）。
+      后端 `/pricing/calculate` 的 `inputs` 段；主分支已带，这个分支原来没有这份类型。 */
+  inputs?: {
+    country?: string | null
+    package_type?: string | null
+    shipping_method?: string | null
+    payment_terms?: string | null
+    target_margin?: number | null
+    target_profit_amount?: number | null
+    target_profit_price?: number | null
+    profit_target_met?: boolean | null
+  } | null
 }
 
 export function listCosts(skuId: number) {
