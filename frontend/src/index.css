@@ -4171,25 +4171,26 @@ table:not(.semi-table) td {
 /* 说明一行、动作一行：原来说明与「下一步：… / 去处理」同一条基线，
    句子一长就把两个标签压在最右边（1440 下只剩一条缝，2026-11-18 主人
    一直指这里"挤"）。现在说明独占整宽，动作另起一行、贴右对齐。 */
+/* 2026-11-21：原来是两列 grid（dot | 说明），动作块也写死在第二列 ——
+   三行待办里第二行的说明会跟第一行的动作挤到同一视觉行，动作掉到下一格，
+   右下的「去处理」看着像给上一句配的。改成 flex：说明可换行、动作永远贴右同一行。 */
 .quote-todo-row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  column-gap: 10px;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
   padding: 6px 0;
 }
-.quote-todo-dot { grid-column: 1; }
+.quote-todo-dot { flex: 0 0 auto; }
 .quote-todo-reason {
-  grid-column: 2;
+  flex: 1 1 auto;
   min-width: 0;
   line-height: 1.8;
 }
 .quote-todo-side {
-  grid-column: 2;
+  flex: 0 0 auto;
   display: flex;
-  justify-content: flex-end;
   align-items: center;
   gap: 14px;
-  margin-top: 2px;
   white-space: nowrap;
 }
 .qt-next { color: var(--crm-text-3); }
@@ -4199,7 +4200,7 @@ table:not(.semi-table) td {
 }
 @media (max-width: 760px) {
   .quote-todo-row { flex-wrap: wrap; }
-  .quote-todo-side { margin-left: 16px; }
+  .quote-todo-side { width: 100%; justify-content: flex-end; padding-left: 16px; }
 }
 
 /* ===== 金额汇总的合计块 =====

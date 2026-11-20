@@ -947,7 +947,9 @@ export default function QuoteDetailPage() {
     {
       title: '金额',
       dataIndex: 'amount',
-      width: 110,
+      /* 110 装不下「¥105,600.00」——六位数带小数被裁成「¥105,600.…」。
+         132 才够（数量/单价两列不动，产品名称弹性列让出 22px）。 */
+      width: 132,
       /* 金额右对齐，与列表页、回款中心同一口径（.cell-right 见 index.css）。 */
       className: 'cell-right',
       render: (v: number, record: QuoteItemRow) => formatMoney(record.amount_exact ?? v, 'CNY'),
