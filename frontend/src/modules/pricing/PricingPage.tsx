@@ -193,9 +193,10 @@ export function PricingTool({ embedded = false }: { embedded?: boolean }) {
                 placeholder="例如 0.30 表示售价的 30%" validateStatus={marginError ? 'error' : 'default'} />
               {marginError && <small style={{ color: 'var(--crm-error)' }}>{marginError}</small>}
             </div>
-            {/* 七个字段排两列，最后一行只剩它一个 —— 给它跨满，免得右边空半格 */}
+            {/* 这一组正好三格一行（运费 / 利润率 / 单件利润），跨满会把输入框
+                拉到 1200px，全站最宽的一个输入框就这么来的 —— 不跨了 */}
             {can('price:manage') && (
-              <div style={{ gridColumn: '1 / -1' }}>
+              <div>
                 <FormLabel hint="利润率留空时使用">目标单件利润（元）</FormLabel>
                 <Input aria-label="目标单件利润" inputMode="decimal" value={targetProfitAmount} onChange={setTargetProfitAmount}
                   disabled={Boolean(margin)} placeholder="例如 80" validateStatus={profitError ? 'error' : 'default'} />

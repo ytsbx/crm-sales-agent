@@ -624,7 +624,11 @@ export default function AnalyticsPage() {
                 value: money(receivable?.unallocated_amount),
                 // 只报口径，不带指令：一句"请先核对分配再催款"把卡片撑成两行，
                 // 也会让人以为这卡是个待办（2026-11-21 巡检）
-                hint: `应收期未结 ${money(receivable?.unsettled_plan_amount)}`,
+                // 值为 0 时还挂「应收期未结 131 万」读着像自相矛盾：0 就是没有
+                // 已到账没分掉的钱，这一句得先说话（2026-11-21 巡检）
+                hint: (receivable?.unallocated_amount ?? 0) > 0
+                  ? `应收期未结 ${money(receivable?.unsettled_plan_amount)}`
+                  : '没有已到账未分配的钱',
               },
               {
                 label: '逾期应收',

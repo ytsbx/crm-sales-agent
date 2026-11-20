@@ -147,7 +147,7 @@ export default function ApprovalPage() {
       title: '报价单号',
       dataIndex: 'quote_no',
       /* 175 放不下「箭头 + 单号 + 版本」一整行，版本被挤成「第 …」；190 刚好 */
-      width: compact ? 150 : 175,
+      width: compact ? 160 : 195,
       /* 原来单号与「第 N 版」是上下两行的块级 div —— 左边那个展开箭头是 inline 的，
          块级内容一定另起一行，于是箭头独占一行、单号再一行、版本第三行。
          改成同一行的两个 inline 片段：箭头 + 单号 + 小字版本，整行只占一行高。 */
@@ -175,7 +175,7 @@ export default function ApprovalPage() {
     {
       title: '客户',
       dataIndex: 'customer_name',
-      width: compact ? 150 : 200,
+      width: compact ? 150 : 235,
       // 紧凑档把申请人并进这一格第二行，省掉一列，避免 1024 宽溢出
       render: (v: string | null, record: ApprovalRow) => (
         <div style={{ display: 'grid', gap: 2, justifyItems: 'center', minWidth: 0 }}>
