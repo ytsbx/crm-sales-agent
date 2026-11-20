@@ -443,15 +443,14 @@ export function PoolRecyclePanel() {
                       width: narrowLayout ? 130 : 132,
                       render: (v: string | null, r: RecycleCandidateRow) =>
                         v ? (
-                          <div
-                            style={{
-                              color: isDue(r) ? 'var(--crm-text-2)' : 'var(--crm-caution, #b26a00)',
-                              lineHeight: 1.5,
-                            }}
-                          >
-                            <div>{fmtDay(v)}</div>
+                          /* 原来"还没到期"整格染橙：一屏十条全在预告期时，整列橙色
+                             反而看不出哪一条已经可以批。日期统一深色 500（跟表里其他
+                             日期/编号一致），未到期只由下面「（预告期中）」小灰字说明 ——
+                             颜色不承担判断，文字承担。（2026-11-20 巡检） */
+                          <div style={{ lineHeight: 1.5 }}>
+                            <div style={{ color: 'var(--crm-text-1)', fontWeight: 500 }}>{fmtDay(v)}</div>
                             {!isDue(r) && (
-                              <div style={{ fontSize: 11 }}>
+                              <div style={{ fontSize: 11, color: 'var(--crm-text-3)' }}>
                                 （{r.status === 'deferred' ? '暂缓期' : '预告期'}中）
                               </div>
                             )}
