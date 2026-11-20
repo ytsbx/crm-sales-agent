@@ -253,24 +253,29 @@ export default function LogisticsPage() {
                     2026-11-20：第一段原来写"算什么、多少"，"算多少"指数量但读起来像
                     在问算法，改成"运什么、多少件"。 */}
                 <div className="calc-step">① 运什么、多少件</div>
-                <div>
-                  <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>SKU</div>
-                  <Select
-                    style={{ width: '100%' }}
-                    placeholder="选择 SKU"
-                    filter={optionMatcher}
-                    value={skuId}
-                    onChange={(value) => setSkuId(value as number)}
-                    optionList={(skusQuery.data ?? []).map((sku) => ({
-                      value: sku.id,
-                      label: skuLabel(sku),
-                    }))}
-                  />
-                </div>
+                {/* SKU 和数量并排：数量格原来也拉满整列（440 宽的框里放 4 位数），
+                    下面的分组因此多占一整行，左卡被撑高、右卡的空态跟着被拉到一样高
+                    （2026-11-21 巡检）。SKU 给 2 份、数量 1 份，一行放下两格。 */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)', gap: 12 }}>
+                  <div>
+                    <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>SKU</div>
+                    <Select
+                      style={{ width: '100%' }}
+                      placeholder="选择 SKU"
+                      filter={optionMatcher}
+                      value={skuId}
+                      onChange={(value) => setSkuId(value as number)}
+                      optionList={(skusQuery.data ?? []).map((sku) => ({
+                        value: sku.id,
+                        label: skuLabel(sku),
+                      }))}
+                    />
+                  </div>
 
-                <div>
-                  <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>数量</div>
-                  <Input value={quantity} onChange={setQuantity} placeholder="1000" />
+                  <div>
+                    <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>数量</div>
+                    <Input value={quantity} onChange={setQuantity} placeholder="1000" />
+                  </div>
                 </div>
 
                 <div className="calc-step">② 从哪到哪</div>
