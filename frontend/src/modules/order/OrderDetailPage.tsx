@@ -1135,7 +1135,14 @@ export default function OrderDetailPage() {
           )}
 
           {activeKey === 'bizdocs' && (
-            <BizDocPanel docType="order_sheet" orderId={orderId} canManage={canManage} />
+            <BizDocPanel
+              docType="order_sheet"
+              orderId={orderId}
+              canManage={canManage}
+              compact
+              emptyInline
+              compactEmptyText="还没有生成过对外单据 —— 点右上「生成一份」，按当前订单内容出一份 PDF。"
+            />
           )}
 
           {activeKey === 'status' && (

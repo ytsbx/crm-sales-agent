@@ -1735,6 +1735,9 @@ export default function SampleListPage() {
                     docType="sample_request"
                     sampleRequestId={detail.id}
                     canManage={canManage}
+                    compact
+                    emptyInline
+                    compactEmptyText="还没有生成过打样需求单 —— 点右上「生成一份」，按本次申请内容出一份 PDF。"
                   />
                 </div>
               </div>
