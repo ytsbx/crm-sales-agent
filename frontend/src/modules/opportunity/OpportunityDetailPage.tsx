@@ -681,8 +681,13 @@ export default function OpportunityDetailPage() {
           {activeKey === 'followups' && (
             <>
               <div className="toolbar">
+                {/* 工具栏左边原来是空的、只有一个按钮吊在右边，表格又空，
+                   上半截看着像没排好版。补一句这条页签干什么。 */}
+                <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>
+                  跟进记的是「客户说了什么」：每次通话、拜访、发出报价后记一条，谁记的、什么时候记的都有痕
+                </div>
                 <div style={{ flex: 1 }} />
-                <Button onClick={() => setFollowupVisible(true)}>记录跟进</Button>
+                <Button type="primary" theme="outline" onClick={() => setFollowupVisible(true)}>记录跟进</Button>
               </div>
               <Table<FollowUp>
                 columns={[
@@ -703,7 +708,7 @@ export default function OpportunityDetailPage() {
                 loading={followupsQuery.isLoading}
                 rowKey="id"
                 pagination={false}
-                empty={emptyLine('还没有跟进记录', '每次电话、拜访或发出报价后记一条；记完会同时进时间线。')}
+                empty={emptyLine('还没有跟进记录', '每记一条，时间线上就多一个节点。')}
               />
             </>
           )}
@@ -711,8 +716,11 @@ export default function OpportunityDetailPage() {
           {activeKey === 'tasks' && (
             <>
               <div className="toolbar">
+                <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>
+                  这个商机接下来要做什么 —— 记成任务：带优先级和截止时间，到期前提醒，过期标红
+                </div>
                 <div style={{ flex: 1 }} />
-                <Button onClick={() => setTaskVisible(true)}>新建任务</Button>
+                <Button type="primary" theme="outline" onClick={() => setTaskVisible(true)}>新建任务</Button>
               </div>
               <Table<Task>
                 columns={taskColumns}
@@ -720,7 +728,7 @@ export default function OpportunityDetailPage() {
                 loading={tasksQuery.isLoading}
                 rowKey="id"
                 pagination={false}
-                empty={emptyLine('还没有任务', '点上方「新建任务」记下要做的事 —— 任务记将来，跟进记过去。')}
+                empty={emptyLine('还没有任务', '建好的任务会同时出现在「销售任务」里，那边能批量完成和交接。')}
               />
             </>
           )}
