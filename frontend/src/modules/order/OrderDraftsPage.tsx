@@ -110,7 +110,10 @@ export default function OrderDraftsPage() {
     {/* auto-height：单卡列表页会被 .page-container 的 flex 规则拉满整屏，
         草稿只有一条时卡片下半截全是白，像没加载完。内容少就按内容高度收住。
         注意注释必须放在花括号里，否则会被当成正文渲染到页面上。 */}
-    <SectionCard className="auto-height"><Table<OrderDraft> dataSource={list.data?.items ?? []} loading={list.isPending} rowKey="id" pagination={{ currentPage: page, pageSize, total: list.data?.total ?? 0, onPageChange: setPage, showSizeChanger: true, pageSizeOpts: [10, 20, 50, 100], onPageSizeChange: (size: number) => { setPageSize(size); setPage(1) } }} columns={[
+    <SectionCard className="auto-height"><Table<OrderDraft> dataSource={list.data?.items ?? []} loading={list.isPending} rowKey="id" /* 一页装得下就不画分页条：草稿往往只有一两条，原来照样挂
+   「显示第 1 条-第 1 条，共 1 条 + 翻页 + 每页条数：20」，翻页键和每页条数都是死的。
+   数据多过一页时原样出现。 */
+          pagination={(list.data?.total ?? 0) <= pageSize ? false : { currentPage: page, pageSize, total: list.data?.total ?? 0, onPageChange: setPage, showSizeChanger: true, pageSizeOpts: [10, 20, 50, 100], onPageSizeChange: (size: number) => { setPageSize(size); setPage(1) } }} columns={[
       /* 2026-11-20：四列原来都不写 width，Semi 把 1170 宽平分成四格，
          一行数据被摊在四个 290 宽的格子里、彼此隔着大半屏，像没排版。
          现在按内容给宽度：草稿 / 状态 / 明细数窄，来源（报价号 + 版本）最宽，
@@ -131,7 +134,14 @@ export default function OrderDraftsPage() {
           <Link to={`/order-drafts/${row.id}`}>{row.status === 'converted' ? '查看' : '继续填写'}</Link>
         ),
       },
-    ]} /></SectionCard></div>
+    ]} />
+      {/* 分页条被收掉时总数就没人说了，右下角补一句「共 N 条」把口径补回来。 */}
+      {(list.data?.total ?? 0) <= pageSize && (
+        <div style={{ marginTop: 10, textAlign: 'right', fontSize: 12, color: 'var(--crm-text-3)' }}>
+          共 {list.data?.total ?? 0} 条
+        </div>
+      )}
+    </SectionCard></div>
   if (!query.data) return <div className="page-container">{query.error?.message ?? '读取草稿中…'}</div>
   const draft = query.data
   const editable = draft.status === 'draft' && can('order:manage') && !busy
