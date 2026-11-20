@@ -1,9 +1,24 @@
 import { skuLabel } from '../../shared/sku-label'
 import { formatBeijingTime } from '../../shared/beijing-time'
 import { useState } from 'react'
-import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AutoComplete, Button, DatePicker, Input, Modal, Popconfirm, Select, Switch, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
+import {
+  AutoComplete,
+  Button,
+  DatePicker,
+  Input,
+  Modal,
+  Popconfirm,
+  Select,
+  SideSheet,
+  Switch,
+  Table,
+  Tabs,
+  Tag,
+  Toast,
+} from '@douyinfe/semi-ui'
+import { PricingTool } from './PricingPage'
 
 import {
   NUMBER_FIELD_LABEL,
@@ -525,7 +540,6 @@ const emptyCustomerPriceForm = {
 export default function PriceCenterPage() {
   const [searchParams] = useSearchParams()
   const queryClient = useQueryClient()
-  const navigate = useNavigate()
   const { can } = usePermissions()
   const customerLevelsQuery = useQuery({
     queryKey: ['dictionaries', 'customer_level'],
@@ -536,6 +550,9 @@ export default function PriceCenterPage() {
   // 默认落在「客户查价」：这是价格中心最高频的入口，
   // 之前默认停在「成本」，用户进来得先自己找页签。
   const [activeKey, setActiveKey] = useState(searchParams.get('tab') === 'costs' ? 'costs' : 'lookup')
+  // 核价试算：这台工具的所有依据（成本、标准价、客户特殊价、让价权限）都在本页，
+  // 没有理由再开一整个页面 —— 抽屉里就地算（主人 2026-11-21「不用为核价单独做一个大模块呀」）。
+  const [pricingVisible, setPricingVisible] = useState(false)
   const [costSkuId, setCostSkuId] = useState<number | undefined>(() => {
     const id = Number(searchParams.get('sku_id'))
     return Number.isSafeInteger(id) && id > 0 ? id : undefined
@@ -1003,11 +1020,23 @@ export default function PriceCenterPage() {
         title="价格中心"
         subtitle="核价引擎的全部依据都在这一页：成本、标准价与最低保护价、客户特殊价、各角色的让价权限、运费费率"
         extra={
-          <Button type="primary" theme="outline" onClick={() => navigate('/pricing')}>
-            打开核价
+          <Button type="primary" theme="outline" onClick={() => setPricingVisible(true)}>
+            核价试算
           </Button>
         }
       />
+
+      {/* 核价试算抽屉：宽 780，内容区自己滚。嵌进去的是同一个 PricingTool，
+          和 /pricing 页是同一段代码，不存在两份实现各自跑偏的可能。 */}
+      <SideSheet
+        title="核价试算"
+        visible={pricingVisible}
+        onCancel={() => setPricingVisible(false)}
+        width={780}
+        bodyStyle={{ padding: '16px 20px' }}
+      >
+        {pricingVisible && <PricingTool embedded />}
+      </SideSheet>
 
       {/* auto-height：这一页只有一张卡，全局规则会把它拉到满屏高。
           而「成本」tab 没选 SKU 时只有一行「请先选择 SKU」，

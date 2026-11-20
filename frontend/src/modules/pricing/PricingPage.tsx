@@ -34,7 +34,13 @@ function Stat({ label, value, tone }: { label: string; value: string; tone?: 'pr
   )
 }
 
-export default function PricingPage() {
+/**
+ * 核价本体。不画页头、不套 page-container —— 它既挂在 /pricing 这条深链上，
+ * 也从「价格中心」右上角的抽屉里打开（主人 2026-11-21「不用为核价单独做一个大模块呀」：
+ * 核价只是价格中心的一个试算工具，不该占一屏、更不该在左侧菜单占一行）。
+ * embedded 时容器换窄类名：抽屉只有 780 宽，三列会挤，改两列。
+ */
+export function PricingTool({ embedded = false }: { embedded?: boolean }) {
   // 支持深链预填：/pricing?sku_id=1&customer_id=1&quantity=3000&quoted_price=25
   const [searchParams] = useSearchParams()
   const paramNumber = (key: string) => {
@@ -139,13 +145,7 @@ export default function PricingPage() {
     value === null || value === undefined ? '-' : `${(value * 100).toFixed(2)}%`
 
   return (
-    <div className="page-container">
-      <PageHeader
-        title="核价"
-        subtitle="填客户、产品、数量，系统按价格中心的成本和价格规则算出建议价与最低允许价"
-      />
-
-      <div className="pricing-grid">
+    <div className={embedded ? 'pricing-grid pricing-grid--drawer' : 'pricing-grid'}>
         <SectionCard title="核价输入">
           <div className="pricing-form">
             <div>
@@ -200,7 +200,7 @@ export default function PricingPage() {
             </div>
             {/* 拟报价跨两列：七个字段排三列，最后一行只剩它一个，
                 右边空两格看着像少填了东西 —— 给它宽一点，视觉上也收得齐 */}
-            <div style={{ gridColumn: 'span 2' }}>
+            <div className="pricing-quote-field" style={{ gridColumn: 'span 2' }}>
               <div style={{ marginBottom: 4 }}>拟报价（元）</div>
               <Input value={quotedPrice} onChange={setQuotedPrice} placeholder="例如 25" />
               {/* 按钮灰着得有个说法，不然只会让人以为坏了。原来那句解释挂在标签上、
@@ -427,7 +427,6 @@ export default function PricingPage() {
         </>
         )}
         </div>
-      </div>
 
       {skuId && (
         <SectionCard
@@ -513,7 +512,7 @@ export default function PricingPage() {
       )}
 
       {result && result.warnings.length > 0 && (
-        <div style={{ marginTop: 16 }}>
+        <div>
           <Banner
             type={result.warnings.some((item) => item.includes('审批')) ? 'warning' : 'info'}
             description={result.warnings.join('；')}
@@ -521,6 +520,18 @@ export default function PricingPage() {
           />
         </div>
       )}
+    </div>
+  )
+}
+
+export default function PricingPage() {
+  return (
+    <div className="page-container">
+      <PageHeader
+        title="核价"
+        subtitle="填客户、产品、数量，系统按价格中心的成本和价格规则算出建议价与最低允许价"
+      />
+      <PricingTool />
     </div>
   )
 }

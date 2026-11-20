@@ -1228,49 +1228,51 @@ a:not([href]) {
 }
 
 /* ============================================================
-   核价页：三栏（输入 / 成本结构 / 核价结果）
+   核价：价格中心里的试算工具（抽屉 + 深链 /pricing）
 
-   三列一律用 minmax(0, 1fr)。grid 子项默认 min-width: auto，
-   不会收缩到比内容的固有宽度更窄 —— 下拉框里的长提示文字会把列撑开，
-   控件就溢出卡片、压到右边那一栏上（之前就是这个毛病）。
-   窄屏改成两列 / 一列，不让三列各自死守最小宽度，把页面撑出横向滚动条。
+   定稿版（主人 2026-11-21「不用为核价单独做一个大模块呀」）：
+     ① 输入卡占满整行，字段排三列 —— 早先挤在 380 窄栏里，七个字段被拉成
+        648 高的一条竖带，主人原话「这一页这么长你为啥做这么窄呢」；
+     ② 结果区两列并排：成本结构 / 核价结果，AI 解读 / 权限校验；
+     ③ 抽屉形态（.pricing-grid--drawer）只有 780 宽，表单降到两列、结果一列。
+   子项一律 minmax(0, 1fr)：grid 默认 min-width:auto，下拉里的长提示会把列撑开。
    ============================================================ */
 .pricing-grid {
-  display: grid;
-  /* 原三栏等分：左栏表单长到 680，右边两张各 155，右边整片白（2026-11-20 主人「右边又空」）。
-     改两栏 —— 左 380 放输入，右边一列竖着叠「成本结构 / 核价结果 / AI 解读 / 权限校验」。 */
-  grid-template-columns: 380px minmax(0, 1fr);
-  gap: 16px;
-  align-items: start;
-}
-/* 右列收成一个 flex 列：用栅格跨行摆过一次，左栏 685 的高度被两行摊成
-   334+334，中间空出 200 多像素 —— 按内容自然堆才不留缝。 */
-.pricing-side {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  min-width: 0;
 }
-
-/* 输入表单：字段竖排。同样要 minmax(0, 1fr) 才收得住里面的控件 */
 .pricing-form {
   display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px 24px;
+  align-items: start;
+}
+.pricing-side {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+  min-width: 0;
+}
+/* 抽屉里：两列已排满，「拟报价」别再跨列拖成一条长条 */
+.pricing-grid--drawer .pricing-form {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.pricing-grid--drawer .pricing-side {
   grid-template-columns: minmax(0, 1fr);
-  gap: 12px;
 }
-
-/* 两列：视口 1200 以下（扣掉侧栏和左右留白，每列已不足 300） */
+.pricing-grid--drawer .pricing-quote-field {
+  grid-column: auto !important;
+}
 @media (max-width: 1200px) {
-  .pricing-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+  .pricing-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
-
-/* 一列：与全站手机断点保持一致 */
+@media (max-width: 900px) {
+  .pricing-side { grid-template-columns: minmax(0, 1fr); }
+}
 @media (max-width: 768px) {
-  .pricing-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
+  .pricing-form { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* ============================================================

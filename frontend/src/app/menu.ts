@@ -23,7 +23,6 @@ import {
   IconHome,
   IconInbox,
   IconMoneyExchangeStroked,
-  IconPercentage,
   IconPriceTag,
   IconSend,
   IconSetting,
@@ -97,9 +96,10 @@ export const MENU_GROUPS: MenuGroup[] = [
       { key: 'products', path: '/products', label: '产品中心', icon: IconBriefcase, ready: true, permission: 'product:view' },
       // 价格中心 / 物流试算挂在 pricing 模块下，读接口用 product:view，维护用 price:manage
       { key: 'prices', path: '/prices', label: '价格中心', icon: IconPriceTag, ready: true, permission: ['price:manage', 'product:view'] },
-      // 「核价」页面（/pricing）一直能做，但没有菜单入口 —— 只能从价格中心里那颗
-      // 按钮跳，主人 2026-11-20 的原话是"这个页面在哪呀，我都找不到"。
-      { key: 'pricing', path: '/pricing', label: '核价', icon: IconPercentage, ready: true, permission: ['price:manage', 'product:view'] },
+      // 「核价」（/pricing）不再单列菜单：它只是价格中心的一个试算工具，
+      // 全部依据（成本、标准价、客户特殊价、让价权限）都在价格中心那一页里
+      // —— 主人 2026-11-21「不用为核价单独做一个大模块呀」。
+      // 入口在价格中心页头的「核价试算」抽屉；深链 /pricing 仍可用（报价单会带参跳过来）。
       { key: 'logistics', path: '/logistics', label: '物流试算', icon: IconSend, ready: true, permission: ['price:manage', 'product:view'] },
       { key: 'tasks', path: '/tasks', label: '销售任务', icon: IconCheckList, ready: true, permission: 'task:view' },
       { key: 'approvals', path: '/approvals', label: '审批中心', icon: IconTickCircle, ready: true, permission: 'quote:view' },
