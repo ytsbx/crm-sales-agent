@@ -220,7 +220,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
     {
       title: '订单号',
       dataIndex: 'order_no',
-      width: compact ? 158 : 170,
+      width: compact ? 158 : 165,
       render: (text: string, record: Order) => (
         <div>
           <Link to={`/orders/${record.id}`} style={{ color: 'var(--crm-primary)' }}>
@@ -239,7 +239,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       dataIndex: 'customer_name',
       // 订单行里客户名是纯文本（不是链接）：按主标识加深，和订单号的蓝字呼应
       className: 'cell-strong',
-      width: compact ? 190 : 220,
+      width: compact ? 190 : 215,
       render: (v: string | null, record: Order) => (
         <div style={{ minWidth: 0 }}>
           <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={v ?? '-'}>
@@ -302,7 +302,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       : [{
           title: '待回款',
           dataIndex: 'unreceived_amount',
-          width: 130,
+          width: 125,
           /* 这一列原来漏了右对齐（同一行的「订单金额 / 已回款」都挂了
              .cell-right，只有它没有），¥1.00 和 ¥930.00 在格子中间各站各的，
              三列金额凑不成一条竖线（2026-11-19 实拍）。 */
@@ -324,12 +324,12 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       : [{
           title: '交期',
           dataIndex: 'delivery_date',
-          width: 120,
+          width: 115,
           render: (v: string | null) => v ?? '-',
         }]),
     ...(compact
       ? []
-      : [{ title: '负责人', dataIndex: 'owner_name', width: 100, render: (v: string | null) => v ?? '-' }]),
+      : [{ title: '负责人', dataIndex: 'owner_name', width: 95, render: (v: string | null) => v ?? '-' }]),
   ]
 
   const receivableColumns = [

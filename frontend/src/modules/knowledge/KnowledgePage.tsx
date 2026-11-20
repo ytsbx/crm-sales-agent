@@ -493,8 +493,11 @@ export default function KnowledgePage() {
           {/* 编号从第一行挪到第二行（和说明并列）：
               原来编号 + 标题挤在一行，13 位的等宽编号占掉 90px，
               标题只剩 10 来字就被截。现在标题独占一整行。 */}
-          <div style={{ fontWeight: 600 }} title={text}>
-            {text && text.length > 17 ? `${text.slice(0, 17)}…` : text}
+          <div
+            style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+            title={text}
+          >
+            {text}
             {record.version && record.version > 1 && (
               <Tag size="small" style={{ marginLeft: 6 }}>{`v${record.version}`}</Tag>
             )}
