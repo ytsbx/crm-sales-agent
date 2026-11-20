@@ -313,7 +313,7 @@ export default function LeadListPage() {
       // 操作列仍是 220，五个链接一行放完、横滚条也不出现了（合计 1066 < 内容区 1070）。
       /* 220 → 240、链接间距 8 → 12：五个动作词（跟进 / 分配 / 转客户 / 释放 / 废弃）
          挤在 8px 里读成一串，"转客户"和"释放"尤其容易看混（2026-11-19 巡检）。 */
-      width: compact ? 154 : 240,
+      width: compact ? 154 : 258,
       render: (_: unknown, record: Lead) => (
         <div
           style={

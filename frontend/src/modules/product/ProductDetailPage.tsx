@@ -662,7 +662,9 @@ export default function ProductDetailPage() {
             tone={record.cost_status?.state === 'complete' ? 'green' : 'orange'}
           />
           {can('price:manage') ? (
-            <Link to={`/prices?tab=costs&sku_id=${record.id}`} style={{ fontSize: 12 }}>维护成本</Link>
+            <Link to={`/prices?tab=costs&sku_id=${record.id}`} style={{ fontSize: 12 }}>
+              {record.cost_status?.state === 'complete' ? '成本明细' : '去维护'}
+            </Link>
           ) : record.cost_status?.state !== 'complete' ? (
             <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>请联系价格管理员补齐</span>
           ) : null}
@@ -730,8 +732,10 @@ export default function ProductDetailPage() {
         title={product.name}
         tags={
           <>
+            {/* 产品线和分类同名时会出现两枚一模一样的标签（截图里两个「缠绕膜」），
+                同值只留一个。 */}
             {product.product_line && <Tag color="blue">{product.product_line}</Tag>}
-            {product.category && <Tag>{product.category}</Tag>}
+            {product.category && product.category !== product.product_line && <Tag>{product.category}</Tag>}
           </>
         }
         meta={
