@@ -16,7 +16,14 @@ import { useCopilotStore } from '../../shared/store/copilot'
 import { readLocalStorage, writeLocalStorage } from '../../shared/browser-storage'
 
 /** 独立页面（不在左侧菜单里）的页签名 */
-const EXTRA_TABS: Record<string, string> = { '/pricing': '核价', '/order-drafts': '订单草稿' }
+/* 不在侧边菜单里、但仍然要有个正经页签名的路由。
+   `/pool-recycle` 是公海回收复核的老链接（菜单已收进「客户中心 › 回收复核」），
+   没登记名字时页签会退回上次的「工作台」，看着像点错了页面（2026-11-20 实拍）。 */
+const EXTRA_TABS: Record<string, string> = {
+  '/pricing': '核价',
+  '/order-drafts': '订单草稿',
+  '/pool-recycle': '公海回收',
+}
 
 /** 角色代号 → 中文名 */
 const ROLE_LABEL: Record<string, string> = {
