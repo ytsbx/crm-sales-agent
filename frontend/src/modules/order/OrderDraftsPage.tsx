@@ -11,6 +11,7 @@ import { usePermissions } from '../../shared/hooks/permissions'
 import { useTabLabel } from '../../shared/hooks/useTabLabel'
 import { confirmOrderDraft, generateOrderDraftDocument, getOrderDraft, listOrderDrafts, updateOrderDraft, type OrderDraft, type OrderDraftLine } from '../../shared/api/order'
 import { listQuotes } from '../../shared/api/quote'
+import { getCustomer } from '../../shared/api/customer'
 import { downloadBizDoc, listBizDocs } from '../../shared/api/bizdoc'
 import { formatQuantityText } from '../../shared/number-input'
 import { newRequestKey } from '../../shared/api/requestKey'
@@ -22,6 +23,15 @@ export default function OrderDraftsPage() {
   const client = useQueryClient()
   const { can } = usePermissions()
   const query = useQuery({ queryKey: ['order-draft', draftId], queryFn: () => getOrderDraft(draftId), enabled: !!id, refetchOnWindowFocus: false, refetchOnReconnect: false })
+  /* 草稿本身只有 customer_id，没有客户名 —— 详情页标题只写「订单草稿」时，
+     打开三个草稿页签根本分不清哪个是哪个客户（2026-11-20 截图）。
+     单独补一次客户读取，只为了在标题里写出客户名。 */
+  const customerQuery = useQuery({
+    queryKey: ['customer', query.data?.customer_id],
+    queryFn: () => getCustomer(query.data!.customer_id),
+    enabled: !!query.data?.customer_id,
+    staleTime: 60_000,
+  })
   // 页签标题带草稿号，避免多个「订单草稿详情」分不清（编号写法照 2026-10-12 口径：不用 #）
   useTabLabel(id && query.data ? `草稿编号 ${draftId}` : null)
   const [page, setPage] = useState(1)
@@ -36,6 +46,14 @@ export default function OrderDraftsPage() {
   const dirtyRef = useRef(false)
   /* 已经灌过哪一份草稿。保存成功回来的那份不再灌（见下面的 effect）。 */
   const hydratedRef = useRef<number | null>(null)
+  /* 数量/单价是 decimal 原值，后端给的是 "3200.000"、"22.0000" 这种带尾零的字符串，
+     直接塞进输入框，满屏都是没意义的小数位（2026-11-20 截图）。
+     只清掉无意义的尾零，数值本身不变。 */
+  const trimZeros = (v: string | number | null | undefined) => {
+    if (v == null || v === '') return ''
+    const s = String(v)
+    return s.includes('.') ? s.replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1') : s
+  }
   const markDirty = (value: boolean) => {
     dirtyRef.current = value
     setDirty(value)
@@ -51,7 +69,7 @@ export default function OrderDraftsPage() {
     if (!query.data) return
     if (hydratedRef.current === query.data.id) return
     hydratedRef.current = query.data.id
-    setRows(query.data.items.map(i => ({ ...i, quantity: i.quantity_exact ?? String(i.quantity), unit_price: i.unit_price_exact ?? (i.unit_price == null ? null : String(i.unit_price)) })))
+    setRows(query.data.items.map(i => ({ ...i, quantity: trimZeros(i.quantity_exact ?? i.quantity), unit_price: i.unit_price_exact == null && i.unit_price == null ? null : trimZeros(i.unit_price_exact ?? i.unit_price) })))
     setForm({ currency: query.data.currency, delivery_date: query.data.delivery_date ?? '', payment_terms: query.data.payment_terms ?? '', remark: query.data.remark ?? '' })
     markDirty(false)
   }, [query.data])
@@ -152,10 +170,17 @@ export default function OrderDraftsPage() {
   if (!query.data) return <div className="page-container">{query.error?.message ?? '读取草稿中…'}</div>
   const draft = query.data
   const editable = draft.status === 'draft' && can('order:manage') && !busy
-  return <div className="page-container"><PageHeader title="订单草稿" subtitle="草稿不代表客户已下单，不进入生产、不生成应收、不计成交" extra={<Link to="/order-drafts">全部草稿</Link>} />
-    <SectionCard title="来源与本次明细"><p>来源：{draft.source_context.no} V{draft.source_context.version} · 草稿修订 {draft.revision} · 币种 {draft.currency}</p>
+  return <div className="page-container"><PageHeader
+    title={`草稿 ${draftId} · ${customerQuery.data?.name ?? '客户读取中…'}`}
+    subtitle={`来源 ${draft.source_context.no ?? '未挂报价'}${draft.source_context.version ? ` V${draft.source_context.version}` : ''} · 第 ${draft.revision} 版 · 币种 ${draft.currency} · 草稿不代表客户已下单`}
+    extra={<Link to="/order-drafts">全部草稿</Link>}
+  />
+    <SectionCard title="来源与本次明细">
       {rows.map((row, index) => <div key={row.id} style={{ borderTop: '1px solid var(--crm-border)', padding: '12px 0' }}>
-        <b>{row.name}</b><p>原采购数量：{row.source_snapshot.original_quantity == null ? '未记录' : formatQuantityText(row.source_snapshot.original_quantity)}</p>
+        {/* 同一份报价里「中空板箱01-1」常按规格拆成两行，两条都写同名，
+            上下两段看着像重复录入。加序号区分第几项。 */}
+        <b>第 {index + 1} 项 · {row.name}</b>
+        {row.source_snapshot.original_quantity != null && <p>原报价数量：{formatQuantityText(row.source_snapshot.original_quantity)}</p>}
         {/* 「本次数量：」「单价：」原来跟输入框平铺在一个 flex 行里：窄屏放不下时，
             标签会被压成「本/次/数/量」逐字换行（461px 实拍）。现在每组包一层
             nowrap 小盒子，整组往下掉，标签和输入框不会被拆开。 */}
@@ -167,9 +192,11 @@ export default function OrderDraftsPage() {
             单价：<Input style={{ width: 130 }} aria-label="草稿单价" inputMode="decimal" value={row.unit_price == null ? '' : String(row.unit_price)} placeholder="未核价" disabled={!editable} onChange={v => patch(index, { unit_price: v === '' ? null : v })} />
           </span>
         </div>
-        <p>本次规格</p><TextArea value={row.specification ?? ''} disabled={!editable} onChange={v => patch(index, { specification: v })} />
+        {/* 只读时也是 TextArea，默认给的是多行大框：一行「1200×800×5mm」被塞进
+            100px 高的空框里，空白比字还多（2026-11-20 截图）。autosize 按内容收高。 */}
+        <p>本次规格</p><TextArea autosize={{ minRows: 1, maxRows: 4 }} value={row.specification ?? ''} disabled={!editable} onChange={v => patch(index, { specification: v })} />
         {(row.specification ?? '') !== (row.source_snapshot.specification ?? '') && <p>原规格：{row.source_snapshot.specification || '未记录'}</p>}
-        <p>本次备注</p><TextArea value={row.remark ?? ''} disabled={!editable} onChange={v => patch(index, { remark: v })} />
+        <p>本次备注</p><TextArea autosize={{ minRows: 1, maxRows: 4 }} placeholder="没有就留空" value={row.remark ?? ''} disabled={!editable} onChange={v => patch(index, { remark: v })} />
       </div>)}
       <p>计划交期</p><DatePicker type="date" format="yyyy-MM-dd" showClear style={{ width: '100%' }} placeholder="选择计划交期" value={form.delivery_date ? new Date(form.delivery_date) : undefined} disabled={!editable} onChange={(_, v) => { markDirty(true); setForm({ ...form, delivery_date: (v as string) || '' }) }} />
       <p>付款条件</p><Input value={form.payment_terms} disabled={!editable} onChange={v => { markDirty(true); setForm({ ...form, payment_terms: v }) }} />

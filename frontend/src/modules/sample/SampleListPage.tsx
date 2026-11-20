@@ -1130,8 +1130,27 @@ export default function SampleListPage() {
                       </div>
                     ),
                   },
-                  { title: '原采购数量', dataIndex: 'original_quantity', width: 110, render: (v: number | null) => v == null ? '未记录' : v.toLocaleString('zh-CN') },
-                  { title: '本次样品数量', dataIndex: 'quantity', width: 110 },
+                  { title: '原数量', dataIndex: 'original_quantity', width: 84, render: (v: number | null) => v == null ? <span style={{ color: 'var(--crm-text-3)' }}>未记录</span> : v.toLocaleString('zh-CN') },
+                  {
+                    /* 抽屉只有 716 宽。原来「本次数量 / 车间依据 / 本次备注 / 本次规格」四列
+                       各占一格，「本次规格」被抽屉右边缘直接切掉（2026-11-20 截图）。
+                       数量、规格、备注合成一格按行堆着。 */
+                    title: '本次样品',
+                    render: (_: unknown, row: SampleItem) => {
+                      const oldSpec = row.source_snapshot?.specification
+                      const oldRemark = row.source_snapshot?.remark
+                      const specChanged = row.source_snapshot && row.specification !== oldSpec
+                      const remarkChanged = row.source_snapshot && (row.remark || '') !== (oldRemark || '')
+                      return (
+                        <div>
+                          <div>{row.quantity} 件{row.specification ? ` · ${row.specification}` : ''}</div>
+                          {specChanged && <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>原规格：{oldSpec || '未记录'}</div>}
+                          {row.remark && <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>备注：{row.remark}</div>}
+                          {remarkChanged && <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>原备注：{oldRemark || '未记录'}</div>}
+                        </div>
+                      )
+                    },
+                  },
                   {
                     // 车间依据逐行不同：一单里两个盒子可能材质、工艺、图纸都不一样，
                     // 所以显示在明细行上，而不是单头一栏。
@@ -1142,8 +1161,6 @@ export default function SampleListPage() {
                       return spec ? `${spec}（图纸 ${row.drawing_version}）` : `图纸 ${row.drawing_version}`
                     },
                   },
-                  { title: '本次备注', dataIndex: 'remark', render: (v: string | null, row: SampleRequestRow['items'][number]) => <div>{v || '-'}{row.source_snapshot && (v || '') !== (row.source_snapshot.remark || '') && <div style={{ fontSize: 12 }}>原备注：{row.source_snapshot.remark || '未记录'}</div>}</div> },
-                  { title: '本次规格', dataIndex: 'specification', render: (v: string | null, row: SampleRequestRow['items'][number]) => <div>{v || '-'}{row.source_snapshot && v !== row.source_snapshot.specification && <div style={{ fontSize: 12 }}>原规格：{row.source_snapshot.specification || '未记录'}</div>}</div> },
                   // 已寄样/已签收不给改：后端也会拒，这里不显示入口省得点了才报错
                   ...(canManage && !['shipped', 'signed'].includes(detail.status)
                     ? [

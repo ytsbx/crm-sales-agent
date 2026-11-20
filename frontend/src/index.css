@@ -6600,3 +6600,48 @@ table:not(.semi-table) td.cell-right {
   box-shadow: none !important;
   cursor: not-allowed !important;
 }
+
+/* Compact explanations beside selected business terms. */
+.crm-help-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.crm-help-tip {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--crm-text-3);
+  font-family: inherit;
+  font-weight: 600;
+  font-size: 11px;
+  line-height: 1;
+  cursor: help;
+}
+
+.crm-help-tip:hover,
+.crm-help-tip:focus-visible,
+.crm-help-tip[aria-expanded="true"] {
+  color: var(--crm-primary);
+  background: var(--crm-surface-low);
+}
+
+.crm-help-tip:focus-visible {
+  outline: 2px solid var(--crm-primary);
+  outline-offset: 2px;
+}
+
+.crm-help-tip-content {
+  max-width: min(260px, calc(100vw - 40px));
+  padding: 9px 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: normal;
+}

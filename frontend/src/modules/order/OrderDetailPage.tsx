@@ -1407,30 +1407,37 @@ export default function OrderDetailPage() {
                       <Tag color={MILESTONE_TONE[v] ?? 'grey'}>{record.status_label}</Tag>
                     ),
                   },
-                  { title: '备注 / 跳过原因', dataIndex: 'remark', render: (v: string | null, row: OrderMilestoneRow) => row.status === 'skipped' ? row.skip_reason : v ?? '-' },
-                  {
-                    // 方案 :103：责任人 / 来源证据 / 逾期原因要能被看到，否则填了也没人用
-                    title: '责任人',
-                    dataIndex: 'owner_id',
-                    width: 100,
-                    className: 'col-hide-narrow',
-                    onHeaderCell: () => ({ className: 'col-hide-narrow' }),
-                    render: (v: number | null) =>
-                      // 查不到人就显示 `-`：内部编号在这里帮不上忙 —— 用户不认识
-                      // 那个号，也没法拿它去找人（下单人是去用户列表里找人）
-                      v
-                        ? ((milestoneUsersQuery.data?.items ?? []).find((u) => u.id === v)
-                            ?.name ?? '-')
-                        : '-',
-                  },
-                  {
-                    title: '逾期原因',
-                    dataIndex: 'overdue_reason',
-                    width: 180,
-                    className: 'col-hide-narrow',
-                    onHeaderCell: () => ({ className: 'col-hide-narrow' }),
-                    render: (v: string | null) => v ?? '-',
-                  },
+                  // 这三列一直是打横杠的：备注/责任人/逾期原因在多数订单里根本没填，
+                  // 全空还占掉 280px，把「节点 / 计划 / 实际 / 状态」挤得很紧（2026-11-20 截图）。
+                  // 整列都没值就不画这一列，有值时自动回来。
+                  ...((milestonesQuery.data ?? []).some((row) => (row.status === 'skipped' ? row.skip_reason : row.remark))
+                    ? [{ title: '备注 / 跳过原因', dataIndex: 'remark', render: (v: string | null, row: OrderMilestoneRow) => (row.status === 'skipped' ? row.skip_reason : v ?? '-') }]
+                    : []),
+                  ...((milestonesQuery.data ?? []).some((row) => row.owner_id)
+                    ? [{
+                        // 方案 :103：责任人 / 来源证据 / 逾期原因要能被看到，否则填了也没人用
+                        title: '责任人',
+                        dataIndex: 'owner_id',
+                        width: 100,
+                        className: 'col-hide-narrow',
+                        onHeaderCell: () => ({ className: 'col-hide-narrow' }),
+                        render: (v: number | null) =>
+                          v
+                            ? ((milestoneUsersQuery.data?.items ?? []).find((u) => u.id === v)
+                                ?.name ?? '-')
+                            : '-',
+                      }]
+                    : []),
+                  ...((milestonesQuery.data ?? []).some((row) => row.overdue_reason)
+                    ? [{
+                        title: '逾期原因',
+                        dataIndex: 'overdue_reason',
+                        width: 180,
+                        className: 'col-hide-narrow',
+                        onHeaderCell: () => ({ className: 'col-hide-narrow' }),
+                        render: (v: string | null) => v ?? '-',
+                      }]
+                    : []),
                   ...(canManage
                     ? [
                         {
@@ -1525,15 +1532,23 @@ export default function OrderDetailPage() {
                     // 顺带把前缀写清是"计划"还是"实发"，免得两个数字看起来一样却含义不同。
                     render: (_: unknown, record: ShipmentBatchRow) => {
                       const shipped = record.status === 'shipped'
-                      return (
-                        record.items
-                          .map((item) => {
-                            const qty = shipped ? item.shipped_qty_exact ?? item.shipped_qty : item.planned_qty_exact ?? item.planned_qty
-                            const tag = shipped ? '实发' : '计划'
-                            return `${item.sku ?? item.order_item_id} ${tag} ${shipmentQuantity(qty)}`
-                          })
-                          .join('；') || '-'
-                      )
+                      // 同一个 SKU 在一批里往往拆成两行（分两次生产/入库），
+                      // 原样拼出来就是「周转箱03-1 实发 1200；周转箱03-1 实发 1800」，
+                      // 而列宽只有 232，后半截被截成省略号（2026-11-20 截图）。
+                      // 同 SKU 先合并再加总，一行说完。
+                      const bySku = new Map<string, number>()
+                      record.items.forEach((item) => {
+                        const qty = shipped
+                          ? item.shipped_qty_exact ?? item.shipped_qty
+                          : item.planned_qty_exact ?? item.planned_qty
+                        const key = item.sku ?? String(item.order_item_id)
+                        bySku.set(key, (bySku.get(key) ?? 0) + Number(qty ?? 0))
+                      })
+                      const tag = shipped ? '实发' : '计划'
+                      const text = [...bySku]
+                        .map(([sku, qty]) => `${sku} ${tag} ${shipmentQuantity(qty)}`)
+                        .join('；')
+                      return text ? <span title={text}>{text}</span> : '-'
                     },
                   },
                   ...(can('order:manage')

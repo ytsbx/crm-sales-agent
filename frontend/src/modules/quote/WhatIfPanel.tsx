@@ -10,6 +10,7 @@ import {
 import type { TagTone } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
 import { formatMoney, formatUnitPrice, toTwoDecimals } from '../../shared/components/money'
+import HelpTip from '../../shared/components/HelpTip'
 
 /**
  * 报价 What-if（UI 设计稿 `ai_sales_agent` 右栏「What-if 边际测算」+ 正文

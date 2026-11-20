@@ -590,8 +590,14 @@ export default function ProductDetailPage() {
             ? `${record.length ?? '-'}×${record.width ?? '-'}×${record.height ?? '-'}`
             : null
         const weight = record.weight ? `${record.weight}kg` : null
-        const extra = [size, weight, record.color, record.material].filter(Boolean).join(' · ')
         const spec = record.specification || ''
+        /* 原样是「规格」+「尺寸 · 重量 · 颜色 · 材质」两行，可规格本身往往就写着
+           尺寸和颜色（「600×400×320 蓝色」），第二行原封不动再说一遍，还多个尾点，
+           列宽 175 又放不下，截成「3.8kg · 蓝色 · 」（2026-11-20 截图）。
+           有规格时第二行只留规格没覆盖的补充项（重量、材质）；没规格才把尺寸颜色补上。 */
+        const extra = spec
+          ? [weight, record.material].filter(Boolean).join(' · ')
+          : [size, weight, record.color, record.material].filter(Boolean).join(' · ')
         if (!spec && !extra) return '-'
         return (
           <div>
