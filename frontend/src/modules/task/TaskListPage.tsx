@@ -239,7 +239,7 @@ export default function TaskListPage() {
     },
     {
       title: '关联',
-      width: compact ? 108 : 178,
+      width: compact ? 108 : 208,
       render: (_: unknown, record: Task) => {
         // 一张任务可能同时挂着客户、商机、报价、订单、打样、合同。这一列只显示
         // **最具体的那一个**并直接跳过去；全铺出来会挤成六行，而用户要找的通常
@@ -300,7 +300,7 @@ export default function TaskListPage() {
     },
     ...(compact
       ? []
-      : [{ title: '负责人', dataIndex: 'owner_name', width: 100, render: (v: string | null) => v ?? '-' }]),
+      : [{ title: '负责人', dataIndex: 'owner_name', width: 86, render: (v: string | null) => v ?? '-' }]),
     {
       title: '操作',
       width: compact ? 132 : 172,

@@ -2650,8 +2650,15 @@ table:not(.semi-table) td {
 .kpi-cols-4 {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
+/* 六张指标卡挤一行会截数字（1440 宽屏上每张只剩 185px，扣内边距 137px，
+   「本月订单金额 ¥1,596,301」顶出卡边）：6 列只在 1500px 以上成立，
+   其余排 3 列 × 2 行。 */
+@media (max-width: 1500px) {
+  .kpi-cols-6 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
 @media (max-width: 1370px) {
-  .kpi-cols-6,
   .kpi-cols-5,
   .kpi-cols-4 {
     grid-template-columns: repeat(3, minmax(0, 1fr));
