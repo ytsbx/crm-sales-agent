@@ -430,7 +430,7 @@ export default function DocumentsPage() {
                 dataIndex: 'title',
                 /* 205 只够 12–13 个字；「【验收】非正式合同 202611180001」被截成
                    「【验收】非正式合同 20261…」。没有到期日列时把省下的 80px 给它。 */
-                width: compact ? 160 : hasExpiry ? 205 : 288,
+                width: compact ? 160 : hasExpiry ? 190 : 288,
                 // 标题超过列宽会被省略成「【全场景演示】销售…」，悬停要看得到全文
                 // （2026-11-17 视觉审视 V-03）。同时给 title 属性，键盘/读屏也能读到。
                 render: (v: string, record: ContractDocument) => (
@@ -501,7 +501,9 @@ export default function DocumentsPage() {
                 title: compact ? '依据' : '依据 / 来源',
                 /* 130：13 位的 SO202611180001（13px 约 101）+ 内边距 24 = 125，刚好放下；
                    再宽就是白占，不够就是「Q202610120001 …」。 */
-                width: compact ? 170 : 134,
+                /* 134 时实测「SO202611180001」还是被压成「SO2026111800…」（2026-11-20 截图），
+                   14 位单号比注释里估的 13 位长一位。让 15px 给「标题」，单号就不省略了。 */
+                width: compact ? 170 : 149,
                 render: (_: unknown, record: ContractDocument) => {
                   const header = record.header_snapshot
                   const basis = record.quote_version_no

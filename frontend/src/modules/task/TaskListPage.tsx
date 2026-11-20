@@ -300,7 +300,7 @@ export default function TaskListPage() {
     },
     ...(compact
       ? []
-      : [{ title: '负责人', dataIndex: 'owner_name', width: 86, render: (v: string | null) => v ?? '-' }]),
+      : [{ title: '负责人', dataIndex: 'owner_name', width: 108, render: (v: string | null) => v ?? '-' }]),
     {
       title: '操作',
       width: compact ? 132 : 172,

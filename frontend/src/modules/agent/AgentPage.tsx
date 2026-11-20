@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, Card, Popconfirm, Tag, Toast, Tooltip } from '@douyinfe/semi-ui'
+import { Button, Card, Modal, Popconfirm, Tag, Toast, Tooltip } from '@douyinfe/semi-ui'
 
 import {
   confirmAgentAction,
@@ -35,6 +35,7 @@ export default function AgentPage() {
   const queryClient = useQueryClient()
   const [sessionId, setSessionId] = useState<number | null>(null)
   const [input, setInput] = useState('')
+  const [toolsOpen, setToolsOpen] = useState(false)
   const [lastTools, setLastTools] = useState<AgentToolCall[]>([])
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -311,35 +312,60 @@ export default function AgentPage() {
           </div>
         ))}
         </div>
-        <details className="agent-tools" style={{ marginTop: 'auto', flexShrink: 0 }}>
-          <summary>能做什么 · {(toolsQuery.data ?? []).length} 项能力</summary>
-          <div style={{ marginTop: 8, display: 'grid', gap: 6 }}>
-          {(toolsQuery.data ?? []).map((tool) => (
-            // 悬停看这个工具具体能干什么。`description` 是后端随 `/agent/tools`
-            // 一起下发的「给用户看的中文说明」（和给模型看的函数名不是一回事），
-            // 以前前端拿到了却没展示，底下还写了一句"鼠标停上去可以看到具体能力"，
-            // 等于承诺了个没做的功能 —— 2026-10-14 补上。
-            <Tooltip key={tool.name} content={tool.description} position="right">
-              {/* cursor: default —— 这行是普通文字，浏览器默认给 I 形文本光标，
-                  鼠标划过去像在编辑框里，看着像坏了。改成箭头。 */}
-              <div
-                style={{
-                  fontSize: 12,
-                  display: 'flex',
-                  gap: 6,
-                  alignItems: 'center',
-                  cursor: 'default',
-                }}
-              >
-                <Tag color={RISK_TONE[tool.risk_level] ?? 'grey'} size="small">
-                  {tool.risk_level}
-                </Tag>
-                <span style={{ color: 'var(--crm-text)' }}>{tool.label}</span>
-              </div>
-            </Tooltip>
-          ))}
+        {/* 原来是一个 <details> 折叠：主人明确说过「不要这种折叠，巨丑」，
+            而且 20 项能力一展开就把左栏撑得老高、把会话列表挤没。
+            现在收成一行文字键，点开在弹窗里看全部。 */}
+        <Button
+          size="small"
+          theme="borderless"
+          style={{ marginTop: 'auto', flexShrink: 0, alignSelf: 'flex-start' }}
+          onClick={() => setToolsOpen(true)}
+        >
+          能做什么 · {(toolsQuery.data ?? []).length} 项能力 →
+        </Button>
+        <Modal
+          title="AI 助手能做什么"
+          visible={toolsOpen}
+          onCancel={() => setToolsOpen(false)}
+          footer={null}
+          width={760}
+        >
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+              gap: 10,
+              maxHeight: '58vh',
+              overflowY: 'auto',
+              paddingRight: 4,
+            }}
+          >
+            {(toolsQuery.data ?? []).map((tool) => (
+              <Tooltip key={tool.name} content={tool.description} position="top">
+                <div
+                  style={{
+                    fontSize: 12.5,
+                    display: 'flex',
+                    gap: 8,
+                    alignItems: 'center',
+                    cursor: 'default',
+                    padding: '6px 8px',
+                    borderRadius: 8,
+                    background: 'var(--crm-surface-low)',
+                  }}
+                >
+                  <Tag color={RISK_TONE[tool.risk_level] ?? 'grey'} size="small">
+                    {tool.risk_level}
+                  </Tag>
+                  <span style={{ color: 'var(--crm-text)' }}>{tool.label}</span>
+                </div>
+              </Tooltip>
+            ))}
           </div>
-        </details>
+          <p style={{ margin: '12px 0 0', fontSize: 12, color: 'var(--crm-text-3)' }}>
+            鼠标停在每一项上，可以看到它具体能做什么。L1 只读取、L2 会写数据、L3 要你确认后才动手。
+          </p>
+        </Modal>
       </SectionCard>
 
       <SectionCard style={{ minHeight: 600, display: 'flex', flexDirection: 'column' }}>

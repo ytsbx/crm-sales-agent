@@ -1231,7 +1231,9 @@ export default function PriceCenterPage() {
                         叫「核价记录」名不副实，改成「价格操作」。 */}
                     <span>最近价格操作</span>
                     <span style={{ fontSize: 12, fontWeight: 400, color: 'var(--crm-text-3)' }}>
-                      共 {recentHistoryQuery.data?.total ?? 0} 条 · 改价、审批、发送、客户回复都记在这
+                      {/* 只渲染最近 5 条，标题却写着「共 121 条」—— 会让人以为下面能翻页看到全部。
+                          如实说明这里只放最近几条。 */}
+                      共 {recentHistoryQuery.data?.total ?? 0} 条 · 这里只放最近 {(recentHistoryQuery.data?.items ?? []).length} 条
                     </span>
                   </div>
                   {(recentHistoryQuery.data?.items ?? []).map((row) => (
