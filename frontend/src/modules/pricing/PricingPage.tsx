@@ -195,7 +195,9 @@ export function PricingTool({ embedded = false }: { embedded?: boolean }) {
               </div>
             </div>
             <div>
-              <div style={{ marginBottom: 4 }}>目标利润率（留空则用价格规则里的值）</div>
+              {/* 口径说清：这是"按卖价比例加成"，不是毛利百分比的另一种叫法；
+                  留空时用价格规则里维护的值（后端 `service.py:1029` 那三级回退）。 */}
+              <FormLabel hint="按卖价比例算，如 0.30 = 加三成；留空则用规则里的值">目标利润率</FormLabel>
               <Input value={targetMargin} onChange={setTargetMargin} placeholder="例如 0.30" />
             </div>
             {/* 拟报价跨两列：七个字段排三列，最后一行只剩它一个，
