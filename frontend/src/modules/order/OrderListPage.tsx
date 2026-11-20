@@ -237,6 +237,8 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
     {
       title: '客户',
       dataIndex: 'customer_name',
+      // 订单行里客户名是纯文本（不是链接）：按主标识加深，和订单号的蓝字呼应
+      className: 'cell-strong',
       width: compact ? 190 : 220,
       render: (v: string | null, record: Order) => (
         <div style={{ minWidth: 0 }}>

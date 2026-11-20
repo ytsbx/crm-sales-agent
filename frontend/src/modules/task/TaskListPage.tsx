@@ -218,6 +218,8 @@ export default function TaskListPage() {
     {
       title: '任务',
       dataIndex: 'title',
+      // 任务名是这一行唯一的"这是哪条"，纯文本、不是链接 —— 按主标识加深（cell-strong）
+      className: 'cell-strong',
       width: compact ? 152 : 206,
       render: (text: string) => (
         <span

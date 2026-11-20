@@ -139,7 +139,7 @@ export default function QuoteListPage() {
       width: compact ? 190 : 175,
       render: (v: string | null, record: Quote) => (
         <div style={{ minWidth: 0 }}>
-          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={v ?? '-'}>
+          <div className="cell-strong" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={v ?? '-'}>
             {v ?? '-'}
           </div>
           <div

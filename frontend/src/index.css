@@ -6348,3 +6348,22 @@ table:not(.semi-table) td.cell-right {
 .semi-table-tbody .semi-table-row-cell.cell-right {
   color: #1d2129;
 }
+/* ─────────────── 主标识：名称不是链接时也要"跳出来"（2026-11-20）
+   表体统一灰字（#4e5969）是为了让数字和状态不抢眼，但"这是哪条记录"的那一格
+   跟着一起灰，扫表时就找不到落点（主人在公海回收/销售任务上说过"看着都一样"）。
+   规则：**能点的名称** = 蓝字（已有 a 规则）；**不能点的名称** = 深色 500 字重。
+   两者都跳出来，但用"蓝/不蓝"区分可点与不可点，不再出现"一片灰"或"一片蓝"。 */
+.semi-table-tbody .semi-table-row-cell.cell-strong {
+  color: var(--crm-text-1) !important;
+  font-weight: 500;
+}
+.semi-table-tbody .semi-table-row-cell .cell-strong {
+  color: var(--crm-text-1) !important;
+  font-weight: 500;
+}
+/* 公海回收的客户名是两行结构（名字 + 「A 级 · 超 60 天未跟进」），
+   名字那行同样按主标识处理 */
+.recycle-cand-table .recycle-cand-name {
+  color: var(--crm-text-1);
+  font-weight: 500;
+}

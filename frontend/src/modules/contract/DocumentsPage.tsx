@@ -438,6 +438,7 @@ export default function DocumentsPage() {
                   <div style={{ minWidth: 0 }}>
                     <span
                       title={v}
+                      className="cell-strong"
                       style={{
                         display: 'block',
                         overflow: 'hidden',
