@@ -1,4 +1,6 @@
 import { formatBeijingTime } from '../../shared/beijing-time'
+import EmptyState from '../../shared/components/EmptyState'
+import PageLoading from '../../shared/components/PageLoading'
 import { UNRATED_OPTION, customerLevelValue, customerLevelPayload, customerLevelLabel } from '../../shared/customer-level'
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
@@ -461,10 +463,21 @@ export default function CustomerDetailPage() {
       : normal
 
   if (customerQuery.isLoading) {
-    return <div className="page-container">加载中…</div>
+    return <PageLoading />
   }
   if (!customer) {
-    return <div className="page-container">客户不存在或无权查看</div>
+    /* 原来是一行裸字挂在整页白底（2026-11-20 巡检）：链接错了或没权限时像页面崩了。 */
+    return (
+      <div className="page-container">
+        <EmptyState
+          title="客户不存在或无权查看"
+          hint="可能链接里的编号有误，或这条客户属于你数据范围之外的人；回客户中心重新选择即可。"
+        />
+        <div style={{ display: 'flex', justifyContent: 'center', paddingBottom: 24 }}>
+          <Button type="primary" theme="solid" onClick={() => navigate('/customers')}>返回客户中心</Button>
+        </div>
+      </div>
+    )
   }
 
   const canEditContact = can('customer:update')

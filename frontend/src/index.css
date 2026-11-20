@@ -6367,3 +6367,13 @@ table:not(.semi-table) td.cell-right {
   color: var(--crm-text-1);
   font-weight: 500;
 }
+/* 详情页加载态：转圈 + 一行字（见 shared/components/PageLoading.tsx） */
+.page-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 80px 0;
+  color: var(--crm-text-3);
+  font-size: 13px;
+}

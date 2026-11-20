@@ -1,4 +1,6 @@
 import { formatBeijingTime } from '../../shared/beijing-time'
+import EmptyState from '../../shared/components/EmptyState'
+import PageLoading from '../../shared/components/PageLoading'
 import { useTabLabel } from '../../shared/hooks/useTabLabel'
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
@@ -676,8 +678,20 @@ export default function OrderDetailPage() {
     ? []
     : ['顺序要求：先点上一步的「预览受影响面」，看到影响面之后才能提交。']
 
-  if (orderQuery.isLoading) return <div className="page-container">加载中…</div>
-  if (!order) return <div className="page-container">订单不存在或无权查看</div>
+  if (orderQuery.isLoading) return <PageLoading />
+  if (!order) {
+    return (
+      <div className="page-container">
+        <EmptyState
+          title="订单不存在或无权查看"
+          hint="可能链接里的编号有误，或这条记录属于你数据范围之外的人；回订单列表重新选择即可。"
+        />
+        <div style={{ display: 'flex', justifyContent: 'center', paddingBottom: 24 }}>
+          <Button type="primary" theme="solid" onClick={() => navigate('/orders')}>返回订单列表</Button>
+        </div>
+      </div>
+    )
+  }
 
   const summary = summaryQuery.data
 

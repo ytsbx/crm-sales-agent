@@ -1,4 +1,6 @@
 import { IconExport, IconFile, IconMail } from '@douyinfe/semi-icons'
+import EmptyState from '../../shared/components/EmptyState'
+import PageLoading from '../../shared/components/PageLoading'
 import { formatMoney, formatUnitPrice } from '../../shared/components/money'
 import { skuLabel } from '../../shared/sku-label'
 import { formatBeijingDate, formatBeijingTime } from '../../shared/beijing-time'
@@ -747,10 +749,20 @@ export default function QuoteDetailPage() {
   // （2026-10-15：`useBlockedNotify` 那一行已随 `GuardedButton` 一起去掉，
   //   这里不再有 hook，但**位置要求不变** —— `planNotReady` 要在 early return 前算好。）
   if (versionsQuery.isLoading || detailQuery.isLoading) {
-    return <div className="page-container">加载中…</div>
+    return <PageLoading />
   }
   if (!detail || !version || !quote) {
-    return <div className="page-container">报价单不存在或无权查看</div>
+    return (
+      <div className="page-container">
+        <EmptyState
+          title="报价单不存在或无权查看"
+          hint="可能链接里的编号有误，或这条报价属于你数据范围之外的人；回报价中心重新选择即可。"
+        />
+        <div style={{ display: 'flex', justifyContent: 'center', paddingBottom: 24 }}>
+          <Button type="primary" theme="solid" onClick={() => navigate('/quotes')}>返回报价中心</Button>
+        </div>
+      </div>
+    )
   }
 
   /**

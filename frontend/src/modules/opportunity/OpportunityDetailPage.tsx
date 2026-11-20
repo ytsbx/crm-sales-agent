@@ -1,4 +1,5 @@
 import { skuLabel } from '../../shared/sku-label'
+import PageLoading from '../../shared/components/PageLoading'
 import { formatBeijingTime } from '../../shared/beijing-time'
 import { useTabLabel } from '../../shared/hooks/useTabLabel'
 import { useState } from 'react'
@@ -332,8 +333,20 @@ export default function OpportunityDetailPage() {
   })
 
   const opportunity = opportunityQuery.data
-  if (opportunityQuery.isLoading) return <div className="page-container">加载中…</div>
-  if (!opportunity) return <div className="page-container">商机不存在或无权查看</div>
+  if (opportunityQuery.isLoading) return <PageLoading />
+  if (!opportunity) {
+    return (
+      <div className="page-container">
+        <EmptyState
+          title="商机不存在或无权查看"
+          hint="可能链接里的编号有误，或这条记录属于你数据范围之外的人；回商机列表重新选择即可。"
+        />
+        <div style={{ display: 'flex', justifyContent: 'center', paddingBottom: 24 }}>
+          <Button type="primary" theme="solid" onClick={() => navigate('/opportunities')}>返回商机列表</Button>
+        </div>
+      </div>
+    )
+  }
 
   const itemColumns = [
     {
