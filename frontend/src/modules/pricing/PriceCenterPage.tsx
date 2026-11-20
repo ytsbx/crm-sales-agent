@@ -1226,9 +1226,12 @@ export default function PriceCenterPage() {
                       color: 'var(--crm-text-2)',
                     }}
                   >
-                    <span>最近核价记录</span>
+                    {/* 2026-11-21：这块拉的是价格与报价的操作流水 ——
+                        里面既有改价、也有提交审批、发送邮件、客户接受。
+                        叫「核价记录」名不副实，改成「价格操作」。 */}
+                    <span>最近价格操作</span>
                     <span style={{ fontSize: 12, fontWeight: 400, color: 'var(--crm-text-3)' }}>
-                      共 {recentHistoryQuery.data?.total ?? 0} 条，这里只显示最近 5 条
+                      共 {recentHistoryQuery.data?.total ?? 0} 条 · 改价、审批、发送、客户回复都记在这
                     </span>
                   </div>
                   {(recentHistoryQuery.data?.items ?? []).map((row) => (
