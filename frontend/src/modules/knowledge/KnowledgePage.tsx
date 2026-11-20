@@ -621,7 +621,14 @@ export default function KnowledgePage() {
           <span style={{ display: 'inline-flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
             <a onClick={() => openEdit(record)}>编辑</a>
             {/* 定制件没有 SKU，报价中心选不到它——这里直接转报价（场景09） */}
-            <a onClick={() => openQuote(record)}>{record.linked_quotes?.length ? '查看报价' : '生成报价草稿'}</a>
+            {/* 2026-11-21：「生成报价草稿」五个字把操作列撑到 240 还不够，
+                右边「更多」被裁。宽窄屏统一用「转报价」，悬停说明它落的是草稿。 */}
+            <a
+              onClick={() => openQuote(record)}
+              title={record.linked_quotes?.length ? undefined : '生成一份报价草稿，价格需按核价复核后才对客'}
+            >
+              {record.linked_quotes?.length ? '查看报价' : '转报价'}
+            </a>
             <Popconfirm title="删除这条定制询价？" onConfirm={() => deleteMutation.mutate(record.id)}>
               <a style={{ color: 'var(--crm-error)' }}>删除</a>
             </Popconfirm>
