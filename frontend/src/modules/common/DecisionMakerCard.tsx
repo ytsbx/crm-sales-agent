@@ -149,7 +149,7 @@ export default function DecisionMakerCard({
             style={{
               display: 'flex',
               gap: 12,
-              padding: 12,
+              padding: '14px 16px',
               borderRadius: 'var(--crm-radius)',
               background: 'var(--crm-surface-low)',
               border: '1px solid var(--crm-surface-high)',
@@ -159,28 +159,59 @@ export default function DecisionMakerCard({
                 姓名常常以「【全场景演示】」开头，第一个字就是「【」，
                 圆形里孤零零一个方括号，比没有还难看。姓名本身就是最好的标识。 */}
             <div style={{ minWidth: 0, flex: 1 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ fontWeight: 600 }}>{primary.name}</span>
+              {/* 姓名 + 标签：gap 6 → 8，并且允许换行 —— 姓名带「【全场景演示】」这类
+                  长前缀时，标签会被挤到贴着最后一个字，看着像连在一起（2026-11-20）。 */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontWeight: 600, lineHeight: 1.4, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {primary.name}
+                </span>
                 {primary.is_primary && (
-                  <Tag color="blue" size="small">
+                  <Tag color="blue" size="small" style={{ flexShrink: 0 }}>
                     主要联系人
                   </Tag>
                 )}
               </div>
-              <div style={{ color: 'var(--crm-text-2)', fontSize: 12, marginTop: 2 }}>
+              <div style={{ color: 'var(--crm-text-2)', fontSize: 12, marginTop: 6 }}>
                 {[primary.title, primary.department].filter(Boolean).join(' · ') || '未填职位'}
               </div>
-              <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginTop: 4 }}>
-                <MaskedContact value={primary.email} kind="email" empty="无邮箱" />　
+              {/* 邮箱和电话原来靠一个全角空格分隔，截图上挤成「c***@… 无电话」，
+                  分不出是两个字段。改成 flex + 10px 间距 + 一个淡灰「·」分隔。 */}
+              <div
+                style={{
+                  color: 'var(--crm-text-3)',
+                  fontSize: 12,
+                  marginTop: 6,
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  alignItems: 'center',
+                  gap: 10,
+                }}
+              >
+                <MaskedContact value={primary.email} kind="email" empty="无邮箱" />
+                <span style={{ color: 'var(--crm-text-4, #c9cdd4)' }}>·</span>
                 <MaskedContact value={primary.mobile ?? primary.phone} empty="无电话" />
               </div>
             </div>
           </div>
 
+          {/* 三个按钮原来都是 Semi 默认浅灰底，和全站"白底描边"不是一套，
+              还容易读成禁用（2026-11-20）。现在：
+              发送邮件 = 主按钮（对外沟通的主动作），企业微信 = 文字按钮（复制账号），
+              拨打电话 = 文字按钮（无号码时禁用成灰字）。
+              ⚠️ Semi 的 Button 默认 type="primary"，只写 theme="borderless" 仍带浅蓝底，
+              必须显式 type="tertiary"（全局 CSS 对 tertiary 做了透明兜底）。 */}
+          {/* 三个按钮原来都是 Semi 默认浅灰底，和全站"白底描边"不是一套，
+              还容易读成禁用（2026-11-20）。现在：
+              发送邮件 = 主按钮（对外沟通的主动作），企业微信 = 文字按钮（复制账号），
+              拨打电话 = 文字按钮（无号码时禁用成灰字）。
+              ⚠️ Semi 的 Button 默认 type="primary"，只写 theme="borderless" 仍带浅蓝底，
+              必须显式 type="tertiary"（全局 CSS 对 tertiary 做了透明兜底）。 */}
           {!compact && (
-            <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 4, marginTop: 12, flexWrap: 'wrap' }}>
               <Button
                 size="small"
+                type="primary"
+                theme="outline"
                 disabled={!primary.email}
                 onClick={() => {
                   window.location.href = `mailto:${primary.email}`
@@ -190,6 +221,8 @@ export default function DecisionMakerCard({
               </Button>
               <Button
                 size="small"
+                type="tertiary"
+                theme="borderless"
                 onClick={async () => {
                   const account = primary.wechat ?? primary.mobile ?? primary.name
                   try {
@@ -204,6 +237,8 @@ export default function DecisionMakerCard({
               </Button>
               <Button
                 size="small"
+                type="tertiary"
+                theme="borderless"
                 disabled={!(primary.mobile ?? primary.phone)}
                 onClick={() => {
                   window.location.href = `tel:${primary.mobile ?? primary.phone}`
