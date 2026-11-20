@@ -132,7 +132,9 @@ const SKU_REMOVED_TEXT: Record<RemovedVia, string> = {
  * 负责人说的是"这客户归谁管"，跟"谁删的"是两件事，混起来会让人找错人。
  */
 const renderDeletedBy = (name: string | null, pending: boolean) =>
-  pending ? <span style={HINT}>历史操作人待核实</span> : (name ?? '-')
+  pending
+    ? <span style={HINT} title="留痕里没记下当时是谁删的，需要去流水账核实">待核实</span>
+    : (name ?? '-')
 
 
 /** 窄屏（<1200）紧凑列宽开关：回收站各表的列加起来都超过 1024 的内容区
@@ -182,7 +184,7 @@ function LeadsPanel() {
     ...(compact
       ? []
       : [{ title: '联系人', dataIndex: 'contact_name', width: 80, render: (v: string | null) => v ?? '-' }]),
-    { title: '手机', dataIndex: 'mobile', width: compact ? 112 : 120, render: (v: string | null) => <MaskedContact value={v} /> },
+    { title: '手机', dataIndex: 'mobile', width: compact ? 112 : 130, render: (v: string | null) => <MaskedContact value={v} /> },
     { title: '负责人', dataIndex: 'owner_name', width: compact ? 84 : 110, render: (v: string | null) => v ?? '未分配' },
     {
       title: '原状态',
@@ -212,7 +214,7 @@ function LeadsPanel() {
           // 线索只可能是被人直接删的，所以没有"删除方式"那一栏 —— 谁删的还是要看
           title: '删除人',
           dataIndex: 'deleted_by_name',
-          width: 132,
+          width: 110,
           render: (v: string | null, record: RecycleLead) =>
             renderDeletedBy(v, record.deleted_by_pending),
         }]),
@@ -220,7 +222,7 @@ function LeadsPanel() {
       ? [
           {
             title: '操作',
-            width: compact ? 82 : 90,
+            width: compact ? 82 : 70,
             render: (_: unknown, record: RecycleLead) => (
               <Popconfirm title="确认恢复这条线索？" onConfirm={() => restoreMutation.mutate(record.id)}>
                 <a>恢复</a>
@@ -317,7 +319,7 @@ function ProductsPanel() {
   })
 
   const productColumns = [
-    { title: '产品名称', dataIndex: 'name', width: compact ? 200 : undefined, ellipsis: true },
+    { title: '产品名称', dataIndex: 'name', width: compact ? 200 : 210, ellipsis: true },
     { title: '产品线', dataIndex: 'product_line', width: compact ? 110 : 130, render: (v: string | null) => v ?? '-' },
     ...(compact
       ? []
@@ -328,36 +330,24 @@ function ProductsPanel() {
     {
       title: '附带 SKU',
       dataIndex: 'deleted_sku_count',
-      width: compact ? 96 : 110,
+      width: compact ? 96 : 130,
       // 恢复这个产品时会一并捡回来的 SKU 条数，先让人心里有数
       render: (count: number) => (count > 0 ? `${count} 个将一起恢复` : '无'),
     },
     {
-      title: compact ? '删除时间 / 人' : '删除时间',
+      // 时间与人叠成一列：九列并排时「删除人」必被挤到滚动条外
+      title: '删除时间 / 人',
       dataIndex: 'deleted_at',
-      width: compact ? 118 : 170,
-      render: (v: string, record: RecycleProduct) =>
-        compact ? (
-          <div style={{ display: 'grid', gap: 2 }}>
-            <span title={formatBeijingTime(v)}>{formatBeijingTime(v).slice(0, 10)}</span>
-            <span style={{ fontSize: 11, color: 'var(--crm-text-3)' }}>
-              {record.deleted_by_name ?? '—'}
-            </span>
-          </div>
-        ) : (
-          fmt(v)
-        ),
+      width: compact ? 118 : 160,
+      render: (v: string, record: RecycleProduct) => (
+        <div style={{ display: 'grid', gap: 2 }}>
+          <span title={formatBeijingTime(v)}>{compact ? formatBeijingTime(v).slice(0, 10) : formatBeijingTime(v)}</span>
+          <span style={{ fontSize: 11, color: 'var(--crm-text-3)' }}>
+            {record.deleted_by_pending ? '历史操作人待核实' : (record.deleted_by_name ?? '—')}
+          </span>
+        </div>
+      ),
     },
-    ...(compact
-      ? []
-      : [{
-          // 产品也只可能是被人直接删的，同样不需要"删除方式"那一栏
-          title: '删除人',
-          dataIndex: 'deleted_by_name',
-          width: 150,
-          render: (v: string | null, record: RecycleProduct) =>
-            renderDeletedBy(v, record.deleted_by_pending),
-        }]),
     ...(canRestore
       ? [
           {
@@ -374,18 +364,18 @@ function ProductsPanel() {
   ]
 
   const skuColumns = [
-    { title: '名称', dataIndex: 'name', width: compact ? 110 : undefined, ellipsis: true, render: (v: string | null) => v ?? '-' },
+    { title: '名称', dataIndex: 'name', width: compact ? 110 : 190, ellipsis: true, render: (v: string | null) => v ?? '-' },
     ...(compact
       ? []
-      : [{ title: '规格', dataIndex: 'specification', width: 150, render: (v: string | null) => v ?? '-' }]),
-    { title: '编码', dataIndex: 'sku_code', width: compact ? 150 : 160 },
+      : [{ title: '规格', dataIndex: 'specification', width: 140, render: (v: string | null) => v ?? '-' }]),
+    { title: '编码', dataIndex: 'sku_code', width: compact ? 150 : 150 },
     ...(compact
       ? []
-      : [{ title: '所属产品', dataIndex: 'product_name', render: (v: string | null) => v ?? '-' }]),
+      : [{ title: '所属产品', dataIndex: 'product_name', width: 150, render: (v: string | null) => v ?? '-' }]),
     {
       title: '状态',
       dataIndex: 'product_deleted',
-      width: compact ? 128 : 170,
+      width: compact ? 128 : 150,
       render: (productDeleted: boolean, record: RecycleSku) => {
         if (record.code_occupied) return <Tag color="red">编码被占用</Tag>
         if (productDeleted) return <Tag color="orange">随产品一起恢复</Tag>
@@ -397,7 +387,7 @@ function ProductsPanel() {
       // 而不是对着这条 SKU 点恢复（那样只会得到一句"请先恢复产品"）
       title: '删除方式',
       dataIndex: 'removed_via',
-      width: compact ? 118 : 150,
+      width: compact ? 118 : 118,
       render: (via: RemovedVia | null) => {
         // 判不出来就说"待核实"，不硬安一个方式（历史数据常是这样）
         if (via === null) return <Tag>待核实</Tag>
@@ -409,31 +399,19 @@ function ProductsPanel() {
       },
     },
     {
-      title: compact ? '删除时间 / 人' : '删除时间',
+      // 时间与人叠成一列：九列并排时「删除人」必被挤到滚动条外
+      title: '删除时间 / 人',
       dataIndex: 'deleted_at',
-      width: compact ? 118 : 170,
-      render: (v: string, record: RecycleSku) =>
-        compact ? (
-          <div style={{ display: 'grid', gap: 2 }}>
-            <span title={formatBeijingTime(v)}>{formatBeijingTime(v).slice(0, 10)}</span>
-            <span style={{ fontSize: 11, color: 'var(--crm-text-3)' }}>
-              {record.deleted_by_name ?? '—'}
-            </span>
-          </div>
-        ) : (
-          fmt(v)
-        ),
+      width: compact ? 118 : 160,
+      render: (v: string, record: RecycleSku) => (
+        <div style={{ display: 'grid', gap: 2 }}>
+          <span title={formatBeijingTime(v)}>{compact ? formatBeijingTime(v).slice(0, 10) : formatBeijingTime(v)}</span>
+          <span style={{ fontSize: 11, color: 'var(--crm-text-3)' }}>
+            {record.deleted_by_pending ? '历史操作人待核实' : (record.deleted_by_name ?? '—')}
+          </span>
+        </div>
+      ),
     },
-    ...(compact
-      ? []
-      : [{
-          // 「随产品删除」时这里给的是**删产品的那个人** —— 正是"谁把它带走的"
-          title: '删除人',
-          dataIndex: 'deleted_by_name',
-          width: 150,
-          render: (v: string | null, record: RecycleSku) =>
-            renderDeletedBy(v, record.deleted_by_pending),
-        }]),
     ...(canRestore
       ? [
           {
@@ -647,12 +625,12 @@ function CustomersPanel() {
   }
 
   const columns = [
-    { title: '客户名称', dataIndex: 'name', width: compact ? 118 : undefined, ellipsis: true },
-    { title: '简称', dataIndex: 'short_name', width: compact ? 76 : 140, ellipsis: true, render: (v: string | null) => v ?? '-' },
+    // 简称列等同于名称的后半截，占掉 120px 反而把名称挤成「宁波麦隆精…」—— 去掉
+    { title: '客户名称', dataIndex: 'name', width: compact ? 118 : 200, ellipsis: true },
     {
       title: '原负责人',
       dataIndex: 'original_owner_name',
-      width: compact ? 100 : 160,
+      width: compact ? 100 : 130,
       // "待核实" ≠ "未分配"：前者是合并留痕里没记当时的负责人（只有管理员看得到），
       // 后者是这条客户本来就没有负责人。说成一样的会把人往错的方向带。
       render: (v: string | null, record: RecycleCustomer) => {
@@ -676,7 +654,7 @@ function CustomersPanel() {
       // 去猜 —— 现在直接说明。两栏分工：这一栏说**动作**，那一栏说**结果**。
       title: '操作方式',
       dataIndex: 'removed_via',
-      width: compact ? 90 : 130,
+      width: compact ? 90 : 120,
       render: (via: RemovedVia) =>
         via === 'merged' ? (
           <Tag color="orange">{CUSTOMER_REMOVED_TEXT[via]}</Tag>
@@ -687,7 +665,7 @@ function CustomersPanel() {
     {
       title: '去向',
       dataIndex: 'merged_into',
-      width: compact ? 128 : 280,
+      width: compact ? 128 : 250,
       render: (merged: RecycleCustomer['merged_into'], record: RecycleCustomer) => {
         // 没有去向＝没人接手。操作方式那一栏已经说了"直接删除"，这里不再重复一遍
         if (!merged) return <span style={HINT}>-</span>
@@ -713,36 +691,23 @@ function CustomersPanel() {
           // 合并原因：只有被合并掉的才有；直接删除的为空 —— 显示成"—"而不是一个空框
           title: '合并原因',
           dataIndex: 'merge_reason',
-          width: 200,
+          width: 150,
           render: (v: string | null) => v || <span style={HINT}>-</span>,
         }]),
     {
-      title: compact ? '删除时间 / 人' : '删除时间',
+      // 时间与人叠成一列：客户表九列并排时「删除人」会被挤到滚动条外
+      title: '删除时间 / 人',
       dataIndex: 'deleted_at',
-      width: compact ? 108 : 170,
-      render: (v: string, record: RecycleCustomer) =>
-        compact ? (
-          <div style={{ display: 'grid', gap: 2 }}>
-            <span title={formatBeijingTime(v)}>{formatBeijingTime(v).slice(0, 10)}</span>
-            <span style={{ fontSize: 11, color: 'var(--crm-text-3)' }}>
-              {record.deleted_by_name ?? '—'}
-            </span>
-          </div>
-        ) : (
-          fmt(v)
-        ),
+      width: compact ? 108 : 160,
+      render: (v: string, record: RecycleCustomer) => (
+        <div style={{ display: 'grid', gap: 2 }}>
+          <span title={formatBeijingTime(v)}>{compact ? formatBeijingTime(v).slice(0, 10) : formatBeijingTime(v)}</span>
+          <span style={{ fontSize: 11, color: 'var(--crm-text-3)' }}>
+            {record.deleted_by_pending ? '历史操作人待核实' : (record.deleted_by_name ?? '—')}
+          </span>
+        </div>
+      ),
     },
-    ...(compact
-      ? []
-      : [{
-          // 合并来源给的是**合并留痕里的操作人**（谁把这条并进了哪条），
-          // 直接删除的取流水账；两者都查不到时说"待核实"，不拿负责人顶替
-          title: '删除人',
-          dataIndex: 'deleted_by_name',
-          width: 150,
-          render: (v: string | null, record: RecycleCustomer) =>
-            renderDeletedBy(v, record.deleted_by_pending),
-        }]),
     ...(showRestoreColumn
       ? [
           {
@@ -917,7 +882,7 @@ export default function RecycleBinPage() {
     <div className="page-container">
       <PageHeader
         title="回收站"
-        subtitle="这里只放「被删掉的东西」，可以捡回来；客户只做查看"
+        subtitle="这里放的是删掉的东西，能捡回来；被合并掉的客户只做查看"
       />
       {tabs.length === 0 ? (
         <SectionCard>你没有查看任何回收站分区的权限。</SectionCard>
