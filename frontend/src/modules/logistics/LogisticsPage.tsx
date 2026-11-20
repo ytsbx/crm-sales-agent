@@ -82,7 +82,8 @@ export default function LogisticsPage() {
   const historyQuery = useQuery({
     queryKey: ['logistics-quotes'],
     queryFn: () => listLogisticsQuotes({ page: 1, page_size: 50 }),
-    enabled: activeKey === 'history',
+    // 试算页也要用它填空态（最近算过的三条），所以不再只在「试算历史」页签里拉。
+    enabled: activeKey === 'history' || activeKey === 'calc',
   })
 
   const quantityNumber = Number(quantity)
@@ -362,6 +363,8 @@ export default function LogisticsPage() {
                   style={{
                     flex: 1,
                     display: 'flex',
+                    flexDirection: 'column',
+                    gap: 16,
                     alignItems: 'center',
                     justifyContent: 'center',
                     padding: '24px 0',
@@ -371,6 +374,53 @@ export default function LogisticsPage() {
                     title="还没有试算结果"
                     hint="选好 SKU 和数量，点「试算」后这里会显示计费重与各承运商方案"
                   />
+                  {/* 2026-11-21：右卡整片空着（主人说"太空了"）。空态下面接三条
+                      "最近算过的"，点一下就把条件填回左边表单 —— 填空，也省得重填。 */}
+                  {(historyQuery.data?.items ?? []).length > 0 && (
+                    <div
+                      style={{
+                        marginTop: 18,
+                        width: '100%',
+                        maxWidth: 420,
+                        margin: '0 auto',
+                        borderTop: '1px solid var(--crm-border, #E5E6EB)',
+                        paddingTop: 10,
+                        textAlign: 'left',
+                      }}
+                    >
+                      <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>
+                        最近算过的，点一下填回左边
+                      </div>
+                      {(historyQuery.data?.items ?? []).slice(0, 3).map((row) => (
+                        <div
+                          key={row.id}
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            gap: 12,
+                            padding: '5px 0',
+                            fontSize: 12,
+                            color: 'var(--crm-text-2)',
+                            cursor: 'pointer',
+                          }}
+                          onClick={() => {
+                            if (row.sku_id) setSkuId(row.sku_id)
+                            if (row.quantity) setQuantity(String(row.quantity))
+                            setOrigin(row.origin ?? '')
+                            setDestination(row.destination ?? '')
+                            if (row.shipping_method) setShippingMethod(row.shipping_method)
+                          }}
+                        >
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {`${row.origin || '—'} → ${row.destination || '—'} · ${row.quantity ?? '-'} 件`}
+                          </span>
+                          <span style={{ flexShrink: 0, color: 'var(--crm-text-3)' }}>
+                            {`¥${row.amount.toLocaleString('zh-CN')} · ${row.eta_days != null ? `${row.eta_days} 天` : row.shipping_method}`}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 

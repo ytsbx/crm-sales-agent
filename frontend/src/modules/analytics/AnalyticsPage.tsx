@@ -637,34 +637,42 @@ export default function AnalyticsPage() {
         </div>
         <div className="kpi-group">
           <div className="kpi-group-head">履约与风险</div>
-          {/* 这两项各只有一个数，铺成两张半屏宽的大卡，卡里全是白 ——
-              正是主人反复说的"内容少却给大卡"。并成一张卡、两格并排：
-              读数、口径一句不少，占的高度只有原来的三分之一。 */}
-          <div className="kpi-pair">
-            <div className="kpi-pair-cell tone-success">
-              <div className="kpi-label">准时交付率</div>
-              <div className="kpi-value">
-                {/* 没有已交付样本时给 "-" 而不是 0%——0% 会被读成"全都延迟" */}
-                {deliverySummary?.delivered_order_count
+          {/* 2026-11-21：原先两张半屏宽的大卡，每张只有 3 行字，一屏里
+              数它两块最空。改成和上面「回款与应收」同宽的四格 ——
+              准时率、已交付、延迟、交期风险各占一格，行高与上一组对齐。 */}
+          <KpiStrip
+            tintValues={false}
+            className="kpi-grid kpi-cols-4"
+            items={[
+              {
+                label: '准时交付率',
+                tone: 'success',
+                value: deliverySummary?.delivered_order_count
                   ? `${(deliverySummary.on_time_rate * 100).toFixed(0)}%`
-                  : '-'}
-              </div>
-              <div className="kpi-pair-hint">
-                <span className="chip chip-success">
-                  准时 {deliverySummary?.on_time_count ?? 0} / 延迟 {deliverySummary?.late_count ?? 0}
-                </span>
-              </div>
-            </div>
-            <div className="kpi-pair-cell tone-error">
-              <div className="kpi-label">交期风险</div>
-              <div className="kpi-value">{`${deliverySummary?.risk_order_count ?? 0} 单`}</div>
-              <div className="kpi-pair-hint">
-                <span className="chip chip-error">
-                  {`${deliverySummary?.due_soon_days ?? 7} 天内到期 ${deliverySummary?.due_soon_order_count ?? 0} 单`}
-                </span>
-              </div>
-            </div>
-          </div>
+                  : '-',
+                // 没有已交付样本时给 "-" 而不是 0%——0% 会被读成"全都延迟"
+                hint: `准时 ${deliverySummary?.on_time_count ?? 0} / 延迟 ${deliverySummary?.late_count ?? 0}`,
+              },
+              {
+                label: '已交付订单',
+                tone: 'default',
+                value: `${deliverySummary?.delivered_order_count ?? 0} 单`,
+                hint: '按订单交付完成时间统计',
+              },
+              {
+                label: '延迟交付',
+                tone: 'error',
+                value: `${deliverySummary?.late_count ?? 0} 单`,
+                hint: '与「准时」相加等于已交付订单',
+              },
+              {
+                label: '交期风险',
+                tone: 'warning',
+                value: `${deliverySummary?.risk_order_count ?? 0} 单`,
+                hint: `${deliverySummary?.due_soon_days ?? 7} 天内到期 ${deliverySummary?.due_soon_order_count ?? 0} 单`,
+              },
+            ]}
+          />
         </div>
       </div>
 
