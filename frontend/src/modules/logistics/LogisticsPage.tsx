@@ -348,14 +348,25 @@ export default function LogisticsPage() {
               </div>
             </SectionCard>
 
-            <SectionCard>
+            {/* 右卡要能"把空态放在中间"：卡片被左边那张拉伸到同高，
+                原来空态只挂 56px 上边距，就贴在卡的上半截、下面空几百 px
+                （2026-11-21 主人圈出来："太靠上了，也太空了"）。
+                纵向 flex + 中间那块 flex:1，空态就落在卡的正中。 */}
+            <SectionCard style={{ display: 'flex', flexDirection: 'column' }}>
               <div className="card-title">试算结果</div>
 
               {!canCalc && (
-                // 原来是一行灰字缩在左上角，右边一大片空白，看着像页面没加载完。
-                // 居中安置，并且把「还要填数量」这半句补上 —— 原来只说"选择 SKU"，
-                // 可只选 SKU 点不动「试算」，用户会以为坏了。
-                <div style={{ padding: '56px 0' }}>
+                // 「还要填数量」这半句必须留着：只说"选择 SKU"时，光选了 SKU
+                // 点不动「试算」，用户会以为坏了。
+                <div
+                  style={{
+                    flex: 1,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    padding: '24px 0',
+                  }}
+                >
                   <EmptyState
                     title="还没有试算结果"
                     hint="选好 SKU 和数量，点「试算」后这里会显示计费重与各承运商方案"
