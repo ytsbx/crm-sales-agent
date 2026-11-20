@@ -373,7 +373,9 @@ export function donutChartOption({
       subtext: centerLabel,
       left: 'center',
       top: '38%',
-      textAlign: 'center',
+      /* **不要再加 textAlign: 'center'**：left:'center' 已经把整个 title 摆到中线，
+         再叠一层文本居中会把文字整体左移半个自身宽度 —— 「84」这种两字看不出，
+         「¥30万」就明显压到环上、左半个字符出界（2026-11-20 实拍数据分析页）。 */
       textStyle: { color: tokens.text, fontSize: centerSize, fontWeight: 500 },
       subtextStyle: { color: tokens.textFaint, fontSize: 12 },
     },

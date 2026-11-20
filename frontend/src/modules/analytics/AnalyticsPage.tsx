@@ -151,6 +151,14 @@ function Donut({
   )
 }
 
+/**
+ * 环图中心用的金额：万为单位**保留一位小数**（¥29.7万）。
+ * 轴上那版 compactMoney 到十万就抹掉小数变成「¥30万」，凑整后跟右侧图例
+ * 的 ¥296,830 差出一截，看着像两个数（2026-11-20 实拍）。
+ */
+const centerMoney: ValueFormat = (value) =>
+  Math.abs(value) >= 10_000 ? `¥${(value / 10_000).toFixed(1)}万` : asMoney(value)
+
 /** 纵向柱：**分档 / 分阶段**的量。分类名横着排不开时可以斜 30 度。 */
 function Columns({
   data,
@@ -511,6 +519,10 @@ export default function AnalyticsPage() {
         basisValue(bases?.repeat_net, month),
     )
 
+  // X 轴月份补「月」字：后端给的是 "10"，画出来轴上只有「10」「11」，
+  // 旁边交期趋势的表格里写的却是「10月」—— 同屏两处口径不一致（2026-11-20 实拍）。
+  const monthLabel = (month: string) => (/^\d{1,2}$/.test(month) ? `${month}月` : month)
+
   // 交期趋势：单量柱 + 准时率线，只用有发货记录的那几个月
   const deliveryTrend = (delivery?.trend ?? []).filter((row) => row.on_time + row.late > 0)
 
@@ -691,7 +703,7 @@ export default function AnalyticsPage() {
               height={264}
               ariaLabel="月度签单、发货、回款与老客净额的折线图"
               option={lineChartOption({
-                categories: trendMonths,
+                categories: trendMonths.map(monthLabel),
                 series: [
                   { name: '签单', values: trendMonths.map((m) => basisValue(bases?.signed, m)) },
                   { name: '发货', values: trendMonths.map((m) => basisValue(bases?.shipped, m)) },
@@ -781,7 +793,10 @@ export default function AnalyticsPage() {
               value: Math.round(row.value),
             }))}
             format={asMoney}
-            centerValueFormat={asMoney}
+            /* 中心用紧凑金额：环内直径只有 ~99px，「¥296,830」9 个字会压到环壁
+               （2026-11-20 实拍，数字左半边已经出了圆）。「¥29.7万」6 个字正合适，
+               精确到元的值在右侧图例里给。 */
+            centerValueFormat={centerMoney}
             centerLabel="合计"
           />
         </Card>
