@@ -16,12 +16,27 @@ export default function DonutLegend({
   format: ValueFormat
 }) {
   const total = data.reduce((sum, item) => sum + item.value, 0)
+  /* 超过 6 项就排两列（客户来源 10 项那种）：单列 10 行把卡片拉到 300+ 高，
+     同排的「客户等级分布」只有 4 项，于是右边空出两百多像素 —— 实拍就是
+     一大片白（2026-11-20 数据分析页）。两列 5 行后高度回到环图那一档，两张卡齐。 */
+  const twoCol = data.length > 6
   return (
     /* 图例宽度收到 340 就够（2026-11-19）：
        卡宽 570 时如果让它吃满 400，名字被 flex:1 撑到最左、数字顶到最右，
        一行中间空出两百像素，看着"撒开了"。340 之内名字与数字仍然两端对齐，
        但距离收紧；再长由省略号兜底。 */
-    <div style={{ display: 'grid', gap: 7, fontSize: 12, flex: '0 1 340px', maxWidth: 340, minWidth: 0 }}>
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: twoCol ? '1fr 1fr' : undefined,
+        columnGap: twoCol ? 16 : undefined,
+        rowGap: 7,
+        fontSize: 12,
+        flex: twoCol ? '0 1 430px' : '0 1 340px',
+        maxWidth: twoCol ? 430 : 340,
+        minWidth: 0,
+      }}
+    >
       {data.map((item, index) => (
         <div key={item.name} style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
           <span
