@@ -394,6 +394,16 @@ export default function OpportunityDetailPage() {
     },
   ]
 
+  /* 商机详情几个"空"页签原来各说各的：需求商品/跟进只有一行小字，任务却摆了个
+     大图标空态（350px 高），同一排页签点来点去高度来回跳。统一成"一句主文 +
+     一句怎么做"，既一致又不空。 */
+  const emptyLine = (title: string, hint: string) => (
+    <div style={{ padding: '16px 0', textAlign: 'center' }}>
+      <div style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>{title}</div>
+      <div style={{ marginTop: 4, fontSize: 12, color: 'var(--crm-text-3)' }}>{hint}</div>
+    </div>
+  )
+
   const taskColumns = [
     { title: '任务', dataIndex: 'title' },
     {
@@ -659,7 +669,7 @@ export default function OpportunityDetailPage() {
                 loading={itemsQuery.isLoading}
                 rowKey="id"
                 pagination={false}
-                empty="还没有需求明细"
+                empty={emptyLine('还没有需求明细', '点右上「添加需求商品」，把品名、规格、数量、目标价记下来；后续核价按条算。')}
                 scroll={{ x: '100%' }}
               />
             </>
@@ -693,7 +703,7 @@ export default function OpportunityDetailPage() {
                 loading={followupsQuery.isLoading}
                 rowKey="id"
                 pagination={false}
-                empty="还没有跟进记录"
+                empty={emptyLine('还没有跟进记录', '每次电话、拜访或发出报价后记一条；记完会同时进时间线。')}
               />
             </>
           )}
@@ -710,12 +720,7 @@ export default function OpportunityDetailPage() {
                 loading={tasksQuery.isLoading}
                 rowKey="id"
                 pagination={false}
-                empty={
-                  <EmptyState
-                    title="还没有任务"
-                    hint="点上方「新建任务」记下要做的事 —— 任务记将来，跟进记过去。"
-                  />
-                }
+                empty={emptyLine('还没有任务', '点上方「新建任务」记下要做的事 —— 任务记将来，跟进记过去。')}
               />
             </>
           )}

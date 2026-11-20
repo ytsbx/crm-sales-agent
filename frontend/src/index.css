@@ -6545,6 +6545,16 @@ table:not(.semi-table) td.cell-right {
   border-bottom: none !important;
 }
 
+/* 只去 tbody 不够：Semi 在空态下渲染的是占位行，那一行的单元格自己还挂着
+   下边框，空表格底下就留了一条淡线（撞单裁定、商机"跟进"页签都见过）。
+   占位行、占位容器一起清掉。 */
+.semi-table-wrapper:has(.semi-table-placeholder) .semi-table-placeholder,
+.semi-table-wrapper:has(.semi-table-placeholder) .semi-table-tbody > tr > td,
+.semi-table-wrapper:has(.semi-table-empty) .semi-table-placeholder,
+.semi-table-wrapper:has(.semi-table-empty) .semi-table-tbody > tr > td {
+  border-bottom: none !important;
+}
+
 /* ─────────────── 文字按钮别再带"凸起"（2026-11-20）
    文件开头那条 .semi-button-primary 的「高光 + 短投影」是按"实心块"写的，
    但它是挂在 .semi-button-primary 上的 —— borderless / tertiary 这些文字按钮
