@@ -611,7 +611,11 @@ async def recent_activities(
 
     conditions = [
         AuditLog.business_type.is_not(None),
-        AuditLog.action.not_in(["login"]),
+        AuditLog.action.not_in(["login", "logout"]),
+        # 登录/登出这类纯会话事件不算业务动态：它们的 business_type 是 "auth"，
+        # 只按 action 过滤时「某某 登出」会混进团队动态，一屏八条里两条是登出，
+        # 看不出团队今天到底在干什么（2026-11-20 实拍工作台）。
+        AuditLog.business_type != "auth",
     ]
     owner_ids = await scoped_owner_ids(session, user)
     if owner_ids is not None:
@@ -658,6 +662,11 @@ async def recent_activities(
         "quote_item": "报价明细",
         "logistics_quote": "物流试算",
         "auth": "登录",
+        # 业务对象名要写全，「更新记录」看不出改的是哪类东西（2026-11-20 实拍动态流）。
+        "inquiry": "定制需求",
+        "case": "案例",
+        "contract": "合同",
+        "integration": "企微数据",
     }
     action_label = {
         "create": "新建",
@@ -684,12 +693,16 @@ async def recent_activities(
         "transfer": "转移负责人",
         "convert": "线索转化",
         "upload": "上传",
+        # 这两个原本漏了：动态流里直接印出英文 action（「revise记录」
+        # 「wecom_sync_follow_relations记录」），一眼就是没做完的界面（2026-11-20 实拍）。
+        "revise": "修订",
+        "wecom_sync_follow_relations": "同步",
     }
     return [
         {
             "id": row.id,
             "operator": name or "系统",
-            "title": f"{action_label.get(row.action, row.action)}{label.get(row.business_type or '', '记录')}",
+            "title": f"{action_label.get(row.action, row.action)} {label.get(row.business_type or '', '记录')}",
             "business_type": row.business_type,
             "business_id": row.business_id,
             "source": row.source,
