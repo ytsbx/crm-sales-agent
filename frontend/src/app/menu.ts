@@ -23,6 +23,7 @@ import {
   IconHome,
   IconInbox,
   IconMoneyExchangeStroked,
+  IconPercentage,
   IconPriceTag,
   IconSend,
   IconSetting,
@@ -96,6 +97,9 @@ export const MENU_GROUPS: MenuGroup[] = [
       { key: 'products', path: '/products', label: '产品中心', icon: IconBriefcase, ready: true, permission: 'product:view' },
       // 价格中心 / 物流试算挂在 pricing 模块下，读接口用 product:view，维护用 price:manage
       { key: 'prices', path: '/prices', label: '价格中心', icon: IconPriceTag, ready: true, permission: ['price:manage', 'product:view'] },
+      // 「核价」页面（/pricing）一直能做，但没有菜单入口 —— 只能从价格中心里那颗
+      // 按钮跳，主人 2026-11-20 的原话是"这个页面在哪呀，我都找不到"。
+      { key: 'pricing', path: '/pricing', label: '核价', icon: IconPercentage, ready: true, permission: ['price:manage', 'product:view'] },
       { key: 'logistics', path: '/logistics', label: '物流试算', icon: IconSend, ready: true, permission: ['price:manage', 'product:view'] },
       { key: 'tasks', path: '/tasks', label: '销售任务', icon: IconCheckList, ready: true, permission: 'task:view' },
       { key: 'approvals', path: '/approvals', label: '审批中心', icon: IconTickCircle, ready: true, permission: 'quote:view' },

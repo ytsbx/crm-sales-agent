@@ -21,6 +21,7 @@ import { agentPricingAnalysis, type AnalysisEnvelope } from '../../shared/api/ag
 import { usePermissions } from '../../shared/hooks/permissions'
 import AgentInsight from '../../shared/components/AgentInsight'
 import FormLabel from '../../shared/components/FormLabel'
+import EmptyState from '../../shared/components/EmptyState'
 import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
 
 function Stat({ label, value, tone }: { label: string; value: string; tone?: 'primary' | 'danger' | 'muted' }) {
@@ -206,9 +207,6 @@ export default function PricingPage() {
                 填了才会判断这单要不要审批；「权限校验」判的也是这个价，空着点不动
               </div>
             </div>
-            <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
-              本系统只做国内业务，核价统一使用人民币（CNY）。
-            </div>
           </div>
         </SectionCard>
 
@@ -217,6 +215,22 @@ export default function PricingPage() {
             没有结果就让它们按内容收高（alignSelf:start），选完 SKU 再和
             输入卡等高。 */}
         <div className="pricing-side">
+        {/* 没选 SKU 时，右列原来是四张并排的空卡（成本结构 / 核价结果 / AI 解读 /
+            权限校验），每张只有一句"请先选择 SKU…"，右边还大片白 ——
+            主人 2026-11-20 贴图说「这个布局设计有点太丑了」。
+            没数据时只留一张引导卡，选完 SKU 再展开四块真内容。 */}
+        {!result && (
+          <SectionCard title="核价结果">
+            <div style={{ padding: '18px 0 10px' }}>
+              <EmptyState
+                title="选好产品、填上数量，这一栏就出数"
+                hint="成本拆解 → 建议价与最低允许价 → AI 解读 → 权限校验，四步会依次出现在右边。"
+              />
+            </div>
+          </SectionCard>
+        )}
+        {result && (
+        <>
         <SectionCard title="成本结构（单件）" style={{ minHeight: 150 }}>
           {resultQuery.isLoading && <div style={{ color: 'var(--crm-text-3)' }}>计算中…</div>}
           {result && (
@@ -407,6 +421,8 @@ export default function PricingPage() {
           </div>
         )}
       </SectionCard>
+        </>
+        )}
         </div>
       </div>
 
