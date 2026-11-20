@@ -523,8 +523,9 @@ export default function KnowledgePage() {
     {
       title: '客户',
       dataIndex: 'customer_name',
-      /* 190 → 202：客户名带「【全场景演示】」前缀时 190 差两三个字就被截。 */
-      width: 202,
+      /* 190 → 202 → 190：数量列从 60 加宽到 96 之后整表变宽，客户列让回 12px，
+         客户名仍按 ellipsis 悬停看全称。 */
+      width: 190,
       // 交给 Semi 按列宽省略（ellipsis）—— 不再按字数硬截。
       // 主人 2026-11-16：「还有这么多空间怎么还是省略呢」：宽屏下这一列
       // 会跟着拉宽，按字数截就永远只显示 13 个字。
@@ -573,7 +574,8 @@ export default function KnowledgePage() {
     },
     {
       title: '操作',
-      width: 228,
+      /* 228 → 240：数量列加宽后「更多」被右边界裁成一个字，操作列补 12px。 */
+      width: 240,
       render: (_: unknown, record: CustomInquiryRow) => {
         // 次要动作收进「更多」下拉。原来 9~11 个操作全铺在这一格里，容器是
         // inline-flex 且 flex-wrap: nowrap —— 挤不下时每个链接被压扁成
