@@ -480,6 +480,10 @@ export default function AgentPage() {
         </div>
 
         <div className="agent-composer">
+          {/* 输入框和发送键包一层：按钮原来按整个 composer 定位，而 composer 底下
+              还压着一行「会直接读系统里的…」小字，结果按钮落到小字那一行上，
+              和输入框错开了一截（2026-11-21 巡检）。包一层之后按钮就贴着框右下角。 */}
+          <div className="agent-input-wrap">
           <textarea
             rows={3}
             value={input}
@@ -498,18 +502,21 @@ export default function AgentPage() {
               borderRadius: 10,
               fontSize: 14,
               outline: 'none',
-              resize: 'vertical',
+              // 聊天框不给拖拽柄：拖出来的高度不会被记住，还会把按钮顶到框外
+              resize: 'none',
             }}
           />
+          {/* 发送是这一页唯一的主操作，实心蓝；原来用描边蓝（theme="outline"），
+              未填内容时几乎看不见按钮在哪（2026-11-21 巡检） */}
           <Button type="primary"
             className="agent-send"
-            theme="outline"
             loading={streaming}
             disabled={!input.trim()}
             onClick={() => handleSend(input)}
           >
             {streaming ? '回复中…' : '发送'}
           </Button>
+          </div>
           {/* 说清楚它到底在干什么：这页最容易被误解成「能随便聊的客服机器人」。 */}
           <p className="agent-composer-hint">
             会直接读系统里的客户、商机、报价、应收数据；涉及改动的动作会先停下来等你确认。
