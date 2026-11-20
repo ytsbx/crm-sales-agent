@@ -353,7 +353,7 @@ export default function WeComPage() {
                   disabled={syncMutation.isPending || importCustomersMutation.isPending}
                   onClick={() => importPreviewMutation.mutate()}>导入客户中心</Button>
               )}
-              <Button style={{ marginLeft: 8 }} onClick={() => setTransferVisible(true)}>离职继承</Button>
+              <Button type="tertiary" theme="borderless" style={{ marginLeft: 8 }} onClick={() => setTransferVisible(true)}>离职继承</Button>
               {/* 四个同步动作收进一个下拉（2026-11-19）。
                  原来这里是六颗同款描边按钮排成一条：主操作「导入客户中心」
                  和四个同步、一个离职继承长得一模一样，看不出该点哪个，
@@ -389,7 +389,12 @@ export default function WeComPage() {
                   </Dropdown.Menu>
                 }
               >
-                <Button style={{ marginLeft: 8 }} loading={syncMutation.isPending}>
+                <Button
+                  type="tertiary"
+                  theme="borderless"
+                  style={{ marginLeft: 8, color: 'var(--crm-primary)' }}
+                  loading={syncMutation.isPending}
+                >
                   数据同步 ▾
                 </Button>
               </Dropdown>
@@ -497,6 +502,8 @@ export default function WeComPage() {
           <div style={{ marginTop: 10, textAlign: 'right' }}>
             <Button
               size="small"
+              type="tertiary"
+              theme="borderless"
               disabled={page <= 1}
               onClick={() => setPage((current) => Math.max(1, current - 1))}
             >
@@ -504,6 +511,8 @@ export default function WeComPage() {
             </Button>
             <Button
               size="small"
+              type="tertiary"
+              theme="borderless"
               style={{ marginLeft: 6 }}
               disabled={rows.length < 20}
               onClick={() => setPage((current) => current + 1)}

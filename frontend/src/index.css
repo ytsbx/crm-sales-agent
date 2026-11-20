@@ -6492,3 +6492,27 @@ table:not(.semi-table) td.cell-right {
 .semi-table-wrapper:has(.semi-table-placeholder) .semi-table-tbody {
   border-bottom: none !important;
 }
+
+/* ─────────────── 文字按钮别再带"凸起"（2026-11-20）
+   文件开头那条 .semi-button-primary 的「高光 + 短投影」是按"实心块"写的，
+   但它是挂在 .semi-button-primary 上的 —— borderless / tertiary 这些文字按钮
+   也继承了它。结果表格里的「延期 / 转交」明明是纯蓝字，却因为底下有投影，
+   远看像一排小药丸（销售任务页三个动作挤成三个框就是这么来的）。
+   文字按钮：无高光、无投影、无底色。 */
+.semi-button-primary.semi-button-borderless,
+.semi-button-primary.semi-button-tertiary {
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  border: none !important;
+}
+.semi-button-primary.semi-button-borderless:hover,
+.semi-button-primary.semi-button-tertiary:hover {
+  background: rgba(47, 109, 246, .08) !important;
+  box-shadow: none !important;
+}
+.semi-button-primary.semi-button-borderless:active,
+.semi-button-primary.semi-button-tertiary:active {
+  transform: none !important;
+  box-shadow: none !important;
+}

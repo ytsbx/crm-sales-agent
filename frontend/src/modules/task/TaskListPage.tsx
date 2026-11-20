@@ -220,7 +220,9 @@ export default function TaskListPage() {
       dataIndex: 'title',
       // 任务名是这一行唯一的"这是哪条"，纯文本、不是链接 —— 按主标识加深（cell-strong）
       className: 'cell-strong',
-      width: compact ? 152 : 206,
+      // 206 装不下「【全场景演示】客户需求确认…」这类标题，一屏八行全是省略号。
+      // 从截止时间 / 状态 / 优先级 / 操作 各让一点给它（合计仍 1114，没有横滚）。
+      width: compact ? 152 : 248,
       render: (text: string) => (
         <span
           title={text}
@@ -237,7 +239,7 @@ export default function TaskListPage() {
     },
     {
       title: '关联',
-      width: compact ? 108 : 182,
+      width: compact ? 108 : 178,
       render: (_: unknown, record: Task) => {
         // 一张任务可能同时挂着客户、商机、报价、订单、打样、合同。这一列只显示
         // **最具体的那一个**并直接跳过去；全铺出来会挤成六行，而用户要找的通常
@@ -255,7 +257,7 @@ export default function TaskListPage() {
     {
       title: '优先级',
       dataIndex: 'priority',
-      width: compact ? 76 : 90,
+      width: compact ? 76 : 78,
       render: (value: string, record: Task) => (
         <StatusDot label={record.priority_label} tone={(PRIORITY_COLOR[value] ?? 'grey') as TagTone} />
       ),
@@ -265,7 +267,7 @@ export default function TaskListPage() {
       dataIndex: 'due_at',
       /* 190 放不下「2026/11/2 09:28 + 逾期标签」，日期被折成了两行；
          日期和标签必须待在同一行，否则整表的行高参差不齐。 */
-      width: compact ? 94 : 202,
+      width: compact ? 94 : 206,
       // 逾期别拼成括号跟在日期后面（「2026/11/2 09:28:47（已逾期）」又长又糊）：
       // 日期一个色、状态一个小标签，扫一眼就分得出来
       render: (value: string | null, record: Task) =>
@@ -289,7 +291,7 @@ export default function TaskListPage() {
     {
       title: '状态',
       dataIndex: 'status_label',
-      width: compact ? 92 : 100,
+      width: compact ? 92 : 86,
       // 状态一列也统一成圆点：只有「已完成」上绿点，其余保持灰点，
       // 和「优先级」列的写法对齐，整行不会一半是色块一半是裸文字。
       render: (value: string) => (
@@ -301,7 +303,7 @@ export default function TaskListPage() {
       : [{ title: '负责人', dataIndex: 'owner_name', width: 100, render: (v: string | null) => v ?? '-' }]),
     {
       title: '操作',
-      width: compact ? 132 : 192,
+      width: compact ? 132 : 172,
       render: (_: unknown, record: Task) =>
         record.status === 'done' || record.status === 'cancelled' ? (
           '-'
@@ -326,9 +328,18 @@ export default function TaskListPage() {
             >
               {/* 一条任务只有一个"了结"的动作（完成），延期和转交只是把它推给别处，
                   三个词原来一样重，看不出该点哪个。完成走主按钮，其余文字按钮。 */}
-              <Button theme="solid" type="primary" size="small">完成</Button>
+              {/* 列表行里的动作一律纯文字，「完成」用字重区分，不加框（2026-11-20） */}
+              <Button
+                type="tertiary"
+                theme="borderless"
+                size="small"
+                style={{ color: 'var(--crm-primary)', fontWeight: 600 }}
+              >
+                完成
+              </Button>
             </Popconfirm>
             <Button
+              type="tertiary"
               theme="borderless"
               size="small"
               onClick={() => {
@@ -340,6 +351,7 @@ export default function TaskListPage() {
             </Button>
             {/* 转交（审查 B2-06）：接口与 api 函数一直有，此前没有页面入口 */}
             <Button
+              type="tertiary"
               theme="borderless"
               size="small"
               onClick={() => {

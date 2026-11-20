@@ -1466,7 +1466,12 @@ export default function QuoteDetailPage() {
               </span>
             )}
           </div>
-          {quoteTodoList.map((todo: QuoteTodo, index: number) => (
+          {/* 运费那条从「现在这一步」里摘掉：页面下面紧跟着一条「待补运费 + 去补填 →」
+              （带动作按钮、滚到附加费用），这里再列一遍同一句「尚未填写运费…」，
+              两句话相隔 60px 说同一件事（2026-11-20 截图）。其它处置项照旧列。 */}
+          {quoteTodoList
+            .filter((todo: QuoteTodo) => !(freightUnconfirmed && todo.key === 'freight_unconfirmed'))
+            .map((todo: QuoteTodo, index: number) => (
             <div
               key={todo.key}
               className="quote-todo-row"

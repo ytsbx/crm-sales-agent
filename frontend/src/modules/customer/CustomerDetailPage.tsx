@@ -632,7 +632,7 @@ export default function CustomerDetailPage() {
               </Button>
             )}
             {can('agent:use') && (
-              <Button type="primary" theme="borderless" onClick={() => navigate(`/agent?context=customer&id=${customerId}`)}>
+              <Button type="tertiary" theme="borderless" onClick={() => navigate(`/agent?context=customer&id=${customerId}`)}>
                 问 Agent
               </Button>
             )}
@@ -726,7 +726,10 @@ export default function CustomerDetailPage() {
                 </Dropdown.Menu>
               }
             >
-              <Button icon={<IconMore />}>更多</Button>
+              {/* 更多 ▾：低频动作的收纳盒，不该与主动作抢描边（2026-11-20） */}
+              <Button icon={<IconMore />} type="tertiary" theme="borderless" style={{ color: 'var(--crm-primary)' }}>
+                更多
+              </Button>
             </Dropdown>
           </>
         }
@@ -834,6 +837,7 @@ export default function CustomerDetailPage() {
                   {can('customer:update') && (
                     <Button
                       size="small"
+                      type="tertiary"
                       theme="borderless"
                       onClick={() => {
                         setPendingTagIds([])
