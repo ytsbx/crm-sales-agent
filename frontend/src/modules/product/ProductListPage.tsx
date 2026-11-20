@@ -209,7 +209,11 @@ export default function ProductListPage() {
             style={{ width: 340 }}
             showClear
           />
+          {/* 和订单 / 报价 / 客户 / 线索四页对齐：查询是"再筛一次"，不是主操作，
+              降成文字按钮，让「新建产品」独占这一行的实心蓝（2026-11-21 巡检）。 */}
           <Button
+            type="tertiary"
+            theme="borderless"
             onClick={() => {
               setKeyword(keywordInput.trim())
               setPage(1)
