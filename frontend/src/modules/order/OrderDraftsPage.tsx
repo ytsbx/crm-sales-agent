@@ -107,7 +107,10 @@ export default function OrderDraftsPage() {
   function patch(index: number, change: Partial<OrderDraftLine>) { if (Object.entries(change).every(([key, value]) => rows[index]?.[key as keyof OrderDraftLine] === value)) return; markDirty(true); setRows(old => old.map((row, i) => i === index ? { ...row, ...change } : row)) }
   if (!id) return <div className="page-container"><PageHeader title="订单草稿" subtitle="提前准备资料，不进入生产、应收或成交统计" extra={<Link to="/orders">返回订单中心</Link>} />
     {list.error && <p>{list.error.message}</p>}
-    <SectionCard><Table<OrderDraft> dataSource={list.data?.items ?? []} loading={list.isPending} rowKey="id" pagination={{ currentPage: page, pageSize, total: list.data?.total ?? 0, onPageChange: setPage, showSizeChanger: true, pageSizeOpts: [10, 20, 50, 100], onPageSizeChange: (size: number) => { setPageSize(size); setPage(1) } }} columns={[
+    {/* auto-height：单卡列表页会被 .page-container 的 flex 规则拉满整屏，
+        草稿只有一条时卡片下半截全是白，像没加载完。内容少就按内容高度收住。
+        注意注释必须放在花括号里，否则会被当成正文渲染到页面上。 */}
+    <SectionCard className="auto-height"><Table<OrderDraft> dataSource={list.data?.items ?? []} loading={list.isPending} rowKey="id" pagination={{ currentPage: page, pageSize, total: list.data?.total ?? 0, onPageChange: setPage, showSizeChanger: true, pageSizeOpts: [10, 20, 50, 100], onPageSizeChange: (size: number) => { setPageSize(size); setPage(1) } }} columns={[
       /* 2026-11-20：四列原来都不写 width，Semi 把 1170 宽平分成四格，
          一行数据被摊在四个 290 宽的格子里、彼此隔着大半屏，像没排版。
          现在按内容给宽度：草稿 / 状态 / 明细数窄，来源（报价号 + 版本）最宽，
