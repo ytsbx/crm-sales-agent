@@ -983,7 +983,9 @@ export default function AnalyticsPage() {
               ariaLabel="按客户等级的平均报价条形图"
               option={rankBarChartOption({
                 data: (pricing?.average_quoted_price_by_level ?? []).map((row) => ({
-                  name: `${row.level} 级（${row.item_count} 条）`,
+                  /* 「未分级」这个等级名本身已带「级」，模板再补一个就成「未分级 级」
+                     （2026-11-20 实拍）。有「级」就不补。 */
+                  name: `${row.level}${row.level.endsWith('级') ? '' : ' 级'}（${row.item_count} 条）`,
                   value: row.average_price,
                 })),
                 format: asMoney,

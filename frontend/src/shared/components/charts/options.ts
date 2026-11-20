@@ -474,7 +474,15 @@ export function rankBarChartOption({
   return {
     grid: { left: 6, right: 56, top: 6, bottom: 2, containLabel: true },
     tooltip: { trigger: 'axis', ...tooltipFor(tokens, {}, format) },
-    xAxis: valueAxis(tokens, axisFormat ?? plainNumber, false),
+    /* 横向条形图**不要 X 轴刻度**：每根条右边已经印着数值（¥31 / 24 个），
+       轴上的刻度纯属重复；卡宽只有 280 时四五个「¥20」会挤成一团墨疙瘩
+       （2026-11-20 数据分析页「平均报价」实拍：轴标签糊成「¥20¥40¥60¥80」）。 */
+    xAxis: {
+      ...valueAxis(tokens, axisFormat ?? plainNumber, false),
+      axisLabel: { show: false },
+      axisLine: { show: false },
+      axisTick: { show: false },
+    },
     yAxis: {
       type: 'category',
       data: ordered.map((item) => item.name),
