@@ -805,20 +805,20 @@ export default function OrderDetailPage() {
   // 指标卡数据（放在 return 之前，好让上面的 <KpiStrip> 按张数选列数）。
   // 「有异常才有意义」的三张只在有值时出现：0 的时候摆出来就是几张 ¥0.00 的空卡。
   const orderKpis: KpiItem[] = [
-    { label: '订单金额', value: formatMoney(order.total_amount_exact ?? order.total_amount, order.currency) },
+    { label: '订单金额', value: formatMoney(toTwoDecimals(order.total_amount_exact ?? order.total_amount), order.currency) },
     {
       label: '实际到账（财务已确认）',
-      value: formatMoney(order.received_amount_exact ?? order.received_amount, order.currency),
+      value: formatMoney(toTwoDecimals(order.received_amount_exact ?? order.received_amount), order.currency),
       tone: 'success',
     },
     {
       label: '尚未到账',
-      value: formatMoney(order.unreceived_amount_exact ?? order.unreceived_amount, order.currency),
+      value: formatMoney(toTwoDecimals(order.unreceived_amount_exact ?? order.unreceived_amount), order.currency),
       tone: order.unreceived_amount > 0 ? 'warning' : 'default',
     },
     {
       label: '已分配到应收期',
-      value: formatMoney(summary?.allocated_amount_exact ?? summary?.allocated_amount ?? 0, order.currency),
+      value: formatMoney(toTwoDecimals(summary?.allocated_amount_exact ?? summary?.allocated_amount ?? 0), order.currency),
     },
     // 这两张也是「有异常才有意义」：钱都分配完、没有待确认的，
     // 它们就是两个 ¥0.00 的空卡，把 4+2 的第二行撑出来。

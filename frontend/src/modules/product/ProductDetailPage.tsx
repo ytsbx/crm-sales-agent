@@ -1,3 +1,4 @@
+import EmptyState from '../../shared/components/EmptyState'
 import { formatBeijingTime } from '../../shared/beijing-time'
 import { useTabLabel } from '../../shared/hooks/useTabLabel'
 import { useMemo, useState } from 'react'
@@ -406,7 +407,21 @@ export default function ProductDetailPage() {
 
   const product = productQuery.data
   if (productQuery.isLoading) return <div className="page-container">加载中…</div>
-  if (!product) return <div className="page-container">产品不存在</div>
+  /* 原来这里是一行裸字「产品不存在」，占着整页白底 —— 链接失效/产品被删时
+     用户会以为页面崩了（2026-11-20 巡检）。改成统一空态：图标 + 说清原因 + 回列表。 */
+  if (!product) {
+    return (
+      <div className="page-container">
+        <EmptyState
+          title="产品不存在或已下线"
+          hint="可能是链接里的产品编号有误，或这条产品已从产品库移除；回产品列表重新选择即可。"
+        />
+        <div style={{ display: 'flex', justifyContent: 'center', paddingBottom: 24 }}>
+          <Button type="primary" theme="solid" onClick={() => navigate('/products')}>返回产品列表</Button>
+        </div>
+      </div>
+    )
+  }
 
   /**
    * 字段级"来源 / 来源状态 / 更新时间 / 权威归属 / 确认版本"。

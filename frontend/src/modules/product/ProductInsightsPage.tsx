@@ -473,21 +473,34 @@ export default function ProductInsightsPage() {
                   /* 操作列原来是 inline-flex，按钮组按内容宽度贴左，
                      表头「操作」却居中 —— 一行三四个动作时表头和数据错开十几像素。
                      改成占满整格的 flex + 居中：动作多也始终压在表头下方。 */
-                  <span style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
+                  <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center' }}>
                     {editable && record.status !== 'converted' && record.status !== 'under_review' && (
                       <a onClick={() => openEdit(record)}>编辑</a>
                     )}
                     {editable && (record.status === 'draft' || record.status === 'rejected') && (
                       <Popconfirm title="确认提交这条新品洞察评审？" onConfirm={() => submitMutation.mutate(record.id)}><a>提交评审</a></Popconfirm>
                     )}
+                    {/* 「通过 / 否决」原来是两个同字重的绿字红字，和旁边「编辑 / 转需求」
+                        长得一样重（2026-11-20 巡检："一排小字看不出该点哪个"）。
+                        现在：通过 = 主按钮（这条洞察的推进动作），否决 = 红色文字按钮。 */}
                     {reviewable && (
                       <>
-                        <a style={{ color: 'var(--crm-success)' }} onClick={() => openReview(record, true)}>
+                        <Button
+                          size="small"
+                          type="primary"
+                          theme="solid"
+                          onClick={() => openReview(record, true)}
+                        >
                           通过
-                        </a>
-                        <a style={{ color: 'var(--crm-error)' }} onClick={() => openReview(record, false)}>
+                        </Button>
+                        <Button
+                          size="small"
+                          type="danger"
+                          theme="borderless"
+                          onClick={() => openReview(record, false)}
+                        >
                           否决
-                        </a>
+                        </Button>
                       </>
                     )}
                     {editable && record.status === 'approved' && (
