@@ -1194,12 +1194,15 @@ export default function CustomerDetailPage() {
           style={{ marginTop: 16 }}
           extra={
             <>
-              {/* 这两个按钮原来是 Semi 默认浅灰底，看着像禁用态（2026-11-20 巡检）。
-                  现在：客户总结 = 白底描边主按钮，跟进建议 = 文字按钮。 */}
+              {/* 2026-11-20 二稿：一稿把「客户总结」做成白底描边、把「跟进建议」降成文字，
+                  结果成了"一个带框、一个光着"（主人贴图问"为什么单独给客户总结加个框"）。
+                  根子是我照搬了「一行只留一个主按钮」那条规则 —— 但这两个动作是**平级**的：
+                  都是点一下看一眼 AI 分析，没有谁更主要。硬分主次，等于给界面编了个
+                  不存在的层级。现在两个都是文字按钮，和商机详情那三个「运行」一致。 */}
               <Button
                 size="small"
-                type="primary"
-                theme="outline"
+                type="tertiary"
+                theme="borderless"
                 loading={aiMutation.isPending}
                 onClick={() => aiMutation.mutate('summary')}
               >
