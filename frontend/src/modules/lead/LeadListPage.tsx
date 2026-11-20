@@ -344,15 +344,23 @@ export default function LeadListPage() {
               onConfirm={() => claimMutation.mutate(record.id)}
               disabled={claimMutation.isPending}
             >
-              <Button theme="solid" type="primary" size="small">
+              <Button
+                theme="borderless"
+                type="primary"
+                size="small"
+                style={{ fontWeight: 600 }}
+              >
                 {claimMutation.isPending ? '领取中…' : '领取'}
               </Button>
             </Popconfirm>
           )}
+          {/* 原来有归属时是 solid 主按钮：一屏三十行就是三十个白底描边框，
+              远看像整列都是按钮（2026-11-21 巡检）。行内只留纯文字，
+              当前这条线索的"推进"动作靠加粗区分，不靠框。 */}
           <Button
-            theme={record.owner_id ? 'solid' : 'borderless'}
-            type={record.owner_id ? 'primary' : undefined}
+            theme="borderless"
             size="small"
+            style={record.owner_id ? { fontWeight: 600, color: 'var(--crm-primary)' } : undefined}
             onClick={() => setFollowupTarget(record)}
           >
             跟进
@@ -441,9 +449,11 @@ export default function LeadListPage() {
             只看线索池
           </Checkbox>
           <Button
+            type="tertiary"
+            theme="borderless"
             onClick={() => {
-              setKeyword(keywordInput.trim())
-              setPage(1)
+            setKeyword(keywordInput.trim())
+            setPage(1)
             }}
           >
             查询

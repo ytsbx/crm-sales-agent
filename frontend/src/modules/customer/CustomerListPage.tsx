@@ -640,7 +640,8 @@ export default function CustomerListPage() {
             optionList={SCOPE_OPTIONS}
             style={{ width: 140 }}
           />
-          <Button onClick={handleSearch}>查询</Button>
+          {/* 工具栏只留「新建客户」一个主按钮：查询是入口、不是决定，降成纯文字 */}
+          <Button type="tertiary" theme="borderless" onClick={handleSearch}>查询</Button>
           <div style={{ flex: 1 }} />
           <input
             ref={fileInputRef}

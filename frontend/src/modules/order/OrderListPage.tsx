@@ -370,7 +370,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       className: 'cell-right',
       width: compact ? 110 : 130,
       render: (v: number, record: Receivable) => {
-        const received = formatMoney(record.received_amount_exact ?? v, record.currency)
+        const received = formatMoney(toTwoDecimals(record.received_amount_exact ?? v), record.currency)
         if (!compact) return received
         /* 窄屏：上一行已收、下一行未收，两张钱合并一列 */
         return (
@@ -383,7 +383,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
                 fontWeight: record.status === 'overdue' ? 600 : undefined,
               }}
             >
-              未收 {formatMoney(record.remaining_amount_exact ?? record.remaining_amount, record.currency)}
+              未收 {formatMoney(toTwoDecimals(record.remaining_amount_exact ?? record.remaining_amount), record.currency)}
             </span>
           </div>
         )
@@ -458,7 +458,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
          所以金额仍被居中；补一个 class 由下面 CSS 用 !important 兜住。 */
       className: 'cell-right',
       width: compact ? 104 : 118,
-      render: (v: number, record: Payment) => formatMoney(record.received_amount_exact ?? v, record.currency),
+      render: (v: number, record: Payment) => formatMoney(toTwoDecimals(record.received_amount_exact ?? v), record.currency),
     },
     ...(compact
       ? []
@@ -590,9 +590,11 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
                   showClear
                 />
                 <Button
+                  type="tertiary"
+                  theme="borderless"
                   onClick={() => {
-                    setKeyword(keywordInput.trim())
-                    setPage(1)
+                  setKeyword(keywordInput.trim())
+                  setPage(1)
                   }}
                 >
                   查询

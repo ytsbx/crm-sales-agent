@@ -300,9 +300,11 @@ export default function OpportunityListPage() {
             disabled={view === 'board'}
           />
           <Button
+            type="tertiary"
+            theme="borderless"
             onClick={() => {
-              setKeyword(keywordInput.trim())
-              setPage(1)
+            setKeyword(keywordInput.trim())
+            setPage(1)
             }}
           >
             查询
