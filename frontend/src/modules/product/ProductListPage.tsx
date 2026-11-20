@@ -267,7 +267,16 @@ export default function ProductListPage() {
                   </Dropdown.Menu>
                 }
               >
-                <Button loading={importing}>导入 / 导出 ▾</Button>
+                {/* 工具栏一行原来并着三个白底描边按钮（查询 / 导入导出 / 新建产品），
+                    分不出谁主谁次（2026-11-20）。导入导出是低频工具，降成文字按钮。 */}
+                <Button
+                  loading={importing}
+                  type="tertiary"
+                  theme="borderless"
+                  style={{ color: 'var(--crm-primary)' }}
+                >
+                  导入 / 导出 ▾
+                </Button>
               </Dropdown>
               {importKind === 'skus' && (
                 <span style={{ color: 'var(--crm-text-3)', fontSize: 12, maxWidth: 250 }}>

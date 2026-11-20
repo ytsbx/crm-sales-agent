@@ -186,11 +186,11 @@ export default function PricingPage() {
                   按承运商确认的金额填写。所以这里的运费**只是参考估算**，
                   不参与建议价/底价/利润的计算 —— 标签必须说清，否则用户会
                   以为改运费能改出不同的建议价。 */}
-              <div style={{ marginBottom: 4 }}>单件运费参考估算（不参与产品核价）</div>
+              <div style={{ marginBottom: 4 }}>单件运费估算（元）</div>
               <Input value={logisticsCost} onChange={setLogisticsCost} placeholder="例如 1.62" />
               <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginTop: 4 }}>
-                仅供参考：产品建议价、保护价与利润均按商品成本计算，不含运费。
-                正式报价的运费请在报价单里按已确认的实际金额填写。
+                只做参考，不参与核价：建议价、保护价、利润都按商品成本算。
+                正式运费在报价单里按实际确认的金额填。
               </div>
             </div>
             <div>
@@ -198,11 +198,12 @@ export default function PricingPage() {
               <Input value={targetMargin} onChange={setTargetMargin} placeholder="例如 0.30" />
             </div>
             <div>
-              <div style={{ marginBottom: 4 }}>拟报价（填了就会判断这单要不要审批）</div>
+              <div style={{ marginBottom: 4 }}>拟报价（元）</div>
               <Input value={quotedPrice} onChange={setQuotedPrice} placeholder="例如 25" />
-              {/* 按钮灰着得有个说法，不然只会让人以为坏了 */}
+              {/* 按钮灰着得有个说法，不然只会让人以为坏了。原来那句解释挂在标签上、
+                  把标签撑成两行，现在挪到这里，顺带说清"填了才会判断要不要审批"。 */}
               <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginTop: 4 }}>
-                「权限校验」要判断的也是这个价，空着点不动
+                填了才会判断这单要不要审批；「权限校验」判的也是这个价，空着点不动
               </div>
             </div>
             <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
@@ -215,7 +216,8 @@ export default function PricingPage() {
             下面 500 多像素纯白 —— 看着像页面没加载完（2026-11-18）。
             没有结果就让它们按内容收高（alignSelf:start），选完 SKU 再和
             输入卡等高。 */}
-        <SectionCard title="成本结构（单件）" style={{ alignSelf: result ? 'stretch' : 'start', minHeight: result ? undefined : 150 }}>
+        <div className="pricing-side">
+        <SectionCard title="成本结构（单件）" style={{ minHeight: 150 }}>
           {resultQuery.isLoading && <div style={{ color: 'var(--crm-text-3)' }}>计算中…</div>}
           {result && (
             <>
@@ -249,7 +251,7 @@ export default function PricingPage() {
           )}
         </SectionCard>
 
-        <SectionCard title="核价结果" style={{ alignSelf: result ? 'stretch' : 'start', minHeight: result ? undefined : 150 }}>
+        <SectionCard title="核价结果" style={{ minHeight: 150 }}>
           {result && (
             <>
               {/* D3：报价基准是「系统适用价」（专属价→等级价→通用指导价），
@@ -313,7 +315,6 @@ export default function PricingPage() {
             </div>
           )}
         </SectionCard>
-      </div>
 
       {/* AI 解读与权限校验：与客户/订单/商机详情页同一个做法 ——
           按钮在卡片右上角、结果在卡片里原地显示。
@@ -322,7 +323,6 @@ export default function PricingPage() {
       {can('agent:use') && (
         <SectionCard
           title="AI 核价解读"
-          style={{ marginTop: 16 }}
           extra={
             <Button
               disabled={!skuId}
@@ -342,7 +342,6 @@ export default function PricingPage() {
 
       <SectionCard
         title="报价权限校验"
-        style={{ marginTop: 16 }}
         extra={
           /* 必带「拟报价」：没填这个价就没什么可校验的，按钮直接禁用
              （而不是让他点了再吃一个 400 回来） */
@@ -408,6 +407,8 @@ export default function PricingPage() {
           </div>
         )}
       </SectionCard>
+        </div>
+      </div>
 
       {skuId && (
         <SectionCard

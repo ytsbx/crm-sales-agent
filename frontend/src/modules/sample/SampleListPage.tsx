@@ -13,6 +13,7 @@ import {
   confirmMessageOf,
 } from '../../shared/components/ConfirmRequiredModal'
 import { emptyNode } from '../../shared/components/EmptyState'
+import StatusDot from '../../shared/components/StatusDot'
 import {
   AutoComplete,
   Button,
@@ -650,9 +651,9 @@ export default function SampleListPage() {
       dataIndex: 'status_label',
       width: compact ? 96 : 100,
       render: (value: string, record: SampleRequestRow) => (
-        <Tag size="small" color={STATUS_COLOR[record.status] ?? 'grey'}>
-          {value}
-        </Tag>
+        // 十二行彩色 Tag 一屏下来像一面色块墙（打样草稿橙、已寄样青、已签收绿…），
+        // 眼睛先被颜色吃掉。改成「圆点 + 状态文字」，与产品中心「● 在售」同一套语言。
+        <StatusDot label={value} tone={STATUS_COLOR[record.status] ?? 'grey'} />
       ),
     },
     {

@@ -1237,8 +1237,19 @@ a:not([href]) {
    ============================================================ */
 .pricing-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  /* 原三栏等分：左栏表单长到 680，右边两张各 155，右边整片白（2026-11-20 主人「右边又空」）。
+     改两栏 —— 左 380 放输入，右边一列竖着叠「成本结构 / 核价结果 / AI 解读 / 权限校验」。 */
+  grid-template-columns: 380px minmax(0, 1fr);
   gap: 16px;
+  align-items: start;
+}
+/* 右列收成一个 flex 列：用栅格跨行摆过一次，左栏 685 的高度被两行摊成
+   334+334，中间空出 200 多像素 —— 按内容自然堆才不留缝。 */
+.pricing-side {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
 }
 
 /* 输入表单：字段竖排。同样要 minmax(0, 1fr) 才收得住里面的控件 */
@@ -6425,4 +6436,38 @@ table:not(.semi-table) td.cell-right {
   margin: 0;
   flex: 1 1 320px;
   min-width: 0;
+}
+
+/* ─────────────── 浅蓝底药丸：一次收干净（2026-11-20 主人）
+   Semi 的 Button 不写 theme 时默认是 light —— 浅蓝底 + 蓝字的"药丸"。
+   全站还有几十处是 <Button onClick={...}>查询</Button> 这种写法
+   （产品列表的「查询」、产品详情的「编辑资料」、样品抽屉的「重新读取…」…），
+   它们一直是浅蓝底，跟"白底描边主按钮"的语言对不上，也正是主人说的
+   「我并不喜欢蓝色全底的这种，有这种的都要改」。
+   之前那条规则只认 solid，漏了 light，这里补齐：统一成白底 + 描边 + 主色字。
+   danger / default / tertiary / borderless 都不在这一条里，不受影响。 */
+.semi-button-primary.semi-button-light {
+  background: #fff !important;
+  background-image: none !important;
+  color: #2f6df6 !important;
+  border: 1px solid rgba(47, 109, 246, .5) !important;
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(47, 109, 246, .12) !important;
+  transition: background-color .14s ease, border-color .14s ease, box-shadow .14s ease;
+}
+.semi-button-primary.semi-button-light:hover {
+  background: #f3f7ff !important;
+  border-color: #2f6df6 !important;
+  box-shadow: 0 2px 6px -2px rgba(47, 109, 246, .22) !important;
+}
+.semi-button-primary.semi-button-light:active {
+  background: #eaf1ff !important;
+  box-shadow: 0 1px 2px rgba(47, 109, 246, .12) !important;
+}
+.semi-button-primary.semi-button-light.semi-button-disabled,
+.semi-button-primary.semi-button-light:disabled {
+  background: #f5f6f8 !important;
+  color: #a9b1bd !important;
+  border-color: #e3e6eb !important;
+  box-shadow: none !important;
 }

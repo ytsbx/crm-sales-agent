@@ -561,7 +561,10 @@ export default function ProductDetailPage() {
       // 图片就放在 SKU 列表这儿（主人 2026-10-10 口径）：直接看到图，
       // 点一下开图片墙（看全部 / 上传 / 删除）。不再单独开"产品图片"区块。
       title: '图片',
-      width: 66,
+      // 66 的时候格子塞不下（40 的方框 + 6 间距 + 两侧内边距 = 78），
+      // 表格给这一格挂了个省略号，看着像"+ 后面还有个坏掉的按钮"（2026-11-20）。
+      // 加到 84，一格里正好放一个缩略图；多图时张数跟在后面也不挤。
+      width: 84,
       render: (_: unknown, record: Sku) => (
         <SkuImageCell
           images={skuImages[record.id] ?? []}
@@ -627,10 +630,13 @@ export default function ProductDetailPage() {
       // 标题再写一遍"来源"是重复，还白占宽度。
       // 150 而不是 120：120 时「来源/待核实/差异」被省略成「来源/待核…」
       title: '',
-      width: 138,
+      // 138 的时候这一格还被表格挤到 ~80 宽，「来源/待核实/差异」折成三行，
+      // 每行的行高被它一个人撑到 96（2026-11-20 巡检）。文案收成「来源 / 差异」，
+      // 再 nowrap 锁一行 —— 点开面板里「来源、待核实、差异」三块一样都在。
+      width: 104,
       render: (_: unknown, record: Sku) => (
         <a
-          style={{ color: 'var(--crm-primary)' }}
+          style={{ color: 'var(--crm-primary)', whiteSpace: 'nowrap' }}
           onClick={() => {
             setResolutions({})
             setNotes({})
@@ -640,7 +646,7 @@ export default function ProductDetailPage() {
             setConfirmFields([...QUOTE_FIELD_NAMES])
           }}
         >
-          来源/待核实/差异
+          来源 / 差异
         </a>
       ),
     },
@@ -736,7 +742,13 @@ export default function ProductDetailPage() {
         extra={
           canManage && (
             <>
+              {/* 2026-11-20：这两个按钮原来都是 Semi 默认的浅底药丸（编辑资料=浅蓝、
+                  删除产品=浅红）。Semi 不写 theme 时是 light，不是 solid —— 全站那条
+                  "主按钮改白底描边"的 CSS 只认 solid，所以漏了这里。现在显式给：
+                  编辑资料=白底描边主按钮，删除产品=红字文字按钮。 */}
               <Button
+                type="primary"
+                theme="outline"
                 onClick={() => {
                   setProductForm({
                     name: product.name,
@@ -751,7 +763,7 @@ export default function ProductDetailPage() {
                 编辑资料
               </Button>
               <Popconfirm title="删除后该产品及其 SKU 将不可见，确认？" onConfirm={() => deleteMutation.mutate()}>
-                <Button type="danger">删除产品</Button>
+                <Button type="danger" theme="borderless">删除产品</Button>
               </Popconfirm>
             </>
           )
