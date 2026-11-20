@@ -136,7 +136,7 @@ export default function OrderDraftsPage() {
       },
     ]} />
       {/* 分页条被收掉时总数就没人说了，右下角补一句「共 N 条」把口径补回来。 */}
-      {(list.data?.total ?? 0) <= pageSize && (
+      {((list.data?.total ?? 0) <= pageSize) && (
         <div style={{ marginTop: 10, textAlign: 'right', fontSize: 12, color: 'var(--crm-text-3)' }}>
           共 {list.data?.total ?? 0} 条
         </div>

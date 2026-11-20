@@ -294,7 +294,7 @@ export default function ApprovalPage() {
   return (
     <div className="page-container">
       <PageHeader
-        title="报价审批"
+        title="审批中心"
         subtitle="业务员报价低于自己的价格权限时，必须经审批才能对外发送；审批只看超出权限的部分"
       />
 
@@ -361,7 +361,7 @@ export default function ApprovalPage() {
               dataSource={query.data?.items ?? []}
               loading={query.isLoading}
               rowKey="id"
-              pagination={{
+              pagination={(query.data?.total ?? 0) <= pageSize ? false : {
                 currentPage: page,
                 pageSize,
                 total: query.data?.total ?? 0,
@@ -373,6 +373,11 @@ export default function ApprovalPage() {
               empty={emptyText(query, '没有待处理的审批')}
               scroll={{ x: '100%' }}
             />
+          </div>
+        )}
+        {(query.data?.total ?? 0) <= pageSize && (
+          <div style={{ marginTop: 10, textAlign: 'right', fontSize: 12, color: 'var(--crm-text-3)' }}>
+            共 {query.data?.total ?? 0} 条
           </div>
         )}
       </SectionCard>

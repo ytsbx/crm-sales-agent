@@ -437,7 +437,7 @@ export default function TaskListPage() {
             title: '没有任务',
             hint: '点右上角「新建任务」，把「接下来要做什么」记下来 —— 任务记将来，跟进记过去。',
           })}
-          pagination={{
+          pagination={(query.data?.total ?? 0) <= pageSize ? false : {
             currentPage: page,
             pageSize,
             total: query.data?.total ?? 0,
@@ -449,6 +449,11 @@ export default function TaskListPage() {
             },
           }}
         />
+        {((query.data?.total ?? 0) <= pageSize) && (
+          <div style={{ marginTop: 10, textAlign: 'right', fontSize: 12, color: 'var(--crm-text-3)' }}>
+            共 {query.data?.total ?? 0} 条
+          </div>
+        )}
       </SectionCard>
 
       <Modal

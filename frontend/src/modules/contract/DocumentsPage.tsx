@@ -718,7 +718,7 @@ export default function DocumentsPage() {
             dataSource={documents}
             loading={documentsQuery.isLoading}
             rowKey="id"
-            pagination={{
+            pagination={(documentsQuery.data?.total ?? 0) <= docPageSize ? false : {
               currentPage: docPage,
               pageSize: docPageSize,
               total: documentsQuery.data?.total ?? 0,
@@ -733,6 +733,11 @@ export default function DocumentsPage() {
                 : '还没有合同文档。上传合同需要「订单管理」权限，请联系管理员或合同负责人。'
             }
           />
+        {(documentsQuery.data?.total ?? 0) <= docPageSize && (
+          <div style={{ marginTop: 10, textAlign: 'right', fontSize: 12, color: 'var(--crm-text-3)' }}>
+            共 {documentsQuery.data?.total ?? 0} 条
+          </div>
+        )}
         </SectionCard>
 
       <Modal
