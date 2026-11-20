@@ -331,7 +331,11 @@ export default function ApprovalPage() {
               expandedRowRender={(record?: ApprovalRow) => {
                 if (!record) return null
                 const reason = record.summary?.reason
-                const offending = record.summary?.offending ?? []
+                /* 「整单（优惠后）」那条的说明跟申请说明是同一句话（同一个 reason 字段
+                   被复写了一份），展开后就是「申请说明：…-257.14%」下面再原样重复一遍，
+                   读起来像系统出了两次一样的错（2026-11-20 截图：三行里两行一模一样）。
+                   只留那些真正不一样的（明细级的超权限行），整单那句由申请说明表达。 */
+                const offending = (record.summary?.offending ?? []).filter(item => item.reason !== reason)
                 if (!reason && offending.length === 0) return null
                 return (
                   <div style={{ display: 'grid', gap: 6, padding: '4px 10px', textAlign: 'left' }}>
@@ -375,7 +379,9 @@ export default function ApprovalPage() {
             />
           </div>
         )}
-        {(query.data?.total ?? 0) <= pageSize && (
+        {/* 「规则配置」页签下没有审批单列表，query 是关掉的、total 恒为 0，
+            照样渲染就变成规则页右下角挂着「共 0 条」，而表里明明有四条。 */}
+        {activeKey !== 'rules' && (query.data?.total ?? 0) <= pageSize && (
           <div style={{ marginTop: 10, textAlign: 'right', fontSize: 12, color: 'var(--crm-text-3)' }}>
             共 {query.data?.total ?? 0} 条
           </div>

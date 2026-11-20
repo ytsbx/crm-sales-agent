@@ -226,23 +226,35 @@ export default function RulesPanel() {
     {
       title: '触发条件',
       className: 'rules-col-cond',
-      // 180 够放最长的一条「较上一版让价金额 ≤ 1000元」；再宽就是浪费，
-      // 窄屏下多出来的每一像素都是从规则名那里抢的。
-      width: 180,
-      render: (_: unknown, row: ApprovalRuleRow) => (
-        <div style={{ fontSize: 12, color: 'var(--crm-text-2)', display: 'grid', gap: 2 }}>
-          {(row.conditions ?? []).map((cond, index) => {
+      // 原来每条条件占一行：三条条件的规则行高被顶到 100px，四行规则就吃掉
+      // 半屏（2026-11-20 截图）。条件之间本来是同一条规则的"与"，一行里用「·」
+      // 连着读更顺；放不下就省略，悬停看全文。
+      width: 330,
+      render: (_: unknown, row: ApprovalRuleRow) => {
+        const text = (row.conditions ?? [])
+          .map((cond, index) => {
             const meta = fieldMeta(cond.field)
-            return (
-              <span key={index}>
-                {meta?.label ?? cond.field}{' '}
-                {row.conditions_pretty?.[index]?.value_label ??
-                  `${OP_LABEL[cond.op] ?? cond.op} ${String(cond.value)}`}
-              </span>
-            )
-          })}
-        </div>
-      ),
+            return `${meta?.label ?? cond.field} ${
+              row.conditions_pretty?.[index]?.value_label ??
+              `${OP_LABEL[cond.op] ?? cond.op} ${String(cond.value)}`
+            }`
+          })
+          .join(' · ')
+        return (
+          <div
+            title={text}
+            style={{
+              fontSize: 12,
+              color: 'var(--crm-text-2)',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+          >
+            {text || '-'}
+          </div>
+        )
+      },
     },
     { title: '优先级', className: 'rules-col-prio', dataIndex: 'priority', width: 56 },
     {
@@ -384,6 +396,12 @@ export default function RulesPanel() {
           tableLayout="fixed"
           className="rules-table"
         />
+        {/* 表格不挂分页条，条数只能自己说一句 */}
+        {Boolean(rulesQuery.data?.length) && (
+          <div style={{ marginTop: 10, textAlign: 'right', fontSize: 12, color: 'var(--crm-text-3)' }}>
+            共 {rulesQuery.data?.length} 条规则
+          </div>
+        )}
       </SectionCard>
 
       <SandboxPanel fields={fields} />
