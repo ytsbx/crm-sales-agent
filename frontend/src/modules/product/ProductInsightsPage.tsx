@@ -318,6 +318,15 @@ export default function ProductInsightsPage() {
       <PageHeader
         title="新品洞察"
         subtitle="市场来源 → 产品方向 → 评审 → 转需求；价格为内部假设，不构成正式指导价"
+        /* 新建类动作归到页头右上，与客户 / 商机 / 产品各列表页同一处 ——
+           原来它插在筛选行里，和搜索框、状态下拉挤在一排（2026-11-20）。 */
+        extra={
+          canManage && (
+            <Button type="primary" theme="outline" onClick={openCreate}>
+              记录新品洞察
+            </Button>
+          )
+        }
       />
       <SectionCard
         className={(query.data?.items?.length ?? 0) <= 8 ? 'auto-height' : undefined}
@@ -350,11 +359,6 @@ export default function ProductInsightsPage() {
               { value: 'converted', label: '已转需求' },
             ]}
           />
-          {canManage && (
-            <Button type="primary" theme="outline" onClick={openCreate}>
-              记录新品洞察
-            </Button>
-          )}
         </div>
         <Table<ProductInsightRow>
           className="insights-table"

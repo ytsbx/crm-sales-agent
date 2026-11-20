@@ -236,7 +236,12 @@ function LeadsPanel() {
         !query.isLoading && (query.data?.items?.length ?? 0) === 0 ? { flex: '0 0 auto' } : undefined
       }
     >
-      <Input showClear value={pager.keyword} onChange={pager.search} placeholder="搜索线索、公司、联系人或手机" style={{ maxWidth: 380, marginBottom: 16 }} />
+      {/* 一个 380 宽的搜索框孤零零占一整行，右边 700 多像素全是白（主人「右边又空」）。
+          右边补上条数与范围说明，一眼知道这一屏有多少条、能看到谁的记录。 */}
+      <div className="list-search-row">
+        <Input showClear value={pager.keyword} onChange={pager.search} placeholder="搜索线索、公司、联系人或手机" style={{ width: 380 }} />
+        <span className="list-search-note">共 {query.data?.total ?? 0} 条 · 只列自己有权查看的删除记录</span>
+      </div>
         <Table<RecycleLead>
         className="recycle-table"
         columns={columns}
@@ -452,7 +457,10 @@ function ProductsPanel() {
   return (
     <>
       <SectionCard title="已删除的产品（恢复时连带恢复它名下的 SKU）">
-        <Input showClear value={productPager.keyword} onChange={productPager.search} placeholder="搜索产品名称、品类或品牌" style={{ maxWidth: 380, marginBottom: 16 }} />
+        <div className="list-search-row">
+          <Input showClear value={productPager.keyword} onChange={productPager.search} placeholder="搜索产品名称、品类或品牌" style={{ width: 380 }} />
+          <span className="list-search-note">共 {productQuery.data?.total ?? 0} 条 · 只列自己有权查看的删除记录</span>
+        </div>
         <Table<RecycleProduct>
           className="recycle-table"
           columns={productColumns}
@@ -471,7 +479,10 @@ function ProductsPanel() {
         />
       </SectionCard>
       <SectionCard title="已删除的 SKU">
-        <Input showClear value={skuPager.keyword} onChange={skuPager.search} placeholder="搜索SKU编码、名称或规格" style={{ maxWidth: 380, marginBottom: 16 }} />
+        <div className="list-search-row">
+          <Input showClear value={skuPager.keyword} onChange={skuPager.search} placeholder="搜索SKU编码、名称或规格" style={{ width: 380 }} />
+          <span className="list-search-note">共 {skuQuery.data?.total ?? 0} 条 · 只列自己有权查看的删除记录</span>
+        </div>
         <Table<RecycleSku>
           className="recycle-table"
           columns={skuColumns}
@@ -765,7 +776,10 @@ function CustomersPanel() {
           </span>
           {canRestoreOwn && !canRestoreAny ? '你只能恢复自己负责的客户。' : ''}
         </p>
-        <Input showClear value={pager.keyword} onChange={pager.search} placeholder="搜索客户名称或简称" style={{ maxWidth: 380, marginBottom: 16 }} />
+        <div className="list-search-row">
+          <Input showClear value={pager.keyword} onChange={pager.search} placeholder="搜索客户名称或简称" style={{ width: 380 }} />
+          <span className="list-search-note">共 {query.data?.total ?? 0} 条 · 只列自己有权查看的删除记录</span>
+        </div>
         <Table<RecycleCustomer>
           className="recycle-table"
           columns={columns}
@@ -848,7 +862,7 @@ function SamplesPanel() {
   const restore = useMutation({ mutationFn: restoreSample,
     onSuccess: () => { Toast.success('样品申请已恢复'); void cache.invalidateQueries({ queryKey: ['recycle', 'samples'] }); void cache.invalidateQueries({ queryKey: ['samples'] }) },
     onError: (error: Error) => Toast.error(error.message) })
-  return <SectionCard><Input showClear value={pager.keyword} onChange={pager.search} placeholder="搜索客户或商机" style={{ maxWidth: 380, marginBottom: 16 }} />
+  return <SectionCard><div className="list-search-row"><Input showClear value={pager.keyword} onChange={pager.search} placeholder="搜索客户或商机" style={{ width: 380 }} /><span className="list-search-note">共 {query.data?.total ?? 0} 条 · 只列自己有权查看的删除记录</span></div>
     <Table<SampleRequestRow> className="recycle-table" rowKey="id" dataSource={query.data?.items ?? []} loading={query.isLoading} empty={emptyText(query, '回收站里没有样品')}
       columns={[{ title: '客户', dataIndex: 'customer_name' }, { title: '商机', dataIndex: 'opportunity_title' },
         { title: '负责人', dataIndex: 'owner_name' }, { title: '原状态', dataIndex: 'status_label' },
@@ -871,7 +885,7 @@ function ContractsPanel() {
   const restore = useMutation({ mutationFn: (id: number) => api.post(`/contract-documents/${id}/restore`),
     onSuccess: () => { Toast.success('合同已恢复'); void cache.invalidateQueries({ queryKey: ['recycle', 'contracts'] }); void cache.invalidateQueries({ queryKey: ['contract-documents'] }) },
     onError: (error: Error) => Toast.error(error.message) })
-  return <SectionCard><Input showClear value={pager.keyword} onChange={pager.search} placeholder="搜索合同编号、名称或客户" style={{ maxWidth: 380, marginBottom: 16 }} /><Table<RecycleContract> className="recycle-table" rowKey="id" dataSource={query.data?.items ?? []} loading={query.isLoading}
+  return <SectionCard><div className="list-search-row"><Input showClear value={pager.keyword} onChange={pager.search} placeholder="搜索合同编号、名称或客户" style={{ width: 380 }} /><span className="list-search-note">共 {query.data?.total ?? 0} 条 · 只列自己有权查看的删除记录</span></div><Table<RecycleContract> className="recycle-table" rowKey="id" dataSource={query.data?.items ?? []} loading={query.isLoading}
     empty={emptyText(query, '回收站里没有合同')} columns={[
       { title: '合同编号', dataIndex: 'doc_no' }, { title: '合同名称', dataIndex: 'title' },
       { title: '客户', dataIndex: 'customer_name' }, { title: '原状态', dataIndex: 'status_label' },

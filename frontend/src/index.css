@@ -6471,3 +6471,24 @@ table:not(.semi-table) td.cell-right {
   border-color: #e3e6eb !important;
   box-shadow: none !important;
 }
+
+/* ─────────────── 列表页「一个搜索框占一整行」（2026-11-20 主人「右边又空」）
+   回收站六个面板都是：380 宽的搜索框贴在卡片左边，右面 700 像素纯白。
+   收成一行：搜索框 + 条数/范围说明，右侧不再空。 */
+.list-search-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.list-search-note {
+  color: var(--crm-text-3);
+  font-size: 12px;
+}
+
+/* 空态表格别再多一条底线：0 条时下面那条线看着像还有数据没显示出来 */
+.semi-table-wrapper:has(.semi-table-empty) .semi-table-tbody,
+.semi-table-wrapper:has(.semi-table-placeholder) .semi-table-tbody {
+  border-bottom: none !important;
+}
