@@ -1035,6 +1035,27 @@ export default function PriceCenterPage() {
         width={780}
         bodyStyle={{ padding: '16px 20px' }}
       >
+        {/* 抽屉里只有一个标题和一排输入框，第一眼确实看不出这东西干嘛用
+            （主人 2026-11-21「这个核价是干嘛的我都不知道」）。开头先说清用途和边界：
+            算数用的，不改任何单据；算出来的三个数各是什么意思。 */}
+        <div
+          style={{
+            marginBottom: 4,
+            padding: '10px 12px',
+            borderRadius: 8,
+            background: 'var(--crm-surface-low)',
+            color: 'var(--crm-text-2)',
+            fontSize: 13,
+            lineHeight: 1.75,
+          }}
+        >
+          报价前在这里先算一遍：拿这个 SKU 的商品成本加上运费，按价格规则加成之后，
+          得到<strong>建议报价</strong>、<strong>你能报到的最低允许价</strong>，
+          再判断这个价你自己能不能报、还是得交上去审批。
+          <span style={{ color: 'var(--crm-text-3)' }}>
+            {' '}它只算数、不写任何单据 —— 真要对外报，还是去报价单里填。
+          </span>
+        </div>
         {pricingVisible && <PricingTool embedded />}
       </SideSheet>
 
