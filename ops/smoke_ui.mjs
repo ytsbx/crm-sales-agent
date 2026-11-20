@@ -1194,7 +1194,9 @@ async function main() {
     },
     { path: '/quotes', name: '12-quotes', expectText: '报价中心' },
     { path: `/quotes/${quoteId ?? 1}`, name: '13-quote-detail', expectText: '版本与方案对比' },
-    { path: '/approvals', name: '14-approvals', expectText: '报价审批' },
+    // 7c6ccd88 审批页标题对齐菜单，「报价审批」改叫「审批中心」——
+    // rendered 探针要等 expectText 出现，旧词会连坐报「页面始终没有渲染出内容」。
+    { path: '/approvals', name: '14-approvals', expectText: '审批中心' },
     { path: '/orders', name: '15-orders', expectText: '订单中心' },
     { path: `/orders/${orderId ?? 1}`, name: '16-order-detail', expectText: '未推送 ERP/MES' },
     { path: '/tasks', name: '17-tasks', expectText: '销售任务' },
