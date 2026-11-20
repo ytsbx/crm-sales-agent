@@ -661,7 +661,10 @@ export default function SampleListPage() {
     {
       title: compact ? '样品明细 / 快递' : '样品明细',
       dataIndex: 'items',
-      width: compact ? 186 : undefined,
+      /* 非紧凑（列表页）也要给宽度：不给的话宽度被「客户 / 商机」抢走，
+         明细只剩 ~200，「中空板箱 5mm（汽配线） · A ×3」第一行就被截。
+         编码单独一行后 240 够放一整条最长品名。 */
+      width: compact ? 186 : 240,
       render: (items: SampleRequestRow['items'], record: SampleRequestRow) =>
         items.length === 0 ? (
           <span style={{ color: 'var(--crm-text-3)' }}>无明细</span>
@@ -688,7 +691,40 @@ export default function SampleListPage() {
           >
             {/* 编码缺失时不要拼出「（编码：null）」：旧写法拿 String(sku_id) 兜底，
                 而演示数据里 sku_id 也是空的，于是列表上明晃晃写着 null（2026-11-19 实拍）。 */}
-            {items.map((item) => `${skuLabel({ name: item.sku_name, sku_code: item.sku_code ?? (item.sku_id != null ? String(item.sku_id) : undefined) })} ×${item.quantity}`).join('、')}
+            {/* 两行结构：第一行「产品名 ×数量」，第二行灰字只放编码。
+                原来挤成一行「EU 斜插周转箱 · A（编码：ZZX-0031） ×3」，
+                折行正好落在「（编 / 码：」中间，读起来像错字（2026-11-20 实拍）。
+                多明细时第一行接「等 N 项」，全文仍在 title 里。 */}
+            {(() => {
+              const first = items[0]
+              /* 第一行只要品名：skuLabel 会把「（编码：…）」一起拼进来，
+                 那样第一行被截、第二行又重复一遍编码。
+                 没有品名时才退回编码当名字。 */
+              const label = first.sku_name?.trim() || first.sku_code || '-'
+              const code = first.sku_code ?? (first.sku_id != null ? String(first.sku_id) : null)
+              const more = items.length > 1 ? ` 等 ${items.length} 项` : ''
+              return (
+                <>
+                  <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {label} ×{first.quantity}
+                    {more}
+                  </div>
+                  {code && (
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: 'var(--crm-text-3)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      编码 {code}
+                    </div>
+                  )}
+                </>
+              )
+            })()}
             {compact && record.shipments[0] && (
               <div
                 title={`${record.shipments[0].carrier ?? '-'} ${record.shipments[0].tracking_no ?? ''}`}
@@ -711,7 +747,7 @@ export default function SampleListPage() {
       ? []
       : [{
       title: '快递',
-      width: 196,
+      width: 192,
       render: (_: unknown, record: SampleRequestRow) => {
         const shipment = record.shipments[0]
         if (!shipment) return <span style={{ color: 'var(--crm-text-3)' }}>-</span>
