@@ -119,7 +119,14 @@ export default function OrderDraftsPage() {
          现在按内容给宽度：草稿 / 状态 / 明细数窄，来源（报价号 + 版本）最宽，
          操作列放"继续填写"，最末一列不设宽吃掉剩余。 */
       { title: '草稿', width: 150, render: (_: unknown, row: OrderDraft) => <Link to={`/order-drafts/${row.id}`}>草稿 #{row.id}</Link> },
-      { title: '来源报价', width: 280, render: (_: unknown, row: OrderDraft) => `${row.source_context.no} V${row.source_context.version}` },
+      /* 来源字段可能缺（手工建的草稿、或历史草稿没挂报价版本）：
+         直接拼模板会渲染成「undefined Vundefined」，缺什么就写人话。 */
+      { title: '来源报价', width: 280, render: (_: unknown, row: OrderDraft) => {
+        const no = row.source_context?.no
+        if (!no) return <span style={{ color: 'var(--crm-text-3)' }}>未挂报价（手工建）</span>
+        const version = row.source_context?.version
+        return version ? `${no} V${version}` : no
+      } },
       {
         title: '状态',
         width: 170,

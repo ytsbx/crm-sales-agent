@@ -445,6 +445,12 @@ export default function CasesPage() {
               含历史版本
             </span>
           </div>
+          {/* 分页条在"一页装得下"时会收起，条数得有个地方交代：推到工具栏最右。 */}
+          {((casesQuery.data?.total ?? 0) > 0) && (
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)', marginLeft: 'auto', flexShrink: 0 }}>
+              共 {casesQuery.data?.total ?? 0} 条
+            </span>
+          )}
         </div>
         <Table<CaseRow>
           className="cases-table"
@@ -618,7 +624,8 @@ export default function CasesPage() {
           dataSource={casesQuery.data?.items ?? []}
           loading={casesQuery.isLoading}
           rowKey="id"
-          pagination={{
+          /* 总数不过一页就收起分页条（12 条还挂翻页只是噪音），条数交给工具栏灰字。 */
+          pagination={(casesQuery.data?.total ?? 0) <= pageSize ? false : {
             currentPage: page,
             pageSize,
             total: casesQuery.data?.total ?? 0,
