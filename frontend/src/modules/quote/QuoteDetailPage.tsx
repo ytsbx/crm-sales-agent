@@ -1779,11 +1779,45 @@ export default function QuoteDetailPage() {
       )}
       {/* 运费未确认要**持续显示**（与主数据未确认同一性质）：草稿允许没填运费，
           但正式发送会被拦下 —— 等到点"标记已发送"才报错就太晚了。 */}
+      {/* 运费未确认要**持续显示**（与主数据未确认同一性质）：草稿允许没填运费，
+          但正式发送会被拦下 —— 等到点「标记已发送」才报错就太晚了。
+          2026-11-20：原来这里是一枚橙色 Tag，内容是后端给的那句
+          "尚未填写运费：请在「附加费用」里以「物流」类型填写…" ——
+          和页顶「现在这一步」的第二条**一字不差**，同一句话隔着 120px 出现两遍，
+          而且贴着明细区、挨着又没动作，看完还得自己往下找「附加费用」。
+          现在压成一条：短句说清后果 + 右边直接给「去补填」（滚到附加费用并开弹窗）。 */}
       {freightUnconfirmed && (
-        <div style={{ marginBottom: 16 }}>
-          <Tag color="orange" size="large">
-            {freightUnconfirmed}
-          </Tag>
+        <div
+          style={{
+            marginBottom: 16,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            padding: '10px 14px',
+            borderRadius: 10,
+            background: 'var(--crm-surface-low)',
+            borderLeft: '3px solid var(--crm-warning)',
+            fontSize: 12.5,
+            color: 'var(--crm-text-2)',
+          }}
+        >
+          <Tag size="small" type="light" color="orange">待补运费</Tag>
+          <span>这版还没填运费，正式发送前必须补上。</span>
+          <span style={{ flex: 1 }} />
+          {canManage && (editable || canEditFreightOnly) && (
+            <Button
+              size="small"
+              type="tertiary"
+              theme="borderless"
+              onClick={() => {
+                if (!editable) setChargeForm((form) => ({ ...form, charge_type: 'logistics' }))
+                setChargeVisible(true)
+                document.getElementById('quote-charges')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+              }}
+            >
+              去补填 →
+            </Button>
+          )}
         </div>
       )}
 

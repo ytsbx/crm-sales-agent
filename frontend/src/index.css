@@ -4533,6 +4533,9 @@ table:not(.semi-table) td.cell-right {
 .cust-pano-tile.tone-caution   { --tile-accent: #ff7d00; --tile-wash: #fff2e6; }
 .cust-pano-tile.tone-success   { --tile-accent: #00b42a; --tile-wash: #e9f9ed; }
 .cust-pano-tile.tone-teal      { --tile-accent: #0d9488; --tile-wash: #e6f6f2; }
+/* 中性：数量为 0 的卡退回灰线（2026-11-20）。四条语义色线同时亮着，
+   读起来像四个业务都"有事发生"，而实际是空单 —— 颜色不该替业务下判断。 */
+.cust-pano-tile.tone-neutral   { --tile-accent: #c9cdd4; --tile-wash: transparent; }
 
 /* 2026-11-20：上一版整块浅色填充（wash），四/五张并排时像一排彩纸。
    现在底色统一（不染色），颜色只留**左侧 3px 语义色线**。 */

@@ -878,7 +878,7 @@ export default function CustomerDetailPage() {
                       <button
                         key={tile.key}
                         type="button"
-                        className={`cust-pano-tile ${tile.tone}`}
+                        className={`cust-pano-tile ${tile.value ? tile.tone : 'tone-neutral'}`}
                         onClick={jump}
                         title={`跳到「${tile.label}」页签`}
                       >
@@ -1205,8 +1205,12 @@ export default function CustomerDetailPage() {
               >
                 客户总结
               </Button>
+              {/* ⚠ 只写 theme="borderless" 不够：Semi 的 Button 不写 type 时默认
+                  type="primary"，borderless + primary 仍然是浅蓝底药丸 —— 这就是
+                  截图里两个按钮"一个白底一个浅蓝"的原因。必须显式 tertiary。 */}
               <Button
                 size="small"
+                type="tertiary"
                 theme="borderless"
                 loading={aiMutation.isPending}
                 onClick={() => aiMutation.mutate('followup')}

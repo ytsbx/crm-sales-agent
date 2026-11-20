@@ -823,12 +823,18 @@ export default function OrderDetailPage() {
     {
       label: '实际到账（财务已确认）',
       value: formatMoney(toTwoDecimals(order.received_amount_exact ?? order.received_amount), order.currency),
-      tone: 'success',
+      /* 2026-11-20：这枚 tone 原来是写死的 success —— 一分钱没收到时
+         那张卡也是一个绿色的「¥0.00」，绿色在这里等于说"收到钱了"。
+         改成收到钱才绿。 */
+      tone: Number(order.received_amount_exact ?? order.received_amount ?? 0) > 0 ? 'success' : 'default',
     },
     {
       label: '尚未到账',
       value: formatMoney(toTwoDecimals(order.unreceived_amount_exact ?? order.unreceived_amount), order.currency),
-      tone: order.unreceived_amount > 0 ? 'warning' : 'default',
+      /* 2026-11-20：尚未到账不是异常 —— 刚下的单本来就一分钱没收。
+         原来只要 >0 就染橙，等于每张新订单都亮一个橙灯，警告用滥了。
+         真正的逾期由「回款中心」的逾期红字承担。 */
+      tone: 'default',
     },
     {
       label: '已分配到应收期',
@@ -1878,7 +1884,9 @@ export default function OrderDetailPage() {
             <button
               key={tile.label}
               type="button"
-              className={`cust-pano-tile ${tile.tone}`}
+              /* 0 条不染色：四条色线（蓝橙绿紫）全亮着，等于四个业务模块都"有事发生"，
+                 实际是空单。数量为 0 时退回中性灰线，有数才用语义色。 */
+              className={`cust-pano-tile ${tile.value ? tile.tone : 'tone-neutral'}`}
               onClick={() => setActiveKey(tile.key)}
               title={`跳到「${TABS.find((t) => t.itemKey === tile.key)?.tab ?? tile.key}」页签`}
             >
