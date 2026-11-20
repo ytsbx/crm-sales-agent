@@ -711,15 +711,26 @@ export default function SampleListPage() {
       ? []
       : [{
       title: '快递',
-      width: 170,
+      width: 196,
       render: (_: unknown, record: SampleRequestRow) => {
         const shipment = record.shipments[0]
         if (!shipment) return <span style={{ color: 'var(--crm-text-3)' }}>-</span>
+        // 原来承运商和单号各占一行，整表每行被这两行撑到 75px 左右，
+        // 一屏只放得下 12 条。改一行「承运商 · 单号」+ 省略号（全号放 title 里），
+        // 行高跟着「客户 / 商机」的两行回到 56（2026-11-21 巡检）。
         return (
-          <span style={{ fontSize: 12 }}>
+          <span
+            title={`${shipment.carrier ?? '-'} ${shipment.tracking_no ?? ''}`.trim()}
+            style={{
+              fontSize: 12,
+              display: 'block',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
             {shipment.carrier ?? '-'}
-            <br />
-            {shipment.tracking_no ?? '-'}
+            {shipment.tracking_no ? ` · ${shipment.tracking_no}` : ''}
           </span>
         )
       },

@@ -654,7 +654,9 @@ export default function ProductDetailPage() {
       title: '成本状态',
       width: 168,
       render: (_: unknown, record: Sku) => (
-        <div style={{ display: 'grid', gap: 2, justifyItems: 'start' }}>
+        // 状态和入口并成一行「● 成本未维护 · 维护成本」：原来格子叠两行，
+        // 每个 SKU 行被撑到 100px，「图片」格里的缩略图也跟着悬空（2026-11-21 巡检）。
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap' }}>
           <StatusDot
             label={record.cost_status?.label ?? '成本状态待查询'}
             tone={record.cost_status?.state === 'complete' ? 'green' : 'orange'}
@@ -662,7 +664,7 @@ export default function ProductDetailPage() {
           {can('price:manage') ? (
             <Link to={`/prices?tab=costs&sku_id=${record.id}`} style={{ fontSize: 12 }}>维护成本</Link>
           ) : record.cost_status?.state !== 'complete' ? (
-            <div style={{ fontSize: 12 }}>请联系价格管理员补齐</div>
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>请联系价格管理员补齐</span>
           ) : null}
         </div>
       ),

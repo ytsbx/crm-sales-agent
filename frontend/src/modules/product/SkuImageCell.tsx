@@ -77,13 +77,14 @@ export default function SkuImageCell({ images, canWrite = false, onClick, size =
     width: size,
     height: size,
     borderRadius: 4,
-    border: '1px solid var(--crm-outline)',
+    // 没有图时用虚线框：实线灰底小方块 + 加号在表格里像"图片加载失败"（2026-11-21 巡检）
+    border: first ? '1px solid var(--crm-outline)' : '1px dashed var(--crm-outline)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     cursor: 'pointer',
     overflow: 'hidden',
-    background: 'rgba(0,0,0,0.03)',
+    background: first ? 'rgba(0,0,0,0.03)' : 'transparent',
     fontSize: 11,
     color: 'var(--crm-text-3)',
   }
