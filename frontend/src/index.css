@@ -6404,3 +6404,25 @@ table:not(.semi-table) td.cell-right {
   color: var(--crm-error) !important;
   text-decoration: underline;
 }
+
+/* ─────────────── 带按钮的「下一步」块改一行（2026-11-20）───────────────
+   订单详情「收款下一步」原来三行竖排：标题、说明、按钮全挤在左边 300px，
+   右边整片浅蓝空着（主人原话"左边太挤，右边又空"）。
+   有按钮时排成一行：标题 → 说明（吃掉剩余宽度）→ 按钮贴右。
+   只匹配"直接挂按钮"的块，纯文字版仍是原来的竖排，不受影响。 */
+.workflow-next:has(> .semi-button) {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.workflow-next:has(> .semi-button) > strong {
+  display: inline;
+  margin-bottom: 0;
+  white-space: nowrap;
+}
+.workflow-next:has(> .semi-button) > p {
+  margin: 0;
+  flex: 1 1 320px;
+  min-width: 0;
+}
