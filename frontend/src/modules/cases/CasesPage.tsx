@@ -670,7 +670,10 @@ export default function CasesPage() {
         confirmLoading={saveMutation.isPending}
         okText="保存"
         cancelText="取消"
-        width={680}
+        // 表单十一块，680 宽时字段全挤成一列、证据区时间线被截；加宽到 860 三列排开。
+        // 弹窗整体比屏幕高，内容区自己滚，动作条钉在窗口底 —— 否则「保存」要滚到底才见得到。
+        width={860}
+        bodyStyle={{ maxHeight: 'calc(100vh - 250px)', overflowY: 'auto' }}
       >
         <div style={{ display: 'grid', gap: 10 }}>
           <div>
