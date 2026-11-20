@@ -1401,6 +1401,22 @@ a:not([href]) {
   background: currentColor;
 }
 
+/* 蓝色 / 绿色的卡内提示降成次要灰（2026-11-21 巡检）
+   ------------------------------------------------------------
+   数据分析一屏 12 张卡，10 段提示全带彩色圆点（蓝"成交 11 / 失单 10"、
+   绿"报价单 25 张"…），整页像挂了十个信号灯。这两类提示本来就只是口径补充，
+   不是"要留意"：信息交给灰字，颜色只留给 warning / error（真要人动手的两类）。 */
+.kpi-card .chip-primary,
+.kpi-card .chip-success {
+  padding-left: 0;
+  color: var(--crm-text-2);
+}
+
+.kpi-card .chip-primary::before,
+.kpi-card .chip-success::before {
+  display: none;
+}
+
 /* 行内危险链接（设置页每行的「停用」）：平时跟普通次要文字一样灰，
    鼠标移上去才变红。一屏九行全红会把页面喊成一片噪音（2026-11-16）。 */
 .crm-danger-hover.semi-button,
@@ -2586,6 +2602,15 @@ table:not(.semi-table) td {
 }
 .kpi-pair-hint {
   margin-top: var(--crm-space-3);
+}
+
+/* 「准时 0 / 延迟 1」原来装在绿胶囊里 —— 绿色胶囊包着"延迟 1"，颜色和内容对不上；
+   而且上面一排卡的小字刚统一成灰字，这里再来两个色块就成了孤岛（2026-11-21 巡检）。
+   并卡之后口径本来就在标题旁边，纯文字即可。 */
+.kpi-pair-cell .chip {
+  padding: 0;
+  background: transparent;
+  color: var(--crm-text-2);
 }
 .kpi-group .kpi-grid > .kpi-card {
   /* 基准 25% 必须扣掉卡间距（每行 4 张有 3 个 16px 空隙，摊到每张约 12px），
