@@ -7,7 +7,7 @@ from conftest import make_engine, make_user, SyncSessionAsAsync
 from app.core.audit import AuditLog
 from app.core.errors import AppError
 from app.modules.product import router, service
-from app.modules.product.model import Product, Sku
+from app.modules.product.model import Product, Sku, SkuFieldAuthority
 from app.modules.product.schema import SkuCreate, SkuStandaloneCreate, SkuUpdate
 
 USER = make_user(1, permissions=("product:manage",), data_scope="all")
@@ -17,7 +17,7 @@ REQUEST = Request({"type": "http", "headers": [], "client": ("127.0.0.1", 1)})
 @pytest.fixture
 def sku_db():
     engine = make_engine()
-    for model in (Product, Sku, AuditLog):
+    for model in (Product, Sku, SkuFieldAuthority, AuditLog):
         model.__table__.create(engine, checkfirst=True)
     with Session(engine, expire_on_commit=False) as raw:
         raw.add(Product(id=1, name="周转箱")); raw.commit()

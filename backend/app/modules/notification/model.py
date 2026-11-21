@@ -129,6 +129,7 @@ class Notification(Base, IdMixin):
         DateTime(timezone=True), nullable=True
     )
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(), server_default=func.now(),
         nullable=False,

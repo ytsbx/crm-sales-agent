@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.core.audit import AuditLog
@@ -74,3 +75,60 @@ async def test_scan_keeps_protection_cap(pool_db, monkeypatch, idle_days, max_da
     if nominated:
         row = db.query(PublicPoolRecycleCandidate).one()
         assert row.protection_snapshot and result['candidates'][0]['protection_reasons'] == row.protection_snapshot
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("followed_up", [False, True])
+async def test_rejected_recycle_candidate_is_reconsidered_after_30_days(pool_db, monkeypatch, followed_up):
+    db = pool_db
+    # Mirror the production partial index in SQLite, where the PostgreSQL predicate is ignored.
+    db.execute(text("DROP INDEX uq_pool_candidate_open"))
+    db.execute(text(
+        "CREATE UNIQUE INDEX uq_pool_candidate_open ON public_pool_recycle_candidates (customer_id) "
+        "WHERE status IN ('pending', 'deferred', 'approved')"
+    ))
+    rejected_at = datetime(2026, 10, 1, 9, tzinfo=UTC)
+    clock = rejected_at
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock.astimezone(tz)
+
+    monkeypatch.setattr(service, "datetime", FrozenDatetime)
+    monkeypatch.setattr(service.duplicates, "is_disputed", AsyncMock(return_value=False))
+    notify = AsyncMock(return_value=0)
+    monkeypatch.setattr(service, "_notify_recycle_candidate", notify)
+    customer = Customer(
+        id=1, name="隔离客户", level="C", owner_id=1, pool_status="private",
+        last_followup_at=rejected_at - timedelta(days=90),
+    )
+    db.add_all([customer, PublicPoolRule(level="C", days=60, enabled=True)])
+    db.commit()
+    session = SyncSessionAsAsync(db)
+
+    assert (await service.run_public_pool_recycle(session, 1))["nominated_count"] == 1
+    original = db.scalars(select(PublicPoolRecycleCandidate)).one()
+    last_followup = customer.last_followup_at
+    decision = await service.decide_candidate(session, candidate=original, decision="reject", operator_id=1, note="继续跟进")
+    reconsider_at = datetime.fromisoformat(decision["reconsider_at"])
+    assert reconsider_at.replace(tzinfo=UTC) == rejected_at + timedelta(days=30)
+    assert original.status == "rejected"
+    assert customer.last_followup_at == last_followup
+
+    for clock in (rejected_at, rejected_at + timedelta(days=30, seconds=-1)):
+        result = await service.run_public_pool_recycle(session, 1)
+        assert result["nominated_count"] == 0
+        assert result["cooldown_count"] == 1
+        assert result["enabled_rule_count"] == 1
+    assert notify.await_count == 1
+
+    if followed_up:
+        customer.last_followup_at = clock
+        db.commit()
+    clock = rejected_at + timedelta(days=30)
+    result = await service.run_public_pool_recycle(session, 1)
+    assert result["nominated_count"] == int(not followed_up)
+    assert result["cooldown_count"] == 0
+    assert notify.await_count == 1 + int(not followed_up)
+    assert original.status == "rejected"

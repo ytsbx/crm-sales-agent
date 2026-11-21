@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import select, update
+from sqlalchemy import case, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -13,11 +13,12 @@ from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
 from app.modules.notification import service as notification_service
-from app.modules.task.model import Task
+from app.modules.task.model import HANDOVER_SOURCE, Task
 from app.modules.task.locking import lock_customers, lock_task_customers
 from app.modules.task.schema import (
     TaskAssign,
     TaskBatchComplete,
+    TaskBatchHandover,
     TaskComplete,
     TaskCreate,
     TaskUpdate,
@@ -29,6 +30,17 @@ router = APIRouter(tags=["Task"])
 
 PRIORITY_LABEL = {"high": "高", "normal": "中", "low": "低"}
 STATUS_LABEL = {"pending": "待处理", "doing": "处理中", "done": "已完成", "cancelled": "已取消"}
+
+
+def _require_handover_manager(user: CurrentUser) -> None:
+    if "admin" not in user.roles and ("sales_manager" not in user.roles or not user.has("task:manage")):
+        raise AppError(ErrorCode.FORBIDDEN, "待办交接仅限管理员和有任务管理权限的销售主管", 403)
+
+
+def _handover_subject(task: Task) -> int | None:
+    if task.owner_id is not None:
+        return task.owner_id
+    return task.source_business_id if task.source_business_type == HANDOVER_SOURCE else None
 
 
 async def _visible_task(
@@ -270,6 +282,38 @@ def serialize(
     }
 
 
+async def _receivable_task_details(session: AsyncSession, user: CurrentUser, tasks: list[Task]) -> dict:
+    if "admin" not in user.roles and not user.has("payment:view"):
+        return {}
+    order_ids = {
+        task.order_id for task in tasks
+        if task.order_id and task.task_type == "payment" and task.source == "system"
+    }
+    if not order_ids:
+        return {}
+    from app.modules.payment import service as payments
+    from app.modules.payment.model import ReceivablePlan
+
+    received = payments.plan_received_totals()
+    stmt = (select(ReceivablePlan, received.c.paid)
+            .outerjoin(received, received.c.plan_id == ReceivablePlan.id)
+            .where(ReceivablePlan.order_id.in_(order_ids), ReceivablePlan.status != "cancelled")
+            .order_by(ReceivablePlan.due_date, ReceivablePlan.id))
+    visible = await payments.visible_order_ids_stmt(session, user)
+    if visible is not None:
+        stmt = stmt.where(ReceivablePlan.order_id.in_(visible))
+    by_order: dict[int, list[dict]] = {}
+    for plan, paid in (await session.execute(stmt)).all():
+        by_order.setdefault(plan.order_id, []).append({
+            "id": plan.id,
+            "plan_name": plan.plan_name,
+            "due_date": plan.due_date,
+            "amount_exact": str(plan.amount),
+            "remaining_amount_exact": str(max(plan.amount - (paid or 0), 0)),
+        })
+    return by_order
+
+
 @router.get("/tasks")
 async def list_tasks(
     status: str | None = None,
@@ -282,9 +326,28 @@ async def list_tasks(
     page_size: int = Query(20, ge=1, le=200),
     user: CurrentUser = Depends(require_permission("task:view")),
     session: AsyncSession = Depends(get_db),
+    handover: bool = False,
 ):
     stmt = select(Task)
-    if mine or user.data_scope == "self":
+    if handover:
+        _require_handover_manager(user)
+        queued = (Task.owner_id.is_(None) & (Task.source_business_type == HANDOVER_SOURCE))
+        subject = case((queued, Task.source_business_id), else_=Task.owner_id)
+        stmt = stmt.where(
+            Task.status.in_(("pending", "doing")),
+            or_(queued, Task.owner_id.in_(select(User.id).where(User.status == "disabled"))),
+        )
+        owner_ids = await scoped_owner_ids(session, user)
+        if owner_ids is not None:
+            stmt = stmt.where(subject.in_(owner_ids))
+        if "admin" not in user.roles:
+            stmt = stmt.where(subject.in_(select(User.id).where(
+                User.department_id == user.department_id, User.department_id.is_not(None)
+            )))
+        if owner_id is not None:
+            stmt = stmt.where(subject == owner_id)
+        stmt = stmt.order_by(subject)
+    elif mine or user.data_scope == "self":
         stmt = stmt.where(Task.owner_id == user.id)
     else:
         # 原先这里对 department / department_and_sub 完全不施加部门条件
@@ -314,6 +377,8 @@ async def list_tasks(
 
     rows, total = await paginate(session, stmt, page, page_size)
     owner_ids = {row.owner_id for row in rows if row.owner_id}
+    if handover:
+        owner_ids.update(subject for row in rows if (subject := _handover_subject(row)) is not None)
     names: dict[int, str] = {}
     if owner_ids:
         name_rows = (
@@ -392,6 +457,14 @@ async def list_tasks(
         )
         for row in rows
     ]
+    plans = await _receivable_task_details(session, user, rows)
+    for item, row in zip(items, rows, strict=True):
+        if handover:
+            subject = _handover_subject(row)
+            item["handover_from_user_id"] = subject
+            item["handover_from_user_name"] = names.get(subject)
+        if row.task_type == "payment" and row.source == "system" and row.order_id in plans:
+            item["receivable_plans"] = plans[row.order_id]
     return ok(page_data(items, total, page, page_size))
 
 
@@ -683,6 +756,24 @@ async def cancel_task(
 # ------------------------------------------------- 03-API §25 新增的三个接口
 
 
+@router.get("/tasks/handover-candidates")
+async def handover_candidates(
+    keyword: str = "",
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    user: CurrentUser = Depends(require_permission("task:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    _require_handover_manager(user)
+    stmt = select(User).where(User.status == "active")
+    if search := keyword.strip():
+        stmt = stmt.where(or_(User.name.icontains(search, autoescape=True),
+                              User.username.icontains(search, autoescape=True)))
+    rows, total = await paginate(session, stmt.order_by(User.name, User.id), page, page_size)
+    return ok(page_data([{"id": row.id, "name": row.name, "username": row.username} for row in rows],
+                        total, page, page_size))
+
+
 @router.get("/tasks/{task_id}")
 async def get_task(
     task_id: int,
@@ -694,7 +785,11 @@ async def get_task(
     owners = (
         await session.execute(select(User.name).where(User.id == task.owner_id))
     ).scalar_one_or_none() if task.owner_id else None
-    return ok(serialize(task, owners))
+    payload = serialize(task, owners)
+    plans = await _receivable_task_details(session, user, [task])
+    if task.order_id in plans:
+        payload["receivable_plans"] = plans[task.order_id]
+    return ok(payload)
 
 
 @router.post("/tasks/{task_id}/assign")
@@ -754,6 +849,53 @@ async def assign_task(
     payload_out = await _reserialize_fresh(session, task, target.name)
     await notification_service.dispatch_pending(session)
     return ok(payload_out, f"已指派给「{target.name}」")
+
+
+@router.post("/tasks/batch-handover")
+async def batch_handover_tasks(
+    payload: TaskBatchHandover,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("task:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    _require_handover_manager(user)
+    target = await _active_owner(session, payload.owner_id)
+    ids = sorted(set(payload.task_ids))
+    parents = await lock_task_customers(session, ids)
+    tasks = (await session.execute(select(Task).where(Task.id.in_(ids)).order_by(Task.id)
+             .with_for_update().execution_options(populate_existing=True))).scalars().all()
+    if len(tasks) != len(ids):
+        raise AppError(ErrorCode.NOT_FOUND, "部分待办不存在，请刷新交接清单", 404)
+    owner_ids = await scoped_owner_ids(session, user)
+    for task in tasks:
+        subject = _handover_subject(task)
+        if subject is None or (owner_ids is not None and subject not in owner_ids):
+            raise AppError(ErrorCode.DATA_SCOPE_DENIED, "部分待办不在你的交接范围", 403)
+        _ensure_not_final(task, "交接")
+        previous = await session.get(User, subject)
+        if "admin" not in user.roles and (
+            previous is None or user.department_id is None or previous.department_id != user.department_id
+        ):
+            raise AppError(ErrorCode.DATA_SCOPE_DENIED, "部分待办不属于你的部门", 403)
+        if task.customer_id != parents.get(task.id) or (
+            task.owner_id is not None and (previous is None or previous.status != "disabled")
+        ):
+            raise AppError(ErrorCode.VERSION_CONFLICT, "待办已改派或账号已恢复，请刷新交接清单", 409)
+        task.owner_id = target.id
+        if task.source_business_type == HANDOVER_SOURCE:
+            task.source_business_type = None
+            task.source_business_id = None
+        await write_audit(
+            session, operator_id=user.id, action="assign", business_type="task", business_id=task.id,
+            before={"owner_id": subject}, after={"owner_id": target.id, "reason": "停用员工待办交接"},
+            ip=client_ip(request),
+        )
+    await notification_service.notify(
+        session, user_id=target.id, type_="task", title="有交接待办指派给你",
+        content=f"已指派 {len(tasks)} 条待办，请在任务中心查看。",
+    )
+    await session.commit()
+    return ok({"task_ids": ids}, f"已交接 {len(ids)} 条待办")
 
 
 @router.post("/tasks/batch-complete")

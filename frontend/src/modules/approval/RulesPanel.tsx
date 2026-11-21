@@ -1,4 +1,5 @@
 import { formatBeijingTime } from '../../shared/beijing-time'
+import { ApiError } from '../../shared/api/client'
 import { useState, type ComponentProps } from 'react'
 import {
   ConfirmRequiredModal,
@@ -37,6 +38,7 @@ import {
 } from '../../shared/api/approval'
 import { listQuotes, listQuoteVersions } from '../../shared/api/quote'
 import SectionCard from '../../shared/components/SectionCard'
+import HelpTip from '../../shared/components/HelpTip'
 import GuardedButton from '../../shared/components/GuardedButton'
 import { blockedReasons } from '../../shared/components/blocked-hint-reasons'
 import { optionMatcher } from '../../shared/components/optionMatch'
@@ -47,6 +49,19 @@ const KIND_TONE: Record<string, TagColor> = {
   auto_pass: 'green',
   express: 'blue',
   exception_route: 'red',
+}
+
+//: 条件操作符的展示符号。**单一来源**：编辑器的下拉、列表的触发条件、
+//: 版本详情、沙盒回退展示都从这里取，避免同一个 op 在四个地方写出四种样子。
+//: 后端 `OPS_LABEL` 是权威文案（发布确认、conditions_pretty 用它的符号），
+//: 这里只补前端自己拼文案时的兜底。
+const OP_LABEL: Record<string, string> = {
+  gte: '≥',
+  gt: '>',
+  lte: '≤',
+  lt: '<',
+  eq: '=',
+  in: '属于',
 }
 
 const KIND_HINT: Record<string, string> = {
@@ -78,6 +93,22 @@ export default function RulesPanel() {
   const queryClient = useQueryClient()
   const [editing, setEditing] = useState<DraftState | null>(null)
   const [versionTarget, setVersionTarget] = useState<ApprovalRuleRow | null>(null)
+  // 409 冲突提示：后端把「和哪条规则、哪两个阈值撞了」写在 message 里，
+  // 这里原样展示。发布/启用失败时只弹这个，不关编辑器、不改表单。
+  const [conflictNotice, setConflictNotice] = useState<{ title: string; message: string } | null>(
+    null,
+  )
+  /* 保存草稿失败（409 冲突 / 422 校验）时，错误要贴在编辑弹窗里，
+     而不是只闪一下 Toast —— 用户正在改的就是这张表单，原因得和输入框放在一起。
+     同时不关弹窗、不动 drafts，用户按提示改完可以直接再保存。 */
+  const [editorError, setEditorError] = useState<string | null>(null)
+  const notifyConflict = (error: Error, verb: string): boolean => {
+    const status = (error as ApiError).status
+    const code = (error as ApiError).code
+    if (status !== 409 && code !== 40901) return false
+    setConflictNotice({ title: `规则冲突，未${verb}`, message: error.message })
+    return true
+  }
 
   const rulesQuery = useQuery({ queryKey: ['approval-rules'], queryFn: listApprovalRules })
   const fieldsQuery = useQuery({ queryKey: ['approval-rule-fields'], queryFn: listConditionFields })
@@ -110,15 +141,20 @@ export default function RulesPanel() {
       setEditing(null)
       refresh()
     },
-    onError: (error: Error) => Toast.error(error.message),
+    onError: (error: Error) => {
+      // 保留 editing / 表单输入，只在弹窗顶部回显后端原文
+      setEditorError(error.message)
+    },
   })
 
   const toggleMutation = useMutation({
     mutationFn: ({ id, enabled }: { id: number; enabled: boolean }) =>
       toggleApprovalRule(id, enabled),
     onSuccess: () => refresh(),
-    onError: (error: Error) => {
-      Toast.error(error.message)
+    onError: (error: Error, variables) => {
+      // 启用被 409 拦下：开关必须回到实际状态 —— 拉一次列表拿后端真实 enabled，
+      // 不做乐观更新（否则会显示成"已经开了"）。
+      if (!notifyConflict(error, variables.enabled ? '启用' : '停用')) Toast.error(error.message)
       refresh()
     },
   })
@@ -143,7 +179,9 @@ export default function RulesPanel() {
     onError: (error: Error, variables) => {
       if (isConfirmRequired(error)) {
         setPublishGate({ message: confirmMessageOf(error), ruleId: variables.id })
-      } else {
+      } else if (!notifyConflict(error, '发布')) {
+        // 发布失败不清草稿：草稿是后端的 rule.conditions，前端列表随后 refresh，
+        // 编辑器（如果开着）保持原样，用户改完阈值可以直接再发一次。
         Toast.error(error.message)
       }
     },
@@ -161,11 +199,13 @@ export default function RulesPanel() {
   const columns = [
     {
       title: '规则',
-      // 六列里只有「规则」是可以伸缩的：其余五列按内容定死（100/240/60/150/170），
-      // 剩下的全给规则名 + 说明。原来不写宽度时 Semi 把多出来的 100 多像素
-      // 又摊给第一列，整张表 1188 > 卡片 1172，「操作」整列被推到卡片外
-      // （2026-11-18 实拍：只剩横向滚动条，看不到「版本」）。
-      width: '100%',
+      className: 'rules-col-name',
+      // 六列里只有「规则」伸缩：**不写 width**。固定布局下没写宽度的列
+      // 自动吃掉剩余空间。原来写 width:'100%' 是错的 —— 那等于"这一列就要
+      // 整张表那么宽"，再加上其余五列的固定宽，总宽必然超卡片：
+      // 1440 下浏览器勉强摊平看不出来，1024 下「优先级/生效状态/操作」
+      // 整段被推出卡片、只剩横向滚动条（2026-11-18 实拍）。
+      // 说明文字允许换行（见 index.css .rules-table），窄屏折两行不丢字。
       render: (_: unknown, row: ApprovalRuleRow) => (
         <div>
           <div style={{ fontWeight: 600, fontSize: 13 }}>{row.name}</div>
@@ -177,6 +217,7 @@ export default function RulesPanel() {
     },
     {
       title: '类型',
+      className: 'rules-col-kind',
       dataIndex: 'kind',
       width: 80,
       render: (kind: string) => (
@@ -185,28 +226,46 @@ export default function RulesPanel() {
     },
     {
       title: '触发条件',
-      width: 220,
-      render: (_: unknown, row: ApprovalRuleRow) => (
-        <div style={{ fontSize: 12, color: 'var(--crm-text-2)', display: 'grid', gap: 2 }}>
-          {(row.conditions ?? []).map((cond, index) => {
+      className: 'rules-col-cond',
+      // 原来每条条件占一行：三条条件的规则行高被顶到 100px，四行规则就吃掉
+      // 半屏（2026-11-20 截图）。条件之间本来是同一条规则的"与"，一行里用「·」
+      // 连着读更顺；放不下就省略，悬停看全文。
+      width: 330,
+      render: (_: unknown, row: ApprovalRuleRow) => {
+        const text = (row.conditions ?? [])
+          .map((cond, index) => {
             const meta = fieldMeta(cond.field)
-            return (
-              <span key={index}>
-                {meta?.label ?? cond.field}{' '}
-                {row.conditions_pretty?.[index]?.value_label ??
-                  `${cond.op} ${String(cond.value)}`}
-              </span>
-            )
-          })}
-        </div>
-      ),
+            return `${meta?.label ?? cond.field} ${
+              row.conditions_pretty?.[index]?.value_label ??
+              `${OP_LABEL[cond.op] ?? cond.op} ${String(cond.value)}`
+            }`
+          })
+          .join(' · ')
+        return (
+          <div
+            title={text}
+            style={{
+              fontSize: 12,
+              color: 'var(--crm-text-2)',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+          >
+            {text || '-'}
+          </div>
+        )
+      },
     },
-    { title: '优先级', dataIndex: 'priority', width: 60 },
+    { title: '优先级', className: 'rules-col-prio', dataIndex: 'priority', width: 56 },
     {
       title: '生效状态',
-      width: 130,
+      className: 'rules-col-state',
+      // 100：开关 + V1 胶囊一行放下；「草稿待发布」出现时换到第二行，
+      // 不为了一个偶尔出现的标签把整列常驻加宽 30px。
+      width: 100,
       render: (_: unknown, row: ApprovalRuleRow) => (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flexWrap: 'wrap', gap: 6 }}>
           <Switch
             checked={row.enabled}
             size="small"
@@ -233,11 +292,12 @@ export default function RulesPanel() {
     },
     {
       title: '操作',
-      // 四个链接（编辑/发布/版本/删除）在 150 里正好排满，gap 从 10 收到 6；
-      // 再宽一点整张表就会顶出卡片，右侧「版本」被切掉（2026-11-18 实测）。
-      width: 140,
+      className: 'rules-col-ops',
+      // 四个链接 4×24 + 3×4 间隙 = 108，加左右 8px 内边距（.rules-table）
+      // 124 正好；内容居中，和表头同一条中线。
+      width: 124,
       render: (_: unknown, row: ApprovalRuleRow) => (
-        <div style={{ display: 'flex', gap: 4, fontSize: 12 }}>
+        <div style={{ display: 'flex', gap: 4, fontSize: 12, justifyContent: 'center', whiteSpace: 'nowrap' }}>
           <a style={{ color: 'var(--crm-primary)' }} onClick={() => toEdit(row)}>
             编辑
           </a>
@@ -256,6 +316,7 @@ export default function RulesPanel() {
   ]
 
   const toEdit = (row: ApprovalRuleRow) => {
+    setEditorError(null)
     setEditing({
       id: row.id,
       name: row.name,
@@ -269,6 +330,32 @@ export default function RulesPanel() {
 
   return (
     <>
+      <Modal
+        visible={conflictNotice !== null}
+        title={conflictNotice?.title ?? '规则冲突'}
+        // 小屏不超出视口：与报价/样品详情弹窗同一写法（2026-11-18）
+        width={Math.min(560, window.innerWidth - 24)}
+        onCancel={() => setConflictNotice(null)}
+        footer={
+          <Button type="primary" onClick={() => setConflictNotice(null)}>
+            知道了
+          </Button>
+        }
+      >
+        <div
+          style={{
+            fontSize: 13,
+            lineHeight: 1.8,
+            color: 'var(--crm-text-1)',
+            padding: '2px 0 4px',
+          }}
+        >
+          {conflictNotice?.message}
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 10 }}>
+          这次没有写入任何配置：开关/发布状态保持原样，草稿也还在。
+        </div>
+      </Modal>
       <ConfirmRequiredModal
         visible={publishGate !== null}
         message={publishGate?.message ?? ''}
@@ -285,7 +372,14 @@ export default function RulesPanel() {
             报价提交审批时按优先级逐条求值，第一条命中的规则决定走向；
             草稿发布后才生效，启停立即生效
           </div>
-          <Button type="primary" theme="outline" onClick={() => setEditing(emptyDraft())}>
+          <Button
+            type="primary"
+            theme="outline"
+            onClick={() => {
+              setEditorError(null)
+              setEditing(emptyDraft())
+            }}
+          >
             新建规则
           </Button>
         </div>
@@ -303,6 +397,12 @@ export default function RulesPanel() {
           tableLayout="fixed"
           className="rules-table"
         />
+        {/* 表格不挂分页条，条数只能自己说一句 */}
+        {Boolean(rulesQuery.data?.length) && (
+          <div style={{ marginTop: 10, textAlign: 'right', fontSize: 12, color: 'var(--crm-text-3)' }}>
+            共 {rulesQuery.data?.length} 条规则
+          </div>
+        )}
       </SectionCard>
 
       <SandboxPanel fields={fields} />
@@ -317,14 +417,35 @@ export default function RulesPanel() {
             Toast.warning('请填写规则名称')
             return
           }
+          setEditorError(null)
           saveMutation.mutate(editing)
         }}
         confirmLoading={saveMutation.isPending}
-        width={680}
+        width={Math.min(680, window.innerWidth - 24)}
         okText="保存草稿"
       >
         {editing && (
           <div style={{ display: 'grid', gap: 14 }}>
+            {editorError && (
+              <div
+                style={{
+                  background: '#fff1f0',
+                  border: '1px solid #ffccc7',
+                  borderRadius: 6,
+                  padding: '8px 12px',
+                }}
+              >
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#cf1322', marginBottom: 2 }}>
+                  保存失败，未写入
+                </div>
+                <div style={{ fontSize: 13, lineHeight: 1.7, color: '#a8071a', whiteSpace: 'pre-wrap' }}>
+                  {editorError}
+                </div>
+                <div style={{ fontSize: 12, color: '#a8071a', marginTop: 4, opacity: 0.85 }}>
+                  表单内容已保留，按上面提示改完再保存。
+                </div>
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 12 }}>
               <div style={{ flex: 1 }}>
                 <div style={labelStyle}>规则名称</div>
@@ -335,7 +456,12 @@ export default function RulesPanel() {
                 />
               </div>
               <div style={{ width: 130 }}>
-                <div style={labelStyle}>优先级（小者先）</div>
+                <div style={labelStyle}>
+                  <span className="crm-help-label">
+                    优先级（小者先）
+                    <HelpTip forLabel="优先级" text="数字越小越先判断。一条规则命中后，就不会再往下看优先级更低的规则。" />
+                  </span>
+                </div>
                 <InputNumber
                   value={editing.priority}
                   onChange={(v) => setEditing({ ...editing, priority: Number(v) || 100 })}
@@ -389,7 +515,7 @@ export default function RulesPanel() {
                         }}
                         optionList={(meta?.ops ?? ['gte']).map((op) => ({
                           value: op,
-                          label: op === 'gte' ? '≥' : op === 'lte' ? '≤' : op === 'eq' ? '=' : '属于',
+                          label: OP_LABEL[op] ?? op,
                         }))}
                       />
                       {meta?.value_type === 'bool' ? (
@@ -473,7 +599,12 @@ export default function RulesPanel() {
                   <div style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>拥有「财务会签」权限即可，不限制角色。授权在「系统设置 → 角色与数据范围」维护。</div>
                 </div>
                 <div style={{ flex: 1 }}>
-                  <div style={labelStyle}>会签节点名称</div>
+                  <div style={labelStyle}>
+                    <span className="crm-help-label">
+                      会签节点名称
+                      <HelpTip forLabel="会签节点" text="会签是审批通过后追加的一道否决节点，由有「财务会签」权限的人处理。这个名字只是显示给人看的。" />
+                    </span>
+                  </div>
                   <Input
                     value={editing.coSignLabel}
                     onChange={(v) => setEditing({ ...editing, coSignLabel: v })}
@@ -526,7 +657,12 @@ function VersionDrawer({
   })
   return (
     <Modal
-      title={rule ? `版本历史：${rule.name}` : ''}
+      title={rule ? (
+        <span className="crm-help-label">
+          版本历史：{rule.name}
+          <HelpTip forLabel="版本历史" text="规则每次发布或停用都会留一版，可以在这里对比改了哪些条件和动作。" />
+        </span>
+      ) : ''}
       visible={Boolean(rule)}
       onCancel={onClose}
       footer={null}
@@ -608,8 +744,7 @@ function VersionDrawer({
                   ? '没有条件，整单适用'
                   : (version.payload.conditions ?? []).map((cond, index) => {
                       const meta = fields.find((f) => f.field === cond.field)
-                      const symbol =
-                        cond.op === 'gte' ? '≥' : cond.op === 'lte' ? '≤' : cond.op === 'eq' ? '=' : '属于'
+                      const symbol = OP_LABEL[cond.op] ?? cond.op
                       const value =
                         typeof cond.value === 'boolean'
                           ? cond.value
@@ -707,7 +842,12 @@ function SandboxPanel({ fields: _fields }: { fields: ConditionFieldMeta[] }) {
           宽、长客户名被截成「【演…」，试算的灰字还被塞进按钮那一列、折成三行
           （2026-11-18 主人："太丑了"）。改成：标题一行、说明另起一行小字，
           控件按「搜索 / 报价 / 版本 / 按钮」四列排，说明落到整行下面。 */}
-      <div style={{ fontWeight: 600, fontSize: 14 }}>规则沙盒</div>
+      <div style={{ fontWeight: 600, fontSize: 14 }}>
+        <span className="crm-help-label">
+          规则沙盒
+          <HelpTip forLabel="规则沙盒" text="发布前拿真实报价试算：命中并生效 = 这条规则会被执行；命中但未启用/被截先 = 条件满足，但没轮到它；不动任何数据。" />
+        </span>
+      </div>
       <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 4, marginBottom: 12 }}>
         发布前先试算这套规则会命中哪几条，不动任何数据
       </div>

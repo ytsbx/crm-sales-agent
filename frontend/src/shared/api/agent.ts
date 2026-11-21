@@ -1,5 +1,5 @@
-import { api, ApiError } from './client'
-import { useAuthStore } from '../store/auth'
+import { api, ApiError, handleSessionRejection } from './client'
+import { currentAuthEpoch, useAuthStore } from '../store/auth'
 import type { PageResult } from '../types'
 
 export interface AgentSessionRow {
@@ -117,6 +117,7 @@ export async function streamAgentMessage(
   onEvent: (kind: AgentStreamEventKind, data: Record<string, unknown>) => void,
 ): Promise<AgentTurnResult | null> {
   const token = useAuthStore.getState().token
+  const sentAt = currentAuthEpoch()
   const resp = await fetch(`/api/v1/agent/sessions/${sessionId}/messages/stream`, {
     method: 'POST',
     headers: {
@@ -127,16 +128,11 @@ export async function streamAgentMessage(
   })
   if (!resp.ok) {
     // 失败时响应体是统一信封，解析出人话再抛；401 与 axios 拦截器同口径处理
-    let message = `请求失败（HTTP ${resp.status}）`
-    try {
-      const body = await resp.json()
-      message = body?.message ?? message
-      if (resp.status === 401 || body?.code === 40101 || body?.code === 40102) {
-        useAuthStore.getState().clear()
-        if (window.location.pathname !== '/login') window.location.href = '/login'
-      }
-    } catch {
-      /* 保留默认消息 */
+    const body = await resp.json().catch(() => null)
+    const message = body?.message ?? `请求失败（HTTP ${resp.status}）`
+    const code = body?.code
+    if (resp.status === 401 || code === 40101 || code === 40102) {
+      handleSessionRejection(sentAt, code === 40102)
     }
     throw new ApiError(message, 0)
   }

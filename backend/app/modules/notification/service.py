@@ -559,6 +559,11 @@ async def dispatch_pending(
                 skipped += 1
                 continue
             user = users.get(row.user_id)
+            if user is not None and user.status != "active":
+                row.wecom_status = "skipped"
+                row.wecom_error = "接收账号已停用"
+                skipped += 1
+                continue
             if not ready or user is None or not user.wecom_userid:
                 # 没配置或这个人没绑企微：标 skipped 而不是 failed，
                 # 否则会把"还没配好"和"真发失败了"混在一起。
@@ -673,12 +678,14 @@ async def send_digest(
             messages += 1
             items += len(batch)
             user = users.get(uid)
-            if app_settings.wecom_push_off or not ready or user is None or not user.wecom_userid:
+            if app_settings.wecom_push_off or not ready or user is None or user.status != "active" or not user.wecom_userid:
                 reason = (
                     "推送已临时关闭（WECOM_PUSH_OFF）"
                     if app_settings.wecom_push_off
                     else "未配置企微应用"
                     if not ready
+                    else "接收账号已停用"
+                    if user is not None and user.status != "active"
                     else "该用户没有绑定企业微信 userid"
                 )
                 for row in batch:

@@ -371,12 +371,20 @@ export function batchTagCustomers(payload: {
   return api.post<{ affected: number }>('/customers/batch-tag', payload)
 }
 
+export interface CustomerBatchTransferResult {
+  affected: number
+  already_assigned: number
+  unavailable: number
+  documents_moved: number
+  documents_skipped: number
+}
+
 export function batchTransferCustomers(payload: {
   customer_ids: number[]
   owner_id: number | null
   reason?: string
 }) {
-  return api.post<{ affected: number }>('/customers/batch-transfer', payload)
+  return api.post<CustomerBatchTransferResult>('/customers/batch-transfer', payload)
 }
 
 export function deduplicateCustomers(payload: {
@@ -475,6 +483,7 @@ export interface DuplicateCase {
   status: string
   decision?: string | null
   decision_label?: string | null
+  resolved_owner_id?: number | null
   resolved_at?: string | null
   remark?: string | null
   created_at?: string | null
@@ -488,6 +497,7 @@ export interface DuplicateCase {
  */
 export function listDuplicateCases(query: {
   status?: string
+  customer_id?: number
   page?: number
   page_size?: number
 } = {}) {

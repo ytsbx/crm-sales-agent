@@ -64,6 +64,8 @@ def create_access_token(
     extra: dict[str, Any] | None = None,
     *,
     session_id: str,
+    token_id: str | None = None,
+    expires_at: datetime | None = None,
 ) -> str:
     """签发访问令牌。
 
@@ -73,13 +75,16 @@ def create_access_token(
     鉴权侧会因为缺 `sid` 直接 401，那种失败要等到使用者登录不上才会被发现。
     """
     now = datetime.now(UTC)
+    expiry = now + timedelta(minutes=settings.access_token_expire_minutes)
+    if expires_at is not None:
+        expiry = min(expiry, expires_at)
     payload: dict[str, Any] = {
         "sub": str(subject),
         "iat": int(now.timestamp()),
-        "exp": int((now + timedelta(minutes=settings.access_token_expire_minutes)).timestamp()),
+        "exp": int(expiry.timestamp()),
         # 随机 jti：没有它，同一秒内签出的 token 完全相同，
         # /auth/refresh 会"续期了个寂寞"（新 token == 旧 token）
-        "jti": uuid4().hex,
+        "jti": token_id or uuid4().hex,
         # 登录会话标识：鉴权与续期都拿它去查"这次登录还作不作数"
         "sid": session_id,
     }

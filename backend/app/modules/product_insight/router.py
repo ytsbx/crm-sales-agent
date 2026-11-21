@@ -323,6 +323,10 @@ async def _get_visible(
     return row
 
 
+def _owner_in_write_scope(owner_id: int | None, owner_ids: list[int] | None) -> bool:
+    return owner_ids is None or owner_id is None or owner_id in owner_ids
+
+
 async def _get_writable(
     session: AsyncSession, user, insight_id: int, *, for_update: bool = False
 ) -> ProductInsight:
@@ -353,7 +357,7 @@ async def _get_writable(
     # 与项目其它模块口径一致：`pricing/service.py` 把 `owner_id IS NULL`
     # 当公海对范围内所有人放行；客户模块同理（"公海对所有有 customer:view
     # 的人可见 —— 这正是公海的意义"）。
-    if owner_ids is not None and row.owner_id is not None and row.owner_id not in owner_ids:
+    if not _owner_in_write_scope(row.owner_id, owner_ids):
         raise AppError(
             ErrorCode.FORBIDDEN,
             "这条洞察的负责人不在你的数据范围内，不能修改"
@@ -394,11 +398,16 @@ async def list_insights(
     # 看着像能点、其实是坏的。这里把判断结果随行下发。
     # 注意：藏按钮**不是**权限，后端每个写入口仍会用 `_get_writable` 再判一次。
     can_review_any = _can_review(user)
+    is_admin = "admin" in user.roles
     items = []
     for r in rows:
         item = _serialize(r, owner_name=names.get(r.owner_id))
-        item["can_edit"] = owner_ids is None or r.owner_id in owner_ids
-        item["can_review"] = can_review_any and r.status == "under_review"
+        item["can_edit"] = _owner_in_write_scope(r.owner_id, owner_ids)
+        # 管理员可以审自己提交的（2026-11-21 用户确认）；其他人仍只审别人的。
+        item["can_review"] = (
+            can_review_any and (r.created_by != user.id or is_admin)
+            and r.status == "under_review"
+        )
         items.append(item)
     return ok(page_data(items, total, page, page_size))
 
@@ -417,8 +426,12 @@ async def get_insight(
     # 能不能改这条：前端据此决定按钮显不显示。**后端仍然逐入口再判一次** ——
     # 藏按钮不是权限（返工单 P1-3 明确说了不能只靠前端）。
     owner_ids = await scoped_owner_ids(session, user)
-    payload["can_edit"] = owner_ids is None or row.owner_id in owner_ids
-    payload["can_review"] = _can_review(user) and row.status == "under_review"
+    payload["can_edit"] = _owner_in_write_scope(row.owner_id, owner_ids)
+    payload["can_review"] = (
+        _can_review(user)
+        and (row.created_by != user.id or "admin" in user.roles)
+        and row.status == "under_review"
+    )
     return ok(payload)
 
 
@@ -619,6 +632,10 @@ async def review_insight(
     # 加行锁：两个人同时点「通过/驳回」时，后到的会等前面提交完再读，
     # 读到的是已审状态 → 被下面的状态检查挡下，只有一个能成功。
     row = await _get_visible(session, user, insight_id, for_update=True)
+    # 管理员可以审核自己提交的（2026-11-21 用户确认）；其他评审人仍不能自审，
+    # 避免“自己提的自己批”绕过评审。只放宽 admin，不按权限码放行。
+    if row.created_by == user.id and "admin" not in user.roles:
+        raise AppError(ErrorCode.FORBIDDEN, "不能审核自己提交的新品洞察，请交由其他审核人处理", 403)
     if row.status != "under_review":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该记录不在待评审状态")
 
@@ -696,8 +713,15 @@ async def convert_insight(
         # 幂等：已经转过了就把既有目标还回去（重试、连点两次都走这里）。
         # 明确告知"没有新建"，避免调用方以为又生成了一条。
         if row.converted_inquiry_id is not None:
+            inquiry = await session.get(CustomInquiry, row.converted_inquiry_id)
+            if inquiry is None or inquiry.deleted_at is not None:
+                raise AppError(
+                    ErrorCode.STATUS_NOT_ALLOWED,
+                    "原询价已删除或无法找到，请联系管理员核对来源记录",
+                    409,
+                )
             return ok(
-                {"insight_id": row.id, "inquiry_id": row.converted_inquiry_id},
+                {"insight_id": row.id, "inquiry_id": inquiry.id},
                 "该洞察已经转过需求，返回的是原来那一条",
             )
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该洞察已标记为已转换，但没有关联需求")

@@ -7,6 +7,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import UploadFile
+from starlette.concurrency import run_in_threadpool
 
 from app.core.config import settings
 from app.core.errors import AppError, ErrorCode
@@ -80,7 +81,7 @@ async def save_upload(file: UploadFile) -> tuple[str, int, str]:
                         f"文件超过 {settings.max_upload_mb} MB 限制",
                     )
                 digest.update(chunk)
-                buffer.write(chunk)
+                await run_in_threadpool(buffer.write, chunk)
     except BaseException:
         _discard_partial(target)
         raise

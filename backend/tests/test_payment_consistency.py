@@ -20,16 +20,21 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
 from starlette.requests import Request
 
 from tests.conftest import SyncSessionAsAsync, make_user
 
 from app.core.audit import AuditLog
 from app.core.base import Base
-from app.core.errors import AppError, ErrorCode
+from app.core.database import get_db
+from app.core.deps import get_current_user
+from app.core.errors import AppError, ErrorCode, register_exception_handlers
 from app.core.idempotency import RequestKey
 from app.modules.customer.model import Customer
 from app.modules.order.model import SalesOrder
+from app.modules.order.schema import ReceivablePlanIn
 from app.modules.payment import service as payment_service
 from app.modules.payment.model import PaymentRecord, ReceivablePlan
 from app.modules.payment.router import (
@@ -37,6 +42,7 @@ from app.modules.payment.router import (
     create_payment,
     delete_receivable,
     generate_receivables,
+    router as payment_router,
     update_payment,
     update_receivable,
 )
@@ -486,6 +492,50 @@ async def test_generate_locks_order_before_checking_existing_plans(pay_db, pay):
     existing_checks = indexes(pay.statements, "select receivable_plans.id")
     assert order_locks, "生成计划必须先锁共同订单"
     assert existing_checks and order_locks[0] < existing_checks[0], "锁要在查无之前拿到"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("names", [None, ["定金", "进度款", "尾款"]])
+async def test_generate_three_periods_requires_each_due_date(pay_db, pay, names):
+    order = make_order(pay_db, total="1000")
+    pay_db.commit()
+    app = FastAPI()
+    register_exception_handlers(app)
+    app.include_router(payment_router)
+
+    async def database():
+        return pay
+
+    async def current_user():
+        return operator()
+
+    app.dependency_overrides[get_db] = database
+    app.dependency_overrides[get_current_user] = current_user
+    path = f"/orders/{order.id}/receivables/generate"
+    dates = ["2026-12-01", "2027-01-01", "2027-02-01"]
+    payload = {"ratios": [0.3, 0.3, 0.4], "first_due_date": dates[0], "second_due_date": dates[1]}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        for body, expected in (
+            (payload, "三期及以上的应收计划必须提供每一期的到期日"),
+            ({**payload, "due_dates": dates[:2]}, "从第 3 期起缺少到期日"),
+            ({**payload, "due_dates": [dates[0], None, dates[2]]}, "第 2 期缺少到期日"),
+        ):
+            response = await client.post(path, json=body)
+            assert response.status_code == 400
+            assert expected in response.json()["message"]
+            assert pay_db.query(ReceivablePlan).filter_by(order_id=order.id).count() == 0
+
+        response = await client.post(path, json={**payload, "due_dates": dates, "names": names})
+        assert response.status_code == 200
+        rows = response.json()["data"]
+        assert [row["due_date"] for row in rows] == dates
+        assert [row["plan_name"] for row in rows] == (names or ["第 1 期", "第 2 期", "第 3 期"])
+
+
+def test_convert_three_periods_keeps_delivery_date_fallback():
+    plan = ReceivablePlanIn(ratios=[0.3, 0.3, 0.4])
+    assert plan.due_dates is None
 
 
 @pytest.mark.anyio

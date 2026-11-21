@@ -6,6 +6,7 @@ from sqlalchemy import Select, and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import CurrentUser
+from app.core.draft_visibility import draft_scope, ensure_draft_access
 from app.core.errors import AppError, ErrorCode
 from app.core.data_scope import scoped_owner_ids
 from app.modules.customer.model import Customer
@@ -36,7 +37,7 @@ async def apply_scope(stmt: Select, user: CurrentUser, session: AsyncSession) ->
     （只剩管理员能翻）。它们通篇不含客户数据，多开的这个可见面比客户资料小得多。
     """
     if user.data_scope == "all":
-        return stmt
+        return stmt.where(draft_scope(CustomInquiry, user.id))
     stmt = stmt.outerjoin(Customer, Customer.id == CustomInquiry.customer_id)
     owner_ids = await scoped_owner_ids(session, user)
     conditions = [
@@ -54,7 +55,7 @@ async def apply_scope(stmt: Select, user: CurrentUser, session: AsyncSession) ->
         # 评审岗之间共享内部开发需求。**只放这一类**——客户询价仍按上面那三条，
         # 别把评审权当成"看更多客户数据的通行证"。
         conditions.append(CustomInquiry.origin == "internal_dev")
-    return stmt.where(or_(*conditions))
+    return stmt.where(draft_scope(CustomInquiry, user.id, or_(*conditions)))
 
 
 async def get_visible_or_404(
@@ -63,6 +64,8 @@ async def get_visible_or_404(
     row = await session.get(CustomInquiry, inquiry_id)
     if row is None or row.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "定制询价不存在", 404)
+    if await ensure_draft_access(session, CustomInquiry, row.id, user.id):
+        return row
     if user.data_scope != "all":
         stmt = await apply_scope(
             select(CustomInquiry.id).where(CustomInquiry.id == inquiry_id), user, session
@@ -217,6 +220,38 @@ async def generate_inquiry_no(session: AsyncSession) -> str:
     )
 
 
+async def lock_quote_source(
+    session: AsyncSession, inquiry: CustomInquiry, *, quote_id: int | None = None
+) -> CustomInquiry:
+    root_id = inquiry.root_id or inquiry.id
+    root = (await session.execute(select(CustomInquiry).where(CustomInquiry.id == root_id)
+            .with_for_update().execution_options(populate_existing=True))).scalar_one()
+    if inquiry.id == root.id:
+        inquiry = root
+    else:
+        inquiry = (await session.execute(select(CustomInquiry).where(CustomInquiry.id == inquiry.id)
+                   .with_for_update().execution_options(populate_existing=True))).scalar_one()
+    if inquiry.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "定制询价已删除", 404)
+    links = (await linked_quotes_for(session, [inquiry.id])).get(inquiry.id, [])
+    if quote_id is not None and any(link["id"] == quote_id for link in links):
+        return root
+    if inquiry.status == "archived":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "询价已归档，请先恢复为待处理或新建修订版再报价", 409)
+    if inquiry.superseded_at is not None:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "这版询价已被新版取代，请从最新询价发起报价", 409)
+    if links:
+        raise AppError(ErrorCode.DUPLICATE_CONVERT,
+            f"这条需求已关联报价 {links[0]['quote_no']}，请打开原报价调整或新增报价版本", 409)
+    newer = (await session.execute(select(CustomInquiry.id).where(
+        or_(CustomInquiry.id == root_id, CustomInquiry.root_id == root_id),
+        CustomInquiry.deleted_at.is_(None), CustomInquiry.version > inquiry.version,
+    ).limit(1))).first()
+    if newer is not None:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "这版询价已被新版取代，请从最新询价发起报价", 409)
+    return root
+
+
 async def create_quote_from_inquiry(
     session: AsyncSession,
     *,
@@ -243,13 +278,7 @@ async def create_quote_from_inquiry(
 
     # 同一修订链同时转报价，只能创建一条归属商机；链级关联对所有版本一致。
     root_id = inquiry.root_id or inquiry.id
-    root = (await session.execute(select(CustomInquiry).where(CustomInquiry.id == root_id)
-            .with_for_update().execution_options(populate_existing=True))).scalar_one()
-    await session.refresh(inquiry)
-    links = (await linked_quotes_for(session, [inquiry.id])).get(inquiry.id, [])
-    if links:
-        raise AppError(ErrorCode.DUPLICATE_CONVERT,
-            f"这条需求已关联报价 {links[0]['quote_no']}，请打开原报价调整或新增报价版本，不要重复生成", 409)
+    root = await lock_quote_source(session, inquiry)
     chain = (await session.execute(not_deleted(select(CustomInquiry)).where(
         (CustomInquiry.id == root_id) | (CustomInquiry.root_id == root_id)
     ).execution_options(populate_existing=True))).scalars().all()
@@ -330,13 +359,15 @@ async def create_quote_from_inquiry(
     return {"quote": quote, "version": version, "item": item, "opportunity": opportunity}
 
 
-async def linked_quotes_for(session, identities):
+async def linked_quotes_for(session, identities, *, viewer_id=None):
     from app.modules.quote.model import Quote, QuoteVersion, QuoteItem
-    rows = (await session.execute(select(QuoteItem.inquiry_id, Quote.id, Quote.quote_no)
-        .join(QuoteVersion, QuoteVersion.id == QuoteItem.quote_version_id)
-        .join(Quote, Quote.id == QuoteVersion.quote_id)
-        .where(QuoteItem.inquiry_id.in_(identities), Quote.deleted_at.is_(None))
-        .distinct().order_by(Quote.id.desc()))).all()
+    stmt = (select(QuoteItem.inquiry_id, Quote.id, Quote.quote_no)
+            .join(QuoteVersion, QuoteVersion.id == QuoteItem.quote_version_id)
+            .join(Quote, Quote.id == QuoteVersion.quote_id)
+            .where(QuoteItem.inquiry_id.in_(identities), Quote.deleted_at.is_(None)))
+    if viewer_id is not None:
+        stmt = stmt.where(draft_scope(Quote, viewer_id))
+    rows = (await session.execute(stmt.distinct().order_by(Quote.id.desc()))).all()
     result = {}
     for inquiry_id, quote_id, quote_no in rows:
         result.setdefault(inquiry_id, []).append({'id':quote_id, 'quote_no':quote_no})

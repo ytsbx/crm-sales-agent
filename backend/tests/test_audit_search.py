@@ -37,6 +37,7 @@ from app.core.audit_search import (
     _action_labels,
     _reverse,
     _type_labels,
+    audit_type_variants,
     action_codes,
     business_type_codes,
     match_codes,
@@ -50,7 +51,7 @@ REPO = Path(__file__).resolve().parent.parent.parent
 
 def test_chinese_type_name_maps_to_code():
     """界面上印的中文，必须能搜到对应的记录。"""
-    assert business_type_codes("定制需求") == {"custom_inquiry"}
+    assert business_type_codes("定制需求") == {"custom_inquiry", "inquiry"}
     assert business_type_codes("打样单") == {"sample"}
     assert business_type_codes("报价单") == {"quote"}
     # 「客户」会连"客户等级""客户价格规则"一起带出来 —— **对的**：
@@ -65,9 +66,7 @@ def test_chinese_action_name_maps_to_code():
 
 def test_partial_chinese_also_works():
     """打半截也要能用 —— 否则用户得先记住完整名字才搜得到。"""
-    # 「定制」带出「定制需求」和「定制询价」两家——命中多个是期望行为
-    # （2026-11-18：inquiry 起名「定制询价」后别把这条又改成精确全集断言）
-    assert {"custom_inquiry", "inquiry"} <= business_type_codes("定制")
+    assert business_type_codes("定制") == {"custom_inquiry", "inquiry"}
     assert "sample" in business_type_codes("打样")
     assert len(action_codes("审批")) > 1  # 「审批」能带出审批通过/提交审批等
 
@@ -186,3 +185,13 @@ def test_match_codes_handles_a_dict_directly():
     assert match_codes("甲", table) == {"a"}
     assert match_codes("乙", table) == {"b", "c"}     # 全称 → 全给
     assert match_codes("甲子", table) == set()         # 没这个词
+
+
+def test_historical_types_are_same_category():
+    assert set(audit_type_variants("inquiry")) == {"custom_inquiry", "inquiry"}
+    assert set(audit_type_variants("settings")) == {"setting", "settings"}
+    assert audit_type_variants("order") == ("order",)
+    assert business_type_codes("系统配置") == {"setting", "settings"}
+    assert business_type_codes("系统配") == {"setting", "settings"}
+    assert business_type_codes("inquiry") == {"custom_inquiry", "inquiry"}
+    assert "wecom_sync_follow_relations" in action_codes("同步跟进关系")

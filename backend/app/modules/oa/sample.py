@@ -17,7 +17,7 @@ from app.modules.dingtalk.model import OaInstance
 from app.modules.file.model import BusinessFile, FileRecord
 from app.modules.file.storage import absolute_path
 from app.modules.oa import client
-from app.modules.oa.service import _map_status
+from app.modules.oa.service import ApprovalUploads, _map_status, review_stuck_submission, send_prepared_approval
 from app.modules.sample.model import SampleItem, SampleRequest
 
 PROVIDER = "self_oa"
@@ -50,6 +50,36 @@ def oa_template_fields() -> list[dict]:
         "options": field.get("options") or [],
         "system": bool(field.get("system")),
     } for field in OA_FIELDS]
+
+
+SOURCE_CODE = "form-21e21dedad1d410c93e996930d012bb3"
+SOURCE_IDS = {"applicant": "applicant_name", "production_unit": "maker_unit", "due_date": "target_date",
+              "points": "score", "sample_details": "sample_items", "requirements": "sample_note"}
+
+
+async def native_form(account):
+    if account is None or not account.dingtalk_userid:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "请先对应同序 OA 申请人员", 422)
+    try:
+        rows = await client.list_templates(account.dingtalk_userid)
+    except (client.OaError, client.OaUnknownOutcome) as exc:
+        raise AppError(ErrorCode.EXTERNAL_ERROR, "暂时无法读取同序打样模板，请重试", 502) from exc
+    selected = _template_id()
+    template = max((row for row in rows if (row["id"] if settings.oa_sample_template_id.strip() else row["code"]) == selected),
+                   key=lambda row: row["version"], default=None)
+    if not template or template["code"] != SOURCE_CODE:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "当前账号无法发起同序原版打样模板", 422)
+    types = {"text": "TextField", "choice": "DDSelectField", "date": "DDDateField", "number": "NumberField",
+             "attachment": "DDAttachment"}
+    identity = template.get("applicant") or {}
+    return {"configured": True, "enabled": bool(identity.get("id") and identity.get("department_id")),
+            "provider": "self_oa", "native_form": True,
+            "prefill": {"applicant_name": identity.get("name", ""), "department": identity.get("department_name", "")},
+            "fields": [{**field, "id": SOURCE_IDS.get(field["id"], field["id"]),
+                        "type": types.get(field["type"], field["type"]), "options": field.get("options", []),
+                        "required": bool(field.get("required")),
+                        "system": field["type"] in {"description", "serial", "user", "department", "attachment"}}
+                       for field in template["fields"]]}
 
 
 def _template_id() -> str:
@@ -86,10 +116,10 @@ async def _department_name(session: AsyncSession, user) -> str:
     return dept.name if dept is not None else ""
 
 
-async def _attachments(session: AsyncSession, user, sample: SampleRequest, payload_fields: dict) -> list[dict]:
+async def _attachments(session: AsyncSession, user, sample: SampleRequest, payload_fields: dict, *, uploads=None) -> list[dict]:
     """把打样申请表 + 随单资料上传到 OA，返回附件元数据。"""
     from app.modules.sample.application_form import render_application_form, TEMPLATE_FILENAME
-    from app.modules.sample.oa_content import submission_summary
+    from app.modules.sample.oa_content import submission_summary, validated_sample_details
 
     items = (await session.scalars(select(SampleItem).where(SampleItem.sample_request_id == sample.id))).all()
     attrs = {column.key: getattr(sample, column.key) for column in sample.__table__.columns}
@@ -101,16 +131,7 @@ async def _attachments(session: AsyncSession, user, sample: SampleRequest, paylo
         value = payload_fields.get("_" + key)
         if value is not None:
             attrs[key] = value or None
-    maker = payload_fields.get("_sample_maker")
-    if maker is not None:
-        attrs["sample_maker"] = str(maker).strip() or None
-    fee = payload_fields.get("_sample_fee")
-    if fee is not None:
-        text = str(fee).strip()
-        try:
-            attrs["sample_fee"] = Decimal(text) if text else None
-        except InvalidOperation as exc:
-            raise AppError(ErrorCode.PARAM_ERROR, "打样费用格式无效", 422) from exc
+    attrs.update(validated_sample_details(payload_fields))
     sample_type = _field(payload_fields, "sample_type", sample.sample_type)
     category = _field(payload_fields, "product_category", sample.product_category)
     maker_unit = _field(payload_fields, "maker_unit", sample.maker_unit)
@@ -162,19 +183,21 @@ async def _attachments(session: AsyncSession, user, sample: SampleRequest, paylo
         )
     except ValueError as exc:
         raise AppError(ErrorCode.PARAM_ERROR, str(exc), 422) from exc
+    upload = uploads.stage if uploads is not None else client.upload_file
     try:
-        attachments = [await client.upload_file(
+        attachments = [await upload(
             user.dingtalk_userid, TEMPLATE_FILENAME, content,
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )]
         for filename, path in prepared:
-            attachments.append(await client.upload_file(user.dingtalk_userid, filename, path.read_bytes()))
+            attachments.append(await upload(user.dingtalk_userid, filename, path if uploads is not None else path.read_bytes()))
     except (client.OaError, OSError) as exc:
         raise AppError(ErrorCode.EXTERNAL_ERROR, f"打样资料未能上传到 OA，尚未发起审批：{exc}", 502) from exc
     return attachments
 
 
 async def start_sample_approval(session: AsyncSession, current_user, sample: SampleRequest, payload_fields: dict) -> tuple[OaInstance, str]:
+    from app.modules.sample.dingtalk import collect_template_values
     from app.modules.user.model import User
 
     if not client.configured():
@@ -186,12 +209,30 @@ async def start_sample_approval(session: AsyncSession, current_user, sample: Sam
     approvers = _approvers()
 
     latest = await latest_sample_row(session, sample.id, for_update=True)
+    if await review_stuck_submission(session, latest):
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "上一次 OA 发起结果待核对，请先到 OA 核对", 409)
     if latest is not None and latest.status in {"pending", "submitting"}:
         return latest, "这张打样单已有在办 OA 审批，请查看进度，不要重复发起"
     if latest is not None and latest.status == "needs_review":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "上一次 OA 发起结果待核对，请先到 OA 核对", 409)
     if latest is not None and latest.status == "approved":
         return latest, "这张打样单的 OA 审批已经通过"
+
+    department = await _department_name(session, user)
+    for label, value in (("申请人员", user.name), ("归属部门", department)):
+        if not (value or "").strip():
+            raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, f"请补齐申请人的{label}后再提交", 422)
+    field_metadata = ((await native_form(user))["fields"]
+                      if settings.oa_sample_template_code.strip() == SOURCE_CODE else oa_template_fields())
+    fields, _ = collect_template_values(field_metadata, {
+        "sample_type": _field(payload_fields, "sample_type", sample.sample_type),
+        "product_category": _field(payload_fields, "product_category", sample.product_category),
+        "maker_unit": _field(payload_fields, "maker_unit", sample.maker_unit),
+        "target_date": _field(payload_fields, "target_date", sample.target_completion_date),
+        "score": _field(payload_fields, "score"),
+        "sample_note": _field(payload_fields, "sample_note", sample.sample_purpose or sample.remark),
+    })
+    fields.update(applicant_name=user.name, department=department)
 
     round_no = (latest.submit_round + 1) if latest is not None else 1
     external_ref = client.approval_external_ref("sample", sample.id, round_no)
@@ -204,68 +245,47 @@ async def start_sample_approval(session: AsyncSession, current_user, sample: Sam
     )
     session.add(row)
     await session.flush()
-    try:
-        attachments = await _attachments(session, user, sample, payload_fields)
-        attachment_ids = [str(item["id"]) for item in attachments]
-        fields = {
-            "sample_type": _field(payload_fields, "sample_type", sample.sample_type),
-            "applicant_name": user.name,
-            "department": await _department_name(session, user),
-            "product_category": _field(payload_fields, "product_category", sample.product_category),
-            "maker_unit": _field(payload_fields, "maker_unit", sample.maker_unit),
-            "target_date": _field(payload_fields, "target_date"),
-            "score": _field(payload_fields, "score"),
-            "sample_items": attachment_ids,
-            "sample_note": _field(payload_fields, "sample_note", sample.sample_purpose or sample.remark or ""),
-        }
-        fields = {key: value for key, value in fields.items() if value not in (None, "")}
-        payload = {
-            "external_ref": external_ref,
-            "applicant_dingtalk_user_id": user.dingtalk_userid,
-            ("template_id" if settings.oa_sample_template_id.strip() else "template_code"): template_id,
-            # customer_name 在 SampleRequest 上不存在（全库模型无此字段，hasattr 永假），
-            # 旧写法是"先探再用"的死分支，行为恒等于用单号；check_model_attrs 会拦
-            # 对不存在列的访问。要标题带客户名需给 SampleRequest 补 customer 关系再改这里。
-            "title": f"打样申请 · {sample.id}",
-            "reason": f"CRM 打样申请 {sample.id}",
-            "amount": "0",
-            "fields": fields,
-            "attachment_ids": attachment_ids,
-        }
-        if approvers:
-            payload["approver_dingtalk_user_ids"] = approvers
-            payload["approver_mode"] = settings.oa_sample_approver_mode or "any"
-        row.form_snapshot = fields
-        summary = await client.create_approval(payload)
-    except client.OaError as exc:
-        row.status = "failed"
-        row.error = exc.message
-        await session.commit()
-        raise AppError(ErrorCode.EXTERNAL_ERROR, f"OA 发起失败：{exc.message}", 502) from exc
-    except client.OaUnknownOutcome as exc:
-        row.status = "needs_review"
-        row.error = exc.message
-        await session.commit()
-        raise AppError(ErrorCode.EXTERNAL_ERROR, "OA 发起结果未知，请到 OA 核对后再处理", 502) from exc
+    uploads = ApprovalUploads()
+    attachments = await _attachments(session, user, sample, {**payload_fields, **fields}, uploads=uploads)
+    attachment_ids = [str(item["id"]) for item in attachments]
+    if not attachment_ids:
+        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "打样申请表未上传成功，请重试", 422)
+    fields["sample_items"] = attachment_ids
+    payload = {
+        "external_ref": external_ref,
+        "applicant_dingtalk_user_id": user.dingtalk_userid,
+        ("template_id" if settings.oa_sample_template_id.strip() else "template_code"): template_id,
+        "title": f"打样申请 · {sample.id}",
+        "reason": f"CRM 打样申请 {sample.id}",
+        "amount": "0",
+        "fields": fields,
+        "attachment_ids": attachment_ids,
+    }
+    if approvers:
+        payload["approver_dingtalk_user_ids"] = approvers
+        payload["approver_mode"] = settings.oa_sample_approver_mode or "any"
+    sample, row, summary = await send_prepared_approval(session, sample, row, payload, uploads)
 
     row.instance_id = str(summary["id"])
     row.status = _map_status(summary.get("status"))
     row.result = summary
     row.synced_at = datetime.now(UTC)
     row.updated_at = row.synced_at
-    sample.status = "pending"
-    sample.source_context = {
-        **(sample.source_context or {}),
-        "dingtalk_oa": {**(sample.source_context or {}).get("dingtalk_oa", {}), "submitted": True,
-                        "provider": PROVIDER, "oa_instance_id": row.id, "instance_id": row.instance_id},
-    }
+    if sample is not None and sample.deleted_at is None and sample.status in {"pending", "rejected"}:
+        sample.status = "pending"
+        sample.source_context = {
+            **(sample.source_context or {}),
+            "dingtalk_oa": {**(sample.source_context or {}).get("dingtalk_oa", {}), "submitted": True,
+                            "provider": PROVIDER, "oa_instance_id": row.id, "instance_id": row.instance_id},
+        }
     await session.flush()
     return row, "已发起 OA 打样审批"
 
 
-async def sync_sample_row(session: AsyncSession, row: OaInstance) -> OaInstance:
-    summary = await client.get_approval(row.instance_id or "")
-    return await _apply_sample_summary(session, row, summary)
+async def sync_sample_row(session: AsyncSession, row: OaInstance) -> OaInstance | None:
+    from app.modules.oa.service import sync_self_oa_row
+
+    return await sync_self_oa_row(session, row)
 
 
 async def _apply_sample_summary(session, row, summary):
@@ -300,5 +320,6 @@ async def _apply_sample_summary(session, row, summary):
 
 
 async def withdraw_sample_row(session: AsyncSession, row: OaInstance, note: str) -> OaInstance:
-    summary = await client.withdraw_approval(row.instance_id or "", note)
-    return await _apply_sample_summary(session, row, summary)
+    from app.modules.oa.service import withdraw_self_oa_row
+
+    return await withdraw_self_oa_row(session, row, note)

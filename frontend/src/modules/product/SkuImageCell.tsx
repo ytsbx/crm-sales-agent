@@ -77,13 +77,15 @@ export default function SkuImageCell({ images, canWrite = false, onClick, size =
     width: size,
     height: size,
     borderRadius: 4,
-    border: '1px solid var(--crm-outline)',
+    // 没有图时用虚线框：表格里一个实线灰底小方块 + 加号，看起来像"图片加载失败"
+    // （2026-11-21 巡检）。虚线是"这里可以放图"的通用写法，和空态虚线框同一套语言。
+    border: first ? '1px solid var(--crm-outline)' : '1px dashed var(--crm-outline)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     cursor: 'pointer',
     overflow: 'hidden',
-    background: 'rgba(0,0,0,0.03)',
+    background: first ? 'rgba(0,0,0,0.03)' : 'transparent',
     fontSize: 11,
     color: 'var(--crm-text-3)',
   }

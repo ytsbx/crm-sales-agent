@@ -244,7 +244,7 @@ def demote_stuck_submitting(row: OaInstance) -> bool:
     if started is not None and (datetime.now(UTC) - started) <= SUBMITTING_STUCK_AFTER:
         return False
     row.status = "needs_review"
-    row.error = (
+    row.error = "上次发起过程中断，请到同序 OA 核对是否已经建单。" if getattr(row, "provider", None) == "self_oa" else (
         "上次发起结果不明（发起过程中断）：钉钉那边可能已经建了审批单。"
         "已转人工核对——请先去钉钉确认，再选择「认领 / 重发 / 作废」"
     )
@@ -881,6 +881,93 @@ async def resend_instance(
     )
 
 
+async def lock_oa_business_then_instance(session: AsyncSession, row: OaInstance) -> OaInstance | None:
+    """Follow submission's lock order. A busy row is retried by the caller."""
+    from app.modules.contract.model import ContractDocument
+    from app.modules.inquiry.model import CustomInquiry
+    from app.modules.sample.model import SampleRequest
+
+    model = {"contract": ContractDocument, "sample": SampleRequest}.get(row.oa_type)
+    if row.oa_type == "inquiry" and row.provider == "self_oa":
+        model = CustomInquiry
+    if model is not None:
+        business = select(model).where(model.id == row.inquiry_id)
+        locked = await session.scalar(business.with_for_update(skip_locked=True).execution_options(populate_existing=True))
+        if locked is None and await session.scalar(select(model.id).where(model.id == row.inquiry_id)) is not None:
+            return None
+    return (await session.execute(
+        select(OaInstance).where(OaInstance.id == row.id)
+        .with_for_update(skip_locked=True).execution_options(populate_existing=True)
+    )).scalars().first()
+
+
+async def query_oa_without_locks(session, row, fetch):
+    """Release the preflight locks and discard a snapshot if a newer write won."""
+    from app.modules.oa.client import OaError
+
+    instance_id = row.instance_id
+    stamp = (row.status, _as_utc(row.updated_at))
+    await session.commit()
+    try:
+        data, error = await fetch(instance_id), None
+    except (OaError, DingTalkError, DingTalkUnknownOutcome) as exc:
+        data, error = None, exc
+    current = await lock_oa_business_then_instance(session, row)
+    if current is None or current.instance_id != instance_id or (current.status, _as_utc(current.updated_at)) != stamp:
+        return None, None, None
+    return current, data, error
+
+
+def settle_withdrawal_snapshot(row, status):
+    attempt = (row.result or {}).get("withdraw_attempt")
+    if not attempt:
+        return True
+    if status in {"approved", "rejected", "withdrawn"}:
+        row.result = {key: value for key, value in row.result.items() if key != "withdraw_attempt"}
+        return True
+    if status == "pending" and datetime.now(UTC).timestamp() - attempt["started"] > SUBMITTING_STUCK_AFTER.total_seconds():
+        row.result = {key: value for key, value in row.result.items() if key != "withdraw_attempt"}
+        return True
+    return False
+
+
+async def withdraw_oa_without_locks(session, row, send, *, reload_business=None):
+    """Reserve one withdrawal before sending. Keep uncertain attempts for synchronization."""
+    from uuid import uuid4
+    from app.modules.oa.client import OaError, OaUnknownOutcome
+
+    if (row.result or {}).get("withdraw_attempt"):
+        raise AppError(ErrorCode.VERSION_CONFLICT, "上次撤回尚待确认，请先同步 OA 审批", 409)
+    token = uuid4().hex
+    instance_id = row.instance_id
+    row.result = {**(row.result or {}), "withdraw_attempt": {"token": token, "started": datetime.now(UTC).timestamp()}}
+    row.updated_at = datetime.now(UTC)
+    await session.commit()
+    try:
+        summary, error = await send(instance_id), None
+    except (OaError, DingTalkError, DingTalkUnknownOutcome) as exc:
+        summary, error = None, exc
+    if reload_business is not None:
+        await reload_business()
+    current = await lock_oa_business_then_instance(session, row)
+    if current is None or current.instance_id != instance_id:
+        raise AppError(ErrorCode.VERSION_CONFLICT, "撤回结果请在 OA 同步后核对", 409)
+    if current.status == "withdrawn":
+        return current, None
+    if (current.result or {}).get("withdraw_attempt", {}).get("token") != token:
+        raise AppError(ErrorCode.VERSION_CONFLICT, "审批状态已变化，请同步后核对撤回结果", 409)
+    if isinstance(error, (OaUnknownOutcome, DingTalkUnknownOutcome)):
+        current.error = "撤回结果暂未确认，请等待同步或到 OA 核对原单"
+        current.updated_at = datetime.now(UTC)
+        await session.commit()
+        raise AppError(ErrorCode.EXTERNAL_ERROR, current.error, 502) from error
+    current.result = {key: value for key, value in current.result.items() if key != "withdraw_attempt"}
+    if error is not None:
+        await session.commit()
+        raise AppError(ErrorCode.EXTERNAL_ERROR, "OA 未接受撤回，请核对审批状态及发起人权限", 422) from error
+    return current, summary
+
+
 async def sync_pending_instances(session: AsyncSession, *, limit: int = 50, oa_id: int | None = None) -> dict:
     """统一回收钉钉快照：事件和手动同步指定单条，定时任务公平轮询未完成记录。
 
@@ -897,16 +984,20 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50, oa_i
         (OaInstance.status == "withdrawn") &
         (OaInstance.result['withdraw_snapshot_pending'].as_boolean().is_(True)),
     )
+    cutoff = datetime.now(UTC) - SUBMITTING_STUCK_AFTER
+    interrupted = (
+        (OaInstance.provider == "self_oa") & (OaInstance.status == "submitting")
+        & ((OaInstance.last_attempt_at < cutoff) |
+           (OaInstance.last_attempt_at.is_(None) & (OaInstance.created_at < cutoff)))
+    )
     rows = (
         await session.execute(
             select(OaInstance)
-            .where(OaInstance.id == oa_id if oa_id is not None else pending,
-                   OaInstance.instance_id.is_not(None),
+            .where(OaInstance.id == oa_id if oa_id is not None else (pending | interrupted),
+                   OaInstance.instance_id.is_not(None) | interrupted,
                    OaInstance.provider == "self_oa" if app_settings.dingtalk_push_off else True)
             .order_by(OaInstance.updated_at.asc().nullsfirst(), OaInstance.id.asc())
             .limit(1 if oa_id is not None else limit)
-            .with_for_update(skip_locked=True)
-            .execution_options(populate_existing=True)
         )
     ).scalars().all()
     if not rows:
@@ -918,29 +1009,51 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50, oa_i
 
     client = None
     changed = 0
-    for row in rows:
+    checked = 0
+    for candidate in rows:
+        row = await lock_oa_business_then_instance(session, candidate)
+        if row is None:
+            continue
+        if getattr(row, "provider", None) == "self_oa" and demote_stuck_submitting(row):
+            checked += 1
+            changed += 1
+            continue
+        if not row.instance_id:
+            continue
+        if oa_id is None and not (
+            row.status == "pending" or
+            (row.status == "withdrawn" and (row.result or {}).get("withdraw_snapshot_pending"))
+        ):
+            continue
+        checked += 1
         if getattr(row, "provider", "dingtalk") == "self_oa":
             from app.modules.oa import client as oa_client
             from app.modules.oa import service as oa_service
 
             try:
-                await oa_service.sync_self_oa_row(session, row)
-                changed += 1
+                synced = await oa_service.sync_self_oa_row(session, row)
+                if synced is not None:
+                    changed += 1
+                else:
+                    checked -= 1
             except (oa_client.OaError, oa_client.OaUnknownOutcome) as exc:
                 # 单条失败不影响其它单；下一轮继续。
                 row.error = str(exc)[:500]
                 row.updated_at = datetime.now(UTC)
             except Exception as exc:  # noqa: BLE001 - 调度不能因单条异常整批中断
-                row.error = f"OA 同步失败：{exc.__class__.__name__}"[:500]
-                row.updated_at = datetime.now(UTC)
+                if row is not None:
+                    row.error = f"OA 同步失败：{exc.__class__.__name__}"[:500]
+                    row.updated_at = datetime.now(UTC)
             continue
         if app_settings.dingtalk_push_off:
             continue
         if client is None:
             client = get_client()
-        try:
-            data = await client.get_process_instance(row.instance_id or "")
-        except (DingTalkError, DingTalkUnknownOutcome) as exc:
+        row, data, error = await query_oa_without_locks(session, row, client.get_process_instance)
+        if row is None:
+            checked -= 1
+            continue
+        if error:
             # 单条查失败不影响其他单：记在行上，下一轮还会再试。
             #
             # ⚠️ **两类都要捕**（2026-10-14 审查修）：
@@ -951,7 +1064,7 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50, oa_i
             # 且本轮改动要到循环末尾才落库，异常路径事务回滚 →
             # **前面已取回的状态全部丢失**，手工触发还会 500。
             # 这与本函数的承诺（"单条查失败不影响其他单"）直接矛盾。
-            row.error = str(exc)[:500]
+            row.error = str(error)[:500]
             row.updated_at = datetime.now(UTC)
             continue
         linked_sample = None
@@ -962,7 +1075,6 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50, oa_i
         elif row.oa_type == 'contract':
             from app.modules.contract.model import ContractDocument
             linked_contract = await session.get(ContractDocument, row.inquiry_id, with_for_update=True)
-        row.error = None
         raw_status = str(data.get("status") or "").upper()
         # 审批**走完**之后，通过还是驳回要看 `result`（agree / refuse）——
         # 只看 status 的话 COMPLETED 会被一律记成"已通过"，
@@ -977,6 +1089,9 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50, oa_i
                 new_status = None
         else:
             new_status = _STATUS_MAP.get(raw_status)
+        if not settle_withdrawal_snapshot(row, new_status):
+            continue
+        row.error = None
         if row.status in ('approved', 'rejected', 'withdrawn') and new_status == 'pending':
             # 保留已确认终态及完整快照，等待外部数据收敛。
             row.updated_at = datetime.now(UTC)
@@ -1046,7 +1161,7 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50, oa_i
                 linked_contract.filled_data = {**linked_contract.filled_data, '_oa_notified': marker}
 
     await session.flush()
-    return {"checked": len(rows), "changed": changed}
+    return {"checked": checked, "changed": changed}
 
 
 async def _notify_contract_review_outcome(
@@ -1147,24 +1262,26 @@ async def first_image_attachment(
 
 
 def serialize(row: OaInstance) -> dict:
+    provider = getattr(row, "provider", "dingtalk")
+    auto_sync = app_settings.scheduler_enabled or app_settings.scheduler_oa_sync_enabled
+    sync_notice = None
+    if provider == "self_oa":
+        if not auto_sync:
+            sync_notice = '同序 OA 未开启自动同步，记录可能滞后，可点击「立即同步」。'
+    elif app_settings.dingtalk_push_off:
+        sync_notice = '钉钉连接当前已关闭，审批记录不会自动更新，请联系管理员确认。'
+    elif not auto_sync:
+        sync_notice = '当前服务未开启审批自动同步，记录可能滞后，请联系管理员确认。'
     return {
         "id": row.id,
         "inquiry_id": row.inquiry_id,
         "inquiry_version": row.inquiry_version,
         "oa_type": row.oa_type,
-        "provider": getattr(row, "provider", "dingtalk"),
+        "provider": provider,
         "instance_id": row.instance_id,
         "status": row.status,
         "status_label": OA_STATUS_LABEL.get(row.status, row.status),
-        "sync_notice": (
-            '当前服务未开启审批自动同步，记录可能滞后，可点“查询状态”或联系管理员确认。'
-            if getattr(row, "provider", "dingtalk") == "self_oa" and
-            not (app_settings.scheduler_enabled or app_settings.scheduler_oa_sync_enabled) else
-            '钉钉连接当前已关闭，审批记录不会自动更新，请联系管理员确认。'
-            if app_settings.dingtalk_push_off else
-            '当前服务未开启审批自动同步，记录可能滞后，请联系管理员确认。'
-            if not (app_settings.scheduler_enabled or app_settings.scheduler_oa_sync_enabled) else None
-        ),
+        "sync_notice": sync_notice,
         # 请求号 / 轮次 / 尝试次数：7.7 要求"保留请求编号、次数与每轮历史"。
         # 轮次看 submit_round（每轮一行，历史不删），同轮内试过几次看 attempt_count。
         "request_no": row.idempotency_key,
@@ -1178,7 +1295,10 @@ def serialize(row: OaInstance) -> dict:
         "resolve_state_label": RESOLVE_STATE_LABEL.get(row.resolve_state, row.resolve_state),
         "resolved_at": row.resolved_at.isoformat() if row.resolved_at else None,
         "resolved_action": row.resolved_action,
-        "allowed_actions": allowed_actions(row.status, row.resolve_state),
+        "allowed_actions": [
+            action for action in allowed_actions(row.status, row.resolve_state)
+            if provider != "self_oa" or action != "resolve_resend"
+        ],
         "synced_at": row.synced_at.isoformat() if row.synced_at else None,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "last_attempt_at": (

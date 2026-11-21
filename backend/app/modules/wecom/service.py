@@ -12,12 +12,14 @@
    CRM 客户负责人、商机负责人、未完成任务；创建人与历史记录一律不动。
 """
 
+import logging
 from datetime import UTC, datetime
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import CurrentUser
+from app.core.draft_visibility import private_draft
 from app.core.errors import AppError, ErrorCode
 from app.modules.contact_util import create_contact_for_customer, find_duplicate_customers
 from app.modules.customer import duplicates as duplicate_service
@@ -38,6 +40,8 @@ from app.modules.wecom.model import (
     WeComTransferItem,
     WeComUser,
 )
+
+logger = logging.getLogger(__name__)
 
 # 任务里"还没做完"的状态，离职继承时要把这些任务的负责人换掉
 OPEN_TASK_STATUS = ("pending", "doing")
@@ -144,7 +148,7 @@ async def sync_departments(session: AsyncSession, *, user: CurrentUser) -> WeCom
 async def sync_users(session: AsyncSession, *, user: CurrentUser) -> WeComSyncJob:
     """同步成员：写 wecom_users 映射，并把 users.wecom_userid 回填上。
 
-    匹配顺序：已有映射 → CRM 里同 wecom_userid 的用户 → 手机号相同的用户。
+    优先使用 CRM 的既有企微身份。仅在手机号唯一匹配到一名未绑定的在岗员工时自动绑定。
     都匹配不上就只留一条待处理的映射记录，**不自动建账号**——
     建账号涉及角色与数据权限，必须有人来定。
     """
@@ -152,9 +156,11 @@ async def sync_users(session: AsyncSession, *, user: CurrentUser) -> WeComSyncJo
     api = wecom_client.get_client()
 
     departments = await api.list_departments()
-    root_id = next((int(item["id"]) for item in departments if str(item.get("parentid")) in ("0", "1")), None)
+    root_id = next((int(item["id"]) for item in departments if str(item.get("parentid")) == "0"), None)
+    full_scope = root_id is not None
     if root_id is None and departments:
-        root_id = int(departments[0]["id"])
+        root_id = next((int(item["id"]) for item in departments if str(item.get("parentid")) == "1"),
+                       int(departments[0]["id"]))
 
     members: list[dict] = []
     if root_id is not None:
@@ -174,11 +180,14 @@ async def sync_users(session: AsyncSession, *, user: CurrentUser) -> WeComSyncJo
 
     success = 0
     unmatched: list[str] = []
+    conflicts: list[str] = []
+    seen_members: set[str] = set()
     now = datetime.now(UTC)
     for item in members:
         wecom_userid = str(item.get("userid") or "")
         if not wecom_userid:
             continue
+        seen_members.add(wecom_userid)
         mobile = item.get("mobile")
         row = mapping_rows.get(wecom_userid)
         if row is None:
@@ -186,12 +195,18 @@ async def sync_users(session: AsyncSession, *, user: CurrentUser) -> WeComSyncJo
             session.add(row)
 
         crm_user = crm_by_wecom.get(wecom_userid)
+        conflict = False
         if crm_user is None and mobile:
-            crm_user = (
+            candidates = (
                 await session.execute(
                     select(User).where(User.mobile == mobile, User.status == "active")
+                    .order_by(User.id).limit(2)
                 )
-            ).scalars().first()
+            ).scalars().all()
+            if len(candidates) == 1 and not candidates[0].wecom_userid:
+                crm_user = candidates[0]
+            elif candidates:
+                conflict = True
 
         row.user_id = crm_user.id if crm_user else None
         row.name = item.get("name")
@@ -201,15 +216,22 @@ async def sync_users(session: AsyncSession, *, user: CurrentUser) -> WeComSyncJo
         row.status = str(item.get("status", ""))
         department_ids = item.get("department") or []
         row.wecom_department_ids = ",".join(str(x) for x in department_ids) or None
-        row.sync_status = "synced" if crm_user else "pending"
+        row.sync_status = "synced" if crm_user else "conflict" if conflict else "pending"
         row.last_sync_at = now
         row.raw_data = item
 
         if crm_user is not None and crm_user.wecom_userid != wecom_userid:
             crm_user.wecom_userid = wecom_userid
         if crm_user is None:
-            unmatched.append(f"{item.get('name') or wecom_userid}({wecom_userid})")
+            (conflicts if conflict else unmatched).append(f"{item.get('name') or wecom_userid}({wecom_userid})")
         success += 1
+
+    not_returned = []
+    if full_scope:
+        for wecom_userid, row in mapping_rows.items():
+            if wecom_userid not in seen_members:
+                row.sync_status = "not_returned"
+                not_returned.append(row.name or wecom_userid)
 
     finish_job(
         job,
@@ -219,6 +241,8 @@ async def sync_users(session: AsyncSession, *, user: CurrentUser) -> WeComSyncJo
             "total": len(members),
             # 这些人企微里有、CRM 里没有账号，需要人工建号并分角色
             "unmatched": unmatched,
+            "conflicts": conflicts,
+            "not_returned": not_returned,
         },
     )
     return job
@@ -227,10 +251,43 @@ async def sync_users(session: AsyncSession, *, user: CurrentUser) -> WeComSyncJo
 # ---- 外部联系人与跟进关系（PRD §8.2）-------------------------------------
 
 
+async def _lock_contact_sync(session: AsyncSession, *, wait: bool = True) -> bool:
+    dialect = getattr(getattr(session, "bind", None), "dialect", None)
+    if dialect is None or dialect.name != "postgresql":
+        return True
+    if wait:
+        await session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended('crm:wecom-contact-sync', 0))"))
+        return True
+    return bool(await session.scalar(text("SELECT pg_try_advisory_xact_lock(hashtextextended('crm:wecom-contact-sync', 0))")))
+
+
+def _apply_contact_snapshot(row: WeComExternalContact, item: dict, now: datetime) -> None:
+    row.name = item.get("name")
+    row.type = str(item["type"]) if item.get("type") is not None else None
+    row.avatar = item.get("avatar")
+    row.corp_name = item.get("corp_name")
+    row.gender = str(item["gender"]) if item.get("gender") is not None else None
+    row.last_sync_at = now
+    row.raw_data = item
+
+
+def _apply_follow_snapshot(row: WeComFollowRelationship, item: dict, now: datetime) -> None:
+    row.add_time = _to_datetime(item.get("createtime"))
+    row.add_way = str(item["add_way"]) if item.get("add_way") is not None else None
+    row.remark = item.get("remark")
+    row.description = item.get("description")
+    row.state = item.get("state")
+    row.tags_json = item.get("tags") or None
+    row.last_sync_at = now
+    if row.status == "deleted":
+        row.status = "active"
+
+
 async def sync_external_contacts(session: AsyncSession, *, user: CurrentUser) -> WeComSyncJob:
     """同步外部联系人。只落"企微侧事实"，不碰 CRM 客户与联系人。"""
     job = await start_job(session, job_type="external_contact", operator_id=user.id)
     api = wecom_client.get_client()
+    await _lock_contact_sync(session)
     contacts = await api.list_all_external_contacts()
 
     existing = {
@@ -247,13 +304,7 @@ async def sync_external_contacts(session: AsyncSession, *, user: CurrentUser) ->
         if row is None:
             row = WeComExternalContact(external_userid=external_userid)
             session.add(row)
-        row.name = item.get("name")
-        row.type = str(item.get("type")) if item.get("type") is not None else None
-        row.avatar = item.get("avatar")
-        row.corp_name = item.get("corp_name")
-        row.gender = str(item.get("gender")) if item.get("gender") is not None else None
-        row.last_sync_at = now
-        row.raw_data = item
+        _apply_contact_snapshot(row, item, now)
         success += 1
 
     errors = getattr(contacts, "errors", [])
@@ -268,6 +319,7 @@ async def sync_follow_relations(session: AsyncSession, *, user: CurrentUser) -> 
     """同步「谁加了谁」。同一个外部联系人可能有多个跟进成员，逐条 upsert。"""
     job = await start_job(session, job_type="follow_relation", operator_id=user.id)
     api = wecom_client.get_client()
+    await _lock_contact_sync(session)
 
     contacts = (
         await session.execute(select(WeComExternalContact))
@@ -308,32 +360,15 @@ async def sync_follow_relations(session: AsyncSession, *, user: CurrentUser) -> 
                     external_contact_id=contact.id, wecom_userid=wecom_userid
                 )
                 session.add(row)
-            row.add_time = _to_datetime(item.get("createtime"))
-            row.add_way = str(item.get("add_way")) if item.get("add_way") is not None else None
-            row.remark = item.get("remark")
-            row.description = item.get("description")
-            row.state = item.get("state")
-            row.tags_json = item.get("tags") or None
-            row.last_sync_at = now
-            # 企微侧又出现了（或被重新加上）→ 恢复 active
-            if row.status == "deleted":
-                row.status = "active"
+            _apply_follow_snapshot(row, item, now)
             success += 1
 
-    # 全量重扫：本轮**没拉到**的关系在企微侧已不存在。两条例外必须排除，
-    # 否则会把还在的关系误标成删除：
-    #   · 该联系人本轮拉取失败的（失败 ≠ 不存在）；
-    #   · 整批请求失败（fail 且一条都没成功）时不做任何判定。
+    # 只核对本轮拉取成功的联系人，包括确实没有跟进人的联系人。
     stale = 0
-    if success or not fail:
-        for (contact_id, wecom_userid), row in existing.items():
-            if contact_id in contacts_failed:
-                continue
-            if (contact_id, wecom_userid) in seen:
-                continue
-            if row.status == "active":
-                row.status = "deleted"
-                stale += 1
+    for key, row in existing.items():
+        if key[0] not in contacts_failed and key not in seen and row.status == "active":
+            row.status = "deleted"
+            stale += 1
 
     finish_job(
         job,
@@ -342,7 +377,104 @@ async def sync_follow_relations(session: AsyncSession, *, user: CurrentUser) -> 
         error="；".join(errors[:5]) if errors else None,
         detail={"total": len(contacts), "marked_deleted": stale},
     )
+    if 0 < fail < len(contacts):
+        job.status = "partial"
     return job
+
+
+_RELATION_REMOVALS = {"del_external_contact", "del_follow_user"}
+_CONTACT_CHANGES = {"add_external_contact", "edit_external_contact"} | _RELATION_REMOVALS
+
+
+def contact_change_id(event: dict) -> str | None:
+    external_id = event.get("ExternalUserID")
+    change_type = event.get("ChangeType")
+    if (event.get("Event") == "change_external_contact"
+            and isinstance(change_type, str) and change_type in _CONTACT_CHANGES
+            and isinstance(external_id, str) and 0 < len(external_id.strip()) <= 128):
+        return external_id.strip()
+    return None
+
+
+async def _sync_contact_change(session: AsyncSession, event: dict, external_id: str) -> None:
+    api = wecom_client.get_client()
+    now = datetime.now(UTC)
+    contact = await session.scalar(select(WeComExternalContact).where(
+        WeComExternalContact.external_userid == external_id,
+    ))
+    try:
+        item = await api.get_external_contact(external_id)
+    except wecom_client.WeComError as error:
+        # A deletion may make the contact invisible to this app. Only retire the named relation.
+        user_id = event.get("UserID")
+        if (error.errcode != 84061 or error.api != "externalcontact/get"
+                or event["ChangeType"] not in _RELATION_REMOVALS
+                or not isinstance(user_id, str) or not user_id):
+            raise
+        if contact is not None:
+            await session.execute(update(WeComFollowRelationship).where(
+                WeComFollowRelationship.external_contact_id == contact.id,
+                WeComFollowRelationship.wecom_userid == user_id,
+                WeComFollowRelationship.status == "active",
+            ).values(status="deleted", last_sync_at=now))
+        return
+
+    followers = await api.get_follow_users(external_id)
+    if contact is None:
+        contact = WeComExternalContact(external_userid=external_id)
+        session.add(contact)
+    _apply_contact_snapshot(contact, item, now)
+    await session.flush()
+    existing = {row.wecom_userid: row for row in (await session.scalars(
+        select(WeComFollowRelationship).where(WeComFollowRelationship.external_contact_id == contact.id)
+    )).all()}
+    for follower in followers:
+        user_id = str(follower["userid"])
+        row = existing.pop(user_id, None)
+        if row is None:
+            row = WeComFollowRelationship(external_contact_id=contact.id, wecom_userid=user_id)
+            session.add(row)
+        _apply_follow_snapshot(row, follower, now)
+    for row in existing.values():
+        if row.status == "active":
+            row.status = "deleted"
+            row.last_sync_at = now
+
+
+async def sync_contact_events(session: AsyncSession) -> None:
+    """同步入口按分钟消费；失败的事件留到下一轮，每条最多尝试五次。"""
+    cursor = 0
+    for _ in range(10):
+        if not await _lock_contact_sync(session, wait=False):
+            return
+        job = await session.scalar(select(WeComSyncJob).where(
+            WeComSyncJob.job_type == "contact_event", WeComSyncJob.status == "running",
+            WeComSyncJob.id > cursor,
+        ).order_by(WeComSyncJob.id).limit(1).with_for_update(skip_locked=True))
+        if job is None:
+            return
+        cursor = job.id
+        event = (job.detail or {}).get("event") or {}
+        external_id = contact_change_id(event)
+        if external_id is None:
+            finish_job(job, success=0, fail=1, error="企微事件缺少有效的联系人信息")
+        else:
+            try:
+                async with session.begin_nested():
+                    await _sync_contact_change(session, event, external_id)
+            except Exception as error:
+                job.fail_count += 1
+                job.error_message = "企业微信联系人同步失败"
+                if isinstance(error, wecom_client.WeComError):
+                    job.error_message += f"（企微错误码 {error.errcode}）"
+                if job.fail_count >= 5:
+                    finish_job(job, success=0, fail=job.fail_count, error=job.error_message)
+                logger.warning("企微联系人事件 %s 同步失败，第 %s 次，原因类型 %s", cursor,
+                               job.fail_count, type(error).__name__)
+            else:
+                finish_job(job, success=1, fail=job.fail_count)
+                job.status = "success"
+        await session.commit()
 
 
 # ---- 待归一（PRD §8.3）----------------------------------------------------
@@ -426,35 +558,10 @@ async def unbound_contacts(
 
 
 async def unbound_candidates(session: AsyncSession, contact_id: int) -> dict:
-    """给一条待归一联系人算候选客户。
-
-    复用客户查重那套加权打分（`dedup_scoring` 配置、score/reasons 可解释），
-    用「企微备注名 / 企业名 + 跟进员工手机号」当输入：
-    企微备注里常直接写着客户联系人名，企业名则匹配客户全称。
-    """
+    """按外部联系人的企业名或姓名推荐候选客户，供人工核定。"""
     row = await session.get(WeComExternalContact, contact_id)
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, "企业微信联系人不存在", 404)
-
-    # 跟进员工的手机号是匹配客户联系人最有效的线索
-    follow_mobiles = [
-        mobile
-        for mobile in (
-            await session.execute(
-                select(User.mobile)
-                .join(WeComUser, WeComUser.user_id == User.id)
-                .join(
-                    WeComFollowRelationship,
-                    WeComFollowRelationship.wecom_userid == WeComUser.wecom_userid,
-                )
-                .where(
-                    WeComFollowRelationship.external_contact_id == contact_id,
-                    User.mobile.isnot(None),
-                )
-            )
-        ).scalars().all()
-        if mobile
-    ]
 
     # 这里**故意不做数据范围过滤**（不传 owner_ids）：企微外部联系人归一是系统级
     # 匹配动作，要判断"这个新联系人是不是已经存在的某家客户"，只在全库范围内比才有意义；
@@ -463,7 +570,7 @@ async def unbound_candidates(session: AsyncSession, contact_id: int) -> dict:
     matches = await find_duplicate_customers(
         session,
         company_name=row.corp_name or row.name,
-        mobile=follow_mobiles[0] if follow_mobiles else None,
+        mobile=None,
     )
     return {
         "contact": {
@@ -531,7 +638,8 @@ async def create_customer_from_contact(
         raise AppError(ErrorCode.PARAM_ERROR, "这条联系人已经归一过了", 422)
 
     data = dict(payload)
-    data.setdefault("source", "企业微信")
+    if data.get("source") is None:
+        data["source"] = "企业微信"
     customer = await customer_service.create_customer(session, user, data)
     contact = await create_contact_for_customer(
         session,
@@ -674,7 +782,7 @@ async def collect_transfer_scope(
                 # 已软删的不算"接手人的活"（2026-10-15）：单子已经被当作没建过
                 SampleRequest.deleted_at.is_(None),
                 or_(
-                    SampleRequest.owner_id == handover.id,
+                    ~private_draft(SampleRequest), SampleRequest.owner_id == handover.id,
                     SampleRequest.production_owner_id == handover.id,
                 ),
             )
@@ -711,7 +819,7 @@ async def collect_transfer_scope(
     for quote in (
         await session.execute(
             select(Quote).where(
-                Quote.owner_id == handover.id, Quote.deleted_at.is_(None)
+                ~private_draft(Quote), Quote.owner_id == handover.id, Quote.deleted_at.is_(None)
             )
         )
     ).scalars().all():
@@ -746,7 +854,7 @@ async def collect_transfer_scope(
         )
 
     for draft in (
-        await session.execute(select(OrderDraft).where(OrderDraft.owner_id == handover.id))
+        await session.execute(select(OrderDraft).where(OrderDraft.owner_id == handover.id, ~private_draft(OrderDraft)))
     ).scalars().all():
         scope["order_draft"].append(
             {
@@ -2079,10 +2187,11 @@ async def readiness(session: AsyncSession) -> dict:
             "agent_id": bool(settings.wecom_agent_id),
             "contact_secret": bool(settings.wecom_contact_secret),
             "external_contact_secret": bool(settings.wecom_external_contact_secret),
-            "callback": bool(settings.wecom_callback_token and settings.wecom_callback_aes_key),
+            "callback": wecom_client.get_client().callback_ready(),
         },
         "can_sync_contact": settings.wecom_contact_ready,
         "can_sync_external": settings.wecom_external_ready,
+        "transfer_enabled": settings.wecom_transfer_enabled,
         "counts": counts,
     }
 

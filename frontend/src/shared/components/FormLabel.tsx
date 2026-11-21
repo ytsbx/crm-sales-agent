@@ -1,4 +1,5 @@
 import type { CSSProperties, ReactNode } from 'react'
+import HelpTip from './HelpTip'
 
 /**
  * 表单字段的标签行。
@@ -18,6 +19,8 @@ export default function FormLabel({
   required,
   conditionallyRequired,
   hint,
+  help,
+  helpLabel,
   style,
   className,
 }: {
@@ -51,6 +54,13 @@ export default function FormLabel({
    * 这种规则用星号标不出来（标了就是假的），只能用一句话讲明白。
    */
   hint?: string
+  /**
+   * 字段名旁边的小「?」说明。给第一次用、光看名字猜不出含义或口径的字段用；
+   * 一句话讲清楚「它是什么/怎么算」，不要重复表单里已经看得见的格式要求。
+   */
+  help?: string
+  /** 读屏器用来念「XX 说明」；缺省取 children 的纯文本。 */
+  helpLabel?: string
   /** 个别地方标签的字号/颜色本来就不同（如设置页用小号次要色），从这里覆盖 */
   style?: CSSProperties
   /**
@@ -78,6 +88,14 @@ export default function FormLabel({
         </span>
       )}
       {hint && <span className="label-hint">{hint}</span>}
+      {help && (
+        <span style={{ marginLeft: 6, display: 'inline-flex', verticalAlign: '-2px' }}>
+          <HelpTip
+            forLabel={helpLabel ?? (typeof children === 'string' ? children : '字段')}
+            text={help}
+          />
+        </span>
+      )}
     </div>
   )
 }

@@ -1,9 +1,9 @@
 import { formatBeijingTime } from '../../shared/beijing-time'
 import { UNRATED_OPTION, customerLevelValue, customerLevelPayload, customerLevelLabel } from '../../shared/customer-level'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, Checkbox, Dropdown, Input, Modal, Popconfirm, Select, Table, Tabs, Tag, TextArea, Toast } from '@douyinfe/semi-ui'
+import { Banner, Button, Checkbox, Dropdown, Input, Modal, Popconfirm, Select, Table, Tabs, Tag, TextArea, Toast } from '@douyinfe/semi-ui'
 import { IconAIEditLevel1, IconFile, IconHistogram, IconMore } from '@douyinfe/semi-icons'
 
 import {
@@ -28,9 +28,10 @@ import {
   updateCustomer,
   type ContactDuplicateMatch,
   type CustomerPayload,
+  type DocumentTransfer,
 } from '../../shared/api/customer'
-import { listUsers } from '../../shared/api/system'
-import { optionMatcher } from '../../shared/components/optionMatch'
+import { listUsers, type SystemUser } from '../../shared/api/system'
+import { ApiError } from '../../shared/api/client'
 import { listDictionaries } from '../../shared/api/settings'
 import { getCustomerTimeline, listFollowups, type FollowUp } from '../../shared/api/followup'
 import { listOpportunities, type Opportunity } from '../../shared/api/opportunity'
@@ -40,7 +41,10 @@ import { usePermissions } from '../../shared/hooks/permissions'
 import { useTabLabel } from '../../shared/hooks/useTabLabel'
 import { useAuthStore } from '../../shared/store/auth'
 import type { Contact } from '../../shared/types'
+import MaskedContact from '../../shared/components/MaskedContact'
+import { useNotePrompt } from '../../shared/components/NotePromptModal'
 import DetailHeader from '../../shared/components/DetailHeader'
+import HelpTip from '../../shared/components/HelpTip'
 import SectionCard from '../../shared/components/SectionCard'
 import ContractDocsPanel from '../../shared/components/ContractDocsPanel'
 import AgentInsight from '../../shared/components/AgentInsight'
@@ -55,6 +59,8 @@ import BlockedHint from '../../shared/components/BlockedHint'
 // 金额一律带**实际币种**（第九批 §9.9）：这几张表原来都写死 `¥`，
 // 同一客户同时有 CNY / USD 订单时，旁边那张表显示的就是错的。
 import { formatMoney } from '../../shared/components/money'
+import EmptyState from '../../shared/components/EmptyState'
+import PageLoading from '../../shared/components/PageLoading'
 
 const TABS = [
   { tab: '概览', itemKey: 'overview' },
@@ -97,6 +103,19 @@ export default function CustomerDetailPage() {
   const { can } = usePermissions()
   const currentUser = useAuthStore((state) => state.user)
   const [activeKey, setActiveKey] = useState(searchParams.get('tab') ?? 'overview')
+  // 跟进表七列是这套详情页里最宽的一张表：1440 卡内 1130 放得下，1024 卡内 699 放不下，
+  // 不做窄屏分档就会在 1024 弹一条横向滚动条、「附件」只剩半个字（2026-11-19 实拍）。
+  // 这里只做"读窗口宽度"，不做路由级适配：改宽度时重算列宽即可。
+  const [viewportWidth, setViewportWidth] = useState(() => (typeof window === 'undefined' ? 1440 : window.innerWidth))
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const onResize = () => setViewportWidth(window.innerWidth)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+  /* 公海「释放」被履约拦住时那次例外释放，原来用 window.prompt 追问原因 */
+  const notePrompt = useNotePrompt()
+  const narrowScreen = viewportWidth < 1200
   const [contactModal, setContactModal] = useState(false)
   const [contactForm, setContactForm] = useState<Partial<Contact>>({ name: '', is_primary: false })
   /** 正在编辑的联系人；null = 新建。标题与提交目标都按它切换。 */
@@ -107,8 +126,16 @@ export default function CustomerDetailPage() {
   const [rating, setRating] = useState<string>(UNRATED_OPTION.value)
   const [editModal, setEditModal] = useState(false)
   const [editForm, setEditForm] = useState<CustomerPayload>({ name: '' })
-  const [transferModal, setTransferModal] = useState(false)
-  const [transferTo, setTransferTo] = useState<number | null>(null)
+  const [transferCustomerId, setTransferCustomerId] = useState<number | null>(null)
+  const transferModal = transferCustomerId === customerId
+  const [transferTo, setTransferTo] = useState<SystemUser | null>(null)
+  const [transferSearch, setTransferSearch] = useState('')
+  const [transferKeyword, setTransferKeyword] = useState('')
+  const [transferReceipt, setTransferReceipt] = useState<{ customerId: number; ownerName: string; documents?: DocumentTransfer } | null>(null)
+  useEffect(() => {
+    const timer = setTimeout(() => setTransferKeyword(transferSearch.trim()), 250)
+    return () => clearTimeout(timer)
+  }, [transferSearch])
   const [followupVisible, setFollowupVisible] = useState(false)
   const [duplicateCaseCount, setDuplicateCaseCount] = useState(0)
 
@@ -269,25 +296,15 @@ export default function CustomerDetailPage() {
   })
 
   const transferMutation = useMutation({
-    mutationFn: (ownerId: number | null) => transferCustomer(customerId, { owner_id: ownerId }),
-    onSuccess: (result) => {
-      // 客户名下的单据会跟着走；但**恰好被同事先接走**的那些会留在同事手里。
-      // 后端把张数与类别带了回来，这里如实提示一句 —— 否则操作者看到
-      // "客户名下怎么少了一张订单"会莫名其妙（主人口径：要提示，不要静默）。
-      const skipped = result.document_transfer?.skipped_total ?? 0
-      if (skipped > 0) {
-        const kinds = result.document_transfer?.skipped_labels ?? []
-        Toast.warning(
-          `负责人已变更；有 ${skipped} 张单据${kinds.length ? `（${kinds.join('、')}）` : ''}` +
-            '因已被其他同事接手，未跟着转',
-        )
-      } else {
-        Toast.success('负责人已变更')
-      }
-      setTransferModal(false)
+    mutationFn: (owner: SystemUser) => transferCustomer(customerId, { owner_id: owner.id }),
+    onSuccess: (result, owner) => {
+      setTransferReceipt({ customerId: result.id, ownerName: owner.name, documents: result.document_transfer })
+      setTransferCustomerId(null)
       invalidateCustomer()
+      for (const key of ['customer-opportunities', 'customer-orders', 'customer-quotes']) {
+        void queryClient.invalidateQueries({ queryKey: [key, result.id] })
+      }
     },
-    onError: (error: Error) => Toast.error(error.message),
   })
 
   const duplicateCaseMutation = useMutation({
@@ -312,15 +329,23 @@ export default function CustomerDetailPage() {
       Toast.success(action === 'release' ? '已放入公海' : '领取成功')
       invalidateCustomer()
     },
-    onError: (error: Error, { action }) => {
+    onError: async (error: Error, { action }) => {
       // 还在履约中会被后端拦下（返工单 6.3）：提示里已经说清是哪张单拦住的。
       // 这里再加一步引导 —— 主管确需释放就填原因走例外，而不是让人卡住。
       if (action === 'release' && error.message.includes('履约中')) {
-        const reason = window.prompt(
-          `${error.message}\n\n确需例外释放请填写原因（会记入审计）：`,
-        )
-        if (reason && reason.trim()) {
-          poolMutation.mutate({ action: 'release', reason: reason.trim() })
+        // 先 checkout 后端那句拦截原因，再问"确需例外就写清依据" —— 一句话就够，
+        // 不必把整段错误原文再抄进输入框占位
+        const reason = await notePrompt.ask({
+          title: '例外释放这个客户',
+          description: error.message,
+          label: '释放原因',
+          placeholder: '例如：合同已终止，剩余应收改走线下结算',
+          required: true,
+          tone: 'warning',
+          okText: '确认释放',
+        })
+        if (reason) {
+          poolMutation.mutate({ action: 'release', reason })
           return
         }
         return
@@ -397,8 +422,8 @@ export default function CustomerDetailPage() {
   })
 
   const usersQuery = useQuery({
-    queryKey: ['assignable-users'],
-    queryFn: () => listUsers({ page: 1, page_size: 100 }),
+    queryKey: ['assignable-users', 'customer-transfer', transferKeyword],
+    queryFn: () => listUsers({ status: 'active', keyword: transferKeyword, page: 1, page_size: 100 }),
     enabled: transferModal && can('customer:assign'),
   })
 
@@ -430,7 +455,27 @@ export default function CustomerDetailPage() {
     enabled: Number.isFinite(customerId) && (activeKey === 'orders' || activeKey === 'overview'),
   })
 
-  const customer = customerQuery.data
+  const customerError = customerQuery.error
+  const customerUnavailable = customerError instanceof ApiError && (customerError.status === 403 || customerError.status === 404)
+  const customer = customerUnavailable ? undefined : customerQuery.data
+  const transferUsers = (usersQuery.data?.items ?? []).filter((user) => user.id !== customer?.owner_id)
+  if (transferTo && transferTo.id !== customer?.owner_id && !transferUsers.some((user) => user.id === transferTo.id)) {
+    transferUsers.unshift(transferTo)
+  }
+  const receipt = transferReceipt?.customerId === customerId ? transferReceipt : null
+  const handoverNotice = receipt && (
+    <Banner fullMode={false} type={receipt.documents?.skipped_total ? 'warning' : 'success'}
+      onClose={() => setTransferReceipt(null)}
+      description={<div>
+        <strong>负责人已转给{receipt.ownerName}</strong>
+        {receipt.documents && <div>
+          {receipt.documents.moved_total > 0
+            ? `已交接 ${receipt.documents.moved_total} 项单据或生成文件。`
+            : '本次没有需要转交的单据或生成文件。'}
+          {receipt.documents.skipped_total > 0 && `另有 ${receipt.documents.skipped_total} 项（${receipt.documents.skipped_labels.join('、')}）已由其他同事接手，保留其归属。`}
+        </div>}
+      </div>} />
+  )
 
   // 第九批 §9.1：板块权限改由服务端**逐块**判（没权限就不返回、不查）。
   // 这里把"请求失败（多半是没有该模块权限）"与"确实没有数据"分开显示——
@@ -441,10 +486,22 @@ export default function CustomerDetailPage() {
       : normal
 
   if (customerQuery.isLoading) {
-    return <div className="page-container">加载中…</div>
+    return <PageLoading />
   }
   if (!customer) {
-    return <div className="page-container">客户不存在或无权查看</div>
+    /* 原来是一行裸字挂在整页白底（2026-11-20 巡检）：链接错了或没权限时像页面崩了。 */
+    return (
+      <div className="page-container">
+        {handoverNotice}
+        <EmptyState
+          title={receipt ? '这位客户已离开你的查看范围' : '客户不存在或无权查看'}
+          hint="可能链接里的编号有误，或这条客户属于你数据范围之外的人；回客户中心重新选择即可。"
+        />
+        <div style={{ display: 'flex', justifyContent: 'center', paddingBottom: 24 }}>
+          <Button type="primary" theme="solid" onClick={() => navigate('/customers')}>返回客户中心</Button>
+        </div>
+      </div>
+    )
   }
 
   const canEditContact = can('customer:update')
@@ -455,11 +512,17 @@ export default function CustomerDetailPage() {
     (can('customer:delete_own') &&
       customer.owner_id != null &&
       customer.owner_id === currentUser?.id)
+  /* 联系人表在「左表 + 右决策人卡」的窄容器里（1440 时左栏约 830），
+     2026-11-19 实拍底部多出一条横向滚动条：列宽是写的，但 auto 布局下
+     邮箱那列按内容自然宽度撑开、外加单元格边距，五列合起来超了容器。
+     改成 fixed 布局（按写的宽度分配，不再让内容反推），并把手机列从 150
+     收到 132 —— 打码后 `138****3633` 只需要 88，展开的 11 位也只要 88。
+     1024 再隐掉「职位」：职位在右边决策人卡里本来就写着，不必占一列位置。 */
   const contactColumns = [
     {
       title: '姓名',
       dataIndex: 'name',
-      width: 140,
+      width: 150,
       render: (v: string, row: Contact) => (
         <>
           {v}
@@ -468,22 +531,27 @@ export default function CustomerDetailPage() {
         </>
       ),
     },
-    { title: '职位', dataIndex: 'title', width: 130, render: (v: string | null) => v ?? '-' },
+    ...(narrowScreen
+      ? []
+      : [{ title: '职位', dataIndex: 'title', width: 112, render: (v: string | null) => v ?? '-' }]),
     // 脱敏时**照原样显示**（星号）并给一句话，别让用户以为库里存的就是星号
     {
       title: '手机',
       dataIndex: 'mobile',
-      width: 150,
-      render: (v: string | null, row: Contact) => (
-        <span title={row.contact_masked ? '你对这条联系人的联系方式没有完整查看权限' : undefined}>
-          {v ?? '-'}
-        </span>
-      ),
+      width: 132,
+      render: (v: string | null, row: Contact) => <MaskedContact value={v} masked={row.contact_masked} />,
     },
-    { title: '邮箱', dataIndex: 'email', render: (v: string | null) => v ?? '-' },
+    {
+      title: '邮箱',
+      dataIndex: 'email',
+      render: (v: string | null, row: Contact) => <MaskedContact value={v} kind="email" masked={row.contact_masked} />,
+    },
     {
       title: '操作',
-      width: 170,
+      /* 桌面 196：主联系人那行有「设为主联系人 / 编辑 / 删除」三个链接并排，
+         实测 84 + 26 + 26 + 两处 10 的间距 = 156，加左右单元格边距 32 → 188，
+         留 8 给"主"标签行；窄屏只有「编辑 / 删除」，收到 140。 */
+      width: narrowScreen ? 140 : 196,
       render: (_: unknown, row: Contact) =>
         canEditContact ? (
           <span style={{ display: 'inline-flex', gap: 10, alignItems: 'center' }}>
@@ -525,6 +593,7 @@ export default function CustomerDetailPage() {
 
   return (
     <div className="page-container">
+      {notePrompt.node}
       {/* 头部按设计稿排：标题 + 状态标签一行，关键信息行在标题下方左对齐，按钮贴右 */}
       <DetailHeader
         title={customer.name}
@@ -559,6 +628,7 @@ export default function CustomerDetailPage() {
             {/* 台面只留日常最高频的三个动作 */}
             {can('customer:update') && (
               <Button
+                type="tertiary"
                 onClick={() => {
                   setEditForm({
                     name: customer.name,
@@ -585,15 +655,17 @@ export default function CustomerDetailPage() {
                 记录跟进
               </Button>
             )}
+            {/* 页头原来并着三个白底描边按钮（记录跟进 / 问 Agent / 更多 ▾），
+                主次分不出来。问 Agent 是"顺带一问"的次要入口，降成纯文字（2026-11-20）。 */}
             {can('agent:use') && (
-              <Button theme="outline" type="primary" onClick={() => navigate(`/agent?context=customer&id=${customerId}`)}>
+              <Button type="tertiary" theme="borderless" onClick={() => navigate(`/agent?context=customer&id=${customerId}`)}>
                 问 Agent
               </Button>
             )}
             {/* 公海客户的主动作就是「领取」，不能藏进菜单 */}
             {customer.pool_status === 'public' && (
               <Button type="primary"
-                theme="outline"
+                theme="solid"
                 loading={poolMutation.isPending}
                 onClick={() =>
                   Modal.confirm({
@@ -624,7 +696,13 @@ export default function CustomerDetailPage() {
                     </Dropdown.Item>
                   )}
                   {can('customer:assign') && (
-                    <Dropdown.Item onClick={() => setTransferModal(true)}>转移负责人</Dropdown.Item>
+                    <Dropdown.Item onClick={() => {
+                      setTransferTo(null)
+                      setTransferSearch('')
+                      setTransferKeyword('')
+                      transferMutation.reset()
+                      setTransferCustomerId(customerId)
+                    }}>转移负责人</Dropdown.Item>
                   )}
                   {can('customer:assign') && (
                     <Dropdown.Item
@@ -680,12 +758,16 @@ export default function CustomerDetailPage() {
                 </Dropdown.Menu>
               }
             >
-              <Button icon={<IconMore />}>更多</Button>
+              {/* 更多 ▾：低频动作的收纳盒，同样不该与主动作抢描边 */}
+              <Button icon={<IconMore />} type="tertiary" theme="borderless" style={{ color: 'var(--crm-primary)' }}>
+                更多
+              </Button>
             </Dropdown>
           </>
         }
       />
 
+      {handoverNotice}
       <Modal
         width={520}
         title="撞单检查结果"
@@ -695,7 +777,7 @@ export default function CustomerDetailPage() {
         onCancel={() => setDuplicateCaseCount(0)}
         onOk={() => {
           setDuplicateCaseCount(0)
-          navigate('/duplicate-cases')
+          navigate(`/duplicate-cases?customer_id=${customerId}`)
         }}
       >
         <p>该客户有 {duplicateCaseCount} 条疑似撞单待裁定。重复检查会复用已有的待裁定记录。</p>
@@ -788,6 +870,7 @@ export default function CustomerDetailPage() {
                   {can('customer:update') && (
                     <Button
                       size="small"
+                      type="tertiary"
                       theme="borderless"
                       onClick={() => {
                         setPendingTagIds([])
@@ -815,11 +898,14 @@ export default function CustomerDetailPage() {
                   </span>
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
+                  {/* 四张数字卡各给一个色带（蓝=联系人 / 紫=商机 / 橙=报价 / 绿=订单）：
+                      以前四块全是灰底，主人说"全是蓝白，太单调"。颜色只落在左边缘
+                      一条细线 + 极淡底，不铺满整块（那种"彩色块"上一版被否过）。 */}
                   {([
-                    { key: 'contacts', label: '联系人', value: (contactsQuery.data ?? []).length },
-                    { key: 'opportunities', label: '商机', value: opportunitiesQuery.data?.total },
-                    { key: 'quotes', label: '报价', value: quotesQuery.data?.total },
-                    { key: 'orders', label: '订单', value: ordersQuery.data?.total },
+                    { key: 'contacts', label: '联系人', value: (contactsQuery.data ?? []).length, tone: 'tone-primary' },
+                    { key: 'opportunities', label: '商机', value: opportunitiesQuery.data?.total, tone: 'tone-secondary' },
+                    { key: 'quotes', label: '报价', value: quotesQuery.data?.total, tone: 'tone-caution' },
+                    { key: 'orders', label: '订单', value: ordersQuery.data?.total, tone: 'tone-success' },
                   ] as const).map((tile) => {
                     const jump = () => {
                       setActiveKey(tile.key)
@@ -829,7 +915,7 @@ export default function CustomerDetailPage() {
                       <button
                         key={tile.key}
                         type="button"
-                        className="cust-pano-tile"
+                        className={`cust-pano-tile ${tile.value ? tile.tone : 'tone-neutral'}`}
                         onClick={jump}
                         title={`跳到「${tile.label}」页签`}
                       >
@@ -908,6 +994,10 @@ export default function CustomerDetailPage() {
                   loading={contactsQuery.isLoading}
                   rowKey="id"
                   pagination={false}
+                  /* fixed + 上面那组写死的列宽：列不会再被长邮箱内容撑开 */
+                  tableLayout="fixed"
+                  /* 邮箱列没有固定宽 —— fixed 布局下它拿剩下的空间，长邮箱这里截断。 */
+
                   empty="这家客户还没有登记联系人（加的是对方公司的人）"
                   // 行上带出联系人 id：UI 取证脚本要能**精确定位某一行**去点
                   // 编辑/删除（按"第一条"或按姓名找会误伤别人的数据，实测踩过）
@@ -922,6 +1012,16 @@ export default function CustomerDetailPage() {
           )}
 
           {activeKey === 'opportunities' && (
+            <>
+            {can('opportunity:view') && can('opportunity:manage') && (
+              <div className="workflow-next">
+                <strong>客户有新的采购需求？</strong>
+                <p className="workflow-guide">为这次采购建一条商机，后续需求商品、报价和订单可以在同一处查看。</p>
+                <Button type="primary" theme="outline" onClick={() => navigate(`/opportunities?new_for_customer=${customerId}`)}>
+                  为该客户新建商机
+                </Button>
+              </div>
+            )}
             <Table<Opportunity>
               columns={[
                 {
@@ -950,6 +1050,7 @@ export default function CustomerDetailPage() {
               pagination={false}
               empty={emptyHint(opportunitiesQuery.isError, '该客户还没有商机', opportunitiesQuery.error)}
             />
+            </>
           )}
 
           {activeKey === 'followups' && (
@@ -959,21 +1060,83 @@ export default function CustomerDetailPage() {
                 <Button onClick={() => setFollowupVisible(true)}>记录跟进</Button>
               </div>
               <Table<FollowUp>
+                /* 这张表列多、每列内容又长，Semi 默认 table-layout:auto 会按内容把
+                   列撑开（1024 实测 714 > 卡内 699，多出一条横向滚动条）。
+                   用 .followup-table 强制 fixed，列宽才真的按我们写的值走。 */
+                className="followup-table"
                 columns={[
                   {
                     title: '跟进时间',
                     dataIndex: 'created_at',
-                    width: 180,
+                    /* 1024：时间列内容本身就是 149 宽（nowrap 才不截断），其余列收窄，
+                       并隐藏「记录时约定」—— 七列硬塞进 699 只会全变省略号。
+                       列宽之和压到 149+56+130+130+94+60 = 630；实测单元格边距会给每列再
+                       加 6~28px，所以按 690 而不是 699 收（714 时仍会多出 15px 横向滚动条）。 */
+                    width: narrowScreen ? 149 : 146,
                     render: (v: string) => formatBeijingTime(v),
                   },
-                  { title: '方式', dataIndex: 'followup_type', width: 100 },
-                  { title: '内容', dataIndex: 'content' },
-                  { title: '客户反馈', dataIndex: 'customer_feedback', render: (v: string | null) => v ?? '-' },
-                  { title: '下一步', dataIndex: 'next_action', render: (v: string | null, row: FollowUp) => v ?? (({ customer_declined: '客户明确拒绝', business_closed: '业务已关闭', waiting_external: '等待外部固定节点' } as Record<string, string>)[row.exemption_reason ?? ''] ?? '-') },
-                  { title: '记录时约定', dataIndex: 'task_due_at', width: 170, render: (v: string | null) => v ? formatBeijingTime(v) : '-' },
+                  {
+                    title: '方式',
+                    dataIndex: 'followup_type',
+                    width: 80,
+                    /* 窄屏整列隐藏：六列实测仍需 714（单元格边距让每列比设定宽 6~28），
+                       699 装不下；「方式」「记录时约定」是附加元信息，先让位。 */
+                    className: 'followup-col-minor',
+                    onHeaderCell: () => ({ className: 'followup-col-minor' }),
+                    /* 方式给底色（电话蓝 / 微信绿 / 拜访紫 / 邮件橙）：整列原本都是黑字，
+                       一排跟进记录看起来"灰扑扑"，分类信息用颜色标出来才好扫。 */
+                    render: (v: string | null) => {
+                      if (!v) return '-'
+                      const tone = /电话|call/i.test(v)
+                        ? 'blue'
+                        : /微信|wechat|企微/i.test(v)
+                          ? 'green'
+                          : /拜访|上门|见面|visit/i.test(v)
+                            ? 'purple'
+                            : /邮件|mail/i.test(v)
+                              ? 'orange'
+                              : 'grey'
+                      return <Tag size="small" color={tone} type="light">{v}</Tag>
+                    },
+                  },
+                  /* 七列全部定宽：原来内容/客户反馈/下一步都不给宽度，按长文本撑开，
+                     表宽 1221 > 卡内 1130，底部多出一条横向滚动条、「附件」只剩半个字。
+                     现在 146+80+300+190+150+150+80 = 1096，表格 width:100% 会自己撑满剩余空间。
+                     （内容列写 width:'100%' 反而会被 Semi 当成额外整宽 + 固定列，仍会溢出。） */
+                  /* 只写 width 不够：表格是 table-layout:auto，长文本会把 300 撑到 370，
+                     表宽 1171 仍超卡内 1130。单元格显式允许折行，列宽才真的守住。 */
+                  {
+                    title: '内容',
+                    dataIndex: 'content',
+                    width: narrowScreen ? 130 : 300,
+                    onCell: () => ({ style: { whiteSpace: 'normal' as const, overflowWrap: 'anywhere' as const } }),
+                  },
+                  {
+                    title: '客户反馈',
+                    dataIndex: 'customer_feedback',
+                    width: narrowScreen ? 130 : 190,
+                    onCell: () => ({ style: narrowScreen ? { whiteSpace: 'normal' as const, overflowWrap: 'anywhere' as const } : { whiteSpace: 'nowrap' as const } }),
+                    render: (v: string | null) => v ?? '-',
+                  },
+                  {
+                    title: '下一步',
+                    dataIndex: 'next_action',
+                    width: narrowScreen ? 94 : 150,
+                    onCell: () => ({ style: narrowScreen ? { whiteSpace: 'normal' as const, overflowWrap: 'anywhere' as const } : { whiteSpace: 'nowrap' as const } }),
+                    render: (v: string | null, row: FollowUp) => v ?? (({ customer_declined: '客户明确拒绝', business_closed: '业务已关闭', waiting_external: '等待外部固定节点' } as Record<string, string>)[row.exemption_reason ?? ''] ?? '-'),
+                  },
+                  {
+                    title: '记录时约定',
+                    dataIndex: 'task_due_at',
+                    width: 150,
+                    /* 窄屏整列隐藏（.followup-col-due 见 index.css）：七列塞进 699 只会全部变省略号 */
+                    className: 'followup-col-due',
+                    onHeaderCell: () => ({ className: 'followup-col-due' }),
+                    render: (v: string | null) => v ? formatBeijingTime(v) : '-',
+                  },
                   {
                     title: '附件',
-                    width: 90,
+                    width: narrowScreen ? 60 : 80,
                     render: (_: unknown, record: FollowUp) => (
                       <FollowUpAttachmentsButton followupId={record.id} />
                     ),
@@ -1015,6 +1178,7 @@ export default function CustomerDetailPage() {
                   title: '金额',
                   dataIndex: 'current_version_amount',
                   width: 140,
+                  className: 'cell-right',
                   render: (v: number | null, record: Quote) => formatMoney(record.current_version_amount_exact ?? v, record.currency),
                 },
                 { title: '状态', dataIndex: 'status_label', width: 110 },
@@ -1045,15 +1209,30 @@ export default function CustomerDetailPage() {
                   title: '订单金额',
                   dataIndex: 'total_amount',
                   width: 140,
+                  className: 'cell-right',
                   render: (v: number, record: Order) => formatMoney(record.total_amount_exact ?? v, record.currency),
                 },
                 {
-                  title: '已回款',
+                  title: (
+                    <span className="crm-help-label">
+                      已回款
+                      <HelpTip forLabel="已回款" text="这张订单已经确认到账的金额。客户分批付款时，它会小于订单金额。" />
+                    </span>
+                  ),
                   dataIndex: 'received_amount',
                   width: 130,
                   render: (v: number, record: Order) => formatMoney(record.received_amount_exact ?? v, record.currency),
                 },
-                { title: '履约状态', dataIndex: 'status_label', width: 120 },
+                {
+                  title: (
+                    <span className="crm-help-label">
+                      履约状态
+                      <HelpTip forLabel="履约状态" text="订单从备货到发货、完成的进度，由实际业务动作推进，不用手改。" />
+                    </span>
+                  ),
+                  dataIndex: 'status_label',
+                  width: 120,
+                },
                 { title: '交期', dataIndex: 'delivery_date', width: 120, render: (v: string | null) => v ?? '-' },
               ]}
               dataSource={ordersQuery.data?.items ?? []}
@@ -1087,10 +1266,30 @@ export default function CustomerDetailPage() {
           style={{ marginTop: 16 }}
           extra={
             <>
-              <Button size="small" loading={aiMutation.isPending} onClick={() => aiMutation.mutate('summary')}>
+              {/* 2026-11-20 二稿：一稿把「客户总结」做成白底描边、把「跟进建议」降成文字，
+                  结果变成"一个带框、一个光着"（主人贴图问"为什么单独给客户总结加个框"）。
+                  根子是我照搬了「一行只留一个主按钮」那条规则 —— 但这两个动作是**平级**的：
+                  都是"点一下看一眼 AI 分析"，没有谁更主要。硬分主次，等于给界面编了个
+                  不存在的层级。现在两个都是文字按钮，和商机详情那三个「运行」一致。 */}
+              <Button
+                size="small"
+                type="tertiary"
+                theme="borderless"
+                loading={aiMutation.isPending}
+                onClick={() => aiMutation.mutate('summary')}
+              >
                 客户总结
               </Button>
-              <Button size="small" loading={aiMutation.isPending} onClick={() => aiMutation.mutate('followup')}>
+              {/* ⚠ 只写 theme="borderless" 不够：Semi 的 Button 不写 type 时默认
+                  type="primary"，borderless + primary 仍然是浅蓝底药丸 —— 这就是
+                  截图里两个按钮"一个白底一个浅蓝"的原因。必须显式 tertiary。 */}
+              <Button
+                size="small"
+                type="tertiary"
+                theme="borderless"
+                loading={aiMutation.isPending}
+                onClick={() => aiMutation.mutate('followup')}
+              >
                 跟进建议
               </Button>
             </>
@@ -1268,7 +1467,14 @@ export default function CustomerDetailPage() {
                       {/* 脱敏时不回显号码：只保留「手机号一致」这类证据。
                           知道"为什么判它疑似"是有用的，看到号码本身不是
                           （2026-10-14 审查修）。 */}
-                      {match.mobile && !match.contact_masked ? ` · ${match.mobile}` : ''}
+                      {match.mobile && !match.contact_masked ? (
+                        <>
+                          {' · '}
+                          <MaskedContact value={match.mobile} />
+                        </>
+                      ) : (
+                        ''
+                      )}
                       {match.reasons.length ? `（${match.reasons.join('、')}）` : ''}
                     </div>
                   ))}
@@ -1365,30 +1571,54 @@ export default function CustomerDetailPage() {
       </Modal>
 
       <Modal
-        title="转移负责人"
+        title="转移客户负责人"
+        className="workflow-scroll-modal"
+        width="min(480px, calc(100vw - 24px))"
         visible={transferModal}
-        onCancel={() => setTransferModal(false)}
-        onOk={() => transferMutation.mutate(transferTo)}
+        onCancel={() => { if (!transferMutation.isPending) setTransferCustomerId(null) }}
+        onOk={() => {
+          if (transferTo && transferTo.id !== customer.owner_id && !transferMutation.isPending) {
+            transferMutation.mutate(transferTo)
+          }
+        }}
+        okButtonProps={{ disabled: !transferTo || transferTo.id === customer.owner_id }}
         confirmLoading={transferMutation.isPending}
         okText="确认转移"
       >
-        <div style={{ marginBottom: 8, color: 'var(--crm-text-2)', fontSize: 13 }}>
-          当前负责人：{customer.owner_name ?? '未分配'}
-        </div>
-        <Select
-          placeholder="选择新的负责人"
-          value={transferTo ?? undefined}
-          onChange={(value) => setTransferTo(value as number)}
-          filter={optionMatcher}
-          optionList={(usersQuery.data?.items ?? []).map((item) => ({
-            value: item.id,
-            label: `${item.name}（${item.department ?? '未分配部门'}）`,
-          }))}
-          loading={usersQuery.isLoading}
-          style={{ width: '100%' }}
-        />
-        <div style={{ marginTop: 12, color: 'var(--crm-text-3)', fontSize: 12 }}>
-          转移会记录历史负责人；不选人直接确认 = 放入公海。
+        <div className="customer-handover">
+          <div className="customer-handover-context">
+            <strong>{customer.name}</strong>
+            <div>当前负责人 {customer.owner_name ?? '未分配'}</div>
+          </div>
+          <div>
+            <FormLabel required>新负责人</FormLabel>
+            <Select
+              aria-label="新负责人"
+              placeholder="输入姓名或登录名查找在职员工"
+              value={transferTo?.id}
+              onChange={(value) => setTransferTo(transferUsers.find((user) => user.id === value) ?? null)}
+              disabled={transferMutation.isPending}
+              filter
+              remote
+              onSearch={setTransferSearch}
+              optionList={transferUsers.map((user) => ({
+                value: user.id,
+                label: `${user.name}（${user.username}） · ${user.department ?? '未分配部门'}`,
+              }))}
+              loading={usersQuery.isFetching}
+              style={{ width: '100%' }}
+            />
+            {usersQuery.isError && <div role="alert">
+              暂时无法读取员工。<Button size="small" theme="borderless" onClick={() => void usersQuery.refetch()}>重新读取</Button>
+            </div>}
+            {usersQuery.isSuccess && transferUsers.length === 0 && <div>没有符合条件的在职员工。</div>}
+          </div>
+          <div className="customer-handover-context">
+            <strong>随客户交接</strong>
+            <div>未完成的待办，以及原负责人名下的商机、报价、打样、订单和生成文件。</div>
+            <div>其他同事负责的单据、已完成的待办和历史业绩归属保留。</div>
+          </div>
+          {transferMutation.isError && <Banner type="warning" fullMode={false} closeIcon={null} description={transferMutation.error.message} />}
         </div>
       </Modal>
 
@@ -1600,6 +1830,7 @@ export default function CustomerDetailPage() {
       </Modal>
 
       <FollowUpModal
+        key={customerId}
         visible={followupVisible}
         onClose={() => setFollowupVisible(false)}
         target={{ customerId }}

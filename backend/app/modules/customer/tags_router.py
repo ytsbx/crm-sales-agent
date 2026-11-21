@@ -382,22 +382,26 @@ async def batch_transfer(
     if not payload.customer_ids:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "请先选择客户")
 
-    affected = 0
+    affected = already_assigned = unavailable = documents_moved = documents_skipped = 0
     for customer_id in dict.fromkeys(payload.customer_ids):
         customer = await session.get(Customer, customer_id)
         if customer is None or customer.deleted_at is not None:
+            unavailable += 1
             continue
         # 与单个转移 POST /customers/{id}/transfer 同口径（那边用 get_visible_customer）：
         # 批量入口此前只判存在，成了跨范围改归属、把别人客户放进公海的旁路。
         await svc.assert_customer_visible(session, user, customer)
         if customer.owner_id == payload.owner_id:
+            already_assigned += 1
             continue
-        await svc.transfer_customer(
+        documents = await svc.transfer_customer(
             session, user, customer, payload.owner_id, payload.reason,
             # 原始 reason 参与保护校验，默认文案只进归属历史
             default_reason="批量转移",
         )
         affected += 1
+        documents_moved += documents["moved_total"]
+        documents_skipped += documents["skipped_total"]
 
     # 批量放公海与批量转给人，审计动作分开记（同单个转移的口径）
     to_pool = payload.owner_id is None
@@ -412,7 +416,13 @@ async def batch_transfer(
     )
     await session.commit()
     return ok(
-        {"affected": affected},
+        {
+            "affected": affected,
+            "already_assigned": already_assigned,
+            "unavailable": unavailable,
+            "documents_moved": documents_moved,
+            "documents_skipped": documents_skipped,
+        },
         f"已放入公海 {affected} 个客户" if to_pool else f"已转移 {affected} 个客户",
     )
 
@@ -435,6 +445,7 @@ __all__ = ["router", "Query"]
 @router.get("/customer-duplicate-cases")
 async def list_duplicate_cases(
     status: str | None = Query("pending"),
+    customer_id: int | None = Query(None, ge=1),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     user: CurrentUser = Depends(require_permission("customer:view")),
@@ -449,7 +460,7 @@ async def list_duplicate_cases(
     from app.modules.customer import duplicates as dup_service
 
     items, total = await dup_service.list_cases(
-        session, user=user, status=status, page=page, page_size=page_size
+        session, user=user, status=status, customer_id=customer_id, page=page, page_size=page_size
     )
     return ok(page_data(items, total, page, page_size))
 

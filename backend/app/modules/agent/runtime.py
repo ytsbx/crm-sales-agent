@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import anyio
 from sqlalchemy import inspect, select
@@ -13,10 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import write_audit
 from app.core.config import settings
 from app.core.data_scope import scoped_owner_ids
-from app.core.timebase import now_business
+from app.core.timebase import now_business, to_business
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
 from app.modules.agent.model import (
+    ACTION_STATUS_LABEL,
     RISK_LABEL,
     AgentAction,
     AgentExecution,
@@ -32,6 +33,31 @@ from app.modules.agent.tools import (
     tool_label,
     validate_tool_arguments,
 )
+
+PENDING_ACTION_STATUSES = ("awaiting_confirmation", "approval_required")
+ACTION_EXPIRED_MESSAGE = "该操作已过期，请重新发起（待确认操作有效期为 24 小时）"
+
+
+def action_expiry_cutoff() -> datetime:
+    return datetime.now(UTC) - timedelta(hours=24)
+
+
+def action_status(action: AgentAction) -> str:
+    if (
+        action.status in PENDING_ACTION_STATUSES
+        and action.created_at is not None
+        and to_business(action.created_at) <= action_expiry_cutoff()
+    ):
+        return "expired"
+    return action.status
+
+
+def require_action_not_expired(action: AgentAction) -> str:
+    status = action_status(action)
+    if status == "expired":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, ACTION_EXPIRED_MESSAGE)
+    return status
+
 
 SYSTEM_PROMPT = """你是公司销售 CRM 里的销售助手，服务对象是业务员和销售主管。
 
@@ -634,6 +660,7 @@ async def run_turn(
 
 
 def serialize_action(action: AgentAction) -> dict:
+    status = action_status(action)
     return {
         "id": action.id,
         "tool_name": action.tool_name,
@@ -643,7 +670,8 @@ def serialize_action(action: AgentAction) -> dict:
         "risk_label": RISK_LABEL.get(action.risk_level, action.risk_level),
         "title": action.title,
         "payload": action.proposed_payload,
-        "status": action.status,
+        "status": status,
+        "status_label": ACTION_STATUS_LABEL.get(status, status),
         "result": action.result,
         "created_at": action.created_at,
         "confirmed_at": action.confirmed_at,
@@ -662,6 +690,7 @@ async def action_display(session: AsyncSession, action: AgentAction, *, user: Cu
     from app.modules.quote.model import Quote, QuoteVersion
     from app.modules.task.model import Task
 
+    status = action_status(action)
     payload = action.proposed_payload or {}
     fields: list[dict] = []
 
@@ -759,7 +788,7 @@ async def action_display(session: AsyncSession, action: AgentAction, *, user: Cu
 
     result_text = ""
     result = action.result or {}
-    if action.status == "executed":
+    if status == "executed":
         if action.tool_name == "create_followup":
             result_text = "跟进已记录"
         elif action.tool_name == "create_task":
@@ -774,19 +803,21 @@ async def action_display(session: AsyncSession, action: AgentAction, *, user: Cu
                 result_text = "价格在权限内，报价已自动通过"
         else:
             result_text = "已执行"
-    elif action.status == "rejected":
+    elif status == "rejected":
         result_text = "你取消了这次操作"
-    elif action.status == "failed":
+    elif status == "failed":
         result_text = f"执行失败：{result.get('error', '未知原因')}"
-    elif action.status == "approval_required":
+    elif status == "expired":
+        result_text = ACTION_EXPIRED_MESSAGE
+    elif status == "approval_required":
         result_text = "需要你确认后才会提交审批"
-    elif action.status == "awaiting_confirmation":
+    elif status == "awaiting_confirmation":
         result_text = "等待你确认"
 
     return {
         "fields": fields,
         "result_text": result_text,
-        "can_confirm": action.status in ("awaiting_confirmation", "approval_required"),
+        "can_confirm": status in PENDING_ACTION_STATUSES,
     }
 
 
@@ -798,7 +829,7 @@ async def execute_action(
     # 然后各执行一次写动作（记跟进变两条）。先对动作行加行锁再查状态，
     # 第二个请求会等到第一个提交后，看到的是已处理状态而被拦下。
     await session.refresh(action, with_for_update=True)
-    if action.status not in ("awaiting_confirmation", "approval_required"):
+    if require_action_not_expired(action) not in PENDING_ACTION_STATUSES:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该动作已经处理过了")
     spec = TOOLS.get(action.tool_name)
     if spec is None:

@@ -10,6 +10,7 @@ import { listOrders, listOrderDrafts, type OrderDraft, type Order } from '../../
 import { usePermissions } from '../../shared/hooks/permissions'
 import { emptyText } from '../../shared/hooks/emptyText'
 import FormLabel from '../../shared/components/FormLabel'
+import HelpTip from '../../shared/components/HelpTip'
 import { formatMoney, toTwoDecimals } from '../../shared/components/money'
 
 /** 一条商机承载一次独立采购需求，各单据保留自己的业务状态。 */
@@ -47,15 +48,29 @@ export default function OpportunityRecords({ opportunityId, customerId, title }:
     enabled: can('order:view'),
   })
   const drafts = useQuery({ queryKey: ['order-drafts', { opportunityId, page: pages.drafts, pageSize: pageSizes.drafts }], queryFn: () => listOrderDrafts({ opportunity_id: opportunityId, page: pages.drafts, page_size: pageSizes.drafts }), enabled: can('order:view') })
-  const pagination = (key: keyof typeof pages, total: number) => ({
-    currentPage: pages[key], pageSize: pageSizes[key], total, showSizeChanger: true,
-    pageSizeOpts: [10, 20, 50, 100],
-    onPageChange: (page: number) => setPages((current) => ({ ...current, [key]: page })),
-    onPageSizeChange: (size: number) => {
-      setPageSizes((current) => ({ ...current, [key]: size }))
-      setPages((current) => ({ ...current, [key]: 1 }))
-    },
-  })
+  // 一页装得下时不画分页条（2026-11-21 巡检）
+  // ------------------------------------------------------------
+  // 这一页竖直排着「定制询价 / 报价 / 打样 / 订单草稿 / 订单」五块表，每块各带一条
+  // 分页栏：只有 1 条数据也照样摆出「显示第 1 条-第 1 条，共 1 条 + 翻页 + 每页条数」，
+  // 五条分页栏把页面切成一段一段，翻页按钮永远灰着。数据装得下一页就返回 false，
+  // 条数改由每块标题旁的「共 N 条」交代。
+  const pagination = (key: keyof typeof pages, total: number) =>
+    total <= pageSizes[key]
+      ? (false as const)
+      : {
+          currentPage: pages[key], pageSize: pageSizes[key], total, showSizeChanger: true,
+          pageSizeOpts: [10, 20, 50, 100],
+          onPageChange: (page: number) => setPages((current) => ({ ...current, [key]: page })),
+          onPageSizeChange: (size: number) => {
+            setPageSizes((current) => ({ ...current, [key]: size }))
+            setPages((current) => ({ ...current, [key]: 1 }))
+          },
+        }
+  const count = (total: number) => (
+    <span style={{ marginLeft: 8, fontSize: 12, fontWeight: 400, color: 'var(--crm-text-3)' }}>
+      共 {total} 条
+    </span>
+  )
   const inquiryMutation = useMutation({
     mutationFn: () => createCustomInquiry({
       title: inquiryForm.title.trim(), description: inquiryForm.description.trim() || null,
@@ -90,7 +105,7 @@ export default function OpportunityRecords({ opportunityId, customerId, title }:
     </div>
     {can('quote:view') && <>
       <div>
-        <div className="toolbar"><strong>定制询价及修订</strong><div style={{ flex: 1 }} />
+        <div className="toolbar"><strong>定制询价及修订</strong>{count(inquiries.data?.total ?? 0)}<div style={{ flex: 1 }} />
           {can('quote:manage') && <Button onClick={() => {
             setInquiryForm({ title, description: '', quantity: '' }); setInquiryVisible(true)
           }}>记录定制询价</Button>}
@@ -105,7 +120,7 @@ export default function OpportunityRecords({ opportunityId, customerId, title }:
           ]} />
       </div>
       <div>
-        <div className="toolbar"><strong>报价</strong><div style={{ flex: 1 }} />
+        <div className="toolbar"><strong>报价</strong>{count(quotes.data?.total ?? 0)}<div style={{ flex: 1 }} />
           {can('quote:manage') && <Button loading={quoteMutation.isPending} onClick={() => {
             // 一次点击 = 一次意图；只有成功后才换新键（见 onSuccess）
             quoteRequestKeyRef.current = quoteRequestKeyRef.current || newRequestKey()
@@ -124,19 +139,27 @@ export default function OpportunityRecords({ opportunityId, customerId, title }:
       </div>
     </>}
     {can('sample:view') && <div>
-      <div className="toolbar"><strong>打样</strong><div style={{ flex: 1 }} />
+      <div className="toolbar"><strong>打样</strong>{count(samples.data?.total ?? 0)}<div style={{ flex: 1 }} />
         {can('sample:manage') && <Button onClick={() => navigate(`/samples?create_opportunity_id=${opportunityId}`)}>申请打样</Button>}
       </div>
       <Table<SampleRequestRow> rowKey="id" loading={samples.isLoading} dataSource={samples.data?.items ?? []}
         empty={emptyText(samples, '暂无关联打样')} pagination={pagination('samples', samples.data?.total ?? 0)} columns={[
           { title: '申请', render: (_: unknown, row: SampleRequestRow) => <Link to={`/samples/${row.id}`}>打样申请 #{row.id}</Link> },
           { title: '状态', dataIndex: 'status_label' },
-          { title: '客户确认', dataIndex: 'confirm_status_label' },
+          {
+            title: (
+              <span className="crm-help-label">
+                客户确认
+                <HelpTip forLabel="客户确认" text="客户收到样品后对样品的结论：接受或未通过。它和签收是两件事，签收只代表客户收到了。" />
+              </span>
+            ),
+            dataIndex: 'confirm_status_label',
+          },
         ]} />
     </div>}
-    {can('order:view') && <div><strong>订单草稿（准备资料）</strong><Table<OrderDraft> rowKey="id" loading={drafts.isLoading} dataSource={drafts.data?.items ?? []} empty={emptyText(drafts, '暂无关联订单草稿')} pagination={pagination('drafts', drafts.data?.total ?? 0)} columns={[{ title: '草稿', render: (_: unknown, row: OrderDraft) => <Link to={`/order-drafts/${row.id}`}>草稿 #{row.id}</Link> }, { title: '状态', render: (_: unknown, row: OrderDraft) => row.status === 'converted' ? '已转正式订单' : '准备中' }]} /></div>}
+    {can('order:view') && <div><strong>订单草稿（准备资料）</strong>{count(drafts.data?.total ?? 0)}<Table<OrderDraft> rowKey="id" loading={drafts.isLoading} dataSource={drafts.data?.items ?? []} empty={emptyText(drafts, '暂无关联订单草稿')} pagination={pagination('drafts', drafts.data?.total ?? 0)} columns={[{ title: '草稿', render: (_: unknown, row: OrderDraft) => <Link to={`/order-drafts/${row.id}`}>草稿 #{row.id}</Link> }, { title: '状态', render: (_: unknown, row: OrderDraft) => row.status === 'converted' ? '已转正式订单' : '准备中' }]} /></div>}
     {can('order:view') && <div>
-      <div className="toolbar"><strong>订单</strong></div>
+      <div className="toolbar"><strong>订单</strong>{count(orders.data?.total ?? 0)}</div>
       <Table<Order> rowKey="id" loading={orders.isLoading} dataSource={orders.data?.items ?? []}
         empty={emptyText(orders, '暂无关联订单')} pagination={pagination('orders', orders.data?.total ?? 0)} columns={[
           { title: '订单单号', render: (_: unknown, row: Order) => <Link to={`/orders/${row.id}`}>{row.order_no}</Link> },

@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { IconSearch } from '@douyinfe/semi-icons'
+import { Button } from '@douyinfe/semi-ui'
 
 import { globalSearch } from '../../shared/api/search'
 
@@ -20,35 +21,38 @@ import { globalSearch } from '../../shared/api/search'
 export default function GlobalSearch() {
   const navigate = useNavigate()
   const [keyword, setKeyword] = useState('')
+  const [searchTerm, setSearchTerm] = useState('')
   const [open, setOpen] = useState(false)
   const [activeIndex, setActiveIndex] = useState(-1)
   /** 结果层的落点（相对视口）：跟着输入框走，窄屏也不会超出右边界 */
-  const [panel, setPanel] = useState({ left: 0, top: 56, width: 360 })
+  const [panel, setPanel] = useState({ left: 0, top: 56, width: 360, maxHeight: 420 })
   const boxRef = useRef<HTMLDivElement | null>(null)
+  const inputRef = useRef<HTMLInputElement | null>(null)
+  const term = keyword.trim()
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSearchTerm(term), 200)
+    return () => window.clearTimeout(timer)
+  }, [term])
 
   const query = useQuery({
-    queryKey: ['global-search', keyword],
-    queryFn: () => globalSearch(keyword, 4),
-    enabled: keyword.trim().length > 0,
+    queryKey: ['global-search', searchTerm],
+    queryFn: () => globalSearch(searchTerm, 4),
+    enabled: open && Boolean(searchTerm) && searchTerm === term,
   })
 
-  const groups = (query.data?.groups ?? []).filter((group) => group.items.length > 0)
-
-  /** 把分组摊平成一个可上下移动的列表，键盘选择才有一条顺序线 */
-  const flat = useMemo(
-    () =>
-      groups.flatMap((group) =>
-        group.items.map((item) => ({ group, item })),
-      ),
-    [groups],
-  )
+  const waiting = term !== searchTerm || query.isPending
+  const groups = !waiting && !query.isError ? (query.data?.groups ?? []).filter((group) => group.items.length > 0) : []
+  const flat = groups.flatMap((group) => group.items.map((item) => ({ group, item })))
+  const activeId = open && activeIndex >= 0 && activeIndex < flat.length ? `global-search-option-${activeIndex}` : undefined
 
   const syncPanel = () => {
     const rect = boxRef.current?.getBoundingClientRect()
     if (!rect) return
     const width = Math.min(420, window.innerWidth - 24)
     const left = Math.max(12, Math.min(rect.left, window.innerWidth - width - 12))
-    setPanel({ left, top: Math.round(rect.bottom + 6), width })
+    const top = Math.round(rect.bottom + 6)
+    setPanel({ left, top, width, maxHeight: Math.min(420, Math.max(0, window.innerHeight - top - 12)) })
   }
 
   const go = (route: string, item: { id: number; customer_id?: number }) => {
@@ -71,9 +75,10 @@ export default function GlobalSearch() {
   })
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === 'Escape') {
-      setOpen(false)
-      setActiveIndex(-1)
+    if (!open && term && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+      event.preventDefault()
+      setOpen(true)
+      syncPanel()
       return
     }
     if (!flat.length) return
@@ -96,15 +101,38 @@ export default function GlobalSearch() {
     }
   }
 
+  useEffect(() => {
+    if (activeId) document.getElementById(activeId)?.scrollIntoView({ block: 'nearest' })
+  }, [activeId])
+
   return (
-    <div style={{ position: 'relative' }} ref={boxRef}>
+    <div
+      style={{ position: 'relative' }}
+      ref={boxRef}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) {
+          setOpen(false)
+          setActiveIndex(-1)
+        }
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== 'Escape' || !open) return
+        event.preventDefault()
+        inputRef.current?.focus()
+        setOpen(false)
+        setActiveIndex(-1)
+      }}
+    >
       <div className="global-search">
         <IconSearch />
         <input
+          ref={inputRef}
           value={keyword}
           role="combobox"
-          aria-expanded={open && Boolean(keyword.trim())}
-          aria-controls="global-search-panel"
+          aria-label="全局搜索"
+          aria-expanded={open && Boolean(term) && flat.length > 0}
+          aria-controls={open && flat.length > 0 ? 'global-search-results' : undefined}
+          aria-activedescendant={activeId}
           aria-autocomplete="list"
           onChange={(event) => {
             setKeyword(event.target.value)
@@ -117,7 +145,6 @@ export default function GlobalSearch() {
             syncPanel()
           }}
           onKeyDown={onKeyDown}
-          onBlur={() => window.setTimeout(() => setOpen(false), 180)}
           placeholder="搜索客户、商机、报价、订单、联系人…"
           style={{
             flex: 1,
@@ -130,17 +157,16 @@ export default function GlobalSearch() {
         />
       </div>
 
-      {open && keyword.trim() && (
+      {open && term && (
         <div
           id="global-search-panel"
-          role="listbox"
           style={{
             // fixed 而不是 absolute：页头有 overflow:hidden，absolute 会被裁掉
             position: 'fixed',
             top: panel.top,
             left: panel.left,
             width: panel.width,
-            maxHeight: 420,
+            maxHeight: panel.maxHeight,
             overflow: 'auto',
             background: 'var(--crm-surface)',
             border: '1px solid var(--crm-surface-high)',
@@ -150,15 +176,24 @@ export default function GlobalSearch() {
             zIndex: 60,
           }}
         >
-          {query.isLoading && (
-            <div style={{ padding: 12, color: 'var(--crm-text-3)', fontSize: 13 }}>搜索中…</div>
+          {waiting && (
+            <div role="status" style={{ padding: 12, color: 'var(--crm-text-3)', fontSize: 13 }}>搜索中…</div>
           )}
-          {!query.isLoading && groups.length === 0 && (
-            <div style={{ padding: 12, color: 'var(--crm-text-3)', fontSize: 13 }}>
-              没有找到「{keyword}」相关记录
+          {!waiting && query.isError && (
+            <div style={{ padding: 12 }}>
+              <p role="status" className="workflow-guide">搜索暂时不可用，请重试。</p>
+              <Button size="small" loading={query.isFetching} onClick={() => {
+                inputRef.current?.focus()
+                void query.refetch()
+              }}>重试搜索</Button>
             </div>
           )}
-          {groups.map((group) => {
+          {!waiting && !query.isError && groups.length === 0 && (
+            <div role="status" style={{ padding: 12, color: 'var(--crm-text-3)', fontSize: 13 }}>
+              没有找到「{term}」相关记录。可以试试客户名称或业务单号。
+            </div>
+          )}
+          {flat.length > 0 && <div id="global-search-results" role="listbox" aria-label="搜索结果">{groups.map((group) => {
             // 每个分组内序号 → 摊平后的序号，键盘高亮才对得上
             let offset = 0
             for (const g of groups) {
@@ -182,9 +217,11 @@ export default function GlobalSearch() {
                   return (
                     <div
                       key={`${group.type}-${item.id}`}
+                      id={`global-search-option-${flatIndex}`}
                       role="option"
                       aria-selected={active}
-                      onMouseDown={() => go(group.route, item)}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => go(group.route, item)}
                       onMouseEnter={() => setActiveIndex(flatIndex)}
                       style={{
                         padding: '8px 10px',
@@ -202,7 +239,7 @@ export default function GlobalSearch() {
                 })}
               </div>
             )
-          })}
+          })}</div>}
         </div>
       )}
     </div>

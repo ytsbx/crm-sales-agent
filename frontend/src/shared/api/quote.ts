@@ -249,6 +249,7 @@ export interface ApprovalRow {
     reason?: string
     offending?: Array<{ sku_code: string; quoted_price?: number | null; minimum_price?: number | null; profit_rate?: number | null; reason?: string }>
     authorized_min_margin?: number
+    current_assignee_name?: string | null
     co_sign?: { label?: string; permission_code?: string; role_codes?: string[]; status?: string } | null
     auto_passed?: boolean
   } | null
@@ -498,7 +499,7 @@ export function listApprovals(query: { status?: string; mine?: boolean; pending_
 }
 
 export function approveApproval(id: number) {
-  return api.post<null>(`/approvals/${id}/approve`)
+  return api.post<{ current_node: 'co_sign' } | null>(`/approvals/${id}/approve`)
 }
 
 export function rejectApproval(id: number, comment?: string) {

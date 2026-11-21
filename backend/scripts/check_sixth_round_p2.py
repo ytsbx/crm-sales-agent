@@ -20,7 +20,7 @@
 验收：**非法值被拒（含小数/布尔，R14）/ 审计有 before / 改配置后旧候选期限跟着重算**。
 
 **追加口径 2 恢复权限**
-恢复改读配置项 `pool_recycle_restore_permission`（此前只在默认值表里躺着），
+恢复权限从角色读取，
 并按客户数据范围过滤。
 验收：**主管能恢复本团队、业务员不能、被领走报冲突**。
 
@@ -200,9 +200,10 @@ async def build_fixtures() -> None:
         )
         s.add_all([mgr_role, sales_role])
         await s.flush()
+        IDS["mgr_role"] = mgr_role.id
         await grant_role(
             s, mgr_role.id,
-            ["customer:view", "customer:update", "customer:assign", "customer:pool_review"],
+            ["customer:view", "customer:update", "customer:assign", "customer:pool_review", "customer:pool_restore"],
         )
         # 业务员：有查看与编辑，**没有** pool_review、也**没有** customer:assign
         await grant_role(s, sales_role.id, ["customer:view", "customer:update"])
@@ -566,9 +567,9 @@ async def section3_config(admin: str) -> None:
     check_in("预告期填布尔 true → 被拒", status, REJECTED)
     status, _ = call(
         "PATCH", "/settings", admin,
-        {"key": "pool_recycle_restore_permission", "value": {"text": "no:such:permission"}},
+        {"key": "pool_recycle_restore_permission", "value": {"text": "customer:assign"}},
     )
-    check_in("恢复权限填不存在的权限码 → 被拒", status, REJECTED)
+    check_in("旧恢复权限设置入口 → 被拒", status, REJECTED)
 
     # 合法值：能存，且审计里有修改前后值
     status, _ = call(
@@ -732,7 +733,7 @@ async def section5_batch(admin: str, mgr_a: str) -> None:
 
 # ---------------------------------------------------------------- 追加口径 2：恢复
 
-async def section6_restore(mgr_a: str, sales_role_token: str | None) -> None:
+async def section6_restore(mgr_a: str, mgr_b: str, sales_role_token: str | None) -> None:
     print("\n== 追加口径 2：恢复权限与冲突 ==")
     async with SessionLocal() as s:
         now = datetime.now(UTC)
@@ -755,13 +756,35 @@ async def section6_restore(mgr_a: str, sales_role_token: str | None) -> None:
         IDS["c5"] = cust.id
         await s.commit()
 
-    # 普通业务员（无 customer:assign）→ 不能恢复
+    # 普通业务员（无 customer:pool_restore）→ 不能恢复
     if sales_role_token:
         status, _ = call(
             "POST", f"/public-pool/recycle-candidates/{IDS['cand_executed']}/restore",
             sales_role_token, {"note": "试一下"},
         )
         check_in("普通业务员不能恢复", status, DENIED)
+
+    restore_path = f"/public-pool/recycle-candidates/{IDS['cand_executed']}/restore"
+    status, _ = call("POST", restore_path, mgr_b, {"note": "跨部门恢复"})
+    check("有恢复权限的主管仍不能恢复其他部门的客户", status, 403)
+
+    # 同一个登录会话失去独立恢复权限后，仍可复核但不能恢复。
+    async with SessionLocal() as s:
+        await s.execute(text("""
+            DELETE FROM role_permissions
+            WHERE role_id = :role AND permission_id = (
+                SELECT id FROM permissions WHERE code = 'customer:pool_restore'
+            )
+        """), {"role": IDS["mgr_role"]})
+        await s.commit()
+    try:
+        status, _ = call("POST", restore_path, mgr_a, {"note": "仅有复核权限"})
+        check("有复核和分配权限的主管不能恢复", status, 403)
+        check("客户仍在公海", await owner_of(IDS["c5"]), None)
+    finally:
+        async with SessionLocal() as s:
+            await grant_role(s, IDS["mgr_role"], ["customer:pool_restore"])
+            await s.commit()
 
     # 本团队主管 → 能恢复
     status, _ = call(
@@ -822,9 +845,7 @@ async def main() -> None:
         await section3_config(admin)
         await section4_sample_chain()
         await section5_batch(admin, mgr_a_t)
-        # 传甲部业务员：它在候选的数据范围内，**但没有** customer:assign ——
-        # 这样才能测出"权限"这道关，而不是被数据范围先拦掉
-        await section6_restore(mgr_a_t, sales_a_t)
+        await section6_restore(mgr_a_t, mgr_b_t, sales_a_t)
     finally:
         await cleanup()
 

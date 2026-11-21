@@ -4,12 +4,15 @@ from decimal import Decimal
 
 import pytest
 from sqlalchemy import delete, select
+from starlette.requests import Request
 
+from app.core.audit import AuditLog
 from app.modules.customer.model import Customer
 from app.modules.order.model import SalesOrder
-from app.modules.payment import service
+from app.modules.payment import router, service
 from app.modules.payment.model import PaymentAllocation, PaymentRecord, ReceivablePlan
-from tests.conftest import SyncSessionAsAsync
+from app.modules.payment.schema import ReceivableUpdate
+from tests.conftest import SyncSessionAsAsync, make_user
 
 
 @pytest.fixture
@@ -64,6 +67,25 @@ async def test_changing_due_order_respects_receipt_priority(rebalance_db):
     db.flush()
     await service.rebalance_order_allocations(session, 1)
     assert allocations(db) == {(1, 2): Decimal(100), (2, 1): Decimal(100)}
+
+
+@pytest.mark.anyio
+async def test_updating_only_due_date_keeps_receipt_allocations(rebalance_db):
+    db = rebalance_db
+    AuditLog.__table__.create(db.get_bind())
+    session = await initialize(db)
+    before = allocations(db)
+    due = date(2026, 12, 15)
+    await router.update_receivable(
+        1,
+        ReceivableUpdate(due_date=due, amount=Decimal("100")),
+        Request({"type": "http", "headers": []}),
+        make_user(roles=("admin",), data_scope="all"),
+        session,
+    )
+
+    assert db.get(ReceivablePlan, 1).due_date == due
+    assert allocations(db) == before
 
 
 @pytest.mark.anyio

@@ -3,11 +3,12 @@
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
 from app.core.data_scope import scoped_owner_ids
+from app.core.draft_visibility import draft_scope, private_draft
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, get_current_user, require_permission
 from app.core.errors import AppError, ErrorCode
@@ -120,8 +121,12 @@ async def list_approvals(
         Quote.deleted_at.is_(None)
     )
     owner_ids = await scoped_owner_ids(session, user)
-    if owner_ids is not None:
-        visible_versions = visible_versions.where(Quote.owner_id.in_(owner_ids))
+    visible_versions = visible_versions.where(
+        draft_scope(Quote, user.id, Quote.owner_id.in_(owner_ids) if owner_ids is not None else None),
+        or_(~private_draft(QuoteVersion), func.coalesce(
+            QuoteVersion.created_by, Quote.created_by, Quote.owner_id,
+        ) == user.id),
+    )
     stmt = stmt.where(
         ApprovalInstance.business_type == "quote_version",
         ApprovalInstance.business_id.in_(visible_versions),

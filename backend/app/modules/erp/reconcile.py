@@ -52,15 +52,19 @@ from app.core.timebase import business_day_start
 from app.core.errors import AppError, ErrorCode
 from app.core.trade_mode import CNY, reject_foreign_currency
 from app.modules.erp.adapter import get_adapter
+from app.modules.erp.collection import LINE_MAPPING_HASH_PREFIX, LINE_MAPPING_KEY_LIMIT, line_mapping_key
 from app.modules.integration.model import (
     ExternalObjectMapping,
     ExternalRecord,
+    ExternalSyncWatermark,
     FinancialAdjustment,
     IntegrationDiff,
     ReconciliationRun,
 )
 from app.modules.integration.vocab import (
     ALL_SHOPS,
+    COLLECT_OBJECT_TYPES,
+    CURSOR_IDLE,
     DIFF_AFTERSALE_REVIEW,
     DIFF_AMOUNT_MISMATCH,
     DIFF_CROSS_SHOP_NUMBER,
@@ -88,6 +92,11 @@ from app.modules.order.model import SalesOrder
 
 #: 金额比较允许的误差（元）。用 Decimal 比，避免二进制浮点把 0.1 变成 0.1000000000000000055。
 AMOUNT_TOLERANCE = Decimal("0.01")
+AUTO_RECONCILED = "auto_reconciled"
+AUTO_CLOSE_TYPES = {
+    DIFF_MISSING_LOCAL, DIFF_AMOUNT_MISMATCH, DIFF_OVER_SHIPPED, DIFF_OVER_RETURNED,
+    DIFF_UNMATCHED_SKU, DIFF_UNMATCHED_CUSTOMER,
+}
 
 _ADJUSTMENT_AMOUNT = TypeAdapter(
     Annotated[Decimal, Field(ge=0, max_digits=16, decimal_places=2)]
@@ -121,6 +130,7 @@ RESOLUTION_LABELS = {
     "take_external": "以外部为准（仅记录结论，不自动改本地财务数据）",
     "manual": "人工已处理并留痕",
     "ignore": "不是差异",
+    AUTO_RECONCILED: "复核一致，系统自动结案",
 }
 
 
@@ -297,7 +307,7 @@ async def _upsert_diff(
             ).with_for_update().execution_options(populate_existing=True)
         )
     ).scalars().first()
-    if row is not None and row.status != DIFF_OPEN:
+    if row is not None and row.status != DIFF_OPEN and row.resolution != AUTO_RECONCILED:
         # 已核定的金额与证据属于历史结论。新事实另开差异，旧结论不背书新金额。
         compared = ("current_value", "incoming_value", "internal_id")
         if all(getattr(row, key) == session_fields.get(key) for key in compared):
@@ -315,8 +325,19 @@ async def _upsert_diff(
                 IntegrationDiff.diff_key == session_fields["diff_key"]
             ).with_for_update().execution_options(populate_existing=True)
         )).scalars().first()
-        if row is not None and row.status != DIFF_OPEN:
+        if row is not None and row.status != DIFF_OPEN and row.resolution != AUTO_RECONCILED:
             return row, "unchanged"
+    if row is not None and row.resolution == AUTO_RECONCILED:
+        prefix = f"{row.diff_key}-r-"
+        latest = (await session.execute(
+            select(IntegrationDiff).where(IntegrationDiff.diff_key.like(f"{prefix}%"))
+            .order_by(IntegrationDiff.id.desc()).limit(1)
+            .with_for_update().execution_options(populate_existing=True)
+        )).scalars().first()
+        row = latest or row
+        if row.resolution == AUTO_RECONCILED:
+            session_fields = {**session_fields, "diff_key": f"{prefix}{row.id}"}
+            row = None
     if row is None:
         candidate = IntegrationDiff(**session_fields, status=DIFF_OPEN)
         begin_nested = getattr(session, "begin_nested", None)
@@ -421,6 +442,15 @@ def _line_quantity(row: ExternalRecord) -> Decimal | None:
     return row.quantity
 
 
+def _period_orders(system_type: str, shop_id: str, start: datetime, end: datetime) -> Select:
+    return select(ExternalRecord).where(
+        *_collect_shop_filter(system_type, shop_id),
+        ExternalRecord.object_type == OBJECT_ORDER,
+        ExternalRecord.occurred_at >= start,
+        ExternalRecord.occurred_at < end,
+    )
+
+
 async def load_period_facts(
     session: AsyncSession,
     *,
@@ -438,14 +468,7 @@ async def load_period_facts(
     shop_conditions = _collect_shop_filter(system_type, shop_id)
     orders = (
         await session.execute(
-            select(ExternalRecord)
-            .where(
-                *shop_conditions,
-                ExternalRecord.object_type == OBJECT_ORDER,
-                ExternalRecord.occurred_at.isnot(None),
-                ExternalRecord.occurred_at >= start,
-                ExternalRecord.occurred_at < end,
-            )
+            _period_orders(system_type, shop_id, start, end)
             .order_by(ExternalRecord.id.asc())
         )
     ).scalars().all()
@@ -753,7 +776,35 @@ async def run_reconciliation(
         "diffs_created": 0,
         "diffs_updated": 0,
         "diffs_unchanged": 0,
+        "diffs_auto_closed": 0,
     }
+
+    # 锁定采集状态后再读事实，避免把分页尚未结束的采集当成完整结果。
+    cursor_stmt = select(ExternalSyncWatermark).where(
+        ExternalSyncWatermark.system_type == system,
+        ExternalSyncWatermark.object_type.in_(COLLECT_OBJECT_TYPES),
+    )
+    if shop != ALL_SHOPS:
+        cursor_stmt = cursor_stmt.where(ExternalSyncWatermark.shop_id.in_((shop, ALL_SHOPS)))
+    cursors = (await session.execute(
+        cursor_stmt.order_by(ExternalSyncWatermark.id).with_for_update()
+        .execution_options(populate_existing=True)
+    )).scalars().all()
+    open_stmt = select(IntegrationDiff).where(
+        IntegrationDiff.domain == DIFF_DOMAIN_ORDER,
+        IntegrationDiff.system_type == system,
+        IntegrationDiff.period == label,
+        IntegrationDiff.status == DIFF_OPEN,
+        IntegrationDiff.diff_type.in_(AUTO_CLOSE_TYPES),
+    )
+    if shop != ALL_SHOPS:
+        open_stmt = open_stmt.where(IntegrationDiff.shop_id == shop)
+    open_by_key: dict[str, list[IntegrationDiff]] = {}
+    for diff in (await session.execute(
+        open_stmt.order_by(IntegrationDiff.id).with_for_update().execution_options(populate_existing=True)
+    )).scalars():
+        base_key = diff.diff_key.split("-v-", 1)[0].split("-r-", 1)[0]
+        open_by_key.setdefault(base_key, []).append(diff)
 
     facts = await load_period_facts(
         session, system_type=system, shop_id=shop, start=start, end=end
@@ -764,6 +815,50 @@ async def run_reconciliation(
 
     def tally(outcome: str) -> None:
         counts[f"diffs_{outcome}"] += 1
+
+    def close_confirmed(order, diff_type, object_type, subject, records, values, local_id=None):
+        key = build_diff_key(
+            domain=DIFF_DOMAIN_ORDER, system_type=system, shop_id=order.shop_id,
+            object_type=object_type, diff_type=diff_type, subject=subject, period=label,
+        )
+        if key not in open_by_key:
+            return
+        # 补建本地订单已可直接证实；金额、数量异常仍需完整重采作为依据。
+        last_finish = None
+        collected_at = {}
+        if diff_type != DIFF_MISSING_LOCAL:
+            applicable = [cursor for cursor in cursors if cursor.shop_id in (order.shop_id, ALL_SHOPS)]
+            if not applicable or any(
+                cursor.status != CURSOR_IDLE or cursor.page_token is not None or not cursor.last_finished_at
+                for cursor in applicable
+            ):
+                return
+            last_finish = max(cursor.last_finished_at.replace(tzinfo=UTC) for cursor in applicable)
+            if any(not row.last_seen_at or row.last_seen_at.replace(tzinfo=UTC) > last_finish for row in records):
+                return
+            refreshed_at = max(row.last_seen_at.replace(tzinfo=UTC) for row in records)
+            collected_at = {"data_seen_at": refreshed_at.isoformat(), "collection_finished_at": last_finish.isoformat()}
+        evidence = build_evidence(records)
+        for diff in open_by_key[key]:
+            original = (diff.evidence or {}).get("record_keys") or []
+            if diff_type == DIFF_MISSING_LOCAL:
+                if record_pointer(order) not in original:
+                    continue
+            elif not original or any(pointer not in evidence["record_keys"] for pointer in original):
+                continue
+            if last_finish is not None and last_finish <= diff.created_at.replace(tzinfo=UTC):
+                continue
+            if local_id is not None and diff.internal_id != local_id:
+                continue
+            diff.status = DIFF_RESOLVED
+            diff.resolution = AUTO_RECONCILED
+            diff.resolve_note = "重新对账已匹配到本地订单" if diff_type == DIFF_MISSING_LOCAL else "采集完整，重算确认差异已消失"
+            diff.resolved_at = _now()
+            diff.evidence = {
+                **diff.evidence,
+                "auto_resolution": {**evidence, **collected_at, "values": values, "run_id": run.id},
+            }
+            counts["diffs_auto_closed"] += 1
 
     # ---- ① 逐张外部订单：匹配本地订单、比金额、查超发/超退 ----------------
     for order_identity, bucket in aggregates.items():
@@ -826,6 +921,10 @@ async def run_reconciliation(
             tally(outcome)
         else:
             counts["local_matched"] += 1
+            close_confirmed(
+                order, DIFF_MISSING_LOCAL, OBJECT_ORDER, order.dedupe_key, [order],
+                {"order_id": local.id, "order_no": local.order_no},
+            )
             if order.amount is not None and abs(Decimal(local.total_amount) - order.amount) > AMOUNT_TOLERANCE:
                 counts["amount_mismatch"] += 1
                 values = {
@@ -867,7 +966,16 @@ async def run_reconciliation(
                     },
                 )
                 tally(outcome)
+            elif order.amount is not None and order.currency == CNY and local.currency == CNY:
+                close_confirmed(
+                    order, DIFF_AMOUNT_MISMATCH, OBJECT_ORDER, order.dedupe_key, evidence_rows,
+                    {"local": str(local.total_amount), "external": str(order.amount), "currency": CNY}, local.id,
+                )
 
+        order_quantities_complete = all(
+            not bucket_line["missing_quantity"] and all(row.external_code for row in bucket_line["records"])
+            for bucket_line in bucket["lines"].values()
+        )
         for sku_key, sku_bucket in bucket["lines"].items():
             # 没有货号或数量的明细不能作跨单据数量比较；待匹配队列仍保留其原始事实。
             if sku_bucket["missing_quantity"] or any(not row.external_code for row in sku_bucket["records"]):
@@ -904,6 +1012,13 @@ async def run_reconciliation(
                     },
                 )
                 tally(outcome)
+            elif order_quantities_complete and {OBJECT_ORDER_ITEM, OBJECT_SHIPMENT_ITEM}.issubset(
+                {row.object_type for row in sku_bucket["records"]}
+            ):
+                close_confirmed(
+                    order, DIFF_OVER_SHIPPED, OBJECT_SHIPMENT_ITEM, json.dumps([order_key, sku_key], ensure_ascii=False),
+                    [order] + sku_bucket["records"], {"ordered": str(sku_ordered), "shipped": str(sku_shipped)},
+                )
 
             if sku_returned > sku_shipped:
                 counts["over_returned"] += 1
@@ -934,6 +1049,14 @@ async def run_reconciliation(
                     },
                 )
                 tally(outcome)
+            elif order_quantities_complete and {OBJECT_SHIPMENT_ITEM, OBJECT_AFTERSALE_ITEM}.issubset(
+                {row.object_type for row in sku_bucket["records"]}
+            ) and all(row.kind in {"return", "exchange"} for row in sku_bucket["records"]
+                      if row.object_type == OBJECT_AFTERSALE_ITEM):
+                close_confirmed(
+                    order, DIFF_OVER_RETURNED, OBJECT_AFTERSALE_ITEM, json.dumps([order_key, sku_key], ensure_ascii=False),
+                    [order] + sku_bucket["records"], {"shipped": str(sku_shipped), "returned": str(sku_returned)},
+                )
 
     # ---- ② 本地推过、本期对方没有：可能漏采，也可能对方没建单 -------------
     mapping_stmt = select(ExternalObjectMapping).where(
@@ -997,35 +1120,32 @@ async def run_reconciliation(
         )
         tally(outcome)
 
-    # ---- ③ 跨店铺同编号：本地按店铺分行不串，但必须显式提示 ----------------
-    cross_stmt = (
-        select(
-            ExternalRecord.external_id,
-            func.count(func.distinct(ExternalRecord.shop_id)),
-        )
-        .where(
-            ExternalRecord.system_type == system,
-            ExternalRecord.object_type == OBJECT_ORDER,
-            ExternalRecord.external_id.isnot(None),
-        )
-        .group_by(ExternalRecord.external_id)
-    )
-    for external_id, shop_count in (await session.execute(cross_stmt)).all():
-        if int(shop_count) <= 1:
+    # ---- ③ 只比所选店铺订单与其他店铺在同一期的记录 ----------------
+    orders_by_number: dict[str, list[ExternalRecord]] = {}
+    for order in facts["orders"]:
+        if order.external_id:
+            orders_by_number.setdefault(order.external_id, []).append(order)
+
+    if shop != ALL_SHOPS and orders_by_number:
+        selected_numbers = _period_orders(system, shop, start, end).with_only_columns(
+            ExternalRecord.external_id
+        ).where(ExternalRecord.external_id.isnot(None))
+        peers = (await session.execute(
+            _period_orders(system, ALL_SHOPS, start, end)
+            .where(ExternalRecord.shop_id != shop, ExternalRecord.external_id.in_(selected_numbers))
+            .order_by(ExternalRecord.id)
+        )).scalars()
+        for order in peers:
+            # 采集可能在本轮读取本店订单后才补到一张新单。
+            if order.external_id in orders_by_number:
+                orders_by_number[order.external_id].append(order)
+
+    for external_id, rows in orders_by_number.items():
+        shops = sorted({row.shop_id for row in rows})
+        if len(shops) <= 1:
             continue
         counts["cross_shop_same_number"] += 1
-        rows = list(
-            (
-                await session.execute(
-                    select(ExternalRecord).where(
-                        ExternalRecord.system_type == system,
-                        ExternalRecord.object_type == OBJECT_ORDER,
-                        ExternalRecord.external_id == external_id,
-                    )
-                )
-            ).scalars().all()
-        )
-        values = {"external_id": external_id, "shops": sorted(row.shop_id for row in rows)}
+        values = {"external_id": external_id, "shops": shops}
         _, outcome = await _upsert_diff(
             session,
             session_fields={
@@ -1036,6 +1156,7 @@ async def run_reconciliation(
                     object_type=OBJECT_ORDER,
                     diff_type=DIFF_CROSS_SHOP_NUMBER,
                     subject=external_id,
+                    period=label,
                 ),
                 "domain": DIFF_DOMAIN_ORDER,
                 "system_type": system,
@@ -1047,12 +1168,23 @@ async def run_reconciliation(
                 "period": label,
                 "current_value": None,
                 "incoming_value": values,
-                "evidence": build_evidence(rows),
+                "evidence": build_evidence(sorted(rows, key=lambda row: row.id)),
             },
         )
         tally(outcome)
 
     # ---- ④ 待匹配的客户 / SKU：未知就待匹配，补齐后可重放 ------------------
+    period_orders = {(row.shop_id, row.dedupe_key): row for row in facts["orders"]}
+    period_orders_by_customer: dict[tuple[str, str], list[ExternalRecord]] = {}
+    orders_with_customer: set[int] = set()
+    for order in period_orders.values():
+        customer_id = order.payload.get("customer_external_id") if isinstance(order.payload, dict) else None
+        if isinstance(customer_id, (str, int)) and not isinstance(customer_id, bool):
+            customer_key = str(customer_id).strip()
+            if customer_key:
+                period_orders_by_customer.setdefault((order.shop_id, customer_key), []).append(order)
+                orders_with_customer.add(order.id)
+
     pending_stmt = select(ExternalObjectMapping).where(
         ExternalObjectMapping.system_type == system,
         ExternalObjectMapping.match_status.in_((MATCH_PENDING, MATCH_CONFLICT)),
@@ -1070,19 +1202,87 @@ async def run_reconciliation(
         if not (is_customer or is_sku):
             continue
         diff_type = DIFF_UNMATCHED_CUSTOMER if is_customer else DIFF_UNMATCHED_SKU
-        counts["unmatched_customer" if is_customer else "unmatched_sku"] += 1
-        rows = list(
-            (
-                await session.execute(
-                    select(ExternalRecord).where(
-                        ExternalRecord.system_type == system,
-                        ExternalRecord.shop_id == mapping.shop_id,
-                        ExternalRecord.object_type == mapping.object_type,
-                        ExternalRecord.dedupe_key == mapping.external_id,
-                    )
-                )
-            ).scalars().all()
+        records = select(ExternalRecord).where(
+            ExternalRecord.system_type == system,
+            ExternalRecord.shop_id == mapping.shop_id,
+            ExternalRecord.object_type == mapping.object_type,
         )
+        if mapping.object_type in (OBJECT_ORDER_ITEM, OBJECT_SHIPMENT_ITEM, OBJECT_AFTERSALE_ITEM) and (
+            mapping.external_id.startswith(LINE_MAPPING_HASH_PREFIX)
+        ):
+            records = records.where(func.length(ExternalRecord.dedupe_key) > LINE_MAPPING_KEY_LIMIT)
+            if mapping.parent_key is not None:
+                records = records.where(
+                    func.coalesce(ExternalRecord.order_key, ExternalRecord.parent_key) == mapping.parent_key
+                )
+            rows = [
+                row for row in (await session.execute(records)).scalars()
+                if line_mapping_key(row.dedupe_key) == mapping.external_id
+            ]
+        else:
+            identity = ExternalRecord.dedupe_key == mapping.external_id
+            if mapping.object_type in ("customer", "sku"):
+                identity = or_(identity, ExternalRecord.external_id == mapping.external_id)
+            rows = list((await session.execute(
+                records.where(identity)
+            )).scalars())
+        if is_customer:
+            orders = {
+                order.id: order for order in period_orders_by_customer.get((mapping.shop_id, mapping.external_id), [])
+            }
+            for row in rows:
+                if not row.order_key:
+                    continue
+                order = period_orders.get((row.shop_id, row.order_key))
+                if order is not None and order.id not in orders_with_customer:
+                    orders[order.id] = order
+            period_rows = [*rows, *orders.values()] if orders else []
+        else:
+            parent_type = {
+                OBJECT_ORDER_ITEM: OBJECT_ORDER,
+                OBJECT_SHIPMENT_ITEM: OBJECT_SHIPMENT,
+                OBJECT_AFTERSALE_ITEM: OBJECT_AFTERSALE,
+            }.get(mapping.object_type)
+            period_rows = []
+            for row in rows:
+                occurred_at = row.occurred_at
+                if occurred_at is None:
+                    for object_type, key in (
+                        (parent_type, row.parent_key),
+                        (OBJECT_ORDER, row.order_key),
+                    ):
+                        if object_type is None or key is None:
+                            continue
+                        occurred_at = await session.scalar(select(ExternalRecord.occurred_at).where(
+                            ExternalRecord.system_type == system,
+                            ExternalRecord.shop_id == row.shop_id,
+                            ExternalRecord.object_type == object_type,
+                            ExternalRecord.dedupe_key == key,
+                        ))
+                        if occurred_at is not None:
+                            break
+                if occurred_at is not None and start <= (
+                    occurred_at if occurred_at.tzinfo else occurred_at.replace(tzinfo=UTC)
+                ) < end:
+                    period_rows.append(row)
+        if not period_rows:
+            key = build_diff_key(
+                domain=DIFF_DOMAIN_ORDER, system_type=system, shop_id=mapping.shop_id,
+                object_type=mapping.object_type, diff_type=diff_type,
+                subject=mapping.external_id, period=label,
+            )
+            for diff in open_by_key.get(key, []):
+                diff.status = DIFF_RESOLVED
+                diff.resolution = AUTO_RECONCILED
+                diff.resolve_note = (
+                    "未找到该客户关联的本期订单，客户仍可在待匹配清单核对" if is_customer
+                    else "原待匹配记录不属于本对账期间，仍可在待匹配清单核对"
+                )
+                diff.resolved_at = _now()
+                diff.evidence = {**(diff.evidence or {}), "auto_resolution": {**build_evidence(rows), "run_id": run.id}}
+                counts["diffs_auto_closed"] += 1
+            continue
+        counts["unmatched_customer" if is_customer else "unmatched_sku"] += 1
         values = {
             "external_code": mapping.external_code,
             "match_status": mapping.match_status,
@@ -1110,7 +1310,7 @@ async def run_reconciliation(
                 "period": label,
                 "current_value": None,
                 "incoming_value": values,
-                "evidence": build_evidence(rows),
+                "evidence": build_evidence(period_rows),
             },
         )
         tally(outcome)
@@ -1181,7 +1381,8 @@ async def run_reconciliation(
         "message": (
             f"对账完成（{label}）：外部订单 {counts['external_orders']} 张，"
             f"本地匹配 {counts['local_matched']} 张，"
-            f"新增差异 {counts['diffs_created']} 条、更新 {counts['diffs_updated']} 条。"
+            f"新增差异 {counts['diffs_created']} 条、更新 {counts['diffs_updated']} 条、"
+            f"自动结案 {counts['diffs_auto_closed']} 条。"
             "外部售后事实只进待核定队列，不会自动冲减本地回款"
         ),
     }

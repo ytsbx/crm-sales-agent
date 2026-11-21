@@ -10,16 +10,27 @@ from sqlalchemy.pool import StaticPool
 
 from app.core.audit import AuditLog
 from app.core.database import get_db
+from app.core.deps import get_current_user
 from app.modules.audit_router import router
 from app.modules.user.model import User, Department
-from tests.conftest import SyncSessionAsAsync, _register_sqlite_bigint_as_integer
+from tests.conftest import SyncSessionAsAsync, _register_sqlite_bigint_as_integer, make_user
 
 
 @pytest.fixture
 def client():
     _register_sqlite_bigint_as_integer()
     engine = create_engine('sqlite+pysqlite:///:memory:', connect_args={'check_same_thread': False}, poolclass=StaticPool)
-    for model in [Department, User, AuditLog]:
+    from app.modules.bizdoc.model import BizDoc
+    from app.modules.cases.model import SalesCase
+    from app.modules.contract.model import ContractDocument
+    from app.modules.dingtalk.model import OaInstance
+    from app.modules.inquiry.model import CustomInquiry
+    from app.modules.order.model import OrderDraft
+    from app.modules.quote.model import Quote, QuoteCharge, QuoteItem, QuoteVersion
+    from app.modules.sample.model import SampleItem, SampleRequest
+
+    for model in (Department, User, AuditLog, BizDoc, SalesCase, ContractDocument, OaInstance,
+                  CustomInquiry, OrderDraft, Quote, QuoteCharge, QuoteItem, QuoteVersion, SampleItem, SampleRequest):
         model.__table__.create(engine)
     with Session(engine) as session:
         for identity, action, kind in [(1,'update','customer'), (2,'create','quote'), (3,'approve','quote'),
@@ -30,9 +41,7 @@ def client():
         session.commit()
         app = FastAPI()
         app.include_router(router)
-        endpoint = next(route for route in router.routes if getattr(route, 'path', None) == '/audit-logs')
-        permission = next(dep.call for dep in endpoint.dependant.dependencies if dep.name == '_')
-        app.dependency_overrides[permission] = lambda: None
+        app.dependency_overrides[get_current_user] = lambda: make_user(1, permissions=("audit:view",))
         app.dependency_overrides[get_db] = lambda: SyncSessionAsAsync(session)
         with TestClient(app) as http:
             yield http

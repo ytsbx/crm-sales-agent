@@ -116,9 +116,12 @@ async def contact_timeline(
     session: AsyncSession = Depends(get_db),
 ):
     """联系人时间线。联系人自己没有负责人，跟着所属客户走范围。"""
+    from app.modules.contact_util import can_view_full_contact
+
     contact = await session.get(Contact, contact_id)
     if contact is None or contact.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "联系人不存在", 404)
+    owner_id = None
     if contact.customer_id:
         customer = await session.get(Customer, contact.customer_id)
         if customer is None or customer.deleted_at is not None:
@@ -126,4 +129,8 @@ async def contact_timeline(
         await ensure_in_scope(
             session, user, owner_id=customer.owner_id, label="客户", allow_unowned=True
         )
-    return ok(await build_timeline(session, "contact", contact_id, user=user))
+        owner_id = customer.owner_id
+    show_full = await can_view_full_contact(
+        session, user, customer_id=contact.customer_id, owner_id=owner_id
+    )
+    return ok(await build_timeline(session, "contact", contact_id, user=user, mask_contacts=not show_full))

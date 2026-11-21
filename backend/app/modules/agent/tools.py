@@ -12,12 +12,13 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Awaitable, Callable
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
 from app.core.data_scope import ensure_in_scope, scoped_owner_ids
 from app.core.deps import CurrentUser
+from app.core.draft_visibility import draft_scope, private_draft
 from app.core.errors import AppError, ErrorCode
 from app.modules.customer.model import Contact, Customer
 from app.modules.followup.model import FollowUp
@@ -424,7 +425,7 @@ async def get_customer_overview(ctx: ToolContext, customer_id: int) -> dict:
     if ctx.user.has("quote:view"):
         # 同商机：按报价自己的负责人收范围（与客户页的"报价"标签一致）
         quote_stmt = await _scope(
-            select(Quote).where(Quote.customer_id == customer_id, Quote.deleted_at.is_(None)),
+            select(Quote).where(Quote.customer_id == customer_id, Quote.deleted_at.is_(None), draft_scope(Quote, ctx.user.id)),
             ctx,
             Quote.owner_id,
         )
@@ -588,7 +589,7 @@ async def get_opportunity_detail(ctx: ToolContext, opportunity_id: int) -> dict:
     quotes = []
     if can_quote:
         quote_stmt = await _scope(
-            select(Quote).where(Quote.opportunity_id == opportunity_id, Quote.deleted_at.is_(None)),
+            select(Quote).where(Quote.opportunity_id == opportunity_id, Quote.deleted_at.is_(None), draft_scope(Quote, ctx.user.id)),
             ctx, Quote.owner_id,
         )
         quotes = (await ctx.session.execute(quote_stmt)).scalars().all()
@@ -597,7 +598,10 @@ async def get_opportunity_detail(ctx: ToolContext, opportunity_id: int) -> dict:
         versions = (
             await ctx.session.execute(
                 select(QuoteVersion)
-                .where(QuoteVersion.quote_id == quote.id)
+                .where(QuoteVersion.quote_id == quote.id, or_(
+                    ~private_draft(QuoteVersion), QuoteVersion.created_by == ctx.user.id,
+                    and_(QuoteVersion.created_by.is_(None), (quote.created_by or quote.owner_id) == ctx.user.id),
+                ))
                 .order_by(QuoteVersion.version_no.desc())
             )
         ).scalars().all()

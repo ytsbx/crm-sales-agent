@@ -1,11 +1,13 @@
 import { UNRATED_OPTION, customerLevelValue, customerLevelPayload } from '../../shared/customer-level'
-import { useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import PageHeader from '../../shared/components/PageHeader'
-import { useNavigate } from 'react-router-dom'
+import HelpTip from '../../shared/components/HelpTip'
+import { PoolRecyclePanel } from '../recycle/PoolRecyclePage'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { emptyText } from '../../shared/hooks/emptyText'
-import { Button, Input, Modal, Select, Table, Toast, TextArea } from '@douyinfe/semi-ui'
+import { Banner, Button, Input, Modal, Select, Table, Tabs, Toast, TextArea } from '@douyinfe/semi-ui'
 
 import {
   batchTagCustomers,
@@ -16,6 +18,7 @@ import {
   listCustomers,
   listStageDistribution,
   listTags,
+  type CustomerBatchTransferResult,
   type CustomerExportPurpose,
   type DuplicateMatch,
   type CustomerPayload,
@@ -26,7 +29,6 @@ import { useAuthStore } from '../../shared/store/auth'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { Customer } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
-import FormLabel from '../../shared/components/FormLabel'
 import BlockedHint, { useBlockedNotify } from '../../shared/components/BlockedHint'
 import GuardedButton from '../../shared/components/GuardedButton'
 import { getPersistedAuthToken } from '../../shared/auth-token'
@@ -47,7 +49,9 @@ const LEVEL_OPTIONS = [
   { value: 'D', label: 'D 级' },
 ]
 
-const SOURCE_OPTIONS = ['展会', '官网', '老客户介绍', '企业微信', 'Excel 导入', '手工录入', '其他'].map(
+// 与库里的 8 个真实渠道一一对齐（2026-11-21）：原来的「老客户介绍 / 企业微信 /
+// Excel 导入 / 手工录入 / 其他」都是同义旧写法，新建一次客户就把脏数据造回来了。
+const SOURCE_OPTIONS = ['展会', '官网询盘', '客户介绍', '电话开发', '企微添加', '导入', '老客复购', '抖音私信'].map(
   (value) => ({ value, label: value }),
 )
 
@@ -78,7 +82,7 @@ const CUSTOMER_EXPORT_PERMISSION_REASON =
 const STAGE_DOT: Record<string, string> = {
   understanding: '#9aa0ab',
   quote: '#1f4fa8',
-  sample: '#b45309',
+  sample: '#aa3866',
   first_order: '#0891b2',
   repeat: '#7431d3',
   stable: '#00b42a',
@@ -89,7 +93,7 @@ const EMPTY_FORM: CustomerPayload = {
   short_name: '',
   region: '',
   address: '',
-  source: '手工录入',
+  source: '电话开发',
   level: null,
   remark: '',
   // 不选负责人 = 归创建人自己（后端 `create_customer` 的口径）
@@ -103,6 +107,16 @@ export default function CustomerListPage() {
   // 批量转移需要 customer:assign，前端先隐藏按钮，避免点了才吃 403
   const { can } = usePermissions()
 
+  /* 1024 宽内容区只有约 700px，九列合计 975px，「标签 / 负责人 / 状态」
+     全被推到卡片外。窄屏切紧凑档：负责人并进客户名称第二行，
+     「近12月项目 + 历史有效订单」并成一列两行，其余列宽收紧。 */
+  const [compact, setCompact] = useState(() => window.innerWidth < 1200)
+  useEffect(() => {
+    const onResize = () => setCompact(window.innerWidth < 1200)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
   const [keywordInput, setKeywordInput] = useState('')
   const [keyword, setKeyword] = useState('')
   const [level, setLevel] = useState<string | undefined>()
@@ -113,6 +127,9 @@ export default function CustomerListPage() {
   )
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
+  // 第二个页签「回收复核」（2026-11-19 主人：公海回收不用单独做一个板块）。
+  // 复核本来就是公海池的下一步：同一张卡里先看池子，再看谁该被回收、直接批 / 驳。
+  const [searchParams, setSearchParams] = useSearchParams()
 
   const [modalVisible, setModalVisible] = useState(false)
   const [form, setForm] = useState<CustomerPayload>(EMPTY_FORM)
@@ -174,6 +191,7 @@ export default function CustomerListPage() {
   }
   const [importPreview, setImportPreview] = useState<ImportSummary | null>(null)
   const [importPreviewFile, setImportPreviewFile] = useState<File | null>(null)
+  const importableCount = (importPreview?.created_count ?? 0) + (importPreview?.updated_count ?? 0)
   const [importResult, setImportResult] = useState<ImportSummary | null>(null)
   const [exportModalOpen, setExportModalOpen] = useState(false)
   const [exportPurpose, setExportPurpose] = useState<CustomerExportPurpose | undefined>()
@@ -185,6 +203,10 @@ export default function CustomerListPage() {
   //   ② 导出弹窗的确认键：没选用途 / 选了「其他」没填说明时灰着，弹窗底部列出缺什么。
   // 两条规矩见 shared/components/BlockedHint.tsx：看得见（常驻灰字）+ 点得动（点了有反应）。
   const canExport = can('customer:export')
+  const canImport = can('customer:create')
+  // 回收复核只对能批回收的人开放（主管的 pool_review / 管理员的 settings:manage）
+  const canPoolReview = can('customer:pool_review') || can('settings:manage')
+  const view = canPoolReview && searchParams.get('tab') === 'review' ? 'review' : 'list'
   const exportBlockedReasons = [
     ...(!exportPurpose ? ['请选择导出用途。'] : []),
     // 用途选「其他」时后端要求写清具体用途（schema 里有最小长度校验），
@@ -202,11 +224,13 @@ export default function CustomerListPage() {
 
   // ---- 批量操作（03-API §7 的 batch-tag / batch-transfer） ----
   const [selectedIds, setSelectedIds] = useState<number[]>([])
+  const [selectedNames, setSelectedNames] = useState<Record<number, string>>({})
   const [batchTagOpen, setBatchTagOpen] = useState(false)
   const [batchTagIds, setBatchTagIds] = useState<number[]>([])
   const [batchTagMode, setBatchTagMode] = useState<'add' | 'replace' | 'remove'>('add')
   const [batchTransferOpen, setBatchTransferOpen] = useState(false)
-  const [batchOwnerId, setBatchOwnerId] = useState<number | null>(null)
+  const [batchOwner, setBatchOwner] = useState<{ id: number; name: string } | null>(null)
+  const [batchReceipt, setBatchReceipt] = useState<(CustomerBatchTransferResult & { ownerName: string }) | null>(null)
 
   // ---- 新建时的查重提示（PRD §6.3） ----
   const [dupMatches, setDupMatches] = useState<DuplicateMatch[]>([])
@@ -222,7 +246,7 @@ export default function CustomerListPage() {
   const STAGE_COLOR: Record<string, string> = {
     understanding: '#727687', // 了解：中性灰，还没开始动作
     quote: '#1f6fe0',         // 报价：蓝
-    sample: '#c2710a',        // 打样：琥珀
+    sample: STAGE_DOT.sample, // 打样：玫红
     first_order: '#0d9488',   // 首单：青
     repeat: '#65a30d',        // 返单：绿
     stable: '#7a4fd3',        // 稳定复购：紫（周期最长的阶段）
@@ -237,6 +261,7 @@ export default function CustomerListPage() {
   const refreshList = () => {
     void queryClient.invalidateQueries({ queryKey: ['customers'] })
     setSelectedIds([])
+    setSelectedNames({})
   }
 
   const batchTagMutation = useMutation({
@@ -252,15 +277,17 @@ export default function CustomerListPage() {
   })
 
   const batchTransferMutation = useMutation({
-    mutationFn: () =>
-      batchTransferCustomers({ customer_ids: selectedIds, owner_id: batchOwnerId }),
-    onSuccess: (result) => {
-      Toast.success(`已转移 ${result.affected} 个客户`)
+    mutationFn: ({ owner, ids }: { owner: { id: number; name: string }; ids: number[] }) =>
+      batchTransferCustomers({ customer_ids: ids, owner_id: owner.id }),
+    onSuccess: (result, { owner, ids }) => {
+      setBatchReceipt({ ...result, ownerName: owner.name })
       setBatchTransferOpen(false)
-      setBatchOwnerId(null)
+      setBatchOwner(null)
+      for (const id of ids) {
+        void queryClient.invalidateQueries({ queryKey: ['customer', id] })
+      }
       refreshList()
     },
-    onError: (error: Error) => Toast.error(error.message),
   })
 
   const dedupMutation = useMutation({
@@ -306,8 +333,13 @@ export default function CustomerListPage() {
     }
   }
 
+  const closeImportPreview = () => {
+    setImportPreview(null)
+    setImportPreviewFile(null)
+  }
+
   const confirmImport = async () => {
-    if (!importPreviewFile || !importPreview?.preview_token) return
+    if (!importableCount || !importPreviewFile || !importPreview?.preview_token) return
     setImporting(true)
     try {
       const { default: axios } = await import('axios')
@@ -319,15 +351,13 @@ export default function CustomerListPage() {
       })
       const body = response.data
       if (body.code !== 0) throw new Error(body.message ?? '导入失败')
-      setImportPreview(null)
-      setImportPreviewFile(null)
+      closeImportPreview()
       setImportResult(body.data)
       void queryClient.invalidateQueries({ queryKey: ['customers'] })
     } catch (error) {
       const data = (error as { response?: { data?: { message?: string; code?: number } } })?.response?.data
       const message = data?.message || (error instanceof Error ? error.message : '导入失败')
-      setImportPreview(null)
-      setImportPreviewFile(null)
+      closeImportPreview()
       Toast.error(Number(data?.code) === 40902 ? `${message}，请重新选择文件预览` : message)
     } finally {
       setImporting(false)
@@ -421,22 +451,38 @@ export default function CustomerListPage() {
       // 顺带把横向滚动条也去掉（14 列 → 10 列）。
       // 260 → 210：实测这一列 268 时整表 1180 > 内容区 1130，横向滚动条又回来了
       // （2026-11-16 全站表格扫描）。210 仍够放「宁波家电01厂【演示造数】」。
-      width: 210,
+      width: compact ? 215 : 210,
       render: (text: string, record: Customer) => (
         <div>
-          <a style={{ color: 'var(--crm-primary)' }} onClick={() => navigate(`/customers/${record.id}`)} title={text}>
+          <a
+            style={{ color: 'var(--crm-primary)', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+            onClick={() => navigate(`/customers/${record.id}`)}
+            title={text}
+          >
             {text}
           </a>
-          <div style={{ marginTop: 2, color: 'var(--crm-text-3)', fontSize: 12 }}>
+          <div
+            title={[record.region, record.source, activityLabel(record.activity_status), compact ? `负责人 ${record.owner_name ?? '公海'}` : ''].filter(Boolean).join(' · ')}
+            style={{ marginTop: 2, color: 'var(--crm-text-3)', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          >
+            {compact ? `${record.level ?? '未分级'} · ` : ''}
             {[record.region, record.source, activityLabel(record.activity_status)]
               .filter(Boolean)
               .join(' · ')}
+            {compact ? ` · 负责人 ${record.owner_name ?? '公海'}` : ''}
           </div>
         </div>
       ),
     },
-    {
-      title: '等级',
+    ...(compact
+      ? []
+      : [{
+      title: (
+        <span className="crm-help-label">
+          等级
+          <HelpTip forLabel="等级" text="A/B/C/D 是客户价值的等级评定，A 最高。未分级表示还没评，不是最低一级。" />
+        </span>
+      ),
       dataIndex: 'level',
       // 96 而不是 80：描边标签（未分级）比实心标签宽，80 时末尾会多出一个省略号
       width: 70,
@@ -461,12 +507,17 @@ export default function CustomerListPage() {
           // 「未分级」是**还没评**，不是一种等级：灰字即可
           <span style={{ color: 'var(--crm-text-3)' }}>未分级</span>
         ),
-    },
+    }]),
     {
       // 领导六阶段：由订单/打样/报价事实自动推导（customer/stage.py），不占销售一分钟
-      title: '阶段',
+      title: (
+        <span className="crm-help-label">
+          阶段
+          <HelpTip forLabel="阶段" text="由报价、打样、订单等已发生的事实自动推进，不用手填：了解 → 报价 → 打样 → 首单 → 返单 → 稳定复购。" />
+        </span>
+      ),
       dataIndex: 'stage',
-      width: 70,
+      width: compact ? 96 : 70,
       render: (_: unknown, record: Customer) =>
         record.stage ? (
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -488,29 +539,54 @@ export default function CustomerListPage() {
     // 三个计数列共用：**有值才上色加粗**，0 保持浅灰。
     // 全是同一种灰时，一列扫过去分不出「这家有 3 个商机」和「这家啥也没有」。
     {
-      title: '当前商机',
+      title: compact ? '商机' : '当前商机',
       dataIndex: 'current_opportunity_count',
-      width: 90,
+      width: compact ? 76 : 90,
       render: (value: number | undefined) => countCell(value),
     },
+    ...(compact
+      ? []
+      : [{
+          title: (
+            <span className="crm-help-label">
+              近12月项目
+              <HelpTip forLabel="近12月项目" text="最近 12 个月的有效订单数，同一商机拆成多张订单只算一个项目，取消单不算。" />
+            </span>
+          ),
+          dataIndex: 'recent_order_count',
+          width: 90,
+          render: (value: number | undefined) => countCell(value),
+        }]),
     {
-      title: '近12月项目',
-      dataIndex: 'recent_order_count',
-      width: 90,
-      render: (value: number | undefined) => countCell(value),
-    },
-    {
-      title: '历史有效订单',
+      title: compact ? '项目 / 订单' : (
+        <span className="crm-help-label">
+          历史有效订单
+          <HelpTip forLabel="历史有效订单" text="该客户累计的有效订单数，取消的订单不算。" />
+        </span>
+      ),
       dataIndex: 'historical_order_count',
-      width: 105,
-      render: (value: number | undefined) => countCell(value),
+      width: compact ? 96 : 105,
+      render: (value: number | undefined, record: Customer) =>
+        compact ? (
+          /* 窄屏把「近12月项目」并到这一列：上一行近12月、下一行历史 */
+          <div style={{ display: 'grid', gap: 2, justifyItems: 'center' }}>
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+              近12月 {countCell(record.recent_order_count)}
+            </span>
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+              历史 {countCell(value)}
+            </span>
+          </div>
+        ) : (
+          countCell(value)
+        ),
     },
     {
       // PRD §6.1：客户列表要能直接看到标签
       title: '标签',
       dataIndex: 'tags',
       // 180 → 140：标签本来就会折行，收窄后空间让给客户名称
-      width: 140,
+      width: compact ? 110 : 140,
       render: (tags: Customer['tags']) => {
         const list = tags ?? []
         if (list.length === 0) {
@@ -519,7 +595,10 @@ export default function CustomerListPage() {
         // 标签不再一个个套灰胶囊：两个胶囊就折成两行，行高被撑、整表节奏被拉乱。
         // 改成一行灰字、「·」分隔，最多两个，多出来的收成「+N」。
         return (
-          <span style={{ fontSize: 12, color: 'var(--crm-text-2)', whiteSpace: 'nowrap' }}>
+          <span
+            title={list.map((tag) => tag.name).join('·')}
+            style={{ fontSize: 12, color: 'var(--crm-text-2)', whiteSpace: 'nowrap' }}
+          >
             {list
               .slice(0, 2)
               .map((tag) => tag.name)
@@ -529,16 +608,18 @@ export default function CustomerListPage() {
         )
       }
     },
-    {
-      title: '负责人',
-      dataIndex: 'owner_name',
-      width: 110,
-      render: (v: string | null) => v ?? '公海',
-    },
+    ...(compact
+      ? []
+      : [{
+          title: '负责人',
+          dataIndex: 'owner_name',
+          width: 110,
+          render: (v: string | null) => v ?? '公海',
+        }]),
     {
       title: '状态',
       dataIndex: 'status',
-      width: 90,
+      width: compact ? 66 : 90,
       render: (v: string) => (v === 'active' ? '正常' : v),
     },
   ]
@@ -548,6 +629,28 @@ export default function CustomerListPage() {
       <PageHeader title="客户中心" subtitle="客户、联系人与归属都在这里统一管理" />
 
       <SectionCard>
+        {canPoolReview && (
+          <Tabs
+            type="line"
+            activeKey={view}
+            onChange={(key) => setSearchParams((previous) => {
+              const next = new URLSearchParams(previous)
+              if (key === 'review') next.set('tab', 'review')
+              else next.delete('tab')
+              return next
+            })}
+            tabList={[
+              { tab: '客户列表', itemKey: 'list' },
+              { tab: '回收复核', itemKey: 'review' },
+            ]}
+          />
+        )}
+        {view === 'review' ? (
+          <div style={{ marginTop: 16 }}>
+            <PoolRecyclePanel />
+          </div>
+        ) : (
+        <div className="customer-list-body" style={canPoolReview ? { marginTop: 16 } : undefined}>
         <div className="toolbar customer-list-toolbar">
           <Input
             placeholder="搜索客户名称 / 简称 / 地址"
@@ -577,9 +680,10 @@ export default function CustomerListPage() {
             optionList={SCOPE_OPTIONS}
             style={{ width: 140 }}
           />
-          <Button onClick={handleSearch}>查询</Button>
+          {/* 工具栏只留「新建客户」一个主按钮：查询是入口、不是决定，降成纯文字 */}
+          <Button type="tertiary" theme="borderless" onClick={handleSearch}>查询</Button>
           <div style={{ flex: 1 }} />
-          <input
+          {canImport && <input
             ref={fileInputRef}
             type="file"
             accept=".csv"
@@ -588,12 +692,13 @@ export default function CustomerListPage() {
               const file = event.target.files?.[0]
               if (file) void handleImport(file)
             }}
-          />
-          <Button onClick={() => downloadCsv('/api/v1/customers/import-template', '客户导入模板.csv')}>
+          />}
+          {canImport && <Button type="tertiary" onClick={() => downloadCsv('/api/v1/customers/import-template', '客户导入模板.csv')}>
             下载模板
-          </Button>
+          </Button>}
           {/* 导出独立授权；提示统一由 GuardedButton 渲染，整行显示在按钮下方。 */}
           <GuardedButton
+            type="tertiary"
             hintBelow
             disabled={!canExport}
             blockedReasons={[CUSTOMER_EXPORT_PERMISSION_REASON]}
@@ -602,11 +707,17 @@ export default function CustomerListPage() {
           >
             导出
           </GuardedButton>
-          <Button loading={importing} onClick={() => fileInputRef.current?.click()}>
+          <GuardedButton
+            type="tertiary"
+            loading={importing}
+            disabled={!canImport}
+            blockedReasons={['批量导入需要「新建客户」权限，请联系管理员。']}
+            onClick={() => fileInputRef.current?.click()}
+          >
             批量导入
-          </Button>
+          </GuardedButton>
           <Button type="primary"
-            theme="outline"
+            theme="solid"
             onClick={() => {
               // 每次打开"新建客户"都是一次新表单 → 换一把新的幂等键
               createRequestKeyRef.current = newRequestKey()
@@ -656,6 +767,18 @@ export default function CustomerListPage() {
           </div>
         )}
 
+        {batchReceipt && (
+          <Banner fullMode={false} type={batchReceipt.unavailable || batchReceipt.documents_skipped ? 'warning' : 'success'}
+            onClose={() => setBatchReceipt(null)} description={<div>
+              <strong>{batchReceipt.affected
+                ? `已将 ${batchReceipt.affected} 个客户转给${batchReceipt.ownerName}`
+                : '本次没有变更客户负责人'}</strong>
+              {batchReceipt.already_assigned > 0 && <div>{batchReceipt.already_assigned} 个客户原本已由该同事负责。</div>}
+              {batchReceipt.unavailable > 0 && <div>{batchReceipt.unavailable} 个客户已不可用。</div>}
+              {batchReceipt.documents_moved > 0 && <div>随同交接了 {batchReceipt.documents_moved} 项单据或生成文件。</div>}
+              {batchReceipt.documents_skipped > 0 && <div>{batchReceipt.documents_skipped} 项单据或生成文件已由其他同事接手，保留其归属。</div>}
+            </div>} />
+        )}
         {selectedIds.length > 0 && (
           <div
             className="toolbar"
@@ -681,19 +804,23 @@ export default function CustomerListPage() {
               </Button>
             )}
             {can('customer:assign') && (
-              <Button size="small" onClick={() => setBatchTransferOpen(true)}>
+              <Button size="small" onClick={() => {
+                setBatchOwner(null)
+                batchTransferMutation.reset()
+                setBatchTransferOpen(true)
+              }}>
                 批量转移负责人
               </Button>
             )}
             <div style={{ flex: 1 }} />
-            <Button size="small" theme="borderless" onClick={() => setSelectedIds([])}>
+            <Button size="small" theme="borderless" onClick={() => { setSelectedIds([]); setSelectedNames({}) }}>
               取消选择
             </Button>
           </div>
         )}
 
         <Table<Customer>
-          className="table-center"
+          className="table-center customers-table"
           columns={columns}
           dataSource={query.data?.items ?? []}
           loading={query.isLoading}
@@ -704,10 +831,17 @@ export default function CustomerListPage() {
           // 改成跟容器走：列多时按比例压缩，宁可略微挤一点也不横滚。
           scroll={{ x: '100%' }}
           empty={emptyText(query, '没有符合条件的客户', '换个筛选条件试试，或点右上角「新建客户」。')}
-          rowSelection={{
+          rowSelection={can('customer:update') || can('customer:assign') ? {
             selectedRowKeys: selectedIds,
-            onChange: (keys) => setSelectedIds((keys ?? []) as number[]),
-          }}
+            onChange: (keys) => {
+              const ids = (keys ?? []) as number[]
+              const visibleNames = new Map(query.data?.items.map((customer) => [customer.id, customer.name]))
+              setSelectedNames((previous) => Object.fromEntries(ids.map((id) => [
+                id, visibleNames.get(id) ?? previous[id] ?? `客户 #${id}`,
+              ])))
+              setSelectedIds(ids)
+            },
+          } : undefined}
           pagination={{
             currentPage: page,
             pageSize,
@@ -721,6 +855,8 @@ export default function CustomerListPage() {
             },
           }}
         />
+        </div>
+        )}
       </SectionCard>
 
       <Modal
@@ -773,18 +909,25 @@ export default function CustomerListPage() {
       <Modal
         title="导入预览（尚未写入）"
         visible={Boolean(importPreview)}
-        onCancel={() => {
-          setImportPreview(null)
-          setImportPreviewFile(null)
-        }}
+        onCancel={closeImportPreview}
         onOk={() => void confirmImport()}
         confirmLoading={importing}
-        okText={`确认导入 ${importPreview?.created_count ?? 0} 条`}
+        okText={`确认导入 ${importableCount} 条`}
         cancelText="取消"
+        {...(importableCount === 0 ? {
+          footer: <Button onClick={closeImportPreview}>关闭预览</Button>,
+        } : {})}
         width={680}
       >
         {importPreview && (
           <div style={importScroll}>
+            {importableCount === 0 ? (
+              <p role="status" style={{ margin: '0 0 14px' }}>
+                没有可导入的记录。请{importPreview.failed_count > 0 ? '按下方行号和原因修正文件，再选择文件预览。' : '检查文件内容，再选择文件预览。'}
+              </p>
+            ) : importPreview.failed_count > 0 && (
+              <p style={{ margin: '0 0 14px' }}>确认后会导入可用的记录。失败的行可以修正后再单独导入。</p>
+            )}
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 14 }}>
               <span className="chip chip-primary">将新增 {importPreview.created_count} 条</span>
               {(importPreview.updated_count ?? 0) > 0 && (
@@ -1029,33 +1172,64 @@ export default function CustomerListPage() {
         </div>
       </Modal>
 
-      {/* 批量转移负责人 */}
       <Modal
-        title={`批量转移负责人（已选 ${selectedIds.length} 个客户）`}
+        title="批量转移客户负责人"
+        className="workflow-scroll-modal"
+        width="min(500px, calc(100vw - 24px))"
         visible={batchTransferOpen}
-        onCancel={() => setBatchTransferOpen(false)}
-        onOk={() => batchTransferMutation.mutate()}
+        onCancel={() => { if (!batchTransferMutation.isPending) setBatchTransferOpen(false) }}
+        onOk={() => {
+          if (batchOwner && selectedIds.length && !batchTransferMutation.isPending) {
+            batchTransferMutation.mutate({ owner: batchOwner, ids: selectedIds })
+          }
+        }}
+        okButtonProps={{ disabled: !batchOwner || !selectedIds.length }}
         confirmLoading={batchTransferMutation.isPending}
         okText="确认转移"
       >
-        <UserSearchSelect
-          queryScope="customer-batch-transfer"
-          enabled={batchTransferOpen}
-          style={{ width: '100%' }}
-          placeholder="按姓名或登录账号搜索新的负责人"
-          value={batchOwnerId ?? undefined}
-          onChange={(value) => setBatchOwnerId(value ?? null)}
-        />
-        <div style={{ marginTop: 12, color: 'var(--crm-text-3)', fontSize: 12 }}>
-          清空选择后确认 = 把这些客户放入公海。每次转移都会记录负责人变更历史。
+        <div className="customer-handover">
+          <div className="customer-handover-context">
+            <strong>已选 {selectedIds.length} 个客户</strong>
+            <ul className="customer-handover-selection">
+              {selectedIds.map((id) => <li key={id}>{selectedNames[id] ?? `客户 #${id}`}</li>)}
+            </ul>
+          </div>
+          <UserSearchSelect
+            queryScope="customer-batch-transfer"
+            activeOnly
+            enabled={batchTransferOpen}
+            disabled={batchTransferMutation.isPending}
+            style={{ width: '100%' }}
+            placeholder="按姓名或登录账号搜索新的负责人"
+            value={batchOwner?.id}
+            onChange={(id, name) => setBatchOwner(id && name ? { id, name } : null)}
+          />
+          <div className="customer-handover-context">
+            未完成待办和原负责人名下符合条件的单据会随客户交接。
+          </div>
+          {batchTransferMutation.isError && <Banner type="warning" closeIcon={null} fullMode={false} description={batchTransferMutation.error.message} />}
         </div>
       </Modal>
 
       <Modal
-        title="新建客户"
+        title={
+          <div className="modal-head">
+            <span className="modal-head-icon" aria-hidden>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
+                <path d="M3 21h18" />
+                <path d="M5 21V8l7-5 7 5v13" />
+                <path d="M9.5 21v-5.5h5V21" />
+              </svg>
+            </span>
+            <div>
+              新建客户
+              <div className="modal-subtitle">只填名称就能建，其余可以后补</div>
+            </div>
+          </div>
+        }
         // 不写 width 时 Semi 用 448，表单挤成一条竖线、八个字段拉出一屏半高。
         visible={modalVisible}
-        width={520}
+        width={600}
         onCancel={() => setModalVisible(false)}
         onOk={() => {
           if (!form.name.trim()) {
@@ -1071,138 +1245,133 @@ export default function CustomerListPage() {
         okText="创建"
         cancelText="取消"
       >
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px 16px' }}>
-          <div style={{ gridColumn: '1 / -1' }}>
-            <FormLabel required>客户名称</FormLabel>
-            <Input
-              value={form.name}
-              onChange={(value) => {
-                setForm({ ...form, name: value })
-                // 名称改了，旧的查重结果就失效了
-                if (dupMatches.length) setDupMatches([])
-              }}
-              onBlur={() => {
-                if (form.name.trim().length >= 2) dedupMutation.mutate()
-              }}
-              placeholder="公司全称，例如：宁波宏远包装制品有限公司"
-            />
-          </div>
-
-          {/* PRD §6.3：新建时就提示疑似重复，而不是等导入时才拦 */}
-          {dupMatches.length > 0 && (
-            <div
-              style={{
-                gridColumn: '1 / -1',
-                background: 'var(--crm-warning-soft)',
-                color: 'var(--crm-warning)',
-                padding: 10,
-                borderRadius: 8,
-                fontSize: 13,
-              }}
-            >
-              <div style={{ fontWeight: 600, marginBottom: 4 }}>
-                发现 {dupMatches.length} 个疑似重复客户
+        <div className="form-cards">
+          <section className="form-card">
+            <div className="form-card-title">客户档案</div>
+            <div className="form-card-grid">
+              <div className="full">
+                <div className="form-field-label">客户名称<span className="req">*</span></div>
+                <Input
+                  value={form.name}
+                  onChange={(value) => {
+                    setForm({ ...form, name: value })
+                    // 名称改了，旧的查重结果就失效了
+                    if (dupMatches.length) setDupMatches([])
+                  }}
+                  onBlur={() => {
+                    if (form.name.trim().length >= 2) dedupMutation.mutate()
+                  }}
+                  placeholder="公司全称，例如：宁波宏远包装制品有限公司"
+                />
               </div>
-              {dupMatches.map((match) => (
-                <div key={match.id} style={{ fontSize: 12, lineHeight: 1.7 }}>
-                  · {match.name}（相似度 {match.score}%：{match.reasons.join('、')}）
+
+              {/* PRD §6.3：新建时就提示疑似重复，而不是等导入时才拦 */}
+              {dupMatches.length > 0 && (
+                <div
+                  className="full form-tip"
+                  style={{ display: 'block', background: 'var(--crm-warning-soft)', color: 'var(--crm-warning)' }}
+                >
+                  <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                    发现 {dupMatches.length} 个疑似重复客户
+                  </div>
+                  {dupMatches.map((match) => (
+                    <div key={match.id} style={{ fontSize: 12, lineHeight: 1.7 }}>
+                      · {match.name}（相似度 {match.score}%：{match.reasons.join('、')}）
+                    </div>
+                  ))}
+                  <div style={{ fontSize: 12, marginTop: 4 }}>
+                    如确认是同一家，建议先取消，去已有客户里补资料；确实不同再继续创建。
+                  </div>
                 </div>
-              ))}
-              <div style={{ fontSize: 12, marginTop: 4 }}>
-                如确认是同一家，建议先取消，去已有客户里补资料；确实不同再继续创建。
+              )}
+
+              <div>
+                <div className="form-field-label">客户简称</div>
+                <Input
+                  value={form.short_name ?? ''}
+                  onChange={(value) => setForm({ ...form, short_name: value })}
+                  placeholder="日常叫法，例如：宏远"
+                />
+              </div>
+              <div>
+                <div className="form-field-label">客户等级</div>
+                <Select
+                  value={customerLevelValue(form.level)}
+                  onChange={(value) => setForm({ ...form, level: customerLevelPayload(value) })}
+                  optionList={LEVEL_OPTIONS}
+                  style={{ width: '100%' }}
+                />
+              </div>
+              <div>
+                <div className="form-field-label">省份 / 地区</div>
+                <Input
+                  value={form.region ?? ''}
+                  onChange={(value) => setForm({ ...form, region: value })}
+                  placeholder="浙江"
+                />
+              </div>
+              <div>
+                <div className="form-field-label">客户来源</div>
+                <Select
+                  value={form.source ?? undefined}
+                  onChange={(value) => setForm({ ...form, source: value as string })}
+                  optionList={SOURCE_OPTIONS}
+                  style={{ width: '100%' }}
+                />
+                {form.source === '其他' && (
+                  <Input
+                    aria-label="其他客户来源"
+                    value={otherSource}
+                    onChange={setOtherSource}
+                    maxLength={32}
+                    placeholder="请输入具体来源，例如：抖音、小红书（最多32字）"
+                    style={{ marginTop: 8 }}
+                  />
+                )}
+              </div>
+              <div className="full">
+                <div className="form-field-label">详细地址</div>
+                <Input
+                  value={form.address ?? ''}
+                  onChange={(value) => setForm({ ...form, address: value })}
+                  placeholder="省市区 + 街道门牌，收货地址以订单为准"
+                />
+              </div>
+              <div className="full">
+                <div className="form-field-label">备注</div>
+                <TextArea
+                  rows={2}
+                  value={form.remark ?? ''}
+                  onChange={(value) => setForm({ ...form, remark: value })}
+                  placeholder="偏好、忌讳、结算习惯……"
+                />
               </div>
             </div>
-          )}
+          </section>
 
-          {/* 归属：**可以指定**（主人 2026-10-13：「为啥只能谁创建谁是负责人，
-              不能指定吗，没有指定再是自己」）。后端一直支持（`CustomerCreate.owner_id`
-              + `create_customer` 里"为空才归创建人"），缺的只是这个入口 + 前端类型字段。
-
-              位置：**必须独立成一格、排在客户名称之后**。原来它被塞在
-              「客户名称」的标签与输入框之间，界面上就成了「客户名称*」→「负责人」
-              →一个没有标签的输入框，看着像客户名称没地方填（主人 2026-10-15 截图）；
-              错位是 `fd3eb24` 引入的。这一格原来还有 `marginTop: 12`，那是为了跟
-              上面的标签拉开距离用的；现在它是独立一格，网格的 `gap: 12` 已经负责间距，
-              再用就会变成 24、跟其它字段不一致。 */}
-          <div style={{ gridColumn: '1 / -1' }}>
-            <FormLabel hint="不选就归你自己，之后也能转移">负责人</FormLabel>
-            <UserSearchSelect
-              queryScope="customer-create"
-              enabled={modalVisible && can('customer:assign')}
-              className="owner-picker"
-              style={{ width: '100%' }}
-              placeholder="按姓名或登录账号搜索；不选归你自己"
-              disabled={!can('customer:assign')}
-              value={form.owner_id ?? undefined}
-              onChange={(value) => setForm({ ...form, owner_id: value ?? null })}
-            />
-            {/* 这段原来是三行灰字（"不指定就归你；指定给别人时…放进公海请创建后用列表里的…"），
-                在 520 宽的弹窗里折成三行、把弹窗又撑高一大截。规则本身没变，
-                只是压成一行；细节（转移、放公海）列表页里都有入口。 */}
-            <div style={{ marginTop: 6, fontSize: 12, color: 'var(--crm-text-3)' }}>
-              {can('customer:assign')
-                ? '不指定就归你；之后可在列表里转移或放入公海。'
-                : '没有分配权限时新客户归你；要指定别人请联系管理员。'}
+          <section className="form-card">
+            <div className="form-card-title">谁来跟这个客户</div>
+            <div className="form-card-grid">
+              <div>
+                <div className="form-field-label">负责人</div>
+                <UserSearchSelect
+                  queryScope="customer-create"
+                  enabled={modalVisible && can('customer:assign')}
+                  className="owner-picker"
+                  style={{ width: '100%' }}
+                  placeholder="按姓名或登录账号搜索"
+                  disabled={!can('customer:assign')}
+                  value={form.owner_id ?? undefined}
+                  onChange={(value) => setForm({ ...form, owner_id: value ?? null })}
+                />
+              </div>
+              <div className="form-tip">
+                {can('customer:assign')
+                  ? '不选就归你自己，之后也能在列表里转移。'
+                  : '没有分配权限时新客户归你；要指定别人请联系管理员。'}
+              </div>
             </div>
-          </div>
-
-          <div>
-            <FormLabel>客户简称</FormLabel>
-            <Input
-              value={form.short_name ?? ''}
-              onChange={(value) => setForm({ ...form, short_name: value })}
-            />
-          </div>
-          <div>
-            <FormLabel>客户等级</FormLabel>
-            <Select
-              value={customerLevelValue(form.level)}
-              onChange={(value) => setForm({ ...form, level: customerLevelPayload(value) })}
-              optionList={LEVEL_OPTIONS}
-              style={{ width: '100%' }}
-            />
-          </div>
-          <div>
-            <FormLabel>省份 / 地区</FormLabel>
-            <Input
-              value={form.region ?? ''}
-              onChange={(value) => setForm({ ...form, region: value })}
-              placeholder="浙江"
-            />
-          </div>
-          <div>
-            <FormLabel>客户来源</FormLabel>
-            <Select
-              value={form.source ?? undefined}
-              onChange={(value) => setForm({ ...form, source: value as string })}
-              optionList={SOURCE_OPTIONS}
-              style={{ width: '100%' }}
-            />
-            {form.source === '其他' && (
-              <Input
-                aria-label="其他客户来源"
-                value={otherSource}
-                onChange={setOtherSource}
-                maxLength={32}
-                placeholder="请输入具体来源，例如：抖音、小红书（最多32字）"
-                style={{ marginTop: 8 }}
-              />
-            )}
-          </div>
-          <div style={{ gridColumn: '1 / -1' }}>
-            <FormLabel>详细地址</FormLabel>
-            <Input
-              value={form.address ?? ''}
-              onChange={(value) => setForm({ ...form, address: value })}
-            />
-          </div>
-          <div style={{ gridColumn: '1 / -1' }}>
-            <FormLabel>备注</FormLabel>
-            <Input
-              value={form.remark ?? ''}
-              onChange={(value) => setForm({ ...form, remark: value })}
-            />
-          </div>
+          </section>
         </div>
       </Modal>
     </div>

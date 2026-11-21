@@ -1,6 +1,7 @@
 import { Table } from '@douyinfe/semi-ui'
 
 import type { AnalysisEnvelope } from '../api/agent'
+import { formatUnitPrice } from './money'
 
 /**
  * Agent 专用分析接口（03-API §37）结果的统一渲染。
@@ -139,7 +140,7 @@ function ListBlock({ rows }: { rows: unknown[] }) {
     (key) =>
       key !== '_idx' &&
       records.every((row) => typeof row[key] !== 'object' || row[key] === null) &&
-      key !== 'id',
+      key !== 'id' && key !== 'last_unit_price_min_exact' && key !== 'last_unit_price_max_exact',
   )
   return (
     <Table
@@ -151,7 +152,16 @@ function ListBlock({ rows }: { rows: unknown[] }) {
         title: labelOf(key),
         dataIndex: key,
         align: 'center' as const,
-        render: (value: unknown) => fmtValue(key, value),
+        render: (value: unknown, row: Record<string, unknown>) => {
+          const { last_unit_price_min_exact: min, last_unit_price_max_exact: max } = row
+          if (key === 'last_unit_price' && typeof min === 'string' && typeof max === 'string') {
+            const low = formatUnitPrice(min, 'CNY')
+            const high = formatUnitPrice(max, 'CNY')
+            if (low === high) return low
+            return `${low.slice(1).replace(/\.00$/, '')}–${high.slice(1).replace(/\.00$/, '')} 元`
+          }
+          return fmtValue(key, value)
+        },
       }))}
       empty="无"
     />

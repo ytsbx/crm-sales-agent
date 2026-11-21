@@ -7,6 +7,7 @@
 
 from datetime import UTC, datetime, timedelta
 
+from app.core.timebase import to_business
 from app.modules.customer.io import TEMPLATE_HEADERS, parse_date
 
 
@@ -18,8 +19,9 @@ def test_parses_common_date_formats():
     for raw in ("2025-03-08", "2025/3/8", "2025.03.08", "2025-03-08 10:30"):
         parsed = parse_date(raw)
         assert parsed is not None, raw
-        assert (parsed.year, parsed.month, parsed.day) == (2025, 3, 8)
+        assert to_business(parsed).date().isoformat() == "2025-03-08"
         assert parsed.tzinfo is not None  # 库里是 timezone-aware 列，比较不能混 aware/naive
+    assert parse_date("2025-03-08 10:30") == datetime(2025, 3, 8, 2, 30, tzinfo=UTC)
 
 
 def test_blank_and_garbage_stay_empty():

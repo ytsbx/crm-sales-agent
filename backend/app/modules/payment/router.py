@@ -336,18 +336,16 @@ async def _generate_receivables(session, order, order_id, payload, request, user
     if existing:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该订单已有应收计划，请先删除再重新生成")
 
-    due_dates = (
-        list(payload.due_dates)
-        if payload.due_dates
-        else [payload.first_due_date, payload.second_due_date or payload.first_due_date]
-    )
-    # 名称/到期日的取法（第九批问题 ⑥）：
-    #   · 给了整份 `names` / `due_dates`（按期对齐）→ 直接用，一次请求成型；
-    #   · 只给前两个槽位（老写法）→ 用 `first_*` / `second_*`；
-    #   · 都没给 → 「第 N 期」+ 第一期日期。
-    # 三期以上从前只能"先生成、再逐条 PATCH"，中途失败就会留下占位名与
-    # 第一期日期、且重试撞"已有应收计划"。现在整份一次落库（同一事务）。
-    names = list(payload.names) if payload.names else [payload.first_name, payload.second_name]
+    # 三期及以上在入参校验时已要求提供完整到期日。
+    due_dates = payload.due_dates or [
+        payload.first_due_date, payload.second_due_date or payload.first_due_date,
+    ]
+    names = payload.names
+    if names is None:
+        names = (
+            [payload.first_name, payload.second_name] if len(ratios) <= 2
+            else [f"第 {index} 期" for index in range(1, len(ratios) + 1)]
+        )
     # 各期金额：前面按比例算，**最后一期用"总额 − 前面各期之和"**。
     # 每期独立四舍五入会让合计不等于总额（订单 0.05 元按 50%/50% 得
     # 0.02 + 0.02 = 0.04，少一分）；差额补在最后一期，合计严格等于订单总额。
@@ -358,12 +356,12 @@ async def _generate_receivables(session, order, order_id, payload, request, user
     amounts = svc.split_amounts(total, ratios)
 
     created = []
-    for index, ratio in enumerate(ratios):
+    for index, amount in enumerate(amounts):
         plan = ReceivablePlan(
             order_id=order_id,
-            plan_name=names[index] if index < len(names) else f"第 {index + 1} 期",
-            due_date=due_dates[index] if index < len(due_dates) else payload.first_due_date,
-            amount=amounts[index],
+            plan_name=names[index],
+            due_date=due_dates[index],
+            amount=amount,
             # **必须显式继承订单币种**（第十一批 11.1）。不写这一行，它会落到列默认的
             # CNY：美元订单按比例分出来的几期全成了人民币，金额看着对、代表的钱已经不同。
             # 手工新增那条路（`_create_plan`）一直是这样写的，两条路的币种规则必须一致。
@@ -421,12 +419,14 @@ async def update_receivable(
     plan = await svc.get_visible_plan(session, user, plan_id, for_update=True)
     before = await svc.serialize_plan(session, plan)
     changes = payload.model_dump(exclude_unset=True)
+    amount = changes.get("amount")
+    amount_changed = amount is not None and Decimal(str(amount)) != plan.amount
     if changes.get("plan_name") is not None:
         plan.plan_name = changes["plan_name"]
     if changes.get("due_date") is not None:
         plan.due_date = changes["due_date"]
-    if changes.get("amount") is not None:
-        plan.amount = Decimal(str(changes["amount"]))
+    if amount_changed:
+        plan.amount = Decimal(str(amount))
     if "remark" in changes:
         plan.remark = changes["remark"]
     # ⚠️ 应收金额变了要**重新平衡分配**（第十批实测发现的缺口）。
@@ -435,17 +435,21 @@ async def update_receivable(
     # 原来收到的钱不够了，而**另一期超收出来的钱不会自动补过来** ——
     # 客户其实付够了，系统却显示还差 100（`check_round3_risk_repairs` 就是这么红的）。
     # 主人定的口径是"超收按到期日自动抵后续期"，所以平衡要跟着应收变化走。
-    await svc.rebalance_order_allocations(session, plan.order_id, operator_id=user.id)
-    for each_plan in (
-        await session.execute(
-            select(ReceivablePlan)
-            .where(
-                ReceivablePlan.order_id == plan.order_id,
-                ReceivablePlan.status != "cancelled",
+    # 单独延期只重算本期逾期状态，保留已有回款的期次归属。
+    plans_to_recalc = [plan]
+    if amount_changed:
+        await svc.rebalance_order_allocations(session, plan.order_id, operator_id=user.id)
+        plans_to_recalc = (
+            await session.execute(
+                select(ReceivablePlan)
+                .where(
+                    ReceivablePlan.order_id == plan.order_id,
+                    ReceivablePlan.status != "cancelled",
+                )
+                .order_by(ReceivablePlan.id.asc())
             )
-            .order_by(ReceivablePlan.id.asc())
-        )
-    ).scalars().all():
+        ).scalars().all()
+    for each_plan in plans_to_recalc:
         await svc.recalc_plan(session, each_plan)
     await session.flush()
     from app.modules.order import milestones as milestones_svc

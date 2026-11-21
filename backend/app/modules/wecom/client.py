@@ -379,11 +379,9 @@ class WeComClient:
     # ---- 事件回调（API §10 POST /webhooks/wecom/events）-------------------
 
     def callback_ready(self) -> bool:
-        return bool(
-            settings.wecom_callback_token
-            and settings.wecom_callback_aes_key
-            and settings.wecom_corp_id
-        )
+        return all(value.strip() for value in (
+            settings.wecom_callback_token, settings.wecom_callback_aes_key, settings.wecom_corp_id,
+        ))
 
     async def send_text_card(
         self, *, to_user: str, title: str, description: str, url: str | None = None

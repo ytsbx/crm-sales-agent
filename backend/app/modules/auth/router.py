@@ -1,7 +1,6 @@
 """Auth：登录 / 登出 / 当前用户 / 我的权限（对齐 03-API §2）。"""
 
 import logging
-from datetime import UTC, datetime
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Request
@@ -19,7 +18,6 @@ from app.core.errors import AppError, ErrorCode
 from app.core import rate_limit
 from app.core.response import ok
 from app.core.security import (
-    create_access_token,
     decode_access_token_allow_expired,
     verify_password,
 )
@@ -27,6 +25,7 @@ from app.modules.auth.schema import DingTalkExchange, LoginRequest, WeComSsoCall
 from app.modules.auth.session import (
     REASON_LOGOUT,
     SID_CLAIM,
+    issue_session_token,
     load_active_session,
     open_session,
     revoke_session,
@@ -100,9 +99,7 @@ async def login(
     # 每次登录开一个**服务端会话**，令牌里带上它的标识（第十批 10.12）。
     # 与审计同一次提交：不会出现"审计有登录、会话表却没有"的半成品。
     login_session = await open_session(session, user.id)
-    token = create_access_token(
-        user.id, {"name": user.name}, session_id=login_session.sid
-    )
+    token = issue_session_token(login_session, user.name)
     await write_audit(
         session,
         operator_id=user.id,
@@ -154,8 +151,7 @@ async def refresh(
 ):
     """用即将过期（或刚过期）的 token 换一个新 token（03-API §2）。
 
-    只在宽限期内有效（`settings.refresh_grace_minutes`），过期太久必须重新登录 ——
-    否则一个泄漏的旧 token 等于永久通行证。
+    刷新须在凭据的续期宽限内，且整个会话尚未达到最长有效期。
 
     用户必须仍然 active：停用后即使拿着有效 token 也不能续期，
     否则"停用账号"会被一个后台页面无限续命。
@@ -164,7 +160,7 @@ async def refresh(
     （`load_active_session`）。登出过、或改过密码的令牌，
     既不能访问接口，也不能拿来换新令牌 —— 否则"失效"只挡得住一半的路。
 
-    续期**不新建会话**：一次登录及其后续刷新属于同一会话，`sid` 原样带过去。
+    续期保留同一会话，替换当前凭据。并发续期串行处理，旧凭据只能成功换一次。
     """
     if credentials is None or not credentials.credentials:
         raise AppError(ErrorCode.UNAUTHORIZED, "未登录", 401)
@@ -181,12 +177,10 @@ async def refresh(
     if user is None or user.status != "active":
         raise AppError(ErrorCode.UNAUTHORIZED, "账号不存在或已停用", 401)
 
-    login_session = await load_active_session(session, payload.get(SID_CLAIM), user_id)
-    login_session.last_refresh_at = datetime.now(UTC)
-
-    token = create_access_token(
-        user.id, {"name": user.name}, session_id=login_session.sid
+    login_session = await load_active_session(
+        session, payload.get(SID_CLAIM), user_id, token_id=payload.get("jti"), for_refresh=True,
     )
+    token = issue_session_token(login_session, user.name)
     await write_audit(
         session,
         operator_id=user.id,
@@ -353,9 +347,7 @@ async def dingtalk_callback(
 
     # 与账号密码登录**同一套**：开服务端会话 → 令牌带 sid → 审计，落在同一次提交里。
     login_session = await open_session(session, user.id)
-    token = create_access_token(
-        user.id, {"name": user.name}, session_id=login_session.sid
-    )
+    token = issue_session_token(login_session, user.name)
     await write_audit(
         session,
         operator_id=user.id,
@@ -388,6 +380,7 @@ async def dingtalk_exchange(
     user = await session.get(User, user_id)
     if user is None or user.status != "active":
         raise AppError(ErrorCode.UNAUTHORIZED, "账号不存在或已停用", 401)
+    await load_active_session(session, claims.get(SID_CLAIM), user_id, token_id=claims.get("jti"))
     return ok(
         {"access_token": token, "token_type": "Bearer", "user": _user_brief(user)},
         "登录成功",
@@ -504,7 +497,7 @@ async def update_personal_account(
     target = (await session.execute(select(User).where(User.id == user.id)
                     .execution_options(populate_existing=True))).scalar_one()
     if user.sid:
-        await load_active_session(session, user.sid, user.id)
+        await load_active_session(session, user.sid, user.id, token_id=user.token_id)
     if target.status != "active":
         raise AppError(ErrorCode.FORBIDDEN, "账号已停用", 403)
     if not verify_password(payload.current_password, target.password_hash):

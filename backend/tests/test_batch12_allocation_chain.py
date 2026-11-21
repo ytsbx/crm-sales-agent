@@ -1,6 +1,8 @@
 """Real functions + real SQL: allocation authority, consumers, manual intent and accounting."""
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal as D
+from sqlalchemy import select
+from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy.orm import Session
 from starlette.requests import Request
@@ -30,6 +32,7 @@ REQ=Request({'type':'http','headers':[],'client':('127.0.0.1',1)})
 USER=make_user(1,data_scope='all',permissions=('payment:view','payment:manage'))
 class AsyncSession(SyncSessionAsAsync):
     async def delete(self,obj): self._session.delete(obj)
+    async def refresh(self, obj, **kwargs): self._session.refresh(obj, **kwargs)
 
 @pytest.fixture
 def case():
@@ -58,6 +61,65 @@ async def allocate(raw,s,row):
     raw.commit()
 async def change(s,payment,allocations):
     return await router.update_payment_allocations(payment.id,PaymentAllocationUpdate(allocations=allocations,reason='财务核实后调整'),REQ,USER,s)
+
+
+@pytest.mark.anyio
+async def test_postponing_auto_overdue_clears_it_but_manual_mark_is_preserved(case):
+    raw, session, _, _ = case
+    today = today_business()
+    await svc.refresh_overdue_plans(session)
+    auto_plan, manual_plan = (raw.get(ReceivablePlan, i) for i in (1, 2))
+    assert auto_plan.status == manual_plan.status == "overdue"
+    await router.mark_overdue(manual_plan.id, REQ, USER, session)
+    for plan in (auto_plan, manual_plan):
+        await router.update_receivable(plan.id, ReceivableUpdate(due_date=today + timedelta(days=30)), REQ, USER, session)
+    assert auto_plan.status == "pending"
+    assert manual_plan.status == "overdue"
+
+    payment = receipt(raw, "200", plan_id=manual_plan.id)
+    await allocate(raw, session, payment)
+    assert manual_plan.status == "paid"
+    assert await session.scalar(select(svc.manual_overdue_action(manual_plan.id))) == "clear_manual_overdue"
+
+
+@pytest.mark.anyio
+async def test_refresh_clears_legacy_future_overdue_only_without_manual_evidence(case):
+    raw, session, _, _ = case
+    await svc.refresh_overdue_plans(session)
+    auto_plan, manual_plan = (raw.get(ReceivablePlan, i) for i in (1, 2))
+    await router.mark_overdue(manual_plan.id, REQ, USER, session)
+    auto_plan.due_date = manual_plan.due_date = today_business() + timedelta(days=10)
+    raw.commit()
+    assert await svc.refresh_overdue_plans(session) == 1
+    assert (auto_plan.status, manual_plan.status) == ("pending", "overdue")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("baseline", [None, "import", "older_followup"])
+async def test_delete_customer_followup_restores_evidence_or_marks_unknown(case, baseline):
+    from app.core.audit import write_audit
+    from app.modules.followup import router as followup_router
+
+    raw, session, _, _ = case
+    imported = NOW - timedelta(days=80)
+    customer = raw.get(Customer, 1)
+    customer.last_followup_at = NOW
+    raw.add_all([
+        FollowUp(id=5, customer_id=1, owner_id=1, content="人工跟进", created_at=NOW),
+        FollowUp(id=6, customer_id=1, owner_id=1, content="系统留痕", followup_type="系统", created_at=NOW),
+    ])
+    if baseline == "import":
+        await write_audit(
+            session, operator_id=1, action="import", business_type="customer", business_id=1,
+            after={"last_followup_at": imported},
+        )
+    elif baseline == "older_followup":
+        raw.add(FollowUp(id=7, customer_id=1, owner_id=1, content="更早的跟进", created_at=imported))
+    raw.commit()
+    await followup_router.delete_followup(5, REQ, USER, session)
+    assert raw.get(FollowUp, 5) is None
+    assert customer.last_followup_at == (imported if baseline else None)
+    assert customer.last_contact_unknown is (baseline is None)
 
 @pytest.mark.anyio
 async def test_complete_allocation_all_consumers(case):
@@ -150,6 +212,36 @@ async def test_moved_receipt_overdue_refresh_and_details(case):
     details=(await router.plan_payments(2,USER,s))['data']
     assert len(details)==1 and details[0]['received_amount']==200 and details[0]['plan_allocated_amount']==200
     assert (await rules_engine.build_context(s,quote=q,version=v,items=[],fx=None))['customer_has_overdue']
+
+
+@pytest.mark.anyio
+async def test_scheduled_overdue_refresh_locks_only_orders_with_new_overdue_plans(case, monkeypatch):
+    raw, session, *_ = case
+    today = today_business()
+    raw.get(ReceivablePlan, 1).status = "overdue"
+    raw.get(ReceivablePlan, 2).due_date = today + timedelta(days=1)
+    for order_id in (2, 3):
+        raw.add(SalesOrder(id=order_id, customer_id=1, owner_id=1,
+                           order_no=f"OVERDUE-{order_id}", total_amount=D(100)))
+        raw.add(ReceivablePlan(id=order_id + 1, order_id=order_id, plan_name="全款",
+                               due_date=today - timedelta(days=1), amount=D(100),
+                               status="pending", created_at=NOW))
+    raw.commit()
+    locks = AsyncMock(wraps=svc.lock_order)
+    commits = AsyncMock(wraps=session.commit)
+    monkeypatch.setattr(svc, "lock_order", locks)
+    monkeypatch.setattr(session, "commit", commits)
+
+    assert await svc.refresh_overdue_plans(session, commit_per_order=True) == 2
+    assert [call.args[1] for call in locks.await_args_list] == [2, 3]
+    assert commits.await_count == 2
+    assert [raw.get(ReceivablePlan, key).status for key in (1, 2, 3, 4)] == [
+        "overdue", "pending", "overdue", "overdue",
+    ]
+    locks.reset_mock()
+    assert await svc.refresh_overdue_plans(session, commit_per_order=True) == 0
+    locks.assert_not_awaited()
+
 
 @pytest.mark.anyio
 async def test_delete_allocated_target_refused_and_empty_plan_allowed(case):

@@ -17,8 +17,11 @@ interface Draft { mode: 'standalone' | 'inquiry'; source_oa_id?: number | null; 
 interface Options {
   configured: boolean; enabled: boolean
   item_count: number
-  fields: Array<{id:string;label:string;type:string;required:boolean;system:boolean;options:string[];format?:string}>
-  draft: Partial<Draft>; candidates: Array<{id:number;label:string}>; records: OaApprovalInstance[]
+  native_form?: boolean
+  template_error?: string
+  prefill?: { applicant_name: string; department: string }
+  fields: Array<{id:string;label:string;type:string;required:boolean;system:boolean;options:string[];format?:string;hint?:string;help_text?:string}>
+  draft: Partial<Draft> & { requires_self_oa?: boolean }; candidates: Array<{id:number;label:string}>; records: OaApprovalInstance[]
 }
 const time = formatApprovalTime
 
@@ -48,6 +51,21 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
   const [adoptKey,setAdoptKey]=useState<string | null>(null)
   const draft=edited ?? {mode:query.data?.draft.mode ?? 'standalone',source_oa_id:query.data?.draft.source_oa_id,fields:query.data?.draft.fields ?? {}, resubmit:query.data?.draft.resubmit ?? false}
   const submitted=Boolean(query.data?.draft.submitted) && !edited?.resubmit
+  const requiresSelfOa = query.data?.draft.requires_self_oa
+  const approval = query.data?.records[0]
+  let nextStep = '填好这版打样资料后提交同序 OA。暂时没填完，可以先保存草稿。'
+  if (draft.mode === 'inquiry') {
+    nextStep = submitted
+      ? '已关联原询价。请到原同序 OA 单继续办理，之后可回样品详情查看进度。'
+      : '选中本单的原询价审批后点「关联原询价」。后续在原同序 OA 单办理。'
+  } else if (submitted) {
+    if (approval?.status === 'approved') nextStep = '审批已通过。返回样品详情，在车间实际做完后登记制作完成。'
+    else if (approval?.status === 'pending') nextStep = '正在等同序 OA 审批。可以关闭弹窗，之后从样品详情回来查看进度。'
+    else if (approval?.status === 'rejected') nextStep = '先查看驳回意见。处理后，如有「修改后重新提交」按钮，可从这里继续办理。'
+    else if (approval?.status === 'needs_review' || approval?.status === 'submitting') {
+      nextStep = '请先在同序 OA 核对审批是否已收到，确认结果后再继续操作。'
+    } else nextStep = '请先查看下方审批记录，再按当前可用的按钮处理。'
+  }
 
   // ---- 预计工时 → 本次打样积分：**自动同步**（2026-10-16 主人）----
   //
@@ -61,7 +79,7 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
   //   · 所以填了工时 → **自动写进那个积分框**，用户不用管积分。
   //
   // 只有当积分框仍是那一版（或本来就是空的）时才覆盖 —— 用户自己填过的判断不抹掉。
-  const pointsFieldId = query.data?.fields.find((f) => f.label === '本次打样积分')?.id
+  const pointsFieldId = query.data?.native_form ? undefined : query.data?.fields.find((f) => f.label === '本次打样积分')?.id
   const hoursInput = draft.fields['_estimated_hours'] ?? ''
   useEffect(() => {
     if (!pointsFieldId || submitted) return
@@ -79,7 +97,7 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
   const mutate=useMutation({
     mutationFn:async(send:boolean)=>{
       if(send && draft.mode==='standalone') {
-        if(!query.data?.configured||!query.data.enabled)throw new Error('独立打样模板未配置或推送关闭，请先保存草稿')
+        if(!query.data?.configured||!query.data.enabled)throw new Error(query.data?.template_error || '暂不能发起同序打样，可先保存草稿')
         // 通用必填先按顺序挡（**排除积分那一格**：页面上没有它的输入框）。
         const missing=query.data.fields.find(f=>!f.system&&f.required&&f.id!==pointsFieldId&&!draft.fields[f.id]?.trim())
         if(missing)throw new Error(`请填写${missing.label}`)
@@ -101,9 +119,10 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
       return api.put<null>(`/samples/${sampleId}/dingtalk-draft`,draft)
     },
     onSuccess:(result,send)=>{
-      if(!send)Toast.success('草稿已保存，未发出同序 OA 审批')
+      if(!send)Toast.success('草稿已保存。填齐资料后，可从样品详情回来提交。')
       else if(draft.mode==='inquiry')Toast.success('已关联原询价；请在原同序 OA 单继续打样，没有新发审批')
-      else if(result?.status==='pending'&&result.instance_id)Toast.success('已提交同序 OA 打样审批')
+      else if(result?.status==='pending'&&result.instance_id)Toast.success('已提交同序 OA 审批，可回样品详情查看进度。')
+      else if(result?.status==='approved')Toast.success('审批已通过，可回样品详情登记制作完成。')
       else Toast.warning('请查看审批状态；结果不明时先核对同序 OA，不要重复发起')
       setEdited(null)
       void query.refetch();void client.invalidateQueries({queryKey:['samples']});void client.invalidateQueries({queryKey:['sample-detail',sampleId]})
@@ -114,38 +133,31 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
     onSuccess:()=>{Toast.success('已撤回同序 OA 打样审批');void query.refetch()},
     onError:(error:Error)=>Toast.error(error.message),
   })
-  return <Modal visible title="同序 OA 打样流程" width={900} bodyStyle={{maxHeight:'70vh',overflowY:'auto'}}
+  return <Modal visible title="同序 OA 打样流程" width={900} style={{maxWidth:'calc(100vw - 32px)'}} bodyStyle={{maxHeight:'70vh',overflowY:'auto'}}
     onCancel={()=>{if(!mutate.isPending)onClose()}}
-    footer={<div style={{display:'flex',justifyContent:'flex-end',gap:10}}>
+    footer={<div style={{display:'flex',flexWrap:'wrap',justifyContent:'flex-end',gap:10}}>
       <Button disabled={mutate.isPending} onClick={onClose}>关闭</Button>
       {submitted && query.data?.records[0]?.allowed_actions?.includes('resubmit') && <Button disabled={mutate.isPending} onClick={()=>setEdited({...draft,resubmit:true})}>修改后重新提交</Button>}
       {submitted && draft.mode==='standalone' && query.data?.records[0]?.status==='pending' && query.data.records[0].instance_id &&
         <Button type="danger" disabled={mutate.isPending||withdraw.isPending} onClick={()=>Modal.confirm({title:'撤回同序 OA 打样审批？',content:'只对仍在审批中的同序 OA 流程生效。',onOk:()=>withdraw.mutate(query.data!.records[0].id)})}>撤回同序 OA 审批</Button>}
-      {/* ⚠️ 这两个按钮**刻意不用** `disabled={!query.data}`（2026-10-15 修）：
-          读不到模板时按钮会变灰，而用户看不出"连保存草稿都不行" —— 界面只有一个字
-          都不说的灰按钮。改成**可点 + 如实报错**：后端对"模板未配置 / 推送关闭"
-          有明确 4xx（`dingtalk.py:168`），点下去会看到原因；
-          网络失败时 `mutate` 的 onError 也会弹出来。
-          比"灰着不说为什么"好：**点得动才知道为什么**。 */}
-      {!submitted&&<Button loading={mutate.isPending} onClick={()=>mutate.mutate(false)}>保存草稿</Button>}
+      {!submitted&&<Button disabled={!query.data} loading={mutate.isPending} onClick={()=>mutate.mutate(false)}>保存草稿</Button>}
       {(!submitted||query.data?.records[0]?.allowed_actions?.includes('retry'))&&<Button theme="solid"
-        disabled={mutate.isPending}
+        disabled={!query.data || mutate.isPending}
         loading={mutate.isPending} onClick={()=>mutate.mutate(true)}>
         {submitted?'重试原申请':draft.mode==='inquiry'?'关联原询价（不发新单）':'提交打样到同序 OA'}
       </Button>}
     </div>}>
-    {/* 请求失败：**必须说清后果**。原来只印一句 `query.error.message`，
-        用户看到红的但不知道"下面这些格子和按钮全都不能用、也不能保存"，
-        只会反复点那几个灰按钮。 */}
-    {query.isError&&<div style={{color:'var(--crm-error)'}}>
-      {`${query.error.message}。下面的流程配置读不出来，此时不能保存草稿、也不能提交；请点「重试」或关掉重开。`}
+    {query.isLoading && <p className="workflow-guide">正在读取打样资料…</p>}
+    {query.isError&&<div role="alert" style={{color:'var(--crm-error)'}}>
+      <p className="workflow-guide">{query.data ? '暂时读不到最新审批状态。' : '审批资料未能加载，请重新读取后再操作。'}</p>
+      <Button size="small" onClick={()=>void query.refetch()}>重新读取审批资料</Button>
     </div>}
     <div style={{display:'grid',gridTemplateColumns:'minmax(0,1fr)',gap:12}}>
-      <div>生产部在同序 OA 处理，CRM每约3分钟同步结果和过程。保存草稿不会发出审批。</div>
+      {query.data && <p className="workflow-guide">{nextStep}</p>}
       {query.data && draft.mode==='standalone' && query.data.item_count===0 && (
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,
-          padding:'10px 12px',border:'1px solid var(--crm-warning-border, #f0c36d)',
-          background:'var(--crm-warning-bg, #fff8e6)',color:'var(--crm-text-2)'}}>
+          padding:'10px 12px',border:'1px solid var(--crm-warning-border)',
+          background:'var(--crm-warning-bg)',color:'var(--crm-text-2)'}}>
           <span>当前还没有打样明细；仍可提交同序 OA 审批，但自动生成的 Excel 中产品名称和数量会留空。如需完整申请表，请在样品详情的「样品明细」区域添加产品；本窗口下方的「产品名称」是申请表内容，不是明细行。</span>
           <Button size="small" onClick={onClose}>关闭并添加明细</Button>
         </div>
@@ -153,15 +165,19 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
       {/* 后端 template() 对"未配置/推送关闭"给出 `configured=false` 或 `enabled=false`；
           它的 message（「独立打样模板未配置…」「同序 OA 推送未开启」）就在下面的红字里。
           这里补一句原因，免得那句业务话被当成又一条技术错误。 */}
-      {!query.isError && query.data && (!query.data.configured || !query.data.enabled) &&
+      {query.data?.template_error && <div role="alert">{query.data.template_error}</div>}
+      {!query.isError && query.data && !query.data.template_error && (!query.data.configured || !query.data.enabled) &&
         <div style={{color:'var(--crm-hint, var(--crm-text-3))'}}>
-          {query.data.configured
+          {requiresSelfOa
+            ? '此修订版须单独提交同序 OA。打样模板尚未配置，可以先保存草稿。'
+            : query.data.configured
             ? '同序 OA 推送当前是关闭的，独立发起会失败；可以保存草稿。'
             : '独立打样审批模板还没配置，独立发起会失败；「沿用原询价流程」仍可用。'}
         </div>}
-      <Select value={draft.mode} disabled={submitted||mutate.isPending} style={{width:'100%'}}
+      {requiresSelfOa && query.data?.configured && <div>此修订版将单独提交同序 OA 审批。</div>}
+      {!requiresSelfOa && <Select value={draft.mode} disabled={submitted||mutate.isPending} style={{width:'100%'}}
         optionList={[{value:'standalone',label:'单独发起打样审批'},{value:'inquiry',label:'沿用原询价流程（不另发审批）'}]}
-        onChange={value=>setEdited({...draft,mode:value as Draft['mode'],source_oa_id:null})}/>
+        onChange={value=>setEdited({...draft,mode:value as Draft['mode'],source_oa_id:null})}/>}
       {draft.mode==='inquiry'?<>
         <div>仅能关联这张样品真实来源询价的审批。后续打样步骤由人员在原同序 OA 单继续办理。</div>
         <Select style={{width:'100%'}} placeholder="选择原询价同序 OA 审批" value={draft.source_oa_id??undefined} disabled={submitted||mutate.isPending}
@@ -175,25 +191,31 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
             主要材质和规格…"这 7 项 —— 它们不是同序 OA 表单的格，而是**写进附件那份 Excel 的**。
             所以这里是两组不同的东西，原来的问题只是"第一组没标题、第二组标题又长又绕"，
             看起来像一团。现在两组各有标题、各说清去哪。 */}
-        <div style={{fontWeight:600}}>同序 OA 审批单（下面这些填进同序 OA 表单）</div>
+        <div style={{fontWeight:600}}>同序 OA 审批表单</div>
         {/* ⚠️ 「本次打样积分」**不在这里单独给输入框**（2026-10-16）：
             它与「预计工时 × 10」是**同一个数**。给两个输入框，
             用户填了工时、积分还是旧值 —— 主人原话：「打样积分不还是要填几遍吗」。
             现在它由工时算出来（见上面的同步 effect），界面上只在「预计工时」旁边显示算出来的分。 */}
         {/* 模板控件：**两列网格**，字段名在上、控件在下（与下面那组同一套排法）。 */}
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px 12px'}}>
-          {query.data?.fields.filter(f=>!f.system && f.label!=='本次打样积分').map(field=>
+          {query.data?.fields.filter(f=>query.data?.native_form || (!f.system && f.label!=='本次打样积分')).map(field=>
             <Field key={field.id} span={!['DDSelectField','DDDateField','NumberField'].includes(field.type)}
-              label={field.label} required={field.required} hint={!field.required ? '（选填）' : undefined}>
-              {field.type==='DDSelectField'?<Select style={{width:'100%'}} placeholder='请选择' value={draft.fields[field.id]||undefined} disabled={submitted||mutate.isPending}
+              label={field.label} required={field.required} hint={field.help_text}>
+              {field.type==='description' ? <p style={{whiteSpace:'pre-line'}}>{field.hint}</p>
+              :field.type==='serial' ? <Input readOnly placeholder={submitted ? "编号可在同序查看" : "由同序自动编号"}/>
+              :field.id==='applicant_name' || field.id==='department' ? <Input readOnly value={query.data?.prefill?.[field.id] ?? ''}/>
+              :field.id==='sample_items' ? <div>提交时随单上传 CRM 打样明细 Excel（当前 {query.data?.item_count ?? 0} 条）</div>
+              :field.type==='DDSelectField'?<Select style={{width:'100%'}} placeholder='请选择' value={draft.fields[field.id]||undefined} disabled={submitted||mutate.isPending}
                 optionList={field.options.map(value=>({value,label:value}))} onChange={value=>setEdited({...draft,fields:{...draft.fields,[field.id]:value as string}})}/>
               :field.type==='DDDateField'?<DatePicker type='date' format='yyyy-MM-dd' style={{width:'100%'}} value={draft.fields[field.id]||undefined} disabled={submitted||mutate.isPending}
                 onChange={(_,value)=>setEdited({...draft,fields:{...draft.fields,[field.id]:(value as string)||''}})}/>
-              :field.type==='NumberField'?<Input style={{width:'100%'}} value={draft.fields[field.id]||''} disabled={submitted||mutate.isPending} onChange={value=>setEdited({...draft,fields:{...draft.fields,[field.id]:value}})}/>
+              :field.type==='NumberField'?<Input inputMode='decimal' placeholder={field.hint} style={{width:'100%'}} value={draft.fields[field.id]||''} disabled={submitted||mutate.isPending} onChange={value=>setEdited({...draft,fields:{...draft.fields,[field.id]:value}})}/>
               :<TextArea rows={3} value={draft.fields[field.id]||''} disabled={submitted||mutate.isPending} onChange={value=>setEdited({...draft,fields:{...draft.fields,[field.id]:value}})}/>}
             </Field>)}
         </div>
         {/* 打样申请单上**该由业务员填的格**，一次排齐：两列网格、字段名在上。 */}
+        <details open={!query.data?.native_form}>
+        <summary>打样明细 Excel 补充资料</summary>
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px 12px',margin:'8px 0'}}>
           {([['sample_purpose','打样目的',['客审确认样','报价核算样','定制改款样','送检上架样']],
              ['urgency','紧急程度',['普通','急','紧急']],
@@ -204,7 +226,7 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
                 optionList={options.map(value=>({value,label:value}))}
                 onChange={value=>setEdited({...draft,fields:{...draft.fields,['_'+key]:value as string}})}/>
             </Field>)}
-          {(() => { const raw = draft.fields['_estimated_hours'] || ''; const n = Number(raw)
+          {!query.data?.native_form && (() => { const raw = draft.fields['_estimated_hours'] || ''; const n = Number(raw)
             const points = raw.trim() && Number.isFinite(n) ? n * 10 : null
             return <>
               <Field label="预计工时（小时）" required>
@@ -249,6 +271,7 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
           accept=".png,.jpg,.jpeg,.gif,.bmp,.webp,.tif,.tiff" uploadLabel="上传产品图片"
           hint="最多4张，仅放入Excel的四个产品图片框，不会作为独立附件传到同序 OA。单个文件不超过20 MB"/>}
         {submitted && <div>已提交的资料已冻结，请在同序 OA 查看本轮附件。</div>}
+        </details>
       </>}
       <div style={{fontWeight:600}}>同序 OA 审批过程与结果</div>
       {query.data?.records.map(row=><div key={row.id} style={{border:'1px solid var(--crm-border)',padding:12}}>

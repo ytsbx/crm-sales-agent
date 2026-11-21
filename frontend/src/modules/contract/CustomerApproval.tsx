@@ -104,21 +104,26 @@ export function ContractBasis({ doc }: { doc: ContractDocument }) {
   const cache = useQueryClient()
   const choices = useQuery({ queryKey: ['contract-basis', doc.customer_id], queryFn: async () => {
     const [orders, quotes] = await Promise.all([
-      api.get<{ items: { id: number; order_no: string }[] }>('/orders', { customer_id: doc.customer_id, page_size: 200 }),
-      api.get<{ items: { id: number; quote_no: string }[] }>('/quotes', { customer_id: doc.customer_id, page_size: 200 }),
+      api.get<{ items: { id: number; order_no: string; status: string }[] }>('/orders', { customer_id: doc.customer_id, page_size: 200 }),
+      api.get<{ items: { id: number; quote_no: string; status: string }[] }>('/quotes', { customer_id: doc.customer_id, page_size: 200 }),
     ])
-    return [...orders.items.map((v) => ({ key: `order:${v.id}`, text: `订单 ${v.order_no}` })), ...quotes.items.map((v) => ({ key: `quote:${v.id}`, text: `报价 ${v.quote_no}` }))]
+    return [
+      ...orders.items.filter((order) => order.status !== 'cancelled')
+        .map((order) => ({ key: `order:${order.id}`, text: `订单 ${order.order_no}` })),
+      ...quotes.items.filter((quote) => quote.status === 'sent' || quote.status === 'accepted')
+        .map((quote) => ({ key: `quote:${quote.id}`, text: `报价 ${quote.quote_no}` })),
+    ]
   } })
   const save = useMutation({ mutationFn: () => {
     const [kind, id] = choice.split(':')
     return api.post(`/contract-documents/${doc.id}/basis`, { [kind === 'order' ? 'order_id' : 'quote_id']: Number(id) })
   }, onSuccess: () => { Toast.success('业务依据已保存'); void cache.invalidateQueries({ queryKey: ['contract-detail', doc.id] }); void cache.invalidateQueries({ queryKey: ['contract-documents'] }) }, onError: (e: Error) => Toast.error(e.message) })
   return <div style={{ display: 'grid', gap: 8 }}>
-    <div>归档前请补充正式订单或客户已收到的有效报价：</div>
+    <div>归档前请补充正式订单或客户已收到的有效报价。</div>
     {/* 原生 <select> 的边框、字号、高度都和同页 Semi 控件对不上（V2-12），换成 Semi Select */}
     <Select
       aria-label="合同业务依据"
-      placeholder="选择订单或报价"
+      placeholder={choices.isSuccess && choices.data.length === 0 ? '暂无可选订单或报价' : '选择订单或报价'}
       value={choice || undefined}
       onChange={(value) => setChoice(String(value ?? ''))}
       loading={choices.isLoading}
@@ -127,6 +132,12 @@ export function ContractBasis({ doc }: { doc: ContractDocument }) {
       style={{ width: '100%' }}
     />
     <Button loading={save.isPending} onClick={() => { if (!choice) Toast.warning('请选择业务依据'); else save.mutate() }}>保存业务依据</Button>
-    {choices.error && <span role="alert">{choices.error.message}</span>}
+    {choices.isSuccess && choices.data.length === 0 && (
+      <p className="workflow-guide">可等客户收到正式报价后回来绑定，或从这位客户的正式订单中选择。</p>
+    )}
+    {choices.isError && <div role="alert">
+      <p className="workflow-guide">没有读取到业务依据。{choices.error.message}</p>
+      <Button size="small" theme="borderless" onClick={() => void choices.refetch()}>重新读取</Button>
+    </div>}
   </div>
 }

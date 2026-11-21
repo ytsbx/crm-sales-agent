@@ -8,7 +8,7 @@ import {
   type VersionComparisonRow,
 } from '../../shared/api/quote'
 import type { TagTone } from '../../shared/types'
-import SectionCard from '../../shared/components/SectionCard'
+import HelpTip from '../../shared/components/HelpTip'
 import { formatMoney, formatUnitPrice, toTwoDecimals } from '../../shared/components/money'
 
 /**
@@ -229,9 +229,20 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
       ),
     },
     {
-      title: '均价',
+      // 列名只写「均价」，孤零零夹在毛利率后面，看不出是每件还是每箱，
+      // 也不能说明它跟「报价金额 ÷ 数量」是不是一回事（2026-11-20 主人：这均价什么鬼）。
+      // 补一句口径：整版加权、按本版总数量摊、不含运费。
+      title: (
+        <span className="crm-help-label">
+          均价
+          <HelpTip
+            forLabel="均价"
+            text="本版整版加权单价 = 报价金额 ÷ 本版总数量，按件计，不含运费。只有一条明细时它就等于那一行的实际报价；多个版本并排时，才用它横向比价。"
+          />
+        </span>
+      ),
       dataIndex: 'avg_price',
-      width: 90,
+      width: 110,
       align: 'right' as const,
       render: (value: number | null) => money(value, 4),
     },
@@ -243,15 +254,12 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
 
   return (
     <>
-      <SectionCard style={{ marginBottom: 16 }}>
-        <div className="toolbar" style={{ marginBottom: 12 }}>
-          {/* 标题不折行：461px 下它和右边的说明抢同一行，被压成「版/本/与/方/案…」
-              逐字竖排（2026-11-17 窄屏复验）。让说明整句换到下一行。 */}
-          <div style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>版本与方案对比（What-if）</div>
-          <div style={{ flex: 1 }} />
-          <span style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
-            旧版本不可覆盖，改价请新建版本
-          </span>
+      {/* 这段本来裹着一张独立白卡，而它外面那层折叠容器**自己就是一张白卡** ——
+          展开之后是卡里套卡（2026-11-20 截图）。现在去掉内层卡，只留一句右对齐的说明：
+          标题「版本与方案对比 · 边际测算」在折叠头上已经写全，这里再写一遍等于重复。 */}
+      <div style={{ padding: '0 20px 16px' }}>
+        <div style={{ marginBottom: 12, textAlign: 'right', color: 'var(--crm-text-3)', fontSize: 12 }}>
+          旧版本不可覆盖，改价请新建版本
         </div>
 
         <Table<VersionComparisonRow>
@@ -326,11 +334,16 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
             ))}
           </div>
         )}
-      </SectionCard>
+      </div>
 
-      <SectionCard style={{ marginBottom: 16 }}>
+      <div style={{ padding: '0 20px 16px' }}>
         <div className="toolbar" style={{ marginBottom: 12 }}>
-          <div style={{ fontWeight: 600 }}>边际测算（What-if）</div>
+          <div style={{ fontWeight: 600 }}>
+            <span className="crm-help-label">
+              边际测算（What-if）
+              <HelpTip forLabel="边际测算" text="拖一个整版均价，系统按各明细数量加权重算利润。下面几条「整版加权」的基准线用的是同一算法，所以能和均价直接比。" />
+            </span>
+          </div>
           <div style={{ flex: 1 }} />
           {targetPrice !== null && (
             <Button size="small" theme="borderless" onClick={() => setTargetPrice(null)}>
@@ -475,6 +488,14 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
 
             <div>
               <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>多维度方案对比</div>
+              {/* 三个方案一个都没记时，原来照样摆一张三行横杠的表：右栏占掉一大块，
+                  读起来像"数据丢了"。没记就直接说怎么记（2026-11-20 截图）。 */}
+              {scenarios.every((price) => price === null) ? (
+                <div style={{ color: 'var(--crm-text-3)', fontSize: 12.5, lineHeight: 1.8 }}>
+                  还没记录方案。拖上面的滑杆定好价，再点「记为方案 A / B / C」，
+                  这里会把几个价格并排比金额、利润和利润率。
+                </div>
+              ) : (
               <Table
                 columns={[
                   { title: '方案', dataIndex: 'label', width: 56 },
@@ -531,9 +552,9 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
                 size="small"
                 empty=""
               />
+              )}
               <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginTop: 8 }}>
-                把滑杆调到想试的价格后点「记为方案」，三个方案并排比较；未记录的方案显示为
-                -。结果仅供内部测算，不要直接发给客户。
+                结果仅供内部测算，不要直接发给客户。
               </div>
               <Button
                 size="small"
@@ -548,7 +569,7 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
             </div>
           </div>
         )}
-      </SectionCard>
+      </div>
     </>
   )
 }

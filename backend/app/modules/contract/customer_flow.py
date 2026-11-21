@@ -272,19 +272,41 @@ async def link_approval(doc_id: int, payload: LinkInput, user: CurrentUser = Dep
 @router.post("/contract-documents/{doc_id}/approval-sync")
 async def sync_approval(doc_id: int, user: CurrentUser = Depends(require_permission("order:manage")), session: AsyncSession = Depends(get_db)):
     from app.core.response import ok
-    doc = await visible_doc(session, user, doc_id, lock=True)
+    doc = await visible_doc(session, user, doc_id)
     row = await oa.get_by_business_key(session, inquiry_id=doc.id, inquiry_version=1, oa_type="contract")
     if row is None or not row.instance_id:
         fail("尚未关联 OA 审批")
+    row = await oa.lock_oa_business_then_instance(session, row)
+    if row is None:
+        fail("审批记录正在处理，请稍后同步", 409)
+    doc = await visible_doc(session, user, doc_id)
+    latest = await oa.get_by_business_key(session, inquiry_id=doc.id, inquiry_version=1, oa_type="contract")
+    if latest is None or latest.id != row.id:
+        fail("审批记录已更新，请刷新后再同步", 409)
     if getattr(row, "provider", "dingtalk") == "self_oa":
         from app.modules.oa import service as oa_service
-        await oa_service.sync_contract_row(session, row)
+        row = await oa_service.sync_contract_row(session, row)
+        if row is None:
+            fail("审批状态已更新，请刷新后再同步", 409)
+        await visible_doc(session, user, doc_id)
         await session.commit()
         return ok(oa_service.serialize(row), "已同步 OA 审批")
     if settings.dingtalk_push_off:
         fail("钉钉外部调用已关闭")
-    data = await read_instance(row.instance_id)
-    await store_snapshot(session, doc, row, data)
+    row, data, error = await oa.query_oa_without_locks(session, row, get_client().get_process_instance)
+    if row is None:
+        fail("审批状态已更新，请刷新后再同步", 409)
+    if error:
+        fail("无法确认钉钉审批状态，请稍后刷新核对", 502)
+    doc = await visible_doc(session, user, doc_id)
+    latest = await oa.get_by_business_key(session, inquiry_id=doc.id, inquiry_version=1, oa_type="contract")
+    if latest is None or latest.id != row.id:
+        fail("审批记录已更新，请刷新后再同步", 409)
+    status = status_of(data)
+    if oa.settle_withdrawal_snapshot(row, status) and not (
+        status == "pending" and row.status in {"approved", "rejected", "withdrawn"}
+    ):
+        await store_snapshot(session, doc, row, data)
     await session.commit()
     return ok(oa.serialize(row), "已同步钉钉审批")
 
@@ -299,28 +321,55 @@ async def withdraw_before_void(session, user, doc):
     actor = await session.get(User, user.id)
     if not actor or not actor.dingtalk_userid or actor.dingtalk_userid != row.originator_user_id:
         fail("请由该 OA 审批的发起人先撤回，确认后再作废合同", 403)
+    row = await oa.lock_oa_business_then_instance(session, row)
+    if row is None or row.status != "pending":
+        fail("审批记录正在处理或已变化，请刷新后重试", 409)
+    doc_id = doc.id
+
+    async def reload_business():
+        return await visible_doc(session, user, doc_id, lock=True)
+
     if getattr(row, "provider", "dingtalk") == "self_oa":
         from app.modules.oa import service as oa_service
-        await oa_service.withdraw_contract_row(session, row, "CRM 作废合同并撤回申请")
+        try:
+            await oa_service.withdraw_contract_row(
+                session, row, "CRM 作废合同并撤回申请", reload_business=reload_business,
+            )
+        except AppError as exc:
+            if exc.http_status == 502:
+                raise AppError(exc.code, f"{exc.message}，本次未作废合同", 502) from exc
+            raise
         return
     if settings.dingtalk_push_off:
         fail("钉钉调用关闭，无法撤回在办审批；本次未作废合同")
-    # 先看真实状态：刚完成的审批不能再撤回，也不能假报已撤回。
-    data = await read_instance(row.instance_id)
-    if status_of(data) != "pending":
-        await store_snapshot(session, doc, row, data)
-        if row.status == "needs_review":
-            fail("钉钉状态无法确认，本次未作废")
-        return
+    operating_id = actor.dingtalk_userid
+    async def send(instance_id):
+        client = get_client()
+        data = await client.get_process_instance(instance_id)
+        status = status_of(data)
+        if status in {"approved", "rejected", "withdrawn"}:
+            return data
+        if status != "pending":
+            raise DingTalkUnknownOutcome("当前审批状态无法确认")
+        await client.terminate_process_instance(
+            instance_id=instance_id, operating_user_id=operating_id, remark="CRM 作废合同并撤回申请",
+        )
+        try:
+            data = await client.get_process_instance(instance_id)
+        except (DingTalkError, DingTalkUnknownOutcome) as exc:
+            raise DingTalkUnknownOutcome("撤回后的审批状态无法确认") from exc
+        if status_of(data) != "withdrawn":
+            raise DingTalkUnknownOutcome("钉钉尚未确认撤回")
+        return data
+
     try:
-        await get_client().terminate_process_instance(instance_id=row.instance_id, operating_user_id=actor.dingtalk_userid, remark="CRM 作废合同并撤回申请")
-    except (DingTalkError, DingTalkUnknownOutcome) as exc:
-        raise AppError(ErrorCode.PARAM_ERROR, "钉钉未确认撤回结果，本次未作废合同；请刷新审批进度核对，勿重复建单", 502) from exc
-    # 只以回读结果确认撤回，超时/仍在办时保留本地状态让人继续核对。
-    data = await read_instance(row.instance_id)
-    if status_of(data) != "withdrawn":
-        fail("钉钉尚未确认撤回，本次未作废合同；请刷新核对")
-    await store_snapshot(session, doc, row, data)
+        row, data = await oa.withdraw_oa_without_locks(session, row, send, reload_business=reload_business)
+    except AppError as exc:
+        if exc.http_status == 502:
+            raise AppError(exc.code, f"{exc.message}，本次未作废合同", 502) from exc
+        raise
+    if data is not None:
+        await store_snapshot(session, doc, row, data)
 
 
 async def remind_countersigns(session):

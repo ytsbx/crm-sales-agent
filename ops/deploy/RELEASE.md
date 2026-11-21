@@ -9,11 +9,13 @@
 ## 发布约束
 
 - 前后端只能从同一明确 Git SHA 构建；即使工作区有未提交文件，构建输入也全部来自 `git archive` 的指定提交。构建在临时目录执行，不复用工作区 dist 或 node_modules。
-- 标准库 Python 3.10+，本地另需 Git、Node 和 pnpm。锁文件冻结安装；默认仅离线缓存，显式 `--allow-downloads` 才下载锁定依赖。不会自动升级依赖。
+- 标准库 Python 3.10+，本地另需 Git、Node 和 pnpm。前端按 pnpm 锁文件安装，默认只用离线缓存，显式 `--allow-downloads` 才下载锁定依赖。
 - 只携带 `backend/app`、原 requirements/alembic 文件及前端 dist。包的整体 SHA256 由操作者另行核对，manifest 的 SHA256 用于查漏/查篡改，**不提供数字签名或来源认证**。
 - 当前只支持无依赖变更、无迁移变更的发布。新旧 requirements、alembic.ini、alembic 全目录必须相同，且线上文件匹配；实际数据库必须已到安装的 migration head。变化时停止，另行设计并批准升级/回滚步骤。
 - 以基线提交的全部后端 app 文件核对服务器内容，拒绝覆盖未知热修或额外文件。历史备份文件若放在 app 源码内也会触发拒绝，不能为了通过检查直接删文件。先调查并决定如何保存/迁出。
 - 不修改 `.env`、虚拟环境、上传文件、业务数据或服务配置。服务器没有 Git 也可以通过源码哈希证明后端与 Git 提交一致。
+
+需要按单独获批的流程重新创建 Python 3.12 后端虚拟环境时，从拟部署的同一提交取 `backend/requirements.lock.txt` 安装运行依赖。应用发布脚本继续使用服务器已有虚拟环境。
 
 ## 本地构建
 

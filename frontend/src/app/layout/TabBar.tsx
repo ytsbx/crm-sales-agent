@@ -10,7 +10,7 @@ export default function TabBar() {
   const tabs = useTabsStore((state) => state.tabs)
   const activeKey = useTabsStore((state) => state.activeKey)
   const closeTab = useTabsStore((state) => state.closeTab)
-  const tabRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({})
 
   // 打开/切换页签后把它滚进可视区：页签多时，新开的那个不能藏在右边看不见。
   useEffect(() => {
@@ -38,6 +38,9 @@ export default function TabBar() {
       const next = useTabsStore.getState().tabs.find((item) => item.key === nextKey)
       navigate(next?.path ?? '/workbench')
     }
+    if (event.detail === 0) {
+      requestAnimationFrame(() => tabRefs.current[nextKey]?.focus())
+    }
   }
 
   // 页签会随浏览不断累积，一个个叉太麻烦：提供两个批量清理入口
@@ -51,26 +54,32 @@ export default function TabBar() {
   }
 
   return (
-    <div className="tab-strip">
+    <nav className="tab-strip" aria-label="已打开的页面">
       {tabs.map((tab) => (
         <div
           key={tab.key}
-          ref={(element) => { tabRefs.current[tab.key] = element }}
           className={`tab-chip ${tab.kind}${tab.key === activeKey ? ' active' : ''}`}
-          title={tab.kind === 'detail' ? `详情页：${tab.label}` : tab.label}
-          onClick={() => handleActivate(tab)}
         >
-          {tab.kind === 'detail' && <span className="tab-kind">详情</span>}
-          <span className="tab-label">{tab.label}</span>
+          <button
+            type="button"
+            ref={(element) => { tabRefs.current[tab.key] = element }}
+            className="tab-open"
+            aria-current={tab.key === activeKey ? 'page' : undefined}
+            title={tab.kind === 'detail' ? `详情页：${tab.label}` : tab.label}
+            onClick={() => handleActivate(tab)}
+          >
+            {tab.kind === 'detail' && <span className="tab-kind">详情</span>}
+            <span className="tab-label">{tab.label}</span>
+          </button>
           {tabs.length > 1 && (
-            <span
+            <button
+              type="button"
               className="tab-close"
-              role="button"
               aria-label={`关闭${tab.label}`}
               onClick={(event) => handleClose(event, tab.key)}
             >
               ✕
-            </span>
+            </button>
           )}
         </div>
       ))}
@@ -98,11 +107,11 @@ export default function TabBar() {
             </Dropdown.Menu>
           }
         >
-          <span className="tab-more" title="全部页签">
+          <button className="tab-more" type="button" aria-label="全部页签" title="全部页签">
             ⋯
-          </span>
+          </button>
         </Dropdown>
       )}
-    </div>
+    </nav>
   )
 }

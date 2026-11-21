@@ -155,7 +155,8 @@ async def test_polling_only_maps_standalone_sample_terminal_result(monkeypatch):
     rows=[OaInstance(id=1,inquiry_id=7,inquiry_version=1,oa_type='sample',instance_id='A',status='pending'),
           OaInstance(id=2,inquiry_id=8,inquiry_version=1,oa_type='inquiry',instance_id='B',status='pending')]
     async def get(model,pk,**_):return own if pk==7 else original
-    session=Obj(execute=AsyncMock(return_value=Obj(scalars=lambda:Obj(all=lambda:rows))),get=get,flush=AsyncMock())
+    session=Obj(execute=AsyncMock(return_value=Obj(scalars=lambda:Obj(all=lambda:rows))),get=get,flush=AsyncMock(),commit=AsyncMock())
+    monkeypatch.setattr(service, 'lock_oa_business_then_instance', AsyncMock(side_effect=lambda _, row: row))
     latest=AsyncMock(return_value=rows[0])
     monkeypatch.setattr(service,'get_by_business_key',latest)
     monkeypatch.setattr(service,'get_client',lambda:Obj(get_process_instance=AsyncMock(return_value={'status':'COMPLETED','result':'agree','tasks':[]})))
@@ -175,7 +176,8 @@ async def test_polling_maps_withdrawn_sample_to_rejected_resubmittable_state(mon
             source_context={'dingtalk_oa':{'mode':'standalone','submitted':True}})
     row=OaInstance(id=1,inquiry_id=7,inquiry_version=1,oa_type='sample',instance_id='A',status='pending')
     async def get(model,pk,**_): return own
-    session=Obj(execute=AsyncMock(return_value=Obj(scalars=lambda:Obj(all=lambda:[row]))),get=get,flush=AsyncMock())
+    session=Obj(execute=AsyncMock(return_value=Obj(scalars=lambda:Obj(all=lambda:[row]))),get=get,flush=AsyncMock(),commit=AsyncMock())
+    monkeypatch.setattr(service, 'lock_oa_business_then_instance', AsyncMock(return_value=row))
     latest=AsyncMock(return_value=row)
     monkeypatch.setattr(service,'get_by_business_key',latest)
     monkeypatch.setattr(service,'get_client',lambda:Obj(get_process_instance=AsyncMock(return_value={

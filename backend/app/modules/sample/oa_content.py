@@ -1,5 +1,28 @@
 """打样提交正文：保留单头和每条明细，不用合计数代替逐行车间依据。"""
 
+from pydantic import ValidationError
+
+from app.core.errors import AppError, ErrorCode
+from app.modules.sample.schema import SampleUpdate
+
+
+def validated_sample_details(fields: dict) -> dict:
+    values = {
+        name: str(fields["_" + name]).strip() or None
+        for name in ("sample_maker", "sample_fee")
+        if fields.get("_" + name) is not None
+    }
+    try:
+        return SampleUpdate.model_validate(values).model_dump(exclude_unset=True)
+    except ValidationError as exc:
+        field = exc.errors()[0]["loc"][0]
+        message = (
+            "打样费用须为非负数字，最多两位小数且不能超出金额范围"
+            if field == "sample_fee" else "打样人不能超过 64 个字符"
+        )
+        raise AppError(ErrorCode.PARAM_ERROR, message, 422) from exc
+
+
 HEADER_FIELDS = (
     ('产品名称', 'product_name'), ('打样类型', 'sample_type'),
     ('产品大类', 'product_category'), ('制作单位', 'maker_unit'),

@@ -150,11 +150,14 @@ async def update_stage(
     row = await session.get(OpportunityStage, stage_id, populate_existing=True)
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, "阶段不存在", 404)
+    changes = payload.model_dump(exclude_unset=True)
+    if changes.get("is_win", row.is_win) and changes.get("status", row.status) != "active":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "成交阶段须保持启用", 422)
     before = svc.serialize_stage(row)
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    for field, value in changes.items():
         setattr(row, field, value)
     await session.flush()
-    await svc.ensure_stage_config_ok(session)
+    await svc.ensure_stage_config_ok(session, require_winner=before["is_win"])
     await write_audit(
         session,
         operator_id=user.id,
@@ -186,7 +189,8 @@ async def delete_stage(
     历史里的名字照旧显示。成交/失单阶段仍不许动（状态机依赖它们）；
     已经是停用的再点一次是幂等的。
     """
-    row = await session.get(OpportunityStage, stage_id)
+    await svc.lock_stages(session)
+    row = await session.get(OpportunityStage, stage_id, populate_existing=True)
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, "阶段不存在", 404)
     if row.is_win or row.is_loss:
@@ -334,9 +338,17 @@ async def funnel(
     user: CurrentUser = Depends(require_permission("opportunity:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    """销售漏斗：按阶段统计未成交商机的数量与金额。"""
+    """销售漏斗：按阶段统计未成交商机的数量与金额。
+
+    只返回未成交阶段（is_win=False）：这是"在谈"商机的存量分布，把「成交」档
+    也列出来永远是 0，看起来像"一单没成交"（2026-11-21 审查修）。
+    """
     stages = (
-        await session.execute(select(OpportunityStage).order_by(OpportunityStage.sequence.asc()))
+        await session.execute(
+            select(OpportunityStage)
+            .where(OpportunityStage.is_win.is_(False))
+            .order_by(OpportunityStage.sequence.asc())
+        )
     ).scalars().all()
     stmt = await svc.apply_data_scope(
         select(
@@ -374,6 +386,7 @@ async def list_opportunities(
     status: str | None = None,
     owner_id: int | None = None,
     customer_id: int | None = None,
+    search_customer_name: bool = False,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     user: CurrentUser = Depends(require_permission("opportunity:view")),
@@ -386,6 +399,7 @@ async def list_opportunities(
             status=status,
             owner_id=owner_id,
             customer_id=customer_id,
+            search_customer_name=search_customer_name,
         ),
         user,
         session,
@@ -1280,7 +1294,7 @@ async def replace_items_batch(
 
     先清空再写入，保证不出现半新半旧的明细。
     """
-    await svc.get_visible_opportunity(session, user, opportunity_id)
+    await svc.get_visible_opportunity(session, user, opportunity_id, for_update=True)
     created = await svc.replace_items(
         session,
         opportunity_id=opportunity_id,

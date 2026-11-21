@@ -9,14 +9,50 @@ from app.modules.file.storage import absolute_path
 LOCKED = {'applicant_name', 'department', 'contract_name', 'contract_files', 'start_type',
           'contract_number', 'contract_number_rule_type', 'contract_number_rule_fix',
           'contract_amount', 'contract_amount_type', 'contract_mine_info', 'contract_opposite_info',
-          'contract_biz_id', 'contract_operation_status', 'contract_performance_status'}
+          'contract_biz_id', 'contract_operation_status', 'contract_performance_status', 'generated_number'}
+
+
+SOURCE_CODE = 'form-dccc0c7614584d1692414c167221b0cd'
+PARTIES = {
+    'our_parties': ('contract_mine_info', 'mine_company_name'),
+    'other_parties': ('contract_opposite_info', 'opposite_company_name'),
+}
+SOURCE_FIELDS = {
+    'contract_classify_cascade': 'file_category', 'contract_number_rule_type': 'number_method',
+    'contract_number': 'manual_number', 'contract_number_rule_fix': 'number_rule',
+    'contract_amount_type': 'amount_type', 'contract_term_type': 'term_type',
+    'contract_period_start_date': 'start_date', 'contract_period_end_date': 'end_date',
+    'contract_archive': 'archiver', 'contract_description': 'contract_note',
+    'contract_attachments': 'additional_files', 'contract_mine_info': 'our_parties',
+    'contract_opposite_info': 'other_parties', 'contract_seal_type': 'seal_types',
+    'contract_sign_mode': 'sign_method', 'contract_sign_date': 'signed_on',
+}
+
+
+def locked_fields(template):
+    return ({SOURCE_FIELDS.get(key, key) for key in LOCKED}
+            if template.get('code') == SOURCE_CODE else LOCKED)
+
+
+def source_defaults(template, defaults):
+    if template.get('code') != SOURCE_CODE:
+        return defaults
+    mapped = {SOURCE_FIELDS.get(key, key): value for key, value in defaults.items()}
+    if mapped.get('file_category') in {'销售合同', '采购合同'}:
+        mapped['file_category'] = '合同 / ' + mapped['file_category']
+    for key, old in [('our_parties', 'mine_company_name'), ('other_parties', 'opposite_company_name')]:
+        mapped[key] = [{'name': row.get(old, ''), 'contact': row.get('contact', '')}
+                       for row in defaults.get('contract_mine_info' if key == 'our_parties' else 'contract_opposite_info', [])]
+    return {field['id']: mapped[field['id']] for field in template['fields']
+            if field['id'] in mapped
+            and (field['id'] != 'file_category' or mapped['file_category'] in field.get('options', []))}
 
 
 async def active_template(user):
     identity, code = service._template_config()
     try:
         templates = await client.list_templates(user.dingtalk_userid)
-    except (client.OaError, client.OaNotConfigured) as exc:
+    except (client.OaError, client.OaNotConfigured, client.OaUnknownOutcome) as exc:
         raise AppError(ErrorCode.EXTERNAL_ERROR, '同序合同表单暂时无法读取，请稍后重试', 502) from exc
     matches = [t for t in templates if (t['id'] == identity if identity else t['code'] == code)]
     if not matches:
@@ -51,18 +87,38 @@ async def submission_form(session, actor, doc):
         'contract_biz_id': '审批生成后自动带入', 'contract_operation_status': '待审批',
         'contract_performance_status': '尚未履约',
     })
-    defaults.update({k:v for k,v in (filled.get('_oa_fields') or {}).items() if k not in LOCKED})
-    return {'fields': [{**f, 'locked': f['id'] in LOCKED} for f in template['fields']],
+    locked = locked_fields(template)
+    defaults = source_defaults(template, defaults)
+    saved_fields = filled.get('_oa_fields') or {}
+    defaults.update({k: v for k, v in saved_fields.items() if k not in locked})
+    if template.get('code') == SOURCE_CODE:
+        for key in PARTIES:
+            saved_parties = saved_fields.get(key) or []
+            for index, party in enumerate(defaults.get(key, [])):
+                if index < len(saved_parties) and isinstance(saved_parties[index], dict):
+                    party['contact'] = saved_parties[index].get('contact') or ''
+    return {'fields': [{**f, 'locked': f['id'] in locked,
+                        'editable_contact': template.get('code') == SOURCE_CODE and f['id'] in PARTIES} for f in template['fields']],
             'defaults': defaults, 'people': template.get('people', [])}
 
 
-async def apply_extra_fields(session, user, doc, payload, extras):
-    template = await active_template(user)
+async def apply_extra_fields(session, user, doc, payload, extras, *, uploads=None, template=None):
+    template = template if template is not None else await active_template(user)
     definitions = {f['id']: f for f in template['fields']}
-    invalid = set(extras) - (set(definitions) - LOCKED)
+    editable_parties = set(PARTIES) & set(definitions) if template.get('code') == SOURCE_CODE else set()
+    invalid = set(extras) - ((set(definitions) - locked_fields(template)) | editable_parties)
     if invalid:
         raise AppError(ErrorCode.PARAM_ERROR, '不可修改的合同字段：' + '、'.join(sorted(invalid)), 422)
     for key, value in extras.items():
+        if key in editable_parties:
+            source_key, name_key = PARTIES[key]
+            parties = payload['fields'][source_key]
+            if (not isinstance(value, list) or len(value) != len(parties)
+                    or any(not isinstance(item, dict) or not isinstance(item.get('contact'), str) for item in value)):
+                raise AppError(ErrorCode.PARAM_ERROR, '合同联系人格式无效', 422)
+            payload['fields'][key] = [{'name': party[name_key], 'contact': entry['contact'].strip()}
+                                      for party, entry in zip(parties, value)]
+            continue
         if definitions[key]['type'] == 'attachment':
             if not isinstance(value, list) or any(type(v) is not int for v in value) or len(value) > 30:
                 raise AppError(ErrorCode.PARAM_ERROR, '附件选择无效', 422)
@@ -76,7 +132,10 @@ async def apply_extra_fields(session, user, doc, payload, extras):
                 path = absolute_path(row.object_key)
                 if not path.is_file() or path.stat().st_size != row.size:
                     raise AppError(ErrorCode.PARAM_ERROR, '合同附件缺失或不完整，请重新上传', 422)
-                saved = await client.upload_file(user.dingtalk_userid, row.file_name, path.read_bytes(), row.mime_type)
+                if uploads is None:
+                    saved = await client.upload_file(user.dingtalk_userid, row.file_name, path.read_bytes(), row.mime_type)
+                else:
+                    saved = await uploads.stage(user.dingtalk_userid, row.file_name, path, row.mime_type)
                 attachments.append(str(saved['id']))
             payload['attachment_ids'].extend(attachments)
             value = attachments

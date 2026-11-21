@@ -25,6 +25,8 @@ SYNC_JOB_TYPES = {
     "user": "成员同步",
     "external_contact": "外部联系人同步",
     "follow_relation": "跟进关系同步",
+    "contact_event": "企微联系人变更同步",
+    "event_callback": "企微事件接收",
     "transfer": "离职继承",
     "customer_import": "客户中心导入",
 }

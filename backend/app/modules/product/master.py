@@ -44,7 +44,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
@@ -317,25 +317,29 @@ def serialize_version(row: SkuMasterVersion) -> dict:
     }
 
 
-async def get_sku_or_404(session: AsyncSession, sku_id: int) -> Sku:
-    sku = await session.get(Sku, sku_id)
+async def get_sku_or_404(session: AsyncSession, sku_id: int, *, for_update: bool = False) -> Sku:
+    if for_update:
+        sku = (await session.execute(select(Sku).where(Sku.id == sku_id)
+               .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
+    else:
+        sku = await session.get(Sku, sku_id)
     if sku is None or sku.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, f"SKU 编号 {sku_id} 不存在", 404)
     return sku
 
 
 async def _find_identity(
-    session: AsyncSession, *, system_type: str, shop_id: str, external_code: str
+    session: AsyncSession, *, system_type: str, shop_id: str, external_code: str,
+    for_update: bool = False,
 ) -> SkuIdentitySource | None:
-    return (
-        await session.execute(
-            select(SkuIdentitySource).where(
-                SkuIdentitySource.system_type == system_type,
-                SkuIdentitySource.shop_id == shop_id,
-                SkuIdentitySource.external_code == external_code,
-            )
-        )
-    ).scalars().first()
+    stmt = select(SkuIdentitySource).where(
+        SkuIdentitySource.system_type == system_type,
+        SkuIdentitySource.shop_id == shop_id,
+        SkuIdentitySource.external_code == external_code,
+    )
+    if for_update:
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
+    return (await session.execute(stmt)).scalars().first()
 
 
 async def _match_identity(
@@ -393,9 +397,26 @@ async def _authority_for(
             select(SkuFieldAuthority).where(
                 SkuFieldAuthority.sku_id == sku_id,
                 SkuFieldAuthority.field_name == field_name,
-            )
+            ).execution_options(populate_existing=True)
         )
     ).scalars().first()
+
+
+async def require_local_editable(session: AsyncSession, sku: Sku, values: dict) -> None:
+    fields = {field for field in MASTER_FIELDS.keys() & values.keys()
+              if local_value(sku, field) != _json_value(values[field])}
+    if not fields:
+        return
+    rows = (await session.execute(select(SkuFieldAuthority).where(
+        SkuFieldAuthority.sku_id == sku.id, SkuFieldAuthority.field_name.in_(fields),
+        SkuFieldAuthority.authority.is_not(None), SkuFieldAuthority.source_verified.is_(True),
+    ))).scalars().all()
+    blocked = [MASTER_FIELDS[row.field_name] for row in rows if row.source_system
+               and row.authority.upper() == row.source_system.upper()
+               and row.authority.upper() not in ("CRM", "MANUAL")]
+    if blocked:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "以下字段由已核实的外部来源维护，请通过差异核定修改："
+                       + "、".join(blocked), 409)
 
 
 async def _raise_field_diffs(
@@ -553,8 +574,11 @@ async def _materialize_fields(
     fields: dict[str, Any],
     source_verified: bool,
     now: datetime,
+    event_updated_at: datetime | None = None,
 ) -> dict:
     """把来源给的字段落成"来源值 + 差异"，**一个字段都不写回 `skus`**。"""
+    # 同一 SKU 的差异核定也先锁 SKU，再锁差异行。
+    sku = await get_sku_or_404(session, sku.id, for_update=True)
     conflicts = 0
     empties = 0
     same = 0
@@ -571,10 +595,28 @@ async def _materialize_fields(
             authority = SkuFieldAuthority(sku_id=sku.id, field_name=field)
             session.add(authority)
             await session.flush()
+        expected = (authority.authority or ("CRM" if field == "name" else "")).upper()
+        if expected and (expected != source.system_type.upper() or not source_verified):
+            _, verdict = await _raise_field_diffs(
+                session, source=source, sku=sku, field=field, incoming=incoming, now=now
+            )
+            conflicts += int(verdict == "differs")
+            empties += int(verdict == "empty")
+            same += int(verdict == "same")
+            continue
+        recorded_at = authority.source_updated_at
+        if recorded_at is not None and recorded_at.tzinfo is None:
+            recorded_at = recorded_at.replace(tzinfo=UTC)
+        same_origin = authority.source_system == source.system_type and authority.external_identity == source.external_code
+        if same_origin and recorded_at is not None and (
+            event_updated_at is None or event_updated_at < recorded_at
+        ):
+            same += 1
+            continue
         authority.source_system = source.system_type
         authority.source_verified = source_verified
         authority.external_identity = source.external_code
-        authority.source_updated_at = source.source_updated_at
+        authority.source_updated_at = event_updated_at
         authority.source_value = _json_value(incoming)
         await session.flush()
 
@@ -626,6 +668,7 @@ async def ingest_external_sku(
     # 字段名先全部校验一遍：不认识的字段要**在写任何东西之前**报错，
     # 否则会出现"前三个字段落了库、第四个字段报错"的半截状态，
     # 而且身份行已经建出来了，重试还会撞唯一键。
+    fields = dict(fields or {})
     unknown = [field for field in fields if field not in MASTER_FIELDS]
     if unknown:
         raise AppError(
@@ -634,7 +677,6 @@ async def ingest_external_sku(
             422,
         )
     shop = (shop_id or "").strip() or ALL_SHOPS
-    fields = dict(fields or {})
     updated_at = source_updated_at
     if isinstance(updated_at, str):
         try:
@@ -644,8 +686,16 @@ async def ingest_external_sku(
     if isinstance(updated_at, datetime) and updated_at.tzinfo is None:
         updated_at = updated_at.replace(tzinfo=UTC)
 
+    # 身份行可能还不存在，先锁归一后的外部身份，直到本条同步提交。
+    if session.get_bind().dialect.name == "postgresql":
+        identity_key = json.dumps([system_type, shop, code], ensure_ascii=False)
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"crm:sku-identity:{identity_key}"},
+        )
+
     source = await _find_identity(
-        session, system_type=system_type, shop_id=shop, external_code=code
+        session, system_type=system_type, shop_id=shop, external_code=code, for_update=True,
     )
     if source is None:
         source = SkuIdentitySource(
@@ -657,8 +707,14 @@ async def ingest_external_sku(
         )
         session.add(source)
         await session.flush()
-    source.external_name = _text(external_name) or source.external_name
-    source.source_updated_at = updated_at or source.source_updated_at
+    previous_at = source.source_updated_at
+    if previous_at is not None and previous_at.tzinfo is None:
+        previous_at = previous_at.replace(tzinfo=UTC)
+    is_current = previous_at is None or (updated_at is not None and updated_at >= previous_at)
+    if is_current or not source.external_name:
+        source.external_name = _text(external_name) or source.external_name
+    if updated_at is not None and is_current:
+        source.source_updated_at = updated_at
     source.last_seen_at = moment
 
     # 字段名已在开头校验过，这里只做类型归一。
@@ -668,6 +724,14 @@ async def ingest_external_sku(
     }
 
     if source.sku_id is None:
+        # 待匹配时只积累有值的字段。迟到或无时间的数据可以补缺，但不能改掉已有的值。
+        pending = {field: value for field, value in (source.source_payload or {}).items() if value is not None}
+        incoming = {field: value for field, value in normalized.items() if value is not None}
+        merged = {**pending, **incoming} if is_current else {**incoming, **pending}
+        source.source_payload = merged
+        normalized = {**normalized, **merged} if is_current else merged
+        if not is_current:
+            updated_at = previous_at
         sku_id, basis, status = await _match_identity(session, source)
         source.match_status = status
         source.match_basis = basis
@@ -678,15 +742,13 @@ async def ingest_external_sku(
 
     verified = await _source_verified(session, system_type=system_type, shop_id=shop)
     result: dict[str, Any] = {
-        "identity": serialize_identity(source),
         "source_verified": verified,
         "matched_sku_id": source.sku_id,
         "applied_to_local": False,
     }
 
     if source.sku_id is None:
-        # 还没匹配上：原始字段值存在身份行里，等本地补建 SKU 后重放（replay）。
-        source.source_payload = normalized
+        result["identity"] = serialize_identity(source)
         if source.match_status != IDENTITY_CONFLICT:
             # 同名不同码已经有一条更具体的差异了，不再叠加一条泛化的"待匹配"——
             # 同一个问题在队列里出两条，人就会开始忽略这个队列。
@@ -704,7 +766,7 @@ async def ingest_external_sku(
     else:
         counts = await _materialize_fields(
             session, source=source, sku=sku, fields=normalized,
-            source_verified=verified, now=moment,
+            source_verified=verified, now=moment, event_updated_at=updated_at,
         )
         source.source_payload = None
         result.update(counts)
@@ -714,6 +776,7 @@ async def ingest_external_sku(
             "本地 SKU 没有被自动改写，差异请在队列里核定"
         )
     # 提交：见 docstring —— 集成入口的"收到即落地"。
+    result["identity"] = serialize_identity(source)
     await session.commit()
     return result
 
@@ -809,6 +872,14 @@ async def replay_identity_source(
 ) -> dict:
     """待匹配的外部身份重放一次：本地补建 SKU 之后把留存的来源值落成字段权威。"""
     moment = now or _now()
+    source = (
+        await session.execute(
+            select(SkuIdentitySource)
+            .where(SkuIdentitySource.id == source.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
     if source.sku_id is not None:
         return {
             "identity": serialize_identity(source),
@@ -843,6 +914,9 @@ async def replay_identity_source(
         fields=dict(source.source_payload or {}),
         source_verified=verified,
         now=moment,
+        event_updated_at=source.source_updated_at.replace(tzinfo=UTC)
+        if source.source_updated_at is not None and source.source_updated_at.tzinfo is None
+        else source.source_updated_at,
     )
     source.source_payload = None
     await session.flush()
@@ -1016,7 +1090,7 @@ async def set_field_authority(
             f"字段 {field_name} 不是 SKU 关键字段（{'、'.join(MASTER_FIELDS)}）",
             422,
         )
-    sku = await get_sku_or_404(session, sku_id)
+    sku = await get_sku_or_404(session, sku_id, for_update=True)
     moment = now or _now()
     row = await _authority_for(session, sku_id=sku.id, field_name=field_name)
     if row is None:
@@ -1376,6 +1450,16 @@ async def confirm_sku_diff(
     写回的范围严格受 `MASTER_FIELDS` 白名单约束；每次写入都会生成一版
     `sku_master_versions` 快照，所以"正式报价用过的口径"事后可回溯。
     """
+    from app.modules.product.service import lock_sku_with_product
+
+    sku_id = diff.internal_id
+    locked = await lock_sku_with_product(session, sku_id) if sku_id is not None else None
+    diff = (await session.execute(select(IntegrationDiff).where(IntegrationDiff.id == diff.id)
+            .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
+    if diff is None:
+        raise AppError(ErrorCode.NOT_FOUND, "SKU 差异不存在", 404)
+    if diff.internal_id != sku_id:
+        raise AppError(ErrorCode.VERSION_CONFLICT, "差异关联已变化，请刷新后核定", 409)
     resolution = (resolution or "").strip()
     _validate_resolution(diff, resolution, note)
 
@@ -1424,14 +1508,29 @@ async def confirm_sku_diff(
         )
 
     if diff.internal_id is not None:
-        # 锁住 SKU 行：两个并发确认会同时算 version_no，靠行锁 + 唯一约束才能只出一版。
-        sku = (
-            await session.execute(
-                select(Sku).where(Sku.id == diff.internal_id).with_for_update()
-            )
-        ).scalars().first()
-        if sku is None:
+        if locked is None:
             raise AppError(ErrorCode.NOT_FOUND, f"SKU 编号 {diff.internal_id} 不存在", 404)
+        sku, product = locked
+        if sku.deleted_at is not None or product.deleted_at is not None:
+            raise AppError(ErrorCode.NOT_FOUND, f"SKU 编号 {diff.internal_id} 已删除", 404)
+        if diff.field_name and resolution in (RESOLUTION_TAKE_EXTERNAL, RESOLUTION_KEEP_LOCAL):
+            authority = await _authority_for(session, sku_id=sku.id, field_name=diff.field_name)
+            expected = ((authority.authority if authority is not None else None)
+                        or ("CRM" if diff.field_name == "name" else "")).upper()
+            if resolution == RESOLUTION_TAKE_EXTERNAL and expected and (
+                expected != diff.system_type.upper() or not await _source_verified(
+                    session, system_type=diff.system_type, shop_id=diff.shop_id
+                )
+            ):
+                raise AppError(ErrorCode.STATUS_NOT_ALLOWED, f"该字段由 {expected} 维护，不能采用这条外部来源", 409)
+            same_origin = authority is not None and (
+                authority.source_system, authority.external_identity
+            ) == (diff.system_type, diff.external_id)
+            if (resolution == RESOLUTION_TAKE_EXTERNAL or same_origin) and (
+                not same_origin or authority.source_value != diff.incoming_value
+                or diff.current_value != local_value(sku, diff.field_name)
+            ):
+                raise AppError(ErrorCode.VERSION_CONFLICT, "差异所用数据已变化，请刷新后核定最新差异", 409)
 
         if resolution == RESOLUTION_KEEP_LOCAL:
             if diff.field_name:

@@ -408,6 +408,11 @@ async def import_customers(
                 )
                 session.add(customer)
                 await session.flush()
+                if last_contact is not None:
+                    await write_audit(
+                        session, operator_id=user.id, action="import", business_type="customer",
+                        business_id=customer.id, after={"last_followup_at": last_contact},
+                    )
                 if dispute_info is not None:
                     from app.modules.customer import duplicates as dup_service
 

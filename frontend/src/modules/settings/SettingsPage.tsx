@@ -1,12 +1,15 @@
-import { formatBeijingDateTime } from '../../shared/beijing-time'
-import PersonalAccountPanel from './PersonalAccountPanel'
 import PersonalProfilePanel from './PersonalProfilePanel'
 import UnratedRulesPanel from './UnratedRulesPanel'
+import AutoTaskRulesPanel from './AutoTaskRulesPanel'
 import { customerLevelLabel } from '../../shared/customer-level'
-import { useState, type CSSProperties } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useState, useRef, type CSSProperties } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Table, Tabs, Tag, Typography } from '@douyinfe/semi-ui'
+import { Table, Tag, Typography } from '@douyinfe/semi-ui'
+import {
+  IconApartment, IconBell, IconBookmark, IconEditStroked, IconHistory, IconIdCard,
+  IconList, IconSetting, IconUser, IconUserGroup,
+} from '@douyinfe/semi-icons'
 
 import {
   createDepartment,
@@ -26,28 +29,25 @@ import {
   updateUser,
 } from '../../shared/api/system'
 import { createTag, deleteTag, listTags, updateTag, type TagRow } from '../../shared/api/customer'
+import { ApiError } from '../../shared/api/client'
 import { syncDingTalkUsers, type DingTalkSyncResult, type DingTalkUnmatched } from '../../shared/api/dingtalk'
+import MaskedContact from '../../shared/components/MaskedContact'
+import { useNotePrompt } from '../../shared/components/NotePromptModal'
 import PageHeader from '../../shared/components/PageHeader'
 import PermissionPicker from '../../shared/components/PermissionPicker'
 import {
-  batchDecideRecycleCandidates,
-  decideRecycleCandidate,
   listPublicPoolRules,
   listDictionaries,
   createDictionary,
   updateDictionary,
-  listRecycleCandidates,
   listSettings,
   listTaskRules,
-  restoreRecycleCandidate,
   runAutoTaskRules,
   runPublicPoolRecycle,
   saveSetting,
   updatePublicPoolRule,
   updateTaskRule,
   type PublicPoolRuleRow,
-  type RecycleCandidateRow,
-  type RecycleStatus,
   type SystemSettingRow,
   type TaskRuleRow,
   type DictionaryItemRow,
@@ -57,54 +57,580 @@ import { usePermissions } from '../../shared/hooks/permissions'
 import type { SystemDepartment, SystemRole, SystemUser } from '../../shared/api/system'
 import AuditLogPanel from './AuditLogPanel'
 import NotificationSettingsPanel from './NotificationSettingsPanel'
-import SectionCard from '../../shared/components/SectionCard'
 import EmptyState from '../../shared/components/EmptyState'
 import FormLabel from '../../shared/components/FormLabel'
 import StatusDot from '../../shared/components/StatusDot'
 import type { TagTone } from '../../shared/types'
 import { settingDescription, settingLabel, settingNote } from '../../shared/setting-labels'
 
+const TAG_GROUP_LABELS: Record<string, string> = { custom: '自定义', region: '区域', industry: '行业', grade: '等级', channel: '渠道' }
+
+const PROFILE_TAB = { tab: '我的', itemKey: 'profile', icon: IconIdCard, description: '查看个人资料和权限，修改登录名或密码。' }
 const TABS = [
-  { tab: '用户', itemKey: 'users' },
-  { tab: '角色与数据范围', itemKey: 'roles' },
-  { tab: '部门', itemKey: 'departments' },
-  { tab: '客户标签', itemKey: 'tags' },
-  { tab: '数据字典', itemKey: 'dictionaries' },
-  { tab: '通知', itemKey: 'notifications' },
-  { tab: '审计日志', itemKey: 'audit' },
-  { tab: '业务规则', itemKey: 'rules' },
+  { tab: '用户', itemKey: 'users', icon: IconUser, description: '维护员工账号，分配部门和角色。' },
+  { tab: '角色与数据范围', itemKey: 'roles', icon: IconUserGroup, description: '设置各岗位能做什么、能查看哪些数据。' },
+  { tab: '部门', itemKey: 'departments', icon: IconApartment, description: '维护部门及上下级关系。' },
+  { tab: '客户标签', itemKey: 'tags', icon: IconBookmark, description: '维护客户详情中可选的标签。' },
+  { tab: '数据字典', itemKey: 'dictionaries', icon: IconList, description: '维护业务表单可选择的客户等级。' },
+  { tab: '业务规则', itemKey: 'rules', icon: IconSetting, description: '在这里设置公海回收、待办提醒、报价和其他业务规则。' },
+  { tab: '通知', itemKey: 'notifications', icon: IconBell, description: '设置通知渠道和发送方式，查看企微送达情况。' },
+  { tab: '审计日志', itemKey: 'audit', icon: IconHistory, description: '查看谁在什么时候做了哪些操作。' },
 ]
 
-/** 时间显示成"2026-10-06 12:30"（回收复核要看具体哪天）。空值给个短横。
- *  原来传 options 走 zh-CN，出来是 `2026/10/06 12:30`（斜杠，2026-11-17 复验 R-02）。 */
-function fmtDay(value: string | null | undefined): string {
-  return formatBeijingDateTime(value)
+/**
+ * 系统配置「值」这一列的字段形态（2026-11-19）。
+ *
+ * 原来所有配置项共用同一个裸 Input：30 是什么？0.15 是 15% 还是 0.15%？
+ * CNY 该填什么？"未分级怎么处理"填 mode 还是中文？全靠猜。
+ * 表格里 13 行长得一模一样，也确实"草率"。
+ *
+ * 这里按 key 给每项定死：单位、输入类型、可选项。配置项增删时跟着改这张表。
+ */
+type SettingFieldMeta = {
+  /** 数字后面的单位：天 / 分 / 行 / kg/m³ */
+  unit?: string
+  /** percent：库里存的是小数（0.15），界面上写 15%，提交时换算回去 */
+  kind?: 'text' | 'number' | 'percent' | 'select' | 'multiline' | 'object'
+  options?: Array<{ value: string; label: string }>
+  placeholder?: string
+  /** 一句话交代"这个值怎么填"，挂在输入框下面 */
+  hint?: string
+  /** 常见取值：点开就能选，不必敲键盘（天数、百分比这类） */
+  presets?: number[]
+  /** 数值范围（前端先拦一道，别等后端 422 才说填错了） */
+  min?: number
+  max?: number
+}
+
+/**
+ * 系统配置的分组（2026-11-19）。
+ *
+ * 原来 29 项平铺在一张表里：没有分类，从"公司名称"一路排到"通知重试"；
+ * 每行一个占满整格的大输入框，说明挤在最右边一列 —— 主人原话
+ * 「很乱，根本没有分类，还有一个框改一个设置，没有丝毫美感」。
+ *
+ * 分组按**业务域**切：改报价的人不用滚过客户沉睡天数。
+ * 顺序也是信息：公司与单据 → 报价定价 → 客户节奏 → 公海 → 审批 → 通知导出。
+ * 这里只放分组，字段形态仍在 SETTING_FIELD_META。
+ */
+const SETTING_GROUPS: Array<{
+  id: string
+  title: string
+  note?: string
+  /** 每个业务域一个色相：只在标题前那 6px 圆点、和顶部药丸上用它，
+      整页还是白 + 发丝线 —— 有颜色，但不"花"。 */
+  color: string
+  /** 组尾的一句"这组影响什么"：不是填充文案，是把卡片底部收住的那一行。 */
+  hint: string
+  keys: string[]
+}> = [
+  {
+    id: 'company',
+    hint: '合同请到「文档管理」上传 Word 或 PDF 原稿。已上传的合同按原文件保留。',
+    title: '公司与单据',
+    color: '#2f6df6',
+    note: '设置单据抬头和新报价的默认条款',
+    // 2026-11-19 主人：「币种和贸易可以直接删，只会是人民币，只会在国内，别搞那么复杂」。
+    // 这两项从页面摘掉（后端 key 仍留着，值恒为 CNY / domestic，业务单据按它算）。
+    keys: ['company_name', 'default_payment_terms', 'default_delivery_terms', 'quote_valid_days'],
+  },
+  {
+    id: 'pricing',
+    hint: '核价时按这里算；角色专属规则优先于这里的默认值。',
+    title: '报价与定价',
+    color: '#6b5ce7',
+    note: '核价时的默认口径；绝对底价是最后一道闸',
+    keys: ['default_min_margin', 'default_target_margin', 'price_range_ratio', 'hard_floor'],
+  },
+  {
+    id: 'customer',
+    hint: '这里设置客户活跃、沉睡和商机预警的判断天数，以及客户查重阈值。生成待办使用「自动任务」里单独设置的天数。',
+    title: '客户与商机节奏',
+    color: '#12b5a0',
+    note: '多少天没动静算沉睡 / 停滞，查重多少分算重复',
+    keys: ['customer_active_days', 'customer_stale_days', 'dedup_scoring', 'opportunity_risk_days', 'opportunity_stale_days'],
+  },
+  // 「审批与外部系统」这一组删掉了（2026-11-19 主人：「是根本就不需要显示呀，
+  // 显示这个给用户看做什么」）。组里只有同序 OA 三个模板编号（PROC-…），
+  // 它们是接入后台的东西，业务管理员既看不懂也用不上；配错了反而会"看着配好了、
+  // 实际发不出单"。报价审批分级在「报价与定价」单独编辑。
+  {
+    id: 'notify',
+    hint: '这两项是安全阈值和计费口径，改由实施来定；页面上只读，值随时看得见。',
+    title: '导出与物流',
+    color: '#00b42a',
+    /* 2026-11-19 主人：「按你建议恢复」—— 组回来了，但两行改只读：
+       export 是防数据外泄的闸门（单次最多 5000 行、24 小时超 2 万行记审计告警），
+       让管理员在页面上调大它等于拆闸门；logistics_volumetric_ratio 是物流计费
+       口径（体积重系数，0 = 不折算）。两个都只展示、不提供编辑入口，
+       真要改走实施（后端 PATCH /api/v1/settings）。 */
+    note: '导出上限与告警阈值、物流体积重系数；只读展示，改动由实施处理',
+    keys: ['export', 'logistics_volumetric_ratio'],
+  },
+]
+
+/**
+ * 「业务规则」页顶部的药丸切换（2026-11-19）。
+ *
+ * 这一页原来是把九块内容从下往上摞：公海回收规则 → 回收节奏 → 指路条 →
+ * 自动任务 → 系统配置六组，一屏滚到底、白卡接白卡。主人说"布局设计质感都不行"。
+ * 现在每次只显示一块：先选"改哪件事"，再改。
+ *
+ * 药丸上的那一点颜色就是该组的色相（和组标题前的圆点同一个色），
+ * 选中时用该色 8% 的淡底 —— 有颜色，但整页仍是白底。
+ */
+const GROUP_TAB_LABEL: Record<string, string> = {
+  customer: '客户与商机',
+}
+
+const RULE_PANELS = [
+  { key: 'unrated', label: '未分级客户' },
+  { key: 'pool', label: '公海回收' },
+  { key: 'auto', label: '自动任务' },
+  ...SETTING_GROUPS.map((g) => ({
+    key: `g-${g.id}`,
+    label: GROUP_TAB_LABEL[g.id] ?? g.title,
+  })),
+]
+
+const SETTINGS_SEARCH = [
+  ...[PROFILE_TAB, ...TABS].map((tab) => ({
+    label: tab.tab, description: tab.description, place: '系统设置', to: `/settings?tab=${tab.itemKey}`,
+  })),
+  ...RULE_PANELS.map((panel) => ({
+    label: panel.label,
+    description: {
+      unrated: '设置未分级客户的提醒与处理方式。',
+      pool: '设置公海回收、未跟进天数、预告期和暂缓期。',
+      auto: '设置报价未跟进、重点客户久未联系和应收即将到期的待办提醒。',
+    }[panel.key] ?? SETTING_GROUPS.find((group) => `g-${group.id}` === panel.key)?.note ?? '',
+    place: '业务规则',
+    to: `/settings?tab=rules&section=${panel.key}`,
+  })),
+  ...SETTING_GROUPS.flatMap((group) => group.keys.map((key) => ({
+    label: key === 'dedup_scoring' ? '客户查重阈值' : settingLabel(key),
+    description: settingDescription(key),
+    place: `业务规则 / ${GROUP_TAB_LABEL[group.id] ?? group.title}`,
+    to: `/settings?tab=rules&section=g-${group.id}`,
+  }))),
+  ...['pool_recycle_notice_days', 'pool_recycle_defer_days', 'pool_recycle_max_protect_days'].map((key) => ({
+    label: settingLabel(key), description: settingDescription(key), place: '业务规则 / 公海回收',
+    to: '/settings?tab=rules&section=pool',
+  })),
+  {
+    label: '恢复公海客户', description: '在角色里选择哪些岗位有权恢复已回收的客户。',
+    place: '角色与数据范围', to: '/settings?tab=roles',
+  },
+  {
+    label: '企业微信提醒怎么发', description: '选择逐条即时推送或每天汇总发送。',
+    place: '通知', to: '/settings?tab=notifications',
+  },
+]
+
+const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
+  company_name: { kind: 'text', placeholder: '例如：杭州天初科技有限公司' },
+  customer_active_days: { unit: '天', presets: [7, 15, 30] },
+  customer_stale_days: { unit: '天', presets: [30, 60, 90] },
+  opportunity_risk_days: { unit: '天', presets: [7, 14, 30] },
+  opportunity_stale_days: { unit: '天', presets: [15, 30, 60] },
+  quote_valid_days: { unit: '天', presets: [7, 15, 30, 60] },
+  pool_recycle_defer_days: { unit: '天', presets: [15, 30, 60], min: 0, max: 365 },
+  pool_recycle_notice_days: { unit: '天', presets: [0, 3, 7, 15], min: 0, max: 365 },
+  pool_recycle_max_protect_days: { unit: '天', presets: [30, 60, 90] },
+  default_min_margin: { kind: 'percent', hint: '填 15 表示最低毛利 15%' , presets: [10, 15, 20, 25] },
+  default_target_margin: { kind: 'percent', hint: '填 30 表示目标毛利 30%' , presets: [20, 25, 30, 35] },
+  price_range_ratio: { kind: 'percent', hint: '报价区间宽度，填 4 表示 ±4%' , presets: [3, 4, 5] },
+  hard_floor: {
+    kind: 'select',
+    options: [
+      { value: 'off', label: '关闭绝对底价' },
+      { value: 'cost', label: '不得低于成本' },
+      { value: 'cost_markup', label: '不得低于成本加成价' },
+    ],
+  },
+  default_delivery_terms: { kind: 'multiline', placeholder: '新报价默认带上的交货与运费说明' },
+  default_payment_terms: { kind: 'text', placeholder: '例如：款到发货' },
+  /** 权限码这一项：选项在页面里按权限清单现取，所以这里只声明"是选择类" */
+  logistics_volumetric_ratio: { unit: 'kg/m³', hint: '体积重换算系数，0 表示不折算' },
+  dedup_scoring: { unit: '分', min: 0, max: 100, hint: '总分达到这个分数时提示疑似重复' },
+  export: { unit: '行', hint: '单次导出上限；超阈值提醒在下面几项单独配' },
+  dingtalk_oa: { kind: 'object' },
+  dingtalk_sample_oa: { kind: 'object' },
+  dingtalk_contract_oa: { kind: 'object' },
+  notification_channels: { kind: 'object' },
+  notification_levels: { kind: 'object' },
+  notification_retry: { kind: 'object' },
+  approval_levels: { kind: 'object' },
+}
+
+/** 库里的小数比例 ↔ 界面上的整数百分比。0.15 → "15"，填 "15" → 0.15。 */
+function ratioToText(value: unknown): string {
+  const num = Number(value)
+  if (!Number.isFinite(num)) return ''
+  return String(Math.round(num * 1000) / 10)
+}
+
+type SettingSaveStatus = 'idle' | 'dirty' | 'saving' | 'saved' | 'error'
+
+/**
+ * 一个配置项的「值」：输入框 + 单位 + 保存状态。
+ *
+ * 三件事必须让用户看见：
+ * 1) 单位 —— 30 是 30 天，不是 30 个；
+ * 2) 未保存 / 已保存 —— 原来是"移开焦点就静默提交 + 全表弹一个 toast"，
+ *    改了哪一行、存没存上，心里没数；
+ * 3) 填错了 —— 数字项填了汉字当场标红，不要等提交回来才报错。
+ */
+/**
+ * 「这一项到底配没配」的判据。
+ *
+ * 不能数对象里有几个 key：同序 OA 的配置对象里 `field_map`、`content_component`
+ * 这些空壳字段永远存在，数出来是"已配置 10 项"；反过来只挑一个标量看，
+ * 又会把配好的项判成空。所以按业务上的"关键字段"逐项判：
+ * 同序 OA 三件看审批模板编号（process_code），有编号才算接通。
+ */
+function objectConfigInfo(key: string, value: unknown): { configured: boolean; detail: string; detailFull?: string } {
+  const raw = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>
+  if (key === 'dingtalk_oa' || key === 'dingtalk_contract_oa' || key === 'dingtalk_sample_oa') {
+    const code = String(raw.process_code ?? '').trim()
+    if (!code) return { configured: false, detail: '' }
+    const mapCount = raw.field_map && typeof raw.field_map === 'object'
+      ? Object.keys(raw.field_map as Record<string, unknown>).length
+      : 0
+    const owners = Array.isArray(raw.quote_owners) ? raw.quote_owners.length : 0
+    const bits = [mapCount ? `映射 ${mapCount} 项` : '', owners ? `发起人 ${owners} 人` : ''].filter(Boolean)
+    return {
+      configured: true,
+      detail: bits.length ? bits.join(' · ') : '模板已接',
+      detailFull: `${code}${bits.length ? ` · ${bits.join(' · ')}` : ''}`,
+    }
+  }
+  const count = Array.isArray(value) ? value.length : Object.keys(raw).length
+  return { configured: count > 0, detail: `${count} 项` }
+}
+
+
+function SettingValueField({
+  rowKey,
+  field,
+  value,
+  markupRatio,
+  onSave,
+}: {
+  rowKey: string
+  field: string
+  value: unknown
+  markupRatio?: unknown
+  onSave: (next: Record<string, unknown>) => Promise<unknown>
+}) {
+  const meta = SETTING_FIELD_META[rowKey] ?? {}
+  const kind = meta.kind ?? 'number'
+  const choices = meta.options
+  const isHardFloor = rowKey === 'hard_floor'
+  const initial = kind === 'percent' ? ratioToText(value) : value === null || value === undefined ? '' : String(value)
+  const currentMarkup = Number(markupRatio ?? 0)
+  const initialMarkup = (currentMarkup * 100).toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 15 })
+  const [text, setText] = useState(initial)
+  const [markup, setMarkup] = useState(initialMarkup)
+  const [status, setStatus] = useState<SettingSaveStatus>('idle')
+  /** 静止态 / 编辑态：页面静止时只有一个值，点开才长控件 */
+  const [open, setOpen] = useState(false)
+  /** 有预设取值的项：默认只给胶囊，点「自定义」才露出输入框 */
+  const [custom, setCustom] = useState(false)
+
+  const editsMarkup = isHardFloor && text === 'cost_markup'
+  const markupPercent = Number(markup)
+  const validMarkup = markup.trim() !== '' && Number.isFinite(markupPercent) && markupPercent >= 0 && markupPercent <= 100
+  const markupChanged = editsMarkup && markup !== initialMarkup
+
+  const finish = (next: SettingSaveStatus) => {
+    setStatus(next)
+    if (next === 'saved') window.setTimeout(() => setStatus((current) => (current === 'saved' ? 'idle' : current)), 1400)
+  }
+
+  const commit = async (raw: string) => {
+    if (status === 'saving') return
+    let parsed: unknown = raw
+    if (kind === 'percent') {
+      const num = Number(raw)
+      if (!raw.trim() || !Number.isFinite(num) || (meta.min !== undefined && num < meta.min)) {
+        finish('error')
+        return
+      }
+      parsed = num / 100
+    } else if (kind === 'number') {
+      if (raw.trim() === '') { setStatus('error'); return }
+      const num = Number(raw)
+      if (!Number.isFinite(num)) { setStatus('error'); return }
+      if (meta.min !== undefined && num < meta.min) { setStatus('error'); return }
+      if (meta.max !== undefined && num > meta.max) { setStatus('error'); return }
+      parsed = num
+    }
+    if (editsMarkup && !validMarkup) return
+    if (raw === initial && !markupChanged) { setOpen(false); setStatus('idle'); return }
+    const next = { [field]: parsed }
+    if (editsMarkup) next.markup_ratio = markupChanged ? markupPercent / 100 : currentMarkup
+    setStatus('saving')
+    try {
+      await onSave(next)
+      setOpen(false)
+      finish('saved')
+    } catch {
+      finish('error')
+    }
+  }
+
+  if (kind === 'object') {
+    const info = objectConfigInfo(rowKey, value)
+    // "已配置 0 项"自相矛盾（同序 OA 这几项的字段映射就是空对象）：
+    // 没配就写"未配置"，并明确"在哪配"，别让人以为这行坏了。
+    if (!info.configured) {
+      return (
+        <div className="setting-object-value">
+          <Tag color="orange" size="small">未配置</Tag>
+          <span>在下方对应区块填写后生效</span>
+        </div>
+      )
+    }
+    return (
+      <div className="setting-object-value">
+        <Tag color="blue" size="small">已配置</Tag>
+        <span title={info.detailFull}>{info.detail}</span>
+      </div>
+    )
+  }
+
+  const readText = () => {
+    if (isHardFloor && initial === 'cost_markup') return `成本加成 ${initialMarkup}%`
+    if (kind === 'select') return choices?.find((option) => option.value === initial)?.label ?? '当前值待核对'
+    return `${initial}${kind === 'percent' ? '%' : meta.unit ?? ''}`
+  }
+  const cancel = () => {
+    setText(initial)
+    setOpen(false)
+    setCustom(false)
+    setStatus('idle')
+  }
+
+  if (!open) {
+    const empty = kind !== 'select' && initial.trim() === ''
+    return (
+      <div className="setting-value-cell">
+        <button
+          type="button"
+          className={`setting-value-view${empty ? ' is-empty' : ''}`}
+          aria-label={`修改${rowKey === 'dedup_scoring' ? '客户查重阈值' : settingLabel(rowKey)}`}
+          onClick={() => {
+            setText(initial)
+            setMarkup(initialMarkup)
+            setOpen(true)
+            setStatus('dirty')
+          }}
+        >
+          <span className="setting-value-text">{empty ? '未填写' : readText()}</span>
+          <span className="setting-value-edit"><IconEditStroked size="small" aria-hidden="true" />修改</span>
+        </button>
+        {status === 'saved' && <span className="setting-save-state is-saved">已保存</span>}
+      </div>
+    )
+  }
+
+  const actions = (
+    <div className="setting-value-actions">
+      <Button size="small" theme="outline" disabled={kind === 'select' && (
+        !text || (text === initial && !markupChanged) || (editsMarkup && !validMarkup)
+      )} loading={status === 'saving'} onClick={() => void commit(text)}>
+        保存
+      </Button>
+      <Button size="small" theme="borderless" disabled={status === 'saving'} onClick={cancel}>
+        取消
+      </Button>
+      {status === 'error' && <span className="setting-save-state is-error">未保存，请核对后重试</span>}
+    </div>
+  )
+
+  if (kind === 'select') {
+    return (
+      <div className="setting-value-cell is-editing">
+        <div className="setting-option-chips">
+          {choices?.map((option) => (
+            <button
+              type="button"
+              key={option.value}
+              className={`setting-option-chip${option.value === text ? ' is-on' : ''}`}
+              aria-pressed={option.value === text}
+              disabled={status === 'saving'}
+              onClick={() => { setText(option.value); setStatus('dirty') }}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+        {editsMarkup && (
+          <div className="setting-markup-editor">
+            <label htmlFor="setting-hard-floor-markup">成本加成比例</label>
+            <Input
+              id="setting-hard-floor-markup"
+              inputMode="decimal"
+              suffix="%"
+              value={markup}
+              disabled={status === 'saving'}
+              aria-invalid={!validMarkup}
+              onChange={(next) => { setMarkup(next); setStatus('dirty') }}
+            />
+            <div className="settings-help">
+              {validMarkup
+                ? `成本 100 元时，绝对底价为 ${(100 + markupPercent).toLocaleString('zh-CN', { maximumFractionDigits: 4 })} 元。`
+                : '请输入 0 到 100 之间的百分比。'}
+            </div>
+          </div>
+        )}
+        {actions}
+      </div>
+    )
+  }
+
+  // 长文本：这里才真的需要一块文本域
+  if (kind === 'multiline') {
+    return (
+      <div className="setting-value-cell is-editing">
+        <TextArea
+          // 定高 3 行，不用 autosize：autosize 的外层容器比可见框高出 40px，
+          // 说明文字被顶出一条空白，看着像这一段没填。
+          rows={3}
+          value={text}
+          placeholder={meta.placeholder}
+          onChange={(next) => { setText(next); setStatus('dirty') }}
+        />
+        {actions}
+      </div>
+    )
+  }
+
+  // 数字 / 百分比 / 短文本：先给常见取值，想填别的点「自定义」
+  // （主人 2026-11-19：「该有自定义的要能自定义」—— 原来胶囊旁边直接摆一个
+  //   没说明的输入框，既不知道它是"兜底"，也说不清什么时候该用它。）
+  const needCustom = !meta.presets || custom
+  return (
+    <div className="setting-value-cell is-editing">
+      {meta.presets && (
+        <div className="setting-preset-row">
+          {meta.presets.map((preset) => (
+            <button
+              type="button"
+              key={preset}
+              className={`setting-preset${!custom && String(preset) === text ? ' is-on' : ''}`}
+              onClick={() => {
+                setCustom(false)
+                setText(String(preset))
+                setStatus('dirty')
+              }}
+            >
+              {preset}
+              {kind === 'percent' ? '%' : meta.unit ?? ''}
+            </button>
+          ))}
+          {/* 预设只是"最常见的几个"，不是全部取值 —— 留一个明确的出口 */}
+          <button
+            type="button"
+            className={`setting-preset is-custom${custom ? ' is-on' : ''}`}
+            onClick={() => {
+              setCustom(true)
+              setStatus('dirty')
+            }}
+          >
+            {custom ? '自定义中' : '自定义…'}
+          </button>
+        </div>
+      )}
+      {needCustom && (
+        <div className="setting-value-row">
+          <Input
+            autoFocus={meta.presets ? true : undefined}
+            className={meta.unit || kind === 'number' || kind === 'percent' ? 'setting-value-input is-num' : 'setting-value-input'}
+            value={text}
+            placeholder={meta.placeholder ?? (meta.min !== undefined ? `${meta.min}–${meta.max ?? '不限'}` : '填一个数')}
+            suffix={meta.unit ?? (kind === 'percent' ? '%' : undefined)}
+            onChange={(next) => { setText(next); setStatus('dirty') }}
+            onEnterPress={() => void commit(text)}
+          />
+          {actions}
+        </div>
+      )}
+      {meta.presets && !custom && (
+        actions
+      )}
+    </div>
+  )
+}
+
+function CustomerScoreDetails({ details }: { details?: SystemSettingRow['customer_score_details'] }) {
+  return (
+    <details className="customer-score-details">
+      <summary>查看计分规则</summary>
+      {details ? (
+        <div className="customer-score-body">
+          <div className="customer-score-groups">
+            <section>
+              <h5>客户名称</h5>
+              <dl>
+                <div><dt>名称一致</dt><dd>{details.points.weight_name_exact} 分</dd></div>
+                <div><dt>一个名称含另一个</dt><dd>{details.points.weight_name_contains} 分</dd></div>
+                <div><dt>名称部分相似</dt><dd>{details.points.weight_name_contains} 分 × 相似度</dd></div>
+              </dl>
+              <p>名称从上到下只取一项。部分相似时，用最长一段连续相同的字数除以较短名称的字数，达到 {Math.round(details.name_similarity_min * 100)}% 才计分，结果向下取整。</p>
+            </section>
+            <section>
+              <h5>其他匹配项</h5>
+              <dl>
+                <div><dt>统一社会信用代码一致</dt><dd>{details.points.weight_tax_no} 分</dd></div>
+                <div><dt>联系人手机号一致</dt><dd>{details.points.weight_mobile} 分</dd></div>
+                <div><dt>官网域名一致</dt><dd>{details.points.weight_domain} 分</dd></div>
+                <div><dt>地址一致</dt><dd>{details.points.weight_address} 分</dd></div>
+              </dl>
+            </section>
+          </div>
+          <p className="customer-score-total">各项得分相加，最高 {details.max_score} 分。当前达到 <strong>{details.points.threshold} 分</strong>就会提示疑似重复。</p>
+        </div>
+      ) : <p className="settings-help">暂时无法读取当前计分规则。</p>}
+    </details>
+  )
 }
 
 export default function SettingsPage() {
+  /* 填原因的弹窗（2026-11-19）：原来这里三处都是 window.prompt，
+     浏览器原生灰框、顶着"127.0.0.1:5275 显示"，没法做必填和字数提示。 */
+  const notePrompt = useNotePrompt()
   // 支持深链：/settings?tab=rules
   const [searchParams, setSearchParams] = useSearchParams()
-  const { isAdmin, can } = usePermissions()
-  // 个人账号向全部登录人开放；管理与公海复核仍分别按权限开放。
-  const canReviewPool = can('customer:pool_review')
+  const { isAdmin } = usePermissions()
+  const [settingSearch, setSettingSearch] = useState('')
+  const searchTerms = settingSearch.trim().toLowerCase().split(/\s+/).filter(Boolean)
+  const settingMatches = searchTerms.length > 0 ? SETTINGS_SEARCH.filter((entry) => {
+    const text = `${entry.label} ${entry.description} ${entry.place}`.toLowerCase()
+    return searchTerms.every((term) => text.includes(term))
+  }) : []
+  // 个人账号向全部登录人开放；管理与规则配置按 settings:manage 开放。
+  // 公海回收的**复核**已经搬成独立页（/pool-recycle），这里不再有复核页签。
   // 第一个页签改叫「我的」而不是「个人账号」：它现在不只有登录名/密码，
   // 还挂着「我的信息」和「我的权限」—— 叫「个人账号」的话，想看自己有哪些
   // 权限的人根本不会往这里点。
-  const visibleTabs = [{ tab: '我的', itemKey: 'profile' }, ...(isAdmin ? TABS : canReviewPool ? TABS.filter((item) => item.itemKey === 'rules') : [])]
+  const visibleTabs = [PROFILE_TAB, ...(isAdmin ? TABS : [])]
   const activeKey = visibleTabs.some((item) => item.itemKey === searchParams.get('tab'))
     ? searchParams.get('tab')! : (isAdmin ? 'users' : 'profile')
+  const currentTab = visibleTabs.find((item) => item.itemKey === activeKey) ?? PROFILE_TAB
 
   // 设置页按「这是谁的事」分四组：个人 / 组织与人 / 业务配置 / 系统。
   // 组内一个可见页签都没有的组直接不渲染 —— 普通用户只看到「我的」，
   // 不会冒出三个空标题；只有公海复核权的人只多出「业务配置」一组。
   const tabGroups = [
-    { title: '个人', keys: ['profile'] },
-    { title: '组织与权限', keys: ['users', 'roles', 'departments'] },
-    { title: '业务配置', keys: ['tags', 'dictionaries', 'rules'] },
-    { title: '系统', keys: ['notifications', 'audit'] },
+    { id: 'personal', title: '个人', keys: ['profile'] },
+    { id: 'organization', title: '组织与权限', keys: ['users', 'roles', 'departments'] },
+    { id: 'business', title: '业务配置', keys: ['tags', 'dictionaries', 'rules'] },
+    { id: 'system', title: '系统', keys: ['notifications', 'audit'] },
   ]
     .map((group) => ({
-      title: group.title,
+      ...group,
       items: visibleTabs.filter((item) => group.keys.includes(item.itemKey)),
     }))
     .filter((group) => group.items.length > 0)
@@ -116,6 +642,9 @@ export default function SettingsPage() {
   // 关键字分成两个状态：`userKeywordInput` 是输入框里的字、`userKeyword`
   // 是**已经提交给服务端**的那个（回车或点「查询」才更新）—— 否则每敲一个字
   // 就发一次请求，人还没打完列表已经翻腾好几轮了。
+  // 业务规则子页由 URL 参数选中。
+  const requestedPanel = searchParams.get('section')
+  const panelKey = RULE_PANELS.some((panel) => panel.key === requestedPanel) ? requestedPanel! : 'pool'
   const [userKeywordInput, setUserKeywordInput] = useState('')
   const [userKeyword, setUserKeyword] = useState('')
   const [userStatus, setUserStatus] = useState<string>('')
@@ -152,26 +681,6 @@ export default function SettingsPage() {
     queryFn: listPublicPoolRules,
     enabled: isAdmin && activeKey === 'rules',
   })
-  // 回收候选（预告）：主管逐条复核的对象（返工单 6.3）
-  //
-  // 返修单第六批第 10 条：此前页面**只查 pending**，于是"暂缓"一点记录就从
-  // 页面上消失（其实还在等期满）、已回收的也找不回来（恢复入口无处可点）。
-  // 现在按状态分页签：待复核 / 已暂缓 / 已回收 / 已驳回。
-  const [candidatePage, setCandidatePage] = useState(1)
-  const [candidatePageSize, setCandidatePageSize] = useState(20)
-  const [candidateStatus, setCandidateStatus] = useState<RecycleStatus>('pending')
-  const [selectedCandidateIds, setSelectedCandidateIds] = useState<number[]>([])
-  const candidatesQuery = useQuery({
-    queryKey: ['recycle-candidates', candidateStatus, candidatePage, candidatePageSize],
-    queryFn: () =>
-      listRecycleCandidates({
-        status: candidateStatus,
-        page: candidatePage,
-        page_size: candidatePageSize,
-      }),
-    // 有回收复核权（主管）或管理员都能看，不再限死管理员
-    enabled: (isAdmin || canReviewPool) && activeKey === 'rules',
-  })
   const taskRulesQuery = useQuery({
     queryKey: ['task-rules'],
     queryFn: listTaskRules,
@@ -190,18 +699,11 @@ export default function SettingsPage() {
   const [dictionaryForm, setDictionaryForm] = useState({
     type: 'customer_level', code: '', label: '', sort_no: '0', remark: '',
   })
-  // 恢复权限要从权限表里挑，不能让人手敲：敲错一个字母，界面上看起来"设好了"，
-  // 实际谁都恢复不了（后端也会拒，但不如直接给选项清楚）
-  const recyclePermsQuery = useQuery({
-    queryKey: ['settings-permissions'],
-    queryFn: listPermissions,
-    enabled: isAdmin && activeKey === 'rules',
-  })
   const settingRow = (key: string): SystemSettingRow | null =>
     (settingsQuery.data ?? []).find((row) => row.key === key) ?? null
   const noticeSetting = settingRow('pool_recycle_notice_days')
   const deferSetting = settingRow('pool_recycle_defer_days')
-  const restoreSetting = settingRow('pool_recycle_restore_permission')
+  const protectSetting = settingRow('pool_recycle_max_protect_days')
 
   // 客户标签字典（03-API §7 的 /tags）
   const tagsQuery = useQuery({
@@ -210,19 +712,21 @@ export default function SettingsPage() {
     enabled: isAdmin && activeKey === 'tags',
   })
   const [tagForm, setTagForm] = useState<{ name: string; type: string }>({ name: '', type: 'custom' })
+  const tagNameInput = useRef<HTMLInputElement>(null)
+  const [tagCreateError, setTagCreateError] = useState('')
   const [tagEditTarget, setTagEditTarget] = useState<TagRow | null>(null)
 
   const refreshTags = () => void queryClient.invalidateQueries({ queryKey: ['settings-tags'] })
 
   const createTagMutation = useMutation({
-    mutationFn: () => createTag({ name: tagForm.name, type: tagForm.type }),
+    mutationFn: createTag,
     onSuccess: () => {
       Toast.success('标签已创建')
       setTagForm({ name: '', type: 'custom' })
       refreshTags()
       void queryClient.invalidateQueries({ queryKey: ['tags'] })
     },
-    onError: (error: Error) => Toast.error(error.message),
+    onError: (error: Error) => setTagCreateError(error.message),
   })
 
   const updateTagMutation = useMutation({
@@ -270,7 +774,10 @@ export default function SettingsPage() {
         trigger_config: { ...(rule?.trigger_config ?? {}), days },
       })
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
+      queryClient.setQueryData<TaskRuleRow[]>(['task-rules'], (rows) =>
+        rows?.map((row) => row.id === data.id ? data : row),
+      )
       Toast.success('自动任务规则已保存')
       refreshRules()
     },
@@ -278,10 +785,15 @@ export default function SettingsPage() {
   })
 
   const settingMutation = useMutation({
-    mutationFn: ({ key, value }: { key: string; value: Record<string, unknown> }) =>
+    mutationFn: ({ key, value }: { key: string; value: Record<string, unknown>; silent?: boolean }) =>
       saveSetting(key, value),
-    onSuccess: () => {
-      Toast.success('配置已保存')
+    onSuccess: (data, variables) => {
+      // silent：系统配置表每一行都有自己的"已保存"提示，再弹一个全表 toast
+      // 就变成"改一项弹一次"，反而看不清是哪行存的。
+      if (!variables?.silent) Toast.success('配置已保存')
+      queryClient.setQueryData<SystemSettingRow[]>(['system-settings'], (rows) =>
+        rows?.map((row) => row.key === data.key ? data : row),
+      )
       refreshRules()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -312,6 +824,29 @@ export default function SettingsPage() {
 
   const renderSettingValue = (record: SystemSettingRow) => {
     const raw = record.value ?? {}
+    // 这两项只读（2026-11-19 恢复该组时定的口径）：
+    // 不是不给看，是不给在页面上改 —— 一个是防外泄的行数闸门，一个是物流计费口径，
+    // 调错了要么导不出、要么算错运费，都由实施确认后再改。
+    if (record.key === 'export') {
+      const box = (raw ?? {}) as Record<string, unknown>
+      const limit = Number(box.limit ?? 5000)
+      const alertRows = Number(box.alert_rows ?? 20000)
+      const windowHours = Number(box.alert_window_hours ?? 24)
+      return (
+        <span className="setting-readonly-value">
+          单次最多导出 {limit.toLocaleString()} 行；{windowHours} 小时内导出超过{' '}
+          {alertRows.toLocaleString()} 行会记一条审计告警
+        </span>
+      )
+    }
+    if (record.key === 'logistics_volumetric_ratio') {
+      const ratio = Number(raw?.number ?? 0)
+      return (
+        <span className="setting-readonly-value">
+          {ratio === 0 ? '未启用 —— 计费重量只按实际重量算' : `1 立方米按 ${ratio} kg 折算`}
+        </span>
+      )
+    }
     if (record.key === 'approval_levels' && Array.isArray(raw.levels)) {
       // 审批分档改成"就地编辑表格"（2026-10-14 主人拍板）。
       // 旧写法是一张只读小表格 + 一个让你**手写整段 JSON** 的输入框：
@@ -329,29 +864,38 @@ export default function SettingsPage() {
         />
       )
     }
-    const first = Object.values(raw)[0]
-    const key = Object.keys(raw)[0] ?? 'text'
-    // 有些配置项的值不是标量而是对象（同序 OA 审批配置里 template_id / 字段映射装在
-    // 一层对象里），直接 String(它) 出来就是 `[object Object]` —— 既看不懂也改不了，
-    // 还占着一个输入框。这种就显示"已配置（N 项）"，并写明在哪改。
-    if (first !== null && typeof first === 'object') {
-      const count = Array.isArray(first) ? first.length : Object.keys(first as object).length
+    // 一条配置的值可能是个对象（threshold + 若干权重、limit + 提醒阈值、
+    // 同序 OA 的模板号 + 字段映射）。取第一个标量来就地编辑，其余交给
+    // 专门的区块（「客户查重规则」「同序 OA 审批配置」）；
+    // 整个都是对象的那几个（通知渠道 / 重试策略）则由组件渲染成"已配置 N 项"。
+    // ⚠️ kind === 'object' 的项必须把**整个对象**传下去。
+    // 以前这里统一"取第一个标量字段"再传，而 object 那几项（同序 OA 三件）
+    // 传下去的其实是一串 process_code —— 组件拿字符串去数 key，永远是 0 项，
+    // 于是明明配好了模板和字段映射，页面上却写「未配置」（2026-11-19 主人问：
+    // "这个我没配置吗"，实测后端有 process_code + field_map + 发起人）。
+    if ((SETTING_FIELD_META[record.key]?.kind) === 'object') {
       return (
-        <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-          已配置（{count} 项）
-        </span>
+        <SettingValueField
+          rowKey={record.key}
+          field={record.key}
+          value={raw}
+          onSave={(next) => settingMutation.mutateAsync({ key: record.key, value: next, silent: true })}
+        />
       )
     }
+    const scalarKey = (record.key === 'hard_floor' ? 'mode' : record.key === 'dedup_scoring' ? 'threshold' : undefined) ?? Object.keys(raw).find((name) => {
+      const candidate = raw[name]
+      return candidate === null || candidate === undefined || typeof candidate !== 'object'
+    }) ?? Object.keys(raw)[0] ?? 'text'
     return (
-      <Input
-        defaultValue={first === undefined || first === null ? '' : String(first)}
-        // 宽度跟着列走，不写死 260：列宽 263 的时候 260 会把输入框顶出卡片右边。
-        style={{ width: '100%' }}
-        onBlur={(event) => {
-          const next = (event.target as HTMLInputElement).value
-          if (next === String(first ?? '')) return
-          settingMutation.mutate({ key: record.key, value: { [key]: next } })
-        }}
+      <SettingValueField
+        rowKey={record.key}
+        field={scalarKey}
+        value={record.key === 'dedup_scoring'
+          ? record.customer_score_details?.points.threshold ?? raw[scalarKey]
+          : raw[scalarKey]}
+        markupRatio={record.key === 'hard_floor' ? raw.markup_ratio : undefined}
+        onSave={(next) => settingMutation.mutateAsync({ key: record.key, value: next, silent: true })}
       />
     )
   }
@@ -359,125 +903,20 @@ export default function SettingsPage() {
   const recycleMutation = useMutation({
     mutationFn: runPublicPoolRecycle,
     onSuccess: (data) => {
-      // 文案要说清"提名 ≠ 回收"：老版本这里写的是"已回收 N 个客户"，
-      // 现在扫描只提名，回收要等主管批（返工单 6.3）
-      Toast.success(
-        `扫描完成：提名 ${data.nominated_count} 个待复核`
-          + (data.protected_count ? `，${data.protected_count} 个在履约中已豁免` : ''),
-      )
+      Toast.success(data.nominated_count ? `扫描完成，新生成 ${data.nominated_count} 条回收预告` : '扫描完成，没有新增回收预告')
       void queryClient.invalidateQueries({ queryKey: ['recycle-candidates'] })
       refreshRules()
     },
     onError: (error: Error) => Toast.error(error.message),
   })
-
-  const decideMutation = useMutation({
-    mutationFn: ({ id, decision, note, early }: {
-      id: number
-      decision: 'approve' | 'reject' | 'defer'
-      note?: string
-      early?: boolean
-    }) => decideRecycleCandidate(id, decision, note, early),
-    onSuccess: (row) => {
-      Toast.success(`已${row.status_label}`)
-      void queryClient.invalidateQueries({ queryKey: ['recycle-candidates'] })
-    },
-    onError: (error: Error) => Toast.error(error.message),
-  })
-
-  /**
-   * 批量复核结果：**逐条**记住哪条成、哪条为什么没成。
-   * 只弹一句"已处理 N 条"是不够的 —— 被拦下的那条还留在待复核里，
-   * 页面不列出来，主管会以为都办完了（返修单第六批第 10 条）。
-   */
-  const [batchResult, setBatchResult] = useState<{
-    done: { candidate_id: number; status: string }[]
-    failed: { candidate_id: number; reason: string; code: number }[]
-  } | null>(null)
-  const batchMutation = useMutation({
-    mutationFn: (payload: {
-      decision: 'approve' | 'reject' | 'defer'
-      note?: string
-      early?: boolean
-    }) =>
-      batchDecideRecycleCandidates({ candidateIds: selectedCandidateIds, ...payload }),
-    onSuccess: (data) => {
-      setBatchResult(data)
-      setSelectedCandidateIds([])
-      if (data.failed.length) {
-        Toast.warning(
-          `已处理 ${data.done.length} 条，${data.failed.length} 条未处理（下方逐条列了原因）`,
-        )
-      } else {
-        Toast.success(`已处理 ${data.done.length} 条`)
-      }
-      void queryClient.invalidateQueries({ queryKey: ['recycle-candidates'] })
-    },
-    onError: (error: Error) => Toast.error(error.message),
-  })
-
-  const restoreMutation = useMutation({
-    mutationFn: ({ id, note }: { id: number; note?: string }) =>
-      restoreRecycleCandidate(id, note),
-    onSuccess: () => {
-      Toast.success('客户已恢复给原负责人')
-      void queryClient.invalidateQueries({ queryKey: ['recycle-candidates'] })
-      void queryClient.invalidateQueries({ queryKey: ['customers'] })
-    },
-    onError: (error: Error) => Toast.error(error.message),
-  })
-
-  /** 这条到「最早可回收时间」了吗？没到就只能走「提前回收」例外。 */
-  const isDue = (row: RecycleCandidateRow) => {
-    if (!row.earliest_action_at) return true
-    const at = new Date(row.earliest_action_at).getTime()
-    return Number.isNaN(at) || Date.now() >= at
-  }
-
-  /** 批准/驳回/暂缓。批准和暂缓可能要填说明（尤其"仍有保护但确需回收"时必须填）。 */
-  const decide = (
-    decision: 'approve' | 'reject' | 'defer',
-    row: RecycleCandidateRow,
-    options?: { early?: boolean },
-  ) => {
-    const early = options?.early ?? false
-    const label = early
-      ? '提前回收'
-      : { approve: '批准回收', reject: '驳回', defer: '暂缓' }[decision]
-    const protected_ = (row.protection ?? []).length > 0
-    const needNote = decision !== 'approve' || protected_ || early
-    if (!needNote) {
-      Modal.confirm({
-        title: `确认回收客户「${row.customer_name ?? '客户编号 ' + row.customer_id}」？`,
-        content: '执行后客户将进入公海，原负责人将不再负责该客户。',
-        okText: '确认回收',
-        onOk: () => decideMutation.mutate({ id: row.id, decision }),
-      })
-      return
-    }
-    const note = window.prompt(
-      early
-        ? `提前回收会让预告/暂缓等待期失效（最早可回收时间 ${fmtDay(row.earliest_action_at)}）。`
-          + '请填写原因（会记入审计）：'
-        : decision === 'approve' && protected_
-          ? `该客户仍有履约事项（${(row.protection ?? []).join('；')}）。`
-            + '确需例外回收，请填写原因（会记入审计）：'
-          : `请填写${label}原因（会记入审计）：`,
-    )
-    if (note === null) return
-    if (!note.trim()) {
-      Toast.error(`请填写${label}原因`)
-      return
-    }
-    decideMutation.mutate({ id: row.id, decision, note: note.trim(), early })
-  }
-
-  /** 单条恢复：把已回收的客户还给原负责人（已被别人领走时会报冲突）。 */
-  const restore = (row: RecycleCandidateRow) => {
-    const note = window.prompt('恢复给原负责人，请填写原因（会记入审计）：', '')
-    if (note === null) return
-    restoreMutation.mutate({ id: row.id, note: note.trim() || undefined })
-  }
+  const poolScan = recycleMutation.data
+  const poolScanReasons = poolScan ? [
+    { count: poolScan.cooldown_count, label: '距离上次驳回未满 30 天' },
+    { count: poolScan.already_open_count, label: '已有回收复核记录，等待处理' },
+    { count: poolScan.protected_count, label: '仍在履约保护期' },
+    { count: poolScan.disputed_count, label: '撞单争议待裁定' },
+    { count: poolScan.unknown_contact_count, label: '最近联系时间待核实' },
+  ].filter(({ count }) => (count ?? 0) > 0) : []
 
   const autoTaskMutation = useMutation({
     mutationFn: runAutoTaskRules,
@@ -588,12 +1027,6 @@ export default function SettingsPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
-  /**
-   * 同步同序 OA 人员：把账号和同序 OA 通讯录里的人对上。
-   *
-   * 结果**不看 `disabled` 就当成功**：总闸关着时后端一次请求都没发，
-   * 数字全是 0 —— 那和"同序 OA 里确实没人"是两回事，提示语必须分开。
-   */
   const dtSyncMutation = useMutation({
     mutationFn: syncDingTalkUsers,
     onSuccess: (result) => {
@@ -604,8 +1037,12 @@ export default function SettingsPage() {
         refreshUsers()
       }
     },
-    onError: (error: Error) => Toast.error(error.message),
+    onError: () => {
+      setDtSyncResult(null)
+      setDtSyncVisible(true)
+    },
   })
+  const dtSyncErrorStatus = dtSyncMutation.error instanceof ApiError ? dtSyncMutation.error.status : undefined
 
   const roleSaveMutation = useMutation({
     mutationFn: () =>
@@ -671,10 +1108,19 @@ export default function SettingsPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
-  const deptOptions = (deptsQuery.data ?? []).map((dept) => ({
-    value: dept.id,
-    label: dept.name,
-  }))
+  const departments = deptsQuery.data ?? []
+  const departmentsById = new Map(departments.map((dept) => [dept.id, dept]))
+  const deptOptions = departments.map((dept) => {
+    const path = [dept.name]
+    const visited = new Set([dept.id])
+    let parent = departmentsById.get(dept.parent_id ?? 0)
+    while (parent && !visited.has(parent.id)) {
+      path.unshift(parent.name)
+      visited.add(parent.id)
+      parent = departmentsById.get(parent.parent_id ?? 0)
+    }
+    return { value: dept.id, label: path.join(' / ') }
+  }).sort((left, right) => left.label.localeCompare(right.label, 'zh-CN'))
   const roleOptions = (rolesQuery.data ?? []).map((role) => ({
     value: role.id,
     label: `${role.name}（${role.code}）`,
@@ -753,22 +1199,13 @@ export default function SettingsPage() {
           </span>
         ),
     },
-    { title: '手机', dataIndex: 'mobile', width: 120, render: (v: string | null) => v ?? '-' },
-    {
-      // 钉钉：**有值才能用钉钉登录**。列上只显示"绑没绑"，编号放进 title 里
-      // （管理员平时不需要看那串号，要排查时鼠标一停就能看见）。
-      title: '钉钉',
-      dataIndex: 'dingtalk_userid',
-      width: 75,
-      render: (v: string | null) =>
-        v ? (
-          <span title={v}>
-            <StatusDot label="已绑定" tone="green" />
-          </span>
-        ) : (
-          <StatusDot label="未绑定" tone="grey" />
-        ),
-    },
+    // 「手机」列也摘掉了（2026-11-19 主人：「手机邮箱是根本就不用填呀」）。
+    // 这套系统是账号密码登录，不发短信、不找回密码，手机号对管理员没有读的价值。
+    // 「同步账号」（旧「钉钉」）这一列摘掉了（2026-11-19）。
+    // 主人问「同步账号是什么意思，同序 oa 那个吗」—— 它不是同序 OA 的模板编号，
+    // 而是钉钉 / 企业微信里的 userid（决定这个人能不能扫码登录）。但这套登录
+    // 没启用，列里 11 个人清一色"未绑定"，占 96px 却没有任何可操作信息；
+    // 钉钉账号的匹配结果可在同步弹窗中查看。
     {
       title: '状态',
       dataIndex: 'status',
@@ -955,59 +1392,75 @@ export default function SettingsPage() {
   ]
 
   return (
-    <div className="page-container">
+    <div className="page-container settings-page">
+      {notePrompt.node}
       <PageHeader
         // 标题跟着**当前页签**走，不能一律写「系统设置」（返修单 R12 的口径）：
         // 主管只有公海回收复核权，他翻到那一页时标题必须写「公海回收复核」，
         // 否则他会以为自己拿到了整个系统设置、跑去点用户和角色。
         // 翻到「我的」时同理 —— 那是他自己的东西，不叫「系统设置」。
-        title={
-          isAdmin
-            ? '系统设置'
-            : activeKey === 'rules'
-              ? '公海回收复核'
-              : '我的'
-        }
-        subtitle={
-          isAdmin
-            ? '用户、角色、部门可在此维护；业务规则、自动任务与系统配置可直接修改'
-            : activeKey === 'rules'
-              ? '复核本团队客户的回收候选：批准 / 驳回 / 暂缓。看得见哪些候选由你的数据范围决定'
-              : '改自己的登录名和密码，看自己的资料与权限'
-        }
+        title={isAdmin ? '系统设置' : '我的'}
+        subtitle={isAdmin ? undefined : '管理登录名、密码，查看资料与权限'}
+        extra={isAdmin && (
+          <Input className="settings-search-input" aria-label="查找设置" placeholder="查找设置，如付款条件、查重"
+            showClear value={settingSearch} onChange={setSettingSearch} />
+        )}
       />
-      <SectionCard>
-        <div className="settings-shell">
+      <div className={`settings-shell${isAdmin ? '' : ' is-personal'}`}>
+          {isAdmin && searchTerms.length > 0 && (
+            <div className="settings-search-results">
+              {settingMatches.length > 0 ? <ul aria-label="设置搜索结果">
+                {settingMatches.map((entry) => (
+                  <li key={`${entry.to}-${entry.label}`}>
+                    <Link to={entry.to} onClick={() => setSettingSearch('')}>
+                      <strong>{entry.label}</strong>
+                      <span>{entry.place}</span>
+                    </Link>
+                    {entry.description && <p>{entry.description}</p>}
+                  </li>
+                ))}
+              </ul> : <p role="status">没有找到相关设置。可以试试「权限」「通知」或「付款条件」。</p>}
+            </div>
+          )}
+          {isAdmin && (
+            <label className="settings-nav-compact">
+              <span>设置分类</span>
+              <select value={activeKey} onChange={(event) => setSearchParams({ tab: event.target.value })}>
+                {tabGroups.map((group) => (
+                  <optgroup key={group.id} label={group.title}>
+                    {group.items.map((item) => <option key={item.itemKey} value={item.itemKey}>{item.tab}</option>)}
+                  </optgroup>
+                ))}
+              </select>
+            </label>
+          )}
           <nav className="settings-nav" aria-label="设置分类">
             {tabGroups.map((group) => (
-              <div className="settings-nav-group" key={group.title}>
+              <div className="settings-nav-group" key={group.id} data-group={group.id}>
                 <div className="settings-nav-title">{group.title}</div>
                 {group.items.map((item) => (
-                  <a
+                  <Link
                     key={item.itemKey}
                     className={`settings-nav-item${activeKey === item.itemKey ? ' active' : ''}`}
-                    onClick={() => {
-                      setSearchParams({ tab: item.itemKey })
-                    }}
+                    aria-current={activeKey === item.itemKey ? 'page' : undefined}
+                    to={`/settings?tab=${item.itemKey}`}
                   >
-                    {item.tab}
-                  </a>
+                    <item.icon aria-hidden="true" />
+                    <span>{item.tab}</span>
+                  </Link>
                 ))}
               </div>
             ))}
           </nav>
-          <div className="settings-content">
-          {activeKey === 'profile' && (
-            <div style={{ display: 'grid', gap: 16 }}>
-              {/* 先给"能改的"（登录名 / 密码），再给"只能看的"（资料 / 权限）：
-                  进来是想改东西的人不用先滚过一屏只读信息。 */}
-              <PersonalAccountPanel />
-              <PersonalProfilePanel />
-            </div>
-          )}
+          <section className="settings-content" aria-labelledby="settings-pane-title">
+          <header className="settings-pane-header">
+            <h3 id="settings-pane-title" className="settings-content-heading">{isAdmin ? currentTab.tab : '个人账号'}</h3>
+            {isAdmin && <p>{currentTab.description}</p>}
+          </header>
+          {activeKey === 'profile' && <PersonalProfilePanel />}
           {activeKey === 'users' && isAdmin && (
             <>
-              <div className="toolbar">
+              <div className="toolbar settings-toolbar">
                 {/* 能搜什么要写在占位符上：不写清楚，等于没做。
                     后端按「姓名或登录名」模糊查（`User.name.ilike | User.username.ilike`）。 */}
                 <Input
@@ -1052,14 +1505,12 @@ export default function SettingsPage() {
                   }}
                   style={{ width: 160 }}
                   showClear
-                  optionList={deptOptions.map((item) => ({
-                    value: item.value as number,
-                    label: item.label as string,
-                  }))}
+                  filter
+                  optionList={deptOptions}
                 />
                 <div style={{ flex: 1 }} />
-                <Popconfirm title="确认同步同序 OA 人员？" content="将读取同序 OA 通讯录并更新本地人员绑定信息。" onConfirm={() => dtSyncMutation.mutate()}>
-                  <Button loading={dtSyncMutation.isPending}>同步同序 OA 人员</Button>
+                <Popconfirm title="确认同步钉钉账号？" content="系统会从钉钉通讯录匹配已有的 CRM 账号，用于钉钉扫码登录。" onConfirm={() => dtSyncMutation.mutate()}>
+                  <Button loading={dtSyncMutation.isPending}>同步钉钉账号</Button>
                 </Popconfirm>
                 <Button type="primary"
                   theme="outline"
@@ -1079,7 +1530,7 @@ export default function SettingsPage() {
                   新建用户
                 </Button>
               </div>
-              <Table<SystemUser> className="table-center"
+              <Table<SystemUser> className="table-center settings-list-table"
                 // 等于各列宽之和（730）。设置页左侧还有一条二级导航，
                 // 表格区只有约 660 —— 写够总宽再配 fixed 操作列，比把列压扁可读
                 scroll={{ x: 730 }}
@@ -1106,7 +1557,7 @@ export default function SettingsPage() {
           )}
           {activeKey === 'roles' && (
             <>
-              <div className="toolbar">
+              <div className="toolbar settings-toolbar">
                 {/* 本地筛就够：角色接口一次返回全部，通常也就几个到十几个。 */}
                 <Input
                   placeholder="搜索角色码 / 角色名"
@@ -1134,7 +1585,7 @@ export default function SettingsPage() {
                   新建角色
                 </Button>
               </div>
-              <Table<SystemRole> className="table-center"
+              <Table<SystemRole> className="table-center settings-list-table"
                 columns={roleColumns}
                 dataSource={filteredRoles}
                 loading={rolesQuery.isLoading}
@@ -1146,7 +1597,7 @@ export default function SettingsPage() {
           )}
           {activeKey === 'departments' && (
             <>
-              <div className="toolbar">
+              <div className="toolbar settings-toolbar">
                 {/* 同上：部门接口一次返回全部，本地筛即可。 */}
                 <Input
                   placeholder="搜索部门名称"
@@ -1167,7 +1618,7 @@ export default function SettingsPage() {
                   新建部门
                 </Button>
               </div>
-              <Table<SystemDepartment> className="table-center"
+              <Table<SystemDepartment> className="table-center settings-list-table"
                 columns={deptColumns}
                 dataSource={filteredDepts}
                 loading={deptsQuery.isLoading}
@@ -1180,16 +1631,45 @@ export default function SettingsPage() {
 
           {activeKey === 'tags' && (
             <>
-              <div className="toolbar">
+              <form
+                className="toolbar settings-toolbar"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  if (createTagMutation.isPending) return
+                  const name = tagForm.name.trim()
+                  if (!name) {
+                    setTagCreateError('请填写标签名称')
+                    tagNameInput.current?.focus()
+                    return
+                  }
+                  setTagCreateError('')
+                  createTagMutation.mutate({ ...tagForm, name })
+                }}
+              >
+                <FormLabel required style={{ marginBottom: 0 }}>
+                  <label htmlFor="settings-tag-name">标签名称</label>
+                </FormLabel>
                 <Input
+                  id="settings-tag-name"
+                  aria-label="标签名称"
+                  aria-required
+                  aria-invalid={Boolean(tagCreateError)}
+                  aria-describedby={tagCreateError ? 'settings-tag-error' : undefined}
+                  validateStatus={tagCreateError ? 'error' : 'default'}
+                  ref={tagNameInput}
                   style={{ width: 200 }}
-                  placeholder="标签名称"
+                  placeholder="例如：重点跟进"
                   value={tagForm.name}
-                  onChange={(value) => setTagForm({ ...tagForm, name: value })}
+                  disabled={createTagMutation.isPending}
+                  onChange={(value) => {
+                    setTagForm({ ...tagForm, name: value })
+                    setTagCreateError('')
+                  }}
                 />
                 <Select
                   style={{ width: 150 }}
                   value={tagForm.type}
+                  disabled={createTagMutation.isPending}
                   onChange={(value) => setTagForm({ ...tagForm, type: value as string })}
                   optionList={[
                     { value: 'custom', label: '自定义' },
@@ -1200,19 +1680,23 @@ export default function SettingsPage() {
                   ]}
                 />
                 <Button type="primary"
+                  htmlType="submit"
                   theme="outline"
                   loading={createTagMutation.isPending}
-                  disabled={!tagForm.name.trim()}
-                  onClick={() => createTagMutation.mutate()}
                 >
                   新建标签
                 </Button>
                 <div style={{ flex: 1 }} />
                 <span style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
-                  标签是受控字典，客户详情里只能从这里维护的标签中选择
+                  创建后可在客户详情里选择这个标签
                 </span>
-              </div>
-              <Table<TagRow> className="table-center"
+                {tagCreateError && (
+                  <div id="settings-tag-error" role="alert" style={{ flexBasis: '100%', color: 'var(--crm-danger)', fontSize: 12 }}>
+                    {tagCreateError}
+                  </div>
+                )}
+              </form>
+              <Table<TagRow> className="table-center settings-list-table"
                 columns={[
                   { title: '标签名', dataIndex: 'name' },
                   {
@@ -1220,7 +1704,7 @@ export default function SettingsPage() {
                     title: '分组',
                     dataIndex: 'type',
                     width: 120,
-                    render: (v: string) => (v === 'custom' ? '自定义' : v),
+                    render: (value: string) => TAG_GROUP_LABELS[value] ?? value,
                   },
                   {
                     title: '状态',
@@ -1284,7 +1768,7 @@ export default function SettingsPage() {
                   共 {(dictionariesQuery.data ?? []).length} 项
                 </span>
               </div>
-              <div className="toolbar">
+              <div className="toolbar settings-toolbar">
                 {/* 这几个框以前全靠 placeholder 自我介绍：鼠标一进去字就消失，
                     只剩三个空格子；「排序」那个框尤其像天书（0 代表什么？）。
                     给每个框配一个固定的小标签，输入时也看得见自己在填什么。 */}
@@ -1331,7 +1815,7 @@ export default function SettingsPage() {
                   </span>
                 )}
               </div>
-              <Table<DictionaryItemRow> className="table-center"
+              <Table<DictionaryItemRow> className="table-center settings-list-table"
                 columns={[
                   // 「类型」这一列删了：库里只有 customer_level 一种，四行全是同一个词，
                   // 140px 换不来任何信息 —— 类型已经在表格上方写死了。
@@ -1350,8 +1834,16 @@ export default function SettingsPage() {
                           theme="borderless"
                           size="small"
                           loading={dictionaryUpdateMutation.isPending}
-                          onClick={() => {
-                            const label = window.prompt('修改显示名称', record.label)?.trim()
+                          onClick={async () => {
+                            const label = await notePrompt.ask({
+                              title: '修改显示名称',
+                              label: '显示名称',
+                              description: `改的是业务表单里看到的名字（当前：${record.label}），不影响编码。`,
+                              defaultValue: record.label,
+                              required: true,
+                              maxLength: 40,
+                              okText: '保存',
+                            })
                             if (label) dictionaryUpdateMutation.mutate({ id: record.id, changes: { label } })
                           }}
                         >
@@ -1399,15 +1891,41 @@ export default function SettingsPage() {
             // 必须写 gridTemplateColumns: 'minmax(0, 1fr)'：单列 grid 的默认列宽是 auto，
             // 会被子项的最小宽度撑开 —— 实测被撑到 1320（容器只有 923），
             // 于是整页出现横向滚动条、右边第三列输入框被裁到框外。
-            <div style={{ display: 'grid', gap: 20, gridTemplateColumns: 'minmax(0, 1fr)' }}>
-              {isAdmin && <UnratedRulesPanel />}
+            <>
+            {isAdmin && (
+              <div className="rule-tabs" role="tablist">
+                {RULE_PANELS.map((panel) => (
+                  <button
+                    key={panel.key}
+                    type="button"
+                    role="tab"
+                    aria-selected={panelKey === panel.key}
+                    className={`rule-tab${panelKey === panel.key ? ' is-on' : ''}`}
+                    onClick={() => setSearchParams({ tab: 'rules', section: panel.key })}
+                  >
+                    {panel.label}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div style={{ display: 'grid', gap: 16, gridTemplateColumns: 'minmax(0, 1fr)' }}>
+              {settingsQuery.isError && (
+                <p className="settings-help" role="status">
+                  无法读取业务设置。 <Button theme="borderless" onClick={() => void settingsQuery.refetch()}>重新读取</Button>
+                </p>
+              )}
+              {isAdmin && (
+                <div className={panelKey === 'unrated' ? undefined : 'panel-hidden'}>
+                  <UnratedRulesPanel />
+                </div>
+              )}
               {/* ⚠️ 下面这三块（公海回收规则 / 自动任务规则 / 系统配置）都是**管理员**的活儿：
                   改规则、调参数、跑扫描，后端一律要 `settings:manage`。
                   主管只有 `customer:pool_review`，看到这些控件也点不动（会吃 403），
                   所以对非管理员**整块不渲染** —— 返修单 R12 要求"主管只进入本团队
                   复核功能"，露着不能用的按钮比藏起来更糟。 */}
               {isAdmin && (
-              <div className="rule-block">
+              <div className={`rule-block${panelKey === 'pool' ? '' : ' panel-hidden'}`}>
                 <div className="rule-block-title">公海回收规则</div>
                 {/* 说明收成两行 + 「展开」：这四句话合起来二十多行灰字，把下面那张表
                     压到屏幕外去了。默认两行够看明白"这规则干嘛的"，要抠细节再展开
@@ -1421,17 +1939,21 @@ export default function SettingsPage() {
                   批准时还会再检查一遍这期间有没有新的跟进、报价、订单或回款。
                   客户手上还有在途订单、未结应收、有效正式报价或在途打样时会被保护。
                 </Typography.Paragraph>
-                <Table<PublicPoolRuleRow> className="table-center"
+                <Table<PublicPoolRuleRow> className="table-center pool-rule-table"
                   columns={[
-                    { title: '客户等级', dataIndex: 'level', width: 110, render: (v: string) => customerLevelLabel(v) },
+                    { title: '客户等级', dataIndex: 'level', render: (v: string) => customerLevelLabel(v) },
                     {
                       title: '未跟进天数',
                       dataIndex: 'days',
-                      width: 220,
                       render: (days: number, record: PublicPoolRuleRow) => (
                         <Input
+                          aria-label={`${customerLevelLabel(record.level)}未跟进天数`}
                           defaultValue={String(days)}
-                          style={{ width: 120 }}
+                          /* 单位补上（2026-11-19）：原来只有 30 / 60 / 90 三个数字，
+                             表头写「未跟进天数」还算能猜到，但和自动任务表并排放时
+                             一边有天一边没天，看着就是两套标准。 */
+                          suffix="天"
+                          style={{ width: 104, maxWidth: '100%' }}
                           onBlur={(event) => {
                             const raw = (event.target as HTMLInputElement).value.trim()
                             const next = Number(raw)
@@ -1449,9 +1971,9 @@ export default function SettingsPage() {
                     {
                       title: '启用',
                       dataIndex: 'enabled',
-                      width: 100,
                       render: (enabled: boolean, record: PublicPoolRuleRow) => (
                         <Switch
+                          aria-label={`启用${customerLevelLabel(record.level)}回收规则`}
                           checked={enabled}
                           onChange={(value) =>
                             poolRuleMutation.mutate({ id: record.id, days: record.days, enabled: value })
@@ -1459,589 +1981,195 @@ export default function SettingsPage() {
                         />
                       ),
                     },
-                    { title: '说明', dataIndex: 'remark', render: (v: string | null) => v ?? '-' },
+                    // 「说明」这一列写的是「A 级客户 30 天未跟进回收」，和前三列完全重复。
+                    // 1024 下它只剩 30px，把表撑出横向滚动、右侧还被裁，所以整列去掉
+                    // （2026-11-18）。
                   ]}
                   dataSource={(poolRulesQuery.data ?? []).filter((row) => row.level !== 'UNRATED')}
                   loading={poolRulesQuery.isLoading}
                   rowKey="id"
                   pagination={false}
                 />
-                <div style={{ marginTop: 12 }}>
+                <div className="pool-scan-toolbar">
                   <Popconfirm title="确认扫描并生成回收预告？" content="会按当前规则生成待复核候选，不会直接回收客户。" onConfirm={() => recycleMutation.mutate()}>
                     <Button loading={recycleMutation.isPending}>扫描并生成回收预告</Button>
                   </Popconfirm>
-                  <span style={{ color: 'var(--crm-text-3)', fontSize: 12, marginLeft: 12 }}>
-                    正式运行由定时任务触发；这里只「提名」候选，不会直接回收
+                  <span>
+                    定时任务也会按这些规则生成回收预告，由主管复核。
                   </span>
                 </div>
+                {poolScan && (
+                  <section className="pool-scan-result" aria-label="本次公海扫描结果">
+                    <div className="pool-scan-result-heading">
+                      <strong role="status">{poolScan.nominated_count
+                        ? `新生成 ${poolScan.nominated_count} 条回收预告`
+                        : '本次没有新增回收预告'}</strong>
+                      <Link to="/pool-recycle">打开公海回收复核</Link>
+                    </div>
+                    {poolScan.enabled_rule_count === 0 && <div>当前没有启用的回收规则。</div>}
+                    {Boolean(poolScan.protection_overridden_count) && (
+                      <div>其中 {poolScan.protection_overridden_count} 位客户仍有履约事项，请复核时重点核对。</div>
+                    )}
+                    {poolScanReasons.length > 0 && <ul>
+                      {poolScanReasons.map(({ label, count }) => <li key={label}>{label} · {count} 位</li>)}
+                    </ul>}
+                  </section>
+                )}
               </div>
               )}
 
               {isAdmin && (
-                <div className="rule-block">
-                  <div className="rule-block-title">回收节奏与恢复权限</div>
-                  <Typography.Paragraph
-                    ellipsis={{ rows: 2, expandable: true }}
+                <div className={`rule-block${panelKey === 'pool' ? '' : ' panel-hidden'}`}>
+                  <div className="rule-block-title">回收等待时间</div>
+                  {/* 原来用 Typography ellipsis 折叠两行 —— 这段里带 <b>，
+                      折叠模式把元素串成 [object Object] 显示出来（1024 下亲眼看到）。
+                      说明本身不长，直接整段铺开，不再折叠。 */}
+                  <div
                     style={{ color: 'var(--crm-text-2)', fontSize: 12, lineHeight: 1.65, marginBottom: 12 }}
                   >
-                    <b>预告期与暂缓期现在跑的是开发默认值（7 天 / 30 天），还没经过业务确认</b>
-                    —— 口径定了在这里改。改完<b>立刻生效</b>：已经提名、还没结案的候选
-                    （待复核 / 已暂缓）会按新天数<b>一起重算到期时间</b>，不会新旧两套天数
-                    并存；已回收 / 已驳回 / 已作废的不动。三项的改动都会记进审计
-                    （含修改前后值、以及同步重算了几条候选）。
-                  </Typography.Paragraph>
+                    保存预告期或暂缓期后，待复核、已暂缓的候选会按对应的新天数重算到期时间。
+                    修改与重算记录可在审计日志查看。
+                  </div>
                   {/* 三项原来横排成三列，每列下面挂一段三四行的灰色说明 ——
                       三段说明离得远、又都压在下沿，读起来像三张便签贴在一起。
                       改成一行一项：名称 200px、控件 200 上下、说明右对齐占剩下的宽度，
                       每项一行或两行，纵向是一条干净的左边缘。 */}
                   <div style={{ display: 'grid', gap: 18 }}>
-                    <div
-                      style={{
-                        display: 'grid',
-                        gridTemplateColumns: '210px 240px minmax(0, 1fr)',
-                        gap: 16,
-                        alignItems: 'start',
-                      }}
-                    >
+                    <div className="recycle-pace-row">
                       <FormLabel>回收预告期（天）</FormLabel>
-                      <Input
-                        key={`notice-${noticeSetting?.value?.days ?? ''}`}
-                        defaultValue={String(noticeSetting?.value?.days ?? 7)}
-                        style={{ width: 220 }}
-                        onBlur={(event) => {
-                          const raw = (event.target as HTMLInputElement).value.trim()
-                          const next = Number(raw)
-                          if (!raw || !Number.isInteger(next) || next < 0 || next > 365) {
-                            Toast.warning('回收预告期须是 0–365 的整数天')
-                            return
-                          }
-                          if (next !== Number(noticeSetting?.value?.days ?? 7)) {
-                            settingMutation.mutate({
-                              key: 'pool_recycle_notice_days',
-                              value: { days: next },
-                            })
-                          }
-                        }}
+                      <SettingValueField
+                        rowKey="pool_recycle_notice_days"
+                        field="days"
+                        value={noticeSetting?.value?.days}
+                        onSave={(next) => settingMutation.mutateAsync({ key: 'pool_recycle_notice_days', value: next, silent: true })}
                       />
                       <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginTop: 4 }}>
                         扫描命中后先预告这么多天，期间业务员仍可跟进自救；
                         没满之前主管只能走「提前回收」例外。0 = 不设缓冲。
-                        {noticeSetting?.is_default ? '（当前为开发默认值）' : ''}
                       </div>
                     </div>
-                    <div
-                      style={{
-                        display: 'grid',
-                        gridTemplateColumns: '210px 240px minmax(0, 1fr)',
-                        gap: 16,
-                        alignItems: 'start',
-                      }}
-                    >
+                    <div className="recycle-pace-row">
                       <FormLabel>主管暂缓等待期（天）</FormLabel>
-                      <Input
-                        key={`defer-${deferSetting?.value?.days ?? ''}`}
-                        defaultValue={String(deferSetting?.value?.days ?? 30)}
-                        style={{ width: 220 }}
-                        onBlur={(event) => {
-                          const raw = (event.target as HTMLInputElement).value.trim()
-                          const next = Number(raw)
-                          if (!raw || !Number.isInteger(next) || next < 0 || next > 365) {
-                            Toast.warning('主管暂缓等待期须是 0–365 的整数天')
-                            return
-                          }
-                          if (next !== Number(deferSetting?.value?.days ?? 30)) {
-                            settingMutation.mutate({
-                              key: 'pool_recycle_defer_days',
-                              value: { days: next },
-                            })
-                          }
-                        }}
+                      <SettingValueField
+                        rowKey="pool_recycle_defer_days"
+                        field="days"
+                        value={deferSetting?.value?.days}
+                        onSave={(next) => settingMutation.mutateAsync({ key: 'pool_recycle_defer_days', value: next, silent: true })}
                       />
                       <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginTop: 4 }}>
                         主管点「暂缓」之后要等这么多天才能再批准回收
                         （暂缓期内随时可以驳回结案）。
-                        {deferSetting?.is_default ? '（当前为开发默认值）' : ''}
                       </div>
                     </div>
-                    <div
-                      style={{
-                        display: 'grid',
-                        gridTemplateColumns: '210px 240px minmax(0, 1fr)',
-                        gap: 16,
-                        alignItems: 'start',
-                      }}
-                    >
-                      <FormLabel>恢复已回收客户所需权限</FormLabel>
-                      <Select
-                        value={String(restoreSetting?.value?.text ?? 'customer:assign')}
-                        /* 240 而不是 220：下拉里是「分配客户（customer:assign）」这种
-                           "中文名 + 权限码"，220 会把尾巴截掉。 */
-                        style={{ width: 240 }}
-                        onChange={(value) =>
-                          settingMutation.mutate({
-                            key: 'pool_recycle_restore_permission',
-                            value: { text: String(value) },
-                          })
-                        }
-                        optionList={(recyclePermsQuery.data ?? []).map((item) => ({
-                          value: item.code,
-                          label: `${item.name}（${item.code}）`,
-                        }))}
+                    <div className="recycle-pace-row">
+                      <FormLabel>{settingLabel('pool_recycle_max_protect_days')}</FormLabel>
+                      <SettingValueField
+                        rowKey="pool_recycle_max_protect_days"
+                        field="days"
+                        value={protectSetting?.value?.days}
+                        onSave={(next) => settingMutation.mutateAsync({ key: 'pool_recycle_max_protect_days', value: next, silent: true })}
                       />
-                      <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginTop: 4 }}>
-                        默认 <code>customer:assign</code>（指派客户）：销售主管能恢复本团队客户、
-                        管理员不受限、普通业务员不能恢复。改这里不影响
-                        "谁能看见哪些候选"——那由角色数据范围决定。
-                        客户已被别人领取时报冲突，不覆盖。
-                      </div>
+                      <div className="settings-help">{settingDescription('pool_recycle_max_protect_days')}</div>
                     </div>
                   </div>
                 </div>
               )}
 
-              <div className="rule-block">
-                <div className="rule-block-title">回收复核</div>
-                <Typography.Paragraph
-                  ellipsis={{ rows: 2, expandable: true }}
-                  style={{ color: 'var(--crm-text-2)', fontSize: 12, lineHeight: 1.65, marginBottom: 12 }}
-                >
-                  扫描只「提名」；批准后才真的回收，并且<b>必须等预告期/暂缓期满了</b>才能批
-                  —— 没满要走「提前回收」这个例外动作，得填原因。
-                  「驳回」不受等待期限制（表示不用回收了，随时可结案）。
-                  客户手上还有在途订单、未结应收、有效正式报价或在途打样时，批准会被拦下。
-                </Typography.Paragraph>
-                <Tabs
-                  type="button"
-                  activeKey={candidateStatus}
-                  onChange={(key) => {
-                    setCandidateStatus(key as RecycleStatus)
-                    setCandidatePage(1)
-                    setSelectedCandidateIds([])
-                    setBatchResult(null)
-                  }}
-                  tabList={[
-                    { tab: '待复核', itemKey: 'pending' },
-                    { tab: '已暂缓', itemKey: 'deferred' },
-                    { tab: '已回收', itemKey: 'executed' },
-                    { tab: '已驳回', itemKey: 'rejected' },
-                  ]}
-                  style={{ marginBottom: 12 }}
+              {/* 复核已经搬成独立页（/pool-recycle）。这里只留一句指路：
+                  规则页改的是"多少天算冷落、保护多久"，批不批是另一件事。 */}
+              <div className={`rule-block-hint${panelKey === 'pool' ? '' : ' panel-hidden'}`}>
+                <span>候选的复核在「客户中心 → 回收复核」页签里处理，这里只改规则。</span>
+                <Link to="/customers">去客户中心 →</Link>
+              </div>
+
+              {isAdmin && panelKey === 'auto' && (
+                <AutoTaskRulesPanel
+                  rules={(taskRulesQuery.data ?? []).filter((row) => row.code !== 'customer_unrated_silent')}
+                  pending={taskRulesQuery.isLoading}
+                  failed={taskRulesQuery.isError}
+                  saving={taskRuleMutation.isPending}
+                  scanning={autoTaskMutation.isPending}
+                  onReload={() => void taskRulesQuery.refetch()}
+                  onSave={(id, days) => taskRuleMutation.mutateAsync({ id, days })}
+                  onScan={() => autoTaskMutation.mutate()}
                 />
-                {(candidateStatus === 'pending' || candidateStatus === 'deferred') && (
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      marginBottom: 8,
-                    }}
-                  >
-                    <span style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
-                      已选 {selectedCandidateIds.length} 条
-                    </span>
-                    <div style={{ flex: 1 }} />
-                    {/* 批量决定一次影响多个人/多个客户，点一下立刻生效太轻
-                        （主人 2026-10-06 定的范围：批量与不可逆的动作都要确认）。 */}
-                    <Popconfirm
-                      title={`批准选中的 ${selectedCandidateIds.length} 条回收候选？`}
-                      content="批准后进入待执行；到期仍未恢复的客户会被真正回收（归属清空）。"
-                      onConfirm={() => batchMutation.mutate({ decision: 'approve' })}
-                    >
-                      <Button
-                        size="small"
-                        disabled={!selectedCandidateIds.length}
-                        loading={batchMutation.isPending}
+              )}
+
+              {isAdmin && (
+              // is-plain：这一块不再套白卡 —— 六个分组本身就是卡片，
+              // 卡中卡（白底套白底、只靠一条描边区分）正是"廉价感"的来源。
+              /* 总标题去掉：一次只显示一个组，组自己就有组头，
+                 上面再压一个「系统配置」等于同一句话说两遍。 */
+              <div className={`rule-block is-plain${panelKey.startsWith('g-') ? '' : ' panel-hidden'}`}>
+                {/* 分组卡片（2026-11-19）：29 项铺一张表 → 按业务域分六组、
+                    每组一张卡，组内是「名称 | 控件 | 一句话说明」的表单行，
+                    控件宽度封顶 240，不再横跨整行。 */}
+                <div className="settings-groups">
+                  {SETTING_GROUPS.map((group) => {
+                    const rows = group.keys
+                      .map((key) => settingRow(key))
+                      .filter((row): row is SystemSettingRow => Boolean(row))
+                    if (!rows.length) return null
+                    return (
+                      <section
+                        className={`settings-group${panelKey === `g-${group.id}` ? '' : ' panel-hidden'}`}
+                        key={group.title}
+                        style={{ '--group-color': group.color } as CSSProperties}
                       >
-                        批量批准
-                      </Button>
-                    </Popconfirm>
-                    <Popconfirm
-                      title={`暂缓选中的 ${selectedCandidateIds.length} 条回收候选？`}
-                      content="暂缓后这些客户这一轮不会被回收，过一阵会重新进入候选。"
-                      onConfirm={() => batchMutation.mutate({ decision: 'defer' })}
-                    >
-                      <Button
-                        size="small"
-                        disabled={!selectedCandidateIds.length}
-                        loading={batchMutation.isPending}
-                      >
-                        批量暂缓
-                      </Button>
-                    </Popconfirm>
-                    <Popconfirm
-                      title={`驳回选中的 ${selectedCandidateIds.length} 条回收候选？`}
-                      content="驳回后本轮不再回收这些客户，需要重新提名才会再进候选。"
-                      onConfirm={() => batchMutation.mutate({ decision: 'reject' })}
-                    >
-                      <Button
-                        size="small"
-                        type="danger"
-                        disabled={!selectedCandidateIds.length}
-                        loading={batchMutation.isPending}
-                      >
-                        批量驳回
-                      </Button>
-                    </Popconfirm>
-                  </div>
-                )}
-                {batchResult && (
-                  <div
-                    style={{
-                      fontSize: 12,
-                      marginBottom: 8,
-                      padding: '8px 10px',
-                      background: 'var(--crm-surface-low)',
-                      borderRadius: 6,
-                    }}
-                  >
-                    <div>成功 {batchResult.done.length} 条；未处理 {batchResult.failed.length} 条。</div>
-                    {batchResult.failed.map((row) => (
-                      <div key={row.candidate_id} style={{ color: 'var(--crm-danger, #d45)' }}>
-                        候选 #{row.candidate_id}：{row.reason}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <Table<RecycleCandidateRow>
-                  rowKey="id"
-                  loading={candidatesQuery.isLoading}
-                  dataSource={candidatesQuery.data?.items ?? []}
-                  pagination={{
-                    currentPage: candidatePage,
-                    pageSize: candidatePageSize,
-                    total: candidatesQuery.data?.total ?? 0,
-                    onPageChange: setCandidatePage,
-                    showSizeChanger: true,
-                    pageSizeOpts: [10, 20, 50, 100],
-                    onPageSizeChange: (size: number) => { setCandidatePageSize(size); setCandidatePage(1) },
-                  }}
-                  rowSelection={
-                    candidateStatus === 'pending' || candidateStatus === 'deferred'
-                      ? {
-                          selectedRowKeys: selectedCandidateIds,
-                          onChange: (keys) => setSelectedCandidateIds((keys ?? []) as number[]),
-                        }
-                      : undefined
-                  }
-                  empty={
-                    // 空表格只有一行灰字，看着像"页面坏了"。待复核为空其实是**正常且好**的
-                    // 状态（说明没客户该被回收），得把这句话说出来，再给个能动的入口
-                    // （2026-11-16）。
-                    <div style={{ padding: '20px 0 10px' }}>
-                      <div style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>
-                        {candidateStatus === 'pending'
-                          ? '没有待复核的候选'
-                          : `没有${
-                              { pending: '待复核', deferred: '已暂缓', executed: '已回收', rejected: '已驳回' }[
-                                candidateStatus
-                              ]
-                            }的候选`}
-                      </div>
-                      <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 6 }}>
-                        {candidateStatus === 'pending'
-                          ? '当前没有客户达到回收条件 —— 这是正常状态。想现在就看有没有能回收的，点上面的「扫描并生成回收预告」。'
-                          : '按上面的标签切回「待复核」可以看到现在需要处理的候选。'}
-                      </div>
-                    </div>
-                  }
-                  columns={[
-                    {
-                      title: '客户',
-                      dataIndex: 'customer_name',
-                      render: (v: string | null, r: RecycleCandidateRow) => (
-                        <span>
-                          {v ?? `客户编号 ${r.customer_id}`}
-                          <span style={{ color: 'var(--crm-text-3)', fontSize: 12, marginLeft: 6 }}>
-                            {r.level ? `${r.level} 级` : ''}
-                            {r.rule_days ? ` · 超 ${r.rule_days} 天未跟进` : ''}
-                          </span>
-                        </span>
-                      ),
-                    },
-                    {
-                      title: '原负责人',
-                      dataIndex: 'owner_name',
-                      width: 100,
-                      render: (v: string | null) => v ?? '-',
-                    },
-                    {
-                      // 复核要看得到"是按哪个时间判它冷落的"，不是只给一句"已超 N 天"
-                      title: '最近有效联系',
-                      dataIndex: 'last_active_at',
-                      width: 140,
-                      render: (v: string | null) => fmtDay(v),
-                    },
-                    ...(candidateStatus === 'executed' || candidateStatus === 'rejected'
-                      ? [
-                          {
-                            title: '处理时间',
-                            dataIndex: 'decided_at',
-                            width: 140,
-                            render: (v: string | null) => fmtDay(v),
-                          },
-                          {
-                            title: '说明',
-                            dataIndex: 'decision_note',
-                            render: (v: string | null) => v ?? '-',
-                          },
-                        ]
-                      : [
-                          {
-                            title: '保护事项',
-                            dataIndex: 'protection',
-                            render: (list: string[], r: RecycleCandidateRow) =>
-                              (list ?? []).length === 0 ? (
-                                <span style={{ color: 'var(--crm-text-3)' }}>无</span>
-                              ) : (
-                                <>
-                                  {/* 有保护却仍被提名 = 保护已过最长有效期（后端下发标记）。
-                                      单独点出来，主管复核时重点看，别当成"没保护"。 */}
-                                  {r.protection_overridden && (
-                                    <div style={{ marginBottom: 4 }}>
-                                      <Tag color="orange" size="small">
-                                        有履约事项仍被提名，请重点看
-                                      </Tag>
-                                    </div>
-                                  )}
-                                  <span style={{ color: 'var(--crm-caution, #b26a00)' }}>
-                                    {(list ?? []).join('；')}
-                                  </span>
-                                </>
-                              ),
-                          },
-                          {
-                            // 到了这个点才能批；没到就只能走「提前回收」例外
-                            title: '最早可回收',
-                            dataIndex: 'earliest_action_at',
-                            width: 140,
-                            render: (v: string | null, r: RecycleCandidateRow) =>
-                              v ? (
-                                <span
-                                  style={{
-                                    color: isDue(r)
-                                      ? 'var(--crm-text-2)'
-                                      : 'var(--crm-caution, #b26a00)',
-                                  }}
-                                >
-                                  {fmtDay(v)}
-                                  {!isDue(r) && (
-                                    <span style={{ fontSize: 11, marginLeft: 4 }}>
-                                      （{r.status === 'deferred' ? '暂缓期' : '预告期'}中）
+                        <header className="settings-group-head">
+                          <span className="settings-group-title">{group.title}</span>
+                          {group.note && <span className="settings-group-note">{group.note}</span>}
+                        </header>
+                        <div className="settings-group-body">
+                          {rows.map((row) => {
+                            // 传上当前值：同序 OA 那三条"待配置"是写死的文案，
+                            // 实际配好了还挂着，等于给对的东西贴错标签。
+                            const note = settingNote(row.key)
+                            // 多行文本（交货条款）独占一整行：塞在 240 宽的列里会被挤成
+                            // 三行字、把这一行撑到 180px 高，上下全是空白。
+                            const kind = SETTING_FIELD_META[row.key]?.kind
+                            return (
+                              <div key={row.key}>
+                              <div className={`setting-field${kind === 'multiline' ? ' is-multiline' : ''}`} key={row.key}>
+                                <span className="setting-field-label">{row.key === 'dedup_scoring' ? '客户查重阈值' : settingLabel(row.key)}</span>
+                                <div className="setting-field-value">{renderSettingValue(row)}</div>
+                                <div className="setting-field-desc">
+                                  <span>{settingDescription(row.key, row.description)}</span>
+                                  {note && (
+                                    <span className="setting-field-tag">
+                                      <Tag color="orange" size="small">{note.tag}</Tag>
+                                      {note.text}
                                     </span>
                                   )}
-                                </span>
-                              ) : (
-                                '-'
-                              ),
-                          },
-                        ]),
-                    {
-                      title: '操作',
-                      width: candidateStatus === 'executed' ? 90 : 230,
-                      render: (_: unknown, r: RecycleCandidateRow) => {
-                        if (candidateStatus === 'executed') {
-                          return (
-                            <span>
-                              {r.restored_at ? (
-                                <Tag color="green" type="light" size="small">
-                                  已恢复
-                                </Tag>
-                              ) : (
-                                <a onClick={() => restore(r)}>恢复</a>
-                              )}
-                            </span>
-                          )
-                        }
-                        if (candidateStatus === 'rejected') {
-                          return <span style={{ color: 'var(--crm-text-3)' }}>已结案</span>
-                        }
-                        return (
-                          <span style={{ display: 'inline-flex', gap: 10 }}>
-                            {isDue(r) ? (
-                              <a onClick={() => decide('approve', r)}>批准回收</a>
-                            ) : (
-                              <a
-                                style={{ color: 'var(--crm-danger, #d45)' }}
-                                onClick={() => decide('approve', r, { early: true })}
-                              >
-                                提前回收
-                              </a>
-                            )}
-                            <a onClick={() => decide('defer', r)}>暂缓</a>
-                            <a
-                              style={{ color: 'var(--crm-danger, #d45)' }}
-                              onClick={() => decide('reject', r)}
-                            >
-                              驳回
-                            </a>
-                          </span>
-                        )
-                      },
-                    },
-                  ]}
-                />
-              </div>
-
-              {isAdmin && (
-              <div className="rule-block">
-                <div className="rule-block-title">自动任务规则</div>
-                <Table<TaskRuleRow>
-                  columns={[
-                    { title: '规则', dataIndex: 'name', width: 220 },
-                    {
-                      title: '触发条件',
-                      dataIndex: 'trigger_type',
-                      width: 200,
-                      render: (v: string) =>
-                        ({
-                          quote_no_followup: '报价发出后未跟进',
-                          customer_silent: '重点客户久未联系',
-                          receivable_due: '应收即将到期',
-                        })[v] ?? v,
-                    },
-                    {
-                      title: '天数',
-                      width: 160,
-                      render: (_: unknown, record: TaskRuleRow) => (
-                        <Input
-                          defaultValue={String(record.trigger_config?.days ?? 3)}
-                          style={{ width: 100 }}
-                          onBlur={(event) => {
-                            const raw = (event.target as HTMLInputElement).value.trim()
-                            const next = Number(raw)
-                            if (!raw || !Number.isInteger(next) || next < 0) {
-                              Toast.warning('自动任务天数须为非负整数')
-                              return
-                            }
-                            if (Number.isFinite(next) && next !== record.trigger_config?.days) {
-                              taskRuleMutation.mutate({ id: record.id, days: next })
-                            }
-                          }}
-                        />
-                      ),
-                    },
-                    {
-                      title: '状态',
-                      dataIndex: 'status',
-                      width: 100,
-                      render: (v: string) => (v === 'active' ? '启用' : '停用'),
-                    },
-                  ]}
-                  dataSource={(taskRulesQuery.data ?? []).filter((row) => row.code !== 'customer_unrated_silent')}
-                  loading={taskRulesQuery.isLoading}
-                  rowKey="id"
-                  pagination={false}
-                />
-                <div style={{ marginTop: 12 }}>
-                  <Popconfirm title="确认立即执行自动任务规则？" content="将按当前启用的规则生成任务。" onConfirm={() => autoTaskMutation.mutate()}>
-                    <Button loading={autoTaskMutation.isPending}>立即执行一次</Button>
-                  </Popconfirm>
-                  <span style={{ color: 'var(--crm-text-3)', fontSize: 12, marginLeft: 12 }}>
-                    同一个业务对象不会重复生成任务
-                  </span>
-                </div>
-              </div>
-              )}
-
-              {isAdmin && (
-              <div className="rule-block">
-                <div className="rule-block-title">系统配置</div>
-                <Table<SystemSettingRow>
-                  columns={[
-                    {
-                      title: '配置项',
-                      dataIndex: 'key',
-                      width: 240,
-                      // 只显示中文名。原来中文名下面还挂着一行灰色小字「内部标识：hard_floor」，
-                      // 那是给排查问题/对文档用的开发术语，摆在每一行下面 99% 的时候是噪音。
-                      // 主人 2026-10-14 决定删掉；要查标识看《09-业务参数配置说明》。
-                      render: (key: string) => <div style={{ fontWeight: 600 }}>{settingLabel(key)}</div>,
-                    },
-                    {
-                      title: '说明',
-                      width: 360,
-                      render: (_: unknown, record: SystemSettingRow) => {
-                        // 一批配置**默认就取最保守的值**（关着 / 0 / 留空），
-                        // 因为底价口径、体积重系数、同序 OA 模板号这些属于业务口径，
-                        // 开发不替业务拍板。它们光看说明跟"坏了"一样，
-                        // 所以这里单独挂一条"当前为什么看不出效果"（文案单点在
-                        // `setting-labels.ts` 的 SETTING_NOTES，只登记这类项）。
-                        const note = settingNote(record.key)
-                        return (
-                          // 必须显式打开换行：Semi 单元格默认 nowrap，"同序 OA 合同签署审批"
-                          // 那条说明有 40 多个字，不换行就把整列撑到 738px，
-                          // 第三列「值」直接被推到卡片外面看不见（2026-11-16 发现：
-                          // 系统配置表只剩两个表头，值根本改不了）。
-                          // textAlign: left —— 表格行内容全局居中，单行数字居中好看，
-                          // 但「说明」是多行段落，居中之后每行都从中间开始，
-                          // 读起来像一排标题（2026-11-16 截图里"只有客户起草的合同能发起。"
-                          // 就缩在中间一小条）。
-                          <div
-                            style={{
-                              whiteSpace: 'normal',
-                              wordBreak: 'break-word',
-                              overflowWrap: 'anywhere',
-                              textAlign: 'left',
-                              lineHeight: 1.6,
-                            }}
-                          >
-                            <span>{settingDescription(record.key, record.description)}</span>
-                            {note && (
-                              <div style={{ marginTop: 4 }}>
-                                <Tag color="orange" size="small">
-                                  {note.tag}
-                                </Tag>
-                                <span
-                                  style={{
-                                    color: 'var(--crm-text-2)',
-                                    fontSize: 12,
-                                    marginLeft: 6,
-                                  }}
-                                >
-                                  {note.text}
-                                </span>
+                                </div>
                               </div>
-                            )}
-                          </div>
-                        )
-                      },
-                    },
-                    {
-                      title: '值',
-                      key: 'value',
-                      // 这一列原来只写 render、不写 key/width，Semi 摊列宽时把它压成了 0，
-                      // 界面上就只剩「配置项」「说明」两个表头，「值」整列消失（2026-11-16 发现）。
-                      // 300 才够放「曼德拉（示例，请替换为公司全称）」这类长值。
-                      width: 300,
-                      render: (_: unknown, record: SystemSettingRow) => renderSettingValue(record),
-                    },
-                  ]}
-                  // 「报价审批分级」在下面单独成块，不混进这张表 ——
-                  // 它是多档编辑器（每档有上限输入框、角色多选、删除按钮），
-                  // 塞进「值」列的一个单元格里，整行会被撑到 180px，
-                  // 中间一大片空白，子表格还顶出 738px 的格子。
-                  dataSource={(settingsQuery.data ?? []).filter((row) => row.key !== 'approval_levels')}
-                  loading={settingsQuery.isLoading}
-                  // 用 key 而不是 id 当行标识（2026-10-06 修）：
-                  // `/settings` 返回的行里有一批是**代码内置默认项**，库里没有对应
-                  // 记录，id 是 null。Semi 对 null 的 rowKey 会**退回数组下标**，
-                  // 于是下标 2/10/11/13/14/15 跟同一张表里真实存在的 id 撞车，
-                  // 控制台刷 36 条 "two children with the same key"，
-                  // 界面上则可能认错行（保存后不刷新/串行）。配置项的 key 唯一且
-                  // 必填，保存接口本来就是按 key 走的，用它当行标识天然不会撞。
-                  rowKey="key"
-                  pagination={false}
-                />
+                              {row.key === 'dedup_scoring' && <CustomerScoreDetails details={row.customer_score_details} />}
+                              </div>
+                            )
+                          })}
+                        </div>
+                        <div className="settings-group-foot">
+                          {group.hint}
+                          {group.id === 'customer' && <>{' '}<Link to="?tab=rules&section=auto">前往自动任务</Link></>}
+                        </div>
+                      </section>
+                    )
+                  })}
+                </div>
 
                 {/* 报价审批分级：从上面那张表里拿出来的独立区块。
                     它本来就是"一张会改的子表格"，跟上面那些"一行一个键值"的
-                    配置项不是同一类东西，硬塞进一格只会把行高顶爆。 */}
+                    配置项不是同一类东西，硬塞进一格只会把行高顶爆。
+                    2026-11-19 挂在「报价与定价」页签下（原来那个「审批与外部」页签
+                    只装同序 OA 三个模板号，整页已经删了，这块得跟过去——
+                    它本来就是"按报价金额定谁能批"，放报价页更贴题）。 */}
                 {(() => {
                   const approvalRow = (settingsQuery.data ?? []).find((row) => row.key === 'approval_levels')
                   const levels = approvalRow?.value?.levels
                   if (!approvalRow || !Array.isArray(levels)) return null
                   return (
                     <div
+                      className={panelKey === 'g-pricing' ? undefined : 'panel-hidden'}
                       style={{
                         marginTop: 24,
                         paddingTop: 20,
@@ -2068,14 +2196,13 @@ export default function SettingsPage() {
               </div>
               )}
             </div>
+            </>
           )}
-          </div>
-        </div>
-      </SectionCard>
+          </section>
+      </div>
 
-      {/* 同序 OA 人员同步的结果：对不上的人必须逐条看得见，否则等于没报 */}
       <Modal
-        title="同序 OA 人员同步"
+        title="钉钉账号同步"
         visible={dtSyncVisible}
         onCancel={() => setDtSyncVisible(false)}
         footer={
@@ -2085,16 +2212,20 @@ export default function SettingsPage() {
         }
         width={680}
       >
-        {dtSyncResult?.disabled ? (
-          <>
-            <p>本次没有读取同序 OA 通讯录，一个人都没动。</p>
-            <p style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>{dtSyncResult.message}</p>
-          </>
-        ) : (
+        {dtSyncMutation.isError ? (
+          <p role="alert">
+            {dtSyncErrorStatus === 503
+              ? '钉钉通讯录连接尚未配置好，请联系管理员检查后再试。'
+              : dtSyncErrorStatus === 502
+                ? '这次没有读到钉钉通讯录，请稍后重试。'
+                : '暂时无法确认同步结果。请稍后重试，如果仍然失败，请联系管理员。'}
+          </p>
+        ) : dtSyncResult?.disabled ? (
+          <p>当前环境未开启钉钉账号同步，本次没有更新账号绑定。</p>
+        ) : dtSyncResult && (
           <>
             <p>
-              同序 OA 通讯录共 {dtSyncResult?.total ?? 0} 人：本次绑定 {dtSyncResult?.bound ?? 0} 人，
-              之前已绑定 {dtSyncResult?.already_bound ?? 0} 人。
+              钉钉通讯录共 {dtSyncResult.total} 人，本次绑定 {dtSyncResult.bound} 人，之前已绑定 {dtSyncResult.already_bound} 人。
             </p>
 
             {(dtSyncResult?.unmatched ?? []).length > 0 ? (
@@ -2105,7 +2236,7 @@ export default function SettingsPage() {
                 <Table<DingTalkUnmatched>
                   columns={[
                     { title: '姓名', dataIndex: 'name', width: 120 },
-                    { title: '手机', dataIndex: 'mobile', width: 150 },
+                    { title: '手机', dataIndex: 'mobile', width: 150, render: (v: string | null) => <MaskedContact value={v} /> },
                     { title: '原因', dataIndex: 'reason_label' },
                   ]}
                   dataSource={dtSyncResult?.unmatched ?? []}
@@ -2114,14 +2245,12 @@ export default function SettingsPage() {
                   size="small"
                 />
               </div>
-            ) : (
-              <p style={{ color: 'var(--crm-text-3)' }}>同序 OA 那边的人全都对上了。</p>
-            )}
+            ) : null}
 
             {(dtSyncResult?.unbound_crm ?? []).length > 0 && (
               <div style={{ marginTop: 12 }}>
                 <div style={{ fontWeight: 500, marginBottom: 6 }}>
-                  账号还没绑钉钉的（{(dtSyncResult?.unbound_crm ?? []).length} 个，这些人暂时登不了）
+                  尚未绑定钉钉的 CRM 账号（{dtSyncResult.unbound_crm.length} 个）
                 </div>
                 <div style={{ color: 'var(--crm-text-2)', fontSize: 12, lineHeight: 1.8 }}>
                   {(dtSyncResult?.unbound_crm ?? []).map((row) => (
@@ -2185,22 +2314,9 @@ export default function SettingsPage() {
               </div>
             )}
           </div>
-          <div style={{ display: 'flex', gap: 12 }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>手机</div>
-              <Input
-                value={userForm.mobile}
-                onChange={(value) => setUserForm({ ...userForm, mobile: value })}
-              />
-            </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>邮箱</div>
-              <Input
-                value={userForm.email}
-                onChange={(value) => setUserForm({ ...userForm, email: value })}
-              />
-            </div>
-          </div>
+          {/* 手机 / 邮箱两格删了（2026-11-19）：登录走账号密码，不发短信、不发邮件，
+              填了也没人看。userForm 里这两个字段留着，编辑时按原值回传，
+              不会把库里已有的手机号顺手清空。 */}
           <div>
             <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>部门</div>
             <Select
@@ -2305,6 +2421,13 @@ export default function SettingsPage() {
                 // `resource` 在接口里可空；空的归到"其他"，**不丢权限**
                 resource: perm.resource ?? 'other',
                 action: perm.action ?? '',
+                // 「用户管理」是能改别人账号和权限的钥匙：勾上时在选项下面说清它到底能做什么，
+                // 只作说明，不拦保存（2026-11-18 主人要求）
+                note: perm.code === 'customer:pool_restore'
+                  ? '与「公海回收复核」一起使用。可将数据范围内已回收的客户交还原负责人。'
+                  : perm.code === 'user:manage'
+                  ? '授予后，此人可以重置他人密码、分配管理员角色，以及修改角色权限和数据范围。请确认授权对象。'
+                  : undefined,
               }))}
             />
           </div>
@@ -2456,12 +2579,6 @@ type ApprovalLevelDraft = {
 }
 
 /** 每档里字段名的小字样式。宽度固定，「第 1 档」「第 2 档」的输入框左边才对得齐。 */
-const LEVEL_FIELD_LABEL: CSSProperties = {
-  width: 56,
-  flexShrink: 0,
-  fontSize: 12,
-  color: 'var(--crm-text-3)',
-}
 
 /**
  * 金额上限的**唯一合法写法**：非负数字，最多两位小数。
@@ -2535,6 +2652,9 @@ function ApprovalLevelsEditor({
       return
     }
     const next: Array<Record<string, unknown>> = []
+    /* 上一档的金额上限，用来判「逐档递增」；null = 还没出现过上限（第一档或前面不限）。 */
+    let prevMax: number | null = null
+    let prevLabel = ''
     for (let i = 0; i < drafts.length; i += 1) {
       const row = drafts[i]
       const label = row.label.trim()
@@ -2564,95 +2684,104 @@ function ApprovalLevelsEditor({
       }
       // 正则已保证是合法数字串，这里不会再是 NaN
       const parsed = Number(text)
+      /* 表格顺序就是判定顺序（后端从上往下找第一个没超上限的档）。
+         上限相等或倒挂时，**当前这一档**先命中，上面那档反而永远轮不到 ——
+         所以提示要说清「是谁不会被使用」，别指错对象
+         （2026-11-18 实测：第一档 500、第二档 200，被挡下的是第二档）。
+         前端先提示，最终仍以后端校验为准。 */
+      if (prevMax !== null && parsed <= prevMax) {
+        Toast.warning(
+          `第 ${i + 1} 档的金额上限（${text}）必须大于第 ${i} 档「${prevLabel}」的 ${prevMax}：` +
+            `审批按顺序匹配，上限不大于上一档时，第 ${i + 1} 档不会被使用。`,
+        )
+        return
+      }
+      prevMax = parsed
+      prevLabel = label
       next.push({ node: row.node, label, max_amount: parsed, role_codes: row.roleCodes })
     }
     onSave(next)
   }
 
   return (
-    // width 写死 310，不是 minWidth：这一列是"内容多宽、列就多宽"的自动布局，
-    // 内层内容会按自身固有宽度把「值」列往外撑。实测不管住它，「值」列会涨到
-    // 462px，加上前两列就把整张配置表顶出内容区、横向滚起来，最右边的操作
-    // 直接被推出视口点不到。收在 310 之后这一列约 342px，三列合计约 1002px，
-    // 正好落在内容区内（改前是 1052px，要横滚 50px 才看得到右边缘）。
-    //
-    // 为什么不是一行四列的表格：被前两列挤完之后这一列只剩 340 出头，再扣掉
-    // 单元格左右内边距，并排的输入框每个只有 50~60px，连 50000 都显示不全、
-    // 「删除」两个字会被压成上下两行。所以每档改成一个小块、字段分两行排。
-    <div style={{ display: 'grid', gap: 8, width: 310 }}>
+    // 一档一行（2026-11-19 重做）。原来一档是一张卡、卡里再挤两行：
+    // 「级别 + 金额上限」一行、「角色」一行，右边留一截空，删除飘在右上角 ——
+    // 一档两张行看不出"这是一条链上的一环"，三档就开始糊。
+    // 现在：序号徽章定性（01/02/03），横着一行把 级别 / 金额上限 / 审批角色 排开，
+    // 上下用同一套小标签对齐，删除压到最右、默认半透明。
+    <div className="approval-chain">
       {drafts.map((row, index) => (
-        <div
-          key={row.node}
-          style={{
-            border: '1px solid var(--crm-surface-high)',
-            borderRadius: 'var(--crm-radius)',
-            padding: '8px 10px',
-            display: 'grid',
-            gap: 6,
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>第 {index + 1} 档</span>
-            <a onClick={() => removeRow(index)}>删除</a>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={LEVEL_FIELD_LABEL}>级别</span>
-            {/* 级别名是中文字、比数字长，所以宽度按 1.3 : 1 分 —— 平分会把
-                「销售主管」裁掉一个字 */}
+        <div className="approval-level" key={row.node}>
+          <span className="approval-level-index">{String(index + 1).padStart(2, '0')}</span>
+
+          <label className="approval-cell">
+            <span className="approval-cell-label">级别名称</span>
             <Input
               size="small"
-              style={{ flex: 1.3 }}
               value={row.label}
-              placeholder="级别名"
+              placeholder="例如：销售主管"
               onChange={(value) => patch(index, { label: value })}
             />
-            <span style={LEVEL_FIELD_LABEL}>金额上限</span>
-            <Input
-              size="small"
-              style={{ flex: 1 }}
-              value={row.maxText}
-              placeholder="不限"
-              // ⚠️ 原样收下用户敲的每一个字符，**不许在这里删字符**（2026-10-14 修）。
-              // 以前写的是 `value.replace(/[^\d.]/g, '')`，本意是防呆，实际是静默篡改：
-              // 「5万」被洗成「5」、「1e5」被洗成「15」、「-50000」被洗成「50000」，
-              // 洗完全都变成合法数字串，保存时那道校验再也拦不住 —— 用户看到的
-              // 和最终存进库的不是一个值，而且**全程没有任何提示**。
-              // 现在非法就保持非法、当场标红，由用户自己改对。
-              onChange={(value) => patch(index, { maxText: value })}
-              validateStatus={
-                row.maxText.trim() !== '' && !AMOUNT_TEXT_PATTERN.test(row.maxText.trim())
-                  ? 'error'
-                  : 'default'
-              }
-            />
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={LEVEL_FIELD_LABEL}>角色</span>
+          </label>
+
+          <label className="approval-cell">
+            <span className="approval-cell-label">金额上限（含）</span>
+            <div className="approval-amount">
+              {/* 口令写"≤"：这一档的意思是"报价不超过这个数就落到本档"，
+                  一个符号比"金额上限"四个字更快看懂 */}
+              <span className="approval-amount-op">≤</span>
+              <Input
+                size="small"
+                value={row.maxText}
+                placeholder="不限"
+                // ⚠️ 原样收下用户敲的每一个字符，**不许在这里删字符**（2026-10-14 修）。
+                // 静默洗字符会让「5万」变成「5」、用户看到的和存进库的不是一个值。
+                onChange={(value) => patch(index, { maxText: value })}
+                validateStatus={
+                  row.maxText.trim() !== '' && !AMOUNT_TEXT_PATTERN.test(row.maxText.trim())
+                    ? 'error'
+                    : 'default'
+                }
+              />
+              <span className="approval-amount-unit">元</span>
+            </div>
+          </label>
+
+          <label className="approval-cell">
+            <span className="approval-cell-label">审批角色</span>
             <Select
               multiple
               size="small"
-              style={{ flex: 1 }}
               value={row.roleCodes}
-              placeholder="留空不限"
-              maxTagCount={1}
+              placeholder="留空 = 不限"
+              maxTagCount={2}
               optionList={roleOptions}
               onChange={(value) =>
                 patch(index, { roleCodes: ((value as Array<string | number>) ?? []).map(String) })
               }
             />
-          </div>
+          </label>
+
+          <a className="approval-level-del" onClick={() => removeRow(index)}>
+            删除
+          </a>
         </div>
       ))}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <Button size="small" onClick={addRow}>
-          增加一档
+
+      <div className="approval-chain-actions">
+        <button type="button" className="approval-add" onClick={addRow}>
+          <span aria-hidden>+</span> 增加一档
+        </button>
+        <Button theme="solid" loading={saving} onClick={submit}>
+          保存分档
         </Button>
-        <Button type="primary" size="small" theme="outline" loading={saving} onClick={submit}>
-          保存
-        </Button>
+        <span className="approval-chain-tip">从上往下匹配，先命中先结束</span>
       </div>
-      <div style={{ fontSize: 12, color: 'var(--crm-text-3)', lineHeight: 1.6 }}>
-        从上往下比金额，所以「不限」只能放最后一档（上限留空即不限）。角色留空不是「没人能批」，
+
+      <div className="approval-chain-hint">
+        <b>怎么匹配：</b>从第一档往下找，第一个「报价金额 ≤ 上限」的档就是它。
+        所以上限必须逐档递增 —— 相等或倒挂时当前这档会先命中，上面那档永远用不到。
+        <b>两档留空规则：</b>「不限」只能放最后一档；角色留空不是没人能批，
         而是有报价审批权限的人都能批。
       </div>
     </div>

@@ -127,6 +127,8 @@ export interface LogisticsCalculateResult {
   options: LogisticsOption[]
   selected?: LogisticsOption | null
   quoted_id?: number | null
+  match_level?: number
+  match_warnings?: string[]
   warnings: string[]
 }
 
@@ -181,6 +183,10 @@ export interface PricingSkuOption {
 }
 
 export interface PricingResult {
+  inputs?: {
+    target_profit_price?: number | null
+    profit_target_met?: boolean | null
+  }
   sku: { id: number; sku_code: string; name?: string | null; specification?: string | null; unit?: string | null; moq?: number | null }
   quantity: number
   customer_id?: number | null

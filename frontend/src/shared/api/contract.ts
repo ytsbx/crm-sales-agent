@@ -160,7 +160,7 @@ export function startContractOaApproval(
   docId: number,
   payload: { our_company: string; counterparty_name: string },
 ) {
-  return api.post<Record<string, unknown>>(`/contract-documents/${docId}/oa-approval`, payload)
+  return api.post<OaApprovalInstance>(`/contract-documents/${docId}/oa-approval`, payload)
 }
 
 export function withdrawContractDingTalkApproval(docId: number) {

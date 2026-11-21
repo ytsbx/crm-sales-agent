@@ -68,20 +68,20 @@ class TestFreezeGuards:
         for endpoint in ('freeze_sales_actuals', 'refreeze_sales_actuals'):
             start = router.index(f'async def {endpoint}(')
             block = router[start:]
-            snap_at = block.index('consistent_snapshot(period)')
+            snap_at = block.index('consistent_snapshot(session, period)')
             collect_at = block.index('_collect_period_actuals(snap, user, period)')
             items_at = block.index('_collect_period_items(snap, user, period)')
             assert snap_at < collect_at < items_at, (
                 f'{endpoint}：汇总与明细必须都在同一个快照会话里读'
             )
 
-    def test_snapshot_helper_sets_isolation_and_lock_together(self):
-        """隔离级别与期间锁必须在**同一条连接**上：锁的作用域是事务，换连接锁就没了。"""
+    def test_snapshot_helper_locks_the_write_transaction_before_reading(self):
+        """写事务持锁贯穿读取和提交，读会话只负责一致的快照。"""
         src = self._source()
         start = src.index('async def consistent_snapshot(')
         block = src[start : src.index('async def lock_period(')]
         assert 'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ' in block
-        assert 'await lock_period(session, period)' in block
+        assert block.index('await lock_period(write_session, period)') < block.index('SessionLocal()')
         assert 'SessionLocal()' in block, '必须是独立连接（第一句才能设隔离级别）'
 
     def test_period_lock_is_transaction_scoped(self):

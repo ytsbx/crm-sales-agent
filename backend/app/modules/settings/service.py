@@ -9,6 +9,7 @@
 import math
 import re
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -41,7 +42,7 @@ from app.modules.settings.model import (
     PublicPoolRule,
     TaskRule,
 )
-from app.modules.task.model import Task
+from app.modules.task.model import HANDOVER_SOURCE, Task
 from app.modules.task.scanning import lock_task_scan
 from app.modules.followup.model import FollowUp
 from app.modules.user.model import User
@@ -61,6 +62,8 @@ from app.modules.user.model import User
 #: ⚠️ 只是**新报价的默认值**：历史版本的 `delivery_terms` 是快照，一个字不动。
 DEFAULT_DELIVERY_TERMS = "产品单价不含运费。运费单列，按已确认的实际金额由本公司代收代付。"
 
+
+LEGACY_POOL_RESTORE_SETTING = "pool_recycle_restore_permission"
 
 DEFAULT_SETTINGS: dict[str, dict] = {
     # 报价
@@ -162,11 +165,6 @@ DEFAULT_SETTINGS: dict[str, dict] = {
     #: 提名后主管复核那道闸仍在（批准时重新检查保护，有保护必须填例外原因）。
     #: 0 = 不设上限（旧行为：有保护就永不提名）。
     "pool_recycle_max_protect_days": {"days": 90},
-    #: 恢复操作需要哪个权限码。做成配置而不是写死角色：
-    #: "谁能把回收掉的客户还回去"是管理口径，不同公司不一样。
-    #: 默认 `customer:assign` —— 销售主管有这个权限，普通业务员没有。
-    #: 保存时会校验这个码在权限表里真实存在（写错等于谁都恢复不了）。
-    "pool_recycle_restore_permission": {"text": "customer:assign"},
     # 通知渠道（PRD §25 要求"站内 + 企业微信"）。
     # 默认只开站内：企微投递依赖 WECOM_AGENT_ID 与每个用户的 wecom_userid，
     # 没配好之前开成默认会每次都失败，反而把"真失败"淹掉。
@@ -328,7 +326,7 @@ def _validate_number_settings(session_key: str, value: object) -> None:
     for (key, field), (low, high, label) in SETTING_NUMBER_RULES.items():
         if key != session_key or field not in value:
             continue
-        _strict_int(value.get(field), label, low, high)
+        _strict_int(value.get(field), label, low, high, allow_zero=key == "logistics_volumetric_ratio")
     for (key, field), label in SETTING_RATIO_RULES.items():
         if key != session_key or field not in value:
             continue
@@ -371,7 +369,7 @@ def _strict_ratio(raw: object, label: str) -> float:
     return number
 
 
-def _strict_int(raw: object, label: str, low: int, high: int) -> int:
+def _strict_int(raw: object, label: str, low: int, high: int, *, allow_zero: bool = False) -> int:
     """把天数配置严格读成整数（返修单 R14）。
 
     此前用的是 `int(raw)`，它有两个安静的坑：
@@ -383,11 +381,12 @@ def _strict_int(raw: object, label: str, low: int, high: int) -> int:
     现在只认两种输入：**真正的整数**，和**纯数字字符串**（表单可能传字符串）。
     小数、布尔、空、负数串、其它类型一律 422，并说清收到的是什么。
     """
+    allowed = f"0（关闭）或 {low}–{high}" if allow_zero else f"{low}–{high}"
     if isinstance(raw, bool):
         # 必须先挡布尔：bool 是 int 的子类，不挡的话 True 会静默变成 1
         raise AppError(
             ErrorCode.PARAM_ERROR,
-            f"{label}必须是整数天（{low}–{high}），不能填真/假",
+            f"{label}必须是整数（{allowed}），不能填真/假",
             422,
         )
     if isinstance(raw, int):
@@ -397,13 +396,13 @@ def _strict_int(raw: object, label: str, low: int, high: int) -> int:
     else:
         raise AppError(
             ErrorCode.PARAM_ERROR,
-            f"{label}必须是整数天（{low}–{high}），收到的不是整数：{raw!r}",
+            f"{label}必须是整数（{allowed}），收到的不是整数：{raw!r}",
             422,
         )
-    if number < low or number > high:
+    if not (low <= number <= high or (allow_zero and number == 0)):
         raise AppError(
             ErrorCode.PARAM_ERROR,
-            f"{label}须在 {low}–{high} 天之间，当前填的是 {number}",
+            f"{label}须为 {allowed}，当前填的是 {number}",
             422,
         )
     return number
@@ -441,28 +440,29 @@ async def validate_setting_value(
 ) -> None:
     """保存配置前的合法性校验。不合法直接 422，不让坏值落库。"""
     # 数值/比率类：只校验**本次真传了的**字段（没传的保持原值）。
-    # 原来的 `return` 已去掉 —— 同一个 key 可能既有数值字段又有别的要求
-    # （`pool_recycle_restore_permission` 只有 text 字段，不受影响）。
     _validate_number_settings(key, value)
 
-    if key == "pool_recycle_restore_permission":
-        from app.modules.user.model import Permission
+    if key == "hard_floor" and value and "mode" in value:
+        if value["mode"] not in ("off", "cost", "cost_markup"):
+            raise AppError(ErrorCode.PARAM_ERROR, "绝对底价模式无效，请选择关闭、按成本或按成本加成", 422)
 
-        code = str((value or {}).get("text") or "").strip()
-        if not code:
-            raise AppError(
-                ErrorCode.PARAM_ERROR,
-                "恢复权限不能留空（默认 customer:assign）",
-                422,
-            )
-        exists = (
-            await session.execute(select(Permission.code).where(Permission.code == code))
-        ).first()
-        if exists is None:
-            # 写错一个字母，界面上看起来"设了权限"，实际谁都恢复不了 —— 挡在这里
-            raise AppError(
-                ErrorCode.PARAM_ERROR, f"权限码「{code}」不在系统权限表里，请核对", 422
-            )
+    if key == "dedup_scoring" and value:
+        if "threshold" in value:
+            _strict_int(value["threshold"], "客户查重阈值", 0, 100)
+        for field in (DEFAULT_SETTINGS[key].keys() & value.keys()) - {"threshold"}:
+            weight = value[field]
+            if not (
+                (type(weight) is int and weight >= 0)
+                or (isinstance(weight, str) and re.fullmatch(r"[0-9]+", weight.strip()))
+            ):
+                raise AppError(ErrorCode.PARAM_ERROR, "客户查重权重必须为非负整数", 422)
+
+    if key == LEGACY_POOL_RESTORE_SETTING:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "请在「角色与数据范围」中配置「恢复公海客户」权限。",
+            422,
+        )
 
     if key == "approval_levels":
         # 报价审批分级：决定"这张报价该找谁批"。这份配置坏掉**不会报错**，
@@ -474,6 +474,7 @@ async def validate_setting_value(
                 "报价审批分级至少要留一档，否则报价提交时找不到该找谁批",
                 422,
             )
+        previous_cap: Decimal | None = None
         for index, item in enumerate(levels, start=1):
             if not isinstance(item, dict):
                 raise AppError(
@@ -500,6 +501,11 @@ async def validate_setting_value(
                     )
                 continue
             _strict_amount(raw, f"第 {index} 档的金额上限")
+            cap = Decimal(str(raw).strip())
+            if previous_cap is not None and cap <= previous_cap:
+                raise AppError(ErrorCode.PARAM_ERROR,
+                               f"第 {index} 档金额上限必须大于上一档，否则这一档不会被使用。", 422)
+            previous_cap = cap
 
 
 async def recompute_open_candidates(
@@ -912,8 +918,7 @@ async def _notify_recycle_candidate(
                 "回收预告待复核",
                 f"客户「{customer.name}」{reason}，最近活跃 {active_text}，"
                 f"原负责人 {owner.name if owner else candidate.owner_id}。"
-                f"预告期至 {due_text}，到期后可在「系统设置 → 业务规则 → "
-                f"回收待复核」批准或驳回。",
+                f"预告期至 {due_text}。可前往回收复核查看，到期后可批准或驳回。",
             )
         )
 
@@ -962,6 +967,9 @@ async def _notify_recycle_candidate(
     return sent
 
 
+RECYCLE_REJECTION_COOLDOWN = timedelta(days=30)
+
+
 async def run_public_pool_recycle(
     session: AsyncSession, operator_id: int | None, source: str = "WEB"
 ) -> dict:
@@ -982,6 +990,7 @@ async def run_public_pool_recycle(
         )
     ).scalars().all()
     now = datetime.now(UTC)
+    rejected_since = now - RECYCLE_REJECTION_COOLDOWN
     notice_days = int(await get_number(session, "pool_recycle_notice_days", "days", 7))
     #: 保护的最长有效期（天，2026-10-13 主人拍板）：从最后活跃算起超过这么多天
     #: 仍无动静，履约保护不再豁免提名 —— 防止"挂着一张在途订单就长期占位不跟进"。
@@ -1003,6 +1012,7 @@ async def run_public_pool_recycle(
     #: 但要单独列出来 —— 名单上"看不见"才最危险，主管得知道有多少条等着补核。
     unknown_contact_skipped: list[dict] = []
     already_open: list[int] = []
+    cooldown_skipped: set[int] = set()
     #: 本轮实际发出去的预告通知条数（一人一条，原负责人与主管分别算）
     notified = 0
 
@@ -1079,6 +1089,16 @@ async def run_public_pool_recycle(
             if last.tzinfo is None:
                 last = last.replace(tzinfo=UTC)
             if last >= cutoff:
+                continue
+            recently_rejected = await session.scalar(
+                select(PublicPoolRecycleCandidate.id).where(
+                    PublicPoolRecycleCandidate.customer_id == customer.id,
+                    PublicPoolRecycleCandidate.status == "rejected",
+                    PublicPoolRecycleCandidate.decided_at > rejected_since,
+                ).limit(1)
+            )
+            if recently_rejected is not None:
+                cooldown_skipped.add(customer.id)
                 continue
             # Recheck current protective documents after locking and refreshing the
             # customer. An OA draft may add protection without touching activity.
@@ -1192,6 +1212,8 @@ async def run_public_pool_recycle(
             "unknown_contact_count": len(unknown_contact_skipped),
             "unknown_contact": unknown_contact_skipped[:100],
             "already_open_count": len(already_open),
+            "cooldown_count": len(cooldown_skipped),
+            "enabled_rule_count": len(rules),
             "notified_count": notified,
         },
     )
@@ -1212,6 +1234,8 @@ async def run_public_pool_recycle(
         "unknown_contact_count": len(unknown_contact_skipped),
         "unknown_contact": unknown_contact_skipped[:100],
         "already_open_count": len(already_open),
+        "cooldown_count": len(cooldown_skipped),
+        "enabled_rule_count": len(rules),
         #: 发出了多少条预告通知（原负责人与复核主管分别计）
         "notified_count": notified,
         "notice_days": notice_days,
@@ -1312,6 +1336,8 @@ def serialize_candidate(
         "earliest_action_at": earliest.isoformat() if earliest else None,
         "decided_by": row.decided_by,
         "decided_at": row.decided_at.isoformat() if row.decided_at else None,
+        "reconsider_at": (row.decided_at + RECYCLE_REJECTION_COOLDOWN).isoformat()
+        if row.status == "rejected" and row.decided_at else None,
         "decision_note": row.decision_note,
         "deferred_until": row.deferred_until.isoformat() if row.deferred_until else None,
         "defer_days": row.defer_days,
@@ -1586,6 +1612,8 @@ async def decide_candidate(
         row.early_approved = True
 
     # **执行前重新检查**：预告发出之后有没有新的履约事项 / 新的跟进
+    if customer.last_contact_unknown and customer.last_progress_at is None:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "最近联系时间待核实，请先补核后再决定是否回收", 422)
     reasons = (await protection_detail(session)).get(customer.id, [])
     latest = _last_active_at(customer)
     if latest is not None and latest.tzinfo is None:
@@ -1814,6 +1842,54 @@ async def _has_open_task(session: AsyncSession, rule_id: int, **filters) -> bool
     return (await session.execute(stmt)).first() is not None
 
 
+def validate_task_rule(rule: TaskRule) -> None:
+    if rule.trigger_type not in ("quote_no_followup", "customer_silent", "receivable_due"):
+        raise AppError(ErrorCode.PARAM_ERROR, "自动任务触发类型无效", 422)
+    config = rule.trigger_config or {}
+    if not isinstance(config, dict):
+        raise AppError(ErrorCode.PARAM_ERROR, "自动任务触发配置格式无效", 422)
+    raw_days = config.get("days", 3)
+    try:
+        days = int(raw_days)
+        if isinstance(raw_days, bool) or days < 0 or str(days) != str(raw_days):
+            raise ValueError
+        delta = timedelta(days=days)
+        if rule.trigger_type == "receivable_due":
+            today_business() + delta
+        else:
+            datetime.now(UTC) - delta
+    except (TypeError, ValueError, OverflowError):
+        raise AppError(ErrorCode.PARAM_ERROR, "自动任务天数必须为可计算的非负整数", 422) from None
+    if rule.trigger_type == "customer_silent":
+        levels = config.get("levels") or ["A"]
+        if not isinstance(levels, list) or not all(isinstance(level, str) for level in levels):
+            raise AppError(ErrorCode.PARAM_ERROR, "客户等级须为列表", 422)
+
+
+async def reject_duplicate_task_rule(session: AsyncSession, candidate: TaskRule) -> None:
+    if candidate.status != "active":
+        return
+
+    def title(rule: TaskRule) -> str:
+        action = rule.action_config if isinstance(rule.action_config, dict) else {}
+        return str(action.get("title") or rule.name).strip()
+
+    def levels(rule: TaskRule) -> set[str]:
+        config = rule.trigger_config if isinstance(rule.trigger_config, dict) else {}
+        values = config.get("levels") or ["A"]
+        return {value for value in values if isinstance(value, str)} if isinstance(values, list) else set()
+
+    rules = (await session.execute(select(TaskRule).where(
+        TaskRule.status == "active", TaskRule.trigger_type == candidate.trigger_type,
+    ).order_by(TaskRule.id))).scalars().all()
+    for rule in rules:
+        if rule.id == candidate.id or title(rule) != title(candidate):
+            continue
+        if candidate.trigger_type != "customer_silent" or levels(candidate) & levels(rule):
+            raise AppError(ErrorCode.DUPLICATE,
+                           f"此规则与「{rule.name}」（编号 {rule.id}）会给同一对象生成同名任务，请调整适用范围或任务名称，或停用原规则。", 409)
+
+
 async def run_auto_tasks(
     session: AsyncSession, operator_id: int | None, source: str = "WEB"
 ) -> dict:
@@ -1829,6 +1905,15 @@ async def run_auto_tasks(
     errors: list[dict] = []
     followup_customer_ids: set[int] = set()
     now = datetime.now(UTC)
+    disabled_owners = set((await session.execute(
+        select(User.id).where(User.status != "active")
+    )).scalars())
+
+    def task_owner(owner_id: int) -> dict:
+        if owner_id in disabled_owners:
+            return {"owner_id": None, "source_business_type": HANDOVER_SOURCE,
+                    "source_business_id": owner_id}
+        return {"owner_id": owner_id}
 
     for rule in rules:
         config = rule.trigger_config or {}
@@ -1897,7 +1982,7 @@ async def run_auto_tasks(
                     task_type="followup",
                     customer_id=quote.customer_id,
                     quote_id=quote.id,
-                    owner_id=quote.owner_id,
+                    **task_owner(quote.owner_id),
                     priority="high",
                     status="pending",
                     due_at=now,
@@ -1963,7 +2048,7 @@ async def run_auto_tasks(
                     title=f"{title_template}：{customer.name}",
                     task_type="followup",
                     customer_id=customer.id,
-                    owner_id=customer.owner_id,
+                    **task_owner(customer.owner_id),
                     priority="high",
                     status="pending",
                     due_at=now,
@@ -1982,31 +2067,36 @@ async def run_auto_tasks(
             # 原来取的是 `now.date()`，而 now 是 UTC —— 北京时间凌晨 0-8 点会比业务日
             # 早一天，而默认的自动任务调度正好是凌晨跑：当天到期的提醒要等到第二天
             # 才发得出来。存储不变（due_date 本来就是 date 列），只换"今天"的取法。
+            open_reminder = select(Task.id).where(
+                Task.order_id == SalesOrder.id, Task.task_type == "payment",
+                Task.source == "system", Task.status.in_(("pending", "doing")),
+            ).exists()
             rows = (
                 await session.execute(
-                    select(ReceivablePlan, SalesOrder)
+                    select(SalesOrder, func.min(ReceivablePlan.due_date))
+                    .select_from(ReceivablePlan)
                     .join(SalesOrder, SalesOrder.id == ReceivablePlan.order_id)
                     .where(
                         ReceivablePlan.status.in_(["pending", "partial", "overdue"]),
                         ReceivablePlan.due_date <= due_before,
                         SalesOrder.status != "cancelled",
+                        SalesOrder.owner_id.is_not(None),
+                        ~open_reminder,
                     )
+                    .group_by(SalesOrder.id)
+                    .order_by(SalesOrder.id)
                 )
             ).all()
-            for plan, order in rows:
-                if not order.owner_id:
-                    continue
-                if await _has_open_task(session, rule.id, order_id=order.id):
-                    continue
+            for order, due_date in rows:
                 task = Task(
-                    title=f"{title_template}：{order.order_no} {plan.plan_name}",
+                    title=f"{title_template}：{order.order_no}",
                     task_type="payment",
                     customer_id=order.customer_id,
                     order_id=order.id,
-                    owner_id=order.owner_id,
+                    **task_owner(order.owner_id),
                     priority="high",
                     status="pending",
-                    due_at=datetime.combine(plan.due_date, datetime.min.time(), tzinfo=UTC),
+                    due_at=datetime.combine(due_date, datetime.min.time(), tzinfo=UTC),
                     source="system",
                     source_rule_id=rule.id,
                 )

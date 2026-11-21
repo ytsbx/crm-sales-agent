@@ -29,6 +29,7 @@ def withdrawal(monkeypatch):
     from app.modules.dingtalk import client as module
     monkeypatch.setattr(module,'get_client',lambda:client)
     monkeypatch.setattr(router,'ensure_oa_type_scope',AsyncMock())
+    monkeypatch.setattr(service,'lock_oa_business_then_instance',AsyncMock(return_value=row))
     monkeypatch.setattr(router,'write_audit',AsyncMock())
     req=Request({'type':'http','headers':[],'client':('127.0.0.1',1)})
     return row,session,client,req
@@ -58,7 +59,30 @@ async def test_failed_or_unknown_withdrawal_never_claims_withdrawn(withdrawal,er
     assert not row.result.get('crm_withdrawn')
     if isinstance(error,DingTalkUnknownOutcome):
         assert '撤回结果暂未确认' in row.error
+        assert session.commit.await_count == 2
+
+
+@pytest.mark.anyio
+async def test_withdrawal_reservation_blocks_duplicate_and_is_cleared_by_confirmed_snapshot(monkeypatch):
+    row = Obj(instance_id="remote-7", status="pending", result={}, error=None)
+    session = Obj(commit=AsyncMock())
+    monkeypatch.setattr(service, "lock_oa_business_then_instance", AsyncMock(return_value=row))
+    duplicate = AsyncMock()
+
+    async def send(instance_id):
+        assert instance_id == "remote-7"
         session.commit.assert_awaited_once()
+        with pytest.raises(AppError, match="尚待确认"):
+            await service.withdraw_oa_without_locks(session, row, duplicate)
+        raise DingTalkUnknownOutcome("timeout")
+
+    with pytest.raises(AppError, match="暂未确认"):
+        await service.withdraw_oa_without_locks(session, row, send)
+    duplicate.assert_not_awaited()
+    assert row.status == "pending"
+    assert not service.settle_withdrawal_snapshot(row, "pending")
+    assert service.settle_withdrawal_snapshot(row, "withdrawn")
+    assert "withdraw_attempt" not in row.result
 
 
 @pytest.mark.anyio
@@ -67,7 +91,8 @@ async def test_withdraw_final_snapshot_does_not_regress_to_pending(monkeypatch,s
     monkeypatch.setattr(settings,'dingtalk_push_off',False)
     row=OaInstance(id=1,inquiry_id=7,inquiry_version=1,oa_type='inquiry',instance_id='ding-7',
                    status='withdrawn',result={'crm_withdrawn':True,'withdraw_snapshot_pending':True})
-    session=Obj(execute=AsyncMock(return_value=Obj(scalars=lambda:Obj(all=lambda:[row]))),flush=AsyncMock())
+    session=Obj(execute=AsyncMock(return_value=Obj(scalars=lambda:Obj(all=lambda:[row]))),flush=AsyncMock(),commit=AsyncMock())
+    monkeypatch.setattr(service,'lock_oa_business_then_instance',AsyncMock(return_value=row))
     payload={'status':status,'operationRecords':[{'type':'TERMINATE_PROCESS_INSTANCE','remark':'已撤回'}]}
     monkeypatch.setattr(service,'get_client',lambda:Obj(get_process_instance=AsyncMock(return_value=payload)))
     await service.sync_pending_instances(session)

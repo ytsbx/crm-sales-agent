@@ -28,6 +28,8 @@ export interface DashboardSummary extends WithCurrencyWarnings {
   month_order_discount_amount: number
   month_order_unverified_count: number
   month_received_amount: number
+  /** 同一口径下按「实际到账日」统计的本月回款，与按确认时间的主数字并列展示 */
+  month_received_by_arrival_amount: number
   pending_receivable_amount: number
   overdue_receivable_count: number
   open_lead_count: number
@@ -93,6 +95,7 @@ export interface QuoteStats {
   accept_rate: number
   approval_rate: number
   accepted_count: number
+  sent_count?: number
   approval_required_count: number
 }
 
@@ -307,6 +310,7 @@ export interface TeamSummary {
   team_won_count_this_month?: number
   team_won_amount_this_month?: number
   members?: TeamMemberRow[]
+  disabled_members?: Pick<TeamMemberRow, 'todo_count' | 'overdue_count' | 'won_amount_this_month'> | null
   risky_opportunities?: RiskOpportunity[]
   funnel?: FunnelRow[]
 }
@@ -350,7 +354,6 @@ export interface LeadStats {
   total: number
   converted_count: number
   conversion_rate: number
-  average_conversion_days: number | null
   by_source: NameValue[]
   by_status: NameValue[]
   invalid_reasons: NameValue[]
@@ -457,17 +460,18 @@ export function getDeliveryStats(riskLimit = 20) {
   return api.get<DeliveryStats>('/analytics/delivery', { risk_limit: riskLimit })
 }
 
-/** 通知列表：支持只看未读 + 日期范围（2026-10-13 加，通知只进不出，不筛很快翻不动） */
 export function listNotifications(
   unreadOnly = false,
   dateFrom?: string,
   dateTo?: string,
+  page = 1,
 ) {
   return api.get<PageResult<NotificationRow>>('/notifications', {
     unread_only: unreadOnly,
     date_from: dateFrom,
     date_to: dateTo,
-    page_size: 50,
+    page,
+    page_size: 10,
   })
 }
 
@@ -481,6 +485,14 @@ export function markNotificationRead(id: number) {
 
 export function markAllNotificationsRead() {
   return api.post<null>('/notifications/read-all')
+}
+
+export function dismissNotification(id: number) {
+  return api.post<null>(`/notifications/${id}/dismiss`)
+}
+
+export function dismissReadNotifications() {
+  return api.post<null>('/notifications/dismiss-read')
 }
 
 /**

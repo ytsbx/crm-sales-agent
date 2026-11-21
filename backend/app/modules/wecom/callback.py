@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import secrets
 import struct
@@ -32,10 +33,14 @@ class WeComCallbackError(RuntimeError):
 
 
 def _aes_key() -> bytes:
-    if not settings.wecom_callback_aes_key:
+    encoded = settings.wecom_callback_aes_key.strip()
+    if not encoded:
         raise WeComCallbackError("还没配置 WECOM_CALLBACK_AES_KEY")
-    key = base64.b64decode(settings.wecom_callback_aes_key + "=")
-    if len(key) != 32:
+    try:
+        key = base64.b64decode(encoded + "=", validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise WeComCallbackError("EncodingAESKey 格式无效") from error
+    if len(encoded) != 43 or len(key) != 32:
         raise WeComCallbackError("EncodingAESKey 长度不对，应为 43 位 base64 字符")
     return key
 
@@ -47,6 +52,8 @@ def compute_signature(*, token: str, timestamp: str, nonce: str, encrypt: str) -
 
 
 def verify_signature(*, signature: str, timestamp: str, nonce: str, encrypt: str) -> None:
+    if not settings.wecom_callback_token.strip():
+        raise WeComCallbackError("企业微信回调未配置")
     expected = compute_signature(
         token=settings.wecom_callback_token,
         timestamp=timestamp,
@@ -65,7 +72,7 @@ def _unpad(data: bytes) -> bytes:
     if not data:
         raise WeComCallbackError("回调密文为空")
     pad = data[-1]
-    if pad < 1 or pad > AES.block_size or len(data) < pad or data[-pad:] != bytes([pad]) * pad:
+    if pad < 1 or pad > 32 or len(data) < pad or data[-pad:] != bytes([pad]) * pad:
         raise WeComCallbackError("回调消息填充无效")
     return data[:-pad]
 
@@ -90,8 +97,11 @@ def decrypt(encrypt: str) -> str:
     msg_len = struct.unpack("!I", plain[16:20])[0]
     if 20 + msg_len > len(plain):
         raise WeComCallbackError("回调消息长度字段越界")
-    message = plain[20 : 20 + msg_len].decode("utf-8")
-    receiveid = plain[20 + msg_len :].decode("utf-8")
+    try:
+        message = plain[20 : 20 + msg_len].decode("utf-8")
+        receiveid = plain[20 + msg_len :].decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise WeComCallbackError("回调明文不是有效 UTF-8") from error
     if settings.wecom_corp_id and receiveid != settings.wecom_corp_id:
         raise WeComCallbackError("回调消息的 receiveid 与本企业 corp id 不一致")
     return message

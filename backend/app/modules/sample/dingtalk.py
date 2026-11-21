@@ -24,6 +24,7 @@ from app.modules.oa import client as oa_client
 from app.modules.oa import sample as oa_sample
 from app.modules.sample import service
 from app.modules.sample.model import SampleItem
+from app.modules.sample.oa_content import validated_sample_details
 
 router = APIRouter(tags=['Sample'])
 META_KEY = 'dingtalk_oa'
@@ -74,10 +75,18 @@ def ensure_editable(sample):
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED,'这张打样申请已经关联或提交审批，不能在CRM修改、删除或重批；请先在对应审批系统处理原单',409)
 
 
-async def template(session, *, for_display=False):
+def self_oa_available() -> bool:
+    return oa_client.configured() and bool(
+        settings.oa_sample_template_id.strip() or settings.oa_sample_template_code.strip()
+    )
+
+
+async def template(session, *, for_display=False, self_oa_only=False):
     # 自研 OA 已配置时，CRM 动态表单直接返回 OA 字段；下面 submit 走 OA 分支。
-    if oa_client.configured() and (settings.oa_sample_template_id or settings.oa_sample_template_code):
+    if self_oa_available():
         return {'configured': True, 'enabled': True, 'provider': 'self_oa', 'fields': oa_sample.oa_template_fields()}, None
+    if self_oa_only:
+        return {'configured': False, 'enabled': False, 'fields': []}, None
     from app.modules.settings.service import get_setting
     cfg = await get_setting(session, CONFIG_KEY) or {}
     code = cfg.get('process_code')
@@ -175,9 +184,15 @@ class Draft(BaseModel):
 async def detail(sample_id:int,user:CurrentUser=Depends(require_permission('sample:manage')),session:AsyncSession=Depends(get_db)):
     sample=await service.get_visible_or_404(session,user,sample_id)
     item_count=len((await session.scalars(select(SampleItem.id).where(SampleItem.sample_request_id==sample.id))).all())
-    try:options,_=await template(session,for_display=True)
-    except AppError as error:options={'configured':False,'enabled':False,'fields':[],'template_error':error.message}
     meta=metadata(sample)
+    self_oa_only=bool(meta.get('requires_self_oa'))
+    try:
+        if self_oa_available() and settings.oa_sample_template_code.strip() == oa_sample.SOURCE_CODE:
+            from app.modules.user.model import User
+            options = await oa_sample.native_form(await session.get(User, user.id))
+        else:
+            options,_=await template(session,for_display=True,self_oa_only=self_oa_only)
+    except AppError as error:options={'configured':False,'enabled':False,'fields':[],'template_error':error.message}
     records=[]
     if meta.get('source_oa_id') and meta.get('submitted'):
         # 关联记录必须仍通过原询价的数据范围，不能用 sample:view 绕过 quote:view。
@@ -203,7 +218,15 @@ async def detail(sample_id:int,user:CurrentUser=Depends(require_permission('samp
     _due_field = next((f for f in (options.get('fields') or []) if f.get('label') == '要求完成日期'), None)
     if _due_field is not None and sample.target_completion_date:
         _prefill[_due_field['id']] = sample.target_completion_date.isoformat()
-    if options.get('provider') == 'self_oa':
+    if options.get('native_form'):
+        for field_id, value in {
+            'sample_type': sample.sample_type, 'product_category': sample.product_category,
+            'maker_unit': sample.maker_unit, 'sample_note': sample.sample_purpose or sample.remark,
+            'score': sample.estimated_hours * 10 if sample.estimated_hours is not None else None,
+        }.items():
+            if value is not None:
+                _prefill[field_id] = str(value)
+    elif options.get('provider') == 'self_oa':
         from app.modules.user.model import User
         from app.modules.oa.inquiry import _department_name
         account = await session.get(User, user.id)
@@ -211,10 +234,14 @@ async def detail(sample_id:int,user:CurrentUser=Depends(require_permission('samp
             'applicant_name': getattr(account, 'name', '') or '',
             'department': await _department_name(session, account) if getattr(account, 'department_id', None) else '',
         }
-    return ok({**options,'item_count':item_count,'draft':{**meta,'fields':{**_prefill,**(meta.get('fields') or {})}},'candidates':await inquiry_candidates(session,user,sample),'records':records})
+    candidates=[] if self_oa_only else await inquiry_candidates(session,user,sample)
+    return ok({**options,'item_count':item_count,'draft':{**meta,'fields':{**_prefill,**(meta.get('fields') or {})}},'candidates':candidates,'records':records})
 
 
 async def save(session,user,sample,payload,options=None):
+    self_oa_only=bool(metadata(sample).get('requires_self_oa'))
+    if self_oa_only and (payload.mode != 'standalone' or payload.source_oa_id is not None):
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED,'此打样修订版须单独提交同序 OA 审批',409)
     if metadata(sample).get('submitted') and payload.resubmit:
         previous=await oa.get_by_business_key(session,inquiry_id=sample.id,inquiry_version=int(sample.version or 1),oa_type='sample')
         if metadata(sample).get('mode')!='standalone' or payload.mode!='standalone' or previous is None or previous.status not in ('rejected','withdrawn'):
@@ -225,7 +252,10 @@ async def save(session,user,sample,payload,options=None):
     if payload.mode=='inquiry' and payload.source_oa_id is not None:
         if payload.source_oa_id not in {r['id'] for r in await inquiry_candidates(session,user,sample)}:
             raise AppError(ErrorCode.PARAM_ERROR,'请选择这张样品真实来源询价的钉钉审批，不能关联其他客户或其他来源',422)
-    sample.source_context={**(sample.source_context or {}),META_KEY:payload.model_dump()}
+    draft=payload.model_dump()
+    if self_oa_only:
+        draft['requires_self_oa']=True
+    sample.source_context={**(sample.source_context or {}),META_KEY:draft}
     # 弹窗里填的「打样目的 / 紧急程度 / 样品情况」**落到正式列**（2026-10-16）。
     #
     # 为什么必须落列：申请表 Excel 的 C4/G4/C5 三格是生成器从 `sample_purpose` /
@@ -278,20 +308,8 @@ async def save(session,user,sample,payload,options=None):
                     sample.deliver_date = date.fromisoformat(_dt)
                 except ValueError:
                     raise AppError(ErrorCode.PARAM_ERROR, '交样时间格式不对（应为 YYYY-MM-DD）', 422)
-        _maker = payload.fields.get('_sample_maker')
-        if _maker is not None:
-            sample.sample_maker = str(_maker).strip() or None
-        _fee = payload.fields.get('_sample_fee')
-        if _fee is not None:
-            _text = str(_fee).strip()
-            if not _text:
-                sample.sample_fee = None
-            else:
-                try:
-                    from decimal import Decimal as _Decimal
-                    sample.sample_fee = _Decimal(_text)
-                except Exception:
-                    raise AppError(ErrorCode.PARAM_ERROR, '打样费用要填一个不小于 0 的数字', 422)
+        for field, value in validated_sample_details(payload.fields).items():
+            setattr(sample, field, value)
     await session.flush()
 
 
@@ -302,7 +320,7 @@ async def save_draft(sample_id:int,payload:Draft,request:Request,user:CurrentUse
     # `save()` 要靠它把那个日期落进 `target_completion_date` 列。取不到就给空表，
     # 保存草稿不该因为钉钉模板读不出来而失败。
     try:
-        options,_ = await template(session)
+        options,_ = await template(session,self_oa_only=bool(metadata(sample).get('requires_self_oa')))
     except AppError:
         options = {'fields': []}
     await save(session,user,sample,payload,options)
@@ -316,7 +334,19 @@ async def save_draft(sample_id:int,payload:Draft,request:Request,user:CurrentUse
 async def submit(sample_id:int,payload:Draft,request:Request,user:CurrentUser=Depends(require_permission('sample:manage')),session:AsyncSession=Depends(get_db)):
     sample=await service.get_visible_or_404(session,user,sample_id,for_update=True,allow_external_flow=True)
     meta=metadata(sample)
-    previous=await oa.get_by_business_key(session,inquiry_id=sample.id,inquiry_version=int(sample.version or 1),oa_type='sample') if payload.mode=='standalone' else None
+    self_oa_enabled = self_oa_available()
+    if meta.get('requires_self_oa') and not self_oa_enabled:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED,'同序 OA 打样模板未配置，此修订版可保存草稿，暂不能提交审批',409)
+    previous=await oa.get_by_business_key(session,inquiry_id=sample.id,inquiry_version=int(sample.version or 1),oa_type='sample') if payload.mode=='standalone' or self_oa_enabled else None
+    if previous is not None and getattr(previous, 'provider', None) == 'self_oa' and previous.status in ('submitting','needs_review'):
+        from app.modules.oa.service import review_stuck_submission
+
+        await review_stuck_submission(session, previous)
+        if previous.status == 'needs_review':
+            raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "上一次 OA 发起结果待核对，请先到 OA 核对", 409)
+        if payload.mode != 'standalone':
+            raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "独立打样审批正在发起，请稍后查看进度", 409)
+        return ok(oa.serialize(previous), "这张打样单正在发起 OA 审批，请稍后查看进度")
     open_new_round=bool(payload.resubmit and previous is not None and previous.status in ('rejected','withdrawn'))
     retry=False
     if meta.get('submitted'):
@@ -360,7 +390,7 @@ async def submit(sample_id:int,payload:Draft,request:Request,user:CurrentUser=De
                          after={'linked_inquiry_oa':payload.source_oa_id},ip=client_ip(request))
         await session.commit()
         return ok(None,'已关联原询价审批；打样步骤请在原钉钉单继续处理，本次没有新发审批')
-    if oa_client.configured() and (settings.oa_sample_template_id or settings.oa_sample_template_code):
+    if self_oa_enabled:
         row,message=await oa_sample.start_sample_approval(session,user,sample,payload.fields)
         await write_audit(session,operator_id=user.id,action='update',business_type='sample',business_id=sample.id,
                          after={'oa_provider':'self_oa','oa_status':row.status,'instance_id':row.instance_id},ip=client_ip(request))
@@ -400,13 +430,7 @@ async def submit(sample_id:int,payload:Draft,request:Request,user:CurrentUser=De
         from datetime import date as _date
         _t=str(_deliver).strip()
         attrs['deliver_date']=_date.fromisoformat(_t) if _t else None
-    _maker=payload.fields.get('_sample_maker')
-    if _maker is not None:attrs['sample_maker']=str(_maker).strip() or None
-    _fee=payload.fields.get('_sample_fee')
-    if _fee is not None:
-        _t=str(_fee).strip()
-        from decimal import Decimal as _D
-        attrs['sample_fee']=_D(_t) if _t else None
+    attrs.update(validated_sample_details(payload.fields))
     # 这几个值直接取自模板字段（`template()` 已保证这些标签都在），但**选填的日期/积分
     # 可以是空的**：空就别往申请表上写，而不是拿 '' 去 fromisoformat / Decimal ——
     # 那会让"选填留空"在提交的最后一步炸成一个 500。

@@ -1,10 +1,11 @@
 import AutoOaSync from '../../shared/components/AutoOaSync'
 import ApplicantIdentity from '../../shared/components/ApplicantIdentity'
 import { formatBeijingDate, formatBeijingTime } from '../../shared/beijing-time'
-import { useRef, useState, type ComponentProps, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  Banner,
   Button,
   Dropdown,
   DatePicker,
@@ -100,12 +101,25 @@ const EMPTY_FORM: InquiryForm = {
 /** 定制需求（文档 §3.3「产品知识库」三态里的定制询价那一类）：客户问了但没有标准产品的需求沉淀。
  *  标签此前叫「知识库」，与文档里的伞概念重名，2026-10-06 统一改成「定制需求」。 */
 export default function KnowledgePage() {
+  /* 1024 宽内容区约 700px，定制询价表八列合计 1103px，「记录人 / 记录时间 /
+     操作 / 状态」整块被裁到卡片外、底部常驻横向滚动条。窄屏切紧凑档：
+     数量与目标价并一列两行，记录时间并进记录人第二行。 */
+  const [compact, setCompact] = useState(() => window.innerWidth < 1200)
+  useEffect(() => {
+    const onResize = () => setCompact(window.innerWidth < 1200)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const rawOpportunityId = Number(searchParams.get('opportunity_id'))
   const opportunityFilter = Number.isSafeInteger(rawOpportunityId) && rawOpportunityId > 0 ? rawOpportunityId : undefined
+  const rawInquiryId = Number(searchParams.get('inquiry_id'))
+  const inquiryFilter = Number.isSafeInteger(rawInquiryId) && rawInquiryId > 0 ? rawInquiryId : undefined
   const { can } = usePermissions()
+  const canManage = can('quote:manage')
   const [moreTargetId, setMoreTargetId] = useState<number | null>(null)
   const [photoTarget, setPhotoTarget] = useState<CustomInquiryRow | null>(null)
   const [submitTarget, setSubmitTarget] = useState<CustomInquiryRow | null>(null)
@@ -123,6 +137,25 @@ export default function KnowledgePage() {
   const [keyword, setKeyword] = useState(() => searchParams.get('keyword') ?? '')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
+  const searchInquiries = () => {
+    setKeyword(keywordInput.trim())
+    setPage(1)
+  }
+  const resetInquiryFilters = (includeScope = false) => {
+    setKeywordInput('')
+    setKeyword('')
+    setStatusFilter(undefined)
+    setPage(1)
+    setSearchParams((params) => {
+      const next = new URLSearchParams(params)
+      next.delete('keyword')
+      if (includeScope) {
+        next.delete('inquiry_id')
+        next.delete('opportunity_id')
+      }
+      return next
+    }, { replace: true })
+  }
   const [editVisible, setEditVisible] = useState(false)
   const [editing, setEditing] = useState<CustomInquiryRow | null>(null)
   const [form, setForm] = useState<InquiryForm>(EMPTY_FORM)
@@ -235,7 +268,6 @@ export default function KnowledgePage() {
       Toast.success(`报价草稿 ${data.quote_no} 已生成`)
       navigate(`/quotes/${data.quote_id}`)
     },
-    onError: (error: Error) => Toast.error(error.message),
   })
 
   const summaryQuery = useQuery({
@@ -243,10 +275,11 @@ export default function KnowledgePage() {
     queryFn: () => customInquiryStatusSummary(),
   })
   const query = useQuery({
-    queryKey: ['custom-inquiries', { statusFilter, keyword, page, pageSize, opportunityFilter }],
+    queryKey: ['custom-inquiries', { statusFilter, keyword, page, pageSize, opportunityFilter, inquiryFilter }],
     refetchInterval: 15000,
     queryFn: () =>
-      listCustomInquiries({ status: statusFilter, keyword, page, page_size: pageSize, opportunity_id: opportunityFilter }),
+      listCustomInquiries({ status: statusFilter, keyword, page, page_size: pageSize,
+        opportunity_id: opportunityFilter, inquiry_id: inquiryFilter }),
   })
   const linkedOpportunity = useQuery({
     queryKey: ['opportunity', opportunityFilter],
@@ -278,8 +311,7 @@ export default function KnowledgePage() {
   const saveMutation = useMutation({
     mutationFn: async (payload: CustomInquiryPayload) => {
       const existing = editing ?? savedInquiry.current
-      const options = submissionOptions.data
-      const draft = { fields: submitFields, quote_owner_user_id: submitQuoteOwner ?? options?.selected_quote_owner ?? null, attachment_file_ids: submitAttachments }
+      const draft = { fields: submitFields, quote_owner_user_id: selectedAllowedQuoteOwner ?? null, attachment_file_ids: submitAttachments }
       const data = { ...payload, oa_draft: draft }
       const row = existing ? await updateCustomInquiry(existing.id, data) : await createCustomInquiry(data)
       // 创建成功即记住真实 ID；照片失败后重试只能更新这条需求，不能再创建一条。
@@ -415,6 +447,10 @@ export default function KnowledgePage() {
     queryFn: () => getInquirySubmissionOptions(submitTarget?.id ?? editing?.id),
     enabled: true,
   })
+  const requestedQuoteOwner = submitQuoteOwner ?? submissionOptions.data?.selected_quote_owner
+  const selectedAllowedQuoteOwner = submissionOptions.data?.quote_owners?.some((person) => person.user_id === requestedQuoteOwner)
+    ? requestedQuoteOwner ?? undefined
+    : undefined
   const submissionFiles = useQuery({
     queryKey: ['business-files', submissionOptions.data?.file_business_type || 'inquiry', submitTarget?.id ?? editing?.id],
     queryFn: () => listBusinessFiles(submissionOptions.data?.file_business_type || 'inquiry', (submitTarget?.id ?? editing?.id)!),
@@ -461,6 +497,17 @@ export default function KnowledgePage() {
       navigate(`/quotes/${row.linked_quotes[0].id}`)
       return
     }
+    if (row.is_deleted) return
+    if (row.is_superseded) {
+      setHistoryTarget(row)
+      return
+    }
+    if (!can('quote:manage')) return
+    if (row.status === 'archived') {
+      openRevise(row)
+      return
+    }
+    quoteMutation.reset()
     setQuoteForm({
       unit_cost: null,
       quoted_price: null,
@@ -483,7 +530,9 @@ export default function KnowledgePage() {
     {
       title: '产品名称',
       dataIndex: 'title',
-      width: 237,
+      /* 237 → 225：给「客户 / 状态 / 记录人」各让出几个像素，
+         八列合计压在 1130 以内，桌面版不再冒出横向滚动条。 */
+      width: compact ? 156 : 240,
       // 这一列原来不设宽，标题一长就把整表顶到 1320、横滑才能看到操作列。
       // 定宽 320，标题正文超过 14 字截断（悬停看全），编号仍然完整显示 ——
       // 编号是报价 / 打样明细回溯用的，一个字都不能少。
@@ -492,8 +541,11 @@ export default function KnowledgePage() {
           {/* 编号从第一行挪到第二行（和说明并列）：
               原来编号 + 标题挤在一行，13 位的等宽编号占掉 90px，
               标题只剩 10 来字就被截。现在标题独占一整行。 */}
-          <div style={{ fontWeight: 600 }} title={text}>
-            {text && text.length > 17 ? `${text.slice(0, 17)}…` : text}
+          <div
+            style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+            title={text}
+          >
+            {text}
             {record.version && record.version > 1 && (
               <Tag size="small" style={{ marginLeft: 6 }}>{`v${record.version}`}</Tag>
             )}
@@ -503,7 +555,7 @@ export default function KnowledgePage() {
               <span style={{ fontFamily: 'monospace', flexShrink: 0 }}>{record.inquiry_no}</span>
             )}
             {record.revision_note && (
-              <span style={{ color: 'var(--crm-warning, #d97706)', flexShrink: 0 }}>
+              <span style={{ color: 'var(--crm-warning)', flexShrink: 0 }}>
                 本次修改：{record.revision_note}
               </span>
             )}
@@ -522,7 +574,11 @@ export default function KnowledgePage() {
     {
       title: '客户',
       dataIndex: 'customer_name',
-      width: 190,
+      /* 190 → 202：客户名带「【全场景演示】」前缀时 190 差两三个字就被截，
+         客户是这一页判断「给谁做的」，整列全是省略号等于没有客户列。
+         窄屏同理：102 只剩「【全场景…」，实测六列合计 700、容器 740，
+         还有 38px 余量，索性给到 140。 */
+      width: compact ? 140 : 190,
       // 交给 Semi 按列宽省略（ellipsis）—— 不再按字数硬截。
       // 主人 2026-11-16：「还有这么多空间怎么还是省略呢」：宽屏下这一列
       // 会跟着拉宽，按字数截就永远只显示 13 个字。
@@ -532,17 +588,41 @@ export default function KnowledgePage() {
       // 超过 10 字截断，鼠标悬停看全称。
       render: (v: string | null) => v || '-',
     },
-    { title: '数量', dataIndex: 'quantity', width: 60, render: (v: number | null) => v ?? '-' },
-    {
-      title: '目标价',
-      dataIndex: 'target_price',
-      width: 84,
-      render: (v: number | null) => (v != null ? `¥${v}` : '-'),
-    },
+    ...(compact
+      ? [{
+          title: '数量 / 目标价',
+          width: 74,
+          render: (_: unknown, record: CustomInquiryRow) => (
+            <div style={{ display: 'grid', gap: 2, justifyItems: 'center' }}>
+              <span>{record.quantity ?? '-'}</span>
+              <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                {record.target_price != null ? `¥${record.target_price}` : '-'}
+              </span>
+            </div>
+          ),
+        }]
+      : [
+          {
+            title: '数量',
+            dataIndex: 'quantity',
+            /* 60px 连「3,000」都放不下，被裁成「3,...」——六位数直接「500,0...」。
+               96 才装得下「500,000」，八列合计 1184 仍在 1224 内容区内、不出横向滚动条。 */
+            width: 96,
+            render: (v: number | null) => (v == null ? '-' : v.toLocaleString()),
+          },
+          {
+            title: '目标价',
+            dataIndex: 'target_price',
+            width: 84,
+            render: (v: number | null) => (v != null ? `¥${v}` : '-'),
+          },
+        ]),
     {
       title: '状态',
       dataIndex: 'status',
-      width: 90,
+      /* 90 放不下「● 已转商机」四个字 + 圆点，一律截成「已转商机…」——
+         状态这一列被截，等于看不出这条需求走到哪一步。104 刚好。 */
+      width: compact ? 96 : 102,
       render: (v: string) => (
         <StatusDot
           label={STATUS_OPTIONS.find((o) => o.value === v)?.label ?? v}
@@ -550,19 +630,38 @@ export default function KnowledgePage() {
         />
       ),
     },
-    { title: '记录人', dataIndex: 'creator_name', width: 96, render: (v: string | null) => v ?? '-' },
     {
-      title: '记录时间',
-      dataIndex: 'created_at',
-      /* 102 时日期被截成 "2026-11-…" —— 这一列等于白给。118 刚好。 */
-      width: 118,
-      // 列表里精确到秒没有意义，反而把这一列撑到 160。
-      // 只给日期，具体时分秒在详情里看。
-      render: (v: string) => formatBeijingDate(v),
+      title: compact ? '记录人 / 时间' : '记录人',
+      dataIndex: 'creator_name',
+      /* 96 放在「系统管理员」五个字上差两三个像素，
+         结果这一列永远是「系统管理…」。108 才装得下。 */
+      width: compact ? 96 : 100,
+      render: (v: string | null, record: CustomInquiryRow) =>
+        compact ? (
+          <div style={{ display: 'grid', gap: 2, justifyItems: 'center' }}>
+            <span style={{ fontSize: 12 }}>{v ?? '-'}</span>
+            <span style={{ fontSize: 11, color: 'var(--crm-text-3)' }}>
+              {formatBeijingDate(record.created_at)}
+            </span>
+          </div>
+        ) : (
+          v ?? '-'
+        ),
     },
+    ...(compact
+      ? []
+      : [{
+          title: '记录时间',
+          dataIndex: 'created_at',
+          /* 102 时日期被截成 "2026-11-…" —— 这一列等于白给。118 刚好。 */
+          width: 110,
+          // 列表里精确到秒没有意义，反而把这一列撑到 160。
+          // 只给日期，具体时分秒在详情里看。
+          render: (v: string) => formatBeijingDate(v),
+        }]),
     {
       title: '操作',
-      width: 228,
+      width: compact ? 176 : 220,
       render: (_: unknown, record: CustomInquiryRow) => {
         // 次要动作收进「更多」下拉。原来 9~11 个操作全铺在这一格里，容器是
         // inline-flex 且 flex-wrap: nowrap —— 挤不下时每个链接被压扁成
@@ -578,17 +677,19 @@ export default function KnowledgePage() {
         if (can('quote:manage')) moreActions.push({ key: 'photo', label: '上传照片', onClick: () => setPhotoTarget(record) })
     // 「上传照片」和「修订」原来铺在外面，六个动作一个格塞不下，换行成两排；
     // 它们都不是常用动作，收进「更多」，外边只留 编辑 / 转报价 / 删除。
-    moreActions.push({ key: 'revise', label: '修订', onClick: () => openRevise(record) })
-    if (can('quote:manage')) moreActions.push({ key: 'oa-start', label: '提交询价到同序 OA', onClick: () => startApproval(record) })
+        if (canManage) {
+          moreActions.push({ key: 'revise', label: '修订', onClick: () => openRevise(record) })
+          moreActions.push({ key: 'oa-start', label: '提交询价到同序 OA', onClick: () => startApproval(record) })
+        }
         // 历次审批 + "结果不明"的人工处理入口（认领/重发/作废）
         moreActions.push({ key: 'oa-log', label: '审批记录', onClick: () => setApprovalTarget(record) })
         if ((record.version ?? 1) > 1) {
           moreActions.push({ key: 'history', label: '历史', onClick: () => setHistoryTarget(record) })
         }
-        if (record.status !== 'developing' && record.status !== 'converted') {
+        if (canManage && record.status !== 'developing' && record.status !== 'converted') {
           moreActions.push({ key: 'developing', label: '转开发中', onClick: () => changeStatus(record, 'developing') })
         }
-        if (record.status !== 'archived') {
+        if (canManage && record.status !== 'archived' && !record.is_superseded) {
           moreActions.push({ key: 'archived', label: '归档', onClick: () => changeStatus(record, 'archived') })
         }
         // 菜单项会因为**权限**和**单据状态**默默消失（上面那几个 if）。用户明明记得
@@ -604,14 +705,33 @@ export default function KnowledgePage() {
         if (record.status === 'developing') moreMissing.push(`当前状态是「${statusLabel}」，不用再转开发中`)
         if (record.status === 'converted') moreMissing.push(`当前状态是「${statusLabel}」，不能转开发中`)
         if (record.status === 'archived') moreMissing.push(`当前状态是「${statusLabel}」，不能再归档`)
+        if (record.source_insight_id != null && record.status !== 'archived') {
+          moreMissing.push(record.is_superseded
+            ? '这是新品洞察转出的原询价，请在最新版本归档'
+            : '这是新品洞察转出的原询价，请用「归档」结束处理')
+        }
   return (
-          <span style={{ display: 'inline-flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-            <a onClick={() => openEdit(record)}>编辑</a>
+          <span
+            style={{
+              display: 'inline-flex',
+              gap: compact ? 6 : 10,
+              flexWrap: 'wrap',
+              alignItems: 'center',
+            }}
+          >
+            {canManage && <a onClick={() => openEdit(record)}>编辑</a>}
             {/* 定制件没有 SKU，报价中心选不到它——这里直接转报价（场景09） */}
-            <a onClick={() => openQuote(record)}>{record.linked_quotes?.length ? '查看报价' : '生成报价草稿'}</a>
-            <Popconfirm title="删除这条定制询价？" onConfirm={() => deleteMutation.mutate(record.id)}>
+            {(record.linked_quotes?.length || record.is_superseded || can('quote:manage')) ? (
+              <a onClick={() => openQuote(record)} title={record.status === 'archived' && !record.linked_quotes?.length ? '已归档，先修订为新版再报价' : '生成一份报价草稿，价格需按核价复核后才对客'}>
+                {record.linked_quotes?.length ? '查看原报价'
+                  : record.is_superseded ? '查看新版'
+                  : record.status === 'archived' ? '修订后报价'
+                  : '转报价'}
+              </a>
+            ) : null}
+            {canManage && record.source_insight_id == null && <Popconfirm title="删除这条定制询价？" onConfirm={() => deleteMutation.mutate(record.id)}>
               <a style={{ color: 'var(--crm-error)' }}>删除</a>
-            </Popconfirm>
+            </Popconfirm>}
             <Dropdown
               trigger="click"
               position="bottomRight"
@@ -657,76 +777,152 @@ export default function KnowledgePage() {
     },
   ]
 
-  const renderSubmissionFields = (target: CustomInquiryRow | null) => <>
-    {submissionOptions.isPending && <div>正在读取同序 OA 询价表单……保存草稿不受影响。</div>}
-    {submissionOptions.isError && <div style={{ color: 'var(--crm-error)' }}>同序 OA 表单读取失败，仍可保存草稿；请稍后重试提交。</div>}
-          {submissionOptions.data?.quote_owner_required && <div>
-            <FormLabel required>对接报价员</FormLabel>
-            <Select style={{ width: '100%' }} placeholder="选择同序 OA 对接报价员"
-              disabled={submitMutation.isPending || saveMutation.isPending}
-              value={submitQuoteOwner ?? submissionOptions.data.selected_quote_owner ?? undefined}
-              onChange={(value) => setSubmitQuoteOwner(value as string)}
-              optionList={submissionOptions.data.quote_owners.map((item) => ({ value: item.user_id, label: item.name }))}
-            />
+  const nativeFields = submissionOptions.data?.template_fields
+  const renderSubmissionFields = (target: CustomInquiryRow | null, only?: string) => <>
+    {!only && submissionOptions.isPending && <div>正在读取同序 OA 询价表单……保存草稿不受影响。</div>}
+    {!only && submissionOptions.isError && <div style={{ color: 'var(--crm-error)' }}>同序 OA 表单读取失败，仍可保存草稿；请稍后重试提交。</div>}
+    {!only && submissionOptions.data?.message && <div style={{ color: 'var(--crm-text-3)' }}>{submissionOptions.data.message}</div>}
+    {(!only || only === 'quoter') && submissionOptions.data?.quote_owner_required && <div>
+      <FormLabel required>对接报价员</FormLabel>
+      <Select style={{ width: '100%' }} placeholder="选择同序 OA 对接报价员"
+        disabled={submitMutation.isPending || saveMutation.isPending}
+        value={selectedAllowedQuoteOwner}
+        onChange={(value) => setSubmitQuoteOwner(value as string)}
+        optionList={submissionOptions.data.quote_owners.map((item) => ({ value: item.user_id, label: item.name }))}
+      />
+    </div>}
+    {submissionOptions.data?.fields.filter(field => !only || field.id === only).map((field) => <div key={field.id}>
+      <FormLabel required={field.required}>{field.label}</FormLabel>
+      {field.type === 'DDAttachment' ? (
+        <section style={{ display: 'grid', gap: 18, padding: 18, border: '1px solid var(--crm-border)', borderRadius: 10, background: 'var(--crm-surface-low)', minWidth: 0 }}>
+          <div style={{ color: 'var(--crm-text-3)', fontSize: 12, lineHeight: 1.7 }}>
+            图纸、PDF、表格等补充资料 · 单个文件不超过 20 MB<br />
+            与上方产品参考照片分开提交，最多 10 个附件。
+          </div>
+          {editVisible ? <div>
+            <Upload action="" uploadTrigger="custom" multiple fileList={pendingAttachments}
+              disabled={saveMutation.isPending || !can('file:manage')} maxSize={20 * 1024}
+              onSizeError={() => Toast.warning('单个附件不能超过20 MB')}
+              onChange={({ fileList }) => setPendingAttachments(fileList)}>
+              <Button disabled={saveMutation.isPending || !can('file:manage')}>＋ 选择附件</Button>
+            </Upload>
+            <div style={{ marginTop: 8, fontSize: 12, color: 'var(--crm-text-3)', lineHeight: 1.7 }}>
+              {can('file:manage') ? '所选文件会在保存草稿或提交时上传，并随本次申请提交。' : '暂无上传权限，请联系管理员开通文件管理权限。'}
+            </div>
+          </div> : target && <AttachmentPanel businessType={submissionOptions.data!.file_business_type} businessId={target.id}
+            category="oa_attachment" onlyCategory="oa_attachment" writePermission="quote:manage"
+            compact hint="先上传文件，再选择本次随申请提交的附件。" />}
+          {editVisible && target && (submissionFiles.data ?? []).some(file => file.category === 'oa_attachment') && <details>
+            <summary style={{ cursor: 'pointer', color: 'var(--crm-primary)', fontSize: 13 }}>查看或管理已上传文件</summary>
+            <div style={{ marginTop: 12 }}><AttachmentPanel businessType={submissionOptions.data!.file_business_type} businessId={target.id}
+              category="oa_attachment" onlyCategory="oa_attachment" writePermission="quote:manage" compact showUpload={false} /></div>
+          </details>}
+          {(submissionFiles.data ?? []).some(file => file.category === 'oa_attachment') && <div style={{ borderTop: '1px solid var(--crm-border)', paddingTop: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, marginBottom: 9, fontSize: 13 }}>
+              <span>本次随申请提交</span><span style={{ color: 'var(--crm-text-3)' }}>已选 {submitAttachments.length} / 10</span>
+            </div>
+            <Select multiple style={{ width: '100%' }} placeholder="选择已上传的附件" maxTagCount={2}
+              value={submitAttachments} disabled={submitMutation.isPending || saveMutation.isPending}
+              optionList={(submissionFiles.data ?? []).filter(file => file.category === 'oa_attachment').map(file => ({ value: file.id, label: file.file_name }))}
+              onChange={value => {
+                const ids = value as number[]
+                if (ids.length > 10) { Toast.warning('单次最多提交10个附件'); return }
+                setSubmitAttachments(ids)
+              }} />
           </div>}
-          {submissionOptions.data?.fields.map((field) => <div key={field.id}>
-            <FormLabel required={field.required}>{field.label}</FormLabel>
-            {field.type === 'DDAttachment' ? (
-              <section style={{ display: 'grid', gap: 18, padding: 18, border: '1px solid var(--crm-border)', borderRadius: 10, background: 'var(--crm-surface-low)', minWidth: 0 }}>
-                <div style={{ color: 'var(--crm-text-3)', fontSize: 12, lineHeight: 1.7 }}>
-                  图纸、PDF、表格等补充资料 · 单个文件不超过 20 MB<br />
-                  与上方产品参考照片分开提交，最多 10 个附件。
-                </div>
-                {editVisible ? <div>
-                  <Upload action="" uploadTrigger="custom" multiple fileList={pendingAttachments}
-                    disabled={saveMutation.isPending || !can('file:manage')} maxSize={20 * 1024}
-                    onSizeError={() => Toast.warning('单个附件不能超过20 MB')}
-                    onChange={({ fileList }) => setPendingAttachments(fileList)}>
-                    <Button disabled={saveMutation.isPending || !can('file:manage')}>＋ 选择附件</Button>
-                  </Upload>
-                  <div style={{ marginTop: 8, fontSize: 12, color: 'var(--crm-text-3)', lineHeight: 1.7 }}>
-                    {can('file:manage') ? '所选文件会在保存草稿或提交时上传，并随本次申请提交。' : '暂无上传权限，请联系管理员开通文件管理权限。'}
-                  </div>
-                </div> : target && <AttachmentPanel businessType={submissionOptions.data!.file_business_type} businessId={target.id}
-                  category="oa_attachment" onlyCategory="oa_attachment" writePermission="quote:manage"
-                  compact hint="先上传文件，再选择本次随申请提交的附件。" />}
-                {editVisible && target && (submissionFiles.data ?? []).some(file => file.category === 'oa_attachment') && <details>
-                  <summary style={{ cursor: 'pointer', color: 'var(--crm-primary)', fontSize: 13 }}>查看或管理已上传文件</summary>
-                  <div style={{ marginTop: 12 }}><AttachmentPanel businessType={submissionOptions.data!.file_business_type} businessId={target.id}
-                    category="oa_attachment" onlyCategory="oa_attachment" writePermission="quote:manage" compact showUpload={false} /></div>
-                </details>}
-                {(submissionFiles.data ?? []).some(file => file.category === 'oa_attachment') && <div style={{ borderTop: '1px solid var(--crm-border)', paddingTop: 16 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, marginBottom: 9, fontSize: 13 }}>
-                    <span>本次随申请提交</span><span style={{ color: 'var(--crm-text-3)' }}>已选 {submitAttachments.length} / 10</span>
-                  </div>
-                  <Select multiple style={{ width: '100%' }} placeholder="选择已上传的附件" maxTagCount={2}
-                    value={submitAttachments} disabled={submitMutation.isPending || saveMutation.isPending}
-                    optionList={(submissionFiles.data ?? []).filter(file => file.category === 'oa_attachment').map(file => ({ value: file.id, label: file.file_name }))}
-                    onChange={value => {
-                      const ids = value as number[]
-                      if (ids.length > 10) { Toast.warning('单次最多提交10个附件'); return }
-                      setSubmitAttachments(ids)
-                    }} />
-                </div>}
-                {submissionFiles.isError && <div style={{ color: 'var(--crm-error)', fontSize: 12 }}>附件列表读取失败，请重试。</div>}
-              </section>
-            ) : field.type === 'DDSelectField' ? (
-              <Select style={{ width: '100%' }} placeholder="请选择" disabled={submitMutation.isPending || saveMutation.isPending}
-                value={submitFields[field.id] || undefined}
-                optionList={field.options.map((value) => ({ value, label: value }))}
-                onChange={(value) => setSubmitFields((current) => ({ ...current, [field.id]: value as string }))} />
-            ) : field.type === 'DDDateField' ? (
-              <DatePicker type="dateTime" format="yyyy-MM-dd HH:mm" style={{ width: '100%' }}
-                disabled={submitMutation.isPending || saveMutation.isPending} placeholder="请选择期望回复时间" showClear
-                value={submitFields[field.id] || undefined}
-                onChange={(_, value) => setSubmitFields((current) => ({ ...current, [field.id]: (value as string) || '' }))} />
-            ) : (
-              <TextArea value={submitFields[field.id] || ''} rows={2} disabled={submitMutation.isPending || saveMutation.isPending}
-                placeholder={`填写${field.label}`}
-                onChange={(value) => setSubmitFields((current) => ({ ...current, [field.id]: value }))} />
-            )}
-          </div>)}
+          {submissionFiles.isError && <div style={{ color: 'var(--crm-error)', fontSize: 12 }}>附件列表读取失败，请重试。</div>}
+        </section>
+      ) : field.type === 'DDSelectField' ? (
+        <Select style={{ width: '100%' }} placeholder="请选择" disabled={submitMutation.isPending || saveMutation.isPending}
+          value={submitFields[field.id] || undefined}
+          optionList={field.options.map((value) => ({ value, label: value }))}
+          onChange={(value) => setSubmitFields((current) => ({ ...current, [field.id]: value as string }))} />
+      ) : field.type === 'DDDateField' ? (
+        <DatePicker type={nativeFields ? "date" : "dateTime"} format={nativeFields ? "yyyy-MM-dd" : "yyyy-MM-dd HH:mm"} style={{ width: '100%' }}
+          disabled={submitMutation.isPending || saveMutation.isPending} placeholder="请选择期望回复时间" showClear
+          value={submitFields[field.id] || undefined}
+          onChange={(_, value) => setSubmitFields((current) => ({ ...current, [field.id]: (value as string) || '' }))} />
+      ) : nativeFields && !field.multiline ? (
+        <Input value={submitFields[field.id] || ''} disabled={submitMutation.isPending || saveMutation.isPending}
+          placeholder={field.hint} onChange={(value) => setSubmitFields((current) => ({ ...current, [field.id]: value }))} />
+      ) : (
+        <TextArea value={submitFields[field.id] || ''} rows={2} disabled={submitMutation.isPending || saveMutation.isPending}
+          placeholder={field.hint || `填写${field.label}`}
+          onChange={(value) => setSubmitFields((current) => ({ ...current, [field.id]: value }))} />
+      )}
+      {field.help_text && <small>{field.help_text}</small>}
+    </div>)}
   </>
+
+  const renderEditPhotos = (label = '产品参考图片', required = true, help?: string, maxFiles?: number) => (
+    <div>
+      <FormLabel required={required}>{label}</FormLabel>
+      {help && <small>{help}</small>}
+      {(!editing || pendingPhotos.length > 0) && <>
+        <Upload action="" uploadTrigger="custom" multiple accept="image/jpeg,image/png"
+          maxSize={20 * 1024} onSizeError={() => Toast.warning('单张照片不能超过 20 MB')}
+          fileList={pendingPhotos} disabled={saveMutation.isPending || !can('file:manage') || !can('quote:manage')}
+          onChange={({ fileList }) => {
+          if (maxFiles && fileList.length > maxFiles) {
+            Toast.warning(`最多选择 ${maxFiles} 张产品参考图片`)
+            return
+          }
+          setPendingPhotos(fileList)
+        }}
+          onAcceptInvalid={() => Toast.warning('请选择 JPG 或 PNG 图片')}
+          prompt="先选择照片；点「保存草稿」仅保存，点「提交到同序 OA」才会发出审批。">
+          <Button theme="solid" disabled={saveMutation.isPending || !can('file:manage') || !can('quote:manage')}>选择照片（可多选）</Button>
+        </Upload>
+        {(!can('file:manage') || !can('quote:manage')) && <div>上传照片需要文件管理和报价管理权限，请联系管理员。</div>}
+      </>}
+      {editing && (
+        <AttachmentPanel
+          businessType="inquiry"
+          businessId={editing.id}
+          writePermission="quote:manage"
+          excludeCategory="oa_attachment"
+          uploadLabel="上传照片" maxFiles={maxFiles}
+          hint="放产品照片、图纸或参考截图，单张不超过 20 MB（JPG / PNG）"
+          accept="image/jpeg,image/png"
+        />
+      )}
+    </div>
+  )
+
+  const renderNativeFields = (target: CustomInquiryRow | null, editable: boolean) => nativeFields?.map(field => {
+    const key = field.id
+    const label = <FormLabel required={field.required}>{field.label}</FormLabel>
+    const aliases: Record<string, string> = {
+      customer: 'customer_contact', specification: 'product_model', delivery_time: 'delivery_date', notes: 'special_note',
+    }
+    switch (key) {
+      case 'instructions':
+        return <div key={key}>{label}<div style={{ color: 'var(--crm-text-3)', whiteSpace: 'pre-line' }}>{field.hint}</div></div>
+      case 'reporter':
+      case 'report_department': {
+        const identity = submissionOptions.data?.prefill
+        return <div key={key}>{label}<Input readOnly value={(key === 'reporter' ? identity?.applicant_name : identity?.department) ?? ''}/></div>
+      }
+      case 'product_name':
+      case 'quantity':
+      case 'requirements': {
+        const index = key === 'product_name' ? 'title' : key === 'quantity' ? 'quantity' : 'description'
+        const value = String((editable ? form[index] : target?.[index]) ?? '')
+        const change = (next: string) => setForm(current => ({ ...current, [index]: next }))
+        return <div key={key}>{label}{index === 'description'
+          ? <TextArea rows={3} value={value} readOnly={!editable} placeholder={field.hint} onChange={change} />
+          : <Input value={value} readOnly={!editable} onChange={change} />}</div>
+      }
+      case 'reference_images':
+        return <div key={key}>{editable
+          ? renderEditPhotos(field.label, Boolean(field.required), field.help_text, field.max_files)
+          : target && <>{label}<AttachmentPanel businessType="inquiry" businessId={target.id}
+              writePermission="quote:manage" excludeCategory="oa_attachment" uploadLabel="上传照片"
+              accept="image/jpeg,image/png" maxFiles={field.max_files} hint={field.help_text} compact /></>}</div>
+      default:
+        return <div key={key}>{renderSubmissionFields(target, aliases[key] ?? key)}</div>
+    }
+  })
 
   const saveForm = (submit: boolean) => {
     if (saveMutation.isPending) return
@@ -735,7 +931,7 @@ export default function KnowledgePage() {
     if (submit) {
       const options = submissionOptions.data
       if (!options?.configured || !options.enabled) { Toast.warning('询价审批暂未启用，可先保存需求和内部报价草稿；正式对外报价仍需通过核价及报价复核'); return }
-      if (options.quote_owner_required && !(submitQuoteOwner ?? options.selected_quote_owner)) { Toast.warning('请选择对接报价员'); return }
+      if (options.quote_owner_required && !selectedAllowedQuoteOwner) { Toast.warning('请选择对接报价员'); return }
       const missing = options.fields.find((field) => field.required && (field.type === 'DDAttachment'
         ? !submitAttachments.length && !pendingAttachments.length : !submitFields[field.id]?.trim()))
       if (missing) { Toast.warning(`请填写${missing.label}`); return }
@@ -758,7 +954,7 @@ export default function KnowledgePage() {
     <div className="page-container">
       <PageHeader
         title="定制需求"
-        subtitle="客户问了但我们还没有标准产品的需求都沉淀在这里——这是找开发方向的原料"
+        subtitle="客户想做的规格在现有产品里找不到时，可以先在这里记录需求，再准备询价和报价。"
       />
 
       {/* 审批暂停要**在页面上先说**，不能等点了提交失败才弹一句 toast。
@@ -782,9 +978,13 @@ export default function KnowledgePage() {
       )}
 
       <SectionCard>
+        {inquiryFilter && <div style={{ marginBottom: 12 }}>
+          当前查看新品洞察转出的询价及其修订版。
+          <Button theme="borderless" onClick={() => resetInquiryFilters(true)}>查看全部询价</Button>
+        </div>}
         {opportunityFilter && <div style={{ marginBottom: 12 }}>
           当前商机：{linkedOpportunity.data?.title ?? linkedOpportunity.error?.message ?? `商机编号 ${opportunityFilter}`} ·
-          <Button theme="borderless" onClick={() => { setSearchParams({}); setPage(1) }}>查看全部询价</Button>
+          <Button theme="borderless" onClick={() => resetInquiryFilters(true)}>查看全部询价</Button>
           <Link to={`/opportunities/${opportunityFilter}`}>返回商机</Link>
         </div>}
         <div className="toolbar">
@@ -795,13 +995,10 @@ export default function KnowledgePage() {
           ))}
           <div style={{ flex: 1 }} />
           <Input
-            placeholder="搜索产品名称"
+            placeholder="输入需求名称或编号"
             value={keywordInput}
             onChange={setKeywordInput}
-            onEnterPress={() => {
-              setKeyword(keywordInput.trim())
-              setPage(1)
-            }}
+            onEnterPress={searchInquiries}
             style={{ width: 220 }}
             showClear
           />
@@ -816,19 +1013,28 @@ export default function KnowledgePage() {
             style={{ width: 130 }}
             showClear
           />
-          <Button theme="solid" onClick={openCreate}>
+          <Button theme="borderless" onClick={searchInquiries}>搜索</Button>
+          {canManage && <Button theme="solid" onClick={openCreate}>
             记录定制询价
-          </Button>
+          </Button>}
         </div>
 
         <Table<CustomInquiryRow>
+          className="inquiries-table"
           columns={columns}
           dataSource={query.data?.items ?? []}
           loading={query.isLoading}
           rowKey="id"
           size="middle"
-          empty={emptyText(query, '还没有定制询价记录')}
-          pagination={{
+          empty={emptyText(query,
+            keyword || statusFilter ? '没有符合筛选条件的定制询价'
+              : inquiryFilter ? '找不到这条询价，可能已删除或没有查看权限'
+                : opportunityFilter ? '这笔商机还没有定制询价' : '还没有定制询价记录',
+            keyword || statusFilter ? undefined : canManage && !inquiryFilter ? '可以先记录客户要的规格和数量。' : undefined,
+            keyword || statusFilter ? <Button size="small" onClick={() => resetInquiryFilters()}>清除筛选</Button>
+              : canManage && !inquiryFilter ? <Button size="small" onClick={openCreate}>记录定制询价</Button> : undefined,
+          )}
+          pagination={((query.data?.total ?? 0) <= pageSize) ? false : {
             currentPage: page,
             pageSize,
             total: query.data?.total ?? 0,
@@ -859,7 +1065,7 @@ export default function KnowledgePage() {
         okButtonProps={{ disabled: submissionOptions.isPending || submissionOptions.isError || !submissionOptions.data?.configured || !submissionOptions.data?.enabled }}
         onOk={() => {
           if (!submitTarget || !submissionOptions.data) return
-          const quoteOwner = submitQuoteOwner ?? submissionOptions.data.selected_quote_owner ?? undefined
+          const quoteOwner = selectedAllowedQuoteOwner
           if (submissionOptions.data.quote_owner_required && !quoteOwner) { Toast.warning('请选择对接报价员'); return }
           const missing = submissionOptions.data.fields.find((field) => field.required && (field.type === 'DDAttachment' ? !submitAttachments.length : !submitFields[field.id]?.trim()))
           if (missing) { Toast.warning(`请填写${missing.label}`); return }
@@ -867,21 +1073,23 @@ export default function KnowledgePage() {
         }}
       >
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 12 }}>
-          <ApplicantIdentity prefill={submissionOptions.data?.prefill} />
-          <div>业务员在CRM提交，生产部在同序 OA 接收并处理。确认提交后才会发起审批，无需在同序 OA 重复填单。</div>
-          <div><strong>{submitTarget?.title}</strong>（第 {submitTarget?.version ?? 1} 版）</div>
-          <div style={{ whiteSpace: 'pre-wrap' }}>{submitTarget?.description || '尚未填写需求描述'}</div>
-          <div>数量：{submitTarget?.quantity ?? '未填写'}；客户：{submitTarget?.customer_name || '未关联'}</div>
-          {submissionOptions.isError && <div style={{ color: 'var(--crm-error)' }}>{submissionOptions.error.message}</div>}
-          {submissionOptions.data && !submissionOptions.data.configured && <div>尚未配置同序 OA 询价模板，请联系管理员。</div>}
-          {submissionOptions.data && !submissionOptions.data.enabled && <div>同序 OA 询价提交暂未开启，请联系管理员。</div>}
-          {submitTarget && submissionOptions.data && <div>
-            <FormLabel required={submissionOptions.data.image_required}>产品参考图片</FormLabel>
-            <div style={{ marginBottom: 8, color: 'var(--crm-text-3)', fontSize: 12 }}>上传真实产品参考图片后再提交；审批结果可在「审批记录」查看，可点击「立即同步」查询最新结果。</div>
-            <AttachmentPanel businessType={submissionOptions.data.file_business_type} businessId={submitTarget.id}
-              writePermission="quote:manage" excludeCategory="oa_attachment" uploadLabel="上传照片" accept="image/jpeg,image/png,image/gif,image/webp,image/bmp" />
-          </div>}
-          {renderSubmissionFields(submitTarget)}
+          {nativeFields ? renderNativeFields(submitTarget, false) : <>
+            <ApplicantIdentity prefill={submissionOptions.data?.prefill} />
+            <div>提交后按同序 OA 模板流转，可在 CRM 查看审批进度。</div>
+            <div><strong>{submitTarget?.title}</strong>（第 {submitTarget?.version ?? 1} 版）</div>
+            <div style={{ whiteSpace: 'pre-wrap' }}>{submitTarget?.description || '尚未填写需求描述'}</div>
+            <div>数量：{submitTarget?.quantity ?? '未填写'}；客户：{submitTarget?.customer_name || '未关联'}</div>
+            {submissionOptions.isError && <div style={{ color: 'var(--crm-error)' }}>{submissionOptions.error.message}</div>}
+            {submissionOptions.data && !submissionOptions.data.configured && <div>尚未配置同序 OA 询价模板，请联系管理员。</div>}
+            {submissionOptions.data && !submissionOptions.data.enabled && <div>同序 OA 询价提交暂未开启，请联系管理员。</div>}
+            {submitTarget && submissionOptions.data && <div>
+              <FormLabel required={submissionOptions.data.image_required}>产品参考图片</FormLabel>
+              <div style={{ marginBottom: 8, color: 'var(--crm-text-3)', fontSize: 12 }}>上传真实产品参考图片后再提交；审批结果可在「审批记录」查看，可点击「立即同步」查询最新结果。</div>
+              <AttachmentPanel businessType={submissionOptions.data.file_business_type} businessId={submitTarget.id}
+                writePermission="quote:manage" excludeCategory="oa_attachment" uploadLabel="上传照片" accept="image/jpeg,image/png,image/gif,image/webp,image/bmp" />
+            </div>}
+            {renderSubmissionFields(submitTarget)}
+          </>}
 
         </div>
       </Modal>
@@ -901,50 +1109,27 @@ export default function KnowledgePage() {
         bodyStyle={{ maxHeight: '65vh', overflowY: 'auto' }}
       >
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 12 }}>
-          <ApplicantIdentity prefill={submissionOptions.data?.prefill} />
-          <div>
-            <FormLabel required>产品参考图片</FormLabel>
-            {(!editing || pendingPhotos.length > 0) && <>
-              <Upload action="" uploadTrigger="custom" multiple accept="image/jpeg,image/png,image/gif,image/webp,image/bmp"
-                maxSize={20 * 1024} onSizeError={() => Toast.warning('单张照片不能超过 20 MB')}
-                fileList={pendingPhotos} disabled={saveMutation.isPending || !can('file:manage') || !can('quote:manage')}
-                onChange={({ fileList }) => setPendingPhotos(fileList)}
-                onAcceptInvalid={() => Toast.warning('请选择 JPG、PNG、GIF、WebP 或 BMP 图片')}
-                prompt="先选择照片；点「保存草稿」仅保存，点「提交到同序 OA」才会发出审批。">
-                <Button theme="solid" disabled={saveMutation.isPending || !can('file:manage') || !can('quote:manage')}>选择照片（可多选）</Button>
-              </Upload>
-              {(!can('file:manage') || !can('quote:manage')) && <div>上传照片需要文件管理和报价管理权限，请联系管理员。</div>}
-            </>}
-            {editing && (
-              /* 编辑态原来沿用通用附件说明「合同、图纸、回款凭证都可以放在这里」，
-                 跟「产品参考图片」这个字段完全不搭（2026-11-17 视觉审视 V2-11）。 */
-              <AttachmentPanel
-                businessType="inquiry"
-                businessId={editing.id}
-                writePermission="quote:manage"
-                excludeCategory="oa_attachment"
-                uploadLabel="上传照片"
-                hint="放产品照片、图纸或参考截图，单张不超过 20 MB（JPG / PNG / GIF / WebP / BMP）"
-                accept="image/jpeg,image/png,image/gif,image/webp,image/bmp"
+          {nativeFields ? renderNativeFields(editing, true) : <>
+            <ApplicantIdentity prefill={submissionOptions.data?.prefill} />
+            {renderEditPhotos()}
+            <div>
+              <FormLabel required>产品名称</FormLabel>
+              <Input
+                value={form.title}
+                onChange={(value) => setForm({ ...form, title: value })}
               />
-            )}
-          </div>
-          <div>
-            <FormLabel required>产品名称</FormLabel>
-            <Input
-              value={form.title}
-              onChange={(value) => setForm({ ...form, title: value })}
-            />
-          </div>
-          <div>
-            <FormLabel required>材质及工艺要求</FormLabel>
-            <TextArea
-              value={form.description}
-              onChange={(value) => setForm({ ...form, description: value })}
-              rows={3}
-              placeholder="材质、工艺、尺寸、使用场景……"
-            />
-          </div>
+            </div>
+            <div>
+              <FormLabel required>材质及工艺要求</FormLabel>
+              <TextArea
+                value={form.description}
+                onChange={(value) => setForm({ ...form, description: value })}
+                rows={3}
+                placeholder="材质、工艺、尺寸、使用场景……"
+              />
+            </div>
+          </>}
+          {nativeFields && <div style={{ borderTop: '1px solid var(--crm-border)', paddingTop: 12, fontWeight: 600 }}>CRM 关联资料</div>}
           <div>
             <div style={{ marginBottom: 4 }}>客户（用于关联 CRM）</div>
             <Select
@@ -993,10 +1178,10 @@ export default function KnowledgePage() {
             )}
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
-            <div style={{ flex: 1 }}>
+            {!nativeFields && <div style={{ flex: 1 }}>
               <FormLabel required>预估订购数量</FormLabel>
               <Input value={form.quantity} onChange={(value) => setForm({ ...form, quantity: value })} />
-            </div>
+            </div>}
             <div style={{ flex: 1 }}>
               <div style={{ marginBottom: 4 }}>客户目标价（元/件）</div>
               <Input
@@ -1009,7 +1194,7 @@ export default function KnowledgePage() {
             <div style={{ marginBottom: 4 }}>备注</div>
             <Input value={form.remark} onChange={(value) => setForm({ ...form, remark: value })} />
           </div>
-          {renderSubmissionFields(editing)}
+          {!nativeFields && renderSubmissionFields(editing)}
         </div>
       </Modal>
 
@@ -1084,7 +1269,17 @@ export default function KnowledgePage() {
             { title: '数量', dataIndex: 'quantity', width: 80, render: (v: number | null) => v ?? '-' },
             { title: '目标价', dataIndex: 'target_price', width: 90, render: (v: number | null) => v ?? '-' },
             { title: '本版说明', dataIndex: 'revision_note', render: (v: string | null) => v ?? '（原始要求）' },
-            { title: '操作', render: (_: unknown, row: CustomInquiryRow) => <div>{can('sample:manage') && <a onClick={() => { setHistoryTarget(null); setSampleSourceId(row.id) }}>按此版本申请打样</a>}{can('order:manage') && <a style={{ display: 'block' }} onClick={() => { setHistoryTarget(null); setDraftSourceId(row.id) }}>按此版本建订单草稿</a>}</div> },
+            { title: '操作', render: (_: unknown, row: CustomInquiryRow) => (
+              <div>
+                {!row.is_deleted && (row.linked_quotes?.length || (can('quote:manage') && !row.is_superseded)) ? (
+                  <a style={{ display: 'block' }} onClick={() => { setHistoryTarget(null); openQuote(row) }}>
+                    {row.linked_quotes?.length ? '查看原报价' : row.status === 'archived' ? '修订后报价' : '按此版本生成报价草稿'}
+                  </a>
+                ) : null}
+                {can('sample:manage') && <a onClick={() => { setHistoryTarget(null); setSampleSourceId(row.id) }}>按此版本申请打样</a>}
+                {can('order:manage') && <a style={{ display: 'block' }} onClick={() => { setHistoryTarget(null); setDraftSourceId(row.id) }}>按此版本建订单草稿</a>}
+              </div>
+            ) },
             {
               title: '提交时间',
               dataIndex: 'created_at',
@@ -1136,7 +1331,7 @@ export default function KnowledgePage() {
               dataIndex: 'instance_id',
               render: (v: string | null, row: OaApprovalInstance) => (
                 <div style={{ fontSize: 12 }}>
-                  <div>{v ? '已创建审批' : '尚未创建审批'}</div>
+                  <div>{v ? '已创建审批' : row.status === 'needs_review' ? '是否建单待核对' : row.status === 'submitting' ? '正在发起' : '尚未创建审批'}</div>
                   <div style={{ color: 'var(--crm-text-3)' }}>第 {row.submit_round ?? 1} 轮</div>
                   {row.error && <div style={{ color: 'var(--crm-text-3)' }}>{row.error}</div>}
                   {row.result?.withdraw_snapshot_pending === true && <div>撤回已确认，正在等待审批系统 最终过程记录；下方为此前同步的快照。</div>}
@@ -1344,6 +1539,15 @@ export default function KnowledgePage() {
         width={520}
       >
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 12 }}>
+          {quoteMutation.error && (
+            <Banner type="danger" fullMode={false} closeIcon={null} description={quoteMutation.error.message}>
+                <Button theme="borderless" onClick={() => {
+                  refresh()
+                  void queryClient.invalidateQueries({ queryKey: ['inquiry-history'] })
+                  setQuoteTarget(null)
+                }}>刷新询价</Button>
+            </Banner>
+          )}
           <div style={{ padding: 12, borderRadius: 8, background: 'var(--crm-surface-low)', color: 'var(--crm-text-2)', lineHeight: 1.7 }}>可以先准备内部报价草稿；正式对外报价需先通过核价及报价复核，无需等待后续打样、采购或备货结束。</div>
 
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
@@ -1353,17 +1557,19 @@ export default function KnowledgePage() {
             {quoteTarget?.inquiry_no ? ` · 需求编号 ${quoteTarget.inquiry_no}` : ''}
           </div>
           <div>
-            <FormLabel required>核价成本（元/件，不含运费）</FormLabel>
+            <FormLabel
+              required
+              help="填核价人员确认的单件成本。系统用它计算利润和审批门槛，运费单独计算。"
+              helpLabel="核价成本"
+            >
+              核价成本（元/件，不含运费）
+            </FormLabel>
             <InputNumber
               style={{ width: '100%' }}
               min={0}
               value={quoteForm.unit_cost ?? undefined}
               onChange={(value) => setQuoteForm({ ...quoteForm, unit_cost: (value as number) ?? null })}
             />
-            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 2 }}>
-              定制件没有系统成本可查，成本由核价环节给出。系统用它算毛利，
-              并按「最低毛利率」推出保护价——低于保护价会转审批。
-            </div>
           </div>
           <div>
             <FormLabel required>报价（元/件）</FormLabel>

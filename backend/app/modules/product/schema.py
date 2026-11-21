@@ -1,6 +1,7 @@
 """产品与 SKU 的入参结构。"""
 
 from decimal import Decimal
+from typing import Literal
 
 from pydantic.fields import FieldInfo
 
@@ -28,7 +29,7 @@ class ProductUpdate(PatchModel):
     brand: str | None = None
     description: str | None = None
     knowledge: str | None = None
-    status: str | None = None
+    status: Literal["active", "disabled"] | None = None
 
 
 def _num_field(name: str) -> FieldInfo:
@@ -83,7 +84,7 @@ class SkuUpdate(PatchModel):
     moq: int | None = _int_field("moq")
     package_type: str | None = None
     unit: str | None = None
-    status: str | None = None
+    status: Literal["active", "disabled"] | None = None
 
 
 class SkuStandaloneCreate(SkuCreate):

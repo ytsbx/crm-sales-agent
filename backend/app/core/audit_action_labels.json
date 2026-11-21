@@ -69,6 +69,7 @@
   "logout": "退出登录",
   "lose": "标记失单",
   "mark_overdue": "标记逾期",
+  "clear_manual_overdue": "结清后解除人工逾期",
   "merge": "合并",
   "milestone_revoked": "撤销节点完成",
   "oa:resolve": "处理OA审批异常",

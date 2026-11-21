@@ -35,6 +35,8 @@ def test_applicant_and_current_assignee_restrictions_remain():
 def test_admin_existing_exception_preserved():
     user=make_user(1,roles=('admin',),permissions=())
     assert approval_denial(user,instance(current_assignee_id=3),price_can_approve=False) is None
+    # 管理员可以审批自己提交的报价（2026-11-21 用户确认）
+    assert approval_denial(user,instance(),price_can_approve=False) is None
 
 
 def test_finance_permission_does_not_grant_normal_approval():

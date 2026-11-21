@@ -42,7 +42,13 @@ export default function DetailHeader({
   style?: CSSProperties
 }) {
   return (
-    <div className="card-block" style={{ marginBottom: 'var(--crm-space-4)', ...style }}>
+    <div
+      /* 头卡与下面的白卡之间要有一眼分界：四个详情页共用这个头部，
+         以前它和普通卡片长得一模一样，整页就是"白卡叠白卡"。
+         detail-header-card 只加一层极淡渐变 + 顶部一条渐变细线（见 index.css）。 */
+      className="card-block detail-header-card"
+      style={{ marginBottom: 'var(--crm-space-4)', ...style }}
+    >
       {/* 宽度不够时自动换行：标题在上、操作按钮落到下方靠左（见 index.css） */}
       <div className="detail-header-grid">
         <div className="dh-main">

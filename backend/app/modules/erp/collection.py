@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -94,6 +95,8 @@ from app.modules.integration.vocab import (
 )
 from app.modules.order.model import SalesOrder, SalesOrderItem
 from app.modules.product.model import Sku
+
+logger = logging.getLogger(__name__)
 
 #: 一页默认多少条、一次最多跑多少页。
 #: 上限存在的理由：采集是同步请求，页数不封顶时一个坏游标就能把请求挂到超时。
@@ -578,8 +581,8 @@ async def _upsert_record(
     item: dict,
     batch_id: str,
     now: datetime,
-) -> tuple[ExternalRecord, str]:
-    """幂等落一条外部事实。返回 `(记录, "inserted" | "updated" | "duplicate")`。"""
+) -> tuple[ExternalRecord, str, str | None]:
+    """落外部事实，同时返回采集前的外部编号供旧明细映射识别。"""
     object_type = item["object_type"]
     digest = record_digest(item)
     row = await _get_record(
@@ -589,6 +592,7 @@ async def _upsert_record(
         object_type=object_type,
         dedupe_key=item["dedupe_key"],
     )
+    prior_external_id = row.external_id if row is not None else None
     if row is None:
         row = ExternalRecord(
             system_type=system_type,
@@ -611,7 +615,7 @@ async def _upsert_record(
         row.collected_count = (row.collected_count or 0) + 1
         row.last_batch_id = batch_id
         await session.flush()
-        return row, "duplicate"
+        return row, "duplicate", prior_external_id
     else:
         row.last_seen_at = now
         row.collected_count = (row.collected_count or 0) + 1
@@ -633,7 +637,7 @@ async def _upsert_record(
     row.payload = item["payload"]
     row.raw_digest = digest
     await session.flush()
-    return row, outcome
+    return row, outcome, prior_external_id
 
 
 # ---------------------------------------------------------------- 映射与待匹配
@@ -731,13 +735,15 @@ async def resolve_mapping(
     if mapping.object_type == "customer":
         if not code:
             return None, None, "对方没有给出客户标识，无法匹配", MATCH_PENDING
-        tax = (
+        by_tax = (
             await session.execute(
-                select(Customer).where(Customer.tax_no == code, Customer.deleted_at.is_(None))
+                select(Customer.id).where(Customer.tax_no == code, Customer.deleted_at.is_(None)).limit(2)
             )
-        ).scalars().first()
-        if tax is not None:
-            return tax.id, "tax_no", None, MATCH_MATCHED
+        ).scalars().all()
+        if len(by_tax) == 1:
+            return by_tax[0], "tax_no", None, MATCH_MATCHED
+        if len(by_tax) > 1:
+            return None, None, f"客户税号「{code}」命中多家客户，需人工指定", MATCH_CONFLICT
         by_name = (
             await session.execute(
                 select(Customer).where(Customer.name == code, Customer.deleted_at.is_(None))
@@ -835,6 +841,16 @@ async def resolve_mapping(
     return parent.internal_id, "parent_order", None, MATCH_MATCHED
 
 
+LINE_MAPPING_HASH_PREFIX = "line-sha256:"
+LINE_MAPPING_KEY_LIMIT = 128
+
+
+def line_mapping_key(dedupe_key: str) -> str:
+    if len(dedupe_key) <= LINE_MAPPING_KEY_LIMIT:
+        return dedupe_key
+    return LINE_MAPPING_HASH_PREFIX + hashlib.sha256(dedupe_key.encode()).hexdigest()
+
+
 async def _ensure_mapping(
     session: AsyncSession,
     *,
@@ -842,6 +858,7 @@ async def _ensure_mapping(
     shop_id: str,
     object_type: str,
     record: ExternalRecord,
+    prior_external_id: str | None,
     now: datetime,
 ) -> ExternalObjectMapping:
     """建/更新映射行，并跑一次自动匹配。
@@ -850,13 +867,31 @@ async def _ensure_mapping(
     别人手工确认过的关联（人工指定的 `matched_by` 就是证据）。
     """
     external_id = record.external_id or record.dedupe_key
-    mapping = await _find_mapping(
-        session,
-        system_type=system_type,
-        shop_id=shop_id,
-        object_type=object_type,
-        external_id=external_id,
-    )
+    mapping = None
+    if object_type not in PRIMARY_OBJECT_TYPES:
+        external_id = line_mapping_key(record.dedupe_key)
+        keys = {key for key in (external_id, record.dedupe_key, prior_external_id, record.external_id)
+                if key is not None}
+        previous = (await session.execute(select(ExternalObjectMapping).where(
+            ExternalObjectMapping.system_type == system_type,
+            ExternalObjectMapping.shop_id == shop_id,
+            ExternalObjectMapping.object_type == object_type,
+            ExternalObjectMapping.external_id.in_(keys),
+            or_(ExternalObjectMapping.external_id == external_id,
+                ExternalObjectMapping.parent_key == (record.order_key or record.parent_key)),
+        ).order_by(ExternalObjectMapping.id))).scalars().all()
+        if len(previous) > 1:
+            # 存量重号可能各有人工确认，原样保留以供核对。
+            logger.warning("ERP 明细存在多条旧映射，等待人工核对：%s", [row.id for row in previous])
+            return previous[0]
+        if previous and previous[0].external_id in (external_id, record.dedupe_key, prior_external_id):
+            mapping = previous[0]
+            mapping.external_id = external_id
+    else:
+        mapping = await _find_mapping(
+            session, system_type=system_type, shop_id=shop_id,
+            object_type=object_type, external_id=external_id,
+        )
     if mapping is None:
         mapping = ExternalObjectMapping(
             system_type=system_type,
@@ -1005,6 +1040,11 @@ async def collect_once(
                 cursor=cursor_token,
                 page_size=page_size,
             )
+            next_token = None
+            if page.has_more:
+                next_token = _text(page.next_page_token)
+                if not next_token or next_token == cursor_token:
+                    raise AppError(ErrorCode.EXTERNAL_ERROR, "ERP 分页断点缺失或重复，采集可从原断点重试", 502)
             # 外部调用期间租约可能已被接管。持锁校验后才写一页事实与断点。
             cursor = await _lock_owned_cursor(
                 session, cursor_id, lease_token, lease_seconds=lease_seconds
@@ -1029,7 +1069,7 @@ async def collect_once(
                 item = normalize_item(
                     raw, object_type=item_object_type, position=position
                 )
-                record, outcome = await _upsert_record(
+                record, outcome, prior_external_id = await _upsert_record(
                     session,
                     system_type=system_type,
                     shop_id=shop,
@@ -1048,6 +1088,7 @@ async def collect_once(
                     shop_id=shop,
                     object_type=item_object_type,
                     record=record,
+                    prior_external_id=prior_external_id,
                     now=moment,
                 )
                 if mapping.match_status != MATCH_MATCHED:
@@ -1059,8 +1100,8 @@ async def collect_once(
                 cursor.watermark = water
             cursor.page_no = start_page_no + summary["pages"]
             cursor.records_collected = (cursor.records_collected or 0) + len(items)
-            if getattr(page, "has_more", False) and getattr(page, "next_page_token", None):
-                cursor.page_token = _text(page.next_page_token)
+            if next_token:
+                cursor.page_token = next_token
                 cursor_token = cursor.page_token
                 await session.commit()
                 continue

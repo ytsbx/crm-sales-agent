@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.core.audit import write_audit
 from app.core.database import get_db
@@ -109,11 +110,12 @@ async def list_notifications(
             "起始日期不能晚于截止日期，请调换后再筛",
             422,
         )
-    stmt = select(Notification).where(Notification.user_id == user.id, await process_notification_filter(session, user))
+    stmt = select(Notification).where(
+        Notification.user_id == user.id, Notification.dismissed_at.is_(None),
+        await process_notification_filter(session, user),
+    )
     if unread_only:
         stmt = stmt.where(Notification.read_at.is_(None))
-    # 按日期过滤用库端 date(created_at)：通知量会一直累积（无清理机制），
-    # 把过滤下到 SQL 才不会随历史增长变慢；口径与界面展示的"通知日期"一致
     if date_from is not None:
         stmt = stmt.where(func.date(Notification.created_at) >= date_from)
     if date_to is not None:
@@ -131,6 +133,7 @@ async def unread_count(
         await session.execute(
             select(func.count(Notification.id)).where(
                 Notification.user_id == user.id, Notification.read_at.is_(None),
+                Notification.dismissed_at.is_(None),
                 await process_notification_filter(session, user),
             )
         )
@@ -146,7 +149,7 @@ async def mark_read(
 ):
     await session.execute(
         update(Notification)
-        .where(Notification.id == notification_id, Notification.user_id == user.id)
+        .where(Notification.id == notification_id, Notification.user_id == user.id, Notification.dismissed_at.is_(None))
         .values(read_at=datetime.now(UTC))
     )
     await session.commit()
@@ -160,11 +163,44 @@ async def mark_all_read(
 ):
     await session.execute(
         update(Notification)
-        .where(Notification.user_id == user.id, Notification.read_at.is_(None))
+        .where(Notification.user_id == user.id, Notification.read_at.is_(None), Notification.dismissed_at.is_(None))
         .values(read_at=datetime.now(UTC))
     )
     await session.commit()
     return ok(None, "全部已读")
+
+
+@router.post("/notifications/{notification_id}/dismiss")
+async def dismiss_notification(
+    notification_id: int,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    await _dismiss_for_user(session, user, Notification.id == notification_id)
+    return ok(None, "通知已移除")
+
+
+@router.post("/notifications/dismiss-read")
+async def dismiss_read_notifications(
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    await _dismiss_for_user(session, user, Notification.read_at.is_not(None))
+    return ok(None, "已读通知已清除")
+
+
+async def _dismiss_for_user(
+    session: AsyncSession, user: CurrentUser, criterion: ColumnElement[bool],
+) -> None:
+    await session.execute(
+        update(Notification)
+        .where(
+            Notification.user_id == user.id, Notification.dismissed_at.is_(None),
+            await process_notification_filter(session, user), criterion,
+        )
+        .values(dismissed_at=datetime.now(UTC))
+    )
+    await session.commit()
 
 
 # ---- 投递失败补投（文档 §六：发送失败保留业务记录并重试通知）----------------
@@ -385,7 +421,7 @@ async def update_notification_settings(
         session,
         operator_id=user.id,
         action="update_notification_settings",
-        business_type="settings",
+        business_type="setting",
         business_id=row.id,
         after=current,
         ip=client_ip(request),
@@ -472,7 +508,7 @@ async def update_level_policy(
         session,
         operator_id=user.id,
         action="update_notification_levels",
-        business_type="settings",
+        business_type="setting",
         business_id=existing.id if existing is not None else None,
         after=current,
         ip=client_ip(request),

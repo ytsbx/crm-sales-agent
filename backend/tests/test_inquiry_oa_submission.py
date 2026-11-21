@@ -209,19 +209,23 @@ async def test_material_control_preserves_original_without_duplicate_summary(set
 @pytest.mark.anyio
 async def test_oa_config_switches_options_and_start(setup, monkeypatch):
     inquiry, cfg, session, user, client, create = setup
-    monkeypatch.setattr(routes.app_settings, "oa_inquiry_template_id", "tpl-oa")
+    monkeypatch.setattr(routes.app_settings, "oa_inquiry_template_id", "")
+    monkeypatch.setattr(routes.app_settings, "oa_inquiry_template_code", routes.oa_inquiry.NATIVE_INQUIRY_CODE)
     monkeypatch.setattr(routes.oa_client, "configured", lambda: True)
     monkeypatch.setattr(routes.oa_client, "list_templates", AsyncMock(return_value=[{
-        "id":"tpl-oa", "code":"inquiry", "version":1,
-        "people":[{"id":"person-1", "name":"报价同事"}]}]))
-    options = await routes.inquiry_submission_options(7, user=user, session=session)
-    data = options["data"]
-    assert data["provider"] == "self_oa"
-    assert data["quote_owner_required"] is False
-    owner_field = next(f for f in data['fields'] if f['id'] == 'quote_owner')
-    assert owner_field['type'] == 'DDSelectField'
-    assert owner_field['options'] == ['报价同事']
-    assert {"quote_scope", "quote_owner", "product_reference"} <= {f["id"] for f in data["fields"]}
+        "id":"tpl-oa", "code":routes.oa_inquiry.NATIVE_INQUIRY_CODE, "version":1,
+        "applicant":{"id":"owner","name":"同序提报人","department_id":"dep","department_name":"同序部门"},
+        "fields":[{"id":"quoter","user_scope":["a","b"]},
+                  {"id":"quote_scope","type":"text","label":"原模板报价范围","required":False}],
+        "people":[{"id":"a","name":"宋桂香"},{"id":"b","name":"子木"},{"id":"outside","name":"范围外"}]}]))
+    inquiry.oa_quote_user_id = 'outside'
+    data = (await routes.inquiry_submission_options(7, user=user, session=session))["data"]
+    assert data["provider"] == "self_oa" and data["enabled"]
+    assert data["quote_owner_required"]
+    assert [p["name"] for p in data["quote_owners"]] == ["宋桂香", "子木"]
+    assert data["selected_quote_owner"] is None
+    assert data["fields"] == [{"id":"quote_scope","type":"TextField","label":"原模板报价范围",
+                               "required":False,"options":[]}]
 
     row = Obj(id=1, status="pending", instance_id="oa-1")
     start = AsyncMock(return_value=(row, "已发起 OA 定制询价审批"))
@@ -231,4 +235,19 @@ async def test_oa_config_switches_options_and_start(setup, monkeypatch):
     )
     assert result["data"]["status"] == "pending"
     start.assert_awaited_once()
+    create.assert_not_awaited()
+
+@pytest.mark.anyio
+async def test_non_native_oa_inquiry_does_not_fall_back_to_crm_roster(setup, monkeypatch):
+    inquiry, cfg, session, user, client, create = setup
+    monkeypatch.setattr(routes.app_settings, "oa_inquiry_template_id", "old-template")
+    monkeypatch.setattr(routes.oa_client, "configured", lambda: True)
+    read = AsyncMock()
+    monkeypatch.setattr(routes.oa_client, "list_templates", read)
+    options = (await routes.inquiry_submission_options(7, user=user, session=session))["data"]
+    assert options["quote_owners"] == []
+    assert not options["enabled"]
+    with pytest.raises(AppError, match="同序已发布"):
+        await routes.start_inquiry_approval(7, routes.StartApproval(), request(), user, session)
+    read.assert_not_awaited()
     create.assert_not_awaited()

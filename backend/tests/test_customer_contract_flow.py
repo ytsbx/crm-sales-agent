@@ -85,13 +85,15 @@ def test_original_bytes_must_exist_and_match_registry(monkeypatch,tmp_path):
 
 
 def setup_withdraw(monkeypatch, *, read_states=None, status='pending'):
-    row=Obj(id=1,status=status,instance_id='INST-1',originator_user_id='ding-actor')
+    row=Obj(id=1,status=status,instance_id='INST-1',originator_user_id='ding-actor',result={})
     monkeypatch.setattr(flow.oa,'get_by_business_key',AsyncMock(return_value=row))
+    monkeypatch.setattr(flow.oa,'lock_oa_business_then_instance',AsyncMock(return_value=row))
     monkeypatch.setattr(flow.settings,'dingtalk_push_off',False)
     client=Obj(get_process_instance=AsyncMock(side_effect=read_states or [instance(), {'status':'TERMINATED'}]), terminate_process_instance=AsyncMock())
     monkeypatch.setattr(flow,'get_client',lambda:client)
     monkeypatch.setattr(flow,'store_snapshot',AsyncMock())
-    session=Obj(get=AsyncMock(return_value=Obj(dingtalk_userid='ding-actor')))
+    monkeypatch.setattr(flow,'visible_doc',AsyncMock())
+    session=Obj(get=AsyncMock(return_value=Obj(dingtalk_userid='ding-actor')),commit=AsyncMock())
     return row,client,session
 
 

@@ -102,6 +102,11 @@ class TaskAssign(BaseModel):
     expected_updated_at: datetime | None = None
 
 
+class TaskBatchHandover(BaseModel):
+    task_ids: list[int] = Field(min_length=1, max_length=100)
+    owner_id: int = Field(gt=0)
+
+
 class TaskBatchComplete(BaseModel):
     """批量完成任务（03-API §25）。
 

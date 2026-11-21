@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     #: `/auth/refresh` 允许"已过期多久之内"仍然续期。过期太久就要求重新登录，
     #: 否则一个泄漏的旧 token 等于永久有效。
     refresh_grace_minutes: int = 720
+    login_session_max_days: int = Field(default=7, ge=1)
 
     #: 登录防爆破：滑动窗口内同一（用户名+IP）连续失败达到上限即锁定。
     login_max_attempts: int = 5
@@ -112,6 +113,10 @@ class Settings(BaseSettings):
     # 自研 OA 服务端对接（CRM → OA）。密钥只放环境变量，不进数据库。
     oa_base_url: str = "http://127.0.0.1:8781"
     oa_integration_secret: str = ""
+    # Existing approvals keep their original server after a local OA cutover.
+    oa_legacy_base_url: str = ""
+    oa_legacy_integration_secret: str = ""
+    oa_legacy_instance_ids: str = ""
     # Separate local database copies must not reuse approvals from another data set.
     oa_external_ref_namespace: str = Field(default="", pattern=r"^[A-Za-z0-9_-]{0,48}$")
     #: 合同审批模板（OA 里发布后的模板 UUID 或 code；两者填一个）
@@ -124,6 +129,7 @@ class Settings(BaseSettings):
     oa_sample_template_code: str = ""
     oa_sample_approver_dingtalk_ids: str = ""
     oa_sample_approver_mode: str = "all"
+    oa_inquiry_submission_enabled: bool = True
     oa_inquiry_template_id: str = ""
     oa_inquiry_template_code: str = ""
     oa_inquiry_approver_dingtalk_id: str = ""

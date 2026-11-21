@@ -174,6 +174,7 @@ async def list_cases(
     *,
     user: CurrentUser,
     status: str | None = "pending",
+    customer_id: int | None = None,
     page: int = 1,
     page_size: int = 20,
 ) -> tuple[list[dict], int]:
@@ -189,6 +190,11 @@ async def list_cases(
     conditions = []
     if status:
         conditions.append(CustomerDuplicateCase.status == status)
+    if customer_id is not None:
+        conditions.append(or_(
+            CustomerDuplicateCase.customer_id == customer_id,
+            CustomerDuplicateCase.candidate_id == customer_id,
+        ))
     owner_ids = await scoped_owner_ids(session, user)
     if owner_ids is not None:
         visible_customers = select(Customer.id).where(

@@ -4,10 +4,12 @@ from app.core.errors import AppError, ErrorCode
 from app.modules.dingtalk.model import OaInstance
 
 
-async def require_latest_approved(session, *, kind, business_id, version=None, release_stage=None):
+async def require_latest_approved(session, *, kind, business_id, version=None, release_stage=None, provider=None):
     query = select(OaInstance).where(OaInstance.oa_type == kind, OaInstance.inquiry_id == business_id)
     if version is not None:
         query = query.where(OaInstance.inquiry_version == version)
+    if provider is not None:
+        query = query.where(OaInstance.provider == provider)
     row = (await session.execute(query.order_by(OaInstance.submit_round.desc(), OaInstance.id.desc()).limit(1))).scalars().first()
     label = {'inquiry': '定制询价', 'sample': '打样', 'contract': '合同'}[kind]
     milestone = ((row.result or {}).get('business_stages') or {}).get(release_stage) if row and release_stage else None
@@ -41,6 +43,11 @@ async def require_inquiry_items_approved(session, items):
 
 async def require_sample_approved(session, sample):
     meta = (sample.source_context or {}).get('dingtalk_oa') or {}
+    if meta.get('requires_self_oa'):
+        return await require_latest_approved(
+            session, kind='sample', business_id=sample.id, version=int(sample.version or 1),
+            release_stage='sample', provider='self_oa',
+        )
     if not meta:
         from app.core.config import settings
         from app.modules.oa import client

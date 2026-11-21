@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import write_audit
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
+from app.core.draft_visibility import ensure_draft_access
 from app.core.errors import AppError, ErrorCode
 from app.core.idempotency import request_key_from
 from app.core.response import ok
@@ -241,6 +242,10 @@ async def generate_sample_request_doc(
                 extra_fields=payload.extra_fields,
             ),
         )
+        if replayed:
+            from app.modules.sample.service import get_visible_or_404
+
+            await get_visible_or_404(session, user, payload.sample_request_id)
         await write_audit(
             session,
             operator_id=user.id,
@@ -317,6 +322,10 @@ async def generate_order_sheet_doc(
                 allow_draft=payload.allow_draft,
             ),
         )
+        if replayed:
+            from app.modules.order.service import get_visible_order
+
+            await get_visible_order(session, user, payload.order_id)
         await write_audit(
             session,
             operator_id=user.id,
@@ -395,6 +404,10 @@ async def generate_quote_doc(
                 extra_fields=payload.extra_fields,
             ),
         )
+        if replayed:
+            from app.modules.quote.service import get_visible_version
+
+            await get_visible_version(session, user, payload.quote_version_id)
         await write_audit(
             session,
             operator_id=user.id,
@@ -640,4 +653,14 @@ async def _ensure_doc_access(
             f"请向管理员申请后再操作",
             403,
         )
-    await ensure_in_scope(session, user, owner_id=doc.owner_id, label=label)
+    from app.modules.bizdoc.model import BizDoc
+    from app.modules.order.model import OrderDraft
+    from app.modules.quote.model import Quote
+    from app.modules.sample.model import SampleRequest
+
+    for identity, model in ((doc.quote_id, Quote), (doc.order_draft_id, OrderDraft),
+                            (doc.sample_request_id, SampleRequest)):
+        if identity is not None:
+            await ensure_draft_access(session, model, identity, user.id)
+    if not await ensure_draft_access(session, BizDoc, doc.id, user.id):
+        await ensure_in_scope(session, user, owner_id=doc.owner_id, label=label)

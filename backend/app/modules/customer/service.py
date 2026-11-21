@@ -265,9 +265,11 @@ async def customer_overview(
     quote_rows: list = []
     quote_total: int | None = None
     if can("quote:view"):
+        from app.core.draft_visibility import draft_scope
+
         quote_base = scoped(
             select(Quote).where(
-                Quote.customer_id == customer_id, Quote.deleted_at.is_(None)
+                Quote.customer_id == customer_id, Quote.deleted_at.is_(None), draft_scope(Quote, user.id)
             ),
             Quote,
         )

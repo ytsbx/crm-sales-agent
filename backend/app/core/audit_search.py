@@ -48,6 +48,15 @@ from pathlib import Path
 _TYPE_LABELS_PATH = Path(__file__).with_name("audit_type_labels.json")
 _ACTION_LABELS_PATH = Path(__file__).with_name("audit_action_labels.json")
 
+# Historical spellings belong to the same object types as current writes.
+_LEGACY_TYPES = {"inquiry": "custom_inquiry", "settings": "setting"}
+
+
+def audit_type_variants(code: str) -> tuple[str, ...]:
+    canonical = _LEGACY_TYPES.get(code, code)
+    return (canonical, *(legacy for legacy, current in _LEGACY_TYPES.items() if current == canonical))
+
+
 
 @lru_cache(maxsize=1)
 def _type_labels() -> dict[str, str]:
@@ -103,7 +112,11 @@ def match_codes(keyword: str, labels: dict[str, str]) -> set[str]:
 
 def business_type_codes(keyword: str) -> set[str]:
     """输入可能指向的对象类型码。"""
-    return match_codes(keyword, _type_labels())
+    canonical_labels = {
+        code: label for code, label in _type_labels().items() if code not in _LEGACY_TYPES
+    }
+    hits = match_codes(keyword, canonical_labels)
+    return {variant for code in hits for variant in audit_type_variants(code)}
 
 
 def action_codes(keyword: str) -> set[str]:

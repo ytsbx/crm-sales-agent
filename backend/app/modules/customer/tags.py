@@ -731,7 +731,9 @@ async def merge_customers(
     #  得人工再设一个。）
     merged_contact_ids = list(
         (
-            await session.execute(select(Contact.id).where(Contact.customer_id == source.id))
+            await session.execute(select(Contact.id).where(
+                Contact.customer_id == source.id, Contact.deleted_at.is_(None),
+            ))
         ).scalars().all()
     )
     for module_path, class_name, label in MERGE_TARGETS:
@@ -784,7 +786,7 @@ async def merge_customers(
     if not has_own_primary and merged_contact_ids:
         await session.execute(
             Contact.__table__.update()
-            .where(Contact.id == min(merged_contact_ids))
+            .where(Contact.id == min(merged_contact_ids), Contact.deleted_at.is_(None))
             .values(is_primary=True)
         )
 

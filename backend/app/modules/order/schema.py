@@ -6,7 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 
 from app.core.patch_schema import CreateModel, PatchModel
-from app.modules.payment.schema import ReceivableGenerate
+from app.modules.payment.schema import FiniteReceivableRatios
 from app.modules.sample.schema import SampleSource
 
 
@@ -15,14 +15,13 @@ class ReceivablePlanIn(BaseModel):
 
     **不传 = 一条「全款」**（沿用转单自动建全款的老行为，向后兼容）。
     传了就是按比例分期：`ratios` 合计必须为 1、每期 > 0、最多 24 期 ——
-    与 `POST /orders/{id}/receivables/generate` **同一套判据**，
-    所以校验参数（`ReceivableGenerate`）直接复用它，避免两处各写一遍漂移。
+    与 `POST /orders/{id}/receivables/generate` 使用同一比例口径。
 
     `due_dates` / `names` 与 `ratios` **按下标对齐**；缺的位置分别回落到
     订单交期、以及「第 N 期」。后端不需要知道"定金/尾款"这类业务命名。
     """
 
-    ratios: list[float]
+    ratios: FiniteReceivableRatios
     due_dates: list[date] | None = None
     #: 每期名称。**上限与库列 `receivable_plans.plan_name` 一致（64）**：
     #: 少了它，65 字会一路走到 INSERT 才撞 `value too long for character varying(64)`
@@ -31,12 +30,6 @@ class ReceivablePlanIn(BaseModel):
 
     @model_validator(mode="after")
     def _check(self):
-        # 复用生成接口的**字段级**校验（NaN/Infinity），再自己补两条：
-        # ⚠️ `ReceivableGenerate` 的校验器只管"是不是有限数"，
-        # **"合计必须=1、每期>0、≤24 期"是在它的 service 里做的**（实测踩到：
-        # 只构造模型时 `[0.9, 0.2]` 能过）。转单要在**参数阶段**就拒掉，
-        # 否则等于先建了订单壳、再在生成应收时才炸。
-        ReceivableGenerate(ratios=self.ratios, first_due_date=date.today())
         if not self.ratios:
             raise ValueError("至少要有一期比例")
         if abs(sum(self.ratios) - 1) > 0.0001:

@@ -22,7 +22,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, NamedTuple
 
-from sqlalchemy import Select, select, text
+from sqlalchemy import Select, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,6 +31,7 @@ from app.core.textfit import fit_column
 from app.core.data_scope import ensure_in_scope, scoped_owner_ids
 from app.core.timebase import to_business
 from app.core.deps import CurrentUser
+from app.core.draft_visibility import draft_scope, ensure_draft_access
 from app.core.errors import AppError, ErrorCode
 from app.core.money import line_amount
 from app.modules.bizdoc import tokens as token_rules
@@ -1743,7 +1744,8 @@ async def generate_sample_request_doc(
     sample = await session.get(SampleRequest, sample_request_id)
     if sample is None:
         raise AppError(ErrorCode.NOT_FOUND, "打样申请不存在", 404)
-    await ensure_in_scope(session, user, owner_id=sample.owner_id, label="打样申请")
+    if not await ensure_draft_access(session, SampleRequest, sample.id, user.id):
+        await ensure_in_scope(session, user, owner_id=sample.owner_id, label="打样申请")
     built = await build_sample_request_doc(session, sample_request_id)
     template = await current_template(session, "sample_request", template_id)
     return await _persist(
@@ -1890,9 +1892,18 @@ async def list_docs(
         .order_by(BizDoc.id.desc())
         .limit(max(1, min(limit, 300)))
     )
+    from app.modules.order.model import OrderDraft
+    from app.modules.quote.model import Quote
+    from app.modules.sample.model import SampleRequest
+
     owner_ids = await scoped_owner_ids(session, user)
-    if owner_ids is not None:
-        stmt = stmt.where(BizDoc.owner_id.in_(owner_ids))
+    scope = BizDoc.owner_id.in_(owner_ids) if owner_ids is not None else None
+    stmt = stmt.where(draft_scope(BizDoc, user.id, scope))
+    for column, model in ((BizDoc.quote_id, Quote), (BizDoc.order_draft_id, OrderDraft),
+                          (BizDoc.sample_request_id, SampleRequest)):
+        stmt = stmt.where(or_(column.is_(None), select(model.id).where(
+            model.id == column, draft_scope(model, user.id),
+        ).exists()))
     if doc_type:
         # 显式筛了一个自己无权看的类型：返回空，而不是偷偷给别的类型
         if doc_type not in permitted:

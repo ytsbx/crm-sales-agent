@@ -18,6 +18,15 @@ export interface Task {
   order_no?: string | null
   owner_id?: number | null
   owner_name?: string | null
+  handover_from_user_id?: number | null
+  handover_from_user_name?: string | null
+  receivable_plans?: {
+    id: number
+    plan_name: string
+    due_date: string
+    amount_exact: string
+    remaining_amount_exact: string
+  }[]
   priority: string
   priority_label: string
   status: string
@@ -44,6 +53,7 @@ export function listTasks(query: {
   status?: string
   mine?: boolean
   overdue?: boolean
+  handover?: boolean
   owner_id?: number
   opportunity_id?: number
   customer_id?: number
@@ -51,6 +61,19 @@ export function listTasks(query: {
   page_size?: number
 }) {
   return api.get<PageResult<Task>>('/tasks', query)
+}
+
+export function listHandoverCandidates(keyword: string) {
+  return api.get<PageResult<{ id: number; name: string; username: string }>>(
+    '/tasks/handover-candidates', { keyword, page_size: 50 },
+  )
+}
+
+export function batchHandoverTasks(taskIds: number[], ownerId: number) {
+  return api.post<{ task_ids: number[] }>('/tasks/batch-handover', {
+    task_ids: taskIds,
+    owner_id: ownerId,
+  })
 }
 
 export function createTask(payload: Record<string, unknown>) {

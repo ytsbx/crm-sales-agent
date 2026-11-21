@@ -17,7 +17,10 @@ import {
 
 import { dingtalkAuthorize, dingtalkExchange, fetchMe, login } from '../../shared/api/auth'
 import { currentAuthEpoch, useAuthStore } from '../../shared/store/auth'
+import { loginReturnPath } from '../../shared/safe-url'
 import './login.css'
+
+const DINGTALK_RETURN = 'crm-dingtalk-return'
 
 export default function LoginPage() {
   const navigate = useNavigate()
@@ -32,6 +35,10 @@ export default function LoginPage() {
   // 钉钉扫码：跳转前、换票中，都让按钮进 loading 态
   const [dingtalkLoading, setDingtalkLoading] = useState(false)
   const [searchParams, setSearchParams] = useSearchParams()
+  const returnTo = loginReturnPath(searchParams.get('next'))
+  const sessionState = searchParams.get('session')
+  const reloginMessage = sessionState === 'expired' ? '登录已过期，请重新登录。'
+    : sessionState === 'invalid' ? '登录状态已失效，请重新登录。' : undefined
   // 回调只处理一次：换票是**一次性**的，重复跑必然失败，
   // 还会把刚拿到的登录态顶掉。
   const handledCallback = useRef(false)
@@ -58,7 +65,7 @@ export default function LoginPage() {
       } catch {
         // 用户信息拉取失败不阻塞登录
       }
-      navigate('/workbench')
+      navigate(returnTo, { replace: true })
     } catch (error) {
       Toast.error(error instanceof Error ? error.message : '登录失败')
     } finally {
@@ -71,6 +78,9 @@ export default function LoginPage() {
     setDingtalkLoading(true)
     try {
       const { authorize_url } = await dingtalkAuthorize()
+      try {
+        sessionStorage.setItem(DINGTALK_RETURN, returnTo)
+      } catch { /* 禁用浏览器存储时仍可扫码登录，完成后回工作台。 */ }
       // 跳走之后本页就不在了，不需要收尾 loading
       window.location.href = authorize_url
     } catch (error) {
@@ -86,11 +96,18 @@ export default function LoginPage() {
     if (handledCallback.current) return
     const error = searchParams.get('dingtalk_error')
     const ticket = searchParams.get('dingtalk_ticket')
+    if (!error && !ticket) return
+    let callbackNext = returnTo
+    try {
+      callbackNext = loginReturnPath(searchParams.get('next') ?? sessionStorage.getItem(DINGTALK_RETURN))
+      sessionStorage.removeItem(DINGTALK_RETURN)
+    } catch { /* 禁用浏览器存储时使用本页的返回地址。 */ }
+    const clearCallback = () => setSearchParams(callbackNext === '/workbench' ? {} : { next: callbackNext }, { replace: true })
 
     if (error) {
       handledCallback.current = true
       Toast.error(error)
-      setSearchParams({}, { replace: true })
+      clearCallback()
       return
     }
     if (!ticket) return
@@ -112,15 +129,14 @@ export default function LoginPage() {
         } catch {
           // 用户信息拉取失败不阻塞登录
         }
-        setSearchParams({}, { replace: true })
-        navigate('/workbench')
+        navigate(callbackNext, { replace: true })
       } catch (err) {
         Toast.error(err instanceof Error ? err.message : '钉钉登录失败')
-        setSearchParams({}, { replace: true })
+        clearCallback()
         setDingtalkLoading(false)
       }
     })()
-  }, [searchParams, setSearchParams, setAuth, setUser, navigate])
+  }, [searchParams, setSearchParams, setAuth, setUser, navigate, returnTo])
 
   return (
     <div className="crm-login">
@@ -166,7 +182,10 @@ export default function LoginPage() {
         <div className="crm-login-content">
           <div className="crm-login-welcome">欢迎回来</div>
           <h2>登录你的工作台</h2>
-          <p className="crm-login-description">从这里，继续今天的业务。</p>
+          {reloginMessage && <p className="crm-login-session-notice" role="status">{reloginMessage}</p>}
+          {(returnTo !== '/workbench' || !reloginMessage) && (
+            <p className="crm-login-description">{returnTo !== '/workbench' ? '登录后将返回你刚才打开的页面。' : '从这里，继续今天的业务。'}</p>
+          )}
 
           <form
             className="crm-login-form"

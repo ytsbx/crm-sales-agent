@@ -273,17 +273,7 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
 
   return (
     <>
-      {/* 筛选条：搜索 + 对象 + 动作 + 操作人 + 时间范围。
-          搜索框的提示语要写清"中文也能搜"，否则用户不会去试。
-
-          宽度是算过的（2026-11-16）：内容区约 938px，
-          240（搜索）+140（对象）+130（动作）+130（操作人）+220（日期）= 860，
-          加四个 8px 间距 = 892，**一行放得下**。
-          每个数不是拍出来的：`全部对象类型` 六个字要 140、日期框低于 220 会把
-          「开始日期 ~ 结束日期」截成「开始…」，压窄了看着是"选中了什么都不知道"。原来 240+160+150+150+250 加一起
-          950，必然换行，「共 N 条」被挤到第二行尾巴上 —— 好看不好看其次，
-          第一行看着像断了一半才是真难看。 */}
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8, alignItems: 'center' }}>
+      <div className="settings-toolbar">
         <Input
           style={{ width: 240, flexShrink: 0 }}
           prefix="搜索"
@@ -318,6 +308,7 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
             { value: 'role', label: '角色' },
             { value: 'auth', label: '登录与账号' },
             { value: 'integration', label: '外部集成' },
+            { value: 'setting', label: '系统配置' },
             { value: 'agent_session', label: 'AI 助手会话' },
           ]}
         />
@@ -396,6 +387,7 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
       </div>
 
       <Table<AuditLogRow>
+        className="settings-list-table"
         loading={query.isFetching}
         dataSource={rows}
         rowKey="id"
@@ -497,9 +489,11 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
                 )
               }
               return (
-                <Tag size="small" type="light" color={actionTone(v)}>
-                  {actionLabel(v)}
-                </Tag>
+                <span title={actionLabel(v)} aria-label={actionLabel(v)}>
+                  <Tag size="small" type="light" color={actionTone(v)}>
+                    {v === 'wecom_sync_follow_relations' ? '同步跟进关系' : actionLabel(v)}
+                  </Tag>
+                </span>
               )
             },
           },

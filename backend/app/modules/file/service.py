@@ -5,6 +5,7 @@
 的那道闸门"，让所有会动到文件的入口走同一份。
 """
 
+import json
 import logging
 from dataclasses import dataclass, field
 
@@ -165,15 +166,39 @@ async def inspect_file_usage(
 
     # 打样依据只在 jsonb 快照里（`basis_files`），不在 `business_files` 表上，
     # 所以必须单独查一次 —— 这是最容易漏掉的一处。
+    if session.get_bind().dialect.name == "sqlite":
+        basis_predicate = """
+            exists (
+                select 1 from json_each(case json_type(basis_files)
+                    when 'array' then basis_files
+                    when 'object' then json_array(json(basis_files))
+                    else '[]' end
+                ) entry
+                where cast(case when entry.type = 'object'
+                    then json_extract(entry.value, '$.file_id') end as text) = :fid
+            )
+        """
+        basis_params = {"fid": str(file_id)}
+    else:
+        # 同时保护正常数组和旧数据里直接存入的单个文件对象。
+        basis_predicate = """
+            basis_files @> cast(:array_numeric as jsonb)
+            or basis_files @> cast(:array_string as jsonb)
+            or basis_files @> cast(:object_numeric as jsonb)
+            or basis_files @> cast(:object_string as jsonb)
+        """
+        numeric_ref = {"file_id": file_id}
+        string_ref = {"file_id": str(file_id)}
+        basis_params = {
+            "array_numeric": json.dumps([numeric_ref]),
+            "array_string": json.dumps([string_ref]),
+            "object_numeric": json.dumps(numeric_ref),
+            "object_string": json.dumps(string_ref),
+        }
     basis_hit = (
         await session.execute(
-            text(
-                "select 1 from sample_requests where basis_files is not null"
-                " and exists (select 1 from jsonb_array_elements(basis_files) e"
-                "             where (e->>'file_id')::bigint = :fid)"
-                " limit 1"
-            ),
-            {"fid": file_id},
+            text(f"select 1 from sample_requests where {basis_predicate} limit 1"),
+            basis_params,
         )
     ).first()
     if basis_hit:

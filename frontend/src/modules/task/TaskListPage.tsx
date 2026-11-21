@@ -1,16 +1,19 @@
-import { formatBeijingTime } from '../../shared/beijing-time'
-import { useState } from 'react'
+import { formatBeijingDate, formatBeijingTime } from '../../shared/beijing-time'
+import { useEffect, useState } from 'react'
 import PageHeader from '../../shared/components/PageHeader'
+import HelpTip from '../../shared/components/HelpTip'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { emptyNode } from '../../shared/components/EmptyState'
-import { Button, Checkbox, DatePicker, Input, Modal, Popconfirm, Select, Table, Toast } from '@douyinfe/semi-ui'
+import { Banner, Button, Checkbox, DatePicker, Input, Modal, Popconfirm, Select, Table, Toast } from '@douyinfe/semi-ui'
 
 import {
   batchCompleteTasks,
+  batchHandoverTasks,
   completeTask,
   createTask,
+  listHandoverCandidates,
   listTasks,
   postponeTask,
   transferTask,
@@ -21,6 +24,8 @@ import type { TagTone } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
 import StatusDot from '../../shared/components/StatusDot'
+import { formatMoney } from '../../shared/components/money'
+import { usePermissions } from '../../shared/hooks/permissions'
 
 const PRIORITY_COLOR: Record<string, TagTone> = { high: 'red', normal: 'blue', low: 'grey' }
 
@@ -70,7 +75,11 @@ function primaryTaskLink(record: Task): { label: string; to: string } | null {
 
 export default function TaskListPage() {
   const queryClient = useQueryClient()
+  const { can, isReviewer } = usePermissions()
+  const canManage = can('task:manage')
+  const canHandover = isReviewer && canManage
   const [searchParams, setSearchParams] = useSearchParams()
+  const handover = canHandover && searchParams.get('handover') === 'true'
   const mine = searchParams.get('mine') !== 'false'
   const status = searchParams.has('status') ? searchParams.get('status') || undefined : 'pending'
   const overdue = searchParams.get('overdue') === 'true'
@@ -96,10 +105,16 @@ export default function TaskListPage() {
   const [transferOwner, setTransferOwner] = useState<number | null>(null)
   // 批量完成（审查 B2-06）：勾选 + 批量操作入口
   const [selectedIds, setSelectedIds] = useState<number[]>([])
+  const [handoverVisible, setHandoverVisible] = useState(false)
+  const [candidateKeyword, setCandidateKeyword] = useState('')
 
   const query = useQuery({
-    queryKey: ['tasks', { mine, status, overdue, page, pageSize }],
-    queryFn: () => listTasks({ mine, status, overdue: overdue || undefined, page, page_size: pageSize }),
+    queryKey: ['tasks', { handover, mine, status, overdue, page, pageSize }],
+    queryFn: () => listTasks({
+      ...(handover ? { handover: true } : { mine, status, overdue: overdue || undefined }),
+      page,
+      page_size: pageSize,
+    }),
   })
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['tasks'] })
@@ -109,6 +124,11 @@ export default function TaskListPage() {
     queryKey: ['users', { status: 'active' }],
     queryFn: () => listUsers({ status: 'active', page_size: 200 }),
     enabled: transferTarget !== null,
+  })
+  const candidatesQuery = useQuery({
+    queryKey: ['task-handover-candidates', candidateKeyword],
+    queryFn: () => listHandoverCandidates(candidateKeyword),
+    enabled: handoverVisible,
   })
 
   const createMutation = useMutation({
@@ -162,6 +182,16 @@ export default function TaskListPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  const handoverMutation = useMutation({
+    mutationFn: () => batchHandoverTasks(selectedIds, transferOwner!),
+    onSuccess: ({ task_ids }) => {
+      Toast.success(`已交接 ${task_ids.length} 条待办`)
+      setHandoverVisible(false)
+      setSelectedIds([])
+      void refresh()
+    },
+  })
+
   const completeMutation = useMutation({
     // 版本取**列表里这一行**的 `updated_at` —— 那正是用户点按钮时屏幕上那一版
     mutationFn: (id: number) => {
@@ -187,6 +217,15 @@ export default function TaskListPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  /* 1024 宽内容区约 700px，任务表七列合计 909px+，「截止时间」右半截
+     「状态 / 操作」整列被裁，底部还挂横向滚动条。窄屏切紧凑档。 */
+  const [compact, setCompact] = useState(() => window.innerWidth < 1200)
+  useEffect(() => {
+    const onResize = () => setCompact(window.innerWidth < 1200)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
   const columns = [
     {
       title: '',
@@ -195,8 +234,9 @@ export default function TaskListPage() {
       render: (_: unknown, record: Task) => (
         <Checkbox
           checked={selectedIds.includes(record.id)}
-          disabled={record.status === 'done' || record.status === 'cancelled' || record.task_type === 'contract_signed_upload'}
-          title={record.task_type === 'contract_signed_upload' ? '上传回签件归档后自动完成' : undefined}
+          aria-label={`选择任务 ${record.title}`}
+          disabled={record.status === 'done' || record.status === 'cancelled' || (!handover && record.task_type === 'contract_signed_upload')}
+          title={!handover && record.task_type === 'contract_signed_upload' ? '上传回签件归档后自动完成' : undefined}
           onChange={(e) => {
             const on = (e.target as HTMLInputElement).checked
             setSelectedIds((prev) =>
@@ -206,10 +246,49 @@ export default function TaskListPage() {
         />
       ),
     },
-    { title: '任务', dataIndex: 'title' },
+    {
+      title: '任务',
+      dataIndex: 'title',
+      // 任务名是这一行唯一的"这是哪条"，纯文本、不是链接 —— 按主标识加深（cell-strong）
+      className: 'cell-strong',
+      // 206 装不下「【全场景演示】客户需求确认…」这类标题，一屏八行全是省略号。
+      // 从截止时间 / 状态 / 优先级 / 操作 各让一点给它（合计仍 1114，没有横滚）。
+      width: compact ? 152 : 248,
+      /* 这一列 206px，长任务会被省略成「【全场景演示】客户需求确…」。
+         试过两种改法都不成：（1）放开两行 —— 中文按字断行把末尾编号甩到第二行，
+         一行只剩一个「1」，比截断更难看；（2）加宽到 244 —— 八列合计超出内容区，
+         表格底下立刻冒出横向滚动条。
+         所以保持单行省略，长任务靠悬停看全文（这一格已带 title）。 */
+      render: (text: string, record: Task) => (
+        <>
+          <span
+            title={text}
+            style={{
+              display: 'block',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {text}
+          </span>
+          {!!record.receivable_plans?.length && (
+            <details style={{ marginTop: 4, fontSize: 12, color: 'var(--crm-text-2)' }}>
+              <summary>查看 {record.receivable_plans.length} 期应收</summary>
+              {record.receivable_plans.map((plan) => (
+                <div key={plan.id} style={{ marginTop: 4 }}>
+                  <div>{plan.plan_name} · {formatBeijingDate(plan.due_date)}</div>
+                  应收 {formatMoney(plan.amount_exact, 'CNY')} · 未收 {formatMoney(plan.remaining_amount_exact, 'CNY')}
+                </div>
+              ))}
+            </details>
+          )}
+        </>
+      ),
+    },
     {
       title: '关联',
-      width: 220,
+      width: compact ? 108 : 208,
       render: (_: unknown, record: Task) => {
         // 一张任务可能同时挂着客户、商机、报价、订单、打样、合同。这一列只显示
         // **最具体的那一个**并直接跳过去；全铺出来会挤成六行，而用户要找的通常
@@ -218,16 +297,21 @@ export default function TaskListPage() {
         const link = primaryTaskLink(record)
         if (!link) return record.customer_id ? '客户不可查看' : '-'
         return (
-          <Link to={link.to} style={{ color: 'var(--crm-primary)' }}>
+          <Link to={link.to} title={link.label} style={{ color: 'var(--crm-primary)' }}>
             {link.label}
           </Link>
         )
       },
     },
     {
-      title: '优先级',
+      title: (
+        <span className="crm-help-label">
+          优先级
+          <HelpTip forLabel="优先级" text="建任务时选的轻重缓急，和截止时间无关。优先级越高越该先做。" />
+        </span>
+      ),
       dataIndex: 'priority',
-      width: 90,
+      width: compact ? 76 : 78,
       render: (value: string, record: Task) => (
         <StatusDot label={record.priority_label} tone={(PRIORITY_COLOR[value] ?? 'grey') as TagTone} />
       ),
@@ -237,15 +321,18 @@ export default function TaskListPage() {
       dataIndex: 'due_at',
       /* 190 放不下「2026/11/2 09:28 + 逾期标签」，日期被折成了两行；
          日期和标签必须待在同一行，否则整表的行高参差不齐。 */
-      width: 215,
+      width: compact ? 94 : 206,
       // 逾期别拼成括号跟在日期后面（「2026/11/2 09:28:47（已逾期）」又长又糊）：
       // 日期一个色、状态一个小标签，扫一眼就分得出来
       render: (value: string | null, record: Task) =>
         value ? (
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-            {/* 精确到分钟就够：任务截止时间带秒既没用、又把这一列撑得很长 */}
-            <span style={{ color: record.overdue ? 'var(--crm-error)' : undefined }}>
-              {formatBeijingTime(value).slice(0, 16)}
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+            {/* 精确到分钟就够：任务截止时间带秒既没用、又把这一列撑得很长。
+                逾期时**只有**后面的红点标「逾期」，日期本身不再染红 ——
+                一屏十条里九条逾期时，整列红字会连成一片红墙，反而看不出最急的是哪条。 */}
+            <span>
+              {/* 窄屏省掉年份：94px 只放得下「11-20 15:21」，逾期标签另起一行 */}
+              {compact ? formatBeijingTime(value).slice(5, 16) : formatBeijingTime(value).slice(0, 16)}
             </span>
             {record.overdue && (
               <StatusDot label="逾期" tone="red" bold />
@@ -258,52 +345,81 @@ export default function TaskListPage() {
     {
       title: '状态',
       dataIndex: 'status_label',
-      width: 100,
+      width: compact ? 92 : 86,
       // 状态一列也统一成圆点：只有「已完成」上绿点，其余保持灰点，
       // 和「优先级」列的写法对齐，整行不会一半是色块一半是裸文字。
       render: (value: string) => (
         <StatusDot label={value} tone={value === '已完成' ? 'green' : value === '逾期' ? 'red' : 'grey'} />
       ),
     },
-    { title: '负责人', dataIndex: 'owner_name', width: 100, render: (v: string | null) => v ?? '-' },
+    ...(compact
+      ? []
+      : [{ title: '负责人', dataIndex: 'owner_name', width: 108, render: (v: string | null) => v ?? '-' }]),
     {
       title: '操作',
-      width: 140,
+      width: compact ? 132 : 172,
       render: (_: unknown, record: Task) =>
         record.status === 'done' || record.status === 'cancelled' ? (
           '-'
         ) : record.task_type === 'contract_signed_upload' ? (
-          <Link to={`/documents?contract=${record.source_business_id}`}>去登记回签（归档后自动完成）</Link>
-        ) : (
-          <div style={{ display: 'flex', gap: 10 }}>
+          // 文案只留动作，说明放进 title：宽屏那 12 个字的括号注释会把操作列撑出表格
+          // （2026-11-18 截图：1440 下这张表出现横向滚动条，右边「去登记回签」被切）
+          <Link to={`/documents?contract=${record.source_business_id}`} title="归档后自动完成">
+              {'去登记回签'}
+            </Link>
+        ) : canManage ? (
+          <div
+            style={
+              compact
+                /* 8 → 12：三个动作词（完成 / 延期 / 转交）贴着排像一串，
+                   和线索中心同批调整（2026-11-19）。 */
+                ? { display: 'flex', gap: 12, whiteSpace: 'nowrap', fontSize: 13 }
+                : { display: 'flex', gap: 10 }
+            }
+          >
             <Popconfirm
               title="确认完成这条任务？"
               content="完成后任务会从未完成列表中移除。"
               onConfirm={() => completeMutation.mutate(record.id)}
             >
-              <a style={{ color: 'var(--crm-primary)' }}>完成</a>
+              {/* 一条任务只有一个"了结"的动作（完成），延期和转交只是把它推给别处，
+                  三个词原来一样重，看不出该点哪个。完成走主按钮，其余文字按钮。 */}
+              {/* 「完成」也不该是白底描边小药丸：列表行里的动作一律纯文字，
+                  它是这条任务唯一的了结动作，用字重区分，不加框（2026-11-20）。 */}
+              <Button
+                type="tertiary"
+                theme="borderless"
+                size="small"
+                style={{ color: 'var(--crm-primary)', fontWeight: 600 }}
+              >
+                完成
+              </Button>
             </Popconfirm>
-            <a
-              style={{ color: 'var(--crm-primary)' }}
+            <Button
+              type="tertiary"
+              theme="borderless"
+              size="small"
               onClick={() => {
                 setPostponeTarget(record)
                 setPostponeDue(null)
               }}
             >
               延期
-            </a>
+            </Button>
             {/* 转交（审查 B2-06）：接口与 api 函数一直有，此前没有页面入口 */}
-            <a
-              style={{ color: 'var(--crm-primary)' }}
+            <Button
+              type="tertiary"
+              theme="borderless"
+              size="small"
               onClick={() => {
                 setTransferTarget(record)
                 setTransferOwner(null)
               }}
             >
               转交
-            </a>
+            </Button>
           </div>
-        ),
+        ) : '-',
     },
   ]
 
@@ -317,6 +433,38 @@ export default function TaskListPage() {
       {/* 只有几行任务时，卡片不该被拉满整屏（详见 .card-block.auto-height） */}
       <SectionCard className={(query.data?.items?.length ?? 0) <= 8 ? 'auto-height' : undefined}>
         <div className="toolbar">
+          {/* 「待办交接」是个筛选开关，不是主操作 —— 原来和「新建任务」并排
+              两个白底描边，看不出谁主谁次。改成文字按钮，打开时加粗变主色。 */}
+          {canHandover && (
+            <Button
+              type="tertiary"
+              theme="borderless"
+              style={handover ? { color: 'var(--crm-primary)', fontWeight: 600 } : undefined}
+              onClick={() => {
+              setSelectedIds([])
+              setFilter('handover', String(!handover))
+            }}>
+              {handover ? '返回任务列表' : '待办交接'}
+            </Button>
+          )}
+          {handover ? (
+            <>
+              <span className="crm-help-label">
+                停用员工的未完成待办
+                <HelpTip forLabel="待办交接" text="员工停用后，他名下没做完的任务要交给别人继续做。这里可以勾选一批，统一转交。" />
+              </span>
+              <div style={{ flex: 1 }} />
+              <Button type="primary" theme="outline" disabled={selectedIds.length === 0} onClick={() => {
+                setTransferOwner(null)
+                setCandidateKeyword('')
+                handoverMutation.reset()
+                setHandoverVisible(true)
+              }}>
+                批量交接{selectedIds.length ? `（已选 ${selectedIds.length}）` : ''}
+              </Button>
+            </>
+          ) : (
+          <>
           <Checkbox
             checked={mine}
             onChange={(event) => {
@@ -350,7 +498,12 @@ export default function TaskListPage() {
             只看逾期
           </Checkbox>
           <div style={{ flex: 1 }} />
-          {/* 批量完成（审查 B2-06）：勾选后一次性完成，成功/跳过与原因都要说清 */}
+          {/* 批量完成（审查 B2-06）：勾选后一次性完成，成功/跳过与原因都要说清。
+              没勾任何任务时按钮是灰的 —— 按规矩得说明缺什么，不能只给一个点不动的灰块。 */}
+          {canManage && <>
+          {selectedIds.length === 0 && (
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>先勾选任务才能批量完成。</span>
+          )}
           <Popconfirm
             title={`确认完成选中的 ${selectedIds.length} 条任务？`}
             onConfirm={() => batchCompleteMutation.mutate()}
@@ -366,34 +519,117 @@ export default function TaskListPage() {
           <Button type="primary" theme="outline" onClick={() => setCreateVisible(true)}>
             新建任务
           </Button>
+          </>}
+          </>
+          )}
         </div>
 
         <Table<Task>
-          columns={columns}
+          key={handover ? 'handover' : 'tasks'}
+          className="tasks-table"
+          columns={handover ? columns.filter(({ title }) => title !== '操作' && title !== '负责人')
+            : canManage ? columns : columns.slice(1)}
+          groupBy={handover ? (row) => `employee-${row?.handover_from_user_id}` : undefined}
+          expandAllGroupRows={handover}
+          renderGroupSection={handover ? (key) => {
+            const employee = query.data?.items.find((row) => `employee-${row.handover_from_user_id}` === key)
+            return <span>原负责人 · {employee?.handover_from_user_name ?? `员工 #${employee?.handover_from_user_id}`}</span>
+          } : undefined}
           dataSource={query.data?.items ?? []}
           loading={query.isLoading}
           rowKey="id"
           empty={emptyNode(query, {
-            title: '没有任务',
-            hint: '点右上角「新建任务」，把「接下来要做什么」记下来 —— 任务记将来，跟进记过去。',
+            title: handover ? '没有待交接的任务'
+              : overdue ? '当前没有符合条件的逾期任务'
+                : status === 'pending' ? '没有待处理的任务'
+                  : status ? '当前状态下没有任务' : '没有任务',
+            hint: !handover && status === 'pending' && !overdue
+              ? '「待处理」只看还没开始的任务。处理中和待处理的任务都可以在「未完成」里查看。'
+              : undefined,
+            action: handover ? undefined : overdue ? (
+              <Button size="small" onClick={() => setFilter('overdue', 'false')}>取消逾期筛选</Button>
+            ) : status === 'pending' ? (
+              <Button size="small" onClick={() => setFilter('status', 'active')}>查看全部未完成</Button>
+            ) : status ? (
+              <Button size="small" onClick={() => setFilter('status', '')}>查看所有状态</Button>
+            ) : canManage ? (
+              <Button size="small" onClick={() => setCreateVisible(true)}>新建任务</Button>
+            ) : undefined,
           })}
-          pagination={{
+          pagination={(query.data?.total ?? 0) <= pageSize ? false : {
             currentPage: page,
             pageSize,
             total: query.data?.total ?? 0,
             showSizeChanger: true,
-            onPageChange: (next: number) => setPage(next),
+            onPageChange: (next: number) => {
+              if (handover) setSelectedIds([])
+              setPage(next)
+            },
             onPageSizeChange: (size: number) => {
+              if (handover) setSelectedIds([])
               setPageSize(size)
               setPage(1)
             },
           }}
         />
+        {query.isSuccess && (query.data?.total ?? 0) <= pageSize && (
+          <div style={{ marginTop: 10, textAlign: 'right', fontSize: 12, color: 'var(--crm-text-3)' }}>
+            共 {query.data?.total ?? 0} 条
+          </div>
+        )}
       </SectionCard>
 
       <Modal
         width={520}
-        title="新建任务"
+        title={`交接 ${selectedIds.length} 条待办`}
+        visible={handoverVisible}
+        onCancel={() => setHandoverVisible(false)}
+        onOk={() => handoverMutation.mutate()}
+        okButtonProps={{ disabled: !transferOwner }}
+        confirmLoading={handoverMutation.isPending}
+        okText="确认交接"
+      >
+        <FormLabel required>接手人</FormLabel>
+        <Select
+          placeholder="输入姓名搜索在职同事"
+          value={transferOwner ?? undefined}
+          onChange={(value) => setTransferOwner(value as number)}
+          onSearch={setCandidateKeyword}
+          remote
+          filter
+          loading={candidatesQuery.isFetching}
+          style={{ width: '100%' }}
+          optionList={(candidatesQuery.data?.items ?? []).map((user) => ({
+            value: user.id, label: `${user.name}（${user.username}）`,
+          }))}
+        />
+        {(handoverMutation.error || candidatesQuery.error) && (
+          <Banner type="danger" closeIcon={null} style={{ marginTop: 12 }}
+            description={(handoverMutation.error ?? candidatesQuery.error)?.message}
+            icon={null} />
+        )}
+        {handoverMutation.isError && (
+          <Button theme="borderless" onClick={() => {
+            setHandoverVisible(false)
+            setSelectedIds([])
+            void refresh()
+          }}>刷新交接清单</Button>
+        )}
+      </Modal>
+
+      <Modal
+        width={600}
+        title={
+          <div className="modal-head">
+            <span className="modal-head-icon" aria-hidden>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><path d="M4 6h10" /><path d="M4 12h10" /><path d="M4 18h7" /><path d="M17 16.5l2 2 3.5-4" /></svg>
+            </span>
+            <div>
+              新建任务
+              <div className="modal-subtitle">写清要做什么、什么时候做完</div>
+            </div>
+          </div>
+        }
         visible={createVisible}
         onCancel={() => setCreateVisible(false)}
         onOk={() => {
@@ -406,46 +642,46 @@ export default function TaskListPage() {
         confirmLoading={createMutation.isPending}
         okText="创建"
       >
-        <div style={{ display: 'grid', gap: 12 }}>
-          <div>
-            <FormLabel required>任务标题</FormLabel>
-            <Input
-              value={form.title}
-              onChange={(v) => setForm({ ...form, title: v })}
-              placeholder="例如：周五前回复客户报价"
-            />
-          </div>
-          <div style={{ display: 'flex', gap: 12 }}>
-            <div>
-              {/* 「优先级」这句说明必须如实：查过全库，priority **不参与任何**
-                  排序、筛选、提醒或统计（任务列表是按「状态 → 截止时间」排的，
-                  见 backend/app/modules/task/router.py 的 order_by）。
-                  它唯一的去处是列表里那个彩色标签。
-                  不写这句，用户会以为选「高」就会被优先处理——那是个空承诺。
-                  ⚠️ 商机详情页有一个一模一样的弹窗，改文案时两处同步。 */}
-              <FormLabel hint="仅作轻重标记，不影响排序和提醒">优先级</FormLabel>
-              <Select
-                value={form.priority}
-                onChange={(value) => setForm({ ...form, priority: value as string })}
-                optionList={[
-                  { value: 'high', label: '高' },
-                  { value: 'normal', label: '中' },
-                  { value: 'low', label: '低' },
-                ]}
-                style={{ width: 140 }}
-              />
+                <div className="form-cards">
+          <section className="form-card">
+            <div className="form-card-title">要做的事</div>
+            <div className="form-card-grid">
+              <div className="full">
+                <div className="form-field-label">任务标题<span className="req">*</span></div>
+                <Input
+                  value={form.title}
+                  onChange={(v) => setForm({ ...form, title: v })}
+                  placeholder="例如：周五前回复客户报价"
+                />
+              </div>
+              <div>
+                <div className="form-field-label">优先级</div>
+                <Select
+                  value={form.priority}
+                  onChange={(value) => setForm({ ...form, priority: value as string })}
+                  optionList={[
+                    { value: 'high', label: '高' },
+                    { value: 'normal', label: '中' },
+                    { value: 'low', label: '低' },
+                  ]}
+                  style={{ width: '100%' }}
+                />
+              </div>
+              <div>
+                <div className="form-field-label">截止时间</div>
+                <DatePicker
+                  type="dateTime"
+                  value={form.due_at ?? undefined}
+                  onChange={(date) => setForm({ ...form, due_at: (date as Date) ?? null })}
+                  placeholder="选择时间"
+                  style={{ width: '100%' }}
+                />
+              </div>
+              <div className="full form-tip">
+                优先级只是轻重标记，不影响排序和提醒；列表按「状态 → 截止时间」排。
+              </div>
             </div>
-            <div style={{ flex: 1 }}>
-              <FormLabel>截止时间</FormLabel>
-              <DatePicker
-                type="dateTime"
-                value={form.due_at ?? undefined}
-                onChange={(date) => setForm({ ...form, due_at: (date as Date) ?? null })}
-                placeholder="选择时间"
-                style={{ width: '100%' }}
-              />
-            </div>
-          </div>
+          </section>
         </div>
       </Modal>
 

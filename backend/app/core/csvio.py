@@ -39,7 +39,9 @@ def _safe_csv_text(value: object) -> object:
     （客户自己填的、导入进来的），最坏情况是 `=HYPERLINK(...)` 这种外链公式。
     成本只有"如果用户真的想以 `=` 开头，前面会多一个不可见引号"。
     """
-    if isinstance(value, str) and value.startswith(_FORMULA_STARTS):
+    if isinstance(value, str) and (
+        value.startswith(_FORMULA_STARTS) or value.lstrip().startswith(_FORMULA_STARTS)
+    ):
         return "'" + value
     return value
 
@@ -120,8 +122,15 @@ def parse_csv_bytes(
     reader = csv.DictReader(io.StringIO(text))
     if not reader.fieldnames:
         raise AppError(ErrorCode.PARAM_ERROR, f"{label}是空的，或者没有表头")
-    field_map = {_norm(name): name for name in reader.fieldnames if name}
-    missing = [name for name in required_headers if _norm(name) not in field_map]
+    headers = set()
+    for name in reader.fieldnames:
+        normalized = _norm(name)
+        if not normalized:
+            continue
+        if normalized in headers:
+            raise AppError(ErrorCode.PARAM_ERROR, f"表头「{normalized}」重复，请保留一列后重新上传", 422)
+        headers.add(normalized)
+    missing = [name for name in required_headers if _norm(name) not in headers]
     if missing:
         raise AppError(
             ErrorCode.PARAM_ERROR,

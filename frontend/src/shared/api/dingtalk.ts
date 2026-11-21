@@ -111,15 +111,7 @@ export function syncOaApprovals() {
   return api.post<{ checked: number; changed: number; disabled?: boolean; message?: string }>('/dingtalk/oa-sync')
 }
 
-/**
- * 同步成员 —— 把 CRM 账号和同序 OA 通讯录里的人对上（写账号上的「同序 OA 编号」）。
- *
- * 这是**同序 OA 登录的地基**：同序 OA 只会告诉系统"这是某某的同序 OA 号"，它不知道这人在
- * CRM 里是什么角色；对上之后系统才认得出"进来的这个人是哪一位"。
- *
- * 服务端**不建账号**：同序 OA 里有人、CRM 里没账号的，只会出现在 `unmatched` 里，
- * 由管理员去建。已经绑好的也不会被改绑（改绑等于换掉一个人的登录身份）。
- */
+/** 将钉钉通讯录成员与 CRM 现有账号匹配，用于钉钉扫码登录。 */
 export function syncDingTalkUsers() {
   return api.post<DingTalkSyncResult>('/dingtalk/sync-users')
 }
@@ -134,12 +126,11 @@ export interface DingTalkUnmatched {
 
 export interface DingTalkSyncResult {
   /**
-   * 推送总闸关着。此时**一次请求都没发出去**，下面的数字全是 0，
-   * 原因在 `message` 里 —— 界面必须把它和"同序 OA 里确实没人"区分开。
+   * 当前环境关闭了钉钉同步，未读取通讯录或写入绑定。
    */
   disabled: boolean
   message?: string
-  /** 同序 OA 通讯录里一共多少人 */
+  /** 钉钉通讯录里一共多少人 */
   total: number
   /** 本次新绑上的 */
   bound: number
@@ -147,7 +138,7 @@ export interface DingTalkSyncResult {
   already_bound: number
   /** 对不上的（要管理员去处理，不是错误） */
   unmatched: DingTalkUnmatched[]
-  /** CRM 里还没绑同序 OA 的在用账号（这些人暂时登不了同序 OA） */
+  /** CRM 中尚未绑定钉钉的在用账号 */
   unbound_crm: { id: number; name: string; username: string }[]
 }
 
@@ -168,8 +159,10 @@ export interface InquirySubmissionOptions {
   quote_owners: Array<{ user_id: string; name: string }>
   selected_quote_owner?: string | null
   image_required: boolean
+  message?: string
   file_business_type: string
-  fields: Array<{ id: string; label: string; type: string; required: boolean; options: string[] }>
+  fields: Array<{ id: string; label: string; type: string; required: boolean; options: string[]; multiline?: boolean; hint?: string; help_text?: string }>
+  template_fields?: Array<{ id: string; label: string; type: string; required?: boolean; hint?: string; help_text?: string; max_files?: number }>
 }
 export function getInquirySubmissionOptions(inquiryId?: number) {
   return api.get<InquirySubmissionOptions>(inquiryId ? `/inquiries/${inquiryId}/oa-submission` : '/inquiries/oa-submission-options')

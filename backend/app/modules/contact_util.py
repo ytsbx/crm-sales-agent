@@ -3,10 +3,10 @@
 import re
 from collections.abc import Iterable
 
-from sqlalchemy import or_, select
+from sqlalchemy import case, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.similarity import similarity_score
+from app.core.similarity import CUSTOMER_SCORE_FALLBACKS, similarity_score
 from app.modules.customer.model import Contact, Customer
 
 #: 显式授权码：拿到它的人可以看**完整**联系方式（不限于自己负责/本团队的客户）。
@@ -345,9 +345,10 @@ async def find_duplicate_customers(
     from app.modules.settings import service as settings_service
 
     weights = await settings_service.get_setting(session, "dedup_scoring")
-    threshold = int(weights.get("threshold", 50))
+    threshold = int(weights.get("threshold", CUSTOMER_SCORE_FALLBACKS["threshold"]))
 
     conditions = []
+    exact = []
     if company_name:
         conditions.append(Customer.name.ilike(f"%{company_name.strip()}%"))
         conditions.append(Customer.short_name.ilike(f"%{company_name.strip()}%"))
@@ -359,23 +360,22 @@ async def find_duplicate_customers(
         contact_customer_ids = select(Contact.customer_id).where(
             Contact.mobile == mobile, Contact.deleted_at.is_(None)
         )
-        conditions.append(Customer.id.in_(contact_customer_ids))
+        exact.append(Customer.id.in_(contact_customer_ids))
     for value, column in ((tax_no, Customer.tax_no), (domain, Customer.domain)):
         if value:
-            conditions.append(column == value.strip())
+            exact.append(column == value.strip())
+    conditions.extend(exact)
     if not conditions:
         return []
 
-    stmt = (
-        select(Customer)
-        .where(Customer.deleted_at.is_(None), or_(*conditions))
-        .limit(max(limit * 4, 20))
-    )
+    stmt = select(Customer).where(Customer.deleted_at.is_(None), or_(*conditions))
+    if exact:
+        stmt = stmt.order_by(case((or_(*exact), 0), else_=1))
     if owner_ids is not None:
         # 范围内的 + 公海（无负责人）。公海对所有人可见，漏掉它会让"我查重查不到、
         # 但列表里翻得到"，用户会以为系统丢数据。
         stmt = stmt.where(or_(Customer.owner_id.in_(owner_ids), Customer.owner_id.is_(None)))
-    rows = (await session.execute(stmt)).scalars().all()
+    rows = (await session.execute(stmt.order_by(Customer.id).limit(max(limit * 4, 20)))).scalars().all()
 
     # 取候选客户的主联系人手机号，参与打分
     candidate_ids = [row.id for row in rows]
@@ -517,49 +517,28 @@ async def find_duplicate_contacts(
     email_key = (email or "").strip().lower()
     name_key = (name or "").strip()
 
-    conditions = []
+    exact = []
+    if mobile_key:
+        exact.append(Contact.mobile == mobile_key)
+    if email_key:
+        exact.append(Contact.email == email_key)
+    conditions = [*exact]
     if name_key:
         conditions.append(Contact.name.ilike(f"%{name_key}%"))
-    if mobile_key:
-        conditions.append(Contact.mobile == mobile_key)
-    if email_key:
-        conditions.append(Contact.email == email_key)
     if not conditions:
         return []
 
-    stmt = (
-        select(Contact)
-        .where(Contact.deleted_at.is_(None), or_(*conditions))
-        .limit(max(limit * 4, 20))
-    )
-    rows = (await session.execute(stmt)).scalars().all()
-
+    stmt = select(Contact).where(Contact.deleted_at.is_(None), or_(*conditions))
+    if exact:
+        stmt = stmt.order_by(case((or_(*exact), 0), else_=1))
     # 数据范围：联系人跟着客户走；没客户的也放行
-    visible: list[Contact] = []
     owner_ids = await scoped_owner_ids(session, user)
-    if owner_ids is None:
-        visible = list(rows)
-    else:
-        customer_ids = {row.customer_id for row in rows if row.customer_id}
-        allowed_customers: set[int] = set()
-        if customer_ids:
-            owner_rows = (
-                await session.execute(
-                    select(Customer.id, Customer.owner_id).where(
-                        Customer.id.in_(customer_ids)
-                    )
-                )
-            ).all()
-            allowed_customers = {
-                int(cid)
-                for cid, owner in owner_rows
-                if owner is None or int(owner) in owner_ids
-            }
-        visible = [
-            row
-            for row in rows
-            if row.customer_id is None or int(row.customer_id) in allowed_customers
-        ]
+    if owner_ids is not None:
+        allowed_customers = select(Customer.id).where(
+            or_(Customer.owner_id.is_(None), Customer.owner_id.in_(owner_ids))
+        )
+        stmt = stmt.where(or_(Contact.customer_id.is_(None), Contact.customer_id.in_(allowed_customers)))
+    visible = (await session.execute(stmt.order_by(Contact.id).limit(max(limit * 4, 20)))).scalars().all()
 
     scored: list[dict] = []
     for contact in visible:

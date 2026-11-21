@@ -88,6 +88,16 @@ def test_author_view_keeps_text_but_reports_hits():
     assert payload["redaction_summary"]  # 但要能自查"分享出去会被抹掉什么"
 
 
+def test_share_alias_cannot_reintroduce_the_customer_name_or_phone():
+    customer = "测试制造有限公司"
+    case = _case(title=customer, lessons=customer, customer_label=f"{customer} 13800001234")
+    share = serialize_case(case, customer_name=customer, reveal_customer=False)
+    assert share["customer_label"] == "某客户"
+    assert customer not in str(share) and "13800001234" not in str(share)
+    case.customer_label = "测试代称 13800001234"
+    assert "13800001234" not in serialize_case(case, reveal_customer=False)["customer_label"]
+
+
 def test_evidence_scope_follows_module_permissions():
     reader = _User(permissions=["quote:view", "order:view"])
     scope = evidence_scope_for(reader)

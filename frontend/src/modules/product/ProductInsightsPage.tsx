@@ -1,5 +1,5 @@
 import { formatBeijingTime } from '../../shared/beijing-time'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Input, Modal, Popconfirm, Select, Table, Tag, Toast, TextArea } from '@douyinfe/semi-ui'
@@ -7,11 +7,13 @@ import { parseOptionalNumber } from '../../shared/number-input'
 import { isSafeExternalUrl, safeExternalUrls } from '../../shared/safe-url'
 import { usePermissions } from '../../shared/hooks/permissions'
 import PageHeader from '../../shared/components/PageHeader'
+import HelpTip from '../../shared/components/HelpTip'
 import SectionCard from '../../shared/components/SectionCard'
 import { formatUnitPrice } from '../../shared/components/money'
 import StatusDot from '../../shared/components/StatusDot'
 import type { TagTone } from '../../shared/types'
 import FormLabel from '../../shared/components/FormLabel'
+import { emptyNode } from '../../shared/components/EmptyState'
 import { listCustomers } from '../../shared/api/customer'
 import {
   convertProductInsight,
@@ -101,6 +103,15 @@ function fmtValue(value: unknown): string {
 
 /** 新品洞察（§3.3 第三类：运营日常选品 → 评审 → 转需求）。 */
 export default function ProductInsightsPage() {
+  /* 1024 宽内容区约 700px，新品洞察七列合计 770px+（产品方向还是自适应），
+     「状态 / 操作」被裁到卡片外。窄屏切紧凑档：列宽收紧，负责人收掉。 */
+  const [compact, setCompact] = useState(() => window.innerWidth < 1200)
+  useEffect(() => {
+    const onResize = () => setCompact(window.innerWidth < 1200)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
   const queryClient = useQueryClient()
   const { can } = usePermissions()
   const canManage = can('product:manage')
@@ -309,11 +320,25 @@ export default function ProductInsightsPage() {
       <PageHeader
         title="新品洞察"
         subtitle="市场来源 → 产品方向 → 评审 → 转需求；价格为内部假设，不构成正式指导价"
+        /* 新建类动作归到页头右上，与客户 / 商机 / 产品各列表页同一处 ——
+           原来它插在筛选行里，和搜索框、状态下拉挤在一排（2026-11-20）。 */
+        extra={
+          canManage && (
+            <Button type="primary" theme="outline" onClick={openCreate}>
+              记录新品洞察
+            </Button>
+          )
+        }
       />
       <SectionCard
         className={(query.data?.items?.length ?? 0) <= 8 ? 'auto-height' : undefined}
       >
         <div className="toolbar" style={{ marginBottom: 10 }}>
+          {canReview && (status !== 'under_review' || keyword) && (
+            <Button theme="outline" onClick={() => { setStatus('under_review'); setKeyword(''); setPage(1) }}>
+              查看待评审
+            </Button>
+          )}
           {/* 原来这里有一个 flex:1 占位，把搜索/状态/按钮全推到最右边 ——
               全站其他列表页的筛选都在左边起头，这一页孤零零靠右，看着像浮在卡上。
               去掉占位，与别页一致。 */}
@@ -341,22 +366,47 @@ export default function ProductInsightsPage() {
               { value: 'converted', label: '已转需求' },
             ]}
           />
-          {canManage && (
-            <Button type="primary" theme="outline" onClick={openCreate}>
-              记录新品洞察
-            </Button>
+          {/* 一屏放得下就不摆分页条，条数用一句灰字交代（与订单草稿、审批中心同一规则）。 */}
+          {!query.isLoading && (query.data?.total ?? 0) > 0 && (
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>共 {query.data?.total} 条</span>
           )}
         </div>
         <Table<ProductInsightRow>
+          className="insights-table"
           columns={[
             {
-              title: '产品方向',
+              title: (
+                <span className="crm-help-label">
+                  产品方向
+                  <HelpTip forLabel="产品方向" text="一条待评估的产品机会或方向，不是已经上架的产品。" />
+                </span>
+              ),
               dataIndex: 'title',
+              width: compact ? 200 : undefined,
               render: (text: string, record: ProductInsightRow) => (
-                <div>
-                  <div style={{ fontWeight: 600 }}>{text}</div>
+                <div style={{ minWidth: 0 }}>
+                  <div
+                    title={text}
+                    style={{
+                      fontWeight: 600,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {text}
+                  </div>
                   {record.selling_points && (
-                    <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                    <div
+                      title={record.selling_points}
+                      style={{
+                        fontSize: 12,
+                        color: 'var(--crm-text-3)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
                       假设卖点：{record.selling_points}
                     </div>
                   )}
@@ -380,27 +430,39 @@ export default function ProductInsightsPage() {
                 </div>
               ),
             },
-            { title: '来源', dataIndex: 'source', width: 100, render: (v: string | null) => v ?? '-' },
+            ...(compact
+              ? []
+              : [{ title: '来源', dataIndex: 'source', width: 100, render: (v: string | null) => v ?? '-' }]),
             {
               title: '目标客户',
               dataIndex: 'target_customer',
-              width: 120,
+              width: compact ? 124 : 120,
               render: (v: string | null) => v ?? '-',
             },
             {
               title: '价格假设',
               dataIndex: 'price_assumption',
-              width: 100,
+              width: compact ? 92 : 100,
+              // 金额右对齐（全站口径 .cell-right）：¥2.30 / ¥86.00 / ¥12.50
+              // 长短不一，居中时小数点各在一处，比不出量级。
+              className: 'cell-right',
               // 每行都挂"（假设）"是纯噪音：表头已经写着「价格假设」，
               // 一列四行重复同样四个字，反而把数字本身压得看不出来。
               // 单价保真（2026-11-17）：最少两位、最多 4 位，不截断。
               // ¥2.3 / ¥86 / ¥4.8 统一成 ¥2.30 / ¥86.00 / ¥4.80，但 3.3333 仍是 3.3333。
               render: (v: number | null) => (v == null ? '-' : formatUnitPrice(v, 'CNY')),
             },
-            { title: '负责人', dataIndex: 'owner_name', width: 80, render: (v: string | null) => v ?? '-' },
+            ...(compact
+              ? []
+              : [{ title: '负责人', dataIndex: 'owner_name', width: 80, render: (v: string | null) => v ?? '-' }]),
             {
-              title: '状态',
-              width: 170,
+              title: (
+                <span className="crm-help-label">
+                  状态
+                  <HelpTip forLabel="洞察状态" text="已转需求 = 这条洞察已经变成一张定制需求单，后续到「定制需求」里跟进。" />
+                </span>
+              ),
+              width: compact ? 110 : 170,
               render: (_: unknown, record: ProductInsightRow) => (
                 /* 这一格原来塞三行：状态 / 第 N 轮 / 意见（还被截成"…"），
                    于是同一张表里这行比别的行高出一截，节奏全乱。
@@ -422,7 +484,7 @@ export default function ProductInsightsPage() {
             },
             {
               title: '操作',
-              width: 200,
+              width: compact ? 170 : 200,
               render: (_: unknown, record: ProductInsightRow) => {
                 // 逐条可操作性（R08）：后端随每一行下发"这条归不归我管""我现在能不能评"。
                 // 原来只按权限码判，于是**数据范围外**的那几条也长着「编辑 / 提交评审 /
@@ -433,21 +495,38 @@ export default function ProductInsightsPage() {
                 const reviewable =
                   record.can_review ?? (canReview && record.status === 'under_review')
                 return (
-                  <span style={{ display: 'inline-flex', gap: 10, flexWrap: 'wrap' }}>
+                  /* 操作列原来是 inline-flex，按钮组按内容宽度贴左，
+                     表头「操作」却居中 —— 一行三四个动作时表头和数据错开十几像素。
+                     改成占满整格的 flex + 居中：动作多也始终压在表头下方。 */
+                  <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center' }}>
                     {editable && record.status !== 'converted' && record.status !== 'under_review' && (
                       <a onClick={() => openEdit(record)}>编辑</a>
                     )}
                     {editable && (record.status === 'draft' || record.status === 'rejected') && (
                       <Popconfirm title="确认提交这条新品洞察评审？" onConfirm={() => submitMutation.mutate(record.id)}><a>提交评审</a></Popconfirm>
                     )}
+                    {/* 原来「通过 / 否决」是两个同字重的绿字红字，和旁边「编辑 / 转需求」
+                        长得一样重（2026-11-20 巡检："一排小字看不出该点哪个"）。
+                        现在：通过 = 主按钮（这条洞察的推进动作），否决 = 红色文字按钮
+                        （终止动作，但不需要抢主按钮的位置）。 */}
                     {reviewable && (
                       <>
-                        <a style={{ color: 'var(--crm-success)' }} onClick={() => openReview(record, true)}>
+                        <Button
+                          size="small"
+                          type="primary"
+                          theme="solid"
+                          onClick={() => openReview(record, true)}
+                        >
                           通过
-                        </a>
-                        <a style={{ color: 'var(--crm-error)' }} onClick={() => openReview(record, false)}>
+                        </Button>
+                        <Button
+                          size="small"
+                          type="danger"
+                          theme="borderless"
+                          onClick={() => openReview(record, false)}
+                        >
                           否决
-                        </a>
+                        </Button>
                       </>
                     )}
                     {editable && record.status === 'approved' && (
@@ -456,13 +535,13 @@ export default function ProductInsightsPage() {
                     {/* 审核历史：能看见这一页的人就能看它的评审史（后端读入口同权限） */}
                     <a
                       style={{ color: 'var(--crm-text-2)' }}
+                      title="审核历史"
                       onClick={() => setHistoryTarget(record)}
                     >
-                      审核历史
+                      {compact ? '历史' : '审核历史'}
                     </a>
-                    {/* 已转：给得出去的深链，不是一串死编号（§6.1(7)） */}
                     {record.converted_inquiry_id && (
-                      <Link to="/inquiries?keyword=" style={{ color: 'var(--crm-text-3)' }}>
+                      <Link to={`/inquiries?inquiry_id=${record.converted_inquiry_id}`} style={{ color: 'var(--crm-text-3)' }}>
                         已转需求 #{record.converted_inquiry_id}
                       </Link>
                     )}
@@ -474,7 +553,7 @@ export default function ProductInsightsPage() {
           dataSource={query.data?.items ?? []}
           loading={query.isLoading}
           rowKey="id"
-          pagination={{
+          pagination={((query.data?.total ?? 0) <= pageSize) ? false : {
             currentPage: page,
             pageSize,
             total: query.data?.total ?? 0,
@@ -483,18 +562,14 @@ export default function ProductInsightsPage() {
             pageSizeOpts: [10, 20, 50, 100],
             onPageSizeChange: (size: number) => { setPageSize(size); setPage(1) },
           }}
-          empty={
-            // 空态是新人第一次打开这页看到的全部内容，只说"还没有"等于什么都没说。
-            // 补一句这页是干什么的、记进来之后会怎样。
-            <div style={{ padding: '28px 0', textAlign: 'center' }}>
-              <div style={{ fontSize: 13, color: 'var(--crm-text-2)', marginBottom: 6 }}>
-                还没有新品洞察
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                运营看到值得做的方向就记在这里，评审通过后可一键转成定制需求
-              </div>
-            </div>
-          }
+          empty={emptyNode(query, {
+            title: status === 'under_review' && !keyword ? '暂无待评审的新品洞察'
+              : status || keyword ? '没有符合筛选条件的新品洞察' : '还没有新品洞察',
+            hint: status || keyword ? undefined : '记录值得评估的产品方向。评审通过后，可以转成定制需求。',
+            action: status || keyword ? (
+              <Button size="small" onClick={() => { setStatus(undefined); setKeyword(''); setPage(1) }}>查看全部洞察</Button>
+            ) : canManage ? <Button size="small" onClick={openCreate}>记录新品洞察</Button> : undefined,
+          })}
         />
       </SectionCard>
 
@@ -699,7 +774,7 @@ export default function ProductInsightsPage() {
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
             <Button onClick={() => setConvertResult(null)}>知道了</Button>
             {convertResult && (
-              <Link to={`/inquiries?keyword=${encodeURIComponent(convertResult.inquiry_no ?? '')}`}>
+              <Link to={`/inquiries?inquiry_id=${convertResult.inquiry_id}`}>
                 <Button type="primary" theme="outline">去看这条需求</Button>
               </Link>
             )}

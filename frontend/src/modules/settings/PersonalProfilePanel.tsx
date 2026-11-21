@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Tag } from '@douyinfe/semi-ui'
 
+import PersonalAccountPanel from './PersonalAccountPanel'
 import SectionCard from '../../shared/components/SectionCard'
 import { fetchMyPermissions } from '../../shared/api/auth'
 import { useAuthStore } from '../../shared/store/auth'
@@ -9,17 +10,6 @@ import {
   PERMISSION_SECTIONS,
   UNGROUPED_TITLE,
 } from '../../shared/components/PermissionPicker'
-
-/**
- * 「我的信息」+「我的权限」（只读两块）。
- *
- * 改登录名 / 改密码不在这里 —— 那是 `PersonalAccountPanel` 的事，两个面板
- * 并排挂在「个人账号」这一个页签下。拆开的理由很实在：那块要处理校验、
- * 重登、初始密码提示，跟"看一眼"这两块是完全不同的东西，塞一起会互相绊。
- *
- * 权限的分组与中文名复用权限选择件里那一份（同一份口径，不在这里另抄一遍，
- * 免得以后后端加了模块，两个地方只改了一处）。
- */
 
 /** 角色代号 → 中文名（与顶栏用的是同一份口径）。 */
 const ROLE_LABEL: Record<string, string> = {
@@ -61,7 +51,7 @@ export default function PersonalProfilePanel() {
   const rest = owned.filter((code) => !grouped.has(code))
 
   return (
-    <div style={{ display: 'grid', gap: 16 }}>
+    <div className="settings-profile">
       <SectionCard title="我的信息">
         <div style={{ display: 'grid', gap: 10, fontSize: 13 }}>
           <Row label="姓名" value={user?.name ?? '-'} />
@@ -81,11 +71,15 @@ export default function PersonalProfilePanel() {
         </div>
         <div style={{ marginTop: 10, fontSize: 12, color: 'var(--crm-text-3)' }}>
           姓名、部门、角色这些由管理员维护，本人改不了；要改请找管理员。
-          登录名和密码可以在下面那块自己改。
+          登录名和密码可在「登录名与密码」修改。
         </div>
       </SectionCard>
 
-      <SectionCard title="我的权限">
+      <SectionCard title="登录名与密码">
+        <PersonalAccountPanel />
+      </SectionCard>
+
+      <SectionCard title="我的权限" className="settings-profile-permissions">
         {permQuery.isLoading && (
           <div style={{ fontSize: 13, color: 'var(--crm-text-3)' }}>加载中…</div>
         )}
@@ -94,7 +88,7 @@ export default function PersonalProfilePanel() {
             你还没有任何权限，请联系管理员分配角色。
           </div>
         )}
-        <div style={{ display: 'grid', gap: 14 }}>
+        <div className="settings-permission-groups">
           {groups.map((group) => (
             <Group
               key={group.title}

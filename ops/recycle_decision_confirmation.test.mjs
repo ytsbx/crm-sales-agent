@@ -19,14 +19,14 @@ function load(note=null) {
   const calls=[],gates=[],prompts=[],errors=[],exports={}
   runInNewContext(compiled,{exports,Modal:{confirm:options=>gates.push(options)},
     decideMutation:{mutate:payload=>calls.push(payload)},
-    window:{prompt:message=>{prompts.push(message);return note}},
+    notePrompt:{ask:async options=>{prompts.push(options);return note}},
     Toast:{error:message=>errors.push(message)},fmtDay:value=>value,
   })
   return {...exports,calls,gates,prompts,errors}
 }
-test('ordinary approval waits for confirmation; cancel writes nothing',()=>{
+test('ordinary approval waits for confirmation; cancel writes nothing',async()=>{
   const t=load()
-  t.decide('approve',{id:7,customer_name:'隔离客户',protection:[]})
+  await t.decide('approve',{id:7,customer_name:'隔离客户',protection:[]})
   assert.equal(t.calls.length,0)
   assert.equal(t.gates.length,1)
   t.gates[0].onCancel?.()
@@ -43,11 +43,12 @@ for(const [decision,row,options] of [
   ['defer',{id:7,protection:[]},undefined],
   ['reject',{id:7,protection:[]},undefined],
 ]) {
-  test(`${decision} ${options?.early?'early':'reason'}: existing reason form handles cancel`,()=>{
+  test(`${decision} ${options?.early?'early':'reason'}: existing reason form handles cancel`,async()=>{
     const t=load()
-    t.decide(decision,row,options)
+    await t.decide(decision,row,options)
     assert.equal(t.calls.length,0)
     assert.equal(t.gates.length,0)
     assert.equal(t.prompts.length,1)
+    assert.equal(t.prompts[0].required,true)
   })
 }

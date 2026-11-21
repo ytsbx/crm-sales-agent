@@ -13,7 +13,7 @@ from app.modules.file.model import BusinessFile, FileRecord
 from app.modules.file.storage import absolute_path
 from app.modules.inquiry.model import CustomInquiry
 from app.modules.oa import client
-from app.modules.oa.service import _map_status
+from app.modules.oa.service import ApprovalUploads, _map_status, review_stuck_submission, send_prepared_approval
 
 PROVIDER = "self_oa"
 OA_TYPE = "inquiry"
@@ -33,6 +33,70 @@ OA_FIELDS = [
 ]
 
 
+NATIVE_INQUIRY_CODE = "key-account-product-inquiry"
+NATIVE_FIELDS = {
+    "title": "product_name",
+    "inquiry_no": "product_reference",
+    "description": "requirements",
+    "customer_contact": "customer",
+    "product_model": "specification",
+    "delivery_date": "delivery_time",
+    "special_note": "notes",
+}
+CRM_IDENTITY_FIELDS = {"applicant_name", "department", "quote_owner"}
+
+
+def uses_native_inquiry() -> bool:
+    return not settings.oa_inquiry_template_id.strip() and settings.oa_inquiry_template_code.strip() == NATIVE_INQUIRY_CODE
+
+
+def native_quoters(template):
+    scope = next((field.get("user_scope", []) for field in template["fields"] if field["id"] == "quoter"), [])
+    return [person for person in template.get("people", []) if person["id"] in scope]
+
+
+def native_entry_fields(template):
+    """Expose OA's editable sales fields through the existing CRM form controls."""
+    types = {"text": "TextField", "choice": "DDSelectField", "date": "DDDateField", "attachment": "DDAttachment"}
+    field_ids = {
+        "quote_scope": "quote_scope", "reply_date": "reply_date", "provide_sample": "provide_sample",
+        "customer": "customer_contact", "product_reference": "product_reference", "specification": "product_model",
+        "delivery_time": "delivery_date", "notes": "special_note", "attachments": "attachments",
+    }
+    return [{**field, "id": field_ids[field["id"]], "type": types[field["type"]],
+             "options": field.get("options", [])}
+            for field in template["fields"] if field["id"] in field_ids and field["type"] in types]
+
+
+async def native_submission_identity(user_id, quoter):
+    try:
+        templates = await client.list_templates(user_id)
+    except (client.OaError, client.OaUnknownOutcome) as exc:
+        raise AppError(ErrorCode.EXTERNAL_ERROR, "无法读取同序询价模板或提报账号，请稍后重试", 502) from exc
+    template = max((item for item in templates if item["code"] == NATIVE_INQUIRY_CODE),
+                   key=lambda item: item["version"], default=None)
+    if template is None:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "当前账号无法发起同序询价，请联系管理员", 422)
+    identity = template.get("applicant") or {}
+    if not identity.get("id") or not identity.get("department_id"):
+        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "请先在同序完善提报人的所属部门", 422)
+    if quoter not in {person["id"] for person in native_quoters(template)}:
+        raise AppError(ErrorCode.PARAM_ERROR, "请选择同序模板允许的对接报价员", 422)
+    return identity
+
+
+def native_inquiry_fields(fields, identity, quoter, image_ids, attachment_ids):
+    """Translate business data using the identity returned by OA, never user-entered names."""
+    return {
+        **{NATIVE_FIELDS.get(key, key): value for key, value in fields.items() if key not in CRM_IDENTITY_FIELDS},
+        "reporter": identity["id"],
+        "report_department": identity["department_id"],
+        "quoter": quoter,
+        "reference_images": image_ids,
+        "attachments": attachment_ids,
+    }
+
+
 def oa_template_fields() -> list[dict]:
     kind_map = {"text": "TextField", "choice": "DDSelectField", "date": "DDDateField",
                 "attachment": "DDAttachment"}
@@ -40,7 +104,13 @@ def oa_template_fields() -> list[dict]:
              "options": field.get("options") or []} for field in OA_FIELDS]
 
 
+def ensure_submission_enabled():
+    if not settings.oa_inquiry_submission_enabled:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "询价审批暂未启用，可先保存需求和内部报价草稿", 422)
+
+
 def _template_id() -> str:
+    ensure_submission_enabled()
     template_id = settings.oa_inquiry_template_id.strip() or settings.oa_inquiry_template_code.strip()
     if not template_id:
         raise AppError(ErrorCode.PARAM_ERROR, "还没配置询价 OA 审批模板（OA_INQUIRY_TEMPLATE_ID 或 OA_INQUIRY_TEMPLATE_CODE）", 422)
@@ -64,7 +134,7 @@ async def _department_name(session: AsyncSession, user) -> str:
     return dept.name if dept is not None else ""
 
 
-async def _attachments(session: AsyncSession, user, inquiry: CustomInquiry, file_ids: list[int], *, images: bool = False, max_count: int = 30) -> list[dict]:
+async def _attachments(session: AsyncSession, user, inquiry: CustomInquiry, file_ids: list[int], *, images: bool = False, max_count: int = 30, uploads=None) -> list[dict]:
     if not file_ids and not images:
         return []
     stmt = select(FileRecord).join(BusinessFile, BusinessFile.file_id == FileRecord.id).where(
@@ -80,21 +150,22 @@ async def _attachments(session: AsyncSession, user, inquiry: CustomInquiry, file
         if not rows:
             raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "请先上传产品参考图片", 422)
         if len(rows) > max_count:
-            raise AppError(ErrorCode.PARAM_ERROR, "产品参考图片与随单附件合计最多30个，请移除多余文件", 422)
+            raise AppError(ErrorCode.PARAM_ERROR, f"本次最多可提交 {max_count} 张产品参考图片，请移除多余图片", 422)
         if any(row.mime_type not in {"image/png", "image/jpeg"} for row in rows):
             raise AppError(ErrorCode.PARAM_ERROR, "OA 产品参考图片只支持 PNG/JPEG，请转换后重新上传", 422)
         file_ids = [row.id for row in rows]
     by_id = {row.id: row for row in rows}
     if set(by_id) != set(file_ids):
         raise AppError(ErrorCode.PARAM_ERROR, "所选附件不属于这条询价，请重新选择", 422)
+    upload = uploads.stage if uploads is not None else client.upload_file
     uploaded = []
     for file_id in file_ids:
         record = by_id[file_id]
         path = absolute_path(record.object_key)
         if not path.is_file() or path.stat().st_size != record.size:
             raise AppError(ErrorCode.PARAM_ERROR, f"附件「{record.file_name}」缺失或不完整，请重新上传", 422)
-        uploaded.append(await client.upload_file(
-            user.dingtalk_userid, record.file_name, path.read_bytes(), record.mime_type
+        uploaded.append(await upload(
+            user.dingtalk_userid, record.file_name, path if uploads is not None else path.read_bytes(), record.mime_type
         ))
     return uploaded
 
@@ -115,12 +186,15 @@ async def start_inquiry_approval(session: AsyncSession, current_user, inquiry: C
     if user is None or not user.dingtalk_userid:
         raise AppError(ErrorCode.PARAM_ERROR, "请先绑定本人钉钉账号，OA 才能按你名义发起", 422)
     template_id = _template_id()
-    approver = settings.oa_inquiry_approver_dingtalk_id.strip()
+    native = uses_native_inquiry()
+    approver = "" if native else settings.oa_inquiry_approver_dingtalk_id.strip()
 
     # Lock the business row as well: two first submissions have no approval row to lock.
     await session.get(CustomInquiry, inquiry.id, with_for_update=True, populate_existing=True)
     require_submittable(inquiry)
     latest = await latest_inquiry_row(session, inquiry.id, for_update=True)
+    if await review_stuck_submission(session, latest):
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "上一次 OA 发起结果待核对，请先到 OA 核对", 409)
     if latest is not None and latest.status in {"pending", "submitting"}:
         return latest, "这条询价已有在办 OA 审批，请查看进度，不要重复发起"
     if latest is not None and latest.status == "needs_review":
@@ -152,83 +226,90 @@ async def start_inquiry_approval(session: AsyncSession, current_user, inquiry: C
         )
         session.add(row)
     await session.flush()
-    try:
-        extra = {str(k): str(v) for k, v in (getattr(payload, "extra_fields", None) or {}).items()}
-        customer = await session.get(Customer, inquiry.customer_id) if inquiry.customer_id else None
-        customer_name = customer.name if customer is not None else ""
-        reply = (extra.get("reply_date") or "").strip()
-        fields = {
-            "title": inquiry.title,
-            "inquiry_no": extra.get("product_reference") or inquiry.inquiry_no or "",
-            "description": inquiry.description or "",
-            "quantity": str(inquiry.quantity) if inquiry.quantity is not None else "",
-            "applicant_name": user.name,
-            "department": await _department_name(session, user),
-            "quote_owner": extra.get("quote_owner") or inquiry.oa_quote_user_name or "待分配",
-            "quote_scope": extra.get("quote_scope", ""),
-            "reply_date": reply[:10] if reply else "",
-            "provide_sample": extra.get("provide_sample", ""),
-            "customer_contact": extra.get("customer_contact") or customer_name,
-            "product_model": extra.get("product_model", ""),
-            "delivery_date": extra.get("delivery_date", ""),
-            "special_note": extra.get("special_note", ""),
-        }
-        fields = {key: value for key, value in fields.items() if value not in (None, "")}
-        if not fields.get("title"):
-            raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "询价产品名称不能为空", 422)
-        required = [("inquiry_no" if field["id"] == "product_reference" else field["id"], field["label"]) for field in OA_FIELDS if field.get("required")]
-        required += [("applicant_name", "提报人"), ("department", "提报部门"),
-                     ("inquiry_no", "产品名称/编号"), ("description", "材质及工艺要求"), ("quantity", "预估订购数量")]
-        missing = [label for key, label in required if not str(fields.get(key) or "").strip()]
-        if missing:
-            raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "请补齐：" + "、".join(missing), 422)
-        selected_files = list(getattr(payload, "attachment_file_ids", []) or [])
-        image_ids = [str(item["id"]) for item in await _attachments(
-            session, user, inquiry, [], images=True, max_count=30-len(set(selected_files)))]
-        file_ids = [str(item["id"]) for item in await _attachments(session, user, inquiry, selected_files)]
-        attachment_ids = list(dict.fromkeys(image_ids + file_ids))
+    uploads = ApprovalUploads()
+    extra = {str(k): str(v) for k, v in (getattr(payload, "extra_fields", None) or {}).items()}
+    customer = await session.get(Customer, inquiry.customer_id) if inquiry.customer_id else None
+    customer_name = customer.name if customer is not None else ""
+    reply = (extra.get("reply_date") or "").strip()
+    fields = {
+        "title": inquiry.title,
+        "inquiry_no": extra.get("product_reference") or inquiry.inquiry_no or "",
+        "description": inquiry.description or "",
+        "quantity": str(inquiry.quantity) if inquiry.quantity is not None else "",
+        "applicant_name": user.name,
+        "department": await _department_name(session, user),
+        "quote_owner": extra.get("quote_owner") or inquiry.oa_quote_user_name or "待分配",
+        "quote_scope": extra.get("quote_scope", ""),
+        "reply_date": reply[:10] if reply else "",
+        "provide_sample": extra.get("provide_sample", ""),
+        "customer_contact": extra.get("customer_contact") or customer_name,
+        "product_model": extra.get("product_model", ""),
+        "delivery_date": extra.get("delivery_date", ""),
+        "special_note": extra.get("special_note", ""),
+    }
+    fields = {key: value for key, value in fields.items() if value not in (None, "")}
+    if not fields.get("title"):
+        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "询价产品名称不能为空", 422)
+    required = [("inquiry_no" if field["id"] == "product_reference" else field["id"], field["label"]) for field in OA_FIELDS if field.get("required")]
+    required += [("applicant_name", "提报人"), ("department", "提报部门"),
+                 ("inquiry_no", "产品名称/编号"), ("description", "材质及工艺要求"), ("quantity", "预估订购数量")]
+    quoter = getattr(payload, "quote_owner_user_id", None)
+    if native:
+        from uuid import UUID
+        try:
+            quoter = str(UUID(quoter or ""))
+        except ValueError as exc:
+            raise AppError(ErrorCode.PARAM_ERROR, "请选择同序模板允许的对接报价员", 422) from exc
+        required = [(key, label) for key, label in required if key not in CRM_IDENTITY_FIELDS]
+    missing = [label for key, label in required if not str(fields.get(key) or "").strip()]
+    if missing:
+        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "请补齐：" + "、".join(missing), 422)
+    identity = await native_submission_identity(user.dingtalk_userid, quoter) if native else None
+    selected_files = list(getattr(payload, "attachment_file_ids", []) or [])
+    image_ids = [str(item["id"]) for item in await _attachments(
+        session, user, inquiry, [], images=True, max_count=min(9 if native else 30, 30-len(set(selected_files))), uploads=uploads)]
+    file_ids = [str(item["id"]) for item in await _attachments(session, user, inquiry, selected_files, uploads=uploads)]
+    attachment_ids = list(dict.fromkeys(image_ids + file_ids))
+    if native:
+        fields = native_inquiry_fields(fields, identity, quoter, image_ids, file_ids)
+    else:
         fields["DDPhotoField_1U7CNXCKQNS00"] = image_ids
         fields["attachments"] = file_ids
-        payload_data = {
-            "external_ref": external_ref,
-            "applicant_dingtalk_user_id": user.dingtalk_userid,
-            ("template_id" if settings.oa_inquiry_template_id.strip() else "template_code"): template_id,
-            "title": inquiry.title,
-            "reason": f"CRM 定制询价 {inquiry.inquiry_no or inquiry.id}",
-            "amount": str(inquiry.target_price or 0),
-            "fields": fields,
-            "attachment_ids": attachment_ids,
-        }
-        if approver:
-            payload_data["approver_dingtalk_user_id"] = approver
-        row.form_snapshot = fields
-        summary = await client.create_approval(payload_data)
-    except client.OaError as exc:
-        row.status = "failed"
-        row.error = exc.message
-        await session.commit()
-        raise AppError(ErrorCode.EXTERNAL_ERROR, f"OA 发起失败：{exc.message}", 502) from exc
-    except client.OaUnknownOutcome as exc:
-        row.status = "needs_review"
-        row.error = exc.message
-        await session.commit()
-        raise AppError(ErrorCode.EXTERNAL_ERROR, "OA 发起结果未知，请到 OA 核对后再处理", 502) from exc
+    payload_data = {
+        "external_ref": external_ref,
+        "applicant_dingtalk_user_id": user.dingtalk_userid,
+        ("template_id" if settings.oa_inquiry_template_id.strip() else "template_code"): template_id,
+        "title": inquiry.title,
+        "reason": f"CRM 定制询价 {inquiry.inquiry_no or inquiry.id}",
+        "amount": str(inquiry.target_price or 0),
+        "fields": fields,
+        "attachment_ids": attachment_ids,
+    }
+    if approver:
+        payload_data["approver_dingtalk_user_id"] = approver
+    inquiry, row, summary = await send_prepared_approval(session, inquiry, row, payload_data, uploads)
 
     row.instance_id = str(summary["id"])
     row.status = _map_status(summary.get("status"))
     row.result = summary
     row.synced_at = datetime.now(UTC)
     row.updated_at = row.synced_at
-    inquiry.extra = {**(inquiry.extra or {}), "oa_approval": {
-        "provider": PROVIDER, "oa_instance_id": row.id, "instance_id": row.instance_id,
-        "status": row.status, "synced_at": row.synced_at.isoformat(),
-    }}
+    if inquiry is not None and inquiry.deleted_at is None:
+        inquiry.extra = {**(inquiry.extra or {}), "oa_approval": {
+            "provider": PROVIDER, "oa_instance_id": row.id, "instance_id": row.instance_id,
+            "status": row.status, "synced_at": row.synced_at.isoformat(),
+        }}
     await session.flush()
     return row, "已发起 OA 定制询价审批"
 
 
-async def sync_inquiry_row(session: AsyncSession, row: OaInstance) -> OaInstance:
-    summary = await client.get_approval(row.instance_id or "")
+async def sync_inquiry_row(session: AsyncSession, row: OaInstance) -> OaInstance | None:
+    from app.modules.oa.service import sync_self_oa_row
+
+    return await sync_self_oa_row(session, row)
+
+
+async def apply_inquiry_summary(session: AsyncSession, row: OaInstance, summary: dict) -> OaInstance:
     row.status = _map_status(summary.get("status"))
     row.result = summary
     row.synced_at = datetime.now(UTC)
@@ -245,11 +326,6 @@ async def sync_inquiry_row(session: AsyncSession, row: OaInstance) -> OaInstance
 
 
 async def withdraw_inquiry_row(session: AsyncSession, row: OaInstance, note: str) -> OaInstance:
-    summary = await client.withdraw_approval(row.instance_id or "", note)
-    row.status = _map_status(summary.get("status"))
-    row.result = summary
-    row.synced_at = datetime.now(UTC)
-    row.updated_at = row.synced_at
-    row.error = None
-    await session.flush()
-    return row
+    from app.modules.oa.service import withdraw_self_oa_row
+
+    return await withdraw_self_oa_row(session, row, note)

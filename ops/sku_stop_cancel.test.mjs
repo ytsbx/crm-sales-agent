@@ -24,7 +24,7 @@ for (const note of [null, '', '停止从旧系统导入']) {
     const calls = [], messages = [], refreshes = []
     const exports = {}
     runInNewContext(compiled, { exports,
-      window: { prompt: () => note },
+      notePrompt: { ask: async () => note },
       stopSkuIdentity: async (...args) => { calls.push(args); return { id: 7 } },
       Toast: { success: message => messages.push(message), error: message => messages.push(message) },
       queryClient: { invalidateQueries: args => refreshes.push(args) }, masterSku: { id: 3 },

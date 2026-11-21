@@ -252,6 +252,27 @@ def _collect(session, adapter, *, object_type="order", shop_id="SHOP-A", **kwarg
 # ---------------------------------------------------------------- 幂等与断点
 
 
+@pytest.mark.parametrize("next_token", [None, " ", "cursor-2"])
+def test_invalid_next_token_keeps_last_committed_page(next_token):
+    class BrokenPage(FakeCollectAdapter):
+        async def fetch_records(self, **kwargs):
+            page = await super().fetch_records(**kwargs)
+            if kwargs["cursor"] == "cursor-2":
+                return ExternalPage(items=page.items, has_more=True, next_page_token=next_token)
+            return page
+
+    session = _session()
+    pages = [[_order_record("1", "SO-1")], [_order_record("2", "SO-2")]]
+    with pytest.raises(AppError, match="断点缺失或重复"):
+        _collect(session, BrokenPage(pages))
+    raw = session._session
+    assert raw.query(ExternalRecord).count() == 1
+    cursor = raw.query(ExternalSyncWatermark).one()
+    assert cursor.page_token == "cursor-2" and cursor.status == CURSOR_FAILED
+    _collect(session, FakeCollectAdapter(pages))
+    assert raw.query(ExternalRecord).count() == 2
+
+
 def test_repeat_collection_does_not_duplicate():
     """同一外部订单重拉：只有一行事实，第二次算"重复（内容未变）"。"""
     session = _session()
@@ -268,6 +289,60 @@ def test_repeat_collection_does_not_duplicate():
     order_row = next(row for row in rows if row["object_type"] == "order")
     assert order_row["collected_count"] == 2, "重复次数要如实记下来"
 
+
+def test_line_mapping_keeps_same_identity_when_external_id_appears_disappears_or_changes():
+    session = _session()
+    raw = session._session
+    for external_id in (None, "ERP-LINE-1", None, "ERP-LINE-9"):
+        item = _order_item("EXT-1", "1", "SKU-A", "10", external_id=external_id)
+        _collect(session, FakeCollectAdapter([[item]]))
+        assert raw.query(ExternalRecord).count() == 1
+        mapping = raw.query(ExternalObjectMapping).one()
+        assert mapping.id == 1
+        assert mapping.external_id == col.line_dedupe_key("EXT-1", "1")
+
+
+def test_legacy_line_mapping_keeps_manual_binding_and_ambiguous_alias_is_left_alone(caplog):
+    session = _session()
+    raw = session._session
+    item = _order_item("EXT-1", "1", "SKU-A", "10")
+    _collect(session, FakeCollectAdapter([[item]]))
+    stable = raw.query(ExternalObjectMapping).one().external_id
+    original = raw.query(ExternalObjectMapping).one()
+    original.external_id = item["external_id"]
+    original.match_status, original.internal_id, original.matched_by = MATCH_MATCHED, 101, 12
+    raw.commit()
+
+    _collect(session, FakeCollectAdapter([[{**item, "external_id": None}]]))
+    updated = raw.query(ExternalObjectMapping).one()
+    assert (updated.id, updated.external_id, updated.internal_id, updated.matched_by) == (1, stable, 101, 12)
+
+    raw.add(ExternalObjectMapping(system_type=updated.system_type, shop_id=updated.shop_id,
+        object_type=updated.object_type, parent_key=updated.parent_key, external_id=item["external_id"],
+        first_seen_at=PERIOD_START, last_seen_at=PERIOD_START,
+        match_status=MATCH_MATCHED, internal_id=102, matched_by=13))
+    raw.commit()
+    _collect(session, FakeCollectAdapter([[item]]))
+    assert [(row.external_id, row.internal_id, row.matched_by) for row in
+            raw.query(ExternalObjectMapping).order_by(ExternalObjectMapping.id)] == [
+        (stable, 101, 12), (item["external_id"], 102, 13),
+    ]
+    assert "ERP 明细存在多条旧映射，等待人工核对：[1, 2]" in caplog.text
+
+
+def test_line_mapping_fits_key_column_and_stays_separate_by_stable_line_key():
+    session = _session()
+    parent = "P" * 100
+    items = [_order_item(parent, str(i) * 30, "SKU-A", "10", external_id="SHARED")
+             for i in (1, 2)]
+    for _ in range(2):
+        _collect(session, FakeCollectAdapter([items]))
+    records = session._session.query(ExternalRecord).all()
+    mappings = session._session.query(ExternalObjectMapping).all()
+    assert len(records) == len(mappings) == 2
+    assert all(len(row.dedupe_key) == 131 for row in records)
+    assert len({row.external_id for row in mappings}) == 2
+    assert all(len(row.external_id) <= 128 for row in mappings)
 
 def test_pagination_break_keeps_token_and_resumes_without_loss():
     """第 2 页取数时崩了：断点留着，续拉后三页数据齐全且不重复。"""

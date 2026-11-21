@@ -146,8 +146,8 @@ async def frozen_items(session: AsyncSession, period: str, metric: str) -> list[
 
 
 @asynccontextmanager
-async def consistent_snapshot(period: str):
-    """**一条独立连接**，读同一个快照，并持有这一期的期间锁（第五批审查 P1）。
+async def consistent_snapshot(write_session: AsyncSession, period: str):
+    """先在写事务中锁定期间，再用独立连接读取同一个快照。
 
     ## 为什么必须是独立连接（我第一版写错了，记下来）
 
@@ -173,14 +173,12 @@ async def consistent_snapshot(period: str):
     改回款跑在别的模块里，不认识那把锁）。要挡它只能让这几条查询读同一个快照：
     本事务内第一次读建立快照，之后所有读都看这一份，别的会话怎么改都影响不了。
 
-    ⚠️ 锁与快照必须在**同一条连接**上：锁的作用域是事务，换条连接锁就没了。
-    所以这里 `SET TRANSACTION` 和 `pg_advisory_xact_lock` 成对出现，别再拆开写。
-
-    ⚠️ REPEATABLE READ 下若并发事务改了本事务读过的行，提交时会报序列化失败 ——
-    那时结账**失败**，而不是存下一份自相矛盾的账。宁可让人重跑一次。
+    期间锁由写事务持有到提交。若读连接退出时就释放期间锁，等待的重算可在旧结果
+    写入前先读后写，旧快照就有机会覆盖更新的快照。
     """
     from app.core.database import SessionLocal
 
+    await lock_period(write_session, period)
     async with SessionLocal() as session:
         try:
             dialect = session.get_bind().dialect.name
@@ -188,7 +186,6 @@ async def consistent_snapshot(period: str):
             dialect = ""
         if dialect == "postgresql":
             await session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
-        await lock_period(session, period)
         yield session
         await session.rollback()  # 只读事务，读完整份快照就结束
 

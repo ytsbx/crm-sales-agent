@@ -12,7 +12,8 @@ import {
   isConfirmRequired,
   confirmMessageOf,
 } from '../../shared/components/ConfirmRequiredModal'
-import { emptyNode } from '../../shared/components/EmptyState'
+import EmptyState, { emptyNode } from '../../shared/components/EmptyState'
+import StatusDot from '../../shared/components/StatusDot'
 import {
   AutoComplete,
   Button,
@@ -26,7 +27,9 @@ import {
   Tag,
   TextArea,
   Toast,
+  Tooltip,
 } from '@douyinfe/semi-ui'
+import { IconHelpCircle } from '@douyinfe/semi-icons'
 
 import { listCustomers } from '../../shared/api/customer'
 import { listCustomInquiries } from '../../shared/api/inquiry'
@@ -56,6 +59,7 @@ import {
 } from '../../shared/api/sample'
 import { listBusinessFiles } from '../../shared/api/file'
 import PageHeader from '../../shared/components/PageHeader'
+import HelpTip from '../../shared/components/HelpTip'
 import SectionCard from '../../shared/components/SectionCard'
 import AttachmentPanel from '../common/AttachmentPanel'
 import { formatMoney, toTwoDecimals } from '../../shared/components/money'
@@ -188,10 +192,39 @@ function dash(value?: string | null) {
   return value && value.trim() ? value : '-'
 }
 
+function sampleNextStep(row: SampleRequestRow) {
+  const oa = (row.source_context as unknown as { dingtalk_oa?: { submitted?: boolean; requires_self_oa?: boolean } } | null)?.dingtalk_oa
+  if (row.superseded_by) return { hint: '原版的制作与寄送记录已保留。审批和后续操作请到新版本办理。' }
+  if (row.status === 'pending') {
+    if (!oa) return { hint: '等待负责审批的同事处理。审批通过后才能登记制作完成。' }
+    return oa.submitted
+      ? { hint: '打开同序 OA 进度确认当前审批阶段。审批通过后，再登记制作完成。', action: 'oa', label: '查看 OA 进度' }
+      : { hint: oa.requires_self_oa
+          ? '这个修订版需要单独审批。补齐本版打样资料后，提交同序 OA。'
+          : '草稿还未送审。补齐资料后，单独发起审批，或选择本单的原询价审批继续办理。',
+        action: 'oa', label: '填写或提交 OA 申请' }
+  }
+  if (row.status === 'rejected') return oa
+    ? { hint: '先查看同序 OA 的处理意见，再按页面提供的操作修改或重提。', action: 'oa', label: '查看 OA 审批意见' }
+    : { hint: '先核对驳回原因，再修改申请资料或重新提交。', action: 'work', label: '查看处理操作' }
+  if (row.status === 'approved') return row.made_at
+    ? { hint: '样品寄出后，填写承运商、快递单号及运费，登记寄样。', action: 'work', label: '去登记寄样' }
+    : { hint: '等车间完成实物制作后，登记制作完成并选取实际使用的图纸或确认件。', action: 'work', label: '去登记制作' }
+  if (row.status === 'shipped') return { hint: '客户收到样品后，登记签收。客户对样品的最终决定在「客户确认」另记。', action: 'work', label: '去登记签收' }
+  if (row.status === 'signed' && row.confirm_status === 'pending') {
+    return { hint: '样品已经签收。等客户明确接受或未通过，到「客户确认」登记结论。', action: 'confirm', label: '去登记客户确认' }
+  }
+  if (row.confirm_status === 'accepted') return { hint: '已登记客户接受。可核对本版的制作、寄送和确认记录。' }
+  if (row.confirm_status === 'rejected') return { hint: '已登记客户未通过。若需修改打样要求，可从生产资料处开新修订版。' }
+  return null
+}
+
 export default function SampleListPage() {
   const queryClient = useQueryClient()
   const { can } = usePermissions()
   const canManage = can('sample:manage')
+  const workActionsRef = useRef<HTMLDivElement>(null)
+  const customerConfirmRef = useRef<HTMLDivElement>(null)
 
   const [status, setStatus] = useState<string | undefined>()
   const [keyword, setKeyword] = useState('')
@@ -238,7 +271,8 @@ export default function SampleListPage() {
     if (createOpportunityQuery.error) Toast.error(createOpportunityQuery.error.message)
   }, [createOpportunityQuery.error])
 
-  const [detailId, setDetailId] = useState<number | null>(null)
+  const routeId = Number(params.id)
+  const detailId = Number.isInteger(routeId) && routeId > 0 ? routeId : null
   const [rejectReason, setRejectReason] = useState('')
   const [shipForm, setShipForm] = useState({ carrier: '', tracking_no: '', shipping_fee: '' })
   const [feedback, setFeedback] = useState('')
@@ -286,17 +320,17 @@ export default function SampleListPage() {
       }),
   })
 
-  // 深链 /samples/:id：路由带 id 进来时直接打开详情抽屉
   useEffect(() => {
-    const routeId = Number(params.id)
-    if (Number.isFinite(routeId) && routeId > 0) setDetailId(routeId)
-  }, [params.id])
+    setRejectReason('')
+    setShipForm({ carrier: '', tracking_no: '', shipping_fee: '' })
+    setFeedback('')
+    setNewItem({ quantity: '1' })
+    setProdEditing(false)
+    setItemEdit(null)
+    setConfirmRemark('')
+  }, [detailId])
 
-  const closeDetail = () => {
-    setDetailId(null)
-    // 深链进来的（地址栏是 /samples/:id）关掉后回到列表，别留在一条空路由上
-    if (params.id) navigate('/samples')
-  }
+  const closeDetail = () => navigate('/samples')
 
   // 详情优先复用列表数据里的完整对象（列表已返回 items/shipments），避免多打一次接口；
   // 深链打开的那条如果不在当前列表页，再用 getSample 补一次。
@@ -309,6 +343,8 @@ export default function SampleListPage() {
     enabled: detailId !== null && listDetail === undefined && !query.isLoading,
   })
   const detail: SampleRequestRow | undefined = listDetail ?? detailQuery.data
+  const nextStep = detail ? sampleNextStep(detail) : null
+  const canUpdateSample = canManage && !detail?.superseded_by
 
   const customersQuery = useQuery({
     queryKey: ['customers-for-select'],
@@ -448,7 +484,7 @@ export default function SampleListPage() {
         }
       })()),
     onSuccess: () => {
-      Toast.success('已登记寄样')
+      Toast.success('已登记寄样，客户收到后可登记签收。')
       setShipForm({ carrier: '', tracking_no: '', shipping_fee: '' })
       void refresh()
     },
@@ -458,7 +494,7 @@ export default function SampleListPage() {
   const signMutation = useMutation({
     mutationFn: () => signSample(detailId!),
     onSuccess: () => {
-      Toast.success('已登记签收')
+      Toast.success('已登记签收，等客户给出结论后再登记客户确认。')
       void refresh()
     },
     onError,
@@ -562,8 +598,8 @@ export default function SampleListPage() {
     onSuccess: () => {
       Toast.success(
         madeForm.fileIds.length
-          ? `已登记制作完成，并记下 ${madeForm.fileIds.length} 份制作依据`
-          : '已登记制作完成（未指定制作依据）',
+          ? `已记录 ${madeForm.fileIds.length} 份制作依据，样品寄出后可登记寄样。`
+          : '已登记制作完成，样品寄出后可登记寄样。',
       )
       setMadeModal(false)
       setMadeForm({ remark: '', fileIds: [] })
@@ -579,7 +615,6 @@ export default function SampleListPage() {
     mutationFn: () => reviseSample(detailId!),
     onSuccess: (row: SampleRequestRow) => {
       Toast.success(`已开第 ${row.version ?? '?'} 版待审批（原版冻结保留）`)
-      setDetailId(row.id)          // 直接切到新版本上继续操作
       navigate(`/samples/${row.id}`)
       void refresh()
     },
@@ -622,9 +657,19 @@ export default function SampleListPage() {
     onError,
   })
 
+  /* 1024 宽内容区约 700px，样品表七列合计 780px+（两列还是自适应），
+     表头「客户 / 商机」和「样品明细」被压到互相重叠、操作列挤成两行。 */
+  const [compact, setCompact] = useState(() => window.innerWidth < 1200)
+  useEffect(() => {
+    const onResize = () => setCompact(window.innerWidth < 1200)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
   const columns = [
     {
       title: '客户 / 商机',
+      width: compact ? 186 : undefined,
       dataIndex: 'customer_name',
       render: (value: string | null, record: SampleRequestRow) => (
         <div>
@@ -636,54 +681,167 @@ export default function SampleListPage() {
       ),
     },
     {
-      title: '状态',
+      title: (
+        <span className="crm-help-label">
+          状态
+          <HelpTip forLabel="打样状态" text="已寄样 = 样品寄出、等客户签收；已签收 = 客户收到但还没表态；客户接受或未通过，在「客户确认」单独登记。" />
+        </span>
+      ),
       dataIndex: 'status_label',
-      width: 100,
+      width: compact ? 96 : 100,
       render: (value: string, record: SampleRequestRow) => (
-        <Tag size="small" color={STATUS_COLOR[record.status] ?? 'grey'}>
-          {value}
-        </Tag>
+        // 十二行彩色 Tag 一屏下来像一面色块墙（打样草稿橙、已寄样青、已签收绿…），
+        // 眼睛先被颜色吃掉。改成「圆点 + 状态文字」，与产品中心「● 在售」同一套语言。
+        <StatusDot label={value} tone={STATUS_COLOR[record.status] ?? 'grey'} />
       ),
     },
     {
-      title: '样品明细',
+      title: compact ? '样品明细 / 快递' : '样品明细',
       dataIndex: 'items',
-      render: (items: SampleRequestRow['items']) =>
+      /* 非紧凑（列表页）也要给宽度：不给的话宽度被「客户 / 商机」抢走，
+         明细只剩 ~200，「中空板箱 5mm（汽配线） · A ×3」第一行就被截。
+         编码单独一行后 250 够放一整条最长品名。 */
+      width: compact ? 186 : 240,
+      render: (items: SampleRequestRow['items'], record: SampleRequestRow) =>
         items.length === 0 ? (
           <span style={{ color: 'var(--crm-text-3)' }}>无明细</span>
         ) : (
           // 列宽固定后长明细会省略号截断；把全文挂到 title，
-          // 鼠标停下能看全，不用为此再开一列
+          // 鼠标停下能看全，不用为此再开一列。
+          // 2026-11-19：改「最多两行」—— 单行时整列都是「【验收草稿】预计工时提示 202…」，
+          // 一列全是省略号；两行能把产品名和编码都露出来，悬停仍可看全。
           <span
-            style={{ fontSize: 12 }}
+            style={{
+              fontSize: 12,
+              display: '-webkit-box',
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: 'vertical',
+              overflow: 'hidden',
+              /* 必须显式 normal：全站给表格文字挂了 nowrap，
+                 不覆盖掉的话 line-clamp 根本不换行（实测两行不生效）。 */
+              whiteSpace: 'normal',
+              lineHeight: 1.5,
+            }}
             title={items
-              .map((item) => `${skuLabel({ name: item.sku_name, sku_code: item.sku_code ?? String(item.sku_id) })} ×${item.quantity}`)
+              .map((item) => `${skuLabel({ name: item.sku_name, sku_code: item.sku_code ?? (item.sku_id != null ? String(item.sku_id) : undefined) })} ×${item.quantity}`)
               .join('、')}
           >
-            {items.map((item) => `${skuLabel({ name: item.sku_name, sku_code: item.sku_code ?? String(item.sku_id) })} ×${item.quantity}`).join('、')}
+            {/* 编码缺失时不要拼出「（编码：null）」：旧写法拿 String(sku_id) 兜底，
+                而演示数据里 sku_id 也是空的，于是列表上明晃晃写着 null（2026-11-19 实拍）。 */}
+            {/* 两行结构：第一行「产品名 ×数量」，第二行灰字只放编码。
+                原来挤成一行「EU 斜插周转箱 · A（编码：ZZX-0031） ×3」，
+                折行正好落在「（编 / 码：」中间，读起来像错字（2026-11-20 实拍）。
+                多明细时第一行接「等 N 项」，全文仍在 title 里。 */}
+            {(() => {
+              const first = items[0]
+              /* 第一行只要品名：skuLabel 会把「（编码：…）」一起拼进来，
+                 那样第一行被截、第二行又重复一遍编码（2026-11-20 r321 实拍）。
+                 没有品名时才退回编码当名字。 */
+              const label = first.sku_name?.trim() || first.sku_code || '-'
+              const code = first.sku_code ?? (first.sku_id != null ? String(first.sku_id) : null)
+              const more = items.length > 1 ? ` 等 ${items.length} 项` : ''
+              return (
+                <>
+                  <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {label} ×{first.quantity}
+                    {more}
+                  </div>
+                  {code && (
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: 'var(--crm-text-3)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      编码 {code}
+                    </div>
+                  )}
+                </>
+              )
+            })()}
+            {compact && record.shipments[0] && (
+              <div
+                title={`${record.shipments[0].carrier ?? '-'} ${record.shipments[0].tracking_no ?? ''}`}
+                style={{
+                  marginTop: 2,
+                  color: 'var(--crm-text-3)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {record.shipments[0].carrier ?? '-'}
+                {record.shipments[0].tracking_no ? ` · ${record.shipments[0].tracking_no}` : ''}
+              </div>
+            )}
           </span>
         ),
     },
-    {
+    ...(compact
+      ? []
+      : [{
       title: '快递',
-      width: 170,
+      width: 192,
       render: (_: unknown, record: SampleRequestRow) => {
         const shipment = record.shipments[0]
         if (!shipment) return <span style={{ color: 'var(--crm-text-3)' }}>-</span>
+        // 原来承运商和单号各占一行，整表每行被这两行撑到 75px 左右，
+        // 一屏只放得下 12 条。改成一行「承运商 · 单号」+ 省略号（全号放 title 里），
+        // 行高跟着「客户 / 商机」的两行回到 56（2026-11-21 巡检）。
         return (
-          <span style={{ fontSize: 12 }}>
+          <span
+            title={`${shipment.carrier ?? '-'} ${shipment.tracking_no ?? ''}`.trim()}
+            style={{
+              fontSize: 12,
+              display: 'block',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
             {shipment.carrier ?? '-'}
-            <br />
-            {shipment.tracking_no ?? '-'}
+            {shipment.tracking_no ? ` · ${shipment.tracking_no}` : ''}
           </span>
         )
       },
-    },
-    { title: '负责人', dataIndex: 'owner_name', width: 100, render: (v: string | null) => v ?? '-' },
-    { title: '申请时间', dataIndex: 'requested_at', width: 170, render: fmt },
+    }]),
+    ...(compact
+      ? []
+      : [{ title: '负责人', dataIndex: 'owner_name', width: 100, render: (v: string | null) => v ?? '-' }]),
     {
-      title: '操作',
-      width: 140,
+      title: '申请时间',
+      dataIndex: 'requested_at',
+      width: compact ? 78 : 170,
+      /* 窄屏拆两行：上行「11-18」、下行「14:14」，78px 才放得下整套时分 */
+      render: compact
+        ? (v: string) =>
+            v ? (
+              <span title={formatBeijingTime(v)} style={{ display: 'grid', gap: 2, justifyItems: 'center' }}>
+                <span>{formatBeijingTime(v).slice(5, 10)}</span>
+                <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                  {formatBeijingTime(v).slice(11, 16)}
+                </span>
+              </span>
+            ) : (
+              '-'
+            )
+        : fmt,
+    },
+    {
+      // 这一列十行里有九行是"不能删"：与其每行挂一句灰字「不可删」，把那条规则
+      // 收到表头一个问号上，行内只在真能删的时候出现红字「删除」。
+      title: (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          操作
+          <Tooltip content="只有待审批（且没提交过钉钉 OA）、已驳回的打样单能删；已批准 / 已寄出的连审批留痕，不能删">
+            <IconHelpCircle style={{ fontSize: 13, color: 'var(--crm-text-3)', cursor: 'help' }} />
+          </Tooltip>
+        </span>
+      ),
+      width: compact ? 108 : 118,
       render: (_: unknown, record: SampleRequestRow) => {
         // 已删除的行只给「恢复」：后端对已删的单子查详情一律 404，
         // 摆一个「详情」也是死的，点了只会报错。
@@ -705,16 +863,15 @@ export default function SampleListPage() {
             <Button
               theme="borderless"
               size="small"
-              onClick={() => {
-                setDetailId(record.id)
-                navigate(`/samples/${record.id}`)
-              }}
+              onClick={() => navigate(`/samples/${record.id}`)}
             >
               详情
             </Button>
             {/* 能不能删由后端下发（`can_delete`）：只有还没走流程的（待审批 / 已驳回）
                 才给「删除」—— 已批准之后的单子连着审批留痕与车间依据。判据别在前端再写一份。 */}
-            {canManage && !record.can_delete && <span title="已提交同序 OA 或已进入制作、寄送流程的样品不能直接删除"><Button theme="borderless" size="small" disabled>删除</Button></span>}
+            {/* 不能删的行什么也不摆（主人 2026-11-21「这个难道没有删除的地方吗」：
+                十几行里十一行都是灰字「不可删」，远看像整列都被拒绝掉了）。
+                规则挪到表头问号，行内只剩「详情」，能删的加一个红字「删除」。 */}
             {canManage && record.can_delete && (
               <Popconfirm
                 title="这张打样单将移入回收站，可在“回收站 → 样品”中恢复。"
@@ -978,11 +1135,25 @@ export default function SampleListPage() {
         title={detail ? `样品申请编号 ${detail.id}` : '样品申请'}
         visible={detailId !== null}
         onCancel={closeDetail}
-        /* 固定 760 在 681px 视口下会把抽屉顶出屏幕左侧（2026-11-17 V2-04），
-           改成跟着视口收窄，永远左右各留 12px 呼吸位 */
-        width={Math.min(760, window.innerWidth - 24)}
+        width="min(760px, calc(100vw - 24px))"
       >
-        {!detail && (
+        {/* 读不到详情时这里原来只有一个浅蓝药丸按钮挂在左上角，下面整片白 ——
+            看不出是"加载完了没数据"还是"接口挂了"（2026-11-20）。
+            改成空态 + 一句失败原因，重读降为文字按钮。 */}
+        {!detail && detailQuery.isError && (
+          <div style={{ paddingTop: 20 }}>
+            <EmptyState
+              title="这份样品申请没读出来"
+              hint={detailQuery.error instanceof Error ? detailQuery.error.message : '接口没有返回数据'}
+            />
+            <div style={{ textAlign: 'center' }}>
+              <Button type="tertiary" theme="borderless" onClick={() => void detailQuery.refetch()}>
+                重新读取
+              </Button>
+            </div>
+          </div>
+        )}
+        {!detail && !detailQuery.isError && (
           <div style={{ color: 'var(--crm-text-3)' }}>正在读取样品申请…</div>
         )}
         {detail && (
@@ -996,6 +1167,20 @@ export default function SampleListPage() {
                 {detail.opportunity_title ? ` · ${detail.opportunity_title}` : ''}
               </span>
             </div>
+            {nextStep && <div className="workflow-next">
+              <strong>{detail.superseded_by ? '历史版本' : '下一步'}</strong>
+              <p className="workflow-guide">{nextStep.hint}</p>
+              {detail.superseded_by && <Button size="small" type="primary" theme="outline"
+                onClick={() => navigate(`/samples/${detail.superseded_by}`)}>打开下一版</Button>}
+              {canUpdateSample && nextStep.action && <Button size="small" onClick={() => {
+                if (nextStep.action === 'oa') setOaTarget(detail.id)
+                else {
+                  const section = (nextStep.action === 'confirm' ? customerConfirmRef : workActionsRef).current
+                  section?.scrollIntoView({ block: 'start' })
+                  section?.focus({ preventScroll: true })
+                }
+              }}>{nextStep.label}</Button>}
+            </div>}
 
             <div style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>
               <div>负责人：{detail.owner_name ?? '-'}</div>
@@ -1043,22 +1228,45 @@ export default function SampleListPage() {
                       </div>
                     ),
                   },
-                  { title: '原采购数量', dataIndex: 'original_quantity', width: 110, render: (v: number | null) => v == null ? '未记录' : v.toLocaleString('zh-CN') },
-                  { title: '本次样品数量', dataIndex: 'quantity', width: 110 },
+                  { title: '原数量', dataIndex: 'original_quantity', width: 84, render: (v: number | null) => v == null ? <span style={{ color: 'var(--crm-text-3)' }}>未记录</span> : v.toLocaleString('zh-CN') },
+                  {
+                    /* 抽屉只有 716 宽。原来「本次数量 / 车间依据 / 本次备注 / 本次规格」四列
+                       各占一格，「本次规格」被抽屉右边缘直接切掉（2026-11-20 截图，
+                       只剩「600×400×320 蓝…」）。数量、规格、备注本来就是同一件事的三个方面，
+                       合成一格按行堆着，一行一行读反而更顺。 */
+                    title: '本次样品',
+                    render: (_: unknown, row: SampleItem) => {
+                      const oldSpec = row.source_snapshot?.specification
+                      const oldRemark = row.source_snapshot?.remark
+                      const specChanged = row.source_snapshot && row.specification !== oldSpec
+                      const remarkChanged = row.source_snapshot && (row.remark || '') !== (oldRemark || '')
+                      return (
+                        <div>
+                          <div>{row.quantity} 件{row.specification ? ` · ${row.specification}` : ''}</div>
+                          {specChanged && <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>原规格：{oldSpec || '未记录'}</div>}
+                          {row.remark && <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>备注：{row.remark}</div>}
+                          {remarkChanged && <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>原备注：{oldRemark || '未记录'}</div>}
+                        </div>
+                      )
+                    },
+                  },
                   {
                     // 车间依据逐行不同：一单里两个盒子可能材质、工艺、图纸都不一样，
                     // 所以显示在明细行上，而不是单头一栏。
-                    title: '车间依据',
+                    title: (
+                      <span className="crm-help-label">
+                        车间依据
+                        <HelpTip forLabel="车间依据" text="做这件样品时交给车间的依据：材质、工艺和图纸版本。同一单里不同明细可能不一样。" />
+                      </span>
+                    ),
                     render: (_: unknown, row: SampleItem) => {
                       const spec = [row.material, row.craft].filter(Boolean).join(' / ')
                       if (!row.drawing_version) return spec || '-'
                       return spec ? `${spec}（图纸 ${row.drawing_version}）` : `图纸 ${row.drawing_version}`
                     },
                   },
-                  { title: '本次备注', dataIndex: 'remark', render: (v: string | null, row: SampleRequestRow['items'][number]) => <div>{v || '-'}{row.source_snapshot && (v || '') !== (row.source_snapshot.remark || '') && <div style={{ fontSize: 12 }}>原备注：{row.source_snapshot.remark || '未记录'}</div>}</div> },
-                  { title: '本次规格', dataIndex: 'specification', render: (v: string | null, row: SampleRequestRow['items'][number]) => <div>{v || '-'}{row.source_snapshot && v !== row.source_snapshot.specification && <div style={{ fontSize: 12 }}>原规格：{row.source_snapshot.specification || '未记录'}</div>}</div> },
                   // 已寄样/已签收不给改：后端也会拒，这里不显示入口省得点了才报错
-                  ...(canManage && !['shipped', 'signed'].includes(detail.status)
+                  ...(canUpdateSample && !['shipped', 'signed'].includes(detail.status)
                     ? [
                         {
                           title: '操作',
@@ -1082,8 +1290,8 @@ export default function SampleListPage() {
                     : []),
                 ]}
               />
-              {canManage && !['shipped', 'signed'].includes(detail.status) && (
-                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+              {canUpdateSample && !['shipped', 'signed'].includes(detail.status) && (
+                <div className="sample-add-item">
                   {/* 追加明细同样只用**一个框**（与上面新建时一致，
                       2026-10-16 主人：「我不明白为什么还要选择这个」） */}
                   <SampleProductName
@@ -1092,7 +1300,7 @@ export default function SampleListPage() {
                     onChange={(fields) => setNewItem((current) => ({ ...current, ...fields }))}
                   />
                   <Input
-                    style={{ width: 96 }}
+                    aria-label="新增打样数量"
                     placeholder="打样数量"
                     value={newItem.quantity}
                     onChange={(value) => setNewItem({ ...newItem, quantity: value })}
@@ -1105,8 +1313,8 @@ export default function SampleListPage() {
                     loading={addItemMutation.isPending}
                     onClick={() => addItemMutation.mutate()}
                   >
-  添加
-</GuardedButton>
+                    添加
+                  </GuardedButton>
                 </div>
               )}
             </div>
@@ -1137,17 +1345,22 @@ export default function SampleListPage() {
               </div>
             )}
 
-            {canManage && <Button theme="outline" type="primary" onClick={() => setOaTarget(detail.id)}>同序 OA 打样申请 / 查看进度</Button>}
+            {canManage && nextStep?.action !== 'oa' && (
+              <div style={{ display: 'flex' }}>
+                <Button theme="borderless" size="small" style={{ alignSelf: 'flex-start' }}
+                  onClick={() => setOaTarget(detail.id)}>查看同序 OA 记录</Button>
+              </div>
+            )}
             {/* 动作区不再整块挂在「同序 OA 已提交」上：approve/reject 那一组
                 自己带 `!dingtalk_oa` 判据，但这之后的制作 / 寄样 / 签收是**业务事实登记**，
                 跟审批走哪条通道无关。原来 OA 提交过的单子获批后整块消失，
                 详情里只剩「查看进度」—— 下一步没入口。 */}
             {canManage && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div ref={workActionsRef} tabIndex={-1} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 {/* 待审批时是「批准 / 拒绝」；已驳回时给两条纠错的路 ——
                     主管改判（上次驳错了）、跟单原样重提（认为驳回理由不成立）。
                     这两条是不同角色在办事，缺哪条都会卡住那一半人。 */}
-                {(detail.status === 'pending' || detail.status === 'rejected') && !((detail.source_context as unknown as Record<string, unknown> | null)?.dingtalk_oa) && (
+                {canUpdateSample && (detail.status === 'pending' || detail.status === 'rejected') && !((detail.source_context as unknown as Record<string, unknown> | null)?.dingtalk_oa) && (
                   <>
                     {detail.status === 'pending' && (
                       <Input
@@ -1189,30 +1402,27 @@ export default function SampleListPage() {
                     先「登记制作完成」（车间做完这一笔事实），登记过之后才轮到「登记寄样」。
                     原来寄样按钮和制作登记一起出现，可以跳过制作直接寄样，
                     记录里就少了一笔"什么时候做完的"，后续追质量问题没有锚点。 */}
-                {detail.status === 'approved' && (detail.made_at ? (
+                {canUpdateSample && detail.status === 'approved' && (detail.made_at ? (
                   <>
                     <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
                       已登记制作完成，下一步登记寄样（承运商 / 单号 / 运费）。
                     </div>
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      <Input
-                        placeholder="承运商"
-                        value={shipForm.carrier}
-                        onChange={(value) => setShipForm({ ...shipForm, carrier: value })}
-                      />
-                      <Input
-                        placeholder="快递单号"
-                        value={shipForm.tracking_no}
-                        onChange={(value) => setShipForm({ ...shipForm, tracking_no: value })}
-                      />
-                      <Input
-                        style={{ width: 100 }}
-                        placeholder="运费"
-                        value={shipForm.shipping_fee}
-                        onChange={(value) => setShipForm({ ...shipForm, shipping_fee: value })}
-                      />
+                    <div className="sample-shipping-fields">
+                      <label htmlFor="sample-carrier">承运商
+                        <Input id="sample-carrier" placeholder="承运商" value={shipForm.carrier}
+                          onChange={(value) => setShipForm({ ...shipForm, carrier: value })} />
+                      </label>
+                      <label htmlFor="sample-tracking">快递单号
+                        <Input id="sample-tracking" placeholder="快递单号" value={shipForm.tracking_no}
+                          onChange={(value) => setShipForm({ ...shipForm, tracking_no: value })} />
+                      </label>
+                      <label htmlFor="sample-shipping-fee">运费（元）
+                        <Input id="sample-shipping-fee" inputMode="decimal" placeholder="留空按 0 元"
+                          value={shipForm.shipping_fee}
+                          onChange={(value) => setShipForm({ ...shipForm, shipping_fee: value })} />
+                      </label>
                     </div>
-                    <Popconfirm title="确认登记寄样？" onConfirm={() => shipMutation.mutate()}>
+                    <Popconfirm title="确认登记寄样？" content="请在样品实际寄出后登记。客户收到样品时，再登记签收。" onConfirm={() => shipMutation.mutate()}>
                       <Button theme="outline" type="primary" loading={shipMutation.isPending}>登记寄样</Button>
                     </Popconfirm>
                   </>
@@ -1236,13 +1446,15 @@ export default function SampleListPage() {
                   </>
                 ))}
 
-                {detail.status === 'shipped' && (
-                  <Popconfirm title="确认登记客户已签收？" onConfirm={() => signMutation.mutate()}>
-                    <Button theme="outline" type="primary" loading={signMutation.isPending}>登记签收</Button>
+                {/* 页顶「下一步」条上的「去登记签收」只是把视线带到这一段，
+                    真正的登记动作在这里执行 —— 所以按钮必须留着。 */}
+                {canUpdateSample && detail.status === 'shipped' && (
+                  <Popconfirm title="确认登记客户已签收？" content="这里只记录客户收到样品。客户接受或未通过，请在「客户确认」登记。" onConfirm={() => signMutation.mutate()}>
+                    <Button theme="borderless" type="primary" style={{ alignSelf: 'flex-start' }} loading={signMutation.isPending}>登记签收</Button>
                   </Popconfirm>
                 )}
 
-                {['shipped', 'signed'].includes(detail.status) && (
+                {canUpdateSample && ['shipped', 'signed'].includes(detail.status) && (
                   <>
                     <TextArea
                       placeholder="客户反馈"
@@ -1253,10 +1465,16 @@ export default function SampleListPage() {
                     <Button
                       disabled={!feedback.trim()}
                       loading={feedbackMutation.isPending}
+                      style={{ alignSelf: 'flex-start' }}
                       onClick={() => feedbackMutation.mutate()}
                     >
                       登记反馈
                     </Button>
+                    {!feedback.trim() && (
+                      <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
+                        先在上面写一句客户怎么说，再登记反馈。
+                      </div>
+                    )}
                   </>
                 )}
 
@@ -1277,7 +1495,7 @@ export default function SampleListPage() {
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
                     <div style={{ fontWeight: 600, flex: 1 }}>生产打样资料</div>
-                    {canManage && !prodEditing && (
+                    {canUpdateSample && !prodEditing && (
                       <a
                         onClick={() => {
                           setProdForm({
@@ -1532,7 +1750,7 @@ export default function SampleListPage() {
                       原地改会被后端拒绝（同一行上留着旧制作时间却写新资料，和已做出来的
                       实物对不上）。这里开新修订版：原版连同制作/寄送事实冻结保留。
                       已被取代的那一版不再给入口——它已经冻结只读。 */}
-                  {canManage && !detail.superseded_by
+                  {canUpdateSample
                     && (detail.made_at || detail.status === 'shipped'
                         || detail.status === 'signed') && (
                     <Popconfirm title="确认开新修订版？原版将冻结只读。" onConfirm={() => reviseMutation.mutate()}>
@@ -1544,7 +1762,7 @@ export default function SampleListPage() {
                 </div>
 
                 {/* 客户确认：签收是物流事实、确认是业务事实，两者分开（文档 §3.5） */}
-                <div>
+                <div ref={customerConfirmRef} tabIndex={-1}>
                   <div style={{ fontWeight: 600, marginBottom: 8 }}>客户确认</div>
                   <div style={{ fontSize: 13, color: 'var(--crm-text-2)', marginBottom: 8 }}>
                     当前：{detail.confirm_status_label}
@@ -1553,7 +1771,7 @@ export default function SampleListPage() {
                       : ''}
                     ｜客户收到样品不等于样品被接受
                   </div>
-                  {canManage && detail.status === 'signed' && detail.confirm_status === 'pending' && (
+                  {canUpdateSample && detail.status === 'signed' && detail.confirm_status === 'pending' && (
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                       <Input
                         placeholder="客户反馈（可不填）"
@@ -1625,6 +1843,9 @@ export default function SampleListPage() {
                     docType="sample_request"
                     sampleRequestId={detail.id}
                     canManage={canManage}
+                    compact
+                    emptyInline
+                    compactEmptyText="还没有生成过打样需求单 —— 点右上「生成一份」，按本次申请内容出一份 PDF。"
                   />
                 </div>
               </div>
@@ -1640,15 +1861,17 @@ export default function SampleListPage() {
           比对对象都没有；而"制作依据"这个字段后端早就存了，只是页面一直没接。 */}
       <Modal
         width={520}
+        style={{ maxWidth: 'calc(100vw - 32px)' }}
         title="登记制作完成"
         visible={madeModal}
         onCancel={() => setMadeModal(false)}
         onOk={() => madeMutation.mutate()}
         confirmLoading={madeMutation.isPending}
-        okText="登记"
+        okText="确认制作完成"
         cancelText="取消"
       >
         <div style={{ display: 'grid', gap: 12 }}>
+          <p className="workflow-guide">请在样品实际制作完成后登记。保存后可填写寄样信息。</p>
           <div>
             <div style={{ fontSize: 12, color: 'var(--crm-text-2)', marginBottom: 4 }}>
               制作说明（可选）
@@ -1665,8 +1888,7 @@ export default function SampleListPage() {
               这次照哪几份文件做的？
             </div>
             <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 6 }}>
-              只能选「挂在这张打样单上的附件」（后端会校验）。选中的会连同文件校验值
-              一起存成快照，事后可核对"就是这一份"。不选也能登记，但将来对不了账。
+              从本单附件里选取实际使用的图纸或确认件，便于日后核对。也可以不选，直接登记制作完成。
             </div>
             {madeFilesQuery.isLoading && (
               <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>正在读附件…</div>

@@ -21,6 +21,7 @@ from datetime import timedelta
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.draft_visibility import private_draft
 from app.core.timebase import now_business
 
 STAGE_UNDERSTANDING = "understanding"
@@ -106,6 +107,7 @@ async def stage_counts_map(
     sample_rows = await session.execute(
         select(SampleRequest.customer_id, func.count())
         .where(
+            ~private_draft(SampleRequest),
             SampleRequest.customer_id.in_(customer_ids),
             SampleRequest.status != "rejected",
             # 已软删的不算数（2026-10-15 加软删）：那张单已经被当作没建过

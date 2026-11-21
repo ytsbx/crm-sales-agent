@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import BigInteger, Text, cast, func, or_, select, update
+from sqlalchemy import BigInteger, Text, cast, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -17,6 +17,7 @@ from app.core.response import ok, page_data, paginate
 from app.core.trade_mode import ensure_currency_allowed
 from app.modules.customer.model import Customer
 from app.modules.pricing import service as svc
+from app.modules.pricing.logistics import rate_specificity
 from app.modules.pricing.model import (
     CustomerPriceRule,
     ExchangeRate,
@@ -998,6 +999,28 @@ async def list_logistics_rates(
     return ok([svc.serialize_logistics_rate(rate) for rate in rows])
 
 
+async def _lock_logistics_rate_changes(session: AsyncSession) -> None:
+    if svc._session_dialect(session) == "postgresql":
+        await session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended('crm:logistics-rates', 0))"))
+
+
+async def _reject_logistics_rate_conflict(session: AsyncSession, rate: LogisticsRate) -> None:
+    if rate.status != "active":
+        return
+    rows = (await session.execute(select(LogisticsRate).where(
+        LogisticsRate.status == "active", LogisticsRate.provider == rate.provider,
+        LogisticsRate.shipping_method == rate.shipping_method,
+    ).order_by(LogisticsRate.id))).scalars().all()
+    for other in rows:
+        if other.id == rate.id or rate_specificity(other) != rate_specificity(rate):
+            continue
+        origin_overlaps = None in (rate.origin_region, other.origin_region) or rate.origin_region == other.origin_region
+        destination_overlaps = None in (rate.destination_region, other.destination_region) or rate.destination_region == other.destination_region
+        if origin_overlaps and destination_overlaps:
+            raise AppError(ErrorCode.DUPLICATE,
+                           f"同一承运商和运输方式的路线与已启用费率（编号 {other.id}）重叠，请修改路线或先停用原费率。", 409)
+
+
 @router.post("/logistics/rates")
 async def create_logistics_rate(
     payload: LogisticsRateCreate,
@@ -1005,7 +1028,9 @@ async def create_logistics_rate(
     user: CurrentUser = Depends(require_permission("price:manage")),
     session: AsyncSession = Depends(get_db),
 ):
+    await _lock_logistics_rate_changes(session)
     rate = LogisticsRate(**payload.model_dump(), status="active")
+    await _reject_logistics_rate_conflict(session, rate)
     session.add(rate)
     await session.flush()
     await write_audit(
@@ -1040,11 +1065,18 @@ async def update_logistics_rate(
     （`logistics.rate_query`），所以"先停掉别再参与核价、数据留着"是可行做法，
     不必非得删。
     """
+    await _lock_logistics_rate_changes(session)
     rate = await session.get(LogisticsRate, rate_id)
     if rate is None:
         raise AppError(ErrorCode.NOT_FOUND, "费率不存在", 404)
     before = svc.serialize_logistics_rate(rate)
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    await _reject_logistics_rate_conflict(session, LogisticsRate(**{
+        "id": rate.id, "status": rate.status,
+        **{field: getattr(rate, field) for field in LogisticsRateCreate.model_fields},
+        **changes,
+    }))
+    for field, value in changes.items():
         setattr(rate, field, value)
     await session.flush()
     await write_audit(
@@ -1191,7 +1223,7 @@ def _sanitize_pricing_result(result: dict, user: CurrentUser) -> dict:
     # 原来的脱敏只扫了顶层键，漏掉整个 inputs 子字典。
     inputs = result.get("inputs")
     if isinstance(inputs, dict):
-        for key in ("target_profit_price", "target_profit_amount"):
+        for key in ("target_profit_price", "target_profit_amount", "profit_target_met"):
             if key in inputs:
                 inputs[key] = None
         # `base_cost` 本身若被带出来，同样直接是成本
@@ -1312,7 +1344,7 @@ async def calculate(
         customer_id=payload.customer_id,
         logistics_cost=payload.logistics_cost,
         target_margin=payload.target_margin,
-        target_profit_amount=payload.target_profit_amount,
+        target_profit_amount=payload.target_profit_amount if user.has("price:manage") else None,
         quoted_price=payload.quoted_price,
         role_codes=user.roles,
         currency=currency,
@@ -1349,7 +1381,7 @@ async def batch_calculate(
                     customer_id=item.customer_id,
                     logistics_cost=item.logistics_cost,
                     target_margin=item.target_margin,
-                    target_profit_amount=item.target_profit_amount,
+                    target_profit_amount=item.target_profit_amount if user.has("price:manage") else None,
                     quoted_price=item.quoted_price,
                     role_codes=user.roles,
                     currency=currency,
@@ -1391,7 +1423,7 @@ async def check_price_permission(
         customer_id=payload.customer_id,
         logistics_cost=payload.logistics_cost,
         target_margin=payload.target_margin,
-        target_profit_amount=payload.target_profit_amount,
+        target_profit_amount=payload.target_profit_amount if user.has("price:manage") else None,
         quoted_price=payload.quoted_price,
         role_codes=user.roles,
         # 币种走固定白名单（第七批 P2-5）：这个入口从前**没接** —— 实测传 USD + 汇率 7
@@ -1477,7 +1509,7 @@ async def simulate_pricing(
         customer_id=base.customer_id,
         logistics_cost=base.logistics_cost,
         target_margin=base.target_margin,
-        target_profit_amount=base.target_profit_amount,
+        target_profit_amount=base.target_profit_amount if user.has("price:manage") else None,
         role_codes=user.roles,
         # 同上（第七批 P2-5）：simulate 从前也没接白名单，实测 USD + 汇率 7 成功返回。
         currency=await ensure_currency_allowed(session, base.currency),
@@ -1521,6 +1553,7 @@ async def simulate_pricing(
             "按利润率反推候选价需要成本，只有价格管理员能用；"
             "你仍可以直接传想报的成交价（candidates），系统会算出它赚不赚、要不要审批"
         )
+    _sanitize_pricing_result(baseline, user)
     if not candidates and not blocked_margin_simulation:
         # 三个关键点位：建议价、最低可自主定价、公司保护价
         for anchor in (
@@ -1531,6 +1564,8 @@ async def simulate_pricing(
             value = Decimal(str(anchor)) if anchor is not None else None
             if value is not None and value > 0:
                 candidates.append(value.quantize(quantize, rounding=ROUND_HALF_UP))
+        if not candidates and not user.has("price:manage"):
+            blocked_reason = "当前没有可用的建议价，请填写想试算的候选报价"
 
     # 去重并保序，避免同一档位算两遍
     seen: set[str] = set()
@@ -1574,8 +1609,6 @@ async def simulate_pricing(
         for row in rows:
             row["profit"] = None
             row["profit_rate"] = None
-    _sanitize_pricing_result(baseline, user)
-
     return ok(
         {
             "sku": baseline["sku"],
@@ -1695,6 +1728,7 @@ async def _scope_pricing_history(session, user, stmt, audit_model):
     历史仅保留给全量价格管理员；这不能成为查看仍存在的越权原单的通道。
     """
     from app.core.data_scope import scoped_owner_ids
+    from app.core.draft_visibility import draft_scope, private_draft
     from app.modules.quote.model import Quote, QuoteItem, QuoteVersion
 
     owners = await scoped_owner_ids(session, user)
@@ -1719,7 +1753,10 @@ async def _scope_pricing_history(session, user, stmt, audit_model):
             condition = or_(condition, ~existing)
         return (audit_model.business_type == kind) & condition
 
-    quote_scope = [] if owners is None else [Quote.owner_id.in_(owners)]
+    quote_scope = draft_scope(Quote, user.id, Quote.owner_id.in_(owners) if owners is not None else None)
+    version_scope = or_(~private_draft(QuoteVersion), func.coalesce(
+        QuoteVersion.created_by, Quote.created_by, Quote.owner_id,
+    ) == user.id)
     quote_source = select(Quote.id).where(
         Quote.id == audit_model.business_id, Quote.deleted_at.is_(None)
     )
@@ -1734,8 +1771,8 @@ async def _scope_pricing_history(session, user, stmt, audit_model):
         or_(Customer.owner_id.is_(None), Customer.owner_id.in_(owners))
     ]
     conditions = [
-        allow("quote", quote_source, quote_scope, is_admin or user.has("quote:view")),
-        allow("quote_item", item_source, quote_scope, is_admin or user.has("quote:view")),
+        allow("quote", quote_source, [quote_scope], is_admin or user.has("quote:view")),
+        allow("quote_item", item_source, [quote_scope, version_scope], is_admin or user.has("quote:view")),
         allow("customer_price_rule", customer_source, customer_scope,
               is_admin or user.has("customer:view")),
     ]

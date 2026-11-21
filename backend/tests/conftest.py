@@ -67,6 +67,9 @@ class SyncSessionAsAsync:
     def __init__(self, session):
         self._session = session
 
+    def get_bind(self):
+        return self._session.get_bind()
+
     async def execute(self, stmt, *args, **kwargs):
         return self._session.execute(stmt, *args, **kwargs)
 
@@ -184,6 +187,13 @@ def _disable_self_oa_business_templates(monkeypatch):
     from app.core.config import settings
     monkeypatch.setattr(settings, "oa_sample_template_id", "")
     monkeypatch.setattr(settings, "oa_inquiry_template_id", "")
+    # 2026-11-21：本地 `.env` 切到同序 8791 后多了模板 code，单测会误走自研 OA；
+    # 三个 code 一并清掉，测试不再依赖本机 OA 配置。
+    monkeypatch.setattr(settings, "oa_sample_template_code", "")
+    monkeypatch.setattr(settings, "oa_inquiry_template_code", "")
+    monkeypatch.setattr(settings, "oa_contract_template_code", "")
+    # 外部单据的 external_ref 前缀也一样取自本机 `.env`；测试不依赖机器配置。
+    monkeypatch.setattr(settings, "oa_external_ref_namespace", "")
 
 
 @pytest.fixture()

@@ -373,14 +373,18 @@ export function donutChartOption({
       subtext: centerLabel,
       left: 'center',
       top: '38%',
-      textAlign: 'center',
+      /* **不要再加 textAlign: 'center'**：left:'center' 已经把整个 title 摆到中线，
+         再叠一层文本居中会把文字整体左移半个自身宽度 —— 「84」这种两字看不出，
+         「¥30万」就明显压到环上、左半个字符出界（2026-11-20 实拍数据分析页）。 */
       textStyle: { color: tokens.text, fontSize: centerSize, fontWeight: 500 },
       subtextStyle: { color: tokens.textFaint, fontSize: 12 },
     },
     series: [
       {
         type: 'pie',
-        radius: ['62%', '88%'],
+        /* 内径 62% → 66%：环再细一点，中间放 `¥11,080` 这种 7 个字时
+           数字两侧才不至于贴到环内壁（2026-11-19 实拍贴边）。 */
+        radius: ['66%', '88%'],
         center: ['50%', '50%'],
         avoidLabelOverlap: true,
         label: { show: false },
@@ -470,7 +474,15 @@ export function rankBarChartOption({
   return {
     grid: { left: 6, right: 56, top: 6, bottom: 2, containLabel: true },
     tooltip: { trigger: 'axis', ...tooltipFor(tokens, {}, format) },
-    xAxis: valueAxis(tokens, axisFormat ?? plainNumber, false),
+    /* 横向条形图**不要 X 轴刻度**：每根条右边已经印着数值（¥31 / 24 个），
+       轴上的刻度纯属重复；卡宽只有 280 时四五个「¥20」会挤成一团墨疙瘩
+       （2026-11-20 数据分析页「平均报价」实拍：轴标签糊成「¥20¥40¥60¥80」）。 */
+    xAxis: {
+      ...valueAxis(tokens, axisFormat ?? plainNumber, false),
+      axisLabel: { show: false },
+      axisLine: { show: false },
+      axisTick: { show: false },
+    },
     yAxis: {
       type: 'category',
       data: ordered.map((item) => item.name),

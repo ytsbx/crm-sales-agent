@@ -67,7 +67,7 @@
 | 动作 | 结果 |
 | --- | --- |
 | `POST /auth/logout` | **只作废本次登录**。同一个令牌再来（任意接口或 `/auth/refresh`）一律 `40101`；同账号在别处的登录不受影响 |
-| `POST /auth/refresh` | 属于**同一会话**（不新建）。会话已失效时同样 `40101` —— 失效的凭据既不能访问、也不能续期 |
+| `POST /auth/refresh` | 保留同一会话并更换当前凭据。换发成功后，旧凭据不能访问接口或再次续期。会话从首次登录起默认最多有效 7 天，可用 `LOGIN_SESSION_MAX_DAYS` 配置，到期后须重新登录。 |
 | 改 / 重置密码（`PATCH /users/{id}` 带 `password`） | 与写新密码**同一笔事务**：该账号**全部**旧会话一起失效（含操作者自己的当前会话），别的账号不受影响。**并且与登录互斥在同一把账号行锁上**（2026-10-08 复审 10.12）：登录一进门就锁住账号行、在锁内重读密码哈希，"正在途中的登录"（密码已校验过、会话还没写进库）不会再漏过去——只"作废此刻已有的会话"挡不住它，那条会话还不存在 |
 | 服务重启 / 多进程 | 失效结果依然有效（判据只存库，无进程内缓存） |
 
@@ -362,6 +362,8 @@ GET `/customers/export` 将 `purpose` 与 `purpose_note` 放在 query。两种�
 - `GET /integrations/wecom/sync-jobs/{id}`
 - `POST /webhooks/wecom/events`
 
+在企业微信后台登记 CRM 公网 HTTPS 回调地址 `/api/v1/webhooks/wecom/events`，并配置企业 ID、回调 Token、EncodingAESKey 和具有客户联系权限的密钥。GET 用于验证地址，POST 验签后将事件放入同步任务队列。后台每分钟处理新增、编辑及删除跟进关系事件，只同步受影响的企微联系人和跟进关系。失败最多尝试五次，可在同步任务列表查看结果。导入客户中心仍需人工确认。
+
 ---
 
 # 11. Opportunity
@@ -652,7 +654,7 @@ GET `/customers/export` 将 `purpose` 与 `purpose_note` 放在 query。两种�
 
 ## 钉钉 OA 开发总闸
 
-- `POST /inquiries/{id}/oa-approval`
+- `POST /inquiries/{id}/oa-approval`：配置 `OA_INQUIRY_TEMPLATE_ID` 后改走自研 OA（首节点刘帅帅办理，`quote_files`/`quote_note` 由办理人补填），否则保持原钉钉路径。
 - `GET /inquiries/{id}/oa-approvals`
 - `POST /oa-instances/{id}/resolve`
 - `POST /dingtalk/oa-sync`
@@ -1044,6 +1046,8 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 - `POST /agent/actions/{id}/reject`
 - `POST /agent/actions/{id}/cancel`
 
+待确认操作自创建起满 24 小时后变为 `expired`，仍可从会话历史或 `GET /agent/actions?status=expired` 查看。确认接口会提示重新发起，原操作不会执行。
+
 ## Execution
 
 - `GET /agent/executions`
@@ -1355,6 +1359,7 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 - `GET /orders/{order_id}/finance-summary`：财务汇总。需要 `payment:view`。
 - `POST /orders/{order_id}/receivables`：新增手动应收计划。需要 `payment:manage`。**币种强制继承订单币种**，不接受调用方指定。
 - `POST /orders/{order_id}/receivables/generate`：按比例生成应收计划（如 30% 定金 + 70% 尾款）。需要 `payment:manage`。**每一期的币种同样继承订单币种**——第十一批 11.1：这条路径原先不写 `currency`、落到列默认的 CNY，于是美元订单分出来的几期全成了人民币（"金额看着对、代表的钱已经不同"），而回款登记又是跟应收节点币种走的，错会一路传到回款、直到跨币种校验也形同虚设。该订单**已有任何应收计划**时拒绝生成（要重排请先清掉原计划）；带 `request_key` 的重复提交回放第一次结果，不生成第二组。末期金额用"总额 − 前面各期之和"，保证各期合计严格等于订单金额。
+  三期及以上须通过 `due_dates` 提供每期的到期日。`names` 可省略，系统按「第 1 期、第 2 期」顺序命名。一两期继续支持前两期的单独日期和名称字段。
 - `GET /orders/{order_id}/shipments`：批次与未发量——跟单看"承诺/事实"分开的数字。需要 `order:view`。
 - `POST /orders/{order_id}/shipments`：新建发货批次（计划）。需要 `order:manage`。
 - `POST /orders/{order_id}/shipments/{batch_id}/ship`：登记实发。需要 `order:manage`。只推进订单到「已发货」——整单完成由**未发量闸门**把关（场景13）。
@@ -1575,9 +1580,9 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
   - 驳回/暂缓也要填 `note`（谁、为什么）；
   - **同名客户中途换过人**（`owner_id` 与提名时不一致）→ 409，让主管重新看，避免按过时依据回收。
 - `POST /public-pool/recycle-candidates/batch-decide`：批量复核。需要 `customer:pool_review` + 逐条数据范围校验。**请求体一次带齐** `{candidate_ids: number[], decision, note?, early?}`（返修单第六批第 10 条：此前 id 走查询参数、决定走请求体，与前端正好反着，从未调通）。**逐条处理、逐条报结果**（`{done: [{candidate_id, status}], failed: [{candidate_id, reason, code}]}`）：被拦下的不影响其余，且**不会被执行**，仍留在待复核里。
-- `POST /public-pool/recycle-candidates/{id}/restore`：**恢复**——把被回收的客户还给原负责人。需要配置项 `pool_recycle_restore_permission` 指定的权限（默认 `customer:assign`，即销售主管；管理员不受限；**普通业务员不能恢复**），并**校验客户数据范围**——客户进了公海虽然人人可见，也不能因此让别的团队的主管捞走。
+- `POST /public-pool/recycle-candidates/{id}/restore` 把被回收的客户还给原负责人。需要角色权限「公海回收复核」和「恢复公海客户」（`customer:pool_review`、`customer:pool_restore`）。管理员沿用角色权限豁免，后端仍按原负责人校验客户数据范围。
   三条纪律：**保留原回收记录**（状态转 `restored`，不删）；客户**已被别人合法领取**时报 **409** 并记下冲突（`restore_conflict_owner_id`），**绝不静默覆盖**；原负责人已停用时 422（改派给别人）。
-- `PATCH /settings`（回收相关配置）：需要 `settings:manage`。可改 `pool_recycle_notice_days`（回收预告期，天）、`pool_recycle_defer_days`（主管暂缓等待期，天）、`pool_recycle_restore_permission`（恢复所需权限码）。
+- `PATCH /settings` 的回收配置需要 `settings:manage`。可改回收预告期（`pool_recycle_notice_days`）、主管暂缓等待期（`pool_recycle_defer_days`）和履约保护天数（`pool_recycle_max_protect_days`）。恢复授权在角色设置中管理。
   **校验取值**（天数须为 0–365 的整数，权限码必须在权限表里真实存在），**审计记下修改前后值与修改人/时间**。
   **改动只对新提名的候选生效**：候选上各自存着生成时的天数与绝对到期时间，不追溯改期（追加口径 1）。`GET /settings` 会把"代码默认值里配了、库里还没落行"的项一并返回并标 `is_default=true`，界面上据此标注"当前为开发默认值"。
   三条纪律：**保留原回收记录**（状态转 `restored`，不删）；客户**已被别人合法领取**时报 **409** 并记下冲突（`restore_conflict_owner_id`），**绝不静默覆盖**；原负责人已停用时 422（改派给别人）。
@@ -1681,6 +1686,8 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 - `POST /integrations/wecom/customer-import`：执行企微客户导入。
 
 ### 打样与钉钉审批
+
+> 2026-11-14：配置 `OA_SAMPLE_TEMPLATE_ID` 后，打样 `GET /dingtalk` / `POST /dingtalk-submit` 仍沿用原路径但切换为自研 OA（9 字段、周星聿+刘帅帅会签）；未配置时保持钉钉。
 
 - `GET /samples/{sample_id}/application-form`：下载打样申请单。
 - `GET /samples/{sample_id}/dingtalk`：读取打样钉钉审批状态。

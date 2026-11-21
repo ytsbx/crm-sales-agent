@@ -150,12 +150,12 @@ async def reserve(
         result_type=result_type,
         created_at=datetime.now(UTC),
     )
-    session.add(row)
     try:
-        await session.flush()
+        async with session.begin_nested():
+            session.add(row)
+            await session.flush()
     except IntegrityError:
-        # 并发：另一个请求刚插进去。回到 savepoint 之后重新读一次再判定。
-        await session.rollback()
+        # 只撤销本次占位，保留调用方整个事务中此前的写入和锁。
         existing = (await session.execute(stmt)).scalars().first()
         if existing is None:  # pragma: no cover - 只可能在极端时序下出现
             raise AppError(

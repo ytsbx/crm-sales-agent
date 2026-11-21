@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +24,134 @@ from app.modules.oa import client
 
 PROVIDER = "self_oa"
 OA_TYPE = "contract"
+
+
+class ApprovalUploads:
+    def __init__(self):
+        self.files = {}
+
+    async def stage(self, owner, name, content, mime=None):
+        key = f"crm-staged-{uuid4().hex}"
+        self.files[key] = (owner, name, content, mime)
+        return {"id": key}
+
+    async def fill(self, payload):
+        ids = {}
+        for key, (owner, name, content, mime) in self.files.items():
+            try:
+                data = content.read_bytes() if isinstance(content, Path) else content
+            except OSError as exc:
+                raise client.OaError(f"无法读取附件「{name}」，请重新上传") from exc
+            uploaded = await client.upload_file(owner, name, data, mime)
+            if not isinstance(uploaded, dict) or not uploaded.get("id"):
+                raise client.OaError(f"附件「{name}」未返回上传编号，请稍后重试")
+            ids[key] = str(uploaded["id"])
+
+        def replace(value):
+            if isinstance(value, dict):
+                return {key: replace(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [replace(item) for item in value]
+            return ids.get(value, value) if isinstance(value, str) else value
+
+        return replace(payload)
+
+
+async def send_prepared_approval(session, business, row, payload, uploads: ApprovalUploads):
+    """Commit the reservation before crossing the network. Reacquire locks before applying the receipt."""
+    model, business_id, row_id, attempt = type(business), business.id, row.id, row.attempt_count
+    business_status = business.status
+    superseded_at = getattr(business, "superseded_at", None)
+    await session.commit()
+
+    async def lock_receipt():
+        fresh_business = await session.get(model, business_id, with_for_update=True, populate_existing=True)
+        current = await session.get(OaInstance, row_id, with_for_update=True, populate_existing=True)
+        if current is None or current.status != "submitting" or current.attempt_count != attempt:
+            raise AppError(ErrorCode.VERSION_CONFLICT, "审批发起记录已变化，请到 OA 核对结果", 409)
+        return fresh_business, current
+
+    sending = False
+    try:
+        payload = await uploads.fill(payload)
+        fresh_business, current = await lock_receipt()
+        if (fresh_business is None or fresh_business.deleted_at is not None
+                or fresh_business.status != business_status
+                or getattr(fresh_business, "superseded_at", None) != superseded_at):
+            current.status = "not_sent"
+            current.error = "上传期间原单状态已变化，本次未发起 OA"
+            await session.commit()
+            raise AppError(ErrorCode.STATUS_NOT_ALLOWED, current.error, 409)
+        current.form_snapshot = payload["fields"]
+        current.last_attempt_at = datetime.now(UTC)
+        await session.commit()
+        sending = True
+        summary = await client.create_approval(payload)
+        if not isinstance(summary, dict) or not summary.get("id"):
+            raise client.OaUnknownOutcome("OA 未返回审批单编号")
+        if summary.get("external_ref") not in (None, payload["external_ref"]):
+            raise client.OaUnknownOutcome("OA 返回的审批单与本轮编号不匹配")
+    except client.OaError as exc:
+        _, current = await lock_receipt()
+        unknown = sending and isinstance(exc, client.OaUnknownOutcome)
+        current.status = "needs_review" if unknown else "not_sent" if isinstance(exc, client.OaNotConfigured) else "failed"
+        current.error = exc.message
+        await session.commit()
+        if unknown:
+            raise AppError(ErrorCode.EXTERNAL_ERROR, "OA 发起结果未知，请到 OA 核对后再处理", 502) from exc
+        if isinstance(exc, client.OaNotConfigured):
+            raise AppError(ErrorCode.PARAM_ERROR, exc.message, 422) from exc
+        raise AppError(ErrorCode.EXTERNAL_ERROR, f"OA 发起失败：{exc.message}", 502) from exc
+    fresh_business, current = await lock_receipt()
+    return fresh_business, current, summary
+
+
+async def review_stuck_submission(session, row):
+    from app.modules.dingtalk.service import demote_stuck_submitting
+
+    if row is not None and demote_stuck_submitting(row):
+        await session.commit()
+        return True
+    return False
+
+
+async def find_receipt_for_adoption(row: OaInstance, instance_id: str | None) -> dict:
+    try:
+        instance = str(UUID((instance_id or "").strip()))
+    except ValueError as exc:
+        raise AppError(ErrorCode.PARAM_ERROR, "请填写同序 OA 审批编号", 422) from exc
+    try:
+        summary = await client.get_approval(instance)
+    except client.OaError as exc:
+        raise AppError(ErrorCode.EXTERNAL_ERROR, "暂时无法核对同序 OA 审批，请稍后重试", 502) from exc
+    if (not isinstance(summary, dict) or summary.get("external_ref") != row.idempotency_key
+            or str(summary.get("id")) != instance):
+        raise AppError(ErrorCode.PARAM_ERROR, "该同序 OA 审批与这轮发起记录不匹配", 422)
+    return summary
+
+
+async def apply_adopted_receipt(session, row: OaInstance, summary: dict):
+    from app.modules.dingtalk.service import get_by_business_key
+
+    latest = await get_by_business_key(
+        session, inquiry_id=row.inquiry_id, inquiry_version=row.inquiry_version, oa_type=row.oa_type,
+    )
+    if latest is not None and latest.id != row.id:
+        row.status = _map_status(summary.get("status"))
+        row.result = summary
+        row.synced_at = row.updated_at = datetime.now(UTC)
+        row.error = None
+        await session.flush()
+        return row
+    if row.oa_type == "sample":
+        from app.modules.oa.sample import _apply_sample_summary
+
+        return await _apply_sample_summary(session, row, summary)
+    if row.oa_type == "inquiry":
+        from app.modules.oa.inquiry import apply_inquiry_summary
+
+        return await apply_inquiry_summary(session, row, summary)
+    return await apply_contract_summary(session, row, summary)
 
 #: OA 状态 → CRM 口径（与钉钉那套翻译只在这里发生，前端只认 CRM 的五个词）。
 _STATUS_MAP = {
@@ -119,13 +249,16 @@ async def _build_payload(
     our_company: str,
     counterparty_name: str,
     extra_fields: dict | None = None,
+    uploads: ApprovalUploads | None = None,
+    prepared_template: dict | None = None,
 ) -> dict:
     template_id, template_code = _template_config()
     customer = await session.get(Customer, doc.customer_id)
     if customer is None or customer.deleted_at is not None:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "合同所属客户不存在或已删除", 422)
     record, data = await _load_contract_file(session, doc)
-    attachment = await client.upload_file(
+    upload = uploads.stage if uploads is not None else client.upload_file
+    attachment = await upload(
         user.dingtalk_userid,
         record.file_name,
         data,
@@ -175,6 +308,10 @@ async def _build_payload(
         "contract_mine_info": [{"mine_company_name": our_company}],
         "contract_opposite_info": [{"opposite_company_name": counterparty_name}],
     }
+    # The supplied OA template has no 月结协议 option; file category is optional.
+    from app.modules.oa.contract_form import SOURCE_CODE
+    if doc.doc_type == 'monthly' and (prepared_template or {}).get('code', template_code) == SOURCE_CODE:
+        fields.pop("contract_classify_cascade")
     # 钉钉模板「合同总额（元）」为必填：无金额时按 0.00 发送，避免留空被拒
     fields["contract_amount"] = f"{amount:.2f}" if amount is not None else "0.00"
     # 「合同编号规则」：选择已有规则时发规则名（智能合同目前只有“系统默认规则”）
@@ -196,7 +333,9 @@ async def _build_payload(
     }
     if extra_fields:
         from app.modules.oa.contract_form import apply_extra_fields
-        await apply_extra_fields(session, user, doc, payload, extra_fields)
+        await apply_extra_fields(
+            session, user, doc, payload, extra_fields, uploads=uploads, template=prepared_template,
+        )
     if template_id:
         payload["template_id"] = template_id
     else:
@@ -214,6 +353,7 @@ async def start_contract_approval(
     our_company: str,
     counterparty_name: str,
     extra_fields: dict | None = None,
+    prepared_template: dict | None = None,
 ) -> tuple[OaInstance, str]:
     """发起合同 OA 审批，返回 (行, 给用户看的结果说明)。"""
     from app.modules.user.model import User
@@ -227,6 +367,8 @@ async def start_contract_approval(
     _template_config()
 
     latest = await latest_contract_row(session, doc.id, for_update=True)
+    if await review_stuck_submission(session, latest):
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "上一次 OA 发起结果待核对，请先到 OA 核对", 409)
     if latest is not None and latest.status in {"pending", "submitting"}:
         return latest, "这份合同已有在办 OA 审批，请查看进度，不要重复发起"
     if latest is not None and latest.status == "needs_review":
@@ -267,33 +409,14 @@ async def start_contract_approval(
         session.add(row)
         await session.flush()
 
-    try:
-        payload = await _build_payload(
-            session, doc, user, external_ref,
-            our_company=our_company, counterparty_name=counterparty_name,
-            extra_fields=extra_fields,
-        )
-        row.form_snapshot = payload.get("fields")
-        summary = await client.create_approval(payload)
-    except client.OaNotConfigured as exc:
-        row.status = "not_sent"
-        row.error = exc.message
-        await session.commit()
-        raise AppError(ErrorCode.PARAM_ERROR, exc.message, 422) from exc
-    except client.OaError as exc:
-        row.status = "failed"
-        row.error = exc.message
-        await session.commit()
-        raise AppError(ErrorCode.EXTERNAL_ERROR, f"OA 发起失败：{exc.message}", 502) from exc
-    except client.OaUnknownOutcome as exc:
-        row.status = "needs_review"
-        row.error = exc.message
-        await session.commit()
-        raise AppError(
-            ErrorCode.EXTERNAL_ERROR,
-            "OA 发起结果未知（对方可能已建单），请到 OA 按合同编号核对后再处理",
-            502,
-        ) from exc
+    uploads = ApprovalUploads()
+    payload = await _build_payload(
+        session, doc, user, external_ref,
+        our_company=our_company, counterparty_name=counterparty_name,
+        extra_fields=extra_fields, uploads=uploads, prepared_template=prepared_template,
+    )
+    doc, row, summary = await send_prepared_approval(session, doc, row, payload, uploads)
+
 
     row.instance_id = str(summary["id"])
     row.status = _map_status(summary.get("status"))
@@ -301,24 +424,28 @@ async def start_contract_approval(
     row.error = None
     row.synced_at = datetime.now(UTC)
     row.updated_at = row.synced_at
-    doc.filled_data = {
-        **(doc.filled_data or {}),
-        "_oa_fields": {**(doc.filled_data or {}).get("_oa_fields", {}), **(extra_fields or {})},
-        "_dingtalk_oa": {
-            "provider": PROVIDER,
-            "oa_instance_id": row.id,
-            "instance_id": row.instance_id,
-            "status": row.status,
-            "synced_at": row.synced_at.isoformat(),
-            "result": summary,
-        },
-    }
+    if doc is not None and doc.deleted_at is None:
+        doc.filled_data = {
+            **(doc.filled_data or {}),
+            "_oa_fields": {**(doc.filled_data or {}).get("_oa_fields", {}), **(extra_fields or {})},
+            "_dingtalk_oa": {
+                "provider": PROVIDER,
+                "oa_instance_id": row.id,
+                "instance_id": row.instance_id,
+                "status": row.status,
+                "synced_at": row.synced_at.isoformat(),
+                "result": summary,
+            },
+        }
     await session.flush()
     return row, "已发起 OA 合同审批"
 
 
-async def sync_contract_row(session: AsyncSession, row: OaInstance) -> OaInstance:
-    summary = await client.get_approval(row.instance_id or "")
+async def sync_contract_row(session: AsyncSession, row: OaInstance) -> OaInstance | None:
+    return await sync_self_oa_row(session, row)
+
+
+async def apply_contract_summary(session: AsyncSession, row: OaInstance, summary: dict) -> OaInstance:
     new_status = _map_status(summary.get("status"))
     row.status = new_status
     row.result = summary
@@ -348,28 +475,8 @@ async def sync_contract_row(session: AsyncSession, row: OaInstance) -> OaInstanc
     return row
 
 
-async def withdraw_contract_row(session: AsyncSession, row: OaInstance, note: str) -> OaInstance:
-    summary = await client.withdraw_approval(row.instance_id or "", note)
-    row.status = _map_status(summary.get("status"))
-    row.result = summary
-    row.synced_at = datetime.now(UTC)
-    row.updated_at = row.synced_at
-    row.error = None
-    doc = await session.get(ContractDocument, row.inquiry_id, with_for_update=True)
-    if doc is not None:
-        doc.filled_data = {
-            **(doc.filled_data or {}),
-            "_dingtalk_oa": {
-                "provider": PROVIDER,
-                "oa_instance_id": row.id,
-                "instance_id": row.instance_id,
-                "status": row.status,
-                "synced_at": row.synced_at.isoformat(),
-                "result": summary,
-            },
-        }
-    await session.flush()
-    return row
+async def withdraw_contract_row(session: AsyncSession, row: OaInstance, note: str, *, reload_business=None) -> OaInstance:
+    return await withdraw_self_oa_row(session, row, note, reload_business=reload_business)
 
 
 async def contract_approval_approved(session: AsyncSession, doc_id: int) -> bool:
@@ -377,22 +484,32 @@ async def contract_approval_approved(session: AsyncSession, doc_id: int) -> bool
     return row is not None and row.status == "approved"
 
 
-async def sync_self_oa_row(session: AsyncSession, row: OaInstance) -> OaInstance:
-    """按业务类型分发自研 OA 同步（合同/打样/询价）。"""
-    if row.oa_type == "sample":
-        from app.modules.oa import sample as sample_service
-        return await sample_service.sync_sample_row(session, row)
-    if row.oa_type == "inquiry":
-        from app.modules.oa import inquiry as inquiry_service
-        return await inquiry_service.sync_inquiry_row(session, row)
-    return await sync_contract_row(session, row)
+async def sync_self_oa_row(session: AsyncSession, row: OaInstance) -> OaInstance | None:
+    from app.modules.dingtalk.service import query_oa_without_locks, settle_withdrawal_snapshot
+
+    current, summary, error = await query_oa_without_locks(session, row, client.get_approval)
+    if current is None:
+        return None
+    if error:
+        raise error
+    status = _map_status(summary.get("status"))
+    if not settle_withdrawal_snapshot(current, status):
+        return current
+    if current.status in {"approved", "rejected", "withdrawn"} and status == "pending":
+        return current
+    return await apply_adopted_receipt(session, current, summary)
 
 
-async def withdraw_self_oa_row(session: AsyncSession, row: OaInstance, note: str) -> OaInstance:
-    if row.oa_type == "sample":
-        from app.modules.oa import sample as sample_service
-        return await sample_service.withdraw_sample_row(session, row, note)
-    if row.oa_type == "inquiry":
-        from app.modules.oa import inquiry as inquiry_service
-        return await inquiry_service.withdraw_inquiry_row(session, row, note)
-    return await withdraw_contract_row(session, row, note)
+async def withdraw_self_oa_row(session: AsyncSession, row: OaInstance, note: str, *, reload_business=None) -> OaInstance:
+    from app.modules.dingtalk.service import withdraw_oa_without_locks
+
+    async def send(instance_id):
+        summary = await client.withdraw_approval(instance_id, note)
+        if not isinstance(summary, dict) or _map_status(summary.get("status")) != "withdrawn":
+            raise client.OaUnknownOutcome("同序 OA 未确认撤回")
+        return summary
+
+    current, summary = await withdraw_oa_without_locks(session, row, send, reload_business=reload_business)
+    if summary is None:
+        return current
+    return await apply_adopted_receipt(session, current, summary)

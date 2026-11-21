@@ -12,6 +12,8 @@ from app.modules.user.model import User
 from app.modules.wecom.customer_import import _plan, preview_import, execute_import
 from app.modules.wecom import customer_import
 from app.modules.wecom.model import WeComExternalContact as External, WeComFollowRelationship as Follow, WeComSyncJob
+from app.modules.wecom.schema import CreateCustomerRequest
+from app.modules.wecom.service import create_customer_from_contact
 from conftest import make_engine, SyncSessionAsAsync
 
 
@@ -135,6 +137,17 @@ async def test_company_import_real_persistence_idempotent_and_audited(db):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("fields,expected_source", [({}, "企业微信"), ({"source": "老客户介绍"}, "老客户介绍")])
+async def test_manual_create_preserves_customer_source(db, fields, expected_source):
+    raw, session = db
+    payload = CreateCustomerRequest(name="逐条核对客户", **fields)
+    result = await create_customer_from_contact(session, user=Obj(id=1), contact_id=1, payload=payload.model_dump())
+
+    assert raw.get(Customer, result["customer_id"]).source == expected_source
+    assert raw.get(Contact, result["contact_id"]).source == "企业微信"
+
+
+@pytest.mark.anyio
 async def test_changed_owner_binding_invalidates_preview(db):
     raw,session=db
     preview=await preview_import(session)
@@ -212,7 +225,8 @@ async def test_http_preview_confirm_and_payload_rejection(db):
     from app.modules.wecom.router import router
     raw,session=db
     app=FastAPI();register_exception_handlers(app);app.include_router(router)
-    async def viewer():return Obj(id=1,roles=[],has=lambda code:code in {'wecom:manage','customer:create','customer:assign'})
+    permissions = {'wecom:view', 'wecom:import_preview', 'customer:create', 'customer:assign'}
+    async def viewer():return Obj(id=1,roles=[],has=permissions.__contains__)
     async def database():yield session
     app.dependency_overrides[get_current_user]=viewer
     app.dependency_overrides[get_db]=database
@@ -220,6 +234,8 @@ async def test_http_preview_confirm_and_payload_rejection(db):
         preview=await client.get('/integrations/wecom/customer-import/preview')
         assert preview.status_code==200
         digest=preview.json()['data']['digest']
+        assert (await client.post('/integrations/wecom/customer-import',json={'digest':digest})).status_code==403
+        permissions.add('wecom:import')
         assert (await client.post('/integrations/wecom/customer-import',json={'digest':digest,'owner_id':999})).status_code==400
         result=await client.post('/integrations/wecom/customer-import',json={'digest':digest})
         assert result.status_code==200 and result.json()['data']['import_contacts']==2

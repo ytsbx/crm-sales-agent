@@ -29,6 +29,7 @@ export const SHARED_ACTION_LABELS: Record<string, string> = {
   'change_stage': '推进阶段',
   'change_status': '改变状态',
   'claim': '领取',
+  'clear_manual_overdue': '结清后解除人工逾期',
   'clone': '复制',
   'complete': '完成',
   'confirm': '确认',

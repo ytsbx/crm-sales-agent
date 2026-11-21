@@ -7,6 +7,7 @@ import json
 from sqlalchemy import select, text
 from app.core.audit import write_audit
 from app.core.data_scope import ensure_in_scope
+from app.core.draft_visibility import ensure_draft_access
 from app.core.errors import AppError, ErrorCode
 from app.core.money import line_amount
 from app.core.trade_mode import ensure_currency_allowed
@@ -39,7 +40,8 @@ async def get_visible(session, user, draft_id, *, lock=False):
         .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none() if lock else await session.get(OrderDraft, draft_id)
     if not row:
         raise AppError(ErrorCode.NOT_FOUND, '订单草稿不存在', 404)
-    await ensure_in_scope(session, user, owner_id=row.owner_id, label='订单草稿')
+    if not await ensure_draft_access(session, OrderDraft, row.id, user.id):
+        await ensure_in_scope(session, user, owner_id=row.owner_id, label='订单草稿')
     return row
 
 

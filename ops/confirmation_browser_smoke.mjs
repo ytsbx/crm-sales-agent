@@ -14,16 +14,22 @@ const executable=process.env.CRM_SMOKE_BROWSER ?? [
 ].find(existsSync)
 assert.ok(executable, 'set CRM_SMOKE_BROWSER to an installed Chrome/Edge binary')
 assert.ok(process.argv[2], 'provide the built frontend dist directory')
-// 本地受限环境（例如 WorkBuddy 沙箱里）Chrome 自家沙箱会把渲染进程摔死
-// （Page.enable 永不回执、Inspector.targetCrashed）——本地验证可用
-// CRM_SMOKE_BROWSER_FLAGS=--no-sandbox 放行。CI 的 Linux 上没这病，不设即可。
-const extraFlags=(process.env.CRM_SMOKE_BROWSER_FLAGS ?? '').split(' ').filter(Boolean)
 const dist=resolve(process.argv[2])
 const profile=mkdtempSync(join(tmpdir(),'crm-confirm-browser-'))
 const user={id:1,name:'隔离测试用户',username:'isolated',roles:['admin'],permissions:[],data_scope:'all'}
 const task={id:7,customer_id:2,customer_name:'隔离任务客户',title:'确认保护测试任务',status:'pending',status_label:'待处理',owner_id:1,priority:'normal',due_at:new Date().toISOString(),updated_at:new Date().toISOString()}
 let completed=0, redispatched=0, markedRead=0, restored=0, browser, socket
 const completedBodies=[], batchBodies=[]
+const handoverBodies=[]
+const inquiryVersions=[
+  {id:401,title:'隔离询价旧版',version:1,is_superseded:true,status:'open',status_label:'待评估'},
+  {id:402,title:'隔离询价新版',version:2,root_id:401,status:'open',status_label:'待评估'},
+  {id:403,title:'隔离归档询价',version:1,status:'archived',status_label:'已归档'},
+  {id:404,title:'隔离归档有原报价',version:1,status:'archived',status_label:'已归档',linked_quotes:[{id:121,quote_no:'EXACT-QUOTE-121'}]},
+]
+const caseFixture={id:405,title:'隔离培训案例',status:'published',status_label:'已发布',author_id:2}
+let skuDiffReads=0
+const skuDiffWrites=[]
 const claimedLeads=[], claimedCustomers=[]
 const approvalsApproved=[], approvalsRejected=[]
 const sampleRequests=[]
@@ -56,10 +62,7 @@ const quoteVersion=id=>({id,quote_id:121,version_no:id===131?2:1,subtotal_amount
 const recycleRecord=(id,name,extra={})=>({id,name,status_label:'已删除',deleted_by_pending:true,deleted_at:new Date().toISOString(),...extra})
 const wecomContact={id:92,external_userid:'isolated-contact',name:'隔离企微联系人',corp_name:'隔离公司',normalize_status:'pending',normalize_status_label:'待确认',followers:[]}
 const sampleStatuses={61:'pending',62:'pending',63:'rejected',64:'approved',65:'shipped',66:'shipped',67:'rejected'}
-// 64 测的是「登记寄样」的确认弹窗纪律。产品 69d90f2 起批准后按业务顺序给按钮：
-// 先「登记制作完成」，登记过（made_at 有值）才出「登记寄样」——夹具直接给出
-// 已制作完成的样品，让寄样按钮现身；制作登记是表单弹窗，不在这条冒烟的清单里。
-const sampleFixture=id=>({id,status:sampleStatuses[id]??'pending',status_label:'隔离样品状态',customer_name:'隔离样品客户',items:[],shipments:[],confirm_status:'pending',...(id===64?{made_at:'2026-11-01T10:00:00+08:00'}:{})})
+const sampleFixture=id=>({id,status:sampleStatuses[id]??'pending',status_label:'隔离样品状态',customer_name:'隔离样品客户',items:[],shipments:[],confirm_status:'pending',made_at:[64,65,66].includes(id)?'2026-11-18T08:00:00+08:00':null})
 const publicCustomer={id:9,name:'领取确认测试客户',pool_status:'public',status:'active',tags:[],owner_id:null}
 let analyticsExact=false
 const analyticsTargetWrites=[]
@@ -151,8 +154,35 @@ const server=createServer(async (req,res)=>{
     else if(path.endsWith('/dashboard/team')) data={is_team_view:false}
     else if(path.endsWith('/dashboard/tasks')) data=[task]
     else if(path.endsWith('/tasks/7/complete') && req.method==='POST') { completed++; completedBodies.push(body); data={...task,status:'done'} }
+    else if(path.endsWith('/tasks/handover-candidates')) data={items:[{id:8,name:'隔离接手同事',username:'successor'}],total:1}
+    else if(path.endsWith('/tasks/batch-handover') && req.method==='POST') {handoverBodies.push(body);data={task_ids:body.task_ids}}
+    else if(path.endsWith('/tasks') && url.searchParams.get('handover')==='true') {
+      const rows=handoverBodies.length ? [] : [{
+        ...task,id:407,title:'隔离待交接任务',handover_from_user_id:25,handover_from_user_name:'隔离已停用员工',
+        receivable_plans:[
+          {id:1,plan_name:'第一期',due_date:'2026-11-19',amount_exact:'100.00',remaining_amount_exact:'80.00'},
+          {id:2,plan_name:'第二期',due_date:'2026-11-20',amount_exact:'980.00',remaining_amount_exact:'980.00'},
+        ],
+      }]
+      data={items:rows,total:rows.length,page:1,page_size:20}
+    }
     else if(path.endsWith('/tasks')) data={items:[task],total:1,page:1,page_size:20}
     else if(path.endsWith('/tasks/batch-complete') && req.method==='POST') { batchBodies.push(body); data={completed:[7],skipped:[]} }
+    else if(path.endsWith('/custom-inquiries')) data={items:inquiryVersions,total:inquiryVersions.length}
+    else if(path.endsWith('/custom-inquiries/401/history')) data=inquiryVersions.slice(0,2)
+    else if(path.endsWith('/inquiries/oa-submission-options')) data={configured:false,enabled:false,fields:[],quote_owners:[]}
+    else if(path.endsWith('/cases/405') && req.method==='DELETE') {
+      caseFixture.status='withdrawn';caseFixture.status_label='已撤下';data=null
+    }
+    else if(path.endsWith('/cases')) {
+      const rows=caseFixture.status==='published' || url.searchParams.get('include_history')==='true' ? [caseFixture] : []
+      data={items:[...rows,{id:406,title:'隔离本人案例',status:'pending_review',status_label:'待审核',author_id:1}],total:rows.length+1}
+    }
+    else if(path.endsWith('/opportunities/408')) data={id:408,name:'隔离推荐商机',status:'open',stage:'quote'}
+    else if(path.endsWith('/agent/product-recommendation')) data={recommendations:[
+      {name:'隔离多价格商品',last_unit_price:null,last_unit_price_min_exact:'8.0000',last_unit_price_max_exact:'10.0000'},
+      {name:'隔离四位单价商品',last_unit_price:8.2345,last_unit_price_min_exact:'8.2345',last_unit_price_max_exact:'8.2345'},
+    ]}
     else if(path.endsWith('/opportunities')) data={items:[],total:0}
     else if(path==='/api/v1/quotes') data={items:exactQuote?[{id:121,quote_no:'EXACT-QUOTE-121',current_version_no:2,current_version_amount:99999999999999.98,current_version_amount_exact:'99999999999999.99',currency:'CNY',status:'accepted',status_label:'已接受'}]:[],total:exactQuote?1:0}
     else if(path.endsWith('/quotes/121/version-comparison')) data={versions:exactQuote?[{version_id:131,version_no:2,approval_status:'approved',currency:'CNY',quantity:100,item_count:1,sku_count:1,amount_total:99999999999999.98,amount_total_exact:'99999999999999.99',cost_total:null,profit_total:null,margin:null,avg_price:null,charges:[]}]:[],diffs:exactQuote?[{from_version_no:1,to_version_no:2,amount_delta:0.01,amount_delta_exact:'0.01',profit_delta:0.01,profit_delta_exact:'0.01',margin_delta:0,changes:[{sku_id:null,field:'charge_amount',before:99999999999999.98,after:99999999999999.98,before_exact:'99999999999999.98',after_exact:'99999999999999.99'},{sku_id:1,field:'quoted_price',before:999999999999.9991,after:999999999999.9991,before_exact:'999999999999.9991',after_exact:'999999999999.9992'},{sku_id:1,field:'quantity',before:9999999999999.988,after:9999999999999.988,before_exact:'9999999999999.988',after_exact:'9999999999999.989'}]}]:[],latest_version_id:131}
@@ -171,6 +201,18 @@ const server=createServer(async (req,res)=>{
     else if(path.endsWith('/products/201')) data={id:201,name:'隔离成本产品',status:'active',sku_count:1}
     else if(path.endsWith('/products/201/skus') && req.method==='POST') {skuCreates.push(body);data={id:202,product_id:201,sku_code:body.sku_code||'SKU-AUTO-202',...body}}
     else if(path.endsWith('/products/201/skus')) data=[{id:1,product_id:201,sku_code:'COST-SKU',name:'成本SKU',status:'active',cost_status:{state:'missing',label:'成本未维护'}},...skuCreates.map((body,i)=>({id:202+i,product_id:201,sku_code:'SKU-AUTO-202',status:'active',...body}))]
+    else if(path.endsWith('/sku-master/skus/1')) {
+      const pending_diffs=++skuDiffReads>1 ? [] : [{
+        id:409,diff_type:'field_conflict',field_label:'名称',current_value:'CRM 名称',incoming_value:'外部名称',
+        requires_note:true,allowed_resolutions:['keep_local'],
+      }]
+      data={fields:[],notes:[],pending_diffs,pending_diff_count:pending_diffs.length,latest_confirmed_version:0}
+    }
+    else if(path.endsWith('/sku-master/diffs/409/confirm')) {
+      skuDiffWrites.push(body)
+      res.writeHead(409,{'Content-Type':'application/json'})
+      res.end(JSON.stringify({code:40901,message:'该差异已过期，请刷新后重新核定'}));return
+    }
     else if(path.endsWith('/files/batch')) data={}
     else if(path.endsWith('/skus/1/costs')) {costPageRequests.push(path);data=[]}
     else if(path.endsWith('/pricing/sku-options')) data=[{id:1,sku_code:'COST-SKU',name:'成本SKU'}]
@@ -227,7 +269,7 @@ const port=server.address().port
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms))
 try {
   let browserStderr=''
-  browser=spawn(executable,['--headless=new','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-extensions','--remote-debugging-port=0',`--user-data-dir=${profile}`,...extraFlags,'about:blank'],{stdio:['ignore','ignore','pipe']})
+  browser=spawn(executable,['--headless=new','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-extensions','--remote-debugging-port=0',`--user-data-dir=${profile}`,'about:blank'],{stdio:['ignore','ignore','pipe']})
   browser.stderr.on('data',chunk=>{browserStderr=(browserStderr+chunk.toString()).slice(-8000)})
   // CI 机器忙时 Chrome 启动能超 10 秒（2026-11-16 晚两条 browser timeout 假红），上限放宽到 60 秒
   for(let i=0;!existsSync(join(profile,'DevToolsActivePort'));i++){if(i>600)throw Error(`browser timeout (exit=${browser.exitCode}, signal=${browser.signalCode}): ${browserStderr}`);await sleep(100)}
@@ -235,22 +277,101 @@ try {
   const target=await (await fetch(`http://127.0.0.1:${debug}/json/new?about:blank`,{method:'PUT'})).json()
   socket=new WebSocket(target.webSocketDebuggerUrl)
   await new Promise((resolve,reject)=>{socket.onopen=resolve;socket.onerror=reject})
-  let next=1;const pending=new Map()
-  socket.onmessage=event=>{const data=JSON.parse(event.data);if(data.id){const p=pending.get(data.id);if(p){clearTimeout(p.timer);pending.delete(data.id);data.error?p.reject(Error(JSON.stringify(data.error))):p.resolve(data.result)}}}
+  let next=1;const pending=new Map(), browserErrors=[]
+  socket.onmessage=event=>{const data=JSON.parse(event.data);if(data.id){const p=pending.get(data.id);if(p){clearTimeout(p.timer);pending.delete(data.id);data.error?p.reject(Error(JSON.stringify(data.error))):p.resolve(data.result)}}
+    if(data.method==='Runtime.consoleAPICalled' && data.params.type==='error') browserErrors.push(...data.params.args.map(arg=>arg.description??arg.value).filter(Boolean))
+  }
   const send=(method,params={})=>new Promise((resolve,reject)=>{
     const id=next++
     const timer=setTimeout(()=>{pending.delete(id);reject(Error(`browser command timed out: ${method}`))},15000)
     pending.set(id,{resolve,reject,timer});socket.send(JSON.stringify({id,method,params}))
   })
   const evaluate=async expression=>{const r=await send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true});if(r.exceptionDetails)throw Error((r.exceptionDetails.exception?.description ?? r.exceptionDetails.text)+'\nExpression: '+expression);return r.result.value}
-  const waitFor=async expression=>{for(let i=0;i<200;i++){if(await evaluate(`Boolean(document.body && (${expression}))`))return;await sleep(100)}throw Error('condition timed out: '+expression+'\n'+await evaluate('document.body?.innerText.slice(0,1800) ?? "<body not ready>"'))}
+  const waitFor=async expression=>{for(let i=0;i<200;i++){if(await evaluate(`Boolean(document.body && (${expression}))`))return;await sleep(100)}throw Error('condition timed out: '+expression+'\n'+await evaluate('document.body?.innerText.slice(0,1800) ?? "<body not ready>"')+'\n'+browserErrors.slice(-4).join('\n'))}
   await send('Page.enable')
+  await send('Runtime.enable')
   const auth=JSON.stringify({state:{token:'isolated-local-only',user},version:0})
   await send('Page.addScriptToEvaluateOnNewDocument',{source:`localStorage.setItem('crm-auth',${JSON.stringify(auth)})`})
   // 页面导航存在 body 尚未建立的窗口；等待器必须继续等，不能因读取 innerText 抛错。
   await evaluate(`document.body.remove();setTimeout(()=>{const body=document.createElement('body');body.textContent='navigation-body-ready';document.documentElement.appendChild(body)},200)`)
   await waitFor(`document.body.innerText.includes('navigation-body-ready')`)
   console.log('BROWSER_NAVIGATION_BODY_WAIT=true')
+  {
+    const navigate = (route) => send('Page.navigate', {url:`http://127.0.0.1:${port}/${route}`})
+    const matchText = (selector, label) =>
+      `Array.from(document.querySelectorAll(${JSON.stringify(selector)})).find(el=>el.innerText.trim()===${JSON.stringify(label)})`
+    const clickText = async (selector, label) => {
+      const match = matchText(selector, label)
+      await waitFor(`${match} && !${match}.disabled`)
+      await evaluate(`${match}.click()`)
+    }
+    await navigate('tasks')
+    await clickText('button', '待办交接')
+    await waitFor(`document.body.innerText.includes('原负责人 · 隔离已停用员工')`)
+    await clickText('summary', '查看 2 期应收')
+    await waitFor(`document.body.innerText.includes('第二期 · 2026-11-20') && document.body.innerText.includes('未收 ¥980.00')`)
+    await evaluate(`document.querySelector('.tasks-table input[type="checkbox"]').click()`)
+    await clickText('button', '批量交接（已选 1）')
+    await evaluate(`document.querySelector('.semi-modal-content .semi-select').click()`)
+    await clickText('.semi-select-option', '隔离接手同事（successor）')
+    assert.deepEqual(handoverBodies, [])
+    await clickText('.semi-modal-content button', '确认交接')
+    await waitFor(`document.body.innerText.includes('没有待交接的任务')`)
+    assert.deepEqual(handoverBodies,[{task_ids:[407],owner_id:8}])
+    console.log('BROWSER_TASK_HANDOVER_AND_RECEIVABLE_PLANS=true')
+
+    await navigate('inquiries')
+    await clickText('a', '查看新版')
+    await waitFor(`document.querySelector('.semi-modal-content')?.innerText.includes('按此版本生成报价草稿')`)
+    await clickText('.semi-modal-content a', '按此版本生成报价草稿')
+    await waitFor(`document.querySelector('.semi-modal-content')?.innerText.includes('生成报价草稿：隔离询价新版')`)
+    await clickText('.semi-modal-content button', '取消')
+    await clickText('a', '修订后报价')
+    await waitFor(`document.querySelector('.semi-modal-content')?.innerText.includes('修订：隔离归档询价')`)
+    await clickText('.semi-modal-content button', '取消')
+    await clickText('a', '查看原报价')
+    await waitFor(`location.pathname === '/quotes/121'`)
+    assert.equal(apiRequests.some(r=>r.path.endsWith('/create-quote')),false)
+    console.log('BROWSER_INQUIRY_LATEST_REVISION_AND_ORIGINAL_QUOTE=true')
+
+    await navigate('products/201')
+    await clickText('a', '来源/待核实/差异')
+    await waitFor(`document.querySelector('.semi-modal-content')?.innerText.includes('CRM 名称')`)
+    await evaluate(`Array.from(document.querySelectorAll('.semi-modal-content .semi-select')).find(el=>el.innerText.includes('选择核定结论')).click()`)
+    await clickText('.semi-select-option', '以本地为准')
+    await waitFor(`Array.from(document.querySelectorAll('.semi-modal-content .semi-select')).some(el=>el.innerText.trim()==='以本地为准')`)
+    const noteInput = `document.querySelector('.semi-modal-content input[placeholder*="依据"]')`
+    await evaluate(`${noteInput}.focus()`)
+    await send('Input.insertText',{text:'隔离核定依据'})
+    await waitFor(`${noteInput}.value === '隔离核定依据'`)
+    await clickText('.semi-modal-content button', '核定')
+    await sleep(250)
+    assert.deepEqual(skuDiffWrites,[{resolution:'keep_local',note:'隔离核定依据'}],await evaluate('document.body.innerText.slice(-900)'))
+    await waitFor(`document.querySelector('.semi-modal-content')?.innerText.includes('该差异已过期，请刷新后重新核定')`)
+    assert.equal(await evaluate(`${noteInput}.value`),'隔离核定依据')
+    await clickText('.semi-modal-content button', '刷新差异')
+    await waitFor(`document.querySelector('.semi-modal-content')?.innerText.includes('没有待确认差异')`)
+    console.log('BROWSER_SKU_DIFF_BLOCKED_WITH_REASON_AND_REFRESH=true')
+
+    await navigate('cases')
+    await waitFor(`document.body.innerText.includes('隔离本人案例')`)
+    assert.ok(await evaluate(`!Array.from(document.querySelectorAll('tr')).find(row=>row.innerText.includes('隔离本人案例')).innerText.includes('驳回')`))
+    await clickText('a', '撤下')
+    await waitFor(`document.querySelector('.semi-popconfirm')?.innerText.includes('撤下这个案例版本')`)
+    assert.equal(caseFixture.status,'published')
+    await clickText('.semi-popconfirm button', '确定')
+    await waitFor(`!document.querySelector('.semi-table-tbody')?.innerText.includes('隔离培训案例')`)
+    await evaluate(`document.querySelector('.toolbar input[type="checkbox"]').click()`)
+    await waitFor(`document.querySelector('.semi-table-tbody')?.innerText.includes('已撤下')`)
+    console.log('BROWSER_CASE_NO_SELF_REVIEW_WITHDRAW_AND_HISTORY=true')
+
+    await navigate('opportunities/408')
+    await waitFor(`document.body.innerText.includes('产品推荐')`)
+    await evaluate(`Array.from(document.querySelectorAll('.card-sub-head')).find(el=>el.innerText.includes('产品推荐')).querySelector('button').click()`)
+    await waitFor(`document.body.innerText.includes('8–10 元') && document.body.innerText.includes('¥8.2345')`)
+    assert.ok(await evaluate(`!document.body.innerText.includes('未命名字段')`))
+    console.log('BROWSER_PRODUCT_RECOMMENDATION_EXACT_RANGE=true')
+  }
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/workbench`})
   const checkbox=`document.querySelector('[aria-label="完成任务：确认保护测试任务"]')`
   await waitFor(checkbox)
@@ -446,43 +567,35 @@ try {
     console.log(`BROWSER_SAMPLE_${id}_${action}_CANCEL_NO_WRITE_CONFIRM_CORRECT_ID=true`)
   }
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/wecom`})
+  await waitFor(`document.body.innerText.includes('先同步企微成员')`)
+  assert.deepEqual(wecomRequests, [], 'the next-step hint must not start a sync')
+  const syncMenuButton=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim().startsWith('更新企微数据') && !b.disabled)`
+  const chooseWecomSync=async label=>{
+    const before=wecomRequests.length
+    await waitFor(syncMenuButton)
+    await evaluate(`${syncMenuButton}.click()`)
+    const option=`Array.from(document.querySelectorAll('.semi-dropdown-item > div > div:first-child')).find(el=>el.innerText.trim()===${JSON.stringify(label)})`
+    await waitFor(option)
+    assert.equal(wecomRequests.length,before,'opening the sync menu must not submit')
+    await evaluate(`${option}.click()`)
+    for(let i=0;wecomRequests.length===before && i<30;i++)await sleep(100)
+    assert.equal(wecomRequests.length,before+1)
+  }
   for(const [label,endpoint] of [
     ['同步部门','sync-departments'],['同步成员','sync-users'],
     ['同步外部联系人','sync-external-contacts'],['同步跟进关系','sync-follow-relations'],
   ]) {
-    const button=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()===${JSON.stringify(label)})`
-    await waitFor(button)
-    const before=wecomRequests.length
-    await evaluate(`${button}.click()`)
-    await waitFor(`document.body.innerText.includes(${JSON.stringify('确认'+label+'？')})`)
-    assert.equal(wecomRequests.length,before,'opening sync confirmation must not submit')
-    await evaluate(`Array.from(${popup}.querySelectorAll('button')).find(b=>b.innerText.trim()==='取消').click()`)
-    await sleep(250)
-    assert.equal(wecomRequests.length,before,'cancel sync must not submit')
-    await evaluate(`${button}.click()`)
-    await waitFor(`document.body.innerText.includes(${JSON.stringify('确认'+label+'？')})`)
-    await evaluate(`Array.from(${popup}.querySelectorAll('button')).find(b=>b.innerText.trim()==='确定').click()`)
-    for(let i=0;wecomRequests.length===before && i<30;i++)await sleep(100)
-    assert.equal(wecomRequests.length,before+1)
+    await chooseWecomSync(label)
     assert.equal(wecomRequests.at(-1),endpoint,'sync must call its own endpoint')
-    await waitFor(`!${popup}`)
-    console.log(`BROWSER_WECOM_${endpoint}_CANCEL_NO_WRITE_CONFIRM_CORRECT_ENDPOINT=true`)
+    console.log(`BROWSER_WECOM_${endpoint}_MENU_NO_WRITE_SELECT_CORRECT_ENDPOINT=true`)
   }
   rejectWecomSync=true
-  await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()==='同步部门').click()`)
-  await waitFor(`document.body.innerText.includes('确认同步部门？')`)
-  await evaluate(`Array.from(${popup}.querySelectorAll('button')).find(b=>b.innerText.trim()==='确定').click()`)
+  await chooseWecomSync('同步部门')
   await waitFor(`document.body.innerText.includes('隔离失败任务')`)
   assert.equal(failedWecomJobs.length,1)
-  await waitFor(`!${popup}`)
   rejectWecomSync=false
-  const beforeRetry=wecomRequests.length
-  await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()==='同步部门').click()`)
-  await waitFor(`document.body.innerText.includes('确认同步部门？')`)
-  await evaluate(`Array.from(${popup}.querySelectorAll('button')).find(b=>b.innerText.trim()==='确定').click()`)
-  for(let i=0;wecomRequests.length===beforeRetry && i<30;i++)await sleep(100)
-  assert.equal(wecomRequests.length,beforeRetry+1)
-  await waitFor(`!${popup}`)
+  await chooseWecomSync('同步部门')
+  assert.equal(wecomRequests.at(-1),'sync-departments')
   console.log('BROWSER_WECOM_FAILURE_REFRESH_AND_RETRY=true')
   const bindButton=`Array.from(document.querySelectorAll('button')).filter(b=>b.innerText.trim()==='关联已有客户')[1]`
   await waitFor(bindButton)
@@ -668,8 +781,13 @@ try {
   }
   for(const [label,title,path] of [
     ['扫描并生成回收预告','确认扫描并生成回收预告','/api/v1/public-pool/run-recycle'],
-    ['立即执行一次','确认立即执行自动任务规则','/api/v1/tasks/run-auto-rules'],
+    ['立即扫描','确认立即扫描自动待办','/api/v1/tasks/run-auto-rules'],
   ]) {
+    if (path.endsWith('run-auto-rules')) {
+      const tab=`Array.from(document.querySelectorAll('.rule-tabs button')).find(b=>b.innerText.trim()==='自动任务')`
+      await waitFor(tab)
+      await evaluate(`${tab}.click()`)
+    }
     const button=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()===${JSON.stringify(label)})`
     await waitFor(button)
     const before=settingsRequests.length
@@ -875,12 +993,12 @@ try {
   }
   console.log('BROWSER_ORDER_FINANCE_SUMMARY_EXACT_CENTS=true')
   await evaluate(`Array.from(document.querySelectorAll('[role="tab"]')).find(el=>el.innerText.includes('应收计划')).click()`)
-  await waitFor(`Array.from(document.querySelectorAll('a')).some(el=>el.innerText.trim()==='登记回款')`)
-  await evaluate(`Array.from(document.querySelectorAll('a')).find(el=>el.innerText.trim()==='登记回款').click()`)
-  await waitFor(`document.querySelector('input[placeholder="收款金额"]')`)
-  assert.equal(await evaluate(`document.querySelector('input[placeholder="收款金额"]').value`),'99999999999999.99')
-  await evaluate(`Array.from(document.querySelectorAll('.semi-modal-content button')).find(el=>el.innerText.trim()==='登记').click()`)
-  await waitFor(`!document.querySelector('input[placeholder="收款金额"]')`)
+  await waitFor(`Array.from(document.querySelectorAll('button')).some(el=>el.innerText.trim()==='登记回款')`)
+  await evaluate(`Array.from(document.querySelectorAll('button')).find(el=>el.innerText.trim()==='登记回款').click()`)
+  await waitFor(`document.querySelector('input[aria-label="实际到账金额"]')`)
+  assert.equal(await evaluate(`document.querySelector('input[aria-label="实际到账金额"]').value`),'99999999999999.99')
+  await evaluate(`Array.from(document.querySelectorAll('.semi-modal-content button')).find(el=>el.innerText.trim()==='提交财务确认').click()`)
+  await waitFor(`!document.querySelector('input[aria-label="实际到账金额"]')`)
   assert.equal(financialPayments.length,1)
   assert.equal(financialPayments[0].received_amount,'99999999999999.99')
   console.log('BROWSER_REGISTER_PAYMENT_PRESERVES_UNEDITED_EXACT_AMOUNT=true')

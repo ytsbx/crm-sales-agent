@@ -505,9 +505,13 @@ async def list_permissions(
             {
                 "id": p.id,
                 "code": p.code,
-                "name": p.name,
+                "name": f"{p.name}（可授管理员）" if p.code == "user:manage" else p.name,
                 "resource": p.resource,
                 "action": p.action,
+                **(
+                    {"warning": "授予后，持有人可以重置他人密码、分配管理员角色，以及修改角色权限和数据范围。请确认授权对象。"}
+                    if p.code == "user:manage" else {}
+                ),
             }
             for p in rows
         ]

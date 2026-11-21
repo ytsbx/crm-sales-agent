@@ -13,6 +13,9 @@ import { formatBeijingTime } from '../../shared/beijing-time'
  */
 
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
+
+/** 卡片按内容收住，不被页面容器拉满（回收站每页最多 10 行，用不着撑整屏）。 */
+const HUG = { flex: '0 0 auto' } as CSSProperties
 import { useNavigate } from 'react-router-dom'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Input, Modal, Popconfirm, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
@@ -21,8 +24,10 @@ import { emptyText } from '../../shared/hooks/emptyText'
 import { api } from '../../shared/api/client'
 import { listSamples, restoreSample, type SampleRequestRow } from '../../shared/api/sample'
 import type { PageResult } from '../../shared/types'
+import MaskedContact from '../../shared/components/MaskedContact'
 import FormLabel from '../../shared/components/FormLabel'
 import PageHeader from '../../shared/components/PageHeader'
+import HelpTip from '../../shared/components/HelpTip'
 import SectionCard from '../../shared/components/SectionCard'
 import { listUsers } from '../../shared/api/system'
 import { usePermissions } from '../../shared/hooks/permissions'
@@ -128,9 +133,25 @@ const SKU_REMOVED_TEXT: Record<RemovedVia, string> = {
  * 负责人说的是"这客户归谁管"，跟"谁删的"是两件事，混起来会让人找错人。
  */
 const renderDeletedBy = (name: string | null, pending: boolean) =>
-  pending ? <span style={HINT}>历史操作人待核实</span> : (name ?? '-')
+  pending
+    ? <span style={HINT} title="留痕里没记下当时是谁删的，需要去流水账核实">待核实</span>
+    : (name ?? '-')
+
+
+/** 窄屏（<1200）紧凑列宽开关：回收站各表的列加起来都超过 1024 的内容区
+    （线索 870+、产品 870+、SKU 1040+），整张表被裁到卡片外。 */
+function useCompactLayout() {
+  const [compact, setCompact] = useState(() => window.innerWidth < 1200)
+  useEffect(() => {
+    const onResize = () => setCompact(window.innerWidth < 1200)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+  return compact
+}
 
 function LeadsPanel() {
+  const compact = useCompactLayout()
   const { can } = usePermissions()
   const queryClient = useQueryClient()
   const pager = usePageSize()
@@ -154,31 +175,57 @@ function LeadsPanel() {
   })
 
   const columns = [
-    { title: '线索名称', dataIndex: 'name' },
-    { title: '公司', dataIndex: 'company_name', render: (v: string | null) => v ?? '-' },
-    { title: '联系人', dataIndex: 'contact_name', render: (v: string | null) => v ?? '-' },
-    { title: '手机', dataIndex: 'mobile', render: (v: string | null) => v ?? '-' },
-    { title: '负责人', dataIndex: 'owner_name', width: 110, render: (v: string | null) => v ?? '未分配' },
+    {
+      title: '线索名称',
+      dataIndex: 'name',
+      // 宽屏下原来不写宽，Semi 按九列平均分，长名字被截成「苏州线索 24 [...]」；
+      // 名称和公司是这行里最长的两段，给足宽度，时间/删除人各让出一点。
+      width: compact ? 130 : 200,
+      ellipsis: true,
+    },
+    { title: '公司', dataIndex: 'company_name', width: compact ? 90 : 175, ellipsis: true, render: (v: string | null) => v ?? '-' },
+    ...(compact
+      ? []
+      : [{ title: '联系人', dataIndex: 'contact_name', width: 80, render: (v: string | null) => v ?? '-' }]),
+    { title: '手机', dataIndex: 'mobile', width: compact ? 112 : 130, render: (v: string | null) => <MaskedContact value={v} /> },
+    { title: '负责人', dataIndex: 'owner_name', width: compact ? 84 : 110, render: (v: string | null) => v ?? '未分配' },
     {
       title: '原状态',
       dataIndex: 'status_label',
-      width: 100,
+      width: compact ? 88 : 100,
       render: (v: string) => <Tag>{v}</Tag>,
     },
-    { title: '删除时间', dataIndex: 'deleted_at', width: 170, render: fmt },
     {
-      // 线索只可能是被人直接删的，所以没有"删除方式"那一栏 —— 谁删的还是要看
-      title: '删除人',
-      dataIndex: 'deleted_by_name',
-      width: 150,
-      render: (v: string | null, record: RecycleLead) =>
-        renderDeletedBy(v, record.deleted_by_pending),
+      title: compact ? '删除时间 / 人' : '删除时间',
+      dataIndex: 'deleted_at',
+      width: compact ? 112 : 150,
+      render: (v: string, record: RecycleLead) =>
+        compact ? (
+          <div style={{ display: 'grid', gap: 2 }}>
+            <span title={formatBeijingTime(v)}>{formatBeijingTime(v).slice(0, 10)}</span>
+            <span style={{ fontSize: 11, color: 'var(--crm-text-3)' }}>
+              {record.deleted_by_name ?? '—'}
+            </span>
+          </div>
+        ) : (
+          fmt(v)
+        ),
     },
+    ...(compact
+      ? []
+      : [{
+          // 线索只可能是被人直接删的，所以没有"删除方式"那一栏 —— 谁删的还是要看
+          title: '删除人',
+          dataIndex: 'deleted_by_name',
+          width: 110,
+          render: (v: string | null, record: RecycleLead) =>
+            renderDeletedBy(v, record.deleted_by_pending),
+        }]),
     ...(can('lead:assign')
       ? [
           {
             title: '操作',
-            width: 90,
+            width: compact ? 82 : 70,
             render: (_: unknown, record: RecycleLead) => (
               <Popconfirm title="确认恢复这条线索？" onConfirm={() => restoreMutation.mutate(record.id)}>
                 <a>恢复</a>
@@ -190,21 +237,24 @@ function LeadsPanel() {
   ]
 
   return (
-    /* 一条记录都没有时，卡片不该跟着撑满整屏：空态只有一句话，
-       给它一张正好装得下这句话的卡，底下露页面底色（与样品管理空态同一处理）。 */
-    <SectionCard
-      style={
-        !query.isLoading && (query.data?.items?.length ?? 0) === 0 ? { flex: '0 0 auto' } : undefined
-      }
-    >
-      <Input showClear value={pager.keyword} onChange={pager.search} placeholder="搜索线索、公司、联系人或手机" style={{ maxWidth: 380, marginBottom: 16 }} />
+    /* 卡片一律按内容收住：回收站每页最多 10 行，加上搜索行、表头、分页条
+       也够不满一屏；跟着 .page-container 拉满只会在表格下面留半屏白
+       （2026-11-21：3 条记录时整张卡被拉到 976px 高）。 */
+    <SectionCard style={HUG}>
+      {/* 一个 380 宽的搜索框孤零零占一整行，右边 700 多像素全是白（主人「右边又空」）。
+          右边补上条数与范围说明，一眼知道这一屏有多少条、能看到谁的记录。 */}
+      <div className="list-search-row">
+        <Input showClear value={pager.keyword} onChange={pager.search} placeholder="搜索线索、公司、联系人或手机" style={{ width: 380 }} />
+        <span className="list-search-note">共 {query.data?.total ?? 0} 条 · 只列自己有权查看的删除记录</span>
+      </div>
         <Table<RecycleLead>
+        className="recycle-table"
         columns={columns}
         dataSource={query.data?.items ?? []}
         loading={query.isLoading}
         rowKey="id"
         empty={emptyText(query, '回收站里没有线索', '被删除的线索会落在这里，随时能取回；客户类只读、不能恢复。')}
-        pagination={{
+        pagination={((query.data?.total ?? 0) <= pager.pageSize) ? false : {
           currentPage: pager.page,
           pageSize: pager.pageSize,
           total: query.data?.total ?? 0,
@@ -218,6 +268,7 @@ function LeadsPanel() {
 }
 
 function ProductsPanel() {
+  const compact = useCompactLayout()
   const { can } = usePermissions()
   const queryClient = useQueryClient()
   const canRestore = can('product:manage')
@@ -272,31 +323,40 @@ function ProductsPanel() {
   })
 
   const productColumns = [
-    { title: '产品名称', dataIndex: 'name' },
-    { title: '产品线', dataIndex: 'product_line', width: 130, render: (v: string | null) => v ?? '-' },
-    { title: '分类', dataIndex: 'category', width: 110, render: (v: string | null) => v ?? '-' },
-    { title: '品牌', dataIndex: 'brand', width: 110, render: (v: string | null) => v ?? '-' },
+    { title: '产品名称', dataIndex: 'name', width: compact ? 200 : 210, ellipsis: true },
+    { title: '产品线', dataIndex: 'product_line', width: compact ? 110 : 130, render: (v: string | null) => v ?? '-' },
+    ...(compact
+      ? []
+      : [{ title: '分类', dataIndex: 'category', width: 110, render: (v: string | null) => v ?? '-' }]),
+    ...(compact
+      ? []
+      : [{ title: '品牌', dataIndex: 'brand', width: 110, render: (v: string | null) => v ?? '-' }]),
     {
       title: '附带 SKU',
       dataIndex: 'deleted_sku_count',
-      width: 110,
+      width: compact ? 96 : 130,
       // 恢复这个产品时会一并捡回来的 SKU 条数，先让人心里有数
       render: (count: number) => (count > 0 ? `${count} 个将一起恢复` : '无'),
     },
-    { title: '删除时间', dataIndex: 'deleted_at', width: 170, render: fmt },
     {
-      // 产品也只可能是被人直接删的，同样不需要"删除方式"那一栏
-      title: '删除人',
-      dataIndex: 'deleted_by_name',
-      width: 150,
-      render: (v: string | null, record: RecycleProduct) =>
-        renderDeletedBy(v, record.deleted_by_pending),
+      // 时间与人叠成一列：九列并排时「删除人」必被挤到滚动条外
+      title: '删除时间 / 人',
+      dataIndex: 'deleted_at',
+      width: compact ? 118 : 160,
+      render: (v: string, record: RecycleProduct) => (
+        <div style={{ display: 'grid', gap: 2 }}>
+          <span title={formatBeijingTime(v)}>{compact ? formatBeijingTime(v).slice(0, 10) : formatBeijingTime(v)}</span>
+          <span style={{ fontSize: 11, color: 'var(--crm-text-3)' }}>
+            {record.deleted_by_pending ? '历史操作人待核实' : (record.deleted_by_name ?? '—')}
+          </span>
+        </div>
+      ),
     },
     ...(canRestore
       ? [
           {
             title: '操作',
-            width: 90,
+            width: compact ? 82 : 90,
             render: (_: unknown, record: RecycleProduct) => (
               <Popconfirm title="确认恢复产品及随产品删除的 SKU？" onConfirm={() => restoreProductMutation.mutate(record.id)}>
                 <a>恢复</a>
@@ -308,14 +368,18 @@ function ProductsPanel() {
   ]
 
   const skuColumns = [
-    { title: '名称', dataIndex: 'name', render: (v: string | null) => v ?? '-' },
-    { title: '规格', dataIndex: 'specification', width: 150, render: (v: string | null) => v ?? '-' },
-    { title: '编码', dataIndex: 'sku_code', width: 160 },
-    { title: '所属产品', dataIndex: 'product_name', render: (v: string | null) => v ?? '-' },
+    { title: '名称', dataIndex: 'name', width: compact ? 110 : 190, ellipsis: true, render: (v: string | null) => v ?? '-' },
+    ...(compact
+      ? []
+      : [{ title: '规格', dataIndex: 'specification', width: 140, render: (v: string | null) => v ?? '-' }]),
+    { title: '编码', dataIndex: 'sku_code', width: compact ? 150 : 150 },
+    ...(compact
+      ? []
+      : [{ title: '所属产品', dataIndex: 'product_name', width: 150, render: (v: string | null) => v ?? '-' }]),
     {
       title: '状态',
       dataIndex: 'product_deleted',
-      width: 170,
+      width: compact ? 128 : 150,
       render: (productDeleted: boolean, record: RecycleSku) => {
         if (record.code_occupied) return <Tag color="red">编码被占用</Tag>
         if (productDeleted) return <Tag color="orange">随产品一起恢复</Tag>
@@ -327,7 +391,7 @@ function ProductsPanel() {
       // 而不是对着这条 SKU 点恢复（那样只会得到一句"请先恢复产品"）
       title: '删除方式',
       dataIndex: 'removed_via',
-      width: 150,
+      width: compact ? 118 : 118,
       render: (via: RemovedVia | null) => {
         // 判不出来就说"待核实"，不硬安一个方式（历史数据常是这样）
         if (via === null) return <Tag>待核实</Tag>
@@ -338,20 +402,25 @@ function ProductsPanel() {
         )
       },
     },
-    { title: '删除时间', dataIndex: 'deleted_at', width: 170, render: fmt },
     {
-      // 「随产品删除」时这里给的是**删产品的那个人** —— 正是"谁把它带走的"
-      title: '删除人',
-      dataIndex: 'deleted_by_name',
-      width: 150,
-      render: (v: string | null, record: RecycleSku) =>
-        renderDeletedBy(v, record.deleted_by_pending),
+      // 时间与人叠成一列：九列并排时「删除人」必被挤到滚动条外
+      title: '删除时间 / 人',
+      dataIndex: 'deleted_at',
+      width: compact ? 118 : 160,
+      render: (v: string, record: RecycleSku) => (
+        <div style={{ display: 'grid', gap: 2 }}>
+          <span title={formatBeijingTime(v)}>{compact ? formatBeijingTime(v).slice(0, 10) : formatBeijingTime(v)}</span>
+          <span style={{ fontSize: 11, color: 'var(--crm-text-3)' }}>
+            {record.deleted_by_pending ? '历史操作人待核实' : (record.deleted_by_name ?? '—')}
+          </span>
+        </div>
+      ),
     },
     ...(canRestore
       ? [
           {
             title: '操作',
-            width: 90,
+            width: compact ? 82 : 90,
             render: (_: unknown, record: RecycleSku) =>
               record.product_deleted ? (
                 // 产品还在回收站时单独恢复 SKU 会造出孤儿，这里不给按钮
@@ -368,15 +437,19 @@ function ProductsPanel() {
 
   return (
     <>
-      <SectionCard title="已删除的产品（恢复时连带恢复它名下的 SKU）">
-        <Input showClear value={productPager.keyword} onChange={productPager.search} placeholder="搜索产品名称、品类或品牌" style={{ maxWidth: 380, marginBottom: 16 }} />
+      <SectionCard title="已删除的产品（恢复时连带恢复它名下的 SKU）" style={HUG}>
+        <div className="list-search-row">
+          <Input showClear value={productPager.keyword} onChange={productPager.search} placeholder="搜索产品名称、品类或品牌" style={{ width: 380 }} />
+          <span className="list-search-note">共 {productQuery.data?.total ?? 0} 条 · 只列自己有权查看的删除记录</span>
+        </div>
         <Table<RecycleProduct>
+          className="recycle-table"
           columns={productColumns}
           dataSource={productQuery.data?.items ?? []}
           loading={productQuery.isLoading}
           rowKey="id"
           empty={emptyText(productQuery, '回收站里没有产品')}
-          pagination={{
+          pagination={((productQuery.data?.total ?? 0) <= productPager.pageSize) ? false : {
             currentPage: productPager.page,
             pageSize: productPager.pageSize,
             total: productQuery.data?.total ?? 0,
@@ -386,15 +459,19 @@ function ProductsPanel() {
           }}
         />
       </SectionCard>
-      <SectionCard title="已删除的 SKU">
-        <Input showClear value={skuPager.keyword} onChange={skuPager.search} placeholder="搜索SKU编码、名称或规格" style={{ maxWidth: 380, marginBottom: 16 }} />
+      <SectionCard title="已删除的 SKU" style={HUG}>
+        <div className="list-search-row">
+          <Input showClear value={skuPager.keyword} onChange={skuPager.search} placeholder="搜索SKU编码、名称或规格" style={{ width: 380 }} />
+          <span className="list-search-note">共 {skuQuery.data?.total ?? 0} 条 · 只列自己有权查看的删除记录</span>
+        </div>
         <Table<RecycleSku>
+          className="recycle-table"
           columns={skuColumns}
           dataSource={skuQuery.data?.items ?? []}
           loading={skuQuery.isLoading}
           rowKey="id"
           empty={emptyText(skuQuery, '回收站里没有 SKU')}
-          pagination={{
+          pagination={((skuQuery.data?.total ?? 0) <= skuPager.pageSize) ? false : {
             currentPage: skuPager.page,
             pageSize: skuPager.pageSize,
             total: skuQuery.data?.total ?? 0,
@@ -409,6 +486,7 @@ function ProductsPanel() {
 }
 
 function CustomersPanel() {
+  const compact = useCompactLayout()
   const navigate = useNavigate()
   const pager = usePageSize()
   const { can } = usePermissions()
@@ -551,12 +629,12 @@ function CustomersPanel() {
   }
 
   const columns = [
-    { title: '客户名称', dataIndex: 'name' },
-    { title: '简称', dataIndex: 'short_name', width: 140, render: (v: string | null) => v ?? '-' },
+    // 简称列等同于名称的后半截，占掉 120px 反而把名称挤成「宁波麦隆精…」—— 去掉
+    { title: '客户名称', dataIndex: 'name', width: compact ? 118 : 200, ellipsis: true },
     {
       title: '原负责人',
       dataIndex: 'original_owner_name',
-      width: 160,
+      width: compact ? 100 : 130,
       // "待核实" ≠ "未分配"：前者是合并留痕里没记当时的负责人（只有管理员看得到），
       // 后者是这条客户本来就没有负责人。说成一样的会把人往错的方向带。
       render: (v: string | null, record: RecycleCustomer) => {
@@ -578,9 +656,14 @@ function CustomersPanel() {
     {
       // 客户有两种"没掉"的方式：有人直接删的 / 被合并掉的。从前只能从「去向」那一栏
       // 去猜 —— 现在直接说明。两栏分工：这一栏说**动作**，那一栏说**结果**。
-      title: '操作方式',
+      title: (
+        <span className="crm-help-label">
+          操作方式
+          <HelpTip forLabel="操作方式" text="这条客户是怎么没的：有人直接删除，还是被合并到了另一个客户。" />
+        </span>
+      ),
       dataIndex: 'removed_via',
-      width: 130,
+      width: compact ? 90 : 120,
       render: (via: RemovedVia) =>
         via === 'merged' ? (
           <Tag color="orange">{CUSTOMER_REMOVED_TEXT[via]}</Tag>
@@ -589,9 +672,14 @@ function CustomersPanel() {
         ),
     },
     {
-      title: '去向',
+      title: (
+        <span className="crm-help-label">
+          去向
+          <HelpTip forLabel="去向" text="客户被并到了哪里。显示「-」表示是直接删除、没有接收方。" />
+        </span>
+      ),
       dataIndex: 'merged_into',
-      width: 280,
+      width: compact ? 128 : 250,
       render: (merged: RecycleCustomer['merged_into'], record: RecycleCustomer) => {
         // 没有去向＝没人接手。操作方式那一栏已经说了"直接删除"，这里不再重复一遍
         if (!merged) return <span style={HINT}>-</span>
@@ -611,28 +699,34 @@ function CustomersPanel() {
         )
       },
     },
+    ...(compact
+      ? []
+      : [{
+          // 合并原因：只有被合并掉的才有；直接删除的为空 —— 显示成"—"而不是一个空框
+          title: '合并原因',
+          dataIndex: 'merge_reason',
+          width: 150,
+          render: (v: string | null) => v || <span style={HINT}>-</span>,
+        }]),
     {
-      // 合并原因：只有被合并掉的才有；直接删除的为空 —— 显示成"—"而不是一个空框
-      title: '合并原因',
-      dataIndex: 'merge_reason',
-      width: 200,
-      render: (v: string | null) => v || <span style={HINT}>-</span>,
-    },
-    { title: '删除时间', dataIndex: 'deleted_at', width: 170, render: fmt },
-    {
-      // 合并来源给的是**合并留痕里的操作人**（谁把这条并进了哪条），
-      // 直接删除的取流水账；两者都查不到时说"待核实"，不拿负责人顶替
-      title: '删除人',
-      dataIndex: 'deleted_by_name',
-      width: 150,
-      render: (v: string | null, record: RecycleCustomer) =>
-        renderDeletedBy(v, record.deleted_by_pending),
+      // 时间与人叠成一列：客户表九列并排时「删除人」会被挤到滚动条外
+      title: '删除时间 / 人',
+      dataIndex: 'deleted_at',
+      width: compact ? 108 : 160,
+      render: (v: string, record: RecycleCustomer) => (
+        <div style={{ display: 'grid', gap: 2 }}>
+          <span title={formatBeijingTime(v)}>{compact ? formatBeijingTime(v).slice(0, 10) : formatBeijingTime(v)}</span>
+          <span style={{ fontSize: 11, color: 'var(--crm-text-3)' }}>
+            {record.deleted_by_pending ? '历史操作人待核实' : (record.deleted_by_name ?? '—')}
+          </span>
+        </div>
+      ),
     },
     ...(showRestoreColumn
       ? [
           {
             title: '操作',
-            width: 90,
+            width: compact ? 78 : 90,
             render: (_: unknown, record: RecycleCustomer) => {
               // 被合并掉的不给恢复按钮；业务员只看得到自己负责的客户有入口
               if (record.removed_via !== 'direct' || !canRestoreRow(record)) {
@@ -648,7 +742,7 @@ function CustomersPanel() {
 
   return (
     <>
-      <SectionCard title="客户回收站">
+      <SectionCard title="客户回收站" style={HUG}>
         {/* 说明原来整段塞在卡片标题里：加粗、字号接近区块标题，压得下面唯一一条
             数据抬不起头（2026-11-17 视觉审视 V2-13）。改成普通说明文字，
             真正要紧的两句（不可恢复 / 要先指定接手人）单独加一点色重，而不是整段加粗。 */}
@@ -660,14 +754,18 @@ function CustomersPanel() {
           </span>
           {canRestoreOwn && !canRestoreAny ? '你只能恢复自己负责的客户。' : ''}
         </p>
-        <Input showClear value={pager.keyword} onChange={pager.search} placeholder="搜索客户名称或简称" style={{ maxWidth: 380, marginBottom: 16 }} />
+        <div className="list-search-row">
+          <Input showClear value={pager.keyword} onChange={pager.search} placeholder="搜索客户名称或简称" style={{ width: 380 }} />
+          <span className="list-search-note">共 {query.data?.total ?? 0} 条 · 只列自己有权查看的删除记录</span>
+        </div>
         <Table<RecycleCustomer>
+          className="recycle-table"
           columns={columns}
           dataSource={query.data?.items ?? []}
           loading={query.isLoading}
           rowKey="id"
           empty={emptyText(query, '回收站里没有客户')}
-          pagination={{
+          pagination={((query.data?.total ?? 0) <= pager.pageSize) ? false : {
             currentPage: pager.page,
             pageSize: pager.pageSize,
             total: query.data?.total ?? 0,
@@ -742,13 +840,13 @@ function SamplesPanel() {
   const restore = useMutation({ mutationFn: restoreSample,
     onSuccess: () => { Toast.success('样品申请已恢复'); void cache.invalidateQueries({ queryKey: ['recycle', 'samples'] }); void cache.invalidateQueries({ queryKey: ['samples'] }) },
     onError: (error: Error) => Toast.error(error.message) })
-  return <SectionCard><Input showClear value={pager.keyword} onChange={pager.search} placeholder="搜索客户或商机" style={{ maxWidth: 380, marginBottom: 16 }} />
-    <Table<SampleRequestRow> rowKey="id" dataSource={query.data?.items ?? []} loading={query.isLoading} empty={emptyText(query, '回收站里没有样品')}
+  return <SectionCard style={HUG}><div className="list-search-row"><Input showClear value={pager.keyword} onChange={pager.search} placeholder="搜索客户或商机" style={{ width: 380 }} /><span className="list-search-note">共 {query.data?.total ?? 0} 条 · 只列自己有权查看的删除记录</span></div>
+    <Table<SampleRequestRow> className="recycle-table" rowKey="id" dataSource={query.data?.items ?? []} loading={query.isLoading} empty={emptyText(query, '回收站里没有样品')}
       columns={[{ title: '客户', dataIndex: 'customer_name' }, { title: '商机', dataIndex: 'opportunity_title' },
         { title: '负责人', dataIndex: 'owner_name' }, { title: '原状态', dataIndex: 'status_label' },
         { title: '删除时间', dataIndex: 'deleted_at', render: fmt },
         ...(can('sample:manage') ? [{ title: '操作', render: (_: unknown, row: SampleRequestRow) => <Popconfirm title="确认恢复这张样品申请？" onConfirm={() => restore.mutate(row.id)}><a>恢复</a></Popconfirm> }] : [])]}
-      pagination={{ currentPage: pager.page, pageSize: pager.pageSize, total: query.data?.total ?? 0, showSizeChanger: true,
+      pagination={((query.data?.total ?? 0) <= pager.pageSize) ? false : { currentPage: pager.page, pageSize: pager.pageSize, total: query.data?.total ?? 0, showSizeChanger: true,
         onPageChange: pager.setPage, onPageSizeChange: pager.changePageSize }} />
   </SectionCard>
 }
@@ -765,13 +863,13 @@ function ContractsPanel() {
   const restore = useMutation({ mutationFn: (id: number) => api.post(`/contract-documents/${id}/restore`),
     onSuccess: () => { Toast.success('合同已恢复'); void cache.invalidateQueries({ queryKey: ['recycle', 'contracts'] }); void cache.invalidateQueries({ queryKey: ['contract-documents'] }) },
     onError: (error: Error) => Toast.error(error.message) })
-  return <SectionCard><Input showClear value={pager.keyword} onChange={pager.search} placeholder="搜索合同编号、名称或客户" style={{ maxWidth: 380, marginBottom: 16 }} /><Table<RecycleContract> rowKey="id" dataSource={query.data?.items ?? []} loading={query.isLoading}
+  return <SectionCard style={HUG}><div className="list-search-row"><Input showClear value={pager.keyword} onChange={pager.search} placeholder="搜索合同编号、名称或客户" style={{ width: 380 }} /><span className="list-search-note">共 {query.data?.total ?? 0} 条 · 只列自己有权查看的删除记录</span></div><Table<RecycleContract> className="recycle-table" rowKey="id" dataSource={query.data?.items ?? []} loading={query.isLoading}
     empty={emptyText(query, '回收站里没有合同')} columns={[
       { title: '合同编号', dataIndex: 'doc_no' }, { title: '合同名称', dataIndex: 'title' },
       { title: '客户', dataIndex: 'customer_name' }, { title: '原状态', dataIndex: 'status_label' },
       { title: '删除时间', dataIndex: 'deleted_at', render: fmt },
       ...(can('order:manage') ? [{ title: '操作', render: (_: unknown, row: RecycleContract) => <Popconfirm title="确认恢复这份合同？相关自动待办可能随之恢复。" onConfirm={() => restore.mutate(row.id)}><a>恢复</a></Popconfirm> }] : []),
-    ]} pagination={{ currentPage: pager.page, pageSize: pager.pageSize, total: query.data?.total ?? 0, showSizeChanger: true, onPageChange: pager.setPage, onPageSizeChange: pager.changePageSize }} /></SectionCard>
+    ]} pagination={((query.data?.total ?? 0) <= pager.pageSize) ? false : { currentPage: pager.page, pageSize: pager.pageSize, total: query.data?.total ?? 0, showSizeChanger: true, onPageChange: pager.setPage, onPageSizeChange: pager.changePageSize }} /></SectionCard>
 }
 
 export default function RecycleBinPage() {
@@ -798,7 +896,7 @@ export default function RecycleBinPage() {
     <div className="page-container">
       <PageHeader
         title="回收站"
-        subtitle="这里只放「被删掉的东西」，可以捡回来；客户只做查看"
+        subtitle="这里放的是删掉的东西，能捡回来；被合并掉的客户只做查看"
       />
       {tabs.length === 0 ? (
         <SectionCard>你没有查看任何回收站分区的权限。</SectionCard>

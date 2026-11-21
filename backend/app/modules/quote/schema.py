@@ -12,7 +12,7 @@ class QuoteCreate(BaseModel):
     customer_id: int | None = None
     contact_id: int | None = None
     valid_until: date | None = None
-    payment_terms: str | None = None
+    payment_terms: str | None = Field(default=None, max_length=128)
     delivery_terms: str | None = None
     remark: str | None = None
     # 外贸口径（可选）：不填就是内贸，全人民币
@@ -30,7 +30,7 @@ class QuoteCreate(BaseModel):
 class QuoteVersionUpdate(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    payment_terms: str | None = None
+    payment_terms: str | None = Field(default=None, max_length=128)
     delivery_terms: str | None = None
     remark: str | None = None
     valid_until: date | None = None

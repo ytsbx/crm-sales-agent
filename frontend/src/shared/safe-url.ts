@@ -60,3 +60,20 @@ export function safeExternalUrls(values: readonly unknown[] | null | undefined):
   if (!Array.isArray(values)) return []
   return values.filter((v): v is string => isSafeExternalUrl(v)).map((v) => v.trim())
 }
+
+export function loginReturnPath(value: string | null): string {
+  if (!value?.startsWith('/') || value.startsWith('//') || value.includes('\\')) return '/workbench'
+  const origin = 'https://crm.internal'
+  try {
+    const url = new URL(value, origin)
+    if (url.origin === origin && url.pathname !== '/' && !url.pathname.startsWith('//')
+      && url.pathname.replace(/\/+$/, '').toLowerCase() !== '/login') {
+      return `${url.pathname}${url.search}${url.hash}`
+    }
+  } catch { /* 地址无法解析时回工作台。 */ }
+  return '/workbench'
+}
+
+export function loginUrl(path: string): string {
+  return `/login?next=${encodeURIComponent(loginReturnPath(path))}`
+}

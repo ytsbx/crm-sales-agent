@@ -76,6 +76,7 @@ export interface FunnelRow {
 
 export function listOpportunities(query: {
   keyword?: string
+  search_customer_name?: boolean
   stage_id?: number
   status?: string
   owner_id?: number

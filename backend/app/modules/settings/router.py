@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +12,11 @@ from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, get_current_user, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data
+from app.core.similarity import (
+    CUSTOMER_NAME_SIMILARITY_MIN,
+    CUSTOMER_SCORE_FALLBACKS,
+    CUSTOMER_SCORE_MAX,
+)
 from app.modules.settings import service as svc
 from app.modules.settings.model import (
     DictionaryItem,
@@ -63,8 +68,22 @@ async def public_config(
     )
 
 
+def _include_customer_score_details(item: dict) -> dict:
+    if item["key"] == "dedup_scoring":
+        stored = item["value"] or svc.DEFAULT_SETTINGS["dedup_scoring"]
+        item["customer_score_details"] = {
+            "points": {
+                key: stored.get(key, fallback)
+                for key, fallback in CUSTOMER_SCORE_FALLBACKS.items()
+            },
+            "name_similarity_min": CUSTOMER_NAME_SIMILARITY_MIN,
+            "max_score": CUSTOMER_SCORE_MAX,
+        }
+    return item
+
+
 def serialize_setting(row: SystemSetting) -> dict:
-    return {
+    return _include_customer_score_details({
         "id": row.id,
         "key": row.key,
         "value": row.value,
@@ -73,7 +92,7 @@ def serialize_setting(row: SystemSetting) -> dict:
         #: 这条是**代码里的开发默认值**，系统里还没改过（返修单第六批追加口径 1：
         #: 页面要标明"开发默认值"，不能让人以为已经是确认过的正式规则）
         "is_default": False,
-    }
+    })
 
 
 def serialize_pool_rule(row: PublicPoolRule) -> dict:
@@ -104,7 +123,11 @@ async def list_settings(
     session: AsyncSession = Depends(get_db),
 ):
     rows = (
-        await session.execute(select(SystemSetting).order_by(SystemSetting.key.asc()))
+        await session.execute(
+            select(SystemSetting)
+            .where(SystemSetting.key != svc.LEGACY_POOL_RESTORE_SETTING)
+            .order_by(SystemSetting.key.asc())
+        )
     ).scalars().all()
     items = [serialize_setting(row) for row in rows]
     # 代码默认值里配了、但库里还没落行的项一并返回（`is_default=True`）。
@@ -115,14 +138,14 @@ async def list_settings(
         if key in known:
             continue
         items.append(
-            {
+            _include_customer_score_details({
                 "id": None,
                 "key": key,
                 "value": value,
                 "description": "开发默认值（系统里还没改过）",
                 "updated_at": None,
                 "is_default": True,
-            }
+            })
         )
     items.sort(key=lambda item: item["key"])
     return ok(items)
@@ -147,9 +170,11 @@ async def upsert_setting(
       重算到期时间（已结案的不动）。原设计是"只影响新候选"，本次按要求
       改成一起重算，免得库里同时跑着两套天数。重算了几条一并记进审计。
     """
-    row = (
-        await session.execute(select(SystemSetting).where(SystemSetting.key == payload.key))
-    ).scalar_one_or_none()
+    merge_fields = payload.key in ("hard_floor", "export", "dedup_scoring", "notification_retry")
+    stmt = select(SystemSetting).where(SystemSetting.key == payload.key)
+    if merge_fields:
+        stmt = stmt.with_for_update()
+    row = (await session.execute(stmt)).scalar_one_or_none()
     before_value = row.value if row is not None else None
     await svc.validate_setting_value(session, payload.key, payload.value)
 
@@ -161,6 +186,14 @@ async def upsert_setting(
     # 一个 key 可以有多个数值字段（`export` 三个），而前端只提交被改的那一个。
     # 判定"这个 key 有没有数值字段"必须按 key 扫一遍，不能 `key in 表`。
     stored_value = payload.value
+    if merge_fields:
+        stored_value = {
+            **svc.DEFAULT_SETTINGS[payload.key],
+            **(before_value or {}),
+            **(payload.value or {}),
+        }
+        if payload.key == "hard_floor":
+            await svc.validate_setting_value(session, payload.key, stored_value)
     days: int | None = None
     for (key, field), (low, high, label) in svc.SETTING_NUMBER_RULES.items():
         if key != payload.key:
@@ -169,7 +202,7 @@ async def upsert_setting(
         if raw is None:
             # 本次没传这个字段（前端只提交被改的那个）→ 保持原值，不归一化
             continue
-        number = svc._strict_int(raw, label, low, high)
+        number = svc._strict_int(raw, label, low, high, allow_zero=key == "logistics_volumetric_ratio")
         if field == "days":
             # 「预告期 / 暂缓期」这类**单个 days 字段**的天数配置：
             # 落库归一化成整数，并把新天数交给下面的候选重算
@@ -220,6 +253,16 @@ async def list_pool_rules(
     return ok([serialize_pool_rule(row) for row in rows])
 
 
+async def _reject_pool_rule_conflict(session: AsyncSession, *, level: str, rule_id: int | None = None) -> None:
+    query = select(PublicPoolRule).where(PublicPoolRule.level == level, PublicPoolRule.enabled.is_(True))
+    if rule_id is not None:
+        query = query.where(PublicPoolRule.id != rule_id)
+    conflict = (await session.execute(query.order_by(PublicPoolRule.id).limit(1))).scalars().first()
+    if conflict is not None:
+        raise AppError(ErrorCode.DUPLICATE,
+                       f"该客户等级已有启用的 {conflict.days} 天回收规则（编号 {conflict.id}），请修改现有规则或先停用它。", 409)
+
+
 @router.post("/public-pool/rules")
 async def create_pool_rule(
     payload: PublicPoolRuleInput,
@@ -227,6 +270,9 @@ async def create_pool_rule(
     user: CurrentUser = Depends(require_permission("settings:manage")),
     session: AsyncSession = Depends(get_db),
 ):
+    await svc.lock_task_scan(session)
+    if payload.enabled:
+        await _reject_pool_rule_conflict(session, level=payload.level)
     row = PublicPoolRule(**payload.model_dump())
     session.add(row)
     await session.flush()
@@ -251,11 +297,15 @@ async def update_pool_rule(
     user: CurrentUser = Depends(require_permission("settings:manage")),
     session: AsyncSession = Depends(get_db),
 ):
+    await svc.lock_task_scan(session)
     row = await session.get(PublicPoolRule, rule_id)
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, "规则不存在", 404)
     before = serialize_pool_rule(row)
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    if changes.get("enabled", row.enabled):
+        await _reject_pool_rule_conflict(session, level=changes.get("level", row.level), rule_id=row.id)
+    for field, value in changes.items():
         setattr(row, field, value)
     await session.flush()
     await write_audit(
@@ -318,7 +368,7 @@ class CandidateDecision(BaseModel):
 
     decision: str
     #: 驳回、暂缓、例外执行都要写理由（例外执行时**必填**，见 service）
-    note: str | None = None
+    note: str | None = Field(default=None, max_length=255)
     #: **提前回收**（返修单第六批第 8 条）：预告期 / 暂缓等待期还没满就要求回收。
     #: 单独一个开关，不能把普通批准当成提前执行 —— 必须填原因，会单独记审计。
     early: bool = False
@@ -423,26 +473,22 @@ async def batch_decide_recycle_candidates(
     )
 
 
+class CandidateRestore(BaseModel):
+    note: str | None = Field(default=None, max_length=255)
+
+
 @router.post("/public-pool/recycle-candidates/{candidate_id}/restore")
 async def restore_recycle_candidate(
     candidate_id: int,
-    payload: dict,
+    payload: CandidateRestore,
     request: Request,
     user: CurrentUser = Depends(require_permission("customer:pool_review")),
     session: AsyncSession = Depends(get_db),
 ):
-    """**恢复**：把被回收的客户还给原负责人。
+    """把已回收的客户交还原负责人。复核权限和数据范围仍适用。"""
+    if "admin" not in user.roles and not user.has("customer:pool_restore"):
+        raise AppError(ErrorCode.FORBIDDEN, "恢复公海客户需要「恢复公海客户」权限", 403)
 
-    谁能恢复是配置项（`pool_recycle_restore_permission`，默认 `customer:assign`）——
-    "谁能把回收掉的客户还回去"是管理口径，不同公司不一样，不该写死。
-    **这个配置此前只在默认值表里躺着、从未参与授权**（第六批审查追加口径 2），
-    现在真正生效：原负责人的主管能恢复本团队的客户，管理员不受限，
-    普通业务员不能恢复。
-
-    还要**校验客户数据范围** —— 客户进了公海虽然人人可见，但不能因此
-    让任意主管把别人团队的客户捞回来。
-    客户已经被别人合法领取时**不静默覆盖**，会报冲突并记下。
-    """
     from app.modules.settings.model import PublicPoolRecycleCandidate
 
     row = await session.get(PublicPoolRecycleCandidate, candidate_id)
@@ -450,22 +496,11 @@ async def restore_recycle_candidate(
         raise AppError(ErrorCode.NOT_FOUND, "该回收候选不存在", 404)
     await svc.assert_candidate_in_scope(session, user, row)
 
-    # 恢复权限按配置项判断（默认 customer:assign）。管理员默认放行，
-    # 与 require_permission 的口径保持一致。
-    restore_perm = await svc.get_text(
-        session, "pool_recycle_restore_permission", "text", "customer:assign"
-    )
-    if "admin" not in user.roles and not user.has(restore_perm):
-        raise AppError(
-            ErrorCode.FORBIDDEN,
-            f"恢复已回收的客户需要权限：{restore_perm}",
-            403,
-        )
     result = await svc.restore_candidate(
         session,
         candidate=row,
         operator_id=user.id,
-        note=payload.get("note"),
+        note=payload.note,
         source="WEB",
     )
     return ok(result, "客户已恢复给原负责人")
@@ -495,7 +530,10 @@ async def create_task_rule(
     data.setdefault("status", "active")
     if data.get("status") is None:
         data["status"] = "active"
+    await svc.lock_task_scan(session)
     row = TaskRule(**data)
+    svc.validate_task_rule(row)
+    await svc.reject_duplicate_task_rule(session, row)
     session.add(row)
     await session.flush()
     await write_audit(
@@ -519,11 +557,21 @@ async def update_task_rule(
     user: CurrentUser = Depends(require_permission("settings:manage")),
     session: AsyncSession = Depends(get_db),
 ):
+    await svc.lock_task_scan(session)
     row = await session.get(TaskRule, rule_id)
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, "规则不存在", 404)
     before = serialize_task_rule(row)
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    candidate = TaskRule(**{
+        "id": row.id,
+        **{field: getattr(row, field) for field in TaskRuleInput.model_fields},
+        **changes,
+    })
+    if candidate.status == "active" or {"trigger_type", "trigger_config"} & changes.keys():
+        svc.validate_task_rule(candidate)
+    await svc.reject_duplicate_task_rule(session, candidate)
+    for field, value in changes.items():
         setattr(row, field, value)
     await session.flush()
     await write_audit(
@@ -553,6 +601,7 @@ async def delete_task_rule(
     `tasks.source_rule_id` 只做溯源，不做外键级联，
     所以这里可以安全地真删，历史任务仍能看出"当初是哪条规则生成的"。
     """
+    await svc.lock_task_scan(session)
     row = await session.get(TaskRule, rule_id)
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, "规则不存在", 404)
@@ -904,9 +953,19 @@ async def save_unrated_rules(
     """未配置就不开启；管理员显式保存后才建立未分级专用规则。"""
     await svc.lock_task_scan(session)
     pool = (await session.execute(select(PublicPoolRule).where(PublicPoolRule.level == "UNRATED")
+                .order_by(PublicPoolRule.enabled.desc(), PublicPoolRule.id).limit(1)
                 .with_for_update().execution_options(populate_existing=True))).scalars().first()
     task = (await session.execute(select(TaskRule).where(TaskRule.code == "customer_unrated_silent")
                 .with_for_update().execution_options(populate_existing=True))).scalars().first()
+    if payload.recycle_enabled:
+        await _reject_pool_rule_conflict(session, level="UNRATED", rule_id=pool.id if pool else None)
+    reminder_action = {"title": "未分级客户久未联系，请跟进并了解客户后评级", "type": "followup"}
+    if payload.reminder_enabled:
+        await svc.reject_duplicate_task_rule(session, TaskRule(
+            id=task.id if task else None, status="active", trigger_type="customer_silent",
+            trigger_config={"levels": ["UNRATED"]},
+            action_config=reminder_action,
+        ))
     if pool is not None or payload.recycle_days is not None:
         before = serialize_pool_rule(pool) if pool else None
         if pool is None:
@@ -931,7 +990,7 @@ async def save_unrated_rules(
             config["days"] = payload.reminder_days
         config["levels"] = ["UNRATED"]
         task.trigger_config = config
-        task.action_config = {"title": "未分级客户久未联系，请跟进并了解客户后评级", "type": "followup"}
+        task.action_config = reminder_action
         task.status = "active" if payload.reminder_enabled else "inactive"
         await session.flush()
         await write_audit(session, operator_id=user.id, action="update" if before else "create",

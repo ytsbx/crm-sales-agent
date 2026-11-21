@@ -1,5 +1,5 @@
 # 这是【下限清单】：只写「至少要什么」，给人看、给人改。
-# 真正部署请用 requirements.lock.txt（安装后 pip freeze 生成，逐条钉死版本）。
+# 安装请用 requirements.lock.txt，更新方式见 README。
 fastapi>=0.115
 uvicorn[standard]>=0.30
 sqlalchemy[asyncio]>=2.0

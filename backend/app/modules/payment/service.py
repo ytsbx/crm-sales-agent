@@ -3,9 +3,10 @@
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.audit import AuditLog, write_audit
 from app.core.errors import AppError, ErrorCode
 from app.core.timebase import today_business
 from app.modules.file.model import FileRecord
@@ -92,10 +93,24 @@ def plan_received_expression():
 
 
 def plan_overdue_expression():
-    from sqlalchemy import and_, or_
     return and_(ReceivablePlan.status != "cancelled", ReceivablePlan.due_date.is_not(None),
                 ReceivablePlan.amount > func.coalesce(plan_received_expression(), 0),
                 or_(ReceivablePlan.status == "overdue", ReceivablePlan.due_date < today_business()))
+
+
+def manual_overdue_action(plan_id):
+    return (
+        select(AuditLog.action)
+        .where(
+            AuditLog.business_type == "receivable_plan",
+            AuditLog.business_id == plan_id,
+            AuditLog.action.in_(("mark_overdue", "clear_manual_overdue")),
+        )
+        .order_by(AuditLog.id.desc())
+        .limit(1)
+        .correlate(ReceivablePlan)
+        .scalar_subquery()
+    )
 
 
 async def confirmed_amounts(session, plan_ids):
@@ -213,10 +228,9 @@ async def allocate_payment(
         )
     )
     await session.flush()
-    manual_total = sum((Decimal(row.amount or 0) for row in manual_rows), Decimal(0))
-    remaining = Decimal(record.received_amount or 0) - manual_total
+    remaining = Decimal(record.received_amount or 0)
     if remaining <= 0:
-        return manual_total
+        return ZERO
 
     # ② 各期还缺多少（按到期日从早到晚；同日按 id，保证顺序确定）
     plans = (
@@ -229,20 +243,15 @@ async def allocate_payment(
             .order_by(ReceivablePlan.due_date.asc(), ReceivablePlan.id.asc())
         )
     ).scalars().all()
-    manual_by_plan: dict[int, Decimal] = {}
-    for row in manual_rows:
-        manual_by_plan[row.plan_id] = manual_by_plan.get(row.plan_id, Decimal(0)) + Decimal(
-            row.amount or 0
-        )
-
-    allocated = Decimal(0)
+    allocated = ZERO
     now = datetime.now(UTC)
     for plan in plans:
         if remaining <= 0:
             break
-        need = Decimal(plan.amount or 0) - manual_by_plan.get(plan.id, Decimal(0))
         # 自动分配只填**当前还没有被任何确认回款覆盖**的空缺
-        need -= await _auto_allocated_excluding(session, plan.id, record.id)
+        need = Decimal(plan.amount or 0) - await _auto_allocated_excluding(
+            session, plan.id, record.id
+        )
         if need <= 0:
             continue
         take = min(need, remaining)
@@ -261,7 +270,7 @@ async def allocate_payment(
         allocated += take
         remaining -= take
     await session.flush()
-    return manual_total + allocated
+    return allocated
 
 
 async def rebalance_order_allocations(
@@ -393,6 +402,10 @@ async def recalc_plan(session: AsyncSession, plan: ReceivablePlan) -> None:
         return
     received = await confirmed_amount(session, plan.id)
     amount = plan.amount or ZERO
+    today = today_business()
+    manual_overdue = False
+    if plan.status == "overdue" and (received >= amount or (plan.due_date is not None and plan.due_date >= today)):
+        manual_overdue = await session.scalar(select(manual_overdue_action(plan.id))) == "mark_overdue"
     # ⚠️ 判据只看**余额**，不看"收过钱没有"（2026-10-14 审查补）。
     # 原来是 `received > 0 and received >= amount`：`amount == 0` 且没收过钱的节点
     # 余额本来就是 0（`is_plan_overdue` 用 `balance > 0` 也判它不逾期），
@@ -404,8 +417,15 @@ async def recalc_plan(session: AsyncSession, plan: ReceivablePlan) -> None:
     # 建出 0 元期时留下一个永远待回款的行。
     if received >= amount:
         plan.status = "paid"
+        if manual_overdue:
+            await write_audit(
+                session, operator_id=None, source="SYSTEM", action="clear_manual_overdue",
+                business_type="receivable_plan", business_id=plan.id,
+                before={"status": "overdue"}, after={"status": "paid"},
+            )
     elif is_plan_overdue(
-        status=plan.status, balance=amount - received, due_date=plan.due_date, today=today_business()
+        status="overdue" if manual_overdue else "pending",
+        balance=amount - received, due_date=plan.due_date, today=today,
     ):
         plan.status = "overdue"
     elif received > 0:
@@ -414,32 +434,35 @@ async def recalc_plan(session: AsyncSession, plan: ReceivablePlan) -> None:
         plan.status = "pending"
 
 
-async def refresh_overdue_plans(session: AsyncSession) -> int:
-    """把"时间自己走过、没人写库"的应收节点状态刷新一遍（每日定时任务调用）。
-
-    为什么要这个：逾期与否取决于**今天**，而 `recalc_plan` 只在有人写节点/
-    确认回款/取消订单时被调用。一张 9 月到期的应收如果 10 月没人碰过，
-    它的状态会一直停在 `pending`/`partial`，界面上看不出逾期。
-    本函数扫"未收齐 且 已过期 且 状态还不是 overdue"的节点，逐个走 `recalc_plan`
-    （同一条判据，不写第二份），返回刷新条数。
-
-    只扫到期日已过、状态未终态、且金额大于已确认回款的行 —— 一条 SQL 捞出来，
-    不受数据量增长影响。
-    """
-    order_ids = (await session.execute(select(ReceivablePlan.order_id).where(
-        plan_overdue_expression()).distinct().order_by(ReceivablePlan.order_id))).scalars().all()
+async def refresh_overdue_plans(session: AsyncSession, *, commit_per_order: bool = False) -> int:
+    """刷新新逾期以及延期后仍显示为自动逾期的节点。"""
+    candidates = or_(
+        and_(ReceivablePlan.status != "overdue", plan_overdue_expression()),
+        and_(
+            ReceivablePlan.status == "overdue",
+            ReceivablePlan.due_date >= today_business(),
+            manual_overdue_action(ReceivablePlan.id).is_distinct_from("mark_overdue"),
+        ),
+    )
+    order_ids = (await session.execute(
+        select(ReceivablePlan.order_id)
+        .join(SalesOrder, SalesOrder.id == ReceivablePlan.order_id)
+        .where(SalesOrder.status != "cancelled", candidates)
+        .distinct().order_by(ReceivablePlan.order_id)
+    )).scalars().all()
     changed = 0
     for oid in order_ids:
         order = await lock_order(session, oid)
-        if order is None or order.status == "cancelled":
-            continue
-        plans = (await session.execute(select(ReceivablePlan).where(
-            ReceivablePlan.order_id == oid, ReceivablePlan.status != "cancelled")
-            .order_by(ReceivablePlan.id).with_for_update().execution_options(populate_existing=True))).scalars().all()
-        for plan in plans:
-            before = plan.status
-            await recalc_plan(session, plan)
-            changed += plan.status != before
+        if order is not None and order.status != "cancelled":
+            plans = (await session.execute(select(ReceivablePlan).where(
+                ReceivablePlan.order_id == oid, candidates)
+                .order_by(ReceivablePlan.id).with_for_update().execution_options(populate_existing=True))).scalars().all()
+            for plan in plans:
+                before = plan.status
+                await recalc_plan(session, plan)
+                changed += plan.status != before
+        if commit_per_order:
+            await session.commit()
     return changed
 
 

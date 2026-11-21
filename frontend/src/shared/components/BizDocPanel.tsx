@@ -47,6 +47,12 @@ interface Props {
   compact?: boolean
   /** 紧凑模式下的空态文案（不传用通用的） */
   compactEmptyText?: string
+  /**
+   * 紧凑空态但容器本身很宽（订单详情、样品抽屉这类整块区）：
+   * 说明一句话放得下，按钮就该留在右上同行，不要再折到第二行去。
+   * 不传则按窄列处理（说明在上、按钮在下）。
+   */
+  emptyInline?: boolean
 }
 
 const SOURCE_LABEL: Record<string, string> = {
@@ -63,6 +69,7 @@ export default function BizDocPanel({
   canManage,
   compact = false,
   compactEmptyText = '还没有生成过',
+  emptyInline = false,
 }: Props) {
   const queryClient = useQueryClient()
   const queryKey = ['biz-docs', docType, sampleRequestId ?? orderId ?? quoteId]
@@ -125,9 +132,10 @@ export default function BizDocPanel({
           // 空态没有表格要并排，改成"说明在上、按钮在下"，
           // 说明能用满整列宽（两行），和旁边「合同文档」那列的排法一致。
           display: 'flex',
-          flexDirection: compactEmpty ? 'column' : 'row',
-          alignItems: compactEmpty ? 'flex-start' : 'center',
-          gap: compactEmpty ? 10 : 12,
+          // 宽容器里空态也保持"说明在左、按钮在右"同行
+          flexDirection: compactEmpty && !emptyInline ? 'column' : 'row',
+          alignItems: compactEmpty && !emptyInline ? 'flex-start' : 'center',
+          gap: compactEmpty && !emptyInline ? 10 : 12,
           marginBottom: compactEmpty ? 0 : 10,
           fontSize: 12,
           color: 'var(--crm-text-2)',

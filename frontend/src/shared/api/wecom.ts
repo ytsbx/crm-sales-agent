@@ -13,6 +13,7 @@ export interface WeComReadiness {
   }
   can_sync_contact: boolean
   can_sync_external: boolean
+  transfer_enabled: boolean
   counts: {
     wecom_users: number
     external_contacts: number
@@ -80,6 +81,10 @@ export interface WeComSyncJob {
   fail_count: number
   error_message?: string | null
   detail?: Record<string, unknown> | null
+}
+
+export function listWeComTransferPeople() {
+  return api.get<Array<{ id: number; name: string; username: string; status: string }>>('/integrations/wecom/transfer-people')
 }
 
 export function getWeComReadiness() {
@@ -151,9 +156,12 @@ export function ignoreUnboundContact(contactId: number, reason?: string) {
   )
 }
 
-export function transferWeComRelations(payload: {
+export interface WeComTransferPeopleSelection {
   handover_user_id: number
   takeover_user_id: number
+}
+
+export function transferWeComRelations(payload: WeComTransferPeopleSelection & {
   transfer_wecom: boolean
   /** 逐项接手人：键 `"{kind}:{business_id}"`，不指定的项跟 takeover_user_id */
   item_assignees?: Record<string, number>

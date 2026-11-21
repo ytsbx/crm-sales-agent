@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
+from app.core.draft_visibility import draft_scope, ensure_draft_access
 from app.core.errors import AppError, ErrorCode
 # 附件写入的锁定判据只有一处（`file/access.py`），上传闸门与本处共用同一份
 from app.modules.file.access import sample_write_lock_label_for
@@ -222,9 +223,8 @@ async def apply_data_scope(
 ) -> Select:
     """按负责人数据范围过滤，与其他业务模块一致（department_and_sub 会递归到下级）。"""
     owner_ids = await scoped_owner_ids(session, user)
-    if owner_ids is None:
-        return stmt
-    return stmt.where(SampleRequest.owner_id.in_(owner_ids))
+    scope = SampleRequest.owner_id.in_(owner_ids) if owner_ids is not None else None
+    return stmt.where(draft_scope(SampleRequest, user.id, scope))
 
 
 def build_list_stmt(
@@ -319,7 +319,8 @@ async def get_visible_or_404(
             raise AppError(ErrorCode.NOT_FOUND, "样品申请不存在", 404)
     else:
         request = await get_or_404(session, sample_id, include_deleted=allow_deleted)
-    await ensure_in_scope(session, user, owner_id=request.owner_id, label="样品申请")
+    if not await ensure_draft_access(session, SampleRequest, request.id, user.id):
+        await ensure_in_scope(session, user, owner_id=request.owner_id, label="样品申请")
     if for_update and not allow_external_flow:
         from app.modules.sample.dingtalk import ensure_editable
         ensure_editable(request)

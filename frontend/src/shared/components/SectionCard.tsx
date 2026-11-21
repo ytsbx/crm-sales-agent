@@ -56,7 +56,23 @@ export default function SectionCard({
             )}
             {typeof title === 'string' ? <span className="card-title" title={title}>{title}</span> : title}
           </span>
-          {extra}
+          {/* extra 必须整组包成**一个** flex item：直接摊开的话，
+              每个按钮都会成为标题行里的独立项，space-between 把它们分别顶到
+              中间和右端 —— 客户详情的「客户总结」就孤零零飘在标题右边一半的位置，
+              「跟进建议」却贴在卡片右上角。包一层之后，整组动作始终靠右对齐。 */}
+          {extra && (
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: 8,
+                marginLeft: 'auto',
+              }}
+            >
+              {extra}
+            </span>
+          )}
         </div>
       )}
       {children}

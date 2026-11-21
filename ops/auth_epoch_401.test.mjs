@@ -39,15 +39,15 @@ const source = readFileSync(
  * 整文件 transpile 会在 import axios / zustand store 时炸（Node 里没这些运行时），
  * 而我们要测的就是这一小段没有依赖的判据。
  */
-function loadJudgement() {
+function loadJudgement(globals = {}) {
   const start = source.indexOf('export function belongsToCurrentLogin')
   assert.ok(start > 0, 'client.ts 里找不到 belongsToCurrentLogin —— 判据被改名或删了？')
-  const body = source.slice(start, source.indexOf('\n}', start) + 2)
+  const body = source.slice(start, source.indexOf('http.interceptors.request.use', start))
   const compiled = ts.transpileModule(body, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText
   const exports = {}
-  runInNewContext(compiled, { exports, module: { exports } })
+  runInNewContext(compiled, { exports, module: { exports }, ...globals })
   return exports
 }
 
@@ -80,4 +80,24 @@ test('拦截器真的把代次记在请求上、并在 401 时比对（接线检
     /belongsToCurrentLogin\(sentAt,\s*currentAuthEpoch\(\)\)/.test(source),
     '401 处理没有用 belongsToCurrentLogin 比对，仍是无条件清登录态',
   )
+})
+
+test('会话失效时保留业务地址，旧请求的拒绝不会跳转', () => {
+  const redirects = []
+  let cleared = 0
+  const { handleSessionRejection } = loadJudgement({
+    currentAuthEpoch: () => 3,
+    useAuthStore: { getState: () => ({ clear: () => { cleared += 1 } }) },
+    window: { location: {
+      pathname: '/customers/1', search: '?tab=files', hash: '#attachment',
+      replace: (url) => redirects.push(url),
+    } },
+    loginUrl: (path) => '/login?next=' + encodeURIComponent(path),
+  })
+  handleSessionRejection(2, true)
+  assert.equal(cleared, 0)
+  assert.deepEqual(redirects, [])
+  handleSessionRejection(3, true)
+  assert.equal(cleared, 1)
+  assert.deepEqual(redirects, ['/login?next=%2Fcustomers%2F1%3Ftab%3Dfiles%23attachment&session=expired'])
 })

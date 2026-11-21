@@ -77,12 +77,14 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-          cache-dependency-path: backend/requirements.txt
+          cache-dependency-path: |
+            backend/requirements.lock.txt
+            backend/requirements-dev.txt
 
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt -r requirements-dev.txt pyflakes
+          pip install -r requirements.lock.txt -r requirements-dev.txt pyflakes
 
       - name: 迁移到最新表结构（空库 → head）
         run: |
@@ -232,7 +234,7 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-          cache-dependency-path: backend/requirements.txt
+          cache-dependency-path: backend/requirements.lock.txt
 
       - uses: actions/setup-node@v4
         with:
@@ -250,7 +252,7 @@ jobs:
       - name: 后端：装依赖 → 迁移 → 种子 → 启动
         working-directory: backend
         run: |
-          pip install -r requirements.txt
+          pip install -r requirements.lock.txt
           PYTHONPATH=. python -m alembic upgrade head
           PYTHONPATH=. python scripts/seed.py
           PYTHONPATH=. nohup python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/backend.log 2>&1 &

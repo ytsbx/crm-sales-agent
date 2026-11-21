@@ -16,6 +16,8 @@ from decimal import Decimal
 from sqlalchemy import Select, and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.audit import AuditLog
+from app.core.draft_visibility import draft_scope, private_draft
 from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.response import paginate
@@ -455,6 +457,30 @@ async def dashboard_summary(session: AsyncSession, user: CurrentUser) -> dict:
         )
     ).scalar_one()
 
+    # 本月回款（按**实际到账日**统计）—— 供工作台在"按确认时间"的主数字下补一行小字。
+    # 两个数的差 = 上月末到账、本月才确认的那几笔，不是算错（2026-11-21 主人要求显式并列）。
+    # ⚠️ `received_date` 是 `date` 列，不能用 `business_month()`（它只给 timestamptz 用，
+    # 对 date 再套时区会整月偏移），直接 `extract` 即可。
+    month_received_by_arrival = (
+        await session.execute(
+            await _scope_filter(
+                select(func.coalesce(func.sum(PaymentRecord.received_amount), 0))
+                .select_from(PaymentRecord)
+                .join(SalesOrder, SalesOrder.id == PaymentRecord.order_id)
+                .where(
+                    PaymentRecord.status == "confirmed",
+                    func.extract("year", PaymentRecord.received_date)
+                    == func.extract("year", func.now()),
+                    func.extract("month", PaymentRecord.received_date)
+                    == func.extract("month", func.now()),
+                ),
+                user,
+                _sales_owner_col(),
+                session,
+            )
+        )
+    ).scalar_one()
+
     # 逾期口径（2026-10-13 主人拍板统一）：**到期日已过且没收齐**即逾期，
     # 收过部分款也算。从前这里比的是 `status == "overdue"`，而状态列既会被
     # "收过 1 元"挡住（旧口径），也可能因"时间自己走过、没人写库"而过期没刷新
@@ -513,6 +539,7 @@ async def dashboard_summary(session: AsyncSession, user: CurrentUser) -> dict:
         "month_order_discount_amount": _f(month_order_discount_amount),
         "month_order_unverified_count": int(month_order_unverified_count),
         "month_received_amount": _f(month_received),
+        "month_received_by_arrival_amount": _f(month_received_by_arrival),
         "pending_receivable_amount": _f(pending_receivable),
         "overdue_receivable_count": int(overdue_receivable),
         "open_lead_count": int(open_leads),
@@ -611,7 +638,11 @@ async def recent_activities(
 
     conditions = [
         AuditLog.business_type.is_not(None),
-        AuditLog.action.not_in(["login"]),
+        AuditLog.action.not_in(["login", "logout"]),
+        # 登录/登出这类纯会话事件不算业务动态：它们的 business_type 是 "auth"，
+        # 只按 action 过滤时「某某 登出」会混进团队动态，一屏八条里两条是登出，
+        # 看不出团队今天到底在干什么（2026-11-20 实拍工作台）。
+        AuditLog.business_type != "auth",
     ]
     owner_ids = await scoped_owner_ids(session, user)
     if owner_ids is not None:
@@ -658,6 +689,11 @@ async def recent_activities(
         "quote_item": "报价明细",
         "logistics_quote": "物流试算",
         "auth": "登录",
+        # 业务对象名要写全，「更新记录」看不出改的是哪类东西（2026-11-20 实拍动态流）。
+        "inquiry": "定制需求",
+        "case": "案例",
+        "contract": "合同",
+        "integration": "企微数据",
     }
     action_label = {
         "create": "新建",
@@ -684,12 +720,17 @@ async def recent_activities(
         "transfer": "转移负责人",
         "convert": "线索转化",
         "upload": "上传",
+        # 这两个原本漏了：动态流里直接印出英文 action（「revise记录」
+        # 「wecom_sync_follow_relations记录」），一眼就是没做完的界面（2026-11-20 实拍）。
+        "revise": "修订",
+        "wecom_sync_follow_relations": "同步",
     }
+    # action 与对象之间要有空格：「更新定制需求」读起来是两个词粘在一起。
     return [
         {
             "id": row.id,
             "operator": name or "系统",
-            "title": f"{action_label.get(row.action, row.action)}{label.get(row.business_type or '', '记录')}",
+            "title": f"{action_label.get(row.action, row.action)} {label.get(row.business_type or '', '记录')}",
             "business_type": row.business_type,
             "business_id": row.business_id,
             "source": row.source,
@@ -822,6 +863,10 @@ async def funnel(session: AsyncSession, user: CurrentUser) -> list[dict]:
             "amount": stats.get(stage.id, (0, 0.0))[1],
         }
         for stage in stages
+        # 进行中商机的阶段分布：`status='open'` 已过滤成交商机，这里再把
+        # **成交阶段**本身剔掉，否则图上永远挂一根「成交 0」的空柱
+        # （2026-11-21 巡检；与工作台「各阶段在谈商机分布」同一口径）。
+        if not stage.is_win
     ]
 
 
@@ -979,7 +1024,7 @@ async def quote_stats(session: AsyncSession, user: CurrentUser) -> dict:
         # 同模块的 `product_stats` 明确写了"已删除的报价整单排除"，两处口径本就该一致。
         await session.execute(
             await _scope_filter(
-                select(Quote).where(Quote.deleted_at.is_(None)),
+                select(Quote).where(Quote.deleted_at.is_(None), draft_scope(Quote, user.id)),
                 user,
                 Quote.owner_id,
                 session,
@@ -995,6 +1040,7 @@ async def quote_stats(session: AsyncSession, user: CurrentUser) -> dict:
             "accept_rate": 0,
             "approval_rate": 0,
             "accepted_count": 0,
+            "sent_count": 0,
             "approval_required_count": 0,
         }
 
@@ -1040,6 +1086,7 @@ async def quote_stats(session: AsyncSession, user: CurrentUser) -> dict:
         "accept_rate": round(accepted / sent, 4) if sent else 0,
         "approval_rate": round(approval_required / total_versions, 4) if total_versions else 0,
         "accepted_count": accepted,
+        "sent_count": sent,
         "approval_required_count": approval_required,
     }
 
@@ -1199,6 +1246,10 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
                     QuoteVersion.version_no.label("version_no"),
                     is_formal.label("is_formal"),
                     QuoteItem.quantity,
+                    # 定制项（无 SKU）在库里只有明细快照名，要一起取回来：
+                    # 否则这些明细会被聚成"未命名产品"，明明有名字却显示成无名。
+                    QuoteItem.sku_name_snapshot,
+                    QuoteItem.spec_snapshot,
                     # 预估毛利只在正式版本上累计（草稿的报价还没对外，不该算进"报价毛利"）
                     func.coalesce(QuoteItem.profit_snapshot * QuoteItem.quantity, 0).label(
                         "profit"
@@ -1216,14 +1267,29 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
     quoted: dict[int, dict] = {}
     # 同一报价单的 V1/V2 是修订，不是两次独立报价；正式毛利只取该报价单该产品的最新正式版本。
     latest_formal: dict[tuple[int | None, int], int] = {}
-    for sku_id, quote_id, version_id, version_no, formal, quantity, profit in quote_rows:
-        if formal:
-            key = (sku_id, quote_id)
-            latest_formal[key] = max(latest_formal.get(key, 0), version_no or 0)
+    # 无 SKU 的定制项**不能都塞进同一个"None 桶"**：它们的产品完全不同
+    # （中空板箱、纸托、围板箱、家电外箱…），混成一行会把"防静电周转箱"当代表，
+    # 其余产品全被算到它头上（2026-11-21 巡检实测）。用快照名当分组键，
+    # 每个定制项单独成行；有 SKU 的仍按 SKU 归并。
+    def _bucket(sid: int | None, nm: str | None) -> object:
+        return sid if sid is not None else f"n:{nm or '定制项'}"
 
-    for sku_id, quote_id, version_id, version_no, formal, quantity, profit in quote_rows:
+    name_fallback: dict[object, tuple] = {}
+    for row in quote_rows:
+        sku_id, quote_id, version_id, version_no, formal, quantity, q_name, q_spec, profit = row
+        bid = _bucket(sku_id, q_name)
+        if sku_id is None and (q_name or q_spec):
+            name_fallback.setdefault(bid, (q_name, q_spec))
+        if formal:
+            latest_formal[(bid, quote_id)] = max(
+                latest_formal.get((bid, quote_id), 0), version_no or 0
+            )
+
+    for row in quote_rows:
+        sku_id, quote_id, version_id, version_no, formal, quantity, q_name, q_spec, profit = row
+        bid = _bucket(sku_id, q_name)
         acc = quoted.setdefault(
-            sku_id,
+            bid,
             {
                 "draft_times": 0,
                 "formal_times": 0,
@@ -1237,7 +1303,7 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
         if formal:
             acc["formal_times"] += 1
             acc["formal_quotes"].add(quote_id)
-            if (version_no or 0) == latest_formal[(sku_id, quote_id)]:
+            if (version_no or 0) == latest_formal[(bid, quote_id)]:
                 acc["profit"] += float(profit or 0)
         else:
             acc["draft_times"] += 1
@@ -1275,13 +1341,18 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
     if not sku_ids:
         return []
 
-    meta_rows = (
-        await session.execute(
-            select(Sku.id, Sku.sku_code, Sku.specification, Product.name)
-            .join(Product, Product.id == Sku.product_id)
-            .where(Sku.id.in_(sku_ids))
-        )
-    ).all()
+    # `quoted` 的键可能是 int（有 SKU）或 "n:名称"（无 SKU 的定制项），
+    # 查 SKU 主数据只取 int 的那部分。
+    int_ids = [sid for sid in sku_ids if isinstance(sid, int)]
+    meta_rows = []
+    if int_ids:
+        meta_rows = (
+            await session.execute(
+                select(Sku.id, Sku.sku_code, Sku.specification, Product.name)
+                .join(Product, Product.id == Sku.product_id)
+                .where(Sku.id.in_(int_ids))
+            )
+        ).all()
     meta = {row[0]: row[1:] for row in meta_rows}
 
     # 成本口径字段按权限（与查价/报价详情同判据，issue #5）
@@ -1291,26 +1362,34 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
         "versions": set(), "formal_quotes": set(), "profit": 0.0,
     }
     items = []
-    for sku_id in sku_ids:
-        code, spec, product_name = meta.get(sku_id, (None, None, None))
-        acc = quoted.get(sku_id, empty)
+    for bid in sku_ids:
+        sid: int | None
+        if isinstance(bid, int):
+            code, spec, product_name = meta.get(bid, (None, None, None))
+            sid = bid
+        else:
+            # 定制项：名称/规格取明细快照；产品名留空（没有主数据可挂）
+            fb_name, fb_spec = name_fallback.get(bid, (None, None))
+            code, spec, product_name = fb_name, fb_spec, None
+            sid = None
+        acc = quoted.get(bid, empty)
         items.append(
             {
-                "sku_id": sku_id,
+                "sku_id": sid,
                 "sku_code": code,
                 "specification": spec,
                 "product_name": product_name,
                 # 需求热度（客户问过）
-                "inquiry_times": inquiry.get(sku_id, 0),
+                "inquiry_times": inquiry.get(bid, 0),
                 # 报价侧：草稿与正式分开；正式按**报价单**去重
                 "quote_draft_times": acc["draft_times"],
                 "quote_formal_times": len(acc["formal_quotes"]),
                 "version_revision_times": len(acc["versions"]),
                 "quote_quantity": round(acc["quantity"], 2),
                 # 成交（商机事实）与实际卖出的量（订单事实）
-                "won_times": won.get(sku_id, 0),
-                "lost_times": lost.get(sku_id, 0),
-                "order_won_quantity": order_won.get(sku_id, 0.0),
+                "won_times": won.get(bid, 0),
+                "lost_times": lost.get(bid, 0),
+                "order_won_quantity": order_won.get(bid, 0.0),
                 # 报价预估毛利 —— 不是实际利润。无权限者为 None
                 "quote_estimated_profit": (
                     round(acc["profit"], 2) if can_see_cost else None
@@ -1348,7 +1427,7 @@ async def sales_user_stats(
         # `customer_count` / `opportunity_count` 都带了，只有它没带 —— 人员榜的
         # "报价数"于是把已删除的报价算成业绩过程量。
         select(func.count(Quote.id))
-        .where(Quote.owner_id == User.id, Quote.deleted_at.is_(None))
+        .where(Quote.owner_id == User.id, Quote.deleted_at.is_(None), draft_scope(Quote, user.id))
         .scalar_subquery(),
         # 签单额按**签单归属**（不是当前负责人）：销售离职交接后，
         # 他谈下来的单子仍算他的成绩（文档 :61「交接后保留历史业绩归属」）
@@ -1488,10 +1567,13 @@ async def loss_reason_stats(session: AsyncSession, user: CurrentUser) -> list[di
 # 03-API §35 里列出但此前缺失的三个整接口：leads / pricing / payments
 
 async def lead_stats(session: AsyncSession, user: CurrentUser) -> dict:
-    """线索分析：来源分布、状态分布、转化率、平均转化时长、无效原因。
+    """线索分析：来源分布、状态分布、转化率、无效原因。
 
     线索池里 owner_id 为空的（未分配）也算进总量，否则管理员看到的
     "待分配线索"会凭空消失；但已分配的按数据范围过滤。
+
+    不统计"平均转化天数"（2026-11-21 主人明确：这个不需要统计）：
+    `leads` 没有 converted_at 列，只能从审计日志里反推，口径不可靠。
     """
     stmt = select(Lead).where(Lead.deleted_at.is_(None))
     owner_ids = await scoped_owner_ids(session, user)
@@ -1504,7 +1586,6 @@ async def lead_stats(session: AsyncSession, user: CurrentUser) -> dict:
     by_source: dict[str, int] = {}
     by_status: dict[str, int] = {}
     invalid_reasons: dict[str, int] = {}
-    conversion_days: list[float] = []
 
     for lead in leads:
         by_source[lead.source or "未填写"] = by_source.get(lead.source or "未填写", 0) + 1
@@ -1512,16 +1593,6 @@ async def lead_stats(session: AsyncSession, user: CurrentUser) -> dict:
         if lead.status == "invalid":
             key = (lead.invalid_reason or "未填写").strip()
             invalid_reasons[key] = invalid_reasons.get(key, 0) + 1
-        if lead.status == "converted" and lead.created_at and lead.updated_at:
-            # 转化时长用「创建 → 最后更新」近似。线索表没有单独的 converted_at，
-            # 转化时会更新该行，所以这是最接近的可用口径。
-            created = lead.created_at
-            updated = lead.updated_at
-            if created.tzinfo is None:
-                created = created.replace(tzinfo=UTC)
-            if updated.tzinfo is None:
-                updated = updated.replace(tzinfo=UTC)
-            conversion_days.append((updated - created).total_seconds() / 86400)
 
     total = len(leads)
     converted = by_status.get("converted", 0)
@@ -1529,9 +1600,6 @@ async def lead_stats(session: AsyncSession, user: CurrentUser) -> dict:
         "total": total,
         "converted_count": converted,
         "conversion_rate": round(converted / total, 4) if total else 0,
-        "average_conversion_days": (
-            round(sum(conversion_days) / len(conversion_days), 1) if conversion_days else None
-        ),
         "by_source": [
             {"name": k, "value": v} for k, v in sorted(by_source.items(), key=lambda x: -x[1])
         ],
@@ -1557,6 +1625,10 @@ async def pricing_stats(session: AsyncSession, user: CurrentUser) -> dict:
         .join(QuoteVersion, QuoteVersion.id == QuoteItem.quote_version_id)
         .join(Quote, Quote.id == QuoteVersion.quote_id)
         .outerjoin(Customer, Customer.id == Quote.customer_id)
+        .where(Quote.deleted_at.is_(None), draft_scope(Quote, user.id),
+               or_(~private_draft(QuoteVersion), func.coalesce(
+                   QuoteVersion.created_by, Quote.created_by, Quote.owner_id,
+               ) == user.id))
     )
     rows = (
         await session.execute(await _scope_filter(stmt, user, Quote.owner_id, session))
@@ -2079,25 +2151,25 @@ async def team_summary(session: AsyncSession, user: CurrentUser) -> dict:
     members = (await session.execute(member_stmt.order_by(User.id.asc()))).scalars().all()
     member_ids = [m.id for m in members]
 
-    # 团队任务 / 逾期
-    team_task_count = (
+    # 用同一批数据计算团队总数和停用员工小计，无负责人任务仍计入原团队口径。
+    disabled = User.status == "disabled"
+    overdue = Task.due_at < now
+    team_task_count, team_overdue_count, disabled_task_count, disabled_overdue_count = (
         await session.execute(
             scoped(
-                select(func.count(Task.id)).where(Task.status.in_(["pending", "doing"])),
+                select(
+                    func.count(Task.id),
+                    func.count(Task.id).filter(overdue),
+                    func.count(Task.id).filter(disabled),
+                    func.count(Task.id).filter(disabled, overdue),
+                )
+                .select_from(Task)
+                .outerjoin(User, User.id == Task.owner_id)
+                .where(Task.status.in_(["pending", "doing"])),
                 Task.owner_id,
             )
         )
-    ).scalar_one()
-    team_overdue_count = (
-        await session.execute(
-            scoped(
-                select(func.count(Task.id)).where(
-                    Task.due_at < now, Task.status.in_(["pending", "doing"])
-                ),
-                Task.owner_id,
-            )
-        )
-    ).scalar_one()
+    ).one()
 
     # 待审批报价（团队提交的）
     pending_approval = (
@@ -2132,13 +2204,18 @@ async def team_summary(session: AsyncSession, user: CurrentUser) -> dict:
     # `Opportunity` 没有 `won_at` 列，正确来源就是阶段历史 —— 与
     # `opportunity_cycle`（:896 用 max(entered_at)）同一份数据。
     won_ids = _won_this_month_cte(month_start)
-    won_count, won_amount = (
+    won_count, won_amount, disabled_won_count, disabled_won_amount = (
         await session.execute(
             scoped(
                 select(
                     func.count(Opportunity.id),
                     func.coalesce(func.sum(Opportunity.expected_amount), 0),
-                ).where(Opportunity.id.in_(won_ids)),
+                    func.count(Opportunity.id).filter(disabled),
+                    func.coalesce(func.sum(Opportunity.expected_amount).filter(disabled), 0),
+                )
+                .select_from(Opportunity)
+                .outerjoin(User, User.id == Opportunity.owner_id)
+                .where(Opportunity.id.in_(won_ids)),
                 Opportunity.owner_id,
             )
         )
@@ -2243,6 +2320,11 @@ async def team_summary(session: AsyncSession, user: CurrentUser) -> dict:
         "team_won_count_this_month": int(won_count),
         "team_won_amount_this_month": _f(won_amount),
         "members": per_member,
+        "disabled_members": {
+            "todo_count": int(disabled_task_count),
+            "overdue_count": int(disabled_overdue_count),
+            "won_amount_this_month": _f(disabled_won_amount),
+        } if disabled_task_count or disabled_won_count else None,
         "risky_opportunities": risky,
         "funnel": team_funnel,
     }

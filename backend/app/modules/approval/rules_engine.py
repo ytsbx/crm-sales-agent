@@ -38,32 +38,32 @@ from app.modules.order.model import SalesOrder
 # 前端编辑器的字段/操作符下拉、沙盒的展示文案都以这份目录为准（单一事实来源）。
 CONTEXT_FIELDS = [
     {"field": "total_amount", "label": "报价总金额", "value_type": "number", "unit": "元",
-     "ops": ["gte", "lte"], "hint": "人民币口径，外币按快照汇率折算"},
+     "ops": ["gte", "gt", "lte", "lt"], "hint": "人民币口径"},
     #: ⚠️ `cost_sensitive=True` = **由成本推出的字段**（第十批审查 ③，2026-10-13）。
     #: 没有 `price:manage` 的人拿到它就能反推成本：
     #: 售价 100、毛利率 80% → 成本 20。所有读出口（沙盒、审批详情）必须按权限
     #: 置空，见 `strip_cost_context`。
     {"field": "gross_margin", "label": "综合毛利率", "value_type": "number", "unit": "%",
-     "ops": ["gte", "lte"], "cost_sensitive": True,
+     "ops": ["gte", "gt", "lte", "lt"], "cost_sensitive": True,
      "hint": "整单（含运费）的加权毛利率"},
     {"field": "min_item_margin", "label": "最低明细毛利率", "value_type": "number", "unit": "%",
-     "ops": ["gte", "lte"], "cost_sensitive": True,
+     "ops": ["gte", "gt", "lte", "lt"], "cost_sensitive": True,
      "hint": "所有明细里最差一行的毛利率"},
     {"field": "customer_level", "label": "客户等级", "value_type": "string", "unit": "",
      "ops": ["in", "eq"], "hint": "客户档案上的等级（A/B/C/D）"},
     {"field": "customer_has_overdue", "label": "客户有逾期应收", "value_type": "bool", "unit": "",
      "ops": ["eq"], "hint": "该客户名下存在逾期状态的应收计划"},
     {"field": "concession_amount", "label": "较上一版让价金额", "value_type": "number", "unit": "元",
-     "ops": ["gte", "lte"], "hint": "上一版本总额 − 本版本总额，无上一版按 0 算"},
+     "ops": ["gte", "gt", "lte", "lt"], "hint": "上一版本总额 − 本版本总额，无上一版按 0 算"},
     {"field": "payment_terms_days", "label": "账期天数", "value_type": "number", "unit": "天",
-     "ops": ["gte", "lte"],
+     "ops": ["gte", "gt", "lte", "lt"],
      # ⚠️ 这句提示是给配规则的人看的：识别不出时**不是** 0（现款），而是"无数据"，
      # 规则会**未命中**（2026-10-12 第四批审查 P1：从前按 0 算，导致
      # "预付30%，余款月结60天"被当成 30 天，配上"账期≤30免审"就绕过了审批）
      "hint": "从付款条件里识别的天数；识别不出时该单此字段为「无数据」，本条件不成立"},
 ]
 
-OPS_LABEL = {"gte": "≥", "lte": "≤", "eq": "=", "in": "属于"}
+OPS_LABEL = {"gte": "≥", "gt": ">", "lte": "≤", "lt": "<", "eq": "=", "in": "属于"}
 
 VALID_KINDS = ("auto_pass", "express", "exception_route")
 
@@ -153,6 +153,10 @@ def evaluate_conditions(conditions: list[dict], ctx: dict) -> tuple[bool, list[d
                 hit = actual >= expected
             elif op == "lte":
                 hit = actual <= expected
+            elif op == "gt":
+                hit = actual > expected
+            elif op == "lt":
+                hit = actual < expected
             elif op == "eq":
                 hit = actual == expected
             elif op == "in":
@@ -168,6 +172,28 @@ def evaluate_conditions(conditions: list[dict], ctx: dict) -> tuple[bool, list[d
             "actual": actual, "hit": hit,
         })
     return all_hit, detail
+
+
+def conditions_overlap(left: list[dict], right: list[dict]) -> bool:
+    """Check whether the two sets of AND conditions admit a common quote context."""
+    for meta in CONTEXT_FIELDS:
+        conditions = [c for c in (*left, *right) if c['field'] == meta['field']]
+        if not conditions:
+            continue
+        if meta['value_type'] == 'number':
+            lower = max(((c['value'], c['op'] == 'gt') for c in conditions
+                         if c['op'] in ('gte', 'gt')), default=None)
+            upper = min(((c['value'], c['op'] == 'lte') for c in conditions
+                         if c['op'] in ('lte', 'lt')), default=None)
+            if lower and upper:
+                if lower[0] > upper[0] or (lower[0] == upper[0] and (lower[1] or not upper[1])):
+                    return False
+        else:
+            first = conditions[0]
+            options = first['value'] if first['op'] == 'in' and isinstance(first['value'], list) else [first['value']]
+            if not any(evaluate_conditions(conditions, {meta['field']: value})[0] for value in options):
+                return False
+    return True
 
 
 def _cond_detail_pretty(detail: list[dict]) -> list[dict]:
@@ -656,7 +682,6 @@ async def load_active_rules(session: AsyncSession) -> list[tuple[ApprovalRule, d
         await session.execute(
             select(ApprovalRule)
             .where(ApprovalRule.enabled.is_(True), ApprovalRule.published_version_no > 0)
-            .order_by(ApprovalRule.priority.asc(), ApprovalRule.id.asc())
         )
     ).scalars().all()
     from app.modules.approval.model import ApprovalRuleVersion
@@ -675,6 +700,7 @@ async def load_active_rules(session: AsyncSession) -> list[tuple[ApprovalRule, d
         ).scalars().first()
         if snapshot is not None:
             result.append((rule, snapshot.payload))
+    result.sort(key=lambda entry: (entry[1].get("priority", 100), entry[0].id))
     return result
 
 

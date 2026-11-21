@@ -32,7 +32,7 @@ def test_formal_quote_uses_pricing_phase_not_whole_request(monkeypatch,overall,m
 
 
 def test_existing_quote_blocks_second_creation_before_business_writes(monkeypatch):
-    inquiry=Obj(id=1,root_id=None,opportunity_id=None)
+    inquiry=Obj(id=1,root_id=None,opportunity_id=None,deleted_at=None,status="open",superseded_at=None)
     session=Obj(execute=AsyncMock(return_value=Obj(scalar_one=lambda:inquiry)), refresh=AsyncMock())
     monkeypatch.setattr(service,'linked_quotes_for',AsyncMock(return_value={1:[{'id':8,'quote_no':'Q-8'}]}))
     validate=AsyncMock()
@@ -43,8 +43,10 @@ def test_existing_quote_blocks_second_creation_before_business_writes(monkeypatc
 
 
 def test_draft_preparation_does_not_wait_for_oa(monkeypatch):
-    inquiry=Obj(id=1,root_id=None,opportunity_id=None,customer_id=1,contact_id=None)
-    session=Obj(execute=AsyncMock(side_effect=[Obj(scalar_one=lambda:inquiry),Obj(scalars=lambda:Obj(all=lambda:[inquiry]))]),refresh=AsyncMock())
+    inquiry=Obj(id=1,root_id=None,opportunity_id=None,customer_id=1,contact_id=None,
+                deleted_at=None,status="open",superseded_at=None,version=1)
+    session=Obj(execute=AsyncMock(side_effect=[Obj(scalar_one=lambda:inquiry),Obj(first=lambda:None),
+                Obj(scalars=lambda:Obj(all=lambda:[inquiry]))]),refresh=AsyncMock())
     monkeypatch.setattr(service,'linked_quotes_for',AsyncMock(return_value={}))
     validate=AsyncMock(side_effect=RuntimeError('reached existing draft validation'))
     monkeypatch.setattr(service,'validate_links',validate)
@@ -112,3 +114,12 @@ async def test_actual_quote_draft_can_be_created_without_oa_and_not_duplicated(c
     with pytest.raises(AppError,match='已关联报价'):
         await service.create_quote_from_inquiry(session,inquiry=inquiry,user=USER,
             unit_cost=Decimal('6'),quoted_price=Decimal('12'))
+    inquiry.superseded_at = datetime.now(UTC)
+    await session.flush()
+    with pytest.raises(AppError, match="最新询价"):
+        await service.lock_quote_source(session, inquiry, quote_id=old_quote.id)
+    assert (await service.lock_quote_source(session, inquiry, quote_id=result["quote"].id)).id == inquiry.id
+    inquiry.status = "archived"
+    await session.flush()
+    with pytest.raises(AppError, match="已归档"):
+        await service.lock_quote_source(session, inquiry)

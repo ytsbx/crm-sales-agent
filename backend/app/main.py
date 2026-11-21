@@ -74,19 +74,21 @@ async def lifespan(_: FastAPI):
     from app.modules.wecom.client import reset_client
     from app.modules.dingtalk.oa_stream import oa_stream
 
-    start_scheduler()
-    oa_stream.start()
     try:
+        start_scheduler()
+        oa_stream.start()
         yield
     finally:
-        await oa_stream.stop()
         try:
-            stop_scheduler()
+            await oa_stream.stop()
         finally:
             try:
-                await reset_adapters()
+                stop_scheduler()
             finally:
-                await reset_client()
+                try:
+                    await reset_adapters()
+                finally:
+                    await reset_client()
 
 
 app = FastAPI(
@@ -176,8 +178,6 @@ async def health() -> dict:
     from sqlalchemy import text
 
     from app.core.database import SessionLocal
-    from app.core.scheduler import scheduler
-    from app.modules.dingtalk.oa_stream import oa_stream
 
     db_ok = True
     try:
@@ -190,12 +190,5 @@ async def health() -> dict:
             "status": "up" if db_ok else "degraded",
             "app": settings.app_name,
             "database": "ok" if db_ok else "error",
-            "dingtalk_oa": {
-                "submission_enabled": not settings.dingtalk_push_off and bool(settings.dingtalk_app_key and settings.dingtalk_app_secret),
-                "sync_running": scheduler.running and scheduler.get_job('oa_sync') is not None,
-                "sync_interval_minutes": settings.scheduler_oa_sync_minutes,
-                "stream_connected": oa_stream.connected,
-                "last_event_at": oa_stream.last_event_at,
-            },
         }
     )

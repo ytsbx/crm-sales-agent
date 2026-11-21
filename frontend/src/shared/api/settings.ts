@@ -8,6 +8,11 @@ export interface SystemSettingRow {
   value?: Record<string, unknown> | null
   description?: string | null
   updated_at?: string | null
+  customer_score_details?: {
+    points: Record<string, number | string>
+    name_similarity_min: number
+    max_score: number
+  }
   /**
    * true = 这一项还是**代码里的开发默认值**，系统里从没改过。
    * 回收预告期 / 暂缓等待期属于"口径未定、先用开发默认值跑"，
@@ -70,11 +75,6 @@ export function listSettings() {
   return api.get<SystemSettingRow[]>('/settings')
 }
 
-/** 所有登录用户可读的少量配置：决定界面显示什么 */
-export function getPublicConfig() {
-  return api.get<{ trade_mode: string; default_currency: string }>('/meta/config')
-}
-
 export function saveSetting(key: string, value: Record<string, unknown>, description?: string) {
   return api.patch<SystemSettingRow>('/settings', { key, value, description })
 }
@@ -99,6 +99,10 @@ export function runPublicPoolRecycle() {
     protected_count: number
     disputed_count: number
     already_open_count: number
+    cooldown_count?: number
+    enabled_rule_count?: number
+    unknown_contact_count?: number
+    protection_overridden_count?: number
     /** 本轮实际发出的预告通知条数（原负责人与复核主管分别计） */
     notified_count: number
     notice_days: number
@@ -140,6 +144,7 @@ export interface RecycleCandidateRow {
    */
   earliest_action_at?: string | null
   decided_at?: string | null
+  reconsider_at?: string | null
   decision_note?: string | null
   deferred_until?: string | null
   defer_days?: number | null

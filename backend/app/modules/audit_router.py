@@ -4,18 +4,68 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, select
+from sqlalchemy import String, and_, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import AuditLog
-from app.core.audit_search import action_codes, business_type_codes
+from app.core.audit_search import action_codes, audit_type_variants, business_type_codes
 from app.core.database import get_db
 from app.core.deps import CurrentUser, require_permission
+from app.core.draft_visibility import draft_creator, private_draft
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data
 from app.modules.user.model import User
 
 router = APIRouter(tags=["Audit"])
+
+
+def _draft_audit_scope(user_id):
+    from app.modules.bizdoc.model import BizDoc
+    from app.modules.cases.model import SalesCase
+    from app.modules.contract.model import ContractDocument
+    from app.modules.inquiry.model import CustomInquiry
+    from app.modules.order.model import OrderDraft
+    from app.modules.quote.model import Quote, QuoteCharge, QuoteItem, QuoteVersion
+    from app.modules.sample.model import SampleItem, SampleRequest
+
+    checks = []
+    for kind, model in (
+        ("quote", Quote), ("order_draft", OrderDraft), ("sample", SampleRequest),
+        ("custom_inquiry", CustomInquiry), ("contract", ContractDocument),
+        ("case", SalesCase), ("biz_doc", BizDoc),
+    ):
+        hidden = select(model.id).where(
+            model.id == AuditLog.business_id, private_draft(model),
+            draft_creator(model).is_distinct_from(user_id),
+        ).correlate(AuditLog).exists()
+        checks.append(and_(AuditLog.business_type.in_(audit_type_variants(kind)), hidden))
+
+    version = select(QuoteVersion.id).join(Quote, Quote.id == QuoteVersion.quote_id).where(or_(
+        private_draft(Quote) & draft_creator(Quote).is_distinct_from(user_id),
+        private_draft(QuoteVersion) & func.coalesce(
+            QuoteVersion.created_by, Quote.created_by, Quote.owner_id,
+        ).is_distinct_from(user_id),
+    )).correlate(AuditLog)
+    checks.append(and_(AuditLog.business_type == "quote_version", version.where(
+        QuoteVersion.id == AuditLog.business_id,
+    ).exists()))
+    def ids_from_item(item, source, key):
+        current = select(cast(source, String)).where(item.id == AuditLog.business_id).correlate(AuditLog)
+        return func.coalesce(current.scalar_subquery(), AuditLog.after_data[key].as_string(),
+                             AuditLog.before_data[key].as_string())
+
+    for kind, item in (("quote_item", QuoteItem), ("quote_charge", QuoteCharge)):
+        source_id = ids_from_item(item, item.quote_version_id, "quote_version_id")
+        checks.append(and_(AuditLog.business_type == kind, version.where(
+            cast(QuoteVersion.id, String) == source_id,
+        ).exists()))
+    sample_source_id = ids_from_item(SampleItem, SampleItem.sample_request_id, "sample_request_id")
+    sample_item = select(SampleRequest.id).where(
+        cast(SampleRequest.id, String) == sample_source_id, private_draft(SampleRequest),
+        draft_creator(SampleRequest).is_distinct_from(user_id),
+    ).correlate(AuditLog).exists()
+    checks.append(and_(AuditLog.business_type == "sample_item", sample_item))
+    return ~or_(*checks)
 
 
 @router.get("/audit-logs")
@@ -29,12 +79,12 @@ async def list_audit_logs(
     end: datetime | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
-    _: CurrentUser = Depends(require_permission("audit:view")),
+    user: CurrentUser = Depends(require_permission("audit:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    stmt = select(AuditLog, User.name).outerjoin(User, User.id == AuditLog.operator_id)
+    stmt = select(AuditLog, User.name).outerjoin(User, User.id == AuditLog.operator_id).where(_draft_audit_scope(user.id))
     if business_type:
-        stmt = stmt.where(AuditLog.business_type == business_type)
+        stmt = stmt.where(AuditLog.business_type.in_(audit_type_variants(business_type)))
     if action:
         stmt = stmt.where(AuditLog.action == action)
     if exclude_actions:
@@ -76,8 +126,6 @@ async def list_audit_logs(
         if digits.isdigit() and len(digits) <= 18:
             conditions.append(AuditLog.business_id == int(digits))
 
-        from sqlalchemy import or_
-
         stmt = stmt.where(or_(*conditions))
 
     count_stmt = stmt.order_by(None)
@@ -117,7 +165,7 @@ async def list_audit_logs(
 @router.get("/audit-logs/{log_id}")
 async def get_audit_log(
     log_id: int,
-    _: CurrentUser = Depends(require_permission("audit:view")),
+    user: CurrentUser = Depends(require_permission("audit:view")),
     session: AsyncSession = Depends(get_db),
 ):
     """单条审计详情（API §33）。
@@ -129,7 +177,7 @@ async def get_audit_log(
         await session.execute(
             select(AuditLog, User.name)
             .outerjoin(User, User.id == AuditLog.operator_id)
-            .where(AuditLog.id == log_id)
+            .where(AuditLog.id == log_id, _draft_audit_scope(user.id))
         )
     ).first()
     if row is None:
@@ -158,7 +206,7 @@ async def list_business_audit_logs(
     business_id: int,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
-    _: CurrentUser = Depends(require_permission("audit:view")),
+    user: CurrentUser = Depends(require_permission("audit:view")),
     session: AsyncSession = Depends(get_db),
 ):
     """某个业务对象的操作历史（API §33）。
@@ -170,13 +218,15 @@ async def list_business_audit_logs(
         select(AuditLog, User.name)
         .outerjoin(User, User.id == AuditLog.operator_id)
         .where(
-            AuditLog.business_type == business_type,
+            AuditLog.business_type.in_(audit_type_variants(business_type)),
             AuditLog.business_id == business_id,
+            _draft_audit_scope(user.id),
         )
     )
     count_stmt = select(AuditLog).where(
-        AuditLog.business_type == business_type,
+        AuditLog.business_type.in_(audit_type_variants(business_type)),
         AuditLog.business_id == business_id,
+        _draft_audit_scope(user.id),
     )
     total = (
         await session.execute(

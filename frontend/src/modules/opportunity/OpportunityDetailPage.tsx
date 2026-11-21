@@ -5,6 +5,7 @@ import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  Banner,
   Button,
   DatePicker,
   Input,
@@ -38,6 +39,7 @@ import { listSkus } from '../../shared/api/product'
 import { completeTask, createTask, listTasks, type Task } from '../../shared/api/task'
 import { usePermissions } from '../../shared/hooks/permissions'
 import DetailHeader from '../../shared/components/DetailHeader'
+import HelpTip from '../../shared/components/HelpTip'
 import { calendarDay } from '../../shared/calendar-day'
 import GuardedButton from '../../shared/components/GuardedButton'
 import ReceivablePlanPicker, {
@@ -66,6 +68,7 @@ import type { TagTone } from '../../shared/types'
 import FormLabel from '../../shared/components/FormLabel'
 import { optionMatcher } from '../../shared/components/optionMatch'
 import { formatMoney, toTwoDecimals } from '../../shared/components/money'
+import PageLoading from '../../shared/components/PageLoading'
 
 const TABS = [
   { tab: '概览', itemKey: 'overview' },
@@ -239,15 +242,22 @@ export default function OpportunityDetailPage() {
       })
     },
     onSuccess: (data) => {
+      setConfirmWinVisible(false)
       Toast.success(
         data.already_ordered
           ? `该成交此前已建单：${data.order_no}`
           : `已确认成交，销售订单 ${data.order_no} 已生成`,
       )
       refresh()
+      void queryClient.invalidateQueries({ queryKey: ['quote-version', data.win_quote_version_id] })
+      void queryClient.invalidateQueries({ queryKey: ['quote-versions', data.quote_id] })
+      void queryClient.invalidateQueries({ queryKey: ['quotes'] })
+      void queryClient.invalidateQueries({ queryKey: ['orders'] })
+      void queryClient.invalidateQueries({ queryKey: ['opportunity-order-count', opportunityId] })
+      if (can('order:view')) navigate(`/orders/${data.order_id}`)
     },
-    onError: (error: Error) => Toast.error(error.message),
   })
+  const missingWinQuote = confirmWinMutation.error?.message.startsWith('该商机下没有已发送/已接受的报价版本')
 
   const loseMutation = useMutation({
     mutationFn: () => loseOpportunity(opportunityId, { loss_reason_id: lossReasonId!, remark: lossRemark || undefined }),
@@ -332,8 +342,22 @@ export default function OpportunityDetailPage() {
   })
 
   const opportunity = opportunityQuery.data
-  if (opportunityQuery.isLoading) return <div className="page-container">加载中…</div>
-  if (!opportunity) return <div className="page-container">商机不存在或无权查看</div>
+  if (opportunityQuery.isLoading) return <PageLoading />
+  if (!opportunity) {
+    /* 原来是一行裸字挂在整页白底（2026-11-20 巡检）：链接错了或没权限时像页面崩了。
+       统一成空态 + 返回列表。 */
+    return (
+      <div className="page-container">
+        <EmptyState
+          title="商机不存在或无权查看"
+          hint="可能链接里的编号有误，或这条记录属于你数据范围之外的人；回商机列表重新选择即可。"
+        />
+        <div style={{ display: 'flex', justifyContent: 'center', paddingBottom: 24 }}>
+          <Button type="primary" theme="solid" onClick={() => navigate('/opportunities')}>返回商机列表</Button>
+        </div>
+      </div>
+    )
+  }
 
   const itemColumns = [
     {
@@ -359,7 +383,12 @@ export default function OpportunityDetailPage() {
       render: (v: number, record: OpportunityItem) => `${v} ${record.unit ?? ''}`,
     },
     {
-      title: '目标价',
+      title: (
+        <span className="crm-help-label">
+          目标价
+          <HelpTip forLabel="目标价" text="客户希望拿到的单价，用来和我方建议价对比；它不是我方的报价。" />
+        </span>
+      ),
       dataIndex: 'target_price',
       width: 110,
       render: (v: number | null) => (v ? `¥${v}` : '-'),
@@ -380,6 +409,16 @@ export default function OpportunityDetailPage() {
         ),
     },
   ]
+
+  /* 商机详情几个"空"页签原来各说各的：需求商品/跟进只有一行小字，任务却摆了个
+     大图标空态（350px 高），同一排页签点来点去高度来回跳。统一成"一句主文 +
+     一句怎么做"，既一致又不空。 */
+  const emptyLine = (title: string, hint: string) => (
+    <div style={{ padding: '16px 0', textAlign: 'center' }}>
+      <div style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>{title}</div>
+      <div style={{ marginTop: 4, fontSize: 12, color: 'var(--crm-text-3)' }}>{hint}</div>
+    </div>
+  )
 
   const taskColumns = [
     { title: '任务', dataIndex: 'title' },
@@ -429,6 +468,34 @@ export default function OpportunityDetailPage() {
     },
   ]
 
+  const hasQuotes = (quoteCountQuery.data?.total ?? 0) > 0
+  const canReadQuotes = can('quote:view')
+  const canStartQuote = canReadQuotes && can('quote:manage')
+  let nextAction: { label: string; text: string; run: () => void } | undefined
+  if (opportunity.status === 'open' && activeKey === 'overview') {
+    if (hasQuotes) {
+      nextAction = {
+        label: '查看关联单据',
+        text: '这笔商机已有报价。打开「关联单据」查看报价状态，点报价单号继续处理。',
+        run: () => setActiveKey('records'),
+      }
+    } else if ((!canReadQuotes || quoteCountQuery.isSuccess) && itemsQuery.isSuccess) {
+      if (itemsQuery.data.length === 0 && canManage) {
+        nextAction = {
+          label: '添加需求商品',
+          text: '先记下客户要买什么和数量，生成报价草稿时会带入这些明细。',
+          run: () => { setActiveKey('items'); setItemVisible(true) },
+        }
+      } else if (itemsQuery.data.length > 0 && canStartQuote) {
+        nextAction = {
+          label: '去报价入口',
+          text: '需求商品已登记。需要报价时，到「关联单据」的报价区点「生成报价草稿」。',
+          run: () => setActiveKey('records'),
+        }
+      }
+    }
+  }
+
   return (
     <div className="page-container">
       {/* 与客户详情页同排布：标题 + 标签一行，关键信息行在标题下方左对齐 */}
@@ -468,8 +535,11 @@ export default function OpportunityDetailPage() {
         }
         extra={
           <>
-            <Button onClick={() => setFollowupVisible(true)}>记录跟进</Button>
+            <Button type="tertiary" onClick={() => setFollowupVisible(true)}>
+              记录跟进
+            </Button>
             <Button
+              type="tertiary"
               onClick={() => {
                 // 深链预填核价页：带上客户；有需求明细时带首条 SKU 与数量
                 const query = new URLSearchParams({ customer_id: String(opportunity.customer_id) })
@@ -486,6 +556,7 @@ export default function OpportunityDetailPage() {
             {canManage && (
               <>
                 <Button
+                  type="tertiary"
                   onClick={() => {
                     setTargetStage(null)
                     setStageVisible(true)
@@ -493,21 +564,24 @@ export default function OpportunityDetailPage() {
                 >
                   推进阶段
                 </Button>
-                <Button onClick={() => setTaskVisible(true)}>新建任务</Button>
+                <Button type="tertiary" onClick={() => setTaskVisible(true)}>
+                  新建任务
+                </Button>
                 {opportunity.status === 'open' && (
                   <>
                     <Button type="primary"
-                      theme="outline"
+                      theme="solid"
                       loading={confirmWinMutation.isPending}
                       onClick={() => {
                         setPlanMode('full')
                         setPlanRows(defaultPlanRows())
+                        confirmWinMutation.reset()
                         setConfirmWinVisible(true)
                       }}
                     >
                       确认成交并建单
                     </Button>
-                    <Button type="danger" onClick={() => setLoseVisible(true)}>
+                    <Button type="danger" theme="borderless" onClick={() => setLoseVisible(true)}>
                       标记失单
                     </Button>
                   </>
@@ -522,36 +596,54 @@ export default function OpportunityDetailPage() {
         <Tabs type="line" activeKey={activeKey} onChange={setActiveKey} tabList={TABS} />
 
         <div style={{ marginTop: 16 }}>
+          {nextAction && (
+            <div className="workflow-next" style={{ marginBottom: 16 }}>
+              <strong>下一步</strong>
+              <p className="workflow-guide">{nextAction.text}</p>
+              <Button type="primary" theme="outline" onClick={nextAction.run}>{nextAction.label}</Button>
+            </div>
+          )}
           {activeKey === 'overview' && (
             <div className="detail-split" style={{ gap: 24 }}>
-              <div
-                className="split-main"
-                style={{
-                  display: 'grid',
-                  // 200px 时左栏只有 3 列，8 个字段排成 3+3+2、最后一行空一格；
-                  // 收到 190 刚好 4 列，两行排满
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))',
-                  gap: 20,
-                  alignContent: 'start',
-                }}
-              >
-                <DetailField label="客户" value={opportunity.customer_name} />
-                <DetailField label="当前阶段" value={opportunity.stage_name} />
-                <DetailField
-                  label="预计金额"
-                  value={opportunity.expected_amount ? formatMoney(toTwoDecimals(opportunity.expected_amount), 'CNY') : '-'}
-                />
-                <DetailField label="预计成交日期" value={opportunity.expected_close_date ?? '-'} />
-                <DetailField label="竞争对手" value={opportunity.competitor ?? '-'} />
-                <DetailField label="下一步动作" value={opportunity.next_action ?? '-'} />
-                <DetailField label="来源" value={opportunity.source ?? '-'} />
-                <DetailField label="创建时间" value={formatBeijingTime(opportunity.created_at)} />
-                {opportunity.status === 'loss' && (
+              <div className="split-main" style={{ minWidth: 0 }}>
+                {/* 2026-11-20：左栏原来只有八个小字段贴在顶部，下面空一大截，
+                    右栏「决策卡 + 三个按钮」却一路垂到底 —— 主人原话"左上角高、右下角低"，
+                    后来改成居中又说"上下都空空的"。根子是左右两栏高度和密度都不匹配。
+                    现在左栏补一行和右栏同规格的标题（商机概览 / 共 N 项），
+                    字段从 4 列 2 行改成 3 列 3 行：版面长到跟右栏差不多高，
+                    中间不再留大片空白，两栏顶端也齐在同一行。 */}
+                <div className="toolbar" style={{ marginBottom: 8 }}>
+                  <div style={{ fontWeight: 600 }}>商机概览</div>
+                  <div style={{ flex: 1 }} />
+                  <span style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
+                    共 {opportunity.status === 'loss' ? 9 : 8} 项
+                  </span>
+                </div>
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+                    gap: '18px 24px',
+                  }}
+                >
+                  <DetailField label="客户" value={opportunity.customer_name} />
+                  <DetailField label="当前阶段" value={opportunity.stage_name} />
                   <DetailField
-                    label="失单原因"
-                    value={`${opportunity.loss_reason_name ?? '-'}${opportunity.loss_remark ? `（${opportunity.loss_remark}）` : ''}`}
+                    label="预计金额"
+                    value={opportunity.expected_amount ? formatMoney(toTwoDecimals(opportunity.expected_amount), 'CNY') : '-'}
                   />
-                )}
+                  <DetailField label="预计成交日期" value={opportunity.expected_close_date ?? '-'} />
+                  <DetailField label="竞争对手" value={opportunity.competitor ?? '-'} />
+                  <DetailField label="下一步动作" value={opportunity.next_action ?? '-'} />
+                  <DetailField label="来源" value={opportunity.source ?? '-'} />
+                  <DetailField label="创建时间" value={formatBeijingTime(opportunity.created_at)} />
+                  {opportunity.status === 'loss' && (
+                    <DetailField
+                      label="失单原因"
+                      value={`${opportunity.loss_reason_name ?? '-'}${opportunity.loss_remark ? `（${opportunity.loss_remark}）` : ''}`}
+                    />
+                  )}
+                </div>
               </div>
               {/* 客户决策关系图（设计稿商机详情右栏）：这单要打通谁一目了然。
                   窄屏时整块落到左栏下方，不会被压成一条 */}
@@ -582,17 +674,18 @@ export default function OpportunityDetailPage() {
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
                 {([
-                  { key: 'items', label: '需求商品', value: itemsQuery.data?.length },
-                  { key: 'records', label: '报价', value: quoteCountQuery.data?.total },
-                  { key: 'records', label: '订单', value: orderCountQuery.data?.total },
-                  { key: 'followups', label: '跟进记录', value: followupsQuery.data?.total ?? followupsQuery.data?.items?.length },
-                  { key: 'tasks', label: '任务', value: tasksQuery.data?.total ?? tasksQuery.data?.items?.length },
+                  /* 色带：需求蓝 / 报价橙 / 订单绿 / 跟进紫 / 任务青 */
+                  { key: 'items', label: '需求商品', value: itemsQuery.data?.length, tone: 'tone-primary' },
+                  { key: 'records', label: '报价', value: quoteCountQuery.data?.total, tone: 'tone-caution' },
+                  { key: 'records', label: '订单', value: orderCountQuery.data?.total, tone: 'tone-success' },
+                  { key: 'followups', label: '跟进记录', value: followupsQuery.data?.total ?? followupsQuery.data?.items?.length, tone: 'tone-secondary' },
+                  { key: 'tasks', label: '任务', value: tasksQuery.data?.total ?? tasksQuery.data?.items?.length, tone: 'tone-teal' },
                   // 报价与订单都落在「关联单据」页签里，所以这两个格子跳同一个地方
                 ] as const).map((tile) => (
                   <button
                     key={tile.label}
                     type="button"
-                    className="cust-pano-tile"
+                    className={`cust-pano-tile ${tile.tone}`}
                     onClick={() => setActiveKey(tile.key)}
                     title={`跳到「${TABS.find((t) => t.itemKey === tile.key)?.tab ?? tile.key}」页签`}
                   >
@@ -628,7 +721,7 @@ export default function OpportunityDetailPage() {
                 loading={itemsQuery.isLoading}
                 rowKey="id"
                 pagination={false}
-                empty="还没有需求明细"
+                empty={emptyLine('还没有需求明细', '点右上「添加需求商品」，把品名、规格、数量、目标价记下来；后续核价按条算。')}
                 scroll={{ x: '100%' }}
               />
             </>
@@ -640,8 +733,13 @@ export default function OpportunityDetailPage() {
           {activeKey === 'followups' && (
             <>
               <div className="toolbar">
+                {/* 工具栏左边原来是空的、只有一个按钮吊在右边，表格又空，
+                   上半截看着像没排好版（2026-11-21）。补一句这条页签干什么。 */}
+                <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>
+                  跟进记的是「客户说了什么」：每次通话、拜访、发出报价后记一条，谁记的、什么时候记的都有痕
+                </div>
                 <div style={{ flex: 1 }} />
-                <Button onClick={() => setFollowupVisible(true)}>记录跟进</Button>
+                <Button type="primary" theme="outline" onClick={() => setFollowupVisible(true)}>记录跟进</Button>
               </div>
               <Table<FollowUp>
                 columns={[
@@ -662,7 +760,7 @@ export default function OpportunityDetailPage() {
                 loading={followupsQuery.isLoading}
                 rowKey="id"
                 pagination={false}
-                empty="还没有跟进记录"
+                empty={emptyLine('还没有跟进记录', '每记一条，时间线上就多一个节点。')}
               />
             </>
           )}
@@ -670,8 +768,11 @@ export default function OpportunityDetailPage() {
           {activeKey === 'tasks' && (
             <>
               <div className="toolbar">
+                <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>
+                  这个商机接下来要做什么 —— 记成任务：带优先级和截止时间，到期前提醒，过期标红
+                </div>
                 <div style={{ flex: 1 }} />
-                <Button onClick={() => setTaskVisible(true)}>新建任务</Button>
+                <Button type="primary" theme="outline" onClick={() => setTaskVisible(true)}>新建任务</Button>
               </div>
               <Table<Task>
                 columns={taskColumns}
@@ -679,12 +780,7 @@ export default function OpportunityDetailPage() {
                 loading={tasksQuery.isLoading}
                 rowKey="id"
                 pagination={false}
-                empty={
-                  <EmptyState
-                    title="还没有任务"
-                    hint="点上方「新建任务」记下要做的事 —— 任务记将来，跟进记过去。"
-                  />
-                }
+                empty={emptyLine('还没有任务', '建好的任务会同时出现在「销售任务」里，那边能批量完成和交接。')}
               />
             </>
           )}
@@ -719,6 +815,8 @@ export default function OpportunityDetailPage() {
             商机分析
             <Button
               size="small"
+              type="tertiary"
+              theme="borderless"
               style={{ marginLeft: 'auto' }}
               loading={aiMutation.isPending && aiKind === 'analysis'}
               onClick={() => {
@@ -741,6 +839,8 @@ export default function OpportunityDetailPage() {
             产品推荐
             <Button
               size="small"
+              type="tertiary"
+              theme="borderless"
               style={{ marginLeft: 'auto' }}
               loading={aiMutation.isPending && aiKind === 'recommend'}
               onClick={() => {
@@ -763,6 +863,8 @@ export default function OpportunityDetailPage() {
             报价草稿建议
             <Button
               size="small"
+              type="tertiary"
+              theme="borderless"
               style={{ marginLeft: 'auto' }}
               loading={aiMutation.isPending && aiKind === 'draft'}
               onClick={() => {
@@ -779,6 +881,7 @@ export default function OpportunityDetailPage() {
       )}
 
       <FollowUpModal
+        key={opportunityId}
         visible={followupVisible}
         onClose={() => setFollowupVisible(false)}
         target={{ opportunityId, customerId: opportunity.customer_id }}
@@ -830,6 +933,7 @@ export default function OpportunityDetailPage() {
 
       <Modal
         title="确认成交并生成订单"
+        className="receivable-plan-modal"
         visible={confirmWinVisible}
         onCancel={() => setConfirmWinVisible(false)}
         onOk={() => confirmWinMutation.mutate()}
@@ -837,9 +941,10 @@ export default function OpportunityDetailPage() {
         okText="确认成交并建单"
         okButtonProps={{ disabled: planNotReady }}
         width={680}
+        style={{ maxWidth: 'calc(100vw - 32px)' }}
         footer={
           <div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+            <div className="workflow-modal-actions">
               <Button onClick={() => setConfirmWinVisible(false)}>取消</Button>
               {/* 2026-10-15 改成共用件：这一处原来是八行手写（两层 div +
                   `pointerEvents: 'none'` + CSS 类名 + 单独一块 BlockedHint），
@@ -851,6 +956,7 @@ export default function OpportunityDetailPage() {
                 disabled={planNotReady}
                 blockedReasons={planBlocked}
                 action="确认成交并建单"
+                hintBelow
                 onClick={() => confirmWinMutation.mutate()}
               >
                 确认成交并建单
@@ -859,17 +965,38 @@ export default function OpportunityDetailPage() {
           </div>
         }
       >
-        <div style={{ display: 'grid', gap: 12 }}>
-          <div style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
-            将把该商机最新已发送/已接受的报价版本转为销售订单，并复制全部明细；
-            此前已建单则直接返回原订单（不会重复建）。
-          </div>
+        <div className="receivable-picker">
+          <p className="receivable-picker-guide">
+            请在客户确认后操作。系统会用该商机最新的已发送或已接受报价建单。
+            如果报价只登记了发出，这一步也会登记客户已接受。
+          </p>
+          {confirmWinMutation.error && (
+            <Banner
+              type="danger"
+              fullMode={false}
+              closeIcon={null}
+              title="还未确认成交"
+              description={missingWinQuote
+                ? '这笔商机还没有可用报价。请先完成报价并登记发送，再回来确认成交。'
+                : confirmWinMutation.error.message}
+            >
+              {missingWinQuote && can('quote:view') && (
+                <Button size="small" theme="borderless" onClick={() => {
+                  setConfirmWinVisible(false)
+                  setActiveKey('records')
+                }}>
+                  去关联单据看报价
+                </Button>
+              )}
+            </Banner>
+          )}
           <ReceivablePlanPicker
             mode={planMode}
             onModeChange={setPlanMode}
             rows={planRows}
             onRowsChange={setPlanRows}
           />
+          {can('order:view') && <p className="receivable-picker-guide">建单后会打开销售订单，可在「应收计划」核对各期金额和到期日。</p>}
         </div>
       </Modal>
 

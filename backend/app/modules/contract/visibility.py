@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.draft_visibility import ensure_draft_access
+from app.core.errors import AppError
 from app.modules.contract.model import ContractDocument
 from app.modules.customer.model import Customer
 from app.modules.order.model import SalesOrder
@@ -46,6 +48,11 @@ async def contract_in_scope(session: AsyncSession, user, doc: ContractDocument) 
     """当前用户的数据范围能不能覆盖这份合同（不判权限码）。"""
     from app.core.data_scope import scoped_owner_ids
 
+    try:
+        if await ensure_draft_access(session, ContractDocument, doc.id, user.id):
+            return True
+    except AppError:
+        return False
     owner_ids = await scoped_owner_ids(session, user)
     if owner_ids is None:  # None = 看全部
         return True

@@ -20,6 +20,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.data_scope import scoped_owner_ids
+from app.core.draft_visibility import draft_scope
 from app.core.database import get_db
 from app.core.deps import CurrentUser, get_current_user
 from app.core.response import ok
@@ -273,7 +274,7 @@ async def global_search(
         quote_stmt = await _scope(
             select(Quote, Customer.name)
             .join(Customer, Customer.id == Quote.customer_id)
-            .where(Quote.deleted_at.is_(None), Quote.quote_no.ilike(like))
+            .where(Quote.deleted_at.is_(None), Quote.quote_no.ilike(like), draft_scope(Quote, user.id))
             .order_by(Quote.id.desc())
             .limit(limit),
             user,

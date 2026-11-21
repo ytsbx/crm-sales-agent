@@ -53,7 +53,7 @@ def _rejects(key: str, value: dict) -> bool:
         ('export', {'limit': -1}, '负数上限'),
         ('export', {'alert_rows': -5}, '负数告警行数'),
         ('export', {'alert_window_hours': 0}, '0 小时窗口'),
-        ('logistics_volumetric_ratio', {'number': 0}, '系数 0 会让体积重变 0'),
+        ('logistics_volumetric_ratio', {'number': 99}, '必须关闭或至少 100'),
         # ---- 比率类：越界一律拒 ----
         ('default_min_margin', {'ratio': 1.5}, '门槛被放大 → 低价审批静默消失'),
         ('default_min_margin', {'ratio': -0.2}, '门槛为负 → 什么都拦'),
@@ -89,6 +89,7 @@ def test_invalid_numbers_are_rejected(key, value, why):
         ('export_tax_refund_rate', {'ratio': 0.13}),
         ('pool_recycle_notice_days', {'days': 7}),
         ('logistics_volumetric_ratio', {'number': 6000}),
+        ('logistics_volumetric_ratio', {'number': 0}),
     ],
 )
 def test_valid_numbers_pass(key, value):

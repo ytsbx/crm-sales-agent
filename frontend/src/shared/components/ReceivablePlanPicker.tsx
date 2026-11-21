@@ -1,7 +1,8 @@
-import { useState } from 'react'
 import { Button, DatePicker, Input, InputNumber, Radio } from '@douyinfe/semi-ui'
 
-import BlockedHint from './BlockedHint'
+import { useId } from 'react'
+import FormLabel from './FormLabel'
+import GuardedButton from './GuardedButton'
 import { formatMoney } from './money'
 import { splitAmountsExact } from '../quote-todo'
 import { calendarDayOrToday } from '../calendar-day'
@@ -90,7 +91,8 @@ export function planBlockedReasons(
   }
   if (rows.length === 0) reasons.push('至少要有一期')
   rows.forEach((row, index) => {
-    if (!row.name.trim()) reasons.push(`第 ${index + 1} 期还没填节点名`)
+    if (!row.name.trim()) reasons.push(`第 ${index + 1} 期还没填名称`)
+    else if (Array.from(row.name.trim()).length > 64) reasons.push(`第 ${index + 1} 期名称最多 64 个字`)
     if (!row.due) reasons.push(`第 ${index + 1} 期还没选到期日`)
     if ((row.percent ?? 0) <= 0) reasons.push(`第 ${index + 1} 期的比例要大于 0`)
   })
@@ -115,18 +117,7 @@ export function isPlanValid(
   rows: ReceivablePlanRow[],
   totalAmount?: number | string,
 ): boolean {
-  if (mode === 'full') return true
-  if (rows.length === 0) return false
-  const ratioSum = rows.reduce((sum, row) => sum + (row.percent ?? 0), 0)
-  if (Math.abs(ratioSum - 100) >= 0.01) return false
-  if (!rows.every((row) => row.name.trim() && row.due && (row.percent ?? 0) > 0)) return false
-  // 金额太小时会分出"不大于 0 的期"（后端同样会 422）：
-  // 与其让用户点了再报错，不如在这里就拦住并说明（第九批问题 ①⑤）
-  if (totalAmount !== undefined && Number.isFinite(Number(totalAmount))) {
-    const split = splitAmountsExact(totalAmount, rows.map((row) => (row.percent ?? 0) / 100))
-    if (split === null) return false
-  }
-  return true
+  return planBlockedReasons(mode, rows, totalAmount).length === 0
 }
 
 export default function ReceivablePlanPicker({
@@ -149,10 +140,10 @@ export default function ReceivablePlanPicker({
   rows: ReceivablePlanRow[]
   onRowsChange: (rows: ReceivablePlanRow[]) => void
   mode: 'full' | 'installments'
-  onModeChange: (mode: 'full' | 'installments') => void
+  onModeChange?: (mode: 'full' | 'installments') => void
   currency?: string
 }) {
-  const [touched, setTouched] = useState(false)
+  const dateLabelId = useId()
   const money = (value: number | string) => {
     const text = typeof value === 'string'
       ? formatMoney(value, 'CNY').slice(1)
@@ -164,6 +155,7 @@ export default function ReceivablePlanPicker({
 
   const ratioSum = rows.reduce((sum, row) => sum + (row.percent ?? 0), 0)
   const ratioOk = Math.abs(ratioSum - 100) < 0.01
+  const difference = Math.round(Math.abs(ratioSum - 100) * 100) / 100
   const hasTotal = totalAmount !== undefined && Number.isFinite(Number(totalAmount))
   // ⚠️ 预览金额**与后端同一套算法**（第九批问题 ⑤）。
   // 原来这里用 `Math.round`（JavaScript 浮点、半分向上），后端用
@@ -171,13 +163,13 @@ export default function ReceivablePlanPicker({
   // 后端落库 `0.02 / 0.03` —— 用户确认的和存下去的不是一回事。
   // 现在统一走 `splitAmountsExact`，`ops/quote_todo.test.mjs` 用同一批
   // 用例盯着它与后端一致。
-  const split = hasTotal
+  const reasons = planBlockedReasons(mode, rows, totalAmount)
+  const amounts = hasTotal && reasons.length === 0 && mode === 'installments'
     ? splitAmountsExact(
         totalAmount!,
         rows.map((row) => (row.percent ?? 0) / 100),
       )
     : null
-  const amounts: string[] = split ?? rows.map(() => '0.00')
 
   const update = (index: number, patch: Partial<ReceivablePlanRow>) => {
     const next = [...rows]
@@ -185,107 +177,101 @@ export default function ReceivablePlanPicker({
     onRowsChange(next)
   }
 
-  // 与调用方显示的"为什么不能提交"同源（见 `planBlockedReasons`）
-  const reasons = planBlockedReasons(mode, rows, totalAmount)
-
   return (
-    <div style={{ display: 'grid', gap: 10 }}>
-      <div>
-        <div style={{ marginBottom: 4 }}>收款计划</div>
-        <Radio.Group
-          value={mode}
-          onChange={(event) => {
-            setTouched(true)
-            onModeChange(event.target.value as 'full' | 'installments')
-          }}
-        >
-          <Radio value="full">全款（一条应收，到期日取交期）</Radio>
-          <Radio value="installments">分期（拆成多期，比例与到期日自己定）</Radio>
-        </Radio.Group>
-      </div>
+    <div className="receivable-picker">
+      {onModeChange && (
+        <div>
+          <FormLabel>收款方式</FormLabel>
+          <Radio.Group
+            aria-label="收款方式"
+            value={mode}
+            onChange={(event) => onModeChange(event.target.value as 'full' | 'installments')}
+          >
+            <Radio value="full">一次收全款</Radio>
+            <Radio value="installments">分期收款</Radio>
+          </Radio.Group>
+        </div>
+      )}
 
       {mode === 'full' ? (
-        <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
-          转单后生成 <b>1 条</b>应收：金额 = 订单总额
-          {hasTotal ? `（${money(totalAmount!)}）` : '（转单时按报价版本确定）'}，到期日取订单交期。
-          之后在订单详情页也能调整或拆分。
-        </div>
+        <p className="receivable-picker-guide">
+          生成一条全款应收{hasTotal ? `（${money(totalAmount!)}）` : ''}。
+          有计划交期时以交期为到期日，否则默认在下单 30 天后到期。可在订单详情调整或拆分。
+        </p>
       ) : (
         <>
-          <div style={{ display: 'grid', gap: 8 }}>
-            <div style={{ display: 'flex', gap: 8, fontSize: 12, color: 'var(--crm-text-3)' }}>
-              <div style={{ width: 140 }}>节点名</div>
-              <div style={{ width: 100 }}>比例（%）</div>
-              <div style={{ flex: 1 }}>到期日</div>
-              {hasTotal && <div style={{ width: 100, textAlign: 'right' }}>金额</div>}
-              <div style={{ width: 44 }} />
-            </div>
+          <div className="receivable-picker">
             {rows.map((row, index) => (
-              <div key={index} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <Input
-                  style={{ width: 140 }}
-                  value={row.name}
-                  placeholder={`第 ${index + 1} 期`}
-                  onChange={(value) => update(index, { name: value })}
-                />
-                <InputNumber
-                  style={{ width: 100 }}
-                  value={row.percent ?? undefined}
-                  min={0}
-                  max={100}
-                  precision={2}
-                  placeholder="如 30"
-                  onChange={(value) => update(index, { percent: typeof value === 'number' ? value : null })}
-                />
-                <div style={{ flex: 1 }}>
-                  <DatePicker
-                    style={{ width: '100%' }}
-                    value={row.due ?? undefined}
-                    onChange={(date) => update(index, { due: (date as Date) ?? null })}
-                  />
-                </div>
-                {hasTotal && <div style={{ width: 100, textAlign: 'right' }}>{money(amounts[index])}</div>}
-                <div style={{ width: 44, textAlign: 'right' }}>
+              <section key={index} className="receivable-installment" aria-label={`第 ${index + 1} 期`}>
+                <div className="receivable-installment-heading">
+                  <strong>第 {index + 1} 期</strong>
+                  {amounts && <span className="receivable-installment-amount">{money(amounts[index])}</span>}
                   {rows.length > 1 && (
-                    <a
-                      style={{ color: 'var(--crm-text-3)' }}
+                    <Button
+                      size="small"
+                      theme="borderless"
+                      type="tertiary"
+                      aria-label={`移除第 ${index + 1} 期`}
                       onClick={() => onRowsChange(rows.filter((_, i) => i !== index))}
                     >
-                      删掉
-                    </a>
+                      移除
+                    </Button>
                   )}
                 </div>
-              </div>
+                <div className="receivable-installment-fields">
+                  <div>
+                    <FormLabel>名称</FormLabel>
+                    <Input
+                      aria-label={`第 ${index + 1} 期名称`}
+                      value={row.name}
+                      placeholder={`第 ${index + 1} 期`}
+                      onChange={(value) => update(index, { name: value })}
+                    />
+                  </div>
+                  <div>
+                    <FormLabel>比例（%）</FormLabel>
+                    <InputNumber
+                      style={{ width: '100%' }}
+                      aria-label={`第 ${index + 1} 期比例`}
+                      value={row.percent ?? undefined}
+                      min={0}
+                      max={100}
+                      precision={2}
+                      placeholder="如 30"
+                      onChange={(value) => update(index, { percent: typeof value === 'number' ? value : null })}
+                    />
+                  </div>
+                  <div className="receivable-installment-date">
+                    <FormLabel><span id={`${dateLabelId}-${index}`}>到期日</span></FormLabel>
+                    <DatePicker
+                      style={{ width: '100%' }}
+                      aria-labelledby={`${dateLabelId}-${index}`}
+                      value={row.due ?? undefined}
+                      onChange={(date) => update(index, { due: (date as Date) ?? null })}
+                    />
+                  </div>
+                </div>
+              </section>
             ))}
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-            <Button
+          <div className="receivable-picker-summary">
+            <GuardedButton
               size="small"
               disabled={rows.length >= 24}
-              onClick={() => {
-                setTouched(true)
-                onRowsChange([
-                  ...rows,
-                  { name: `第 ${rows.length + 1} 期`, percent: null, due: new Date() },
-                ])
-              }}
+              blockedReasons={['最多可设置 24 期。']}
+              onClick={() => onRowsChange([
+                ...rows,
+                { name: `第 ${rows.length + 1} 期`, percent: null, due: new Date() },
+              ])}
             >
               再加一期
-            </Button>
-            <span style={{ fontSize: 13, color: ratioOk ? 'var(--crm-text-2)' : 'var(--crm-error, #ba1a1a)' }}>
-              合计比例 {Math.round(ratioSum * 100) / 100}%{ratioOk ? '' : '（必须正好 100%）'}
+            </GuardedButton>
+            <span className={ratioOk ? undefined : 'receivable-picker-unbalanced'}>
+              合计 {Math.round(ratioSum * 100) / 100}%
+              {!ratioOk && ` · ${ratioSum < 100 ? '还差' : '超过'} ${difference}%`}
             </span>
-            {/* 没有订单总额时不编数字：宁可只说比例，也不拿"预计金额"冒充订单金额 */}
-            {!hasTotal && (
-              <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                各期金额在转单时按报价版本总额自动算（前期抹零、末期补差，合计=订单总额）
-              </span>
-            )}
           </div>
-          {/* 用**共用件**而不是自己写一句（项目口径：灰键的说明走同一套渲染，
-              也让 `ops/check_disabled_hint.py` 认得出来）。
-              只在用户动过之后才提示，免得刚展开就一片红。 */}
-          {touched && <BlockedHint reasons={reasons} action="提交" />}
+          {!hasTotal && <p className="receivable-picker-guide">各期金额会按成交报价的订单总额计算。</p>}
         </>
       )}
     </div>

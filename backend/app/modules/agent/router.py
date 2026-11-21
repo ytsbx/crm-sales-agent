@@ -273,7 +273,6 @@ async def get_action(
     return ok(
         {
             **runtime.serialize_action(action),
-            "status_label": ACTION_STATUS_LABEL.get(action.status, action.status),
             "risk_label": RISK_LABEL.get(action.risk_level, action.risk_level),
             "display": await runtime.action_display(session, action, user=user),
         }
@@ -299,12 +298,12 @@ async def cancel_action(
     action = await _get_action(session, action_id, user.id)
     # 与确认、拒绝共享动作行锁，锁后重读，避免取消覆盖已执行结果。
     await session.refresh(action, with_for_update=True)
-    if action.status in ("executed", "rejected", "cancelled", "failed"):
+    before = runtime.require_action_not_expired(action)
+    if before in ("executed", "rejected", "cancelled", "failed"):
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
             f"动作已是「{ACTION_STATUS_LABEL.get(action.status, action.status)}」，不能取消",
         )
-    before = action.status
     action.status = "cancelled"
     await session.flush()
     await write_audit(
@@ -457,13 +456,19 @@ async def list_actions(
         .join(AgentSession, AgentSession.id == AgentAction.session_id)
         .where(AgentSession.user_id == user.id)
     )
-    if status:
+    cutoff = runtime.action_expiry_cutoff()
+    if status == "expired":
+        stmt = stmt.where(
+            AgentAction.status.in_(runtime.PENDING_ACTION_STATUSES), AgentAction.created_at <= cutoff
+        )
+    elif status:
         stmt = stmt.where(AgentAction.status == status)
+        if status in runtime.PENDING_ACTION_STATUSES:
+            stmt = stmt.where(AgentAction.created_at > cutoff)
     rows, total = await paginate(session, stmt.order_by(AgentAction.id.desc()), page, page_size)
     items = [
         {
             **runtime.serialize_action(row),
-            "status_label": ACTION_STATUS_LABEL.get(row.status, row.status),
             "display": await runtime.action_display(session, row, user=user),
         }
         for row in rows
@@ -501,7 +506,7 @@ async def reject_action(
     await _get_session(session, action.session_id, user.id)
     # 确认与拒绝共享动作行锁；等待后重读，避免用旧状态覆盖已完成动作。
     await session.refresh(action, with_for_update=True)
-    if action.status not in ("awaiting_confirmation", "approval_required"):
+    if runtime.require_action_not_expired(action) not in runtime.PENDING_ACTION_STATUSES:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该动作已经处理过了")
     action.status = "rejected"
     action.result = {"reason": payload.reason}

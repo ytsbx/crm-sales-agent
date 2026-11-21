@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Button, Tag, Toast } from '@douyinfe/semi-ui'
 
+import MaskedContact from '../../shared/components/MaskedContact'
 import { listContacts } from '../../shared/api/customer'
 import type { Contact } from '../../shared/types'
 
@@ -112,7 +113,7 @@ export default function DecisionMakerCard({
 
   return (
     <div className={boxed ? 'card-block' : undefined} style={boxed ? { marginTop } : undefined}>
-      <div className="toolbar" style={{ marginBottom: 12 }}>
+      <div className="toolbar" style={{ marginBottom: 8 }}>
         <div style={{ fontWeight: 600 }}>{title}</div>
         <div style={{ flex: 1 }} />
         <span style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
@@ -148,7 +149,12 @@ export default function DecisionMakerCard({
             style={{
               display: 'flex',
               gap: 12,
-              padding: 12,
+              /* 12 → 14/16：截图里姓名、职位、联系方式三层挤成一坨，右边又空着
+                 （2026-11-20 主人圈出「这里没排版好」）。卡片内边距给足，
+                 三层之间各留 6~8px，读起来才是三段信息而不是一段字。 */
+              /* 2026-11-20：14/16 → 12/14。右栏这张卡加三个按钮比左栏八字段高出 50px，
+                 商机详情的概览被撑成"左上高、右下低"；卡片自身先瘦一圈。 */
+              padding: '12px 14px',
               borderRadius: 'var(--crm-radius)',
               background: 'var(--crm-surface-low)',
               border: '1px solid var(--crm-surface-high)',
@@ -158,27 +164,53 @@ export default function DecisionMakerCard({
                 姓名常常以「【全场景演示】」开头，第一个字就是「【」，
                 圆形里孤零零一个方括号，比没有还难看。姓名本身就是最好的标识。 */}
             <div style={{ minWidth: 0, flex: 1 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ fontWeight: 600 }}>{primary.name}</span>
+              {/* 姓名 + 标签：gap 6 → 8，并且允许换行 —— 姓名带「【全场景演示】」这类
+                  长前缀时，标签会被挤到贴着最后一个字，看着像连在一起（2026-11-20）。 */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontWeight: 600, lineHeight: 1.4, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {primary.name}
+                </span>
                 {primary.is_primary && (
-                  <Tag color="blue" size="small">
+                  <Tag color="blue" size="small" style={{ flexShrink: 0 }}>
                     主要联系人
                   </Tag>
                 )}
               </div>
-              <div style={{ color: 'var(--crm-text-2)', fontSize: 12, marginTop: 2 }}>
+              <div style={{ color: 'var(--crm-text-2)', fontSize: 12, marginTop: 4 }}>
                 {[primary.title, primary.department].filter(Boolean).join(' · ') || '未填职位'}
               </div>
-              <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginTop: 4 }}>
-                {primary.email ?? '无邮箱'}　{primary.mobile ?? primary.phone ?? '无电话'}
+              {/* 邮箱和电话原来靠一个全角空格分隔，截图上挤成「c***@… 无电话」，
+                  分不出是两个字段。改成 flex + 10px 间距 + 一个淡灰「·」分隔。 */}
+              <div
+                style={{
+                  color: 'var(--crm-text-3)',
+                  fontSize: 12,
+                  marginTop: 6,
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  alignItems: 'center',
+                  gap: 10,
+                }}
+              >
+                <MaskedContact value={primary.email} kind="email" empty="无邮箱" />
+                <span style={{ color: 'var(--crm-text-4, #c9cdd4)' }}>·</span>
+                <MaskedContact value={primary.mobile ?? primary.phone} empty="无电话" />
               </div>
             </div>
           </div>
 
+          {/* 三个按钮原来都是 Semi 默认浅灰底，和全站"白底描边"不是一套，
+              还容易读成禁用（2026-11-20）。现在：
+              发送邮件 = 主按钮（对外沟通的主动作），企业微信 = 文字按钮（复制账号），
+              拨打电话 = 文字按钮（无号码时禁用成灰字）。
+              ⚠️ Semi 的 Button 默认 type="primary"，只写 theme="borderless" 仍带浅蓝底，
+              必须显式 type="tertiary"（全局 CSS 对 tertiary 做了透明兜底）。 */}
           {!compact && (
-            <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 4, marginTop: 10, flexWrap: 'wrap' }}>
               <Button
                 size="small"
+                type="primary"
+                theme="outline"
                 disabled={!primary.email}
                 onClick={() => {
                   window.location.href = `mailto:${primary.email}`
@@ -188,6 +220,8 @@ export default function DecisionMakerCard({
               </Button>
               <Button
                 size="small"
+                type="tertiary"
+                theme="borderless"
                 onClick={async () => {
                   const account = primary.wechat ?? primary.mobile ?? primary.name
                   try {
@@ -202,6 +236,8 @@ export default function DecisionMakerCard({
               </Button>
               <Button
                 size="small"
+                type="tertiary"
+                theme="borderless"
                 disabled={!(primary.mobile ?? primary.phone)}
                 onClick={() => {
                   window.location.href = `tel:${primary.mobile ?? primary.phone}`
@@ -217,18 +253,42 @@ export default function DecisionMakerCard({
               <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginBottom: 8 }}>
                 决策链其他联系人
               </div>
-              <div style={{ display: 'grid', gap: 8 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 8, minWidth: 0 }}>
                 {contacts.slice(1).map((contact, index) => (
                   <div
                     key={contact.id}
-                    style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}
+                    /* minWidth:0 + overflow:hidden：不加这两条，名字的 nowrap 会一路撑出去，
+                       整行冲出右栏、连页面都跟着横向溢出（2026-11-19 第一版实测）。 */
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      fontSize: 13,
+                      minWidth: 0,
+                      overflow: 'hidden',
+                    }}
                   >
-                    <Tag color={toneFor(index)} size="small">
+                    {/* 右栏只有 340 宽，三个东西并排时原来 Tag 被压成「技…」、
+                        名字被挤成两行（2026-11-19 实拍）。
+                        现在 Tag 和号码都不让位，中间的名字自己截断 ——
+                        职位和号码都是"看一眼就要用的"，名字截了还能悬停看全。 */}
+                    <Tag color={toneFor(index)} size="small" style={{ flexShrink: 0 }}>
                       {contact.title ?? contact.department ?? '联系人'}
                     </Tag>
-                    <span>{contact.name}</span>
-                    <span style={{ color: 'var(--crm-text-3)', fontSize: 12, marginLeft: 'auto' }}>
-                      {contact.mobile ?? contact.email ?? '-'}
+                    <span
+                      title={contact.name}
+                      style={{
+                        minWidth: 0,
+                        flex: 1,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {contact.name}
+                    </span>
+                    <span style={{ color: 'var(--crm-text-3)', fontSize: 12, flexShrink: 0 }}>
+                      <MaskedContact value={contact.mobile ?? contact.email} kind={contact.mobile ? 'phone' : 'email'} />
                     </span>
                   </div>
                 ))}

@@ -10,6 +10,11 @@ const source = readFileSync(new URL('../frontend/src/modules/quote/WhatIfPanel.t
 const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
 }).outputText
+const moneySource = readFileSync(new URL('../frontend/src/shared/components/money.ts', import.meta.url), 'utf8')
+const money = {}
+runInNewContext(ts.transpileModule(moneySource, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText, { exports: money })
 
 // Run the actual component and its event handlers; replace only hooks, API and UI dependencies.
 function setup(unitCost = 1) {
@@ -30,14 +35,7 @@ function setup(unitCost = 1) {
       if (id === '@tanstack/react-query') return { useQuery: () => ({ data: { versions: [] } }) }
       if (id === '@douyinfe/semi-ui') return Object.fromEntries(['Button', 'Input', 'Slider', 'Table', 'Tag', 'Toast'].map((name) => [name, name]))
       if (id.endsWith('/SectionCard')) return { default: 'SectionCard' }
-      // 「标签全家」：mock 必须覆盖 WhatIfPanel 实际用到的 money 全部导出。
-      // 2026-11-17 教训：formatUnitPrice/toTwoDecimals 缺席即 TypeError，
-      // 三条用例连环红——替身家族要跟着组件真实 import 走。
-      if (id.endsWith('/money')) return {
-        formatMoney: String,
-        formatUnitPrice: (value) => `¥${value}`,
-        toTwoDecimals: String,
-      }
+      if (id.endsWith('/money')) return money
       if (id.endsWith('/api/quote')) return {}
       return require(id)
     },

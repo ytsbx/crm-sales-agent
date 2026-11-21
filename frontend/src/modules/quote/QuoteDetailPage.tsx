@@ -1,4 +1,4 @@
-import { IconExport, IconFile, IconMail } from '@douyinfe/semi-icons'
+import { IconEditStroked, IconExport, IconFile, IconMail } from '@douyinfe/semi-icons'
 import { formatMoney, formatUnitPrice } from '../../shared/components/money'
 import { skuLabel } from '../../shared/sku-label'
 import { formatBeijingDate, formatBeijingTime } from '../../shared/beijing-time'
@@ -8,6 +8,8 @@ import SampleFromSourceModal from '../sample/SampleFromSourceModal'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import FormLabel from '../../shared/components/FormLabel'
+import HelpTip from '../../shared/components/HelpTip'
+import TermHelp from '../../shared/components/TermHelp'
 import { ConfirmRequiredModal, isConfirmRequired, confirmMessageOf } from '../../shared/components/ConfirmRequiredModal'
 import BlockedHint from '../../shared/components/BlockedHint'
 import StatusDot from '../../shared/components/StatusDot'
@@ -49,6 +51,7 @@ import {
   submitApproval,
   updateQuoteCharge,
   updateQuoteItem,
+  updateQuoteVersion,
   withdrawApproval,
   type QuoteChargeRow,
   type QuoteVersion,
@@ -70,6 +73,8 @@ import SectionCard from '../../shared/components/SectionCard'
 import ContractDocsPanel from '../../shared/components/ContractDocsPanel'
 import QuoteSendLogsPanel from './QuoteSendLogsPanel'
 import BizDocPanel from '../../shared/components/BizDocPanel'
+import EmptyState from '../../shared/components/EmptyState'
+import PageLoading from '../../shared/components/PageLoading'
 import WhatIfPanel from './WhatIfPanel'
 import DecisionMakerCard from '../common/DecisionMakerCard'
 import { optionMatcher } from '../../shared/components/optionMatch'
@@ -90,6 +95,8 @@ const STATUS_TONE: Record<string, TagTone> = {
   declined: 'red',
   approval_rejected: 'red',
 }
+
+const PAYMENT_TERMS_MAX_LENGTH = 128
 
 /**
  * 收件人下拉里"不用联系人、手动填"这一项的哨兵值。
@@ -161,6 +168,18 @@ export default function QuoteDetailPage() {
   const currentUser = useAuthStore((state) => state.user)
   const { can } = usePermissions()
   const canManage = can('quote:manage')
+  const [paymentTermsDraft, setPaymentTermsDraft] = useState<{ versionId: number; text: string } | null>(null)
+  const savePaymentTerms = useMutation({
+    mutationFn: ({ versionId, text }: { versionId: number; text: string }) =>
+      updateQuoteVersion(versionId, { payment_terms: text }),
+    onSuccess: (_, { versionId }) => {
+      setPaymentTermsDraft(null)
+      void queryClient.invalidateQueries({ queryKey: ['quote-version', versionId] })
+      void queryClient.invalidateQueries({ queryKey: ['quote-versions', quoteId] })
+      Toast.success('付款条件已保存')
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
   const [deleteVisible, setDeleteVisible] = useState(false)
   const deleteMutation = useMutation({
     mutationFn: () => deleteQuote(quoteId),
@@ -367,7 +386,8 @@ export default function QuoteDetailPage() {
     mutationFn: (confirm) =>
       convertToOrder(versionId!, { receivable_plan: toPlanPayload(planMode, planRows) }, confirm),
     onSuccess: (data) => {
-      Toast.success(`已生成订单 ${data.order_no}`)
+      setConvertVisible(false)
+      Toast.success(`已生成订单 ${data.order_no}，可在订单详情查看应收计划。`)
       navigate(`/orders/${data.order_id}`)
     },
     onError: (error: Error) => {
@@ -479,6 +499,13 @@ export default function QuoteDetailPage() {
   })
 
   const isCurrentVersion = Boolean(version && quote?.current_version_id === version.id)
+  const rejection = version?.approval_status === 'rejected'
+  const rejectionRecord = rejection
+    ? detail?.approval?.records.findLast((record) => record.action === 'reject')
+    : undefined
+  const approvalAssignee = detail?.approval?.summary?.current_assignee_name
+  const awaitingFinance = detail?.approval?.current_node === 'co_sign'
+  const assignedApprover = typeof approvalAssignee === 'string' ? approvalAssignee.trim() : ''
   const editable = isCurrentVersion && version?.approval_status === 'not_submitted' && !version?.sent_at
   /**
    * 锁版之后能不能**补/改运费**（主人 2026-10-12 拍板，方案 A+B）。
@@ -747,10 +774,20 @@ export default function QuoteDetailPage() {
   // （2026-10-15：`useBlockedNotify` 那一行已随 `GuardedButton` 一起去掉，
   //   这里不再有 hook，但**位置要求不变** —— `planNotReady` 要在 early return 前算好。）
   if (versionsQuery.isLoading || detailQuery.isLoading) {
-    return <div className="page-container">加载中…</div>
+    return <PageLoading />
   }
   if (!detail || !version || !quote) {
-    return <div className="page-container">报价单不存在或无权查看</div>
+    return (
+      <div className="page-container">
+        <EmptyState
+          title="报价单不存在或无权查看"
+          hint="可能链接里的编号有误，或这条报价属于你数据范围之外的人；回报价中心重新选择即可。"
+        />
+        <div style={{ display: 'flex', justifyContent: 'center', paddingBottom: 24 }}>
+          <Button type="primary" theme="solid" onClick={() => navigate('/quotes')}>返回报价中心</Button>
+        </div>
+      </div>
+    )
   }
 
   /**
@@ -849,14 +886,29 @@ export default function QuoteDetailPage() {
           {/* 规格并进这一格，不再单占一列：它和产品是「同一条东西」的两行字，
               分两列反而要多横着看一次（十二列挤在 1130 里就是这个代价）。 */}
           {(record.specification || (v && record.sku_name)) && (
-            <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+            /* 副行（规格 · 编码）在 1024 下会跟着名称一起折，把行高撑到五行：
+               143px 的首列放不下「来源未记录采购数量 - XQ202610120002」。
+               名称照旧折行（识别列不能只剩省略号），副行改为单行省略 + 悬停看全，
+               行高回落到三行（2026-11-19）。 */
+            <div
+              title={[record.specification || '', v && record.sku_name ? v : ''].filter(Boolean).join(' · ')}
+              style={{
+                fontSize: 12,
+                color: 'var(--crm-text-3)',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+            >
               {[record.specification || '', v && record.sku_name ? v : ''].filter(Boolean).join(' · ')}
             </div>
           )}
         </div>
       ),
     },
-    { title: '数量', dataIndex: 'quantity', width: 60, render: (v: number) => v.toLocaleString('zh-CN') },
+    /* 52 → 72：52 那会儿实测单元格只剩三十来像素，数量「1」被渲染成「1...」，
+       一个数字后面挂省略号（2026-11-19 实拍）。72 够放四位数量加千分位逗号。 */
+    { title: '数量', dataIndex: 'quantity', width: 72, render: (v: number) => v.toLocaleString('zh-CN') },
     {
       // 单价口径必须在列头写清"不含运费"：运费分离之后，客户与业务员都容易
       // 按含运费的旧口径理解，列头不写就会各理解一套。
@@ -909,15 +961,27 @@ export default function QuoteDetailPage() {
       },
     },
     {
-      title: '利润率',
+      title: (
+        <span className="crm-help-label">
+          利润率
+          <HelpTip forLabel="利润率" text="单件毛利 ÷ 单件报价（不含运费）。头部的毛利率是整单合计口径，两者算法相同、取数范围不同。" />
+        </span>
+      ),
       dataIndex: 'profit_rate_snapshot',
-      width: 85,
+      /* 85 装不下「100.00%」（实测被裁成「100.0...」）——
+         明细表七列合计超出内容区时各列一起被压，这一列正好压到小数点后。
+         96 才够，产品名称是弹性列，会自然让出这 11px。 */
+      width: 96,
       render: (v: number | null) => v == null ? '-' : `${(v * 100).toFixed(2)}%`,
     },
     {
       title: '金额',
       dataIndex: 'amount',
-      width: 110,
+      /* 110 装不下「¥105,600.00」——六位数带小数被裁成「¥105,600.…」。
+         132 才够（数量/单价两列不动，产品名称弹性列让出 22px）。 */
+      width: 132,
+      /* 金额右对齐，与列表页、回款中心同一口径（.cell-right 见 index.css）。 */
+      className: 'cell-right',
       render: (v: number, record: QuoteItemRow) => formatMoney(record.amount_exact ?? v, 'CNY'),
     },
     {
@@ -969,10 +1033,13 @@ export default function QuoteDetailPage() {
     // 下拉里带上 SKU 名称：只有 `编码 · 规格` 时，一个产品下几个 SKU 认不出区别
     label: skuLabel(sku),
   }))
-  const inquiryOptions = (inquiriesQuery.data?.items ?? []).map((row) => ({
-    value: row.id,
-    label: `${row.inquiry_no} · ${row.title}`,
-  }))
+  const inquiryOptions = (inquiriesQuery.data?.items ?? [])
+    .filter((row) => row.linked_quotes?.some((link) => link.id === quoteId) ||
+      (!row.linked_quotes?.length && !row.is_superseded && row.status !== 'archived'))
+    .map((row) => ({
+      value: row.id,
+      label: `${row.inquiry_no} · ${row.title}`,
+    }))
 
   return (
     <div className="page-container">
@@ -992,7 +1059,10 @@ export default function QuoteDetailPage() {
                 </span>
               </div>
               <div className="qhk-item">
-                <span className="qhk-label">毛利率</span>
+                <span className="qhk-label crm-help-label">
+                  毛利率
+                  <HelpTip forLabel="毛利率" text="整单毛利 ÷ 整单货款（不含运费）。明细表里的「利润率」是逐行口径。" />
+                </span>
                 <span className="qhk-value">
                   {version?.total_profit == null || !version?.subtotal_amount
                     ? '-'
@@ -1042,7 +1112,16 @@ export default function QuoteDetailPage() {
             </span>
             <span>负责人：{quote.owner_name ?? '-'}</span>
             <span>有效期至：{quote.valid_until ?? '-'}</span>
-            <span>付款条件：{version.payment_terms ?? '-'}</span>
+            <span className="quote-payment-terms">
+              <span>付款条件：{version.payment_terms || '未填写'}</span>
+              {canManage && editable && (
+                <button type="button" className="quote-payment-terms-edit" aria-label="修改付款条件"
+                  onClick={() => setPaymentTermsDraft({ versionId: version.id, text: version.payment_terms ?? '' })}>
+                  <IconEditStroked size="small" aria-hidden="true" />
+                  修改
+                </button>
+              )}
+            </span>
           </>
         }
       >
@@ -1064,7 +1143,7 @@ export default function QuoteDetailPage() {
 
           // 每个动作的"能不能露"（判据一个字没动，仍是原来那些）
           const conditions: Record<string, boolean> = {
-            '新建版本': Boolean(canManage),
+            '新建版本': Boolean(canManage && !rejection),
             '提交审批': Boolean(canManage && editable),
             '撤回审批': Boolean(canManage && isCurrentVersion && version.approval_status === 'pending'),
             '标记已发送': Boolean(
@@ -1234,7 +1313,9 @@ export default function QuoteDetailPage() {
 
           const rendered: ReactElement[] = []
           const used = new Set<string>()
-          const take = (label: string): ReactElement | null => {
+          // solid=true 才给实心：这一阶段**唯一**的主推动作。其余一律无底文字按钮，
+          // 否则一排按钮全是实心块，等于没有主操作（新建版本/下载 PDF 就是踩过的坑）。
+          const take = (label: string, solid = false): ReactElement | null => {
             // `标记已发送` / `登记再次发送` 是同一个位置的两副文案：
             // 发送过就显示"登记再次发送"，否则"标记已发送"
             if (label === '登记再次发送' && !byLabel.has('登记再次发送')) return null
@@ -1244,7 +1325,17 @@ export default function QuoteDetailPage() {
             // ⚠️ 这些元素是**放进数组**渲染的，必须有 key ——
             // 少了它会报 "Each child in a list should have a unique key prop"，
             // CI 的 UI 冒烟把控制台报错当失败（我第一版就漏了）。
-            return cloneElement(item.element, { key: label })
+            // 主操作实心；危险动作保留红色、只去掉描边；其余统一成 type=tertiary
+            // （Semi 里 theme="borderless" 对 primary 型按钮仍带一层浅底，tertiary 才是纯文字）。
+            const isDanger = (item.element.props as { type?: string }).type === 'danger'
+            return cloneElement(
+              item.element as ReactElement<{ theme?: 'solid' | 'borderless'; type?: string }>,
+              solid
+                ? { key: label, theme: 'solid' }
+                : isDanger
+                  ? { key: label, theme: 'borderless' }
+                  : { key: label, type: 'tertiary' },
+            )
           }
 
           // ⚠️ 阶段由待办列表第一条决定。主数据/运费没确认时，第一条是"准备明细"
@@ -1260,7 +1351,7 @@ export default function QuoteDetailPage() {
               ? (primary.handler === 'markSent' && version.sent_at ? '登记再次发送' : primary.label)
               : null
           if (primaryLabel) {
-            const element = take(primaryLabel)
+            const element = take(primaryLabel, true)
             if (element) rendered.push(element)
           }
           for (const item of secondary) {
@@ -1298,7 +1389,10 @@ export default function QuoteDetailPage() {
           const hasMore = more.length > 0 || moreNotes.length > 0
 
           return (
-            <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <div
+              className="quote-actions"
+              style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}
+            >
               {rendered}
               {hasMore && (
                 <Dropdown
@@ -1371,6 +1465,29 @@ export default function QuoteDetailPage() {
           </div>
         </div>
 
+        {rejection && (
+          <div className="workflow-next quote-approval-rejection">
+            <div>
+              <strong>报价审批已拒绝</strong>
+              <p className="quote-approval-opinion">{rejectionRecord?.comment?.trim() || '审批人未填写意见。'}</p>
+              {rejectionRecord && (
+                <p className="workflow-guide">
+                  {[rejectionRecord.approver_name, formatBeijingTime(rejectionRecord.created_at)].filter(Boolean).join(' · ')}
+                </p>
+              )}
+              {isCurrentVersion && canManage && <p className="workflow-guide">新建版本后，在新版修改并重新提交审批。</p>}
+            </div>
+            {isCurrentVersion && canManage && (
+              <Button type="primary" theme="outline" loading={versionMutation.isPending}
+                onClick={() => versionMutation.mutate(false)}>新建版本</Button>
+            )}
+            {!isCurrentVersion && quote.current_version_id && allVersionIds.includes(quote.current_version_id) && (
+              <Button theme="outline"
+                onClick={() => setSearchParams({ version: String(quote.current_version_id) })}>打开当前版本</Button>
+            )}
+          </div>
+        )}
+
         {/* 版本页签下面正是「按钮突然全没了」发生的地方：切到历史版本、或这一版已经发送/审批通过时，
             提交审批、批量录入、添加费用都会整块消失（判据 `canManage && editable`）。
             常驻一行说明它们为什么不在这儿、下一步该怎么做（规矩见 shared/components/BlockedHint.tsx）。 */}
@@ -1398,7 +1515,7 @@ export default function QuoteDetailPage() {
         判据全部来自 `shared/quote-todo.ts`（单一真源），页面只负责渲染与跳转 ——
         别在这里自己判一遍，否则两处会说法不一。
       */}
-      {quoteTodoList.length > 0 && (
+      {quoteTodoList.some((todo) => todo.key !== 'approval_rejected') && (
         <div
           style={{
             marginTop: 16,
@@ -1410,7 +1527,9 @@ export default function QuoteDetailPage() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
             <span style={{ fontWeight: 600 }}>现在这一步</span>
             <Tag color={quoteTodosBlocked ? 'orange' : 'blue'} size="small">
-              {currentStage(quoteTodoList) ? STAGE_LABEL[currentStage(quoteTodoList)!] : ''}
+              {awaitingFinance && currentStage(quoteTodoList) === 'approving'
+                ? '待财务会签'
+                : currentStage(quoteTodoList) ? STAGE_LABEL[currentStage(quoteTodoList)!] : ''}
             </Tag>
             {stageProgress(currentStage(quoteTodoList)) && (
               <span style={{ color: 'var(--crm-text-3)' }}>
@@ -1419,19 +1538,33 @@ export default function QuoteDetailPage() {
               </span>
             )}
           </div>
-          {quoteTodoList.map((todo: QuoteTodo, index: number) => (
+          {/* 运费那条从「现在这一步」里摘掉：页面下面紧跟着一条「待补运费 + 去补填 →」
+              （带动作按钮、滚到附加费用），这里再列一遍同一句「尚未填写运费…」，
+              两句话相隔 60px 说同一件事（2026-11-20 截图）。流程上与运费无关的
+              其它处置项照旧列。 */}
+          {quoteTodoList
+            .filter((todo: QuoteTodo) => todo.key !== 'approval_rejected' && !(freightUnconfirmed && todo.key === 'freight_unconfirmed'))
+            .map((todo: QuoteTodo, index: number) => (
             <div
               key={todo.key}
-              className="quote-todo-row"
+              className={todo.key === 'approval_pending' ? 'quote-todo-row quote-approval-stage' : 'quote-todo-row'}
               // 原来「去处理」「下一步：…」直接挂在长句末尾，句子一长就把两个标签
               // 顶到最右边、和正文挤在同一条基线上。现在说明独占左侧、可换行，
               // 两个标签收进右侧固定列，永远贴右边对齐。
               style={{ color: index === 0 ? 'var(--crm-text-1)' : 'var(--crm-text-3)' }}
             >
               <span className="quote-todo-dot">·</span>
-              <span className="quote-todo-reason">{todo.reason}</span>
+              <span className="quote-todo-reason">
+                {todo.key === 'approval_pending' && (awaitingFinance || assignedApprover) ? (
+                  <>
+                    {awaitingFinance ? '业务审批已通过，等待财务会签。' : ''}
+                    {assignedApprover ? `当前由「${assignedApprover}」处理。` : ''}
+                    全部审批通过后才能发给客户。
+                  </>
+                ) : todo.reason}
+              </span>
               <span className="quote-todo-side">
-                {todo.action && index === 0 && (
+                {todo.action && index === 0 && todo.key !== 'approval_pending' && (
                   <span className="qt-next">下一步：{todo.action}</span>
                 )}
                 {/* 能点的必须给去处：只说明"差什么"而不给入口，等于把问题换个地方放着 */}
@@ -1454,6 +1587,40 @@ export default function QuoteDetailPage() {
         </div>
       )}
       </DetailHeader>
+
+      <Modal
+        title="修改付款条件"
+        visible={Boolean(canManage && editable && paymentTermsDraft?.versionId === version.id)}
+        onCancel={() => {
+          if (!savePaymentTerms.isPending) setPaymentTermsDraft(null)
+        }}
+        onOk={() => {
+          const text = paymentTermsDraft?.text.trim()
+          if (!paymentTermsDraft || !text || [...text].length > PAYMENT_TERMS_MAX_LENGTH) return
+          savePaymentTerms.mutate({ versionId: paymentTermsDraft.versionId, text })
+        }}
+        okText="保存"
+        confirmLoading={savePaymentTerms.isPending}
+        okButtonProps={{
+          disabled: !paymentTermsDraft?.text.trim()
+            || [...paymentTermsDraft.text.trim()].length > PAYMENT_TERMS_MAX_LENGTH,
+        }}
+      >
+        <FormLabel required><label htmlFor="quote-payment-terms">付款条件</label></FormLabel>
+        <TextArea
+          id="quote-payment-terms"
+          aria-required
+          aria-describedby="quote-payment-terms-help"
+          rows={2}
+          value={paymentTermsDraft?.text ?? ''}
+          disabled={savePaymentTerms.isPending}
+          placeholder="例如：先付 30% 定金，发货前付清尾款"
+          onChange={(text) => setPaymentTermsDraft((draft) => draft ? { ...draft, text } : null)}
+        />
+        <p className="settings-help" id="quote-payment-terms-help">
+          仅修改这版报价，所填内容会出现在对客报价单上。最多 {PAYMENT_TERMS_MAX_LENGTH} 个字。
+        </p>
+      </Modal>
       <Modal
         title={`确认删除报价「${quote.quote_no}」？`}
         visible={deleteVisible}
@@ -1504,9 +1671,11 @@ export default function QuoteDetailPage() {
         <div className="quote-master-warning">
           <div className="qmw-main">
             <div className="qmw-title">这几条明细的主数据还没确认，不能用来做正式报价</div>
-            {(detail.master_warnings ?? []).map((warning) => (
-              <div className="qmw-item" key={warning}>{warning}</div>
-            ))}
+            {/* 每一条明细在这里原样复述一遍，和上方「现在这一步」第一条是一字不差的两段长句，
+                读完两遍才知道说的是同一件事（2026-11-20 截图）。这里只留处数和去哪看。 */}
+            <div className="qmw-item">
+              {(detail.master_warnings ?? []).length} 处不一致，逐条说明见上方「现在这一步」。
+            </div>
           </div>
           {/* 入口放到右侧垂直居中：原来按钮压在文案最后一行下面，整条看着又长又挤。
               现在"说明在左、动作在右"，一眼知道下一步点哪儿。 */}
@@ -1531,6 +1700,7 @@ export default function QuoteDetailPage() {
       */}
       <Modal
         title="转销售订单"
+        className="receivable-plan-modal"
         visible={convertVisible}
         onCancel={() => setConvertVisible(false)}
         onOk={() => convertMutation.mutate(true)}
@@ -1538,9 +1708,10 @@ export default function QuoteDetailPage() {
         okText="生成订单"
         okButtonProps={{ disabled: planNotReady }}
         width={680}
+        style={{ maxWidth: 'calc(100vw - 32px)' }}
         footer={
           <div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+            <div className="workflow-modal-actions">
               <Button onClick={() => setConvertVisible(false)}>取消</Button>
               <GuardedButton
                 theme="solid"
@@ -1548,6 +1719,7 @@ export default function QuoteDetailPage() {
                 disabled={planNotReady}
                 blockedReasons={planBlocked}
                 action="生成订单"
+                hintBelow
                 onClick={() => convertMutation.mutate(true)}
               >
                 生成订单
@@ -1556,12 +1728,11 @@ export default function QuoteDetailPage() {
           </div>
         }
       >
-        <div style={{ display: 'grid', gap: 12 }}>
-          <div style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
-            将把本报价版本转为销售订单（金额
-            {formatMoney(version?.total_amount_exact ?? version?.total_amount ?? 0, 'CNY')}
-            ），并「复制全部明细」。订单是正式履约依据，生成后要改需走订单自己的流程。
-          </div>
+        <div className="receivable-picker">
+          <p className="workflow-guide">
+            将按当前报价版本的全部明细生成正式订单，金额为{' '}
+            <strong>{formatMoney(version?.total_amount_exact ?? version?.total_amount ?? 0, 'CNY')}</strong>。
+          </p>
           <ReceivablePlanPicker
             totalAmount={version?.total_amount_exact ?? version?.total_amount ?? 0}
             currency="CNY"  /* 口径：系统只做人民币（版本上没有 currency 字段，别猜） */
@@ -1570,6 +1741,7 @@ export default function QuoteDetailPage() {
             rows={planRows}
             onRowsChange={setPlanRows}
           />
+          <p className="workflow-guide">确认收款安排后点「生成订单」。系统会打开订单详情，下一步到「应收计划」核对各期金额和到期日。</p>
         </div>
       </Modal>
 
@@ -1699,7 +1871,7 @@ export default function QuoteDetailPage() {
         <div
           style={{
             marginBottom: 16,
-            background: 'var(--crm-warning-soft, #fff7e6)',
+            background: 'var(--crm-warning-soft)',
             border: '1px solid var(--crm-warning, #fa8c16)',
             borderRadius: 6,
             padding: '10px 14px',
@@ -1723,20 +1895,47 @@ export default function QuoteDetailPage() {
           </Button>
         </div>
       )}
-      {version.approval_status === 'rejected' && (
-        <div style={{ marginBottom: 16 }}>
-          <Tag color="red" size="large">
-            审批未通过，请调整价格后新建版本重新提交
-          </Tag>
-        </div>
-      )}
       {/* 运费未确认要**持续显示**（与主数据未确认同一性质）：草稿允许没填运费，
           但正式发送会被拦下 —— 等到点"标记已发送"才报错就太晚了。 */}
+      {/* 运费未确认要**持续显示**（与主数据未确认同一性质）：草稿允许没填运费，
+          但正式发送会被拦下 —— 等到点「标记已发送」才报错就太晚了。
+          2026-11-20：原来这里是一枚橙色 Tag，内容是后端给的那句
+          "尚未填写运费：请在「附加费用」里以「物流」类型填写…" ——
+          和页顶「现在这一步」的第二条**一字不差**，同一句话隔着 120px 出现两遍，
+          而且贴着明细区、挨着又没动作，看完还得自己往下找「附加费用」。
+          现在压成一条：短句说清后果 + 右边直接给「去补填」（滚到附加费用并开弹窗）。 */}
       {freightUnconfirmed && (
-        <div style={{ marginBottom: 16 }}>
-          <Tag color="orange" size="large">
-            {freightUnconfirmed}
-          </Tag>
+        <div
+          style={{
+            marginBottom: 16,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            padding: '10px 14px',
+            borderRadius: 10,
+            background: 'var(--crm-surface-low)',
+            borderLeft: '3px solid var(--crm-warning)',
+            fontSize: 12.5,
+            color: 'var(--crm-text-2)',
+          }}
+        >
+          <Tag size="small" type="light" color="orange">待补运费</Tag>
+          <span>这版还没填运费，正式发送前必须补上。</span>
+          <span style={{ flex: 1 }} />
+          {canManage && (editable || canEditFreightOnly) && (
+            <Button
+              size="small"
+              type="tertiary"
+              theme="borderless"
+              onClick={() => {
+                if (!editable) setChargeForm((form) => ({ ...form, charge_type: 'logistics' }))
+                setChargeVisible(true)
+                document.getElementById('quote-charges')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+              }}
+            >
+              去补填 →
+            </Button>
+          )}
         </div>
       )}
 
@@ -1745,12 +1944,22 @@ export default function QuoteDetailPage() {
         title="报价明细"
         style={{ marginBottom: 16 }}
         extra={
-          <div style={{ display: 'flex', gap: 8 }}>
-          {can('order:manage') && <Button size="small" onClick={() => setDraftVisible(true)}>按此版本建订单草稿</Button>}
-          {can('sample:manage') && <Button size="small" onClick={() => setSampleVisible(true)}>按此版本申请打样</Button>}
+          <div className="quote-actions" style={{ display: 'flex', gap: 8 }}>
+          {/* 明细这块的推进动作是「按此版本建订单草稿」，给它实心；
+              打样、批量录入是并列入口，收成文字按钮（2026-11-19）。 */}
+          {can('order:manage') && (
+            <Button theme="solid" size="small" onClick={() => setDraftVisible(true)}>
+              按此版本建订单草稿
+            </Button>
+          )}
+          {can('sample:manage') && (
+            <Button size="small" type="tertiary" onClick={() => setSampleVisible(true)}>
+              按此版本申请打样
+            </Button>
+          )}
           {canManage &&
           editable && (
-            <Button size="small" onClick={openItemsEditor}>
+            <Button size="small" type="tertiary" onClick={openItemsEditor}>
               批量录入
             </Button>
           )}
@@ -1831,6 +2040,7 @@ export default function QuoteDetailPage() {
                 {facts.map((f) => (
                   <span key={f.label} style={{ whiteSpace: 'nowrap' }}>
                     <span style={{ color: 'var(--crm-text-3)' }}>{f.label} </span>
+                    {f.label === '最低保护价' && <TermHelp term="最低保护价" />}
                     <span style={{ color: 'var(--crm-text)', fontWeight: 600 }}>{f.value}</span>
                   </span>
                 ))}
@@ -2049,6 +2259,10 @@ export default function QuoteDetailPage() {
                 title: '金额',
                 dataIndex: 'amount',
                 width: 120,
+                // 金额右对齐（与明细表、报价列表同一口径）：这一列漏了 .cell-right，
+                // ¥30.00 与 ¥1,200.00 各站在格子中间，两行比不出大小（2026-11-19）。
+                align: 'right' as const,
+                className: 'cell-right',
                 // 「（代收代付）」原来跟在金额后面一行写：「¥30.00（代收代付）」要 154px，
                 // 把 120 的列宽撑到 154，整张表超出卡片、底下挂滚动条，
                 // 「删除」按钮被推到卡片外面看不见。拆成两行，口径说明用灰色小字放下面。
@@ -2164,7 +2378,10 @@ export default function QuoteDetailPage() {
               {/* 运费从"附加费用"里**单独一行**列具体金额，不再混在一起让客户自己猜。
                   注意：下面这几行都**已经含在**应付合计里，只是拆分展示，不再相加。 */}
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: 'var(--crm-text-3)' }}>运费（代收代付）</span>
+                <span className="crm-help-label" style={{ color: 'var(--crm-text-3)' }}>
+                  运费（代收代付）
+                  <HelpTip forLabel="运费" text="客户承担、公司代收代付的运费。按行单列给客户看，已计入下面的应付合计，不计入利润。" />
+                </span>
                 <span>{cny(summary.logistics_amount)}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -2222,7 +2439,7 @@ export default function QuoteDetailPage() {
             columns={[
               { title: '动作', dataIndex: 'action', width: 120,
                 render: (v: string) =>
-                  ({ submit: '提交申请', approve: '同意', reject: '拒绝', withdraw: '撤回' })[v] ?? v },
+                  ({ submit: '提交申请', approve: '同意', reject: '拒绝', withdraw: '撤回', transfer: '转交' })[v] ?? '审批操作' },
               { title: '处理人', dataIndex: 'approver_name', width: 120, render: (v: string | null) => v ?? '-' },
               { title: '意见', dataIndex: 'comment', render: (v: string | null) => v ?? '-' },
               {
@@ -2241,7 +2458,9 @@ export default function QuoteDetailPage() {
 
       {/* 关联询价的审批：只有明细里带 inquiry_id 才出现，纯现货报价看不到这张卡 */}
       {linkedInquiries.length > 0 && (
-        <SectionCard title="关联询价的审批进度" className="oa-inquiry-card" style={{ marginTop: 16 }}>
+        <SectionCard title={<span className="crm-help-label">关联询价的审批进度
+          <HelpTip forLabel="关联询价的审批进度" text="正式发送前，关联询价须完成核价和报价复核。后续打样、采购、备货可以继续进行。" />
+        </span>} className="oa-inquiry-card" style={{ marginTop: 16 }}>
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 12 }}>
             「核价 / 报价复核」在同序 OA 的询价单上办理；这一层没通过时，正式对外发送仍会被拦。
           </div>
@@ -2287,7 +2506,10 @@ export default function QuoteDetailPage() {
                     )}
                   </span>
                   {row.quotation?.approved && (
-                    <span className="oa-stage-approved">✓ 核价 / 报价复核已通过</span>
+                    <span className="oa-stage-approved crm-help-label">
+                      ✓ 核价 / 报价复核已通过
+                      <HelpTip forLabel="核价与报价复核" text="同序 OA 里核价和报价复核两个节点都通过了；之后这份报价才能正式发给客户。" />
+                    </span>
                   )}
                 </div>
                 {row.latest && canManage && (
@@ -2361,9 +2583,13 @@ export default function QuoteDetailPage() {
             </span>
           </div>
           {/* 输入框只有 placeholder 自我介绍，点进去字就没了 —— 补固定标签 */}
-          <div>
-            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>实际报价</div>
-            <Input value={newPrice} onChange={setNewPrice} placeholder="填数字，单位元" />
+          <div className="form-rows">
+            <div className="form-row">
+              <label className="form-row-label">实际报价</label>
+              <div className="form-row-control">
+                <Input value={newPrice} onChange={setNewPrice} placeholder="填数字，单位元" />
+              </div>
+            </div>
           </div>
           <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
             保存后会按你的价格权限重新判断是否需要审批。
@@ -2417,18 +2643,20 @@ export default function QuoteDetailPage() {
                   <ItemField label="定制需求">
                   <Select
                     style={{ width: 240 }}
-                    placeholder={inquiryOptions.length > 0 ? '选择定制需求' : '本客户还没有定制需求'}
+                    placeholder={inquiryOptions.length > 0 ? '选择定制需求' : '本客户暂无可选定制需求'}
                     filter={optionMatcher}
                     value={row.inquiry_id}
                     onChange={(value) => patchRow(index, { inquiry_id: value as number })}
-                    optionList={inquiryOptions}
+                    optionList={row.inquiry_id && !inquiryOptions.some((option) => option.value === row.inquiry_id)
+                      ? [{ value: row.inquiry_id, label: `原关联需求 #${row.inquiry_id}` }, ...inquiryOptions]
+                      : inquiryOptions}
                   />
                   </ItemField>
                   {/* 下拉只列**本客户**的需求（2026-10-12 主人提问核实）：空的时候要说清
                       是"这个客户还没有需求"，而不是让用户以为系统里没数据、或者去别处找。 */}
-                  {inquiryOptions.length === 0 && (
+                  {!inquiriesQuery.isLoading && inquiryOptions.length === 0 && !row.inquiry_id && (
                     <span style={{ fontSize: 12, color: 'var(--crm-text-3)', alignSelf: 'center' }}>
-                      这个客户还没有定制需求：请先到「定制需求」里为「{quote.customer_name ?? '本客户'}」记录一条，再回来报价
+                      请到「定制需求」选择客户的当前版本，或打开该需求已经关联的原报价。
                     </span>
                   )}
                 </>
@@ -2515,8 +2743,18 @@ export default function QuoteDetailPage() {
       </Modal>
 
       <Modal
-        width={520}
-        title={editable ? '添加附加费用' : '补填运费'}
+        width={600}
+        title={
+          <div className="modal-head">
+            <span className="modal-head-icon" aria-hidden>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><path d="M4 7h16v10H4z" /><path d="M4 11h16" /><path d="M8 15h3" /></svg>
+            </span>
+            <div>
+              {editable ? '添加附加费用' : '补填运费'}
+              <div className="modal-subtitle">{editable ? '费用会加进这份报价的总额' : '运费不进产品价，补它不用重走审批'}</div>
+            </div>
+          </div>
+        }
         visible={chargeVisible}
         onCancel={() => setChargeVisible(false)}
         onOk={() => chargeMutation.mutate()}
@@ -2558,45 +2796,52 @@ export default function QuoteDetailPage() {
               三个空格子长得一模一样，填完也看不出这格是"说明"还是"金额"。
               每格上面配一个固定小标签（和数据字典、回收节奏同一套做法），
               placeholder 只留"怎么填"的例子。 */}
-          <div>
-            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>类型</div>
-            <Select
-              value={chargeForm.charge_type}
-              onChange={(value) => setChargeForm({ ...chargeForm, charge_type: value as string })}
-              optionList={editable ? CHARGE_TYPES : CHARGE_TYPES.filter((item) => item.value === 'logistics')}
-              disabled={!editable}
-              style={{ width: '100%' }}
-            />
-          </div>
-          <div>
-            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>说明</div>
-            <Input
-              value={chargeForm.description}
-              onChange={(value) => setChargeForm({ ...chargeForm, description: value })}
-              placeholder="例如：宁波到苏州运费"
-              disabled={!editable && Boolean(existingFreight)}
-            />
-          </div>
-          <div>
-            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>金额</div>
-            <Input
-              value={chargeForm.amount}
-              onChange={(value) => setChargeForm({ ...chargeForm, amount: value })}
-              placeholder={
-                chargeForm.charge_type === 'discount'
-                  ? '填正数，系统自动扣减'
-                  : '确属零运费请显式填 0，不要留空'
-              }
-              disabled={!editable && Boolean(existingFreight)}
-            />
-          </div>
-          {chargeForm.charge_type === 'logistics' && (
-            <div style={{ color: 'var(--crm-text-3)', fontSize: 12, lineHeight: 1.6 }}>
-              运费的支出金额与向客户收取的金额<b>共用这一份数据</b>：客户全额承担、
-              公司原额代收代付，不赚不赔。填进来即视为已确认的实际运费；
-              <b>留空不等于零运费</b>——确实没有运费请显式填 0。
+          <div className="form-rows">
+            <div className="form-row">
+              <label className="form-row-label">类型</label>
+              <div className="form-row-control">
+                <Select
+                  value={chargeForm.charge_type}
+                  onChange={(value) => setChargeForm({ ...chargeForm, charge_type: value as string })}
+                  optionList={editable ? CHARGE_TYPES : CHARGE_TYPES.filter((item) => item.value === 'logistics')}
+                  disabled={!editable}
+                  style={{ width: '100%' }}
+                />
+              </div>
             </div>
-          )}
+            <div className="form-row">
+              <label className="form-row-label">说明</label>
+              <div className="form-row-control">
+                <Input
+                  value={chargeForm.description}
+                  onChange={(value) => setChargeForm({ ...chargeForm, description: value })}
+                  placeholder="例如：宁波到苏州运费"
+                  disabled={!editable && Boolean(existingFreight)}
+                />
+              </div>
+            </div>
+            <div className="form-row">
+              <label className="form-row-label">金额</label>
+              <div className="form-row-control">
+                <Input
+                  value={chargeForm.amount}
+                  onChange={(value) => setChargeForm({ ...chargeForm, amount: value })}
+                  placeholder={
+                    chargeForm.charge_type === 'discount'
+                      ? '填正数，系统自动扣减'
+                      : '确属零运费请显式填 0，不要留空'
+                  }
+                  disabled={!editable && Boolean(existingFreight)}
+                />
+                {chargeForm.charge_type === 'logistics' && (
+                  <div className="form-row-hint" style={{ lineHeight: 1.6 }}>
+                    运费的支出与向客户收取<b>共用这一份数据</b>：客户全额承担、公司原额代收代付，
+                    <b>留空不等于零运费</b> —— 确实没有运费请显式填 0。
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
       </Modal>
 
@@ -2858,7 +3103,7 @@ export default function QuoteDetailPage() {
             {/* 场景10：对客 Excel 报价单——金额取自当前选中版本的快照，
                 之后改价或改模板都不会影响已导出的那份 */}
             <div className="quote-archive-head">
-              <span className="quote-archive-icon" style={{ background: '#fdf1e3', color: '#c2710a' }}>
+              <span className="quote-archive-icon" style={{ background: 'var(--crm-secondary-soft)', color: 'var(--crm-secondary)' }}>
                 <IconExport size="small" />
               </span>
               对外单据（对客报价 Excel）

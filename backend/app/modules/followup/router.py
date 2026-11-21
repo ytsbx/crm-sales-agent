@@ -1,16 +1,19 @@
 """跟进记录接口（对齐 03-API §24）。"""
 
 
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.audit import write_audit
+from app.core.audit import AuditLog, write_audit
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
 from app.modules.customer import service as customer_service
+from app.modules.customer.model import Customer
 from app.modules.followup.model import FollowUp
 from app.modules.followup.mutations import serialize, notify_manual_followup, create_manual_followup
 from app.modules.notification import service as notification_service
@@ -325,10 +328,32 @@ async def delete_followup(
 ):
     # update 与详情都走 _visible_followup，删除原先却只 session.get——
     # 任何有跟进权限的人拿别人的 id 就能删（"列表看不到的，按 id 也拿不到"是本项目铁律）。
-    followup = await _visible_followup(session, user, followup_id)
+    followup = await _visible_followup(session, user, followup_id, for_update=True)
     if followup.followup_type == "系统":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "系统过程记录不可删除，请在原单执行业务操作", 422)
     await session.delete(followup)
+    if followup.customer_id is not None:
+        await session.flush()
+        customer = await session.get(Customer, followup.customer_id)
+        if customer is not None:
+            latest = await session.scalar(select(func.max(FollowUp.created_at)).where(
+                FollowUp.customer_id == customer.id, FollowUp.followup_type != "系统",
+            ))
+            after = AuditLog.after_data["last_followup_at"].as_string()
+            baseline = await session.scalar(select(after).where(
+                AuditLog.business_type == "customer",
+                AuditLog.business_id == customer.id,
+                or_(AuditLog.action == "import", and_(
+                    AuditLog.action == "update",
+                    after.is_distinct_from(AuditLog.before_data["last_followup_at"].as_string()),
+                )),
+            ).order_by(AuditLog.id.desc()).limit(1))
+            times = [value for value in (latest, datetime.fromisoformat(baseline) if baseline else None) if value]
+            customer.last_followup_at = max(
+                (value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC) for value in times),
+                default=None,
+            )
+            customer.last_contact_unknown = customer.last_followup_at is None
     await write_audit(
         session,
         operator_id=user.id,

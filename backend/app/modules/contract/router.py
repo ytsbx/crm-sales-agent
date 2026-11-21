@@ -13,6 +13,7 @@ from app.core.audit import write_audit
 from app.core.data_scope import ensure_in_scope, scoped_owner_ids
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
+from app.core.draft_visibility import ensure_draft_access
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data
 from app.modules.contract import service as svc
@@ -104,6 +105,19 @@ async def start_oa_contract_approval(
     """发起自研 OA 合同审批；审批在 OA 完成，CRM 负责同步与回签。"""
     from app.modules.oa import service as oa_service
 
+    prepared_template = None
+    if payload.extra_fields:
+        from app.modules.oa.contract_form import active_template
+        from app.modules.user.model import User
+
+        draft = await svc.get_doc_or_404(session, doc_id)
+        await _ensure_doc_in_scope(session, user, draft)
+        if draft.status != "draft":
+            raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "只有待签草稿合同可以发起审批", 422)
+        account = await session.get(User, user.id)
+        if account is None or not account.dingtalk_userid:
+            raise AppError(ErrorCode.PARAM_ERROR, "请先绑定本人钉钉账号，OA 才能按你名义发起", 422)
+        prepared_template = await active_template(account)
     doc = await svc.get_doc_or_404(session, doc_id, for_update=True, protect_transfer=True)
     await _ensure_doc_in_scope(session, user, doc)
     if doc.status != "draft":
@@ -113,6 +127,7 @@ async def start_oa_contract_approval(
         our_company=payload.our_company,
         counterparty_name=payload.counterparty_name,
         extra_fields=payload.extra_fields,
+        prepared_template=prepared_template,
     )
     await write_audit(
         session,
@@ -372,7 +387,8 @@ async def withdraw_dingtalk_contract_approval(
         actor = await session.get(User, user.id)
         if not actor or not actor.dingtalk_userid or actor.dingtalk_userid != row.originator_user_id:
             raise AppError(ErrorCode.FORBIDDEN, "请由该 OA 审批的发起人先撤回，确认后再作废合同", 403)
-        await oa_service.withdraw_contract_row(session, row, "CRM 撤回合同审批")
+        row = await oa_service.withdraw_contract_row(session, row, "CRM 撤回合同审批")
+        await _ensure_doc_in_scope(session, user, doc)
         await write_audit(
             session, operator_id=user.id, action="withdraw_contract_oa", business_type="contract",
             business_id=doc.id,
@@ -385,6 +401,7 @@ async def withdraw_dingtalk_contract_approval(
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "钉钉推送已关闭，无法向钉钉发送撤回请求", 422)
     from app.modules.contract.customer_flow import withdraw_before_void
     await withdraw_before_void(session, user, doc)
+    await _ensure_doc_in_scope(session, user, doc)
     if row.status != "withdrawn":
         await session.commit()
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "审批已经结束，不能撤回；状态已同步，请刷新", 422)
@@ -425,6 +442,7 @@ async def list_documents(
     items, total = await svc.list_documents(
         session,
         owner_ids=owner_ids,
+        viewer_id=user.id,
         customer_id=customer_id,
         status=status,
         order_id=order_id,
@@ -483,7 +501,8 @@ async def create_document_record(payload: DocumentCreate, request: Request, user
             raise AppError(ErrorCode.NOT_FOUND, "报价单不存在", 404)
         if quote.customer_id != customer.id:
             raise AppError(ErrorCode.PARAM_ERROR, "所选报价不属于该客户", 422)
-        await ensure_in_scope(session, user, owner_id=quote.owner_id, label="报价单")
+        if not await ensure_draft_access(session, Quote, quote.id, user.id):
+            await ensure_in_scope(session, user, owner_id=quote.owner_id, label="报价单")
     if payload.order_id is not None and payload.quote_id is not None:
         if order.quote_id is not None and order.quote_id != quote.id:
             raise AppError(ErrorCode.PARAM_ERROR, "所选报价与订单不匹配", 422)
@@ -615,7 +634,7 @@ async def get_document(
 
         parent = await session.get(ContractDocument, doc.parent_id)
         result["parent_doc_no"] = parent.doc_no if parent else None
-    result["amendments"] = await svc.list_amendments(session, doc.id)
+    result["amendments"] = await svc.list_amendments(session, doc.id, viewer_id=user.id)
     # 签署原件清单：已签状态下前端要有"看签回来的那一份"的入口。
     # 不给的话，用户点「下载」拿到的是生成稿，却以为拿的是签署件。
     result["signed_files"] = await svc.list_signed_files(session, doc.id)
@@ -831,6 +850,10 @@ async def void_document(
         )
     from app.modules.contract.customer_flow import withdraw_before_void
     await withdraw_before_void(session, user, doc)
+    doc = await svc.get_doc_or_404(session, doc_id)
+    await _ensure_doc_in_scope(session, user, doc)
+    if doc.status == "signed" and not _is_manager(user):
+        raise AppError(ErrorCode.FORBIDDEN, "已签署的合同要作废，需要主管权限", 403)
     cancelled = await svc.void_document(session, doc, reason=payload.reason)
     await _record_contract_event(
         session,
@@ -862,6 +885,16 @@ async def delete_document(doc_id: int, request: Request, user: CurrentUser = Dep
     await _ensure_doc_in_scope(session, user, doc)
     if doc.status == "signed":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已签署合同不能删除，请使用作废流程", 422)
+    from app.modules.oa.service import latest_contract_row
+
+    approval = await latest_contract_row(session, doc.id)
+    if approval is not None and approval.status in ("pending", "submitting", "needs_review"):
+        message = (
+            "合同审批正在进行，请先撤回审批并确认结果，再删除合同"
+            if approval.status == "pending" else
+            "合同审批状态尚未确认，请先核对审批进度，再删除合同"
+        )
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, message, 409)
     doc.deleted_at = datetime.now(UTC)
     # 合同回签待办的生命周期跟随文档：文档进回收站后，继续显示“去登记回签”
     # 会把用户带到一个不可见的对象，形成任务数与文档数不一致。
@@ -997,8 +1030,11 @@ async def _ensure_doc_in_scope(session: AsyncSession, user, doc) -> None:
     → 创建人。抽出来的原因：附件走的是通用文件入口，那边原来只认客户当前
     负责人，于是"客户进公海、负责人清空"时详情能看、原件下不了。
     """
+    from app.modules.contract.model import ContractDocument
     from app.modules.contract.visibility import contract_scope_owner_id
 
+    if await ensure_draft_access(session, ContractDocument, doc.id, user.id):
+        return
     owner_id = await contract_scope_owner_id(session, doc)
     await ensure_in_scope(session, user, owner_id=owner_id, label="合同文档")
 

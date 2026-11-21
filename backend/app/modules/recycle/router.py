@@ -28,7 +28,7 @@ async def list_recycle_contracts(
 ):
     from app.core.data_scope import scoped_owner_ids
     from app.modules.contract.service import list_documents
-    items, total = await list_documents(session, owner_ids=await scoped_owner_ids(session, user),
+    items, total = await list_documents(session, owner_ids=await scoped_owner_ids(session, user), viewer_id=user.id,
         customer_id=None, status=None, page=page, page_size=page_size, deleted_only=True, keyword=keyword)
     return ok(page_data(items, total, page, page_size))
 

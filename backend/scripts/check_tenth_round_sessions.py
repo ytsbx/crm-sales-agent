@@ -347,11 +347,17 @@ def main():
     before_rows = asyncio.run(total_session_count(uid))
     before_seen = asyncio.run(session_row(sid_b))[5]
     time.sleep(1.1)  # 让"最近一次续期时间"有机会前进（同一秒内比大小是假绿）
-    status, res = call('POST', '/auth/refresh', token_b)
+    first = call_later('POST', '/auth/refresh', token=token_b)
+    second = call_later('POST', '/auth/refresh', token=token_b)
+    attempts = [_await(*first), _await(*second)]
+    check('同一凭据并发续期仅一次成功', sorted(status for status, _ in attempts), [200, 401])
+    res = next(response for status, response in attempts if status == 200)
     check('续期成功', res.get('code'), 0)
     token_b2 = res['data']['access_token']
     check_true('续期换了新令牌', token_b2 != token_b, 'token 已更换')
     check('新令牌可用', call('GET', '/auth/me', token_b2)[1].get('code'), 0)
+    check('续期后旧令牌不可访问', call('GET', '/auth/me', token_b)[0], 401)
+    check('续期后旧令牌不可再续期', call('POST', '/auth/refresh', token_b)[0], 401)
     check_true('续期后仍是**同一个**会话', sid_of(token_b2) == sid_b,
                f'{sid_b} -> {sid_of(token_b2)}')
     check('续期没有新建会话', asyncio.run(total_session_count(uid)), before_rows)

@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.deps import CurrentUser, require_permission
 from app.core.data_scope import scoped_owner_ids
+from app.core.draft_visibility import draft_scope
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
 from app.modules.order import drafts
@@ -38,8 +39,7 @@ async def listing(opportunity_id: int | None = None, customer_id: int | None = N
                   user: CurrentUser = Depends(require_permission('order:view')), session: AsyncSession = Depends(get_db)):
     stmt = select(OrderDraft)
     owners = await scoped_owner_ids(session, user)
-    if owners is not None:
-        stmt = stmt.where(OrderDraft.owner_id.in_(owners))
+    stmt = stmt.where(draft_scope(OrderDraft, user.id, OrderDraft.owner_id.in_(owners) if owners is not None else None))
     if opportunity_id is not None:
         stmt = stmt.where(OrderDraft.opportunity_id == opportunity_id)
     if customer_id is not None:

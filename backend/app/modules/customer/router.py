@@ -10,6 +10,7 @@ from app.core.audit import write_audit
 from app.core.data_scope import scoped_owner_ids
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, ensure_permission, require_permission
+from app.core.draft_visibility import draft_scope
 from app.core.errors import ErrorCode, AppError
 from app.core.response import ok, page_data, paginate
 from app.core.timebase import now_business, to_business
@@ -726,8 +727,7 @@ async def customer_quotes(
         Quote.customer_id == customer_id, Quote.deleted_at.is_(None)
     )
     owner_ids = await scoped_owner_ids(session, user)
-    if owner_ids is not None:
-        stmt = stmt.where(Quote.owner_id.in_(owner_ids))
+    stmt = stmt.where(draft_scope(Quote, user.id, Quote.owner_id.in_(owner_ids) if owner_ids is not None else None))
     if status:
         stmt = stmt.where(Quote.status == status)
     rows, total = await paginate(session, stmt.order_by(Quote.id.desc()), page, page_size)

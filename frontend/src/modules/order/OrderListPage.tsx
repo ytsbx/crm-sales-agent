@@ -1,6 +1,7 @@
 import { skuLabel } from '../../shared/sku-label'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import PageHeader from '../../shared/components/PageHeader'
+import HelpTip from '../../shared/components/HelpTip'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
@@ -34,9 +35,9 @@ import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/componen
 import { formatMoney, toTwoDecimals } from '../../shared/components/money'
 
 const TABS = [
-  { tab: '销售订单', itemKey: 'orders' },
-  { tab: '应收计划', itemKey: 'receivables' },
-  { tab: '回款记录', itemKey: 'payments' },
+  { tab: '销售订单', itemKey: 'orders', permission: 'order:view' },
+  { tab: '应收计划', itemKey: 'receivables', permission: 'payment:view' },
+  { tab: '回款记录', itemKey: 'payments', permission: 'payment:view' },
 ]
 
 const ORDER_TONE: Record<string, TagTone> = {
@@ -62,13 +63,27 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
   const queryClient = useQueryClient()
   const { can } = usePermissions()
   const currentUser = useAuthStore((state) => state.user)
-  const [activeKey, setActiveKey] = useState(initialTab)
+  const [selectedTab, setActiveKey] = useState(initialTab)
+  const tab = TABS.find(({ itemKey }) => itemKey === selectedTab)
+  const activeKey = tab && can(tab.permission) ? tab.itemKey : undefined
+  /* 1024 宽内容区约 700px，销售订单八列合计 1114px，右侧「待回款 / 交期 /
+     负责人」被裁、底部常驻横向滚动条。窄屏切紧凑档：交期并进订单号第二行、
+     负责人并进客户第二行、「已回款 + 待回款」并成一列两行。 */
+  const [compact, setCompact] = useState(() => window.innerWidth < 1200)
+  useEffect(() => {
+    const onResize = () => setCompact(window.innerWidth < 1200)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
   const [keywordInput, setKeywordInput] = useState('')
   const [keyword, setKeyword] = useState('')
   const [status, setStatus] = useState<string | undefined>()
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
+  const [receivablesPage, setReceivablesPage] = useState(1)
+  const [paymentsPage, setPaymentsPage] = useState(1)
   const [createVisible, setCreateVisible] = useState(false)
+  const [showItemIssues, setShowItemIssues] = useState(false)
   const [createForm, setCreateForm] = useState({
     customer_id: null as number | null,
     owner_id: null as number | null,
@@ -84,13 +99,13 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
     enabled: activeKey === 'orders',
   })
   const receivablesQuery = useQuery({
-    queryKey: ['receivables'],
-    queryFn: () => listReceivables({ page: 1, page_size: 100 }),
+    queryKey: ['receivables', receivablesPage],
+    queryFn: () => listReceivables({ page: receivablesPage, page_size: 20 }),
     enabled: activeKey === 'receivables',
   })
   const paymentsQuery = useQuery({
-    queryKey: ['payments'],
-    queryFn: () => listPayments({ page: 1, page_size: 100 }),
+    queryKey: ['payments', paymentsPage],
+    queryFn: () => listPayments({ page: paymentsPage, page_size: 20 }),
     enabled: activeKey === 'payments',
   })
   // 手工建单的下拉数据：客户 / SKU / 负责人
@@ -120,7 +135,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
   const confirmMutation = useMutation({
     mutationFn: (id: number) => confirmPayment(id, '财务核对通过'),
     onSuccess: () => {
-      Toast.success('回款已确认')
+      Toast.success('回款已确认。打开订单详情可核对各期已收金额。')
       refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -128,7 +143,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
   const rejectMutation = useMutation({
     mutationFn: (id: number) => rejectPayment(id, '金额或凭证有误'),
     onSuccess: () => {
-      Toast.success('已驳回')
+      Toast.success('回款已驳回。核对金额和凭证后，可从订单对应期重新登记。')
       refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -153,24 +168,24 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
     if (!Number.isFinite(Number(price)) || Number(price) < 0) return '单价要是不小于 0 的数字'
     return null
   }
-  const validItems = createForm.items.filter((item) => itemIssue(item) === null)
+  const enteredItems = createForm.items
+    .map((item, index) => ({ item, line: index + 1 }))
+    .filter(({ item }) => item.sku_id != null || item.quantity.trim() !== ''
+      || item.unit_price.trim() !== '' || item.specification.trim() !== '')
+  const itemIssues = enteredItems.flatMap(({ item, line }) => {
+    const issue = itemIssue(item)
+    return issue ? [`第 ${line} 行：${issue}`] : []
+  })
+  // 明细合计：填了 SKU / 数量 / 单价就实时算出来，别让人猜"到底多少钱"
+  const createTotal = enteredItems.reduce((sum, { item }) => {
+    const q = Number(item.quantity)
+    const p = Number(item.unit_price)
+    return sum + (Number.isFinite(q) && Number.isFinite(p) ? q * p : 0)
+  }, 0)
   const createMutation = useMutation({
-    mutationFn: () =>
-      createOrder({
-        customer_id: createForm.customer_id!,
-        items: validItems.map((item) => ({
-          sku_id: item.sku_id!,
-          quantity: Number(item.quantity),
-          unit_price: Number(item.unit_price),
-          specification: item.specification.trim() || undefined,
-        })),
-        owner_id: createForm.owner_id ?? undefined,
-        delivery_date: createForm.delivery_date.trim() || undefined,
-        payment_terms: createForm.payment_terms.trim() || undefined,
-        remark: createForm.remark.trim() || undefined,
-      }),
+    mutationFn: createOrder,
     onSuccess: (data) => {
-      Toast.success(`订单 ${data.order_no} 已创建（${formatMoney(data.total_amount, data.currency)}）`)
+      Toast.success(`订单 ${data.order_no} 已创建。可在订单详情核对应收计划。`)
       setCreateVisible(false)
       setCreateForm({
         customer_id: null,
@@ -189,90 +204,189 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       Toast.warning('请选择客户')
       return
     }
-    if (!validItems.length) {
-      // 说清**是哪一行、差什么** —— "至少要有一条完整明细"这种话用户没法照着改
-      const reasons = createForm.items
-        .map((item, index) => {
-          const issue = itemIssue(item)
-          return issue ? `第 ${index + 1} 行：${issue}` : null
-        })
-        .filter(Boolean)
-      Toast.warning(
-        reasons.length
-          ? `明细还没填完 —— ${reasons.join('；')}`
-          : '至少要有一条完整明细（SKU、数量、单价）',
-      )
+    if (!enteredItems.length || itemIssues.length) {
+      setShowItemIssues(true)
       return
     }
-    createMutation.mutate()
+    createMutation.mutate({
+      customer_id: createForm.customer_id,
+      items: enteredItems.map(({ item }) => ({
+        sku_id: item.sku_id!,
+        quantity: Number(item.quantity),
+        unit_price: Number(item.unit_price),
+        specification: item.specification.trim() || undefined,
+      })),
+      owner_id: createForm.owner_id ?? undefined,
+      delivery_date: createForm.delivery_date.trim() || undefined,
+      payment_terms: createForm.payment_terms.trim() || undefined,
+      remark: createForm.remark.trim() || undefined,
+    })
   }
 
   const orderColumns = [
     {
       title: '订单号',
       dataIndex: 'order_no',
-      width: 170,
+      width: compact ? 158 : 165,
       render: (text: string, record: Order) => (
-        <Link to={`/orders/${record.id}`} style={{ color: 'var(--crm-primary)' }}>
-          {text}
-        </Link>
+        <div>
+          <Link to={`/orders/${record.id}`} style={{ color: 'var(--crm-primary)' }}>
+            {text}
+          </Link>
+          {compact && (
+            <div style={{ marginTop: 2, fontSize: 12, color: 'var(--crm-text-3)' }}>
+              交期 {record.delivery_date ?? '-'}
+            </div>
+          )}
+        </div>
       ),
     },
-    { title: '客户', dataIndex: 'customer_name', width: 220, render: (v: string | null) => v ?? '-' },
+    {
+      title: '客户',
+      dataIndex: 'customer_name',
+      // 订单行里客户名是纯文本（不是链接）：按主标识加深，和订单号的蓝字呼应
+      className: 'cell-strong',
+      width: compact ? 190 : 215,
+      render: (v: string | null, record: Order) => (
+        <div style={{ minWidth: 0 }}>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={v ?? '-'}>
+            {v ?? '-'}
+          </div>
+          {compact && (
+            <div style={{ marginTop: 2, fontSize: 12, color: 'var(--crm-text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              负责人 {record.owner_name ?? '-'}
+            </div>
+          )}
+        </div>
+      ),
+    },
     {
       title: '订单金额',
       dataIndex: 'total_amount',
+      /* 金额右对齐：位数不同的钱左对齐时右边界参差，一眼读不出量级。 */
+      align: 'right' as const,
+      /* 全局 CSS 把每个单元格居中，Semi 的 align 不写 inline style，
+         所以金额仍被居中；补一个 class 由下面 CSS 用 !important 兜住。 */
+      className: 'cell-right',
       // 140 → 124：8 列合计本来正好 1130，但列表一长出现纵向滚动条，
       // 它占掉 15px，body 只剩 1115 → 横向滚动条又冒出来（2026-11-16 实测）。
-      width: 124,
+      width: compact ? 108 : 124,
       render: (v: number, record: Order) =>
         formatMoney(toTwoDecimals(record.total_amount_exact ?? v), record.currency),
     },
     {
-      title: '已回款',
+      title: compact ? '回款' : '已回款',
       dataIndex: 'received_amount',
-      width: 130,
+      /* 金额右对齐：位数不同的钱左对齐时右边界参差，一眼读不出量级。 */
+      align: 'right' as const,
+      /* 全局 CSS 把每个单元格居中，Semi 的 align 不写 inline style，
+         所以金额仍被居中；补一个 class 由下面 CSS 用 !important 兜住。 */
+      className: 'cell-right',
+      width: compact ? 116 : 130,
       /* 这一列原来混着两种写法：有的行取到库里的精确字符串（¥2,100.00），
          有的行只有后端给的 number（¥0）—— 同一列里一半带两位小数、一半不带。
          没有精确字符串时把 number 补成两位小数再交给 formatMoney。 */
-      render: (v: number, record: Order) => (
-        <span style={{ color: record.unreceived_amount <= 0 ? 'var(--crm-success)' : undefined }}>
-          {formatMoney(toTwoDecimals(record.received_amount_exact ?? v), record.currency)}
+      render: (v: number, record: Order) => {
+        const received = (
+          <span style={{ color: record.unreceived_amount <= 0 ? 'var(--crm-success)' : undefined }}>
+            {formatMoney(toTwoDecimals(record.received_amount_exact ?? v), record.currency)}
+          </span>
+        )
+        if (!compact) return received
+        /* 窄屏：上一行「已回」、下一行「待回」，省掉一列 */
+        return (
+          <div style={{ display: 'grid', gap: 2, justifyItems: 'end' }}>
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>已回 {received}</span>
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+              待回 {formatMoney(toTwoDecimals(record.unreceived_amount_exact ?? record.unreceived_amount), record.currency)}
+            </span>
+          </div>
+        )
+      },
+    },
+    ...(compact
+      ? []
+      : [{
+          title: '待回款',
+          dataIndex: 'unreceived_amount',
+          width: 125,
+          /* 这一列原来漏了右对齐（同一行的「订单金额 / 已回款」都挂了
+             .cell-right，只有它没有），¥1.00 和 ¥930.00 在格子中间各站各的，
+             三列金额凑不成一条竖线（2026-11-19 实拍）。 */
+          align: 'right' as const,
+          className: 'cell-right',
+          render: (v: number, record: Order) =>
+            formatMoney(toTwoDecimals(record.unreceived_amount_exact ?? v), record.currency),
+        }]),
+    {
+      title: (
+        <span className="crm-help-label">
+          履约状态
+          <HelpTip forLabel="履约状态" text="订单从确认、备货、发货到完成的进度，由实际业务动作推进，不用手改。" />
         </span>
       ),
-    },
-    {
-      title: '待回款',
-      dataIndex: 'unreceived_amount',
-      width: 130,
-      render: (v: number, record: Order) =>
-        formatMoney(toTwoDecimals(record.unreceived_amount_exact ?? v), record.currency),
-    },
-    {
-      title: '履约状态',
       dataIndex: 'status_label',
-      width: 120,
-      render: (value: string, record: Order) => (
-        <StatusDot label={value} tone={ORDER_TONE[record.status] ?? 'grey'} />
-      ),
+      width: compact ? 96 : 120,
+      render: (value: string, record: Order) => {
+        const unpaid = record.unreceived_amount_exact ?? record.unreceived_amount
+        const hasUnreceived = Number(unpaid) > 0
+        const deliveryCompleted = record.status === 'completed'
+        return (
+          <div style={{ display: 'grid', gap: 2, justifyItems: 'start' }}>
+            <StatusDot label={deliveryCompleted ? '交付已完成' : value} tone={ORDER_TONE[record.status] ?? 'grey'} />
+            {deliveryCompleted && (
+              <span
+                style={{
+                  fontSize: 11,
+                  lineHeight: 1.4,
+                  color: hasUnreceived ? 'var(--crm-text-2)' : 'var(--crm-text-3)',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {hasUnreceived ? `待收款 ${formatMoney(unpaid, record.currency)}` : '已收清'}
+              </span>
+            )}
+          </div>
+        )
+      },
     },
-    {
-      title: '交期',
-      dataIndex: 'delivery_date',
-      width: 120,
-      render: (v: string | null) => v ?? '-',
-    },
-    { title: '负责人', dataIndex: 'owner_name', width: 100, render: (v: string | null) => v ?? '-' },
+    ...(compact
+      ? []
+      : [{
+          title: '交期',
+          dataIndex: 'delivery_date',
+          width: 115,
+          render: (v: string | null) => v ?? '-',
+        }]),
+    ...(compact
+      ? []
+      : [{ title: '负责人', dataIndex: 'owner_name', width: 95, render: (v: string | null) => v ?? '-' }]),
   ]
 
   const receivableColumns = [
-    { title: '订单号', dataIndex: 'order_no', width: 170, render: (v: string | null) => v ?? '-' },
-    { title: '节点', dataIndex: 'plan_name', width: 120 },
-    { title: '应收日期', dataIndex: 'due_date', width: 130 },
+    { title: '订单号', dataIndex: 'order_no', width: compact ? 154 : 170,
+      render: (v: string | null, record: Receivable) => v && can('order:view')
+        ? <Link to={`/orders/${record.order_id}`}>{v}</Link> : v ?? '-' },
+    {
+      title: '节点',
+      dataIndex: 'plan_name',
+      width: compact ? 130 : 120,
+      render: (v: string | null) => (
+        <span title={v ?? ''} style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {v ?? '-'}
+        </span>
+      ),
+    },
+    { title: '应收日期', dataIndex: 'due_date', width: compact ? 112 : 130 },
     {
       title: '应收金额',
       dataIndex: 'amount',
-      width: 130,
+      /* 金额右对齐：位数不同的钱左对齐时右边界参差，一眼读不出量级。 */
+      align: 'right' as const,
+      /* 全局 CSS 把每个单元格居中，Semi 的 align 不写 inline style，
+         所以金额仍被居中；补一个 class 由下面 CSS 用 !important 兜住。 */
+      className: 'cell-right',
+      width: compact ? 100 : 130,
       /* 同一行里「已收/未收」走的是库里的精确十进制字符串（900.00），
          这里原来传的是 number（900）—— 一行里一半带两位小数、一半不带，
          看着像两个系统拼起来的。统一成精确值。 */
@@ -280,21 +394,69 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
         formatMoney(toTwoDecimals(record.amount_exact ?? v), record.currency),
     },
     {
-      title: '已收',
+      title: compact ? '已收 / 未收' : '已收',
       dataIndex: 'received_amount',
-      width: 130,
-      render: (v: number, record: Receivable) => formatMoney(record.received_amount_exact ?? v, record.currency),
+      /* 金额右对齐：位数不同的钱左对齐时右边界参差，一眼读不出量级。 */
+      align: 'right' as const,
+      /* 全局 CSS 把每个单元格居中，Semi 的 align 不写 inline style，
+         所以金额仍被居中；补一个 class 由下面 CSS 用 !important 兜住。 */
+      className: 'cell-right',
+      width: compact ? 110 : 130,
+      render: (v: number, record: Receivable) => {
+        /* 精确字符串可能是 "0"（不带小数），formatMoney 会原样印成「¥0」——
+            同一张表里别的格子是「¥0.00」，一半带小数一半不带（2026-11-21 巡检）。
+            先过 toTwoDecimals 补到两位，全表一个口径。 */
+        const received = formatMoney(toTwoDecimals(record.received_amount_exact ?? v), record.currency)
+        if (!compact) return received
+        /* 窄屏：上一行已收、下一行未收，两张钱合并一列 */
+        return (
+          <div style={{ display: 'grid', gap: 2, justifyItems: 'end' }}>
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>已收 {received}</span>
+            <span
+              style={{
+                fontSize: 12,
+                color: record.status === 'overdue' ? '#f53f3f' : 'var(--crm-text-3)',
+                fontWeight: record.status === 'overdue' ? 600 : undefined,
+              }}
+            >
+              未收 {formatMoney(toTwoDecimals(record.remaining_amount_exact ?? record.remaining_amount), record.currency)}
+            </span>
+          </div>
+        )
+      },
     },
-    {
-      title: '未收',
-      dataIndex: 'remaining_amount',
-      width: 130,
-      render: (v: number, record: Receivable) => formatMoney(record.remaining_amount_exact ?? v, record.currency),
-    },
+    ...(compact
+      ? []
+      : [{
+          title: '未收',
+          dataIndex: 'remaining_amount',
+      /* 金额右对齐：位数不同的钱左对齐时右边界参差，一眼读不出量级。 */
+      align: 'right' as const,
+      /* 全局 CSS 把每个单元格居中，Semi 的 align 不写 inline style，
+         所以金额仍被居中；补一个 class 由下面 CSS 用 !important 兜住。 */
+      className: 'cell-right',
+          width: 130,
+          /* 逾期行把"未收"标红加粗：这是这一行唯一还没回来的钱，
+             原来和已回款行的未收 ¥0.00 长得一样，扫一遍看不出哪笔真欠着。 */
+          render: (v: number, record: Receivable) => {
+            const overdue = record.status === 'overdue'
+            return (
+              <span
+                style={
+                  overdue
+                    ? { color: '#f53f3f', fontWeight: 600 }
+                    : undefined
+                }
+              >
+                {formatMoney(record.remaining_amount_exact ?? v, record.currency)}
+              </span>
+            )
+          },
+        }]),
     {
       title: '状态',
       dataIndex: 'status_label',
-      width: 110,
+      width: compact ? 92 : 110,
       render: (value: string, record: Receivable) => (
         <StatusDot label={value} tone={PLAN_TONE[record.status] ?? 'grey'} bold={record.status === 'overdue'} />
       ),
@@ -302,61 +464,104 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
   ]
 
   const paymentColumns = [
-    { title: '订单号', dataIndex: 'order_no', width: 170, render: (v: string | null) => v ?? '-' },
-    { title: '应收节点', dataIndex: 'plan_name', width: 120, render: (v: string | null) => v ?? '-' },
-    { title: '收款日期', dataIndex: 'received_date', width: 130 },
+    {
+      title: '订单号',
+      dataIndex: 'order_no',
+      width: compact ? 150 : 160,
+      render: (v: string | null, record: Payment) => (
+        <div style={{ minWidth: 0 }}>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={v ?? '-'}>
+            {v && can('order:view') ? <Link to={`/orders/${record.order_id}`}>{v}</Link> : v ?? '-'}
+          </div>
+          {compact && (
+            <div style={{ marginTop: 2, fontSize: 12, color: 'var(--crm-text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {record.plan_name ?? '-'}
+            </div>
+          )}
+        </div>
+      ),
+    },
+    ...(compact
+      ? []
+      : [{ title: '应收节点', dataIndex: 'plan_name', width: 120, render: (v: string | null) => v ?? '-' }]),
+    { title: '收款日期', dataIndex: 'received_date', width: compact ? 108 : 118 },
     {
       title: '金额',
       dataIndex: 'received_amount',
-      width: 130,
-      render: (v: number, record: Payment) => formatMoney(record.received_amount_exact ?? v, record.currency),
+      /* 金额右对齐：位数不同的钱左对齐时右边界参差，一眼读不出量级。 */
+      align: 'right' as const,
+      /* 全局 CSS 把每个单元格居中，Semi 的 align 不写 inline style，
+         所以金额仍被居中；补一个 class 由下面 CSS 用 !important 兜住。 */
+      className: 'cell-right',
+      width: compact ? 104 : 118,
+      render: (v: number, record: Payment) => formatMoney(toTwoDecimals(record.received_amount_exact ?? v), record.currency),
     },
-    { title: '方式', dataIndex: 'payment_method', width: 120, render: (v: string | null) => v ?? '-' },
+    ...(compact
+      ? []
+      : [{ title: '方式', dataIndex: 'payment_method', width: 100, render: (v: string | null) => v ?? '-' }]),
     {
       title: '回款凭证',
-      width: 220,
+      width: compact ? 120 : 170,
       render: (_: unknown, record: Payment) => (
-        <PaymentVoucherControl
-          payment={record}
-          onChanged={() => void queryClient.invalidateQueries({ queryKey: ['payments'] })}
-        />
+        <div style={{ display: 'grid', gap: 2, justifyItems: 'end', minWidth: 0 }}>
+          <PaymentVoucherControl
+            payment={record}
+            onChanged={() => void queryClient.invalidateQueries({ queryKey: ['payments'] })}
+          />
+          {compact && (
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{record.payment_method ?? '-'}</span>
+          )}
+        </div>
       ),
     },
     {
-      title: '状态',
+      title: compact ? '状态 / 确认人' : '状态',
       dataIndex: 'status_label',
-      width: 130,
-      render: (value: string) => (
-        <StatusDot label={value} tone={value === '已确认' ? 'green' : value === '已驳回' ? 'red' : 'orange'} />
-      ),
+      width: compact ? 96 : 110,
+      render: (value: string, record: Payment) => {
+        const dot = (
+          <StatusDot label={value} tone={value === '已确认' ? 'green' : value === '已驳回' ? 'red' : 'orange'} />
+        )
+        if (!compact) return dot
+        return (
+          <div style={{ display: 'grid', gap: 2, justifyItems: 'end' }}>
+            {dot}
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+              确认人 {record.confirmed_by_name ?? '-'}
+            </span>
+          </div>
+        )
+      },
     },
-    {
-      title: '确认人',
-      dataIndex: 'confirmed_by_name',
-      width: 110,
-      render: (v: string | null) => v ?? '-',
-    },
+    ...(compact
+      ? []
+      : [{
+          title: '确认人',
+          dataIndex: 'confirmed_by_name',
+          width: 100,
+          render: (v: string | null) => v ?? '-',
+        }]),
     {
       title: '操作',
-      width: 150,
+      width: compact ? 100 : 130,
       render: (_: unknown, record: Payment) =>
         record.status === 'pending' && can('payment:manage') ? (
-          <div style={{ display: 'flex', gap: 10 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
             {/* 回款确认/驳回是财务动作、点一下立即生效，必须二次确认
                 （主人 2026-10-06：表格里的动作「点一下就转换成功了，有点儿戏」）。 */}
             <Popconfirm
               title="确认收到这笔回款？"
-              content="确认后会记入回款并影响业绩口径，请核对金额后再点。"
+              content={`请核对到账日期、凭证和金额 ${formatMoney(record.received_amount_exact ?? record.received_amount, record.currency)}。确认后会计入实收。`}
               onConfirm={() => confirmMutation.mutate(record.id)}
             >
-              <a style={{ color: 'var(--crm-success)' }}>确认</a>
+              <Button size="small" theme="borderless">确认</Button>
             </Popconfirm>
             <Popconfirm
               title="驳回这笔回款？"
-              content="驳回后这笔回款不计入确认口径，需要重新提交。"
+              content="驳回后，这笔记录不计入实收。请告知登记人核对金额和凭证，再从订单对应期重新登记。"
               onConfirm={() => rejectMutation.mutate(record.id)}
             >
-              <a style={{ color: 'var(--crm-error)' }}>驳回</a>
+              <Button size="small" theme="borderless" type="danger">驳回</Button>
             </Popconfirm>
           </div>
         ) : (
@@ -385,9 +590,12 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       />
 
       <SectionCard>
-        <Tabs type="line" activeKey={activeKey} onChange={setActiveKey} tabList={TABS} />
+        <Tabs type="line" activeKey={selectedTab} onChange={setActiveKey} tabList={TABS} />
 
         <div style={{ marginTop: 16 }}>
+          {tab && !activeKey && (
+            <p className="workflow-guide">当前账号没有查看「{tab.tab}」的权限。如需查看，请联系管理员。</p>
+          )}
           {activeKey === 'orders' && (
             <>
               <div className="toolbar">
@@ -414,16 +622,18 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
                     { value: 'in_production', label: '生产中' },
                     { value: 'shipped', label: '已发货' },
                     { value: 'delivered', label: '已签收' },
-                    { value: 'completed', label: '已完成' },
+                    { value: 'completed', label: '交付已完成' },
                     { value: 'cancelled', label: '已取消' },
                   ]}
                   style={{ width: 150 }}
                   showClear
                 />
                 <Button
+                  type="tertiary"
+                  theme="borderless"
                   onClick={() => {
-                    setKeyword(keywordInput.trim())
-                    setPage(1)
+                  setKeyword(keywordInput.trim())
+                  setPage(1)
                   }}
                 >
                   查询
@@ -432,12 +642,16 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
                     后端按 order:assign 把守，按钮跟着同一权限点走（不能只靠前端隐藏，
                     但也不该让业务员点到一个必然 403 的按钮）。 */}
                 {can('order:assign') && (
-                  <Button type="primary" theme="outline" onClick={() => setCreateVisible(true)}>
+                  <Button type="primary" theme="outline" onClick={() => {
+                    setShowItemIssues(false)
+                    setCreateVisible(true)
+                  }}>
                     手工建单
                   </Button>
                 )}
               </div>
               <Table<Order>
+                className="orders-table"
                 columns={orderColumns}
                 dataSource={ordersQuery.data?.items ?? []}
                 loading={ordersQuery.isLoading}
@@ -459,25 +673,46 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
           )}
 
           {activeKey === 'receivables' && (
+            <>
+            <p className="workflow-guide">应收计划列的是约定要收的款。客户实际打款后，到订单详情的「应收计划」找到对应期登记。</p>
             <Table<Receivable>
+              className="receivables-table"
               columns={receivableColumns}
               dataSource={receivablesQuery.data?.items ?? []}
               loading={receivablesQuery.isLoading}
               rowKey="id"
-              pagination={false}
-              empty="还没有应收计划"
+              pagination={{
+                currentPage: receivablesPage,
+                pageSize: 20,
+                total: receivablesQuery.data?.total ?? 0,
+                onPageChange: setReceivablesPage,
+              }}
+              empty={emptyText(receivablesQuery, '还没有应收计划', '在订单详情查看应收计划，或联系财务生成。')}
             />
+            </>
           )}
 
           {activeKey === 'payments' && (
+            <>
+            <p className="workflow-guide">{can('payment:manage')
+              ? '先核对银行到账和凭证，再处理状态为「待确认」的回款。'
+              : '财务确认后，回款才计入已收。可查看每笔的处理状态。'}
+              {can('order:view') && '点订单号可回到订单详情。'}</p>
             <Table<Payment>
+              className="payments-table"
               columns={paymentColumns}
               dataSource={paymentsQuery.data?.items ?? []}
               loading={paymentsQuery.isLoading}
               rowKey="id"
-              pagination={false}
-              empty="还没有回款记录"
+              pagination={{
+                currentPage: paymentsPage,
+                pageSize: 20,
+                total: paymentsQuery.data?.total ?? 0,
+                onPageChange: setPaymentsPage,
+              }}
+              empty={emptyText(paymentsQuery, '还没有回款记录', '已经到账的款项可到订单对应的应收期登记。')}
             />
+            </>
           )}
         </div>
       </SectionCard>
@@ -572,18 +807,32 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
                       setCreateForm({ ...createForm, items })
                     }}
                   />
-                  <Button
-                    type="danger"
-                    disabled={createForm.items.length === 1}
-                    onClick={() =>
-                      setCreateForm({
-                        ...createForm,
-                        items: createForm.items.filter((_, i) => i !== index),
-                      })
-                    }
-                  >
-                    删
-                  </Button>
+                  {createForm.items.length === 1 ? (
+                    /* 只剩一行时删不了，把原因直接写出来 —— 灰按钮不给理由，
+                       点下去也没反应（30-前端约定）。 */
+                    <span
+                      style={{
+                        alignSelf: 'center',
+                        fontSize: 12,
+                        color: 'var(--crm-text-3)',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      仅一行
+                    </span>
+                  ) : (
+                    <Button
+                      type="danger"
+                      onClick={() =>
+                        setCreateForm({
+                          ...createForm,
+                          items: createForm.items.filter((_, i) => i !== index),
+                        })
+                      }
+                    >
+                      删
+                    </Button>
+                  )}
                 </div>
               ))}
             </div>
@@ -593,6 +842,11 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
             >
               加一行
             </Button>
+            {showItemIssues && (!enteredItems.length || itemIssues.length > 0) && (
+              <div role="alert" style={{ marginTop: 8, color: 'var(--crm-error)' }}>
+                {enteredItems.length ? `请补齐商品明细：${itemIssues.join('；')}` : '请至少填写一行商品（SKU、数量、单价）'}
+              </div>
+            )}
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))', gap: 12 }}>
@@ -626,8 +880,18 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
               onChange={(value) => setCreateForm({ ...createForm, remark: value })}
             />
           </div>
-          <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
-            金额由明细自动算出，不需要手填；创建后可在订单详情里生成应收计划。
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
+              金额由明细自动算出，不需要手填；创建后可在订单详情里生成应收计划。
+            </span>
+            {createTotal > 0 && (
+              <span style={{ marginLeft: 'auto', fontSize: 13 }}>
+                明细合计 <strong>{formatMoney(toTwoDecimals(createTotal), 'CNY')}</strong>
+                <span style={{ color: 'var(--crm-text-3)', marginLeft: 6 }}>
+                  {enteredItems.length} 行
+                </span>
+              </span>
+            )}
           </div>
         </div>
       </Modal>

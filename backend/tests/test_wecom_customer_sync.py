@@ -6,10 +6,151 @@ import pytest
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.modules.customer.model import Contact, Customer
+from app.modules.settings.model import SystemSetting
+from app.modules.user.model import User
 from app.modules.wecom.client import ExternalContactBatch, WeComClient, WeComError
 from app.modules.wecom import service
-from app.modules.wecom.model import WeComExternalContact, WeComFollowRelationship, WeComSyncJob
+from app.modules.wecom.model import WeComExternalContact, WeComFollowRelationship, WeComSyncJob, WeComUser
 from conftest import SyncSessionAsAsync, make_engine
+
+
+@pytest.mark.anyio
+async def test_customer_candidates_do_not_use_the_following_employees_mobile():
+    engine = make_engine()
+    for model in (WeComExternalContact, WeComFollowRelationship, WeComUser, SystemSetting):
+        model.__table__.create(engine)
+    mobile = "18800001111"
+    with Session(engine) as raw:
+        raw.add_all([
+            Customer(id=1, name="甲方零件公司"),
+            Contact(customer_id=1, name="甲联系人", mobile=mobile),
+            User(id=7, name="员工", username="staff", password_hash="fixture", mobile=mobile),
+            WeComUser(wecom_userid="STAFF", user_id=7),
+            WeComExternalContact(id=8, external_userid="CONTACT", corp_name="乙方包装公司"),
+            WeComFollowRelationship(external_contact_id=8, wecom_userid="STAFF", status="active"),
+            SystemSetting(key="dedup_scoring", value={"threshold": 50, "weight_mobile": 60}),
+        ])
+        raw.flush()
+        session = SyncSessionAsAsync(raw)
+        assert (await service.unbound_candidates(session, 8))["candidates"] == []
+        raw.add(Customer(id=2, name="乙方包装公司"))
+        raw.flush()
+        matches = (await service.unbound_candidates(session, 8))["candidates"]
+        assert [match["id"] for match in matches] == [2]
+        assert all("手机号一致" not in str(reason) for reason in matches[0]["reasons"])
+    engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_member_sync_only_auto_binds_an_unambiguous_unbound_account(monkeypatch):
+    engine = make_engine()
+    for model in (WeComUser, WeComSyncJob):
+        model.__table__.create(engine)
+
+    class API:
+        async def list_departments(self):
+            return [{"id": 1, "parentid": 0}]
+
+        async def list_department_users(self, *_args, **_kwargs):
+            return [
+                {"userid": "ambiguous", "mobile": "18800001111"},
+                {"userid": "known", "mobile": "18800001111"},
+                {"userid": "new", "mobile": "18800002222"},
+                {"userid": "other", "mobile": "18800003333"},
+            ]
+
+    monkeypatch.setattr(service.wecom_client, "get_client", API)
+    with Session(engine) as raw:
+        for uid, mobile, binding in (
+            (21, "18800001111", None), (22, "18800001111", "known"),
+            (23, "18800002222", None), (24, "18800003333", "other-existing"),
+        ):
+            raw.add(User(id=uid, username=f"staff{uid}", name=f"员工{uid}",
+                         password_hash="fixture", mobile=mobile, wecom_userid=binding))
+        raw.flush()
+        job = await service.sync_users(SyncSessionAsAsync(raw), user=SimpleNamespace(id=1))
+        rows = {row.wecom_userid: (row.user_id, row.sync_status) for row in raw.query(WeComUser)}
+        assert rows == {"ambiguous": (None, "conflict"), "known": (22, "synced"),
+                        "new": (23, "synced"), "other": (None, "conflict")}
+        assert raw.get(User, 21).wecom_userid is None
+        assert raw.get(User, 24).wecom_userid == "other-existing"
+        assert len(job.detail["conflicts"]) == 2
+    engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_member_sync_marks_absence_only_after_success_and_keeps_binding(monkeypatch):
+    engine = make_engine()
+    for model in (WeComUser, WeComSyncJob):
+        model.__table__.create(engine)
+    members = []
+    departments = [{"id": 2, "parentid": 1}, {"id": 1, "parentid": 0}]
+
+    class API:
+        async def list_departments(self):
+            return departments
+
+        async def list_department_users(self, department_id, **_kwargs):
+            assert department_id == (1 if len(departments) == 2 else 2)
+            if members is None:
+                raise WeComError(-1, "timeout", "user/list")
+            return members
+
+    monkeypatch.setattr(service.wecom_client, "get_client", API)
+    with Session(engine) as raw:
+        user = User(id=21, username="staff", name="员工", password_hash="fixture", wecom_userid="staff")
+        mapping = WeComUser(wecom_userid="staff", user_id=21, name="员工", sync_status="synced")
+        raw.add_all([user, mapping])
+        raw.flush()
+        session = SyncSessionAsAsync(raw)
+        members = None
+        with pytest.raises(WeComError):
+            await service.sync_users(session, user=SimpleNamespace(id=1))
+        assert mapping.sync_status == "synced"
+        members = []
+        root = departments.pop()
+        await service.sync_users(session, user=SimpleNamespace(id=1))
+        assert mapping.sync_status == "synced"
+        departments.append(root)
+        job = await service.sync_users(session, user=SimpleNamespace(id=1))
+        assert mapping.sync_status == "not_returned"
+        assert job.detail["not_returned"] == ["员工"]
+        assert mapping.user_id == 21 and user.wecom_userid == "staff"
+        members = [{"userid": "staff", "name": "员工"}]
+        await service.sync_users(session, user=SimpleNamespace(id=1))
+        assert mapping.sync_status == "synced"
+    engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_successful_empty_followers_expire_only_that_contacts_old_relationships(monkeypatch):
+    engine = make_engine()
+    for model in (WeComSyncJob, WeComExternalContact, WeComFollowRelationship):
+        model.__table__.create(engine)
+
+    class API:
+        async def get_follow_users(self, external_userid):
+            if external_userid == "empty":
+                return []
+            raise WeComError(-1, "timeout", "externalcontact/get")
+
+    monkeypatch.setattr(service.wecom_client, "get_client", API)
+    with Session(engine) as raw:
+        raw.add_all([
+            WeComExternalContact(id=1, external_userid="empty"),
+            WeComExternalContact(id=2, external_userid="failure"),
+            WeComFollowRelationship(external_contact_id=1, wecom_userid="staff", status="active"),
+            WeComFollowRelationship(external_contact_id=2, wecom_userid="staff", status="active"),
+        ])
+        raw.flush()
+        job = await service.sync_follow_relations(SyncSessionAsAsync(raw), user=SimpleNamespace(id=1))
+        assert {row.external_contact_id: row.status for row in raw.query(WeComFollowRelationship)} == {
+            1: "deleted", 2: "active",
+        }
+        assert (job.status, job.success_count, job.fail_count) == ("partial", 0, 1)
+        assert job.detail["marked_deleted"] == 1
+    engine.dispose()
 
 
 @pytest.fixture

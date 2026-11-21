@@ -9,6 +9,18 @@
 
 from typing import Any
 
+CUSTOMER_SCORE_FALLBACKS = {
+    "threshold": 50,
+    "weight_name_exact": 60,
+    "weight_name_contains": 45,
+    "weight_mobile": 0,
+    "weight_tax_no": 0,
+    "weight_domain": 0,
+    "weight_address": 0,
+}
+CUSTOMER_NAME_SIMILARITY_MIN = 0.6
+CUSTOMER_SCORE_MAX = 100
+
 # 公司名里不影响主体的后缀，比较前先去掉
 NAME_SUFFIXES = (
     "股份有限公司",
@@ -92,15 +104,18 @@ def similarity_score(
     right_name = normalize_name(right.get("name"))
     if left_name and right_name:
         if left_name == right_name:
-            score += int(w.get("weight_name_exact", 60))
+            score += int(w.get("weight_name_exact", CUSTOMER_SCORE_FALLBACKS["weight_name_exact"]))
             reasons.append("企业名称一致")
         elif left_name in right_name or right_name in left_name:
-            score += int(w.get("weight_name_contains", 45))
+            score += int(w.get("weight_name_contains", CUSTOMER_SCORE_FALLBACKS["weight_name_contains"]))
             reasons.append("企业名称互相包含")
         else:
             ratio = longest_common_substring_ratio(left_name, right_name)
-            if ratio >= 0.6:
-                score += int(int(w.get("weight_name_contains", 45)) * ratio)
+            if ratio >= CUSTOMER_NAME_SIMILARITY_MIN:
+                contains_points = int(
+                    w.get("weight_name_contains", CUSTOMER_SCORE_FALLBACKS["weight_name_contains"])
+                )
+                score += int(contains_points * ratio)
                 reasons.append(f"企业名称相似度 {int(ratio * 100)}%")
 
     for field, weight_key, label in (
@@ -112,7 +127,7 @@ def similarity_score(
         lv = (left.get(field) or "").strip().lower()
         rv = (right.get(field) or "").strip().lower()
         if lv and rv and lv == rv:
-            score += int(w.get(weight_key, 0))
+            score += int(w.get(weight_key, CUSTOMER_SCORE_FALLBACKS[weight_key]))
             reasons.append(label)
 
-    return min(score, 100), reasons
+    return min(score, CUSTOMER_SCORE_MAX), reasons

@@ -4,14 +4,19 @@ import axios, { type AxiosRequestConfig, type AxiosResponse } from 'axios'
 
 import { currentAuthEpoch, useAuthStore } from '../store/auth'
 import type { Envelope } from '../types'
+import { loginUrl } from '../safe-url'
 
 export class ApiError extends Error {
   code: number
+  /** HTTP 状态码（仅拦截器知道）。业务码 `code` 与状态码可能不同： */
+  /** 例如规则冲突是 code=40901 + status=409，调用方要按"是不是 409"分支时看 status。 */
+  status?: number
 
-  constructor(message: string, code: number) {
+  constructor(message: string, code: number, status?: number) {
     super(message)
     this.name = 'ApiError'
     this.code = code
+    this.status = status
   }
 }
 
@@ -93,6 +98,16 @@ export function belongsToCurrentLogin(sentAt: number | undefined, now: number): 
   return sentAt === undefined || sentAt === now
 }
 
+export function handleSessionRejection(sentAt: number | undefined, expired: boolean) {
+  if (!belongsToCurrentLogin(sentAt, currentAuthEpoch())) return
+  const { pathname, search, hash } = window.location
+  useAuthStore.getState().clear()
+  if (pathname !== '/login') {
+    const reason = expired ? 'expired' : 'invalid'
+    window.location.replace(`${loginUrl(pathname + search + hash)}&session=${reason}`)
+  }
+}
+
 http.interceptors.request.use((config) => {
   const token = useAuthStore.getState().token
   if (token) {
@@ -134,16 +149,9 @@ http.interceptors.response.use(
       // ⚠️ 只有"这次失败属于**当前**登录态"时才清（第十批审查 ⑩）。
       // 迟到的 401（旧账号发出的请求）不能把新登录的账号踢下线。
       const sentAt = (error.config as { authEpochAtSend?: number } | undefined)?.authEpochAtSend
-      if (belongsToCurrentLogin(sentAt, currentAuthEpoch())) {
-        useAuthStore.getState().clear()
-        if (window.location.pathname !== '/login') {
-          window.location.href = '/login'
-        }
-      }
-      // 不属于当前登录态：只把这次的错误抛给调用方，不动登录态、不跳转。
-      // （调用方本来就会把这条请求的错误显示/忽略掉，与"当前用户被踢出"是两件事。）
+      handleSessionRejection(sentAt, code === 40102)
     }
-    return Promise.reject(new ApiError(message, code))
+    return Promise.reject(new ApiError(message, code, status))
   },
 )
 

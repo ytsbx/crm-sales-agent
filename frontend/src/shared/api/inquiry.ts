@@ -7,6 +7,7 @@ export interface InquiryOaDraft {
   attachment_file_ids: number[]
 }
 export interface CustomInquiryRow {
+  source_insight_id?: number | null
   id: number
   extra?: { oa_draft?: InquiryOaDraft | null; [key: string]: unknown } | null
   /** 需求编号（场景09）：报价/打样明细引用它溯源，同一条需求的各版本共用一个号 */
@@ -38,6 +39,7 @@ export interface CustomInquiryRow {
   /** 已被新版取代（取代是版本属性，不覆盖业务 status） */
   superseded_at?: string | null
   is_superseded?: boolean
+  is_deleted?: boolean
   version_state_label?: string
   converted_sku_id?: number | null
   created_by?: number | null
@@ -64,6 +66,7 @@ export interface InquiryStatusCount {
 }
 
 export function listCustomInquiries(query: {
+  inquiry_id?: number
   status?: string
   keyword?: string
   opportunity_id?: number

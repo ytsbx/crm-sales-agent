@@ -27,7 +27,7 @@ from app.modules.user.model import (
 
 
 # ------------------------------------------------------------------ 登录态查询
-# 注意：下面三个函数被 core/deps.py 用来构造 CurrentUser，是登录链路的一部分，
+# 这些查询供登录和权限判断使用，
 # 改动前务必确认 auth / 所有 require_permission 仍然可用。
 
 # 角色状态里「生效」的那一个：`ROLE_ACTIVE`（定义在 `user/model.py`，此处 import）。
@@ -68,6 +68,22 @@ async def get_user_permission_codes(session: AsyncSession, user_id: int) -> set[
         .where(user_roles.c.user_id == user_id, Role.status == ROLE_ACTIVE)
     )
     return {code for code in (await session.execute(stmt)).scalars().all()}
+
+
+async def get_user_roles_and_permissions(
+    session: AsyncSession, user_id: int
+) -> tuple[list[Role], set[str]]:
+    stmt = (
+        select(Role, Permission.code)
+        .join(user_roles, user_roles.c.role_id == Role.id)
+        .outerjoin(role_permissions, role_permissions.c.role_id == Role.id)
+        .outerjoin(Permission, Permission.id == role_permissions.c.permission_id)
+        .where(user_roles.c.user_id == user_id, Role.status == ROLE_ACTIVE)
+    )
+    rows = (await session.execute(stmt)).all()
+    roles = {role.id: role for role, _ in rows}
+    permissions = {code for _, code in rows if code is not None}
+    return list(roles.values()), permissions
 
 
 def resolve_data_scope(roles: list[Role]) -> str:

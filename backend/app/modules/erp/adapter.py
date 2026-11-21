@@ -238,6 +238,10 @@ class ExternalPage:
       amount / currency   可选，单据金额与币种（金额对账用）。
       payload             可选，原样保留的报文，差异"点回原始证据"看的就是它。
 
+    月度对账只按明确的客户身份关联：随订单返回的 customer 记录可提供
+    order_key 指向订单。订单原始报文已经提供 customer_external_id 时，可用该
+    外部客户编号关联独立采集的 customer 记录。
+
     `next_page_token` / `has_more` 管分页：业务层每落完一页才推进断点，
     所以中断后重拉的那一页靠唯一键去重，既不漏也不重复。
     """

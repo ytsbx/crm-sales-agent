@@ -8,11 +8,12 @@ from datetime import UTC, date, datetime, timedelta
 
 import logging
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.textfit import fit_column
+from app.core.draft_visibility import draft_scope
 from app.core.errors import AppError, ErrorCode
 from app.core.timebase import business_day_end, today_business, to_business
 from app.core.response import paginate
@@ -209,11 +210,15 @@ def render_template(
 
 
 async def _header_snapshot(
-    session: AsyncSession, *, customer, order, quote, quote_version
+    session: AsyncSession, *, customer, order, quote, quote_version, our_company: str | None = None
 ) -> dict:
     """生成时的抬头快照（存进 filled_data 的 `_header` 键）。
 
-    含：公司名（系统设置里的抬头）、客户名、关联的订单号 / 报价号 / 报价版本号。
+    含：公司名、客户名、关联的订单号 / 报价号 / 报价版本号。
+
+    公司名优先用经办人这次填写的「我方主体」；没填才回落到系统设置里的默认抬头。
+    2026-11-13 已确认签约主体由经办人填写，上传合同再拿全局默认值会显示成
+    「未设置公司抬头」，与发起 OA 时填的内容对不上。
 
     存它就是为了"历史原件下载出来和当初一模一样"：客户改名、公司换抬头、
     报价后来出了 V2，都不该让已经发出去的那份合同跟着变。
@@ -221,8 +226,9 @@ async def _header_snapshot(
     """
     from app.modules.settings import service as settings_service
 
+    entered = (our_company or "").strip()
     return {
-        "company_name": await settings_service.get_text(session, "company_name", "text", ""),
+        "company_name": entered or await settings_service.get_text(session, "company_name", "text", ""),
         "customer_name": customer.name,
         "order_no": order.order_no if order is not None else None,
         "quote_no": quote.quote_no if quote is not None else None,
@@ -667,7 +673,8 @@ async def generate_document(
     # 不存的话，客户改名之后同一份合同再下载，正文还是老名字（走快照）、
     # 抬头却已经是新名字——同一编号两次下载内容不同，对外文件出这种事说不清。
     filled["_header"] = await _header_snapshot(
-        session, customer=customer, order=order, quote=quote, quote_version=quote_version
+        session, customer=customer, order=order, quote=quote, quote_version=quote_version,
+        our_company=payload.our_company,
     )
     from app.modules.settings import numbering
 
@@ -1313,6 +1320,7 @@ async def list_documents(
     page_size: int = 20,
     deleted_only: bool = False,
     keyword: str | None = None,
+    viewer_id: int | None = None,
 ) -> tuple[list[dict], int]:
     """台账（分页）：数据范围跟客户负责人**当前**归属走——
 
@@ -1349,6 +1357,7 @@ async def list_documents(
         stmt = stmt.where(ContractDocument.quote_id == quote_id)
     if status:
         stmt = stmt.where(ContractDocument.status == status)
+    scope = None
     if owner_ids is not None:
         # ⚠️ 台账的范围判据必须与 `visibility.py::contract_scope_owner_id` **等价**
         # （2026-10-14 审查修）。原来这里写的是裸 `Customer.owner_id.in_(owner_ids)`
@@ -1364,20 +1373,11 @@ async def list_documents(
         # 用 `or_` 逐级表达（而不是 `COALESCE(...) IN (...)`）：三级归属全为空的
         # 合同在 `COALESCE` 写法下结果是 NULL，`NULL IN (...)` 仍不成立；
         # 逐级 `or_` 更直白，也和 `visibility.py` 的 if 链一一对应。
-        stmt = stmt.where(
-            or_(
-                Customer.owner_id.in_(owner_ids),
-                and_(
-                    Customer.owner_id.is_(None),
-                    SalesOrder.owner_id.in_(owner_ids),
-                ),
-                and_(
-                    Customer.owner_id.is_(None),
-                    SalesOrder.owner_id.is_(None),
-                    ContractDocument.created_by.in_(owner_ids),
-                ),
-            )
-        )
+        scope = func.coalesce(Customer.owner_id, SalesOrder.owner_id, ContractDocument.created_by).in_(owner_ids)
+    if viewer_id is not None:
+        stmt = stmt.where(draft_scope(ContractDocument, viewer_id, scope))
+    elif scope is not None:
+        stmt = stmt.where(scope)
     docs, total = await paginate(
         session, stmt.order_by(ContractDocument.created_at.desc()), page, page_size
     )
@@ -1415,7 +1415,7 @@ async def list_documents(
     ], total
 
 
-async def list_amendments(session: AsyncSession, doc_id: int) -> list[dict]:
+async def list_amendments(session: AsyncSession, doc_id: int, *, viewer_id: int) -> list[dict]:
     """这份文档下面挂了哪些衍生件（补充协议 / 续签）。
 
     关系链往下走的那一半：往上看是 `parent_doc_no`，往下看是这个。
@@ -1434,6 +1434,7 @@ async def list_amendments(session: AsyncSession, doc_id: int) -> list[dict]:
             .where(
                 ContractDocument.parent_id == doc_id,
                 ContractDocument.deleted_at.is_(None),
+                draft_scope(ContractDocument, viewer_id),
             )
             .order_by(ContractDocument.id.desc())
         )

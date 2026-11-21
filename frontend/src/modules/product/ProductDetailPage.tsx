@@ -1,9 +1,11 @@
+import EmptyState, { emptyTextNode } from '../../shared/components/EmptyState'
 import { formatBeijingTime } from '../../shared/beijing-time'
 import { useTabLabel } from '../../shared/hooks/useTabLabel'
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  Banner,
   Button,
   Checkbox,
   CheckboxGroup,
@@ -42,6 +44,8 @@ import {
 } from '../../shared/api/product'
 import { usePermissions } from '../../shared/hooks/permissions'
 import DetailHeader from '../../shared/components/DetailHeader'
+import HelpTip from '../../shared/components/HelpTip'
+import { useNotePrompt } from '../../shared/components/NotePromptModal'
 import AttachmentPanel from '../common/AttachmentPanel'
 import ImageGallery from '../../shared/components/ImageGallery'
 import SkuImageCell from './SkuImageCell'
@@ -51,6 +55,7 @@ import SectionCard from '../../shared/components/SectionCard'
 import StatusDot from '../../shared/components/StatusDot'
 import type { Sku } from '../../shared/types'
 import FormLabel from '../../shared/components/FormLabel'
+import GuardedButton from '../../shared/components/GuardedButton'
 
 /**
  * 主数据差异的中文口径与核定结论。
@@ -150,6 +155,9 @@ const FREIGHT_FIELD_NAMES: readonly string[] = [
 ]
 
 export default function ProductDetailPage() {
+  /* 三处原来都是 window.prompt（改来源编码、停用来源、填权威来源）：
+     浏览器原生弹窗没法做必填、也不能解释"改的是哪条来源"。 */
+  const notePrompt = useNotePrompt()
   const params = useParams()
   const navigate = useNavigate()
   const productId = Number(params.id)
@@ -308,11 +316,26 @@ export default function ProductDetailPage() {
     mutationFn: async ({ action, source }: { action: 'replay' | 'rename' | 'stop'; source: SkuIdentitySource }) => {
       if (action === 'replay') return replaySkuIdentity(source.id)
       if (action === 'rename') {
-        const next = window.prompt('请输入来源的新编码', source.external_code)?.trim()
+        const next = await notePrompt.ask({
+          title: '修改来源编码',
+          label: '新编码',
+          description: `改的是「${source.system_type}」这条台账的编码（当前：${source.external_code}），改完按新编码对齐主数据。`,
+          defaultValue: source.external_code,
+          required: true,
+          okText: '保存',
+        })
         if (!next) throw new Error('未填写新编码')
         return renameSkuIdentity(source.id, next)
       }
-      const note = window.prompt('确认停用此来源？填写停用说明（可选），取消则不执行。')
+      const note = await notePrompt.ask({
+        title: '停用这个编码来源',
+        label: '停用说明',
+        description: '停用后这条来源不再参与编码对齐，历史记录保留；之后想恢复要重新登记。',
+        placeholder: '例如：对方已更换编码规则，改用新供应商编码',
+        required: false,
+        tone: 'warning',
+        okText: '停用',
+      })
       if (note === null) return { cancelled: true } as const
       return stopSkuIdentity(source.id, note)
     },
@@ -342,7 +365,6 @@ export default function ProductDetailPage() {
       void queryClient.invalidateQueries({ queryKey: ['sku-master', masterSku?.id] })
       void queryClient.invalidateQueries({ queryKey: ['product-skus', productId] })
     },
-    onError: (error: Error) => Toast.error(error.message),
   })
 
   /**
@@ -387,7 +409,21 @@ export default function ProductDetailPage() {
 
   const product = productQuery.data
   if (productQuery.isLoading) return <div className="page-container">加载中…</div>
-  if (!product) return <div className="page-container">产品不存在</div>
+  /* 原来这里是一行裸字「产品不存在」，占着整页白底 —— 链接失效/产品被删时
+     用户会以为页面崩了（2026-11-20 巡检）。改成统一空态：图标 + 说清原因 + 回列表。 */
+  if (!product) {
+    return (
+      <div className="page-container">
+        <EmptyState
+          title="产品不存在或已下线"
+          hint="可能是链接里的产品编号有误，或这条产品已从产品库移除；回产品列表重新选择即可。"
+        />
+        <div style={{ display: 'flex', justifyContent: 'center', paddingBottom: 24 }}>
+          <Button type="primary" theme="solid" onClick={() => navigate('/products')}>返回产品列表</Button>
+        </div>
+      </div>
+    )
+  }
 
   /**
    * 字段级"来源 / 来源状态 / 更新时间 / 权威归属 / 确认版本"。
@@ -413,7 +449,12 @@ export default function ProductDetailPage() {
       render: (_: unknown, record: SkuMasterField) => record.source_system ?? '-',
     },
     {
-      title: '来源状态',
+      title: (
+        <span className="crm-help-label">
+          来源状态
+          <HelpTip forLabel="来源状态" text="已核实 = 外部来源的值已人工确认；待核实 = 有来源但还没确认；无外部来源 = 本地自建，不用等外部核对。" />
+        </span>
+      ),
       width: 92,
       // 三值：已核实 / 待核实（有来源但没核实）/ 无外部来源（本地自建）。
       // 「无外部来源」从前被写成「待核实」，让人以为还差一步外部核对 —— 而它永远等不到。
@@ -433,7 +474,12 @@ export default function ProductDetailPage() {
         record.source_updated_at ? formatBeijingTime(record.source_updated_at) : '-',
     },
     {
-      title: '权威归属',
+      title: (
+        <span className="crm-help-label">
+          权威归属
+          <HelpTip forLabel="权威归属" text="这个字段以哪个系统为准。空着表示还没拍板，暂时按当前值使用。" />
+        </span>
+      ),
       width: 150,
       render: (_: unknown, record: SkuMasterField) => (
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
@@ -442,9 +488,17 @@ export default function ProductDetailPage() {
             <Button
               size="small"
               theme="borderless"
-              onClick={() => {
-                const next = window.prompt('填写权威来源（留空表示未拍板）', record.authority ?? record.source_system ?? '')
-                if (next !== null) authorityMutation.mutate({ fieldName: record.field_name, authority: next.trim() || null })
+              onClick={async () => {
+                const next = await notePrompt.ask({
+                  title: '填写权威来源',
+                  label: '权威来源',
+                  description: '这个字段以谁的值为准（例如「供应商官网」「采购确认单」）；留空表示还没拍板。',
+                  defaultValue: record.authority ?? record.source_system ?? '',
+                  required: false,
+                  maxLength: 60,
+                  okText: '保存',
+                })
+                if (next !== null) authorityMutation.mutate({ fieldName: record.field_name, authority: next || null })
               }}
             >
               设置
@@ -519,7 +573,10 @@ export default function ProductDetailPage() {
       // 图片就放在 SKU 列表这儿（主人 2026-10-10 口径）：直接看到图，
       // 点一下开图片墙（看全部 / 上传 / 删除）。不再单独开"产品图片"区块。
       title: '图片',
-      width: 66,
+      // 66 的时候格子塞不下（40 的方框 + 6 间距 + 两侧内边距 = 78），
+      // 表格给这一格挂了个省略号，看着像"+ 后面还有个坏掉的按钮"（2026-11-20）。
+      // 加到 84，一格里正好放一个缩略图；多图时张数跟在后面也不挤。
+      width: 84,
       render: (_: unknown, record: Sku) => (
         <SkuImageCell
           images={skuImages[record.id] ?? []}
@@ -545,8 +602,14 @@ export default function ProductDetailPage() {
             ? `${record.length ?? '-'}×${record.width ?? '-'}×${record.height ?? '-'}`
             : null
         const weight = record.weight ? `${record.weight}kg` : null
-        const extra = [size, weight, record.color, record.material].filter(Boolean).join(' · ')
         const spec = record.specification || ''
+        /* 原样是「规格」+「尺寸 · 重量 · 颜色 · 材质」两行，可规格本身往往就写着
+           尺寸和颜色（「600×400×320 蓝色」），第二行原封不动再说一遍，还多个尾点，
+           列宽 175 又放不下，截成「3.8kg · 蓝色 · 」（2026-11-20 截图）。
+           有规格时第二行只留规格没覆盖的补充项（重量、材质）；没规格才把尺寸颜色补上。 */
+        const extra = spec
+          ? [weight, record.material].filter(Boolean).join(' · ')
+          : [size, weight, record.color, record.material].filter(Boolean).join(' · ')
         if (!spec && !extra) return '-'
         return (
           <div>
@@ -581,40 +644,53 @@ export default function ProductDetailPage() {
       ),
     },
     {
-      // 列头留空：内容本身就是"来源/待核实/差异"这个入口，
-      // 标题再写一遍"来源"是重复，还白占宽度。
-      // 150 而不是 120：120 时「来源/待核实/差异」被省略成「来源/待核…」
-      title: '',
-      width: 138,
+      // 列头原来留空，可这一格夹在「状态」和「成本状态」中间，
+      // 下面孤零零一个「来源 / 差异」，读起来像状态的一部分（2026-11-20 截图）。
+      // 补一个「主数据」把它认回来。
+      title: '主数据',
+      // 138 的时候这一格还被表格挤到 ~80 宽，「来源/待核实/差异」折成三行，
+      // 每行的行高被它一个人撑到 96（2026-11-20 巡检）。文案收成「来源 / 差异」，
+      // 再 nowrap 锁一行 —— 点开面板里「来源、待核实、差异」三块一样都在。
+      width: 104,
       render: (_: unknown, record: Sku) => (
         <a
-          style={{ color: 'var(--crm-primary)' }}
+          style={{ color: 'var(--crm-primary)', whiteSpace: 'nowrap' }}
           onClick={() => {
             setResolutions({})
             setNotes({})
+            confirmDiffMutation.reset()
             setMasterSku(record)
             // 每次打开都重置为默认勾选（对客三字段）：
             // 上一次的勾选残留会造成"以为只确认重量、结果把名称也确认了"这类误操作。
             setConfirmFields([...QUOTE_FIELD_NAMES])
           }}
         >
-          来源/待核实/差异
+          来源 / 差异
         </a>
       ),
     },
     {
-      title: '成本状态',
+      title: (
+        <span className="crm-help-label">
+          成本状态
+          <HelpTip forLabel="成本状态" text="完整表示采购、生产、包装等成本项都录了；缺项会影响核价和报价。" />
+        </span>
+      ),
       width: 168,
       render: (_: unknown, record: Sku) => (
-        <div style={{ display: 'grid', gap: 2, justifyItems: 'start' }}>
+        // 状态和入口并成一行「● 成本未维护 · 维护成本」：原来一个格子叠两行，
+        // 每个 SKU 行都被撑到 100px，「图片」格里的缩略图也跟着悬空（2026-11-21 巡检）。
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap' }}>
           <StatusDot
             label={record.cost_status?.label ?? '成本状态待查询'}
             tone={record.cost_status?.state === 'complete' ? 'green' : 'orange'}
           />
           {can('price:manage') ? (
-            <Link to={`/prices?tab=costs&sku_id=${record.id}`} style={{ fontSize: 12 }}>维护成本</Link>
+            <Link to={`/prices?tab=costs&sku_id=${record.id}`} style={{ fontSize: 12 }}>
+              {record.cost_status?.state === 'complete' ? '成本明细' : '去维护'}
+            </Link>
           ) : record.cost_status?.state !== 'complete' ? (
-            <div style={{ fontSize: 12 }}>请联系价格管理员补齐</div>
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>请联系价格管理员补齐</span>
           ) : null}
         </div>
       ),
@@ -675,12 +751,15 @@ export default function ProductDetailPage() {
 
   return (
     <div className="page-container">
+      {notePrompt.node}
       <DetailHeader
         title={product.name}
         tags={
           <>
+            {/* 产品线和分类同名时会出现两枚一模一样的标签（截图里两个「缠绕膜」），
+                同值只留一个。 */}
             {product.product_line && <Tag color="blue">{product.product_line}</Tag>}
-            {product.category && <Tag>{product.category}</Tag>}
+            {product.category && product.category !== product.product_line && <Tag>{product.category}</Tag>}
           </>
         }
         meta={
@@ -693,7 +772,13 @@ export default function ProductDetailPage() {
         extra={
           canManage && (
             <>
+              {/* 2026-11-20：这两个按钮原来都是 Semi 默认的浅底药丸（编辑资料=浅蓝、
+                  删除产品=浅红）。Semi 不写 theme 时是 light，不是 solid —— 全站那条
+                  "主按钮改白底描边"的 CSS 只认 solid，所以漏了这里。现在显式给：
+                  编辑资料=白底描边主按钮，删除产品=红字文字按钮。 */}
               <Button
+                type="primary"
+                theme="outline"
                 onClick={() => {
                   setProductForm({
                     name: product.name,
@@ -708,7 +793,7 @@ export default function ProductDetailPage() {
                 编辑资料
               </Button>
               <Popconfirm title="删除后该产品及其 SKU 将不可见，确认？" onConfirm={() => deleteMutation.mutate()}>
-                <Button type="danger">删除产品</Button>
+                <Button type="danger" theme="borderless">删除产品</Button>
               </Popconfirm>
             </>
           )
@@ -985,8 +1070,178 @@ export default function ProductDetailPage() {
         onCancel={() => setMasterSku(null)}
       >
         {masterQuery.isLoading && <div>加载中…</div>}
-        {masterQuery.data && (
-          <div style={{ display: 'grid', gap: 16 }}>
+        {masterQuery.isError && emptyTextNode(masterQuery, '暂无主数据资料')}
+        {masterQuery.data && !masterQuery.isError && (
+          <div className="sku-master-overview">
+            <div className={`sku-master-status${!quoteFieldsConfirmed || changedSinceConfirm.length ? ' sku-master-status-attention' : ''}`}>
+              <div>
+                <strong>{quoteFieldsConfirmed ? '报价资料已确认' : '报价资料待确认'}</strong>
+                <p className="workflow-guide">
+                  {quoteFieldsConfirmed
+                    ? '名称、规格和单位已有确认版本。正式发送前，报价明细也要引用对应的确认资料。'
+                    : `${quoteFieldsMissingLabels.join('、') || '部分报价字段'}尚未确认。先补齐报价资料，再到报价页核对明细使用的版本。`}
+                </p>
+                {changedSinceConfirm.length > 0 && (
+                  <p className="workflow-guide">这些本地字段已修改，等重新核对确认：{changedSinceConfirm.join('、')}。</p>
+                )}
+                {!can('product:manage') && (!quoteFieldsConfirmed || changedSinceConfirm.length > 0) && (
+                  <p className="workflow-guide">请联系有商品维护权限的同事核对并确认。</p>
+                )}
+              </div>
+              {can('product:manage') && (
+                <>
+                  <div>
+                    <p className="workflow-guide">核对本地名称、规格和单位，有变化时会保存新的确认版本。</p>
+                    <CheckboxGroup className="sku-master-checkboxes"
+                      value={confirmFields.filter((field) => QUOTE_FIELD_NAMES.includes(field))}
+                      onChange={(values) => setConfirmFields((current) => [
+                        ...current.filter((field) => !QUOTE_FIELD_NAMES.includes(field)), ...values as string[],
+                      ])}>
+                      {masterQuery.data.fields.filter((field) => QUOTE_FIELD_NAMES.includes(field.field_name)).map((field) => (
+                        <Checkbox key={field.field_name} value={field.field_name}>{field.field_label}</Checkbox>
+                      ))}
+                    </CheckboxGroup>
+                    <details className="sku-master-optional">
+                      <summary>其他字段（按需确认）</summary>
+                      <CheckboxGroup className="sku-master-checkboxes"
+                        value={confirmFields.filter((field) => !QUOTE_FIELD_NAMES.includes(field))}
+                        onChange={(values) => setConfirmFields((current) => [
+                          ...current.filter((field) => QUOTE_FIELD_NAMES.includes(field)), ...values as string[],
+                        ])}>
+                        {masterQuery.data.fields.filter((field) => !QUOTE_FIELD_NAMES.includes(field.field_name)).map((field) => (
+                          <Checkbox key={field.field_name} value={field.field_name}>
+                            {field.field_label}
+                            {FREIGHT_FIELD_NAMES.includes(field.field_name) && (
+                              <Tag size="small" color="blue" style={{ marginLeft: 4 }}>参与运费计算</Tag>
+                            )}
+                          </Checkbox>
+                        ))}
+                      </CheckboxGroup>
+                    </details>
+                  </div>
+
+                  <div>
+                    <Popconfirm
+                      title="确认本地主数据？"
+                      content={`将按当前本地值确认这 ${confirmFields.length} 个字段。`}
+                      onConfirm={() => {
+                        if (!masterSku || !confirmFields.length) return
+                        confirmLocalMutation.mutate({
+                          skuId: masterSku.id,
+                          fields: confirmFields,
+                        })
+                      }}
+                    >
+                      <Button theme="outline" type="warning" disabled={!confirmFields.length} loading={confirmLocalMutation.isPending}>
+                        确认选中的 {confirmFields.length} 个字段
+                      </Button>
+                    </Popconfirm>
+                  </div>
+                </>
+              )}
+            </div>
+            <section className="sku-master-differences" aria-label="待确认差异">
+              <div className="sku-master-diff-heading">
+                <strong>待确认差异（{masterQuery.data.pending_diff_count}）</strong>
+                <span>
+                  {masterQuery.data.latest_confirmed_version > 0
+                    ? `最近已确认版本 v${masterQuery.data.latest_confirmed_version}`
+                    : '暂无人工确认版本'}
+                </span>
+              </div>
+              {masterQuery.data.pending_diffs.length === 0 && (
+                <div className="sku-master-diff-detail">没有待确认差异</div>
+              )}
+              {masterQuery.data.pending_diffs.map((diff: SkuMasterDiff) => {
+                const resolution = resolutions[diff.id] ?? ''
+                const note = notes[diff.id] ?? ''
+                const blockedReason = !diff.allowed_resolutions.includes(resolution)
+                  ? '先选择如何处理这条差异'
+                  : diff.requires_note && !note.trim()
+                    ? '请填写核定依据，例如核对了哪份资料'
+                    : ''
+                const effect = diff.field_name && resolution === 'keep_local'
+                  ? '保留当前本地值，并将它记为确认值。'
+                  : diff.field_name && resolution === 'take_external'
+                    ? '来源符合该字段的维护规则时，会用外部值更新本地资料并记录确认版本。'
+                    : ''
+                return (
+                  <div key={diff.id} className="sku-master-diff">
+                    <div className="sku-master-diff-heading">
+                      <strong>{diff.field_label || 'SKU 资料'}</strong>
+                      <Tag color="orange">{DIFF_TYPE_LABELS[diff.diff_type] ?? diff.diff_type}</Tag>
+                    </div>
+                    <dl className="sku-master-diff-values">
+                      <div>
+                        <dt>本地值</dt>
+                        <dd>{String(diff.current_value ?? '未填写')}</dd>
+                      </div>
+                      <div>
+                        <dt>外部来源值{diff.system_type ? `（${diff.system_type}）` : ''}</dt>
+                        <dd>{String(diff.incoming_value ?? '空值')}</dd>
+                      </div>
+                    </dl>
+                    {canManage ? (
+                      <>
+                        <div className="sku-master-diff-fields">
+                          <div>
+                            <FormLabel required>处理方式</FormLabel>
+                            <Select
+                              aria-label="处理方式"
+                              style={{ width: '100%' }}
+                              placeholder="选择处理方式"
+                              value={resolution}
+                              onChange={(value: unknown) =>
+                                setResolutions((previous) => ({ ...previous, [diff.id]: String(value) }))
+                              }
+                              optionList={diff.allowed_resolutions.map((item) => ({
+                                value: item,
+                                label: RESOLUTION_LABELS[item] ?? item,
+                              }))}
+                            />
+                          </div>
+                          <div>
+                            <FormLabel required={diff.requires_note}>{diff.requires_note ? '核定依据' : '备注（可选）'}</FormLabel>
+                            <Input
+                              aria-label={diff.requires_note ? '核定依据' : '备注'}
+                              placeholder={diff.requires_note ? '必填，例如已核对样品标签' : '例如已与产品负责人确认'}
+                              value={note}
+                              onChange={(value: string) => setNotes((previous) => ({ ...previous, [diff.id]: value }))}
+                            />
+                          </div>
+                        </div>
+                        {effect && <p className="sku-master-diff-detail">{effect}</p>}
+                        <GuardedButton
+                          action="确认结论"
+                          theme="outline"
+                          disabled={Boolean(blockedReason)}
+                          blockedReasons={blockedReason ? [blockedReason] : []}
+                          loading={confirmDiffMutation.isPending}
+                          onClick={() => confirmDiffMutation.mutate({ diffId: diff.id, resolution, note })}
+                        >
+                          确认结论
+                        </GuardedButton>
+                      </>
+                    ) : (
+                      <p className="sku-master-diff-detail">需要产品维护权限才能核定。可以请产品负责人核对这条差异。</p>
+                    )}
+                    {confirmDiffMutation.error && confirmDiffMutation.variables?.diffId === diff.id && (
+                      <Banner type="danger" fullMode={false} closeIcon={null} description={confirmDiffMutation.error.message}>
+                        <Button theme="borderless" loading={masterQuery.isFetching} onClick={async () => {
+                          const result = await masterQuery.refetch()
+                          if (result.isError) {
+                            Toast.error(result.error.message)
+                            return
+                          }
+                          setResolutions((previous) => ({ ...previous, [diff.id]: '' }))
+                          confirmDiffMutation.reset()
+                        }}>刷新差异</Button>
+                      </Banner>
+                    )}
+                  </div>
+                )
+              })}
+            </section>
             {/* 逐条一行：原来用「；」连成一大段，在窄弹窗里挤成好几行、断句也难看 */}
             <ul
               style={{
@@ -1017,7 +1272,7 @@ export default function ProductDetailPage() {
                     title: '状态', dataIndex: 'match_status', width: 100,
                     render: (v: string) => ({ matched: '已匹配', pending: '待匹配', conflict: '有冲突', renamed: '已改码', stopped: '已停用' }[v] ?? v),
                   },
-                  {
+                  ...(canManage ? [{
                     title: '操作', width: 220,
                     render: (_: unknown, source: SkuIdentitySource) => (
                       <span style={{ display: 'inline-flex', gap: 8 }}>
@@ -1032,9 +1287,10 @@ export default function ProductDetailPage() {
                         )}
                       </span>
                     ),
-                  },
+                  }] : []),
                 ]}
-                empty="暂无外部来源记录"
+                scroll={{ x: canManage ? 730 : 510 }}
+                empty={emptyTextNode(identityQuery, '暂无外部来源记录')}
               />
             </div>
             <Table<SkuMasterField>
@@ -1045,206 +1301,6 @@ export default function ProductDetailPage() {
               pagination={false}
               scroll={{ x: `max(100%, ${MASTER_TABLE_WIDTH}px)` }}
             />
-            {/*
-              主数据确认入口（**常驻**，主人 2026-10-10 定稿）。
-
-              为什么常驻而不是"缺确认时才出现"：确认过之后还要能回来核对 ——
-              改了本地值要能看出"哪些和上次确认的不一样"、再确认一次；
-              只在对客三字段没确认时才显示按钮，等于确认完就把门关了。
-
-              三块内容按顺序：
-                ① 状态摘要：对客三字段齐不齐 / 有没有本地改了还没重新确认
-                ② 字段勾选：默认勾对客三字段，其余 10 个按需；标注影响面
-                ③ 确认按钮：按当前本地值确认并冻结快照
-            */}
-            {can('product:manage') && (
-              <div
-                style={{
-                  border: `1px solid ${
-                    !quoteFieldsConfirmed || changedSinceConfirm.length > 0
-                      ? 'var(--semi-color-warning)'
-                      : 'var(--semi-color-border)'
-                  }`,
-                  background:
-                    !quoteFieldsConfirmed || changedSinceConfirm.length > 0
-                      ? 'var(--semi-color-warning-light-default)'
-                      : 'var(--semi-color-fill-0)',
-                  borderRadius: 6,
-                  padding: 12,
-                  display: 'grid',
-                  gap: 10,
-                }}
-              >
-                <div style={{ fontSize: 13, lineHeight: 1.7 }}>
-                  {!quoteFieldsConfirmed && (
-                    <div>
-                      正式报价只能引用<strong>已确认</strong>的主数据版本。这个 SKU 的
-                      {quoteFieldsMissingLabels.length > 0
-                        ? `「${quoteFieldsMissingLabels.join('、')}」还没有确认过`
-                        : '对客字段还没有确认过'}
-                      ，因此<strong>无法正式发送</strong>。
-                    </div>
-                  )}
-                  {changedSinceConfirm.length > 0 && (
-                    <div style={{ color: 'var(--semi-color-warning)' }}>
-                      <strong>本地值已修改，尚未重新确认</strong>：
-                      {changedSinceConfirm.join('、')}
-                      。改动<strong>不会</strong>自动成为已确认值，旧确认快照也照常保留 ——
-                      需要你核对后重新确认。
-                    </div>
-                  )}
-                  {quoteFieldsConfirmed && changedSinceConfirm.length === 0 && (
-                    <div style={{ color: 'var(--crm-text-2)' }}>
-                      对客三字段（名称/规格/单位）已确认，可以正式发送。
-                      本地值改动后这里会提示重新确认。
-                    </div>
-                  )}
-                </div>
-
-                <div>
-                  <div style={{ fontSize: 12, color: 'var(--crm-text-2)', marginBottom: 6 }}>
-                    选择要确认的字段（按当前<strong>本地值</strong>确认；值没变的字段
-                    不会增加确认次数、也不会生成新快照）：
-                  </div>
-                  <CheckboxGroup
-                    value={confirmFields}
-                    onChange={(v) => setConfirmFields(v as string[])}
-                  >
-                    {masterQuery.data.fields.map((f) => (
-                      <Checkbox key={f.field_name} value={f.field_name}>
-                        <span style={{ fontSize: 13 }}>
-                          {f.field_label}
-                          {QUOTE_FIELD_NAMES.includes(f.field_name) && (
-                            <Tag size="small" color="red" style={{ marginLeft: 4 }}>
-                              影响正式发送
-                            </Tag>
-                          )}
-                          {FREIGHT_FIELD_NAMES.includes(f.field_name) && (
-                            <Tag size="small" color="blue" style={{ marginLeft: 4 }}>
-                              参与运费计算
-                            </Tag>
-                          )}
-                          {f.local_differs_from_confirmed && (
-                            <Tag size="small" color="orange" style={{ marginLeft: 4 }}>
-                              本地已改
-                            </Tag>
-                          )}
-                        </span>
-                      </Checkbox>
-                    ))}
-                  </CheckboxGroup>
-                </div>
-
-                <div>
-                  <Popconfirm
-                    title="确认本地主数据？"
-                    content={
-                      confirmFields.length
-                        ? `将按当前本地值确认这 ${confirmFields.length} 个字段，并冻结一版快照。`
-                        : '请先勾选要确认的字段。'
-                    }
-                    onConfirm={() => {
-                      if (!confirmFields.length) {
-                        Toast.warning('请先勾选要确认的字段')
-                        return
-                      }
-                      confirmLocalMutation.mutate({
-                        skuId: masterSku!.id,
-                        fields: confirmFields,
-                      })
-                    }}
-                  >
-                    <Button theme="outline" type="warning" loading={confirmLocalMutation.isPending}>
-                      确认选中的 {confirmFields.length} 个字段
-                    </Button>
-                  </Popconfirm>
-                </div>
-              </div>
-            )}
-            <div>
-              <div style={{ marginBottom: 8, fontWeight: 500 }}>
-                待确认差异（{masterQuery.data.pending_diff_count}）
-                {masterQuery.data.latest_confirmed_version > 0
-                  ? `｜最近已确认版本 v${masterQuery.data.latest_confirmed_version}`
-                  : '｜还没有人工确认过的主数据版本'}
-              </div>
-              {masterQuery.data.pending_diffs.length === 0 && (
-                <div style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>没有待确认差异</div>
-              )}
-              {masterQuery.data.pending_diffs.map((diff: SkuMasterDiff) => (
-                <div
-                  key={diff.id}
-                  style={{
-                    border: '1px solid var(--semi-color-border)',
-                    borderRadius: 6,
-                    padding: 10,
-                    marginBottom: 8,
-                    display: 'grid',
-                    gap: 8,
-                  }}
-                >
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                    <Tag color="orange">{DIFF_TYPE_LABELS[diff.diff_type] ?? diff.diff_type}</Tag>
-                    {diff.field_label && <span>{diff.field_label}</span>}
-                    <span style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
-                      本地 {String(diff.current_value ?? '-')} → 来源{' '}
-                      {diff.incoming_value === null || diff.incoming_value === undefined
-                        ? '空值'
-                        : String(diff.incoming_value)}
-                    </span>
-                    {diff.requires_note && <Tag>核定需写依据</Tag>}
-                  </div>
-                  {canManage ? (
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                      <Select
-                        style={{ width: 220 }}
-                        placeholder="选择核定结论"
-                        value={resolutions[diff.id]}
-                        onChange={(value: unknown) =>
-                          setResolutions({ ...resolutions, [diff.id]: String(value) })
-                        }
-                        optionList={diff.allowed_resolutions.map((item) => ({
-                          value: item,
-                          label: RESOLUTION_LABELS[item] ?? item,
-                        }))}
-                      />
-                      <Input
-                        style={{ flex: 1 }}
-                        placeholder={diff.requires_note ? '必填：依据 / 来源与时点' : '备注（可选）'}
-                        value={notes[diff.id] ?? ''}
-                        onChange={(value: string) => setNotes({ ...notes, [diff.id]: value })}
-                      />
-                      <Button type="primary"
-                        theme="outline"
-                        loading={confirmDiffMutation.isPending}
-                        onClick={() => {
-                          const resolution = resolutions[diff.id]
-                          if (!resolution) {
-                            Toast.warning('先选择核定结论')
-                            return
-                          }
-                          if (diff.requires_note && !(notes[diff.id] ?? '').trim()) {
-                            Toast.warning('这条差异必须写清依据')
-                            return
-                          }
-                          confirmDiffMutation.mutate({
-                            diffId: diff.id,
-                            resolution,
-                            note: notes[diff.id],
-                          })
-                        }}
-                      >
-                        核定
-                      </Button>
-                    </div>
-                  ) : (
-                    <div style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
-                      需要产品维护权限才能核定
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
           </div>
         )}
       </Modal>

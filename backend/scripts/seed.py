@@ -110,11 +110,18 @@ PERMISSIONS: list[tuple[str, str, str, str]] = [
     # **业务动作**，不该和"系统设置"共用一个权限码 ——
     # 默认销售主管要能做这件事，但不该顺带拿到整个系统设置的权限。
     ("customer:pool_review", "公海回收复核", "customer", "pool_review"),
+    ("customer:pool_restore", "恢复公海客户", "customer", "pool_restore"),
     ("agent:use", "使用 Sales Agent", "agent", "use"),
     ("sample:view", "查看样品", "sample", "view"),
     ("sample:manage", "管理样品", "sample", "manage"),
     ("wecom:view", "查看企业微信集成", "wecom", "view"),
-    ("wecom:manage", "同步与归一转处理", "wecom", "manage"),
+    ("wecom:manage", "整理企微联系人", "wecom", "manage"),
+    ("wecom:sync_directory", "同步企微部门和成员", "wecom", "sync_directory"),
+    ("wecom:sync_contacts", "同步企微联系人和跟进关系", "wecom", "sync_contacts"),
+    ("wecom:import_preview", "预览企微客户导入", "wecom", "import_preview"),
+    ("wecom:import", "确认企微客户导入", "wecom", "import"),
+    ("wecom:transfer_preview", "查看企微离职交接清单", "wecom", "transfer_preview"),
+    ("wecom:transfer", "执行企微离职交接", "wecom", "transfer"),
 ]
 
 SALES_PERMISSIONS = [
@@ -184,6 +191,8 @@ MANAGER_PERMISSIONS = SALES_PERMISSIONS + [
     # 企业微信集成：只有主管及以上才需要看同步状态、做待归一处理和离职继承
     "wecom:view",
     "wecom:manage",
+    "wecom:import_preview",
+    "wecom:transfer_preview",
     # 公海回收复核：主管复核本团队客户的回收候选（批准/驳回/暂缓）。
     # 独立于 settings:manage —— 此前复用系统设置权限，默认主管根本没有它，
     # 于是"主管逐条或批量批准"实际上打不通（第六批审查第 7 条）。
@@ -250,6 +259,8 @@ async def seed() -> None:
                 role = Role(code=code, name=name, data_scope=scope, description=desc)
                 session.add(role)
                 await session.flush()
+                if code == "sales_manager":
+                    perms = [*perms, "customer:pool_restore"]
             role_map[code] = role
             have = {
                 pid
@@ -1117,7 +1128,7 @@ async def seed() -> None:
                     SystemSetting(key=key, value=value, description=description)
                 )
 
-        # 审批流转规则（设计稿 `_6` 的国内业务版）：三条默认规则，发布 V1 并启用。
+        # 默认审批规则发布 V1 并启用，条件互斥。
         # 只对"有明细超权限"的报价生效；不满足任何规则时仍走金额分档，行为不变。
         from app.modules.approval.model import ApprovalRule, ApprovalRuleVersion
 
@@ -1140,7 +1151,21 @@ async def seed() -> None:
                 "priority": 20,
                 "description": "让价金额很小且客户无逾期：跳过高层级，主管一级直接审完",
                 "conditions": [
-                    {"field": "gross_margin", "op": "gte", "value": 22},
+                    {"field": "gross_margin", "op": "gt", "value": 22},
+                    {"field": "gross_margin", "op": "lt", "value": 25},
+                    {"field": "concession_amount", "op": "lte", "value": 1000},
+                    {"field": "customer_has_overdue", "op": "eq", "value": False},
+                ],
+                "action": {},
+            },
+            {
+                "name": "小额让价极速通道（高毛利大额报价）",
+                "kind": "express",
+                "priority": 21,
+                "description": "让价金额很小且客户无逾期：跳过高层级，主管一级直接审完",
+                "conditions": [
+                    {"field": "gross_margin", "op": "gte", "value": 25},
+                    {"field": "total_amount", "op": "gt", "value": 100000},
                     {"field": "concession_amount", "op": "lte", "value": 1000},
                     {"field": "customer_has_overdue", "op": "eq", "value": False},
                 ],
@@ -1161,14 +1186,9 @@ async def seed() -> None:
                 },
             },
         ]
-        for spec in default_rules:
-            exists = (
-                await session.execute(
-                    select(ApprovalRule).where(ApprovalRule.name == spec["name"])
-                )
-            ).scalar_one_or_none()
-            if exists is not None:
-                continue
+        has_rules = await session.scalar(select(ApprovalRule.id).limit(1))
+        # Existing installations may have customized the routing or removed a default.
+        for spec in default_rules if has_rules is None else []:
             rule = ApprovalRule(
                 name=spec["name"],
                 kind=spec["kind"],
@@ -1201,7 +1221,7 @@ async def seed() -> None:
         print(
             "种子数据完成：3 个角色、权限清单、3 个账号、3 个示例客户、3 个示例产品、"
             "9 个商机阶段、9 类失单原因、2 条示例线索、1 个示例商机"
-            "、成本与价格规则（占位值）、价格权限、运费费率、3 条审批规则"
+            "、成本与价格规则（占位值）、价格权限、运费费率、初始化审批规则"
         )
         print("登录账号：admin / admin123     zhangsan / 123456     lisi / 123456")
 

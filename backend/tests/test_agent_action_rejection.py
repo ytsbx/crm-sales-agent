@@ -1,5 +1,7 @@
 """拒绝与取消必须重读动作状态；真PG的双事务竞态由check_agent_action_race验证。"""
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import update
@@ -8,8 +10,11 @@ from starlette.requests import Request
 from conftest import SyncSessionAsAsync, make_user
 from app.core.audit import AuditLog
 from app.core.errors import AppError
-from app.modules.agent.model import AgentAction, AgentSession
-from app.modules.agent.router import cancel_action, reject_action
+from app.modules.agent import runtime
+from app.modules.agent.model import AgentAction, AgentExecution, AgentMessage, AgentSession
+from app.modules.agent.router import (
+    cancel_action, confirm_action, get_action, get_session_detail, list_actions, reject_action,
+)
 from app.modules.agent.schema import ActionReject
 
 REQUEST = Request({'type': 'http', 'headers': [], 'client': ('127.0.0.1', 1)})
@@ -17,7 +22,7 @@ REQUEST = Request({'type': 'http', 'headers': [], 'client': ('127.0.0.1', 1)})
 
 @pytest.fixture
 def action_db(db_session):
-    for model in (AgentSession, AgentAction, AuditLog):
+    for model in (AgentSession, AgentAction, AgentMessage, AgentExecution, AuditLog):
         model.__table__.create(db_session.get_bind(), checkfirst=True)
     db_session.add(AgentSession(id=1, user_id=101, title='隔离动作'))
     db_session.add(AgentAction(id=1, session_id=1, action_type='create_task', tool_name='create_task',
@@ -29,6 +34,59 @@ def action_db(db_session):
 class ActionSession(SyncSessionAsAsync):
     async def refresh(self, obj, **kwargs):
         self._session.refresh(obj, **kwargs)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("status", ["awaiting_confirmation", "approval_required"])
+@pytest.mark.parametrize("expired", [False, True])
+async def test_action_confirmation_expires_at_24_hours(action_db, monkeypatch, status, expired):
+    now = datetime(2026, 11, 19, 8, tzinfo=UTC)
+
+    class FrozenTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now.astimezone(tz) if tz is not None else now.replace(tzinfo=None)
+
+    monkeypatch.setattr(runtime, "datetime", FrozenTime)
+    handler = AsyncMock(return_value={})
+    monkeypatch.setitem(runtime.TOOLS, "create_task", replace(runtime.TOOLS["create_task"], handler=handler))
+    row = action_db.get(AgentAction, 1)
+    row.created_at = now - timedelta(hours=24)
+    if not expired:
+        row.created_at += timedelta(microseconds=1)
+    row.status = status
+    action_db.commit()
+    session = ActionSession(action_db)
+    user = make_user(roles=("admin",))
+
+    if not expired:
+        result = await confirm_action(1, user, session)
+        assert result["data"]["action"]["status"] == "executed"
+        handler.assert_awaited_once()
+        now += timedelta(days=2)
+        history = await get_action(1, user, session)
+        assert history["data"]["status"] == "executed"
+        return
+
+    with pytest.raises(AppError, match="已过期.*重新发起"):
+        await confirm_action(1, user, session)
+    with pytest.raises(AppError, match="已过期"):
+        await reject_action(1, ActionReject(reason="取消"), REQUEST, user, session)
+    with pytest.raises(AppError, match="已过期"):
+        await cancel_action(1, ActionReject(reason="撤回"), user, session)
+    handler.assert_not_awaited()
+    assert action_db.query(AgentExecution).count() == 0
+    assert action_db.query(AuditLog).count() == 0
+    assert action_db.get(AgentAction, 1).status == status
+
+    detail = (await get_action(1, user, session))["data"]
+    assert detail["status"] == "expired" and detail["status_label"] == "已过期"
+    assert not detail["display"]["can_confirm"]
+    assert "重新发起" in detail["display"]["result_text"]
+    history = (await get_session_detail(1, user, session))["data"]["actions"]
+    assert history[0]["status"] == "expired"
+    assert (await list_actions(status, 1, 20, user, session))["data"]["total"] == 0
+    assert (await list_actions("expired", 1, 20, user, session))["data"]["total"] == 1
 
 
 class ExecutionCommittedDuringOwnershipCheck(ActionSession):

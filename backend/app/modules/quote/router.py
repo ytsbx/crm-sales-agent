@@ -6,7 +6,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Query, Request, Response
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.approval.rules_engine import strip_approval_summary
@@ -14,12 +14,14 @@ from app.core.audit import write_audit
 from app.core.data_scope import scoped_owner_ids
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
+from app.core.draft_visibility import draft_scope
 from app.core.errors import AppError, ErrorCode
 from app.core.money import line_amount
 from app.core.response import ok, page_data, paginate
 from app.modules.customer import service as customer_service
 from app.modules.customer.model import Customer
 from app.modules.opportunity.model import Opportunity
+from app.modules.opportunity.model import OpportunityItem
 from app.modules.order.model import SalesOrder
 from app.modules.followup import service as followup_service
 from app.modules.notification import service as notification_service
@@ -71,7 +73,7 @@ def _with_master_warnings(payload: dict, warnings: set[str]) -> dict:
 
 
 async def _ensure_inquiry_visible(
-    session: AsyncSession, user: CurrentUser, inquiry_id: int | None
+    session: AsyncSession, user: CurrentUser, inquiry_id: int | None, *, quote_id: int,
 ) -> None:
     """定制明细引用的需求必须在该用户数据范围内。
 
@@ -83,7 +85,39 @@ async def _ensure_inquiry_visible(
         return
     from app.modules.inquiry import service as inquiry_service
 
-    await inquiry_service.get_visible_or_404(session, user, inquiry_id)
+    inquiry = await inquiry_service.get_visible_or_404(session, user, inquiry_id)
+    await inquiry_service.lock_quote_source(session, inquiry, quote_id=quote_id)
+
+
+async def _ensure_opportunity_item_same_customer(
+    session: AsyncSession, opportunity_item_id: int | None, *, quote: Quote,
+) -> None:
+    """商机需求只能挂进同一客户的报价。
+
+    此前 SKU 明细入口只校验定制需求（inquiry_id），`opportunity_item_id`
+    直接原样落库；于是 B 的报价可以挂 A 客户商机下的需求，留下跨客户引用。
+    单条追加与整版替换共用这一处判据。
+    """
+    if opportunity_item_id is None:
+        return
+    customer_id = await session.scalar(
+        select(Opportunity.customer_id)
+        .join(OpportunityItem, OpportunityItem.opportunity_id == Opportunity.id)
+        .where(
+            OpportunityItem.id == opportunity_item_id,
+            Opportunity.deleted_at.is_(None),
+        )
+    )
+    if customer_id is None:
+        raise AppError(
+            ErrorCode.NOT_FOUND, f"商机需求 id={opportunity_item_id} 不存在", 404
+        )
+    if customer_id != quote.customer_id:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "该商机需求属于别的客户，不能挂进这张报价。请选择本客户的商机需求。",
+            422,
+        )
 
 
 CHARGE_LABEL = {
@@ -165,8 +199,7 @@ async def list_quotes(
     if owner_id:
         stmt = stmt.where(Quote.owner_id == owner_id)
     owner_ids = await scoped_owner_ids(session, user)
-    if owner_ids is not None:
-        stmt = stmt.where(Quote.owner_id.in_(owner_ids))
+    stmt = stmt.where(draft_scope(Quote, user.id, Quote.owner_id.in_(owner_ids) if owner_ids is not None else None))
 
     rows, total = await paginate(session, stmt.order_by(Quote.id.desc()), page, page_size)
     ctx = await _quote_context(session, rows)
@@ -331,11 +364,16 @@ async def list_versions(
     user: CurrentUser = Depends(require_permission("quote:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    await svc.get_visible_quote(session, user, quote_id)
+    quote = await svc.get_visible_quote(session, user, quote_id)
+    from app.core.draft_visibility import private_draft
+
     rows = (
         await session.execute(
             select(QuoteVersion)
-            .where(QuoteVersion.quote_id == quote_id)
+            .where(QuoteVersion.quote_id == quote_id, or_(
+                ~private_draft(QuoteVersion),
+                func.coalesce(QuoteVersion.created_by, quote.created_by or quote.owner_id) == user.id,
+            ))
             .order_by(QuoteVersion.version_no.desc())
         )
     ).scalars().all()
@@ -604,6 +642,9 @@ async def clone_quote(
         else None
     )
     source_currency = source_version.currency if source_version else "CNY"
+    source_items = await svc.version_items(session, source_version.id) if payload.copy_items and source_version else []
+    if any(item.inquiry_id is not None for item in source_items):
+        raise AppError(ErrorCode.DUPLICATE_CONVERT, "来源报价已包含定制询价，请在原报价中新建版本", 409)
 
     # D8：复制出的也是**新报价**，同样必须归属商机。先取"显式指定 > 源报价"的
     # 最终归属，源报价就没挂商机且未指定时按同一口径拒绝（历史数据不追溯，
@@ -665,7 +706,6 @@ async def clone_quote(
 
     copied_items = 0
     if payload.copy_items and source.current_version_id:
-        source_items = await svc.version_items(session, source.current_version_id)
         new_version = created["_version"]
         for item in source_items:
             session.add(
@@ -911,8 +951,9 @@ async def compare_versions(
     session: AsyncSession = Depends(get_db),
 ):
     """报价多方案对比（What-if）：逐版本汇总 + 与上一版的差异明细。"""
-    await svc.get_visible_quote(session, user, quote_id)
-    payload = await svc.version_comparison(session, quote_id)
+    quote = await svc.get_visible_quote(session, user, quote_id)
+    payload = await svc.version_comparison(session, quote_id, viewer_id=user.id,
+                                           fallback_creator=quote.created_by or quote.owner_id)
     # 成本与毛利只给价格管理员（第七批 P1-4）：本接口只要求 quote:view，
     # 不裁剪的话普通销售能直接读到完整成本、单位成本、利润与毛利率，
     # 与核价接口的脱敏口径不一致。
@@ -1143,7 +1184,21 @@ async def set_items(
     await svc.ensure_version_editable(version)
     quote = await svc.get_visible_quote(session, user, version.quote_id)
 
+    # 先把归属校验完，再删旧明细：被拒的整版替换不能把原明细清掉。
+    for item in items:
+        await _ensure_opportunity_item_same_customer(session, item.opportunity_item_id, quote=quote)
+
     existing = await svc.version_items(session, version_id)
+    inquiry_ids = {item.inquiry_id for item in items if item.inquiry_id is not None}
+    if inquiry_ids:
+        from app.modules.inquiry.model import CustomInquiry
+
+        ordered_ids = (await session.execute(select(CustomInquiry.id).where(CustomInquiry.id.in_(inquiry_ids))
+                       .order_by(func.coalesce(CustomInquiry.root_id, CustomInquiry.id), CustomInquiry.id))).scalars().all()
+        if len(ordered_ids) != len(inquiry_ids):
+            raise AppError(ErrorCode.NOT_FOUND, "部分定制询价不存在", 404)
+        for inquiry_id in ordered_ids:
+            await _ensure_inquiry_visible(session, user, inquiry_id, quote_id=quote.id)
     for item in existing:
         await session.delete(item)
     await session.flush()
@@ -1152,7 +1207,6 @@ async def set_items(
     # §8.14：这几条 SKU 的关键字段主数据还没人工确认 —— 只提示，不阻断报价
     unconfirmed_master: set[str] = set()
     for payload in items:
-        await _ensure_inquiry_visible(session, user, payload.inquiry_id)
         item = await svc.build_item_snapshot(
             session,
             version=version,
@@ -1814,7 +1868,8 @@ async def add_version_item(
     version = await svc.get_visible_version(session, user, version_id, for_update=True)
     await svc.ensure_version_editable(version)
     quote = await svc.get_visible_quote(session, user, version.quote_id)
-    await _ensure_inquiry_visible(session, user, payload.inquiry_id)
+    await _ensure_inquiry_visible(session, user, payload.inquiry_id, quote_id=quote.id)
+    await _ensure_opportunity_item_same_customer(session, payload.opportunity_item_id, quote=quote)
     # §8.14：主数据未确认只提示、不阻断
     unconfirmed_master: set[str] = set()
     item = await svc.build_item_snapshot(

@@ -337,6 +337,7 @@ async def update_sku(
     if sku.deleted_at is not None or product.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
     data = payload.model_dump(exclude_unset=True)
+    await master_svc.require_local_editable(session, sku, data)
     if "sku_code" in data:
         await svc.ensure_sku_code_unique(session, data["sku_code"], exclude_id=sku.id)
     before = svc.serialize_sku(sku)
@@ -998,23 +999,7 @@ async def confirm_sku_master_diff(
     session: AsyncSession = Depends(get_db),
 ):
     """核定一条 SKU 主数据差异：**唯一**能改 SKU 关键字段的入口，改动留版本快照。"""
-    # ⚠️ **锁住差异行再判**（第九批问题 ③）。
-    #
-    # 原来是无锁 `session.get`：一条差异被核定（resolution 落库）之后，
-    # 同一个请求再打一次、或换个结论再打一次，**照样成功** ——
-    # 实测同一差异能走 keep_local → take_external → take_external，
-    # 一路生成 v2 / v3 / v4 三个主数据版本，主数据被改来改去。
-    #
-    # 锁 + `populate_existing`（项目里踩过"锁等到了、对象还是旧的"那个坑）：
-    # 读到的是**此刻**的真相；幂等判据见 `confirm_sku_diff`。
-    diff = (
-        await session.execute(
-            select(IntegrationDiff)
-            .where(IntegrationDiff.id == diff_id)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
-    ).scalar_one_or_none()
+    diff = await session.get(IntegrationDiff, diff_id)
     if diff is None or diff.domain != "sku_master":
         raise AppError(ErrorCode.NOT_FOUND, f"SKU 主数据差异编号 {diff_id} 不存在", 404)
     result = await master_svc.confirm_sku_diff(

@@ -7,6 +7,7 @@ export interface CaseEvidenceItem {
   kind_label: string
   business_id: number
   label?: string | null
+  note?: string | null
 }
 
 /**
@@ -142,4 +143,13 @@ export function reviewCase(id: number, payload: { approve: boolean; note?: strin
  */
 export function reviseCase(id: number) {
   return api.post<CaseRow>(`/cases/${id}/revise`)
+}
+
+export function withdrawPublishedCase(id: number) {
+  return api.delete<null>(`/cases/${id}`)
+}
+
+
+export function deleteCaseDraft(id: number) {
+  return api.delete<null>(`/cases/${id}?draft_only=true`)
 }

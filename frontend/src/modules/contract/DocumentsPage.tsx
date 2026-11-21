@@ -2,6 +2,7 @@ import { formatBeijingDate, formatBeijingTime } from '../../shared/beijing-time'
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { ApprovalHistory, ContractBasis } from './CustomerApproval'
+import { approvalProgress, formatApprovalEventTime } from '../knowledge/approval-progress'
 import { api } from '../../shared/api/client'
 import { templateFieldLabel } from './template-fields'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -18,6 +19,7 @@ import {
 } from '@douyinfe/semi-ui'
 import { usePermissions } from '../../shared/hooks/permissions'
 import PageHeader from '../../shared/components/PageHeader'
+import HelpTip from '../../shared/components/HelpTip'
 import SectionCard from '../../shared/components/SectionCard'
 import StatusDot from '../../shared/components/StatusDot'
 import type { TagTone } from '../../shared/types'
@@ -58,10 +60,48 @@ const STATUS_TONE: Record<string, 'green' | 'grey' | 'red'> = {
   void: 'red',
 }
 
+function contractStage(doc: ContractDocument) {
+  const oaStatus = doc.dingtalk_oa_row?.status ?? doc.dingtalk_oa?.status
+  const needsApproval = Boolean(doc.original_file_id || doc.dingtalk_oa || doc.dingtalk_oa_row)
+  const historical = (doc.dingtalk_oa_row?.provider ?? doc.dingtalk_oa?.provider) === 'dingtalk'
+  if (doc.status === 'signed') return { action: 'read', hint: '回签已归档，可在「签署原件」查看双方签好的合同。' }
+  if (doc.status !== 'draft') return { action: 'read', hint: '可在详情核对合同和已归档的文件。' }
+  if (oaStatus === 'pending' || oaStatus === 'submitting') {
+    return { action: 'review', hint: '等待同序 OA 审批。通过后，再把双方签好的合同登记回签。' }
+  }
+  if (oaStatus === 'needs_review') {
+    return { action: 'review', hint: '请按合同编号到同序 OA 核对上次是否发起成功，确认结果后再处理。' }
+  }
+  if (oaStatus === 'rejected') {
+    return { action: historical ? 'review' : 'start', hint: historical
+      ? '历史审批已驳回，可查看处理意见。'
+      : '先查看同序 OA 的驳回意见，按意见处理合同后再发起审批。' }
+  }
+  if (needsApproval && oaStatus !== 'approved') {
+    return { action: historical ? 'review' : 'start', hint: historical
+      ? '请查看这份合同的历史审批进度。'
+      : '核对合同原件和双方主体后，发起同序 OA 审批。' }
+  }
+  if (doc.original_file_id && doc.doc_type !== 'monthly' && !doc.order_id && !doc.quote_id) {
+    return { action: 'basis', hint: '先补上正式订单或已发出的报价，再登记回签。' }
+  }
+  return { action: 'sign', hint: '收到双方签好的合同后，点「登记回签」上传并归档签署件。' }
+}
+
 const DETAIL_LABEL = { fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 2 }
 const DETAIL_VALUE = { fontSize: 13 }
 
 export default function DocumentsPage() {
+  /* 1024 宽内容区约 700px，合同台账九列合计 1123px，整张表被裁在卡片外、
+     底部常驻横向滚动条。窄屏切紧凑档：类型并进合同编号第二行，
+     客户并进标题第二行，到期日 / 签署时间不在列表里占位，操作列收 3 个链接。 */
+  const [compact, setCompact] = useState(() => window.innerWidth < 1200)
+  useEffect(() => {
+    const onResize = () => setCompact(window.innerWidth < 1200)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
   const queryClient = useQueryClient()
   const { can, isReviewer } = usePermissions()
   const canManage = can('order:manage')
@@ -161,8 +201,9 @@ export default function DocumentsPage() {
       })
     },
     onSuccess: (doc) => {
-      Toast.success(`合同已上传：${doc.doc_no}`)
+      Toast.success(`合同 ${doc.doc_no} 已上传，可在详情核对后发起审批。`)
       setUploadVisible(false)
+      setDetailTarget(doc)
       refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -184,9 +225,13 @@ export default function DocumentsPage() {
         our_company: vars.our_company,
         counterparty_name: vars.counterparty_name,
       }),
-    onSuccess: () => {
-      Toast.success('已提交 OA 合同审批')
+    onSuccess: (row, { id }) => {
+      if (row.status === 'approved') Toast.success('审批已通过，收到双方签署件后可登记回签。')
+      else if (row.status === 'pending' && row.instance_id) Toast.success('已进入同序 OA 审批，可在合同详情查看进度。')
+      else Toast.warning('请在合同详情核对审批进度，确认结果前请勿重复提交。')
+      if (oaStartTarget?.id === id) setDetailTarget(oaStartTarget)
       setOaStartTarget(null)
+      void queryClient.invalidateQueries({ queryKey: ['contract-detail', id] })
       refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -283,7 +328,7 @@ export default function DocumentsPage() {
   const signMutation = useMutation({
     mutationFn: () => signContractDocument(signTarget!.id, { file_id: signFileId! }),
     onSuccess: () => {
-      Toast.success('已登记签署')
+      Toast.success('回签已归档，可在合同详情的「签署原件」查看。')
       closeSignModal()
       refresh()
     },
@@ -295,7 +340,8 @@ export default function DocumentsPage() {
   // 单独拿它当"看签署原件"的入口也是这个道理：只给一个「下载」，
   // 用户会以为拿到的是签回来的那一份，实际是我们自己生成的稿子，事后对账就会扯皮。
   const [detailTarget, setDetailTarget] = useState<ContractDocument | null>(null)
-  const [searchParams] = useSearchParams()
+  const basisRef = useRef<HTMLDivElement>(null)
+  const [searchParams, setSearchParams] = useSearchParams()
   const requestedContract = searchParams.get('contract')
   useEffect(() => {
     if (!requestedContract || !/^\d+$/.test(requestedContract)) return
@@ -316,7 +362,13 @@ export default function DocumentsPage() {
     refetchOnWindowFocus: true,
   })
   const detail = detailQuery.data
-  const oaLabel = detail?.dingtalk_oa?.provider === 'self_oa' ? 'OA' : '同序 OA'
+  const detailStage = detail ? contractStage(detail) : null
+  const approvalSnapshot = detail?.dingtalk_oa
+  const approvalProvider = detail?.dingtalk_oa_row?.provider ?? approvalSnapshot?.provider
+  const oaHistory = approvalProvider === 'self_oa'
+    ? approvalProgress(detail?.dingtalk_oa_row?.result ?? approvalSnapshot?.result)
+    : []
+  const oaLabel = approvalProvider === 'dingtalk' ? '历史' : '同序 OA'
   const signedFiles: ContractSignedFile[] = detail?.signed_files ?? []
   const amendments: ContractAmendment[] = detail?.amendments ?? []
 
@@ -343,8 +395,14 @@ export default function DocumentsPage() {
   })
 
   // 已选签署件的文件名：确认前要让用户看清"签的是哪份文件"，光给内部编号看不懂
-  const selectedSignFile = (signFilesQuery.data ?? []).find((row) => row.id === signFileId)
+  const signFiles = (signFilesQuery.data ?? []).filter((file) =>
+    file.id !== signTarget?.original_file_id && file.id !== signTarget?.generated_file_id)
+  const selectedSignFile = signFiles.find((row) => row.id === signFileId)
   const documents = documentsQuery.data?.items ?? []
+  /* 「到期日」这一列在真实数据里几乎是空的（草稿合同一律没有到期日）。
+     空着的 80px 一直占着首屏，把「标题」挤到只剩 12 个字、整列省略号。
+     有值才出这一列，没值就把宽度还给标题 —— 而不是固定留一列横杠。 */
+  const hasExpiry = documents.some((row) => Boolean(row.expiry_date))
 
   const canUploadSignFile = can('file:manage')
   const noFileManageReason =
@@ -373,44 +431,113 @@ export default function DocumentsPage() {
         <PageHeader
           title="文档管理"
           subtitle="我方合同、客户合同均上传原文件；审批在同序 OA 办理，CRM 同步进度并跟催回签归档"
+          /* 2026-11-20：原来「上传合同」单独占卡片内左上角一行，右边一整排空白，
+             和其它列表页"新建类按钮在页头右上"（案例库「新建案例」）也不一致。
+             挪到页头 extra，卡片从表格直接开始。 */
+          extra={canManage && (
+            <Button type="primary" theme="outline" onClick={() => openUploadModal()}>
+              上传合同
+            </Button>
+          )}
         />
         <SectionCard
           className={(documents?.length ?? 0) <= 8 ? 'auto-height' : undefined}
         >
-          <div className="toolbar" style={{ marginBottom: 10 }}>
-            {/* 这里原来有个 flex:1 占位把工具栏全推到右边；全站其他列表页筛选从左边起头，
-                这一页孤零零靠右，看着像浮在卡上。去掉。 */}
-            {canManage && (
-              <Button type="primary" theme="outline" onClick={() => openUploadModal()}>
-                上传合同
-              </Button>
-            )}
-          </div>
-          <Table<ContractDocument> className="table-center"
+          <Table<ContractDocument> className="table-center documents-table"
             columns={[
               // 140 放不下 12 位的合同编号（实测被截成「CT202610140…」）。
               // 156 是刚好够 + 又不把表格撑出横向滚动条的宽度。
-              { title: '合同编号', dataIndex: 'doc_no', width: 156 },
-              { title: '类型', dataIndex: 'doc_type_label', width: 85 },
+              // 类型并到编号下面第二行（2026-11-19，原宽屏档有独立「类型」列 85px）：
+              // 九列加起来 1118、容器约 1130，标题只分到 120（约 7 个字），
+              // 15 字的「【全场景演示】销售合同-甲」整列都是省略号。
+              // 把类型降级成 11px 小灰字挂在编号下，空出的 85px 全给标题（120→205）。
+              // 不丢信息、不多行高（客户列本来就是两行），宽屏窄屏从此同一套读法。
+              {
+                title: '合同编号',
+                dataIndex: 'doc_no',
+                /* 148 刚够 14 位的 CT202611180001（13px 约 133），原来 156 多给了 8px。 */
+                width: compact ? 128 : 148,
+                render: (v: string, record: ContractDocument) => (
+                  <div>
+                    <div>{v}</div>
+                    <div style={{ marginTop: 2, fontSize: 11, color: 'var(--crm-text-3)' }}>
+                      {record.doc_type_label ?? '-'}
+                    </div>
+                  </div>
+                ),
+              },
               // 标题不给上限时它会吃掉所有剩余宽度（实测 270px），
-              // 把后面的列全顶到屏幕外；200 是"销售合同-甲"这类标题的实测上限再留些余量。
+              // 把后面的列全顶到屏幕外；205 是"销售合同-甲"这类标题的实测
+              // 上限（约 12–13 字）再留些余量。
               {
                 title: '标题',
                 dataIndex: 'title',
-                width: 160,
+                /* 205 只够 12–13 个字；「【验收】非正式合同 202611180001」被截成
+                   「【验收】非正式合同 20261…」。没有到期日列时把省下的 80px 给它。 */
+                /* 190 时「销售合同（化妆品外箱+内衬）」这种还是被截（2026-11-20 实拍），
+                   而右边其实还剩七十来像素 —— 九列合计 1057 撑不满 1130。
+                   把余量给标题：hasExpiry 档 190→240（无到期日档本来就 288）。 */
+                width: compact ? 160 : hasExpiry ? 220 : 288,
                 // 标题超过列宽会被省略成「【全场景演示】销售…」，悬停要看得到全文
                 // （2026-11-17 视觉审视 V-03）。同时给 title 属性，键盘/读屏也能读到。
-                render: (v: string) => (
-                  <span title={v} style={{ display: 'inline-block', maxWidth: '100%' }}>
-                    {v}
-                  </span>
+                render: (v: string, record: ContractDocument) => (
+                  <div style={{ minWidth: 0 }}>
+                    <span
+                      title={v}
+                      className="cell-strong"
+                      style={{
+                        display: 'block',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {v}
+                    </span>
+                    {compact && (
+                      <div
+                        title={record.customer_name ?? '-'}
+                        style={{
+                          marginTop: 2,
+                          fontSize: 11,
+                          color: 'var(--crm-text-3)',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {record.customer_name ?? '-'}
+                      </div>
+                    )}
+                  </div>
                 ),
               },
-              { title: '客户', dataIndex: 'customer_name', width: 95 },
+              ...(compact
+                ? []
+                : [// 客户名是台账的识别维度：原来 95px 只够放五个字，
+                // 满屏「青岛包装…」「【全场景…」，一列全是省略号等于没有客户列。
+                // 从标题（160→120）和到期日（90→80）各让一点，整表总宽不变。
+                {
+                  title: '客户',
+                  dataIndex: 'customer_name',
+                  width: 116,
+                  // 140px 只放得下七八个字，「【全场景演示】华东复购采购客户」这
+                  // 类名字照样截。改成最多两行：一行装不下的往下走，行的总高
+                  // 只多一行，比整列显示成「【全场景演示】…」有用得多。
+                  render: (v: string | null) => (
+                    <span
+                      title={v ?? ''}
+                      style={{ display: 'block', whiteSpace: 'normal', lineHeight: 1.45 }}
+                    >
+                      {v || '-'}
+                    </span>
+                  ),
+                }]),
               {
                 title: '状态',
                 dataIndex: 'status_label',
-                width: 100,
+                /* 88 会把「待签草稿」压成「待签草稿…」：四个字 ≈56 + 圆点 8 + 间距 6 + 内边距 24。 */
+                width: compact ? 96 : 96,
                 render: (v: string, record: ContractDocument) => (
                   <StatusDot label={v} tone={(STATUS_TONE[record.status] ?? 'grey') as TagTone} />
                 ),
@@ -418,8 +545,19 @@ export default function DocumentsPage() {
               {
                 // 「依据」= 这份合同是照哪一版报价 / 哪张订单签的。
                 // 报价能出 V2/V3，不写清版本，台账上光看单号证明不了金额依据。
-                title: '依据 / 来源',
-                width: 160,
+                title: compact ? '依据' : (
+                  <span className="crm-help-label">
+                    依据 / 来源
+                    <HelpTip forLabel="依据 / 来源" text="这份合同是照哪一版报价或哪张订单签的。报价会有 V2、V3，写清版本才能对上金额。" />
+                  </span>
+                ),
+                /* 130：13 位的 SO202611180001（13px 约 101）+ 内边距 24 = 125，刚好放下；
+                   再宽就是白占，不够就是「Q202610120001 …」。 */
+                /* 134 时实测「SO202611180001」还是被压成「SO2026111800…」（2026-11-20 截图），
+                   14 位单号比注释里估的 13 位长一位。让 15px 给「标题」，单号就不省略了。 */
+                /* 160：14 位单号 + 「 V1」后缀（Q202610120001 V1）在 149 时仍被压成
+                   「Q202610120001 …」（2026-11-20 实拍）。 */
+                width: compact ? 170 : 160,
                 render: (_: unknown, record: ContractDocument) => {
                   const header = record.header_snapshot
                   const basis = record.quote_version_no
@@ -436,7 +574,21 @@ export default function DocumentsPage() {
                   return (
                     <div style={{ display: 'grid', gap: 2 }}>
                       {basis ? (
-                        <span>{basis}</span>
+                        <span
+                          title={basis}
+                          /* 窄屏 170px 放不下「订单 + 15 位单号」：去掉前缀，
+                             单号本身 SO / Q 开头就能认出是订单还是报价 */
+                          data-compact={compact ? '1' : undefined}
+                          style={{
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {/* 宽屏也去掉「订单 / 报价」前缀：SO / Q 开头本来就认得出，
+                              5 个字的前缀换 5 个字的单号，150px 才放得下完整单号。 */}
+                          {basis.replace(/^(订单|报价) /, '')}
+                        </span>
                       ) : (
                         <span style={{ color: 'var(--crm-text-3)' }}>未绑定</span>
                       )}
@@ -453,10 +605,20 @@ export default function DocumentsPage() {
               // 到期日 / 签署时间是两个**经常为空**的列（草稿合同一律是横杠），
               // 却排在首屏位置上，把真正有内容的「依据」挤到了滚动区。
               // 有值的往前、空着的往后 —— 用户不用横滑就能看见这段合同照哪版报价签的。
-              { title: '到期日', dataIndex: 'expiry_date', width: 90, render: (v: string | null) => v ?? '-' },
+              /* 整列都是 "-" 的列不上（见上面 hasExpiry）：一排横杠不是信息，
+                 还占着首屏最值钱的一段宽度。有一条带到期日就正常显示。 */
+              ...(compact || !hasExpiry
+                ? []
+                /* 92 时实测被压成「2027-0…」；和签署时间同一个日期格式，
+                   108 才是"不省略"的线。 */
+                : [{ title: '到期日', dataIndex: 'expiry_date', width: 108, render: (v: string | null) => v ?? '-' }]),
               // ⚠️ 原来是 `.slice(0, 10)`（UTC 取日）；签署时间是 UTC 瞬时，
               // 北京时间凌晨签的会显示成前一天。
-              { title: '签署时间', dataIndex: 'signed_at', width: 112, render: (v: string | null) => (v ? formatBeijingDate(v) : '-') },
+              ...(compact
+                ? []
+                /* 100 时实测被 Semi 压成「2026-11…」：2026-11-18 是 10 个字符 ≈ 96px，
+                   108 才是"不省略"的线。 */
+                : [{ title: '签署时间', dataIndex: 'signed_at', width: 108, render: (v: string | null) => (v ? formatBeijingDate(v) : '-') }]),
               {
                 // 「下载」不跟管理操作挤在一起：下载接口要的是 order:view，
                 // 原来整列挂在 canManage 下，只读用户连下载入口都看不见。
@@ -465,7 +627,10 @@ export default function DocumentsPage() {
                 // 从「到期日」和「操作」各让一点：到期日 90 够放 2026-11-16。
                 // 165 不变：加宽会把整张表撑出横向滚动条（2026-11-17 实拍到 200 就滚了）。
                 // 所以这里靠"每个词只占该占的字数"来省地方：下载、签署都是两个字的动作词。
-                width: 165,
+                /* 三个动作词（详情 / 下载 / 更多）实测 140，150 留一点余量。 */
+                /* 170：草稿态的「详情 / 登记回签 / 更多」三个词，150 时最后那个被压成
+                   「更多…」（2026-11-20 实拍）。总宽仍守在 1130 以内，标题让出 20。 */
+                width: compact ? 144 : 162,
                 // 这一列原来是 260 宽、还排在最后：整张表 1400、容器只有 1130，
                 // 结果「下载 / 详情 / 登记签署」全被推到屏幕外，必须横向拖才能点 ——
                 // 高频操作用户最不该找不着。固定在右侧，横滑时它始终在。
@@ -479,13 +644,17 @@ export default function DocumentsPage() {
                 // 判据一个没动：能不能点、点了会失败还是成功，仍走原来的权限与状态判断；
                 // 只是把"入口摆在哪"改了。作废被复核人挡住时，条目仍给，点一下弹原因。
                 render: (_: unknown, record: ContractDocument) => {
-                  const oaPending = Boolean(record.dingtalk_oa && record.dingtalk_oa.status === 'pending')
-                  const stageAction =
-                    canManage && record.status === 'draft'
-                      ? oaPending
-                        ? { label: '看 OA', onClick: () => setDetailTarget(record) }
-                        : { label: '签署', onClick: () => openSignModal(record) }
-                      : null
+                  const oaPending = (record.dingtalk_oa_row?.status ?? record.dingtalk_oa?.status) === 'pending'
+                  const { action, hint } = contractStage(record)
+                  const stageAction = canManage && record.status === 'draft' ? {
+                    label: action === 'sign' ? '登记回签' : action === 'start' && !record.dingtalk_oa
+                      ? '发起审批' : action === 'basis' ? '补依据' : '看审批',
+                    onClick: () => {
+                      if (action === 'sign') openSignModal(record)
+                      else if (action === 'start' && !record.dingtalk_oa) openOaStart(record)
+                      else setDetailTarget(record)
+                    },
+                  } : null
                   // 主操作只能有一个（2026-11-17 复验 D-01 收尾）：
                   // 草稿态是「签署 / 看 OA」，其余状态（已签、作废）就是「下载」——
                   // 那一行的下一步动作本来就是把这单原件发出去。
@@ -515,9 +684,7 @@ export default function DocumentsPage() {
                             onOk: () => withdrawDingtalkMutation.mutate(record.id),
                           }),
                       })
-                    } else if (record.dingtalk_oa_row?.provider !== 'dingtalk') {
-                      more.push({ key: 'start-oa', label: '发起 OA 审批', onClick: () => openOaStart(record) })
-                    } else {
+                    } else if ((record.dingtalk_oa_row?.provider ?? record.dingtalk_oa?.provider) === 'dingtalk') {
                       // 只读的历史同序 OA 审批：给一行说明，不占主位
                       more.push({ key: 'oa-readonly', label: '历史同序 OA 审批（只读，不能重提）' })
                     }
@@ -561,13 +728,7 @@ export default function DocumentsPage() {
                       {/* 收敛后只剩三样：详情（看）、一个主操作（做）、更多（长尾）。
                           原来「下载」和阶段动作并排都是蓝的，看不出这行该干什么。 */}
                       <a
-                        title={
-                          primaryAction.label === '签署'
-                            ? '登记签署（填签署日期与原件）'
-                            : primaryAction.label === '看 OA'
-                              ? '查看 OA 审批进度'
-                              : '下载合同原件'
-                        }
+                        title={stageAction ? hint : '下载合同原件'}
                         style={{ color: 'var(--crm-primary)', fontWeight: 600 }}
                         onClick={primaryAction.onClick}
                       >
@@ -611,7 +772,7 @@ export default function DocumentsPage() {
             dataSource={documents}
             loading={documentsQuery.isLoading}
             rowKey="id"
-            pagination={{
+            pagination={(documentsQuery.data?.total ?? 0) <= docPageSize ? false : {
               currentPage: docPage,
               pageSize: docPageSize,
               total: documentsQuery.data?.total ?? 0,
@@ -626,6 +787,11 @@ export default function DocumentsPage() {
                 : '还没有合同文档。上传合同需要「订单管理」权限，请联系管理员或合同负责人。'
             }
           />
+          {((documentsQuery.data?.total ?? 0) <= docPageSize) && (
+            <div style={{ marginTop: 10, textAlign: 'right', fontSize: 12, color: 'var(--crm-text-3)' }}>
+              共 {documentsQuery.data?.total ?? 0} 条
+            </div>
+          )}
         </SectionCard>
 
       <Modal
@@ -734,7 +900,12 @@ export default function DocumentsPage() {
             </div>
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>合同原文件（Word / PDF）</div>
+            <div style={{ marginBottom: 4 }}>
+              <span className="crm-help-label">
+                合同原文件（Word / PDF）
+                <HelpTip forLabel="合同原文件" text="我方准备、还没盖章签署的合同文本。客户签回来的那一份叫「签署原件」，两者分开保存。" />
+              </span>
+            </div>
             {/* 原来直接摆一个浏览器原生「选择文件 / 未选择任何文件」，
                 和同页 Semi 控件不是一个物种（2026-11-17 视觉审视 V2-12）。
                 改成和「上传签署件」同一套：自定义按钮 + 隐藏输入框，
@@ -854,19 +1025,25 @@ export default function DocumentsPage() {
 
       <Modal
         width={520}
-        title={`登记签署：${signTarget?.doc_no ?? ''}`}
+        title={
+          <span className="crm-help-label">
+            登记回签：{signTarget?.doc_no ?? ''}
+            <HelpTip forLabel="登记回签" text="把客户盖章后寄回的合同扫描件上传归档。回签完成，这份合同才算正式生效。" />
+          </span>
+        }
+        style={{ maxWidth: 'calc(100vw - 32px)' }}
         visible={Boolean(signTarget)}
         onCancel={closeSignModal}
         onOk={() => signMutation.mutate()}
         confirmLoading={signMutation.isPending}
         // 上传没结束时不许确认：这会儿 signFileId 可能是上一份的，也可能还是空的
         okButtonProps={{ disabled: !signFileId || signUploading }}
-        okText="确认签署"
+        okText="确认归档"
         cancelText="取消"
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-            上传签署扫描件（或从已上传的文件里选一份）。签署件与草稿在台账上分开可见。
+            上传或选择双方签好的合同。确认归档后，在合同详情的「签署原件」可以找到这份文件。
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             {/* 灰按钮要能解释自己：用共用件 `GuardedButton`（2026-10-15 换），
@@ -896,12 +1073,12 @@ export default function DocumentsPage() {
                 : '尚未选择文件'}
             </span>
           </div>
-          {(signFilesQuery.data ?? []).length > 0 && (
+          {signFiles.length > 0 && (
             <Select
               placeholder="或从已上传的文件里选"
               value={signFileId ?? undefined}
               onChange={(value) => setSignFileId(value as number)}
-              optionList={(signFilesQuery.data ?? []).map((row) => ({
+              optionList={signFiles.map((row) => ({
                 value: row.id,
                 label: row.file_name,
               }))}
@@ -926,15 +1103,22 @@ export default function DocumentsPage() {
 
       <Modal
         width={520}
-        title={`发起 OA 合同审批：${oaStartTarget?.doc_no ?? ''}`}
+        title={`发起同序 OA 合同审批：${oaStartTarget?.doc_no ?? ''}`}
+        style={{ maxWidth: 'calc(100vw - 32px)' }}
         visible={Boolean(oaStartTarget)}
         onCancel={() => setOaStartTarget(null)}
         onOk={submitOaStart}
         confirmLoading={startOaMutation.isPending}
         okText="提交 OA 审批"
+        okButtonProps={{ disabled: !oaStartTarget?.our_company?.trim() || !oaStartTarget?.counterparty_name?.trim() }}
         cancelText="取消"
       >
         <div style={{ display: 'grid', gap: 10 }}>
+          <p className="workflow-guide">提交后由同序 OA 审批。可回合同详情看进度，通过后再登记回签。</p>
+          <div>我方主体：{oaStartTarget?.our_company || '未填写'}</div>
+          <div>对方主体：{oaStartTarget?.counterparty_name || '未填写'}</div>
+          {(!oaStartTarget?.our_company?.trim() || !oaStartTarget?.counterparty_name?.trim()) &&
+            <p className="workflow-guide">这份合同缺少签约主体。请联系管理员补齐信息后再提交。</p>}
         </div>
       </Modal>
 
@@ -967,13 +1151,36 @@ export default function DocumentsPage() {
       <Modal
         title={`文档详情：${detailTarget?.doc_no ?? ''}`}
         visible={Boolean(detailTarget)}
-        onCancel={() => setDetailTarget(null)}
+        onCancel={() => {
+          setDetailTarget(null)
+          if (requestedContract) {
+            setSearchParams((previous) => {
+              const next = new URLSearchParams(previous)
+              next.delete('contract')
+              return next
+            }, { replace: true })
+          }
+        }}
         footer={null}
         width={620}
+        style={{ maxWidth: 'calc(100vw - 32px)' }}
       >
         {detailQuery.isLoading && <div>读取中…</div>}
+        {detailQuery.isError && <Button onClick={() => void detailQuery.refetch()}>重新读取合同详情</Button>}
         {detail && (
           <div style={{ display: 'grid', gap: 14 }}>
+            {detailStage && <div className="workflow-next">
+              <strong>下一步</strong>
+              <p className="workflow-guide">{detailStage.hint}</p>
+              {canManage && detailStage.action === 'start' &&
+                <Button onClick={() => openOaStart(detail)}>发起同序 OA 审批</Button>}
+              {canManage && detailStage.action === 'sign' &&
+                <Button onClick={() => openSignModal(detail)}>登记回签</Button>}
+              {canManage && detailStage.action === 'basis' && <Button onClick={() => {
+                basisRef.current?.scrollIntoView({ block: 'start' })
+                basisRef.current?.focus({ preventScroll: true })
+              }}>去补业务依据</Button>}
+            </div>}
             <div>
               <div style={DETAIL_LABEL}>抬头（建档时固定，客户/公司后来改名也不影响下载）</div>
               <div style={DETAIL_VALUE}>
@@ -1012,7 +1219,12 @@ export default function DocumentsPage() {
               </div>
             </div>
             <div>
-              <div style={DETAIL_LABEL}>签署原件（客户签回来、上传登记的那一份）</div>
+              <div style={DETAIL_LABEL}>
+                <span className="crm-help-label">
+                  签署原件（客户签回来、上传登记的那一份）
+                  <HelpTip forLabel="签署原件" text="客户盖章后寄回、登记回签时上传的那一份。它是合同生效的凭据，不能拿未签原稿代替。" />
+                </span>
+              </div>
               {signedFiles.length === 0 ? (
                 <div style={{ color: 'var(--crm-danger, #d45)', fontSize: 12 }}>
                   {detail.status === 'signed'
@@ -1035,8 +1247,10 @@ export default function DocumentsPage() {
                 ))
               )}
             </div>
-            {canManage && detail.status === 'draft' && detail.original_file_id && !detail.order_id && !detail.quote_id && <ContractBasis doc={detail} />}
-            {detail.dingtalk_oa && (
+            {canManage && detail.status === 'draft' && detail.original_file_id && detail.doc_type !== 'monthly'
+              && !detail.order_id && !detail.quote_id &&
+              <div ref={basisRef} tabIndex={-1}><ContractBasis doc={detail} /></div>}
+            {(approvalSnapshot || detail.dingtalk_oa_row) && (
               <div>
                 <div style={DETAIL_LABEL}>{oaLabel} 合同审批</div>
                 {/* 5 秒那次只能读 CRM 里存着的快照 —— OA 那边批了，CRM 不动它也永远是 pending。
@@ -1048,21 +1262,14 @@ export default function DocumentsPage() {
                   row={detail.dingtalk_oa_row}
                   invalidateKeys={[['contract-detail', detail.id], ['contract-documents']]}
                 />
-                <div style={{ fontSize: 12, marginBottom: 8 }}>页面每5秒自动更新记录，无需刷新浏览器。</div>
                 {canManage && detail.dingtalk_oa_row?.instance_id && <SyncOaButton oaId={detail.dingtalk_oa_row.id} invalidateKeys={[[ 'contract-detail',detail.id ],['contract-documents']]}/>}
                 <div style={DETAIL_VALUE}>
-                  {detail.dingtalk_oa.status === 'approved'
-                    ? `${oaLabel} 审批已通过，等待上传客户回签文件`
-                    : detail.dingtalk_oa.status === 'rejected'
-                      ? `${oaLabel} 审批已驳回，请查看处理意见`
-                      : detail.dingtalk_oa.status === 'withdrawn'
-                        ? `${oaLabel} 审批已撤回`
-                        : `${oaLabel} 审批处理中或需核对，页面将自动更新`}
-                  {detail.dingtalk_oa.synced_at
-                    ? ` · 最近同步 ${formatBeijingTime(detail.dingtalk_oa.synced_at)}`
+                  {detail.dingtalk_oa_row?.status_label || '审批进度'}
+                  {approvalSnapshot?.synced_at
+                    ? ` · 最近同步 ${formatBeijingTime(approvalSnapshot.synced_at)}`
                     : ''}
                 </div>
-                {detail.dingtalk_oa.instance_id && canManage && <Button size="small" onClick={async () => {
+                {approvalSnapshot?.instance_id && !detail.dingtalk_oa_row?.instance_id && canManage && <Button size="small" onClick={async () => {
                   try {
                     await api.post(`/contract-documents/${detail.id}/approval-sync`, {})
                     void queryClient.invalidateQueries({ queryKey: ['contract-detail', detail.id] })
@@ -1070,8 +1277,23 @@ export default function DocumentsPage() {
                     Toast.success('审批进度已同步')
                   } catch (e) { Toast.error(oaSyncErrorMessage(e)) }
                 }}>刷新{oaLabel}进度</Button>}
-                {detail.dingtalk_oa.provider !== 'self_oa' && detail.dingtalk_oa.result && <ApprovalHistory result={detail.dingtalk_oa.result} />}
-                {detail.dingtalk_oa.provider !== 'self_oa' && detail.dingtalk_oa_row && (
+                {approvalProvider !== 'self_oa' && approvalSnapshot?.result && <ApprovalHistory result={approvalSnapshot.result} />}
+                {approvalProvider === 'self_oa' && (oaHistory.length > 0 ? (
+                  <ul className="contract-oa-history" aria-label="同序 OA 审批记录">
+                    {oaHistory.map((entry, index) => (
+                      <li key={index}>
+                        <div className="contract-oa-history-heading">
+                          <strong>{entry.person} · {entry.node}</strong>
+                          <span>{entry.status}{entry.time ? ` · ${formatApprovalEventTime(entry.time)}` : ''}</span>
+                        </div>
+                        {entry.remark && <p>{entry.remark}</p>}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (detail.dingtalk_oa_row?.status ?? approvalSnapshot?.status) === 'rejected' && (
+                  <p className="workflow-guide">CRM 还没有收到处理意见，可到同序 OA 查看。</p>
+                ))}
+                {approvalProvider !== 'self_oa' && detail.dingtalk_oa_row && (
                   <div style={{ marginTop: 8, display: 'flex', gap: 12 }}>
                     <ResolveOaActions
                       row={detail.dingtalk_oa_row}
@@ -1089,7 +1311,7 @@ export default function DocumentsPage() {
             {Object.keys(detail.missing_fields ?? {}).length > 0 && (
               <div>
                 <div style={DETAIL_LABEL}>历史合同尚未填入的信息</div>
-                <div style={{ fontSize: 12, color: 'var(--crm-warning, #d68000)' }}>
+                <div style={{ fontSize: 12, color: 'var(--crm-warning)' }}>
                   {Object.entries(detail.missing_fields)
                     .map(([token, reason]) => `${templateFieldLabel(token)}（${reason}）`)
                     .join('；')}

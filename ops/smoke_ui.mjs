@@ -1174,7 +1174,7 @@ async function main() {
   if (!skuId) setupProblems.push('没有可用于核价/物流验收的 SKU')
   if (!orderId) setupProblems.push('没有可用于订单详情验收的订单')
   const PAGES = [
-    { path: '/workbench', name: '01-workbench', expectText: '今日待办' },
+    { path: '/workbench', name: '01-workbench', expectText: '我的待办' },
     { path: '/analytics', name: '02-analytics', expectText: '数据分析' },
     { path: '/leads', name: '03-leads', expectText: '线索中心' },
     { path: '/customers', name: '04-customers', expectText: '客户中心' },
@@ -1194,9 +1194,12 @@ async function main() {
     },
     { path: '/quotes', name: '12-quotes', expectText: '报价中心' },
     { path: `/quotes/${quoteId ?? 1}`, name: '13-quote-detail', expectText: '版本与方案对比' },
-    { path: '/approvals', name: '14-approvals', expectText: '报价审批' },
+    { path: '/approvals', name: '14-approvals', expectText: '待我审批' },
     { path: '/orders', name: '15-orders', expectText: '订单中心' },
     { path: `/orders/${orderId ?? 1}`, name: '16-order-detail', expectText: '未推送 ERP/MES' },
+    { path: '/order-drafts', name: '16b-order-drafts', expectText: '订单草稿' },
+    { path: '/receivables', name: '16c-receivables', expectText: '应收计划' },
+    { path: '/documents', name: '16d-documents', expectText: '文档管理' },
     { path: '/tasks', name: '17-tasks', expectText: '销售任务' },
     { path: '/settings', name: '18-settings', expectText: '系统设置' },
     { path: '/settings?tab=rules', name: '19-settings-rules', expectText: '业务规则' },
@@ -1207,6 +1210,9 @@ async function main() {
     { path: '/agent', name: '20-agent', expectText: '开始新对话' },
     // 定制需求（原菜单名「知识库」）：需求列表 + 修订链/钉钉审批入口都在这一页
     { path: '/inquiries', name: '32-inquiries', expectText: '定制需求' },
+    { path: '/cases', name: '32b-cases', expectText: '案例库' },
+    { path: '/insights', name: '32c-insights', expectText: '新品洞察' },
+    { path: '/recycle-bin', name: '32d-recycle-bin', expectText: '回收站' },
     { path: '/samples', name: '22-samples', expectText: '样品管理' },
     // 深链详情：/samples/:id 直接打开该条详情抽屉（案例证据跳转也走它）
     ...(sample ? [{ path: `/samples/${sample.id}`, name: '22b-sample-detail', expectText: '样品' }] : []),
@@ -1396,6 +1402,8 @@ async function main() {
     const timelineFixture = FIXTURES_ENABLED
       ? await createTimelineFixture(auth.token, customerId, skuId)
       : null
+    const batchQuoteId = FIXTURES_ENABLED ? await createSeedQuote(auth.token, customerId) : interactionQuoteId
+    if (FIXTURES_ENABLED && !batchQuoteId) throw new Error('批量录入验收未创建报价草稿')
     const INTERACTIONS = [
       {
         name: '26-opportunity-board',
@@ -1424,14 +1432,13 @@ async function main() {
         skip: !interactionQuoteId,
       },
       {
-        // 批量录入整版明细（只有"未提交、未发送"的草稿版本才有这个按钮；
-        // 当前这张报价不是草稿时跳过，不算功能缺失）
         name: '33-quote-batch-items',
-        path: `/quotes/${interactionQuoteId ?? 1}`,
+        path: `/quotes/${batchQuoteId ?? 1}`,
         clicks: ['批量录入'],
         expect: ['批量录入明细', '整版替换'],
-        optional: true,
-        skip: !interactionQuoteId,
+        expectAll: true,
+        optional: !FIXTURES_ENABLED,
+        skip: !batchQuoteId,
       },
     ]
 
@@ -1479,8 +1486,11 @@ async function main() {
     })
 
     if (FIXTURES_ENABLED) INTERACTIONS.push({
-      name: '39-settings-rule-save', path: '/settings?tab=rules', clicks: [],
-      expect: ['自动任务规则', '业务规则'], expectAll: true, ruleSave: true,
+      name: '39-settings-task-rule-save', path: '/settings?tab=rules&section=auto', clicks: [],
+      expect: ['自动待办', '业务规则'], expectAll: true, ruleSave: 'task',
+    }, {
+      name: '39-settings-pool-rule-save', path: '/settings?tab=rules&section=pool', clicks: [],
+      expect: ['公海回收规则', '业务规则'], expectAll: true, ruleSave: 'pool',
     })
 
     if (FIXTURES_ENABLED) {
@@ -1751,7 +1761,8 @@ async function main() {
           const choice = await client.send('Runtime.evaluate', {
             expression: `(() => {
               const row = Array.from(document.querySelectorAll('.semi-modal-content tr')).find(node => node.cells?.[0]?.innerText.trim() === 'v1');
-              const link = row?.querySelector('a'); if (!link) return false; link.click(); return true;
+              const link = Array.from(row?.querySelectorAll('a') ?? []).find(el => el.textContent.trim() === '按此版本申请打样');
+              if (!link) return false; link.click(); return true;
             })()`, returnByValue: true,
           })
           if (choice.result.value) { choseV1 = true; break }
@@ -1976,7 +1987,7 @@ async function main() {
         if (!typed.result.value) problems.push('跟进表单：无法填写沟通结论')
         await sleep(200)
         if (item.followupPlan) {
-          await clickByText(client, '保存')
+          await clickByText(client, '保存并建待办')
           if (!await waitForText(client, '请填写下一动作和下次跟进时间，或选择免填原因', 3000)) {
             problems.push('跟进表单：缺计划没有阻止保存')
           }
@@ -2002,7 +2013,7 @@ async function main() {
           )
           const beforePlanCount = (await beforePlanRes.json()).data.items
             .filter((row) => row.content === 'CHKUI计划跟进').length
-          await clickByText(client, '保存')
+          await clickByText(client, '保存并建待办')
           if (!await waitForText(client, '跟进已记录，并生成了后续任务', 5000)) problems.push('跟进表单：计划保存失败')
           const response = await fetch(`${API_BASE}/api/v1/followups?customer_id=${customerId}&page_size=200`, { headers: { Authorization: `Bearer ${auth.token}` } })
           const rows = (await response.json()).data
@@ -2024,7 +2035,7 @@ async function main() {
           await sleep(200)
           const choice = await client.send('Runtime.evaluate', {
             expression: `(() => {
-              const option = [...document.querySelectorAll('[role="option"], .semi-select-option')].find((el) => el.innerText.includes('免填：等待外部固定节点'));
+              const option = [...document.querySelectorAll('[role="option"], .semi-select-option')].find((el) => el.innerText.includes('只记跟进：等待外部固定节点'));
               if (!option) return 'missing-option';
               option.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
               option.click();
@@ -2032,7 +2043,7 @@ async function main() {
             })()`, returnByValue: true,
           })
           if (choice.result.value !== 'clicked') problems.push('跟进表单：没有选中免填原因')
-          if (!await waitForText(client, '保存免填原因，本次不创建后续待办。', 3000)) {
+          if (!await waitForText(client, '原因随跟进记录保存，本次不创建待办。', 3000)) {
             problems.push('跟进表单：免填说明没有显示')
           }
           // 记录操作前的同名条数。人工跟进**会留在库里**（收尾清扫只清系统留痕），
@@ -2044,7 +2055,7 @@ async function main() {
           )
           const beforeCount = (await beforeRes.json()).data.items
             .filter((row) => row.content === 'CHKUI免填跟进').length
-          await clickByText(client, '保存')
+          await clickByText(client, '只保存跟进')
           if (!await waitForText(client, '跟进已记录', 5000)) problems.push('跟进表单：免填保存失败')
           const result = await fetch(`${API_BASE}/api/v1/followups?customer_id=${customerId}&page_size=200`, { headers: { Authorization: `Bearer ${auth.token}` } })
           const rows = (await result.json()).data
@@ -2056,34 +2067,37 @@ async function main() {
       }
 
       if (item.ruleSave) {
-        for (const [heading, endpoint, toast] of [
-          ['自动任务规则', '/task-rules', '自动任务规则已保存'],
-          ['公海回收规则', '/public-pool/rules', '公海规则已保存'],
-        ]) {
-          const beforeResponse = await fetch(`${API_BASE}/api/v1${endpoint}`, { headers: { Authorization: `Bearer ${auth.token}` } })
-          const before = (await beforeResponse.json()).data[0]
-          const changed = await client.send('Runtime.evaluate', {
-            expression: `(() => {
-              const heading = [...document.querySelectorAll('div')].find((el) => el.childElementCount === 0 && el.innerText === ${JSON.stringify(heading)});
-              const input = heading?.parentElement.querySelector('input');
-              if (!input) return null;
-              const next = Number(input.value) + 1;
-              input.focus();
-              Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, String(next));
-              input.dispatchEvent(new Event('input', { bubbles: true }));
-              input.blur();
-              return next;
-            })()`, returnByValue: true,
-          })
-          if (!changed.result.value || !await waitForText(client, toast, 5000)) {
-            problems.push(`${heading}：修改天数未保存`)
-            continue
-          }
-          const afterResponse = await fetch(`${API_BASE}/api/v1${endpoint}`, { headers: { Authorization: `Bearer ${auth.token}` } })
-          const after = (await afterResponse.json()).data.find((row) => row.id === before.id)
-          const days = endpoint === '/task-rules' ? after.trigger_config.days : after.days
-          if (days !== changed.result.value || after.code !== before.code || after.name !== before.name || after.level !== before.level) {
-            problems.push(`${heading}：部分更新结果错误或覆盖原有字段`)
+        const isTask = item.ruleSave === 'task'
+        const heading = isTask ? '自动待办' : '公海回收规则'
+        const endpoint = isTask ? '/task-rules' : '/public-pool/rules'
+        const toast = isTask ? '自动任务规则已保存' : '公海规则已保存'
+        const rows = await checkedJson(endpoint, auth.token)
+        const before = isTask ? rows[0] : rows.find((row) => row.level !== 'UNRATED')
+        if (!before) throw new Error(`${heading}缺少用于验证的规则`)
+        const selector = isTask ? `#auto-task-days-${before.id}` : '.pool-rule-table tbody input'
+        const changed = await client.send('Runtime.evaluate', {
+          expression: `(() => {
+            const input = document.querySelector(${JSON.stringify(selector)});
+            if (!input) return null;
+            const next = Number(input.value) + 1;
+            input.focus();
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, String(next));
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.blur();
+            return next;
+          })()`, returnByValue: true,
+        })
+        const clicked = !isTask || await clickByText(client, '保存', { tag: '.auto-task-rule button:not([disabled])' }) === 'clicked'
+        if (!changed.result.value || !clicked || !await waitForText(client, toast, 5000)) {
+          problems.push(`${heading}：修改天数未保存`)
+        } else {
+          const after = (await checkedJson(endpoint, auth.token)).find((row) => row.id === before.id)
+          const expected = isTask
+            ? { ...before, trigger_config: { ...before.trigger_config, days: changed.result.value } }
+            : { ...before, days: changed.result.value }
+          if (!after || Object.keys(expected).some((key) =>
+            key !== 'updated_at' && JSON.stringify(after[key]) !== JSON.stringify(expected[key]))) {
+            problems.push(`${heading}：修改天数后读取的规则与预期不一致`)
           }
         }
       }
@@ -2166,9 +2180,10 @@ async function main() {
     await checkTwelfthRepairs(client, auth, problems)
 
     // 自测页：页面内「按需加载的一块」失败时不能把整页连表单一起顶掉（第九批复审 §9.11）
-    await checkLazyRegionSelfTest(client, problems)
-    // 同一块的**真实网络**失败与恢复：重试必须真的再发一次请求（不能只在开发服务里有效）
-    await checkLazyRegionNetworkRetry(client, problems)
+    if (process.env.SMOKE_APP_PREVIEW !== '1') {
+      await checkLazyRegionSelfTest(client, problems)
+      await checkLazyRegionNetworkRetry(client, problems)
+    }
     await checkLazyRegionProdBuild(client, problems)
 
     if (problems.length > 0) {

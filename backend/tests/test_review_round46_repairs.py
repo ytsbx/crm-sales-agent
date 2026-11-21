@@ -233,7 +233,7 @@ async def test_month_refreeze_audit_uses_locked_previous_value(monkeypatch):
         seed.commit()
     with Session(engine, expire_on_commit=False) as raw:
         @asynccontextmanager
-        async def snapshot(period):
+        async def snapshot(write_session, period):
             # 并发重算在 A 的旧读之后完整提交，A 写入前必须以 200 为审计旧值。
             with Session(engine) as other:
                 other.execute(update(ActualSnapshot).values(actual_value=D(200)))

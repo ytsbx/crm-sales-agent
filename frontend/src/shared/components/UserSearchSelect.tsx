@@ -4,11 +4,12 @@ import { Button, Select } from '@douyinfe/semi-ui'
 import { listUsers } from '../api/system'
 
 /** 按需搜索用户；每页 20 人，选中项在切换关键词时继续保留。 */
-export default function UserSearchSelect({ queryScope, enabled, value, onChange, placeholder, className, style, disabled }: {
+export default function UserSearchSelect({ queryScope, activeOnly, enabled, value, onChange, placeholder, className, style, disabled }: {
   queryScope: string
+  activeOnly?: boolean
   enabled: boolean
   value?: number
-  onChange: (value: number | undefined) => void
+  onChange: (value: number | undefined, name?: string) => void
   placeholder?: string
   className?: string
   style?: CSSProperties
@@ -16,7 +17,7 @@ export default function UserSearchSelect({ queryScope, enabled, value, onChange,
 }) {
   const [search, setSearch] = useState('')
   const [keyword, setKeyword] = useState('')
-  const [selected, setSelected] = useState<{ label: string; value: number } | null>(null)
+  const [selected, setSelected] = useState<{ label: string; value: number; name: string } | null>(null)
   useEffect(() => {
     const timer = setTimeout(() => {
       if (!enabled) setSearch('')
@@ -25,9 +26,9 @@ export default function UserSearchSelect({ queryScope, enabled, value, onChange,
     return () => clearTimeout(timer)
   }, [enabled, search])
   const query = useInfiniteQuery({
-    queryKey: ['user-search-options', queryScope, keyword],
+    queryKey: ['user-search-options', queryScope, activeOnly, keyword],
     initialPageParam: 1,
-    queryFn: ({ pageParam }) => listUsers({ keyword, page: pageParam, page_size: 20 }),
+    queryFn: ({ pageParam }) => listUsers({ keyword, status: activeOnly ? 'active' : undefined, page: pageParam, page_size: 20 }),
     getNextPageParam: (last, pages) =>
       pages.reduce((count, page) => count + page.items.length, 0) < last.total && last.items.length > 0
         ? pages.length + 1 : undefined,
@@ -35,6 +36,7 @@ export default function UserSearchSelect({ queryScope, enabled, value, onChange,
   })
   const options = (query.data?.pages.flatMap((page) => page.items) ?? []).map((user) => ({
     value: user.id,
+    name: user.name,
     label: `${user.name}（${user.username} · ${user.department ?? '未分配部门'}）`,
   }))
   if (selected && selected.value === value && !options.some((option) => option.value === value)) options.push(selected)
@@ -52,8 +54,9 @@ export default function UserSearchSelect({ queryScope, enabled, value, onChange,
     optionList={options}
     onChange={(next) => {
       const id = next as number | undefined
-      setSelected(options.find((option) => option.value === id) ?? null)
-      onChange(id)
+      const option = options.find((item) => item.value === id)
+      setSelected(option ?? null)
+      onChange(id, option?.name)
     }}
     outerBottomSlot={query.isError ? <Button theme="borderless" onClick={() => {
       if (query.isFetchNextPageError) void query.fetchNextPage()

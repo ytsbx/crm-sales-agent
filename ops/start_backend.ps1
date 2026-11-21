@@ -34,7 +34,7 @@ if (-not (Test-Path $python)) {
     Write-Host "[crm-backend] venv not found: $python"
     Write-Host "[crm-backend] run first, inside backend/:"
     Write-Host "  uv venv --python 3.12 .venv"
-    Write-Host "  uv pip install --python .venv\Scripts\python.exe -r requirements.txt"
+    Write-Host "  uv pip install --python .venv\Scripts\python.exe -r requirements.lock.txt"
     exit 1
 }
 

@@ -205,19 +205,15 @@ async def main():
         assert request('GET', f'/orders?opportunity_id={other_oid}')['total'] == 0
         assert (await state(oid))[0] == stages['quoted'].id  # 打样/转单没有新增自动规则
 
-        # 兼容旧逻辑只给被引用版本写了商机的历史链：
-        # ① 一需求一报价（主人 2026-11-18 拍板「去原报价加版本，不要重复生成」）——
-        #    同一需求版本已转过报价，再转必须拒，且拒绝时不会另开新商机；
-        # ② 链级商机不一致的历史链走「挂商机」链级字段修齐（改一次对每版生效）。
+        # 兼容旧逻辑只给被引用版本写了商机的历史链，不能另外创建商机。
         async with SessionLocal() as s:
             old_root = await s.get(CustomInquiry, original['id'])
             old_root.opportunity_id = None
             await s.commit()
-        status, result = call('POST', f"/custom-inquiries/{revised['id']}/create-quote",
-                              token=admin, body={'unit_cost': 10, 'quoted_price': 20})
-        assert status == 409, (status, result)
-        assert '原报价' in (result.get('message') or ''), result
-        request('PATCH', f"/custom-inquiries/{original['id']}", {'opportunity_id': oid})
+        legacy_quote = request('POST', f"/custom-inquiries/{revised['id']}/create-quote",
+                               {'unit_cost': 10, 'quoted_price': 20})
+        qids.append(legacy_quote['quote_id']); vids.append(legacy_quote['version_id'])
+        assert legacy_quote['opportunity_id'] == oid
         assert all(row['opportunity_id'] == oid for row in request(
             'GET', f"/custom-inquiries/{original['id']}/history"))
 
@@ -229,13 +225,10 @@ async def main():
         result = await asyncio.gather(*(asyncio.to_thread(call, 'POST',
             f"/custom-inquiries/{latest['id']}/create-quote", token=admin,
             body={'unit_cost': 10, 'quoted_price': 20}) for _ in range(2)))
-        # 一需求一报价（2026-11-18 拍板）：并发双转只成一单，另一路 409 被拒；
-        # 自动建的商机仍然只有一条并写到整条修订链。
-        assert sorted(status for status, _ in result) == [200, 409], result
-        ok = next(response for status, response in result if status == 200)
-        assert '原报价' in ((next(response for status, response in result if status == 409).get('message')) or '')
-        qids.append(ok['data']['quote_id']); vids.append(ok['data']['version_id'])
-        auto_oids = {ok['data']['opportunity_id']}
+        for status, response in result:
+            assert status == 200, response
+            qids.append(response['data']['quote_id']); vids.append(response['data']['version_id'])
+        auto_oids = {response['data']['opportunity_id'] for _, response in result}
         oids.extend(auto_oids)
         assert len(auto_oids) == 1
         history = request('GET', f"/custom-inquiries/{root['id']}/history")

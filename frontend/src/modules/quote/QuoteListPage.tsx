@@ -1,9 +1,9 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import PageHeader from '../../shared/components/PageHeader'
 import { formatMoney } from '../../shared/components/money'
 import SectionCard from '../../shared/components/SectionCard'
 import { Link, useNavigate } from 'react-router-dom'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { emptyText } from '../../shared/hooks/emptyText'
 import { Button, Input, Modal, Select, Table, Toast } from '@douyinfe/semi-ui'
@@ -13,7 +13,7 @@ import { createQuote, listQuotes, type Quote } from '../../shared/api/quote'
 import { newRequestKey } from '../../shared/api/requestKey'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { TagTone } from '../../shared/types'
-import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
+import { optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
 import StatusDot from '../../shared/components/StatusDot'
 
 const STATUS_OPTIONS = [
@@ -40,6 +40,7 @@ export default function QuoteListPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { can } = usePermissions()
+  const canViewOpportunities = can('opportunity:view')
 
   const [keywordInput, setKeywordInput] = useState('')
   const [keyword, setKeyword] = useState('')
@@ -47,25 +48,54 @@ export default function QuoteListPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [createVisible, setCreateVisible] = useState(false)
-  const [opportunityId, setOpportunityId] = useState<number | null>(null)
+  const [selectedOpportunity, setSelectedOpportunity] = useState<{ label: string; value: number } | null>(null)
+  const [opportunitySearch, setOpportunitySearch] = useState('')
+  const [opportunityKeyword, setOpportunityKeyword] = useState('')
   // 一次"新建报价"意图一把键（第八批 8.15）：在 mutationFn 里现生成的话，
   // 弱网重试会换一把新键，服务端仍会建出第二条报价 —— 幂等就白做了。
   const createRequestKeyRef = useRef('')
+
+  /* 1024 宽时内容区约 704px，七列固定宽度合计 825px，「有效期 / 负责人」
+     两列被裁到卡片外（2026-11-18）。窄屏切紧凑档：列宽收紧，负责人并进
+     客户/商机的第二行小字，七列变六列 —— 不出现横向滚动条。 */
+  const [compact, setCompact] = useState(() => window.innerWidth < 1200)
+  useEffect(() => {
+    const onResize = () => setCompact(window.innerWidth < 1200)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
 
   const query = useQuery({
     queryKey: ['quotes', { keyword, status, page, pageSize }],
     queryFn: () => listQuotes({ keyword, status, page, page_size: pageSize }),
   })
-  const opportunitiesQuery = useQuery({
-    queryKey: ['opportunities-for-quote'],
-    queryFn: () => listOpportunities({ status: 'open', page_size: 100 }),
-    enabled: createVisible,
+  useEffect(() => {
+    const timer = setTimeout(() => setOpportunityKeyword(opportunitySearch.trim()), 250)
+    return () => clearTimeout(timer)
+  }, [opportunitySearch])
+  const opportunitiesQuery = useInfiniteQuery({
+    queryKey: ['opportunities-for-quote', opportunityKeyword],
+    initialPageParam: 1,
+    queryFn: ({ pageParam }) => listOpportunities({
+      status: 'open', keyword: opportunityKeyword, search_customer_name: true, page: pageParam, page_size: 20,
+    }),
+    getNextPageParam: (last, pages) =>
+      last.items.length > 0 && pages.length * 20 < last.total ? pages.length + 1 : undefined,
+    enabled: createVisible && canViewOpportunities,
   })
+  const opportunityOptions = optionsWithCodeOnDuplicate(
+    opportunitiesQuery.data?.pages.flatMap((result) => result.items) ?? [],
+    (item) => `${item.title}（${item.customer_name ?? ''}）`,
+    (item) => item.id,
+  )
+  if (selectedOpportunity && !opportunityOptions.some(({ value }) => value === selectedOpportunity.value)) {
+    opportunityOptions.push(selectedOpportunity)
+  }
 
   const createMutation = useMutation({
     mutationFn: () =>
       createQuote({
-        opportunity_id: opportunityId!,
+        opportunity_id: selectedOpportunity!.value,
         request_key: createRequestKeyRef.current,
       }),
     onSuccess: (data) => {
@@ -83,7 +113,7 @@ export default function QuoteListPage() {
       // 这一把键已用完：再开一次表单会换成新键（两次真实报价必须是两条）
       createRequestKeyRef.current = ''
       setCreateVisible(false)
-      setOpportunityId(null)
+      setSelectedOpportunity(null)
       void queryClient.invalidateQueries({ queryKey: ['quotes'] })
       navigate(`/quotes/${data.quote_id}`)
     },
@@ -91,13 +121,26 @@ export default function QuoteListPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  /* 审批状态点：宽屏单独一列，窄屏并进「状态」列第二行 */
+  const approvalDot = (value: string | null | undefined) =>
+    value === 'approved' ? (
+      <StatusDot label="已通过" tone="green" />
+    ) : value === 'pending' ? (
+      <StatusDot label="审批中" tone="orange" />
+    ) : value === 'rejected' ? (
+      <StatusDot label="被拒" tone="red" />
+    ) : (
+      <StatusDot label="未提交" tone="grey" />
+    )
+
   const columns = [
+
     {
       // 版本号并到单号下面一行小字：V1/V2 单独占一整列（100px 放两个字）太奢侈，
       // 而看单子又必须知道是第几版 —— 和单号放一起最省地方
       title: '报价单号',
       dataIndex: 'quote_no',
-      width: 145,
+      width: compact ? 124 : 145,
       render: (text: string, record: Quote) => (
         <div>
           <Link to={`/quotes/${record.id}`} style={{ color: 'var(--crm-primary)' }}>
@@ -113,12 +156,25 @@ export default function QuoteListPage() {
       // 商机名同理：并到客户名下面做小字，省掉一整个自适应列
       title: '客户 / 商机',
       dataIndex: 'customer_name',
-      width: 175,
+      width: compact ? 168 : 175,
       render: (v: string | null, record: Quote) => (
-        <div>
-          <div>{v ?? '-'}</div>
-          <div style={{ marginTop: 2, fontSize: 12, color: 'var(--crm-text-3)' }}>
+        <div style={{ minWidth: 0 }}>
+          <div className="cell-strong" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={v ?? '-'}>
+            {v ?? '-'}
+          </div>
+          <div
+            title={`${record.opportunity_title ?? '未关联商机'}${compact ? ` · 负责人 ${record.owner_name ?? '-'}` : ''}`}
+            style={{
+              marginTop: 2,
+              fontSize: 12,
+              color: 'var(--crm-text-3)',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
             {record.opportunity_title ?? '未关联商机'}
+            {compact ? ` · 负责人 ${record.owner_name ?? '-'}` : ''}
           </div>
         </div>
       ),
@@ -126,40 +182,56 @@ export default function QuoteListPage() {
     {
       title: '报价总额',
       dataIndex: 'current_version_amount',
-      width: 115,
-      render: (v: number | null, record: Quote) =>
-        formatMoney(record.current_version_amount_exact ?? v, record.currency),
-    },
-    {
-      title: '报价状态',
-      dataIndex: 'status_label',
-      width: 100,
-      render: (value: string, record: Quote) => (
-        <StatusDot label={value} tone={(STATUS_TONE[record.status] ?? 'grey') as TagTone} />
+      /* 窄屏 640 下这一列被压到 90 出头，"¥135,000.00" 会被省略号吞掉
+         尾巴（金额被截断比文字截断更糟：读者无法判断量级）。加宽并禁掉省略。 */
+      width: compact ? 124 : 115,
+      ellipsis: false,
+      /* 金额右对齐：位数不同的报价左对齐时右边界参差，
+         ¥100.00 和 ¥34,343.00 摆一起读不出量级（与回款中心一致）。 */
+      align: 'right' as const,
+      className: 'cell-right',
+      render: (v: number | null, record: Quote) => (
+        <span style={{ whiteSpace: 'nowrap', fontSize: compact ? 12 : undefined }}>
+          {formatMoney(record.current_version_amount_exact ?? v, record.currency)}
+        </span>
       ),
     },
     {
-      title: '审批',
-      dataIndex: 'approval_status',
-      width: 95,
-      render: (value: string | null) =>
-        value === 'approved' ? (
-          <StatusDot label="已通过" tone="green" />
-        ) : value === 'pending' ? (
-          <StatusDot label="审批中" tone="orange" />
-        ) : value === 'rejected' ? (
-          <StatusDot label="被拒" tone="red" />
+      title: compact ? '状态 / 审批' : '报价状态',
+      dataIndex: 'status_label',
+      width: compact ? 92 : 100,
+      render: (value: string, record: Quote) =>
+        compact ? (
+          /* 窄屏把「审批状态」并进这一列的第二行，省掉一列宽度 */
+          <div style={{ display: 'grid', gap: 2, justifyItems: 'center' }}>
+            <StatusDot label={value} tone={(STATUS_TONE[record.status] ?? 'grey') as TagTone} />
+            {approvalDot(record.approval_status)}
+          </div>
         ) : (
-          <StatusDot label="未提交" tone="grey" />
+          <StatusDot label={value} tone={(STATUS_TONE[record.status] ?? 'grey') as TagTone} />
         ),
     },
-    {
-      title: '有效期',
-      dataIndex: 'valid_until',
-      width: 105,
-      render: (v: string | null) => v ?? '-',
-    },
-    { title: '负责人', dataIndex: 'owner_name', width: 90, render: (v: string | null) => v ?? '-' },
+    ...(compact
+      ? []
+      : [{
+          title: '审批',
+          dataIndex: 'approval_status',
+          width: 95,
+          render: (value: string | null) => approvalDot(value),
+        }]),
+    /* 窄屏（640）不放有效期：五列挤在 590px 里，日期只露出「20」两个字符，
+       还不如不给 —— 报价单号、客户、金额、状态四个才是列表里要扫的东西。 */
+    ...(compact
+      ? []
+      : [{
+          title: '有效期',
+          dataIndex: 'valid_until',
+          width: 105,
+          render: (v: string | null) => v ?? '-',
+        }]),
+    ...(compact
+      ? []
+      : [{ title: '负责人', dataIndex: 'owner_name', width: 90, render: (v: string | null) => v ?? '-' }]),
   ]
 
   return (
@@ -194,9 +266,11 @@ export default function QuoteListPage() {
             showClear
           />
           <Button
+            type="tertiary"
+            theme="borderless"
             onClick={() => {
-              setKeyword(keywordInput.trim())
-              setPage(1)
+            setKeyword(keywordInput.trim())
+            setPage(1)
             }}
           >
             查询
@@ -208,6 +282,8 @@ export default function QuoteListPage() {
               onClick={() => {
                 // 每次打开"新建报价"都是一次新意图 → 换一把新的幂等键
                 createRequestKeyRef.current = newRequestKey()
+                setOpportunitySearch('')
+                setOpportunityKeyword('')
                 setCreateVisible(true)
               }}
             >
@@ -217,6 +293,10 @@ export default function QuoteListPage() {
         </div>
 
         <Table<Quote>
+          /* 固定列宽：不设的话表格按内容撑宽，商机那行小字会把客户列顶到 220px，
+             「审批 / 有效期」被挤出卡片（1024 宽）。 */
+          tableLayout="fixed"
+          className="quotes-table"
           columns={columns}
           dataSource={query.data?.items ?? []}
           loading={query.isLoading}
@@ -244,32 +324,52 @@ export default function QuoteListPage() {
         visible={createVisible}
         onCancel={() => setCreateVisible(false)}
         onOk={() => {
-          if (!opportunityId) {
+          if (!selectedOpportunity) {
             Toast.warning('请选择商机')
             return
           }
           createMutation.mutate()
         }}
         confirmLoading={createMutation.isPending}
+        /* 没选商机时按钮是灰的，并且把「缺什么」写在按钮上方常驻一行 ——
+           原来只在点了以后弹 Toast，主人定的规矩是禁用控件要当场说明原因。 */
+        okButtonProps={{ disabled: !canViewOpportunities || !selectedOpportunity }}
         okText="生成报价单"
       >
         <div style={{ marginBottom: 8 }}>选择商机（明细取自该商机的需求商品）</div>
+        {/* 原来写「去「查价」页」—— 左侧菜单里没有叫「查价」的页，
+            那个入口其实叫「价格中心」（2026-11-20 截图）。按菜单名写。 */}
         <div style={{ marginBottom: 12, fontSize: 12, color: 'var(--crm-text-3)' }}>
-          报价必须关联商机；还没有合适商机？去「查价」页选品下单，可一键新建快捷商机
+          报价必须关联商机。还没有合适商机？去「价格中心」搜 SKU 选品，那里能一键新建快捷商机。
         </div>
-        <Select
-          placeholder="选择商机"
-          value={opportunityId ?? undefined}
-          onChange={(value) => setOpportunityId(value as number)}
-          optionList={optionsWithCodeOnDuplicate(
-            opportunitiesQuery.data?.items ?? [],
-            (item) => `${item.title}（${item.customer_name ?? ''}）`,
-            (item) => item.id,
-          )}
-          filter={optionMatcher}
-          loading={opportunitiesQuery.isLoading}
+        {canViewOpportunities ? <Select
+          placeholder="按商机或客户名称搜索"
+          value={selectedOpportunity?.value}
+          onChange={(value) => setSelectedOpportunity(opportunityOptions.find((option) => option.value === value) ?? null)}
+          optionList={opportunityOptions}
+          filter
+          remote
+          onSearch={setOpportunitySearch}
+          loading={opportunitiesQuery.isFetching}
+          outerBottomSlot={opportunitiesQuery.isError ? (
+            <Button theme="borderless" onClick={() => {
+              if (opportunitiesQuery.isFetchNextPageError) void opportunitiesQuery.fetchNextPage()
+              else void opportunitiesQuery.refetch()
+            }}>加载失败，点击重试</Button>
+          ) : opportunitiesQuery.hasNextPage ? (
+            <Button theme="borderless" loading={opportunitiesQuery.isFetchingNextPage} onClick={() => {
+              if (!opportunitiesQuery.isFetching && opportunitySearch.trim() === opportunityKeyword) {
+                void opportunitiesQuery.fetchNextPage()
+              }
+            }}>加载更多商机</Button>
+          ) : undefined}
           style={{ width: '100%' }}
-        />
+        /> : <p className="workflow-guide">当前账号没有查看商机的权限。请联系管理员开通，再新建报价。</p>}
+        {canViewOpportunities && !selectedOpportunity && (
+          <p className="workflow-guide" style={{ marginTop: 8 }}>
+            先在上面选一个商机，「生成报价单」才可用。
+          </p>
+        )}
       </Modal>
     </div>
   )

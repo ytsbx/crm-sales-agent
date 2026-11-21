@@ -25,9 +25,9 @@ def history_db(db_session):
     db_session.flush()
     db_session.add(Sku(id=1, product_id=1, sku_code="SKU-1"))
     for qid, owner in ((1, 101), (2, 999)):
-        db_session.add(Quote(id=qid, quote_no=f"Q-{qid}", customer_id=qid, owner_id=owner))
+        db_session.add(Quote(id=qid, quote_no=f"Q-{qid}", customer_id=qid, owner_id=owner, status="sent"))
     db_session.flush()
-    db_session.add_all([QuoteVersion(id=i, quote_id=i, version_no=1,
+    db_session.add_all([QuoteVersion(id=i, quote_id=i, version_no=1, approval_status="approved",
                                     created_at=datetime.now(UTC)) for i in (1, 2)])
     db_session.flush()
     return db_session

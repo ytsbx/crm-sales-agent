@@ -14,7 +14,7 @@ import type { TagTone } from '../types'
  * 取色比 Semi Tag 的背景色深一档 —— 白底上 6px 的圆点如果沿用浅底色会糊掉。
  */
 const DOT_COLOR: Record<TagTone, string> = {
-  amber: '#b45309',
+  amber: 'var(--crm-warning)',
   blue: '#1f4fa8',
   cyan: '#0891b2',
   green: '#00b42a',
@@ -27,7 +27,7 @@ const DOT_COLOR: Record<TagTone, string> = {
   red: '#f5222d',
   teal: '#0d9488',
   violet: '#7431d3',
-  yellow: '#c2860a',
+  yellow: '#e09616',
 }
 
 export default function StatusDot({

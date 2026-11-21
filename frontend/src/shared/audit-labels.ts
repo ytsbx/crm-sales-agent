@@ -51,6 +51,7 @@ export const AUDIT_TYPE_LABEL: Record<string, string> = {
   contract: '合同文档',
   contract_template: '合同模板',
   custom_inquiry: '定制需求',
+  inquiry: '定制需求',
   customer: '客户',
   customer_duplicate_case: '撞单裁定',
   customer_level: '客户等级',
@@ -65,9 +66,6 @@ export const AUDIT_TYPE_LABEL: Record<string, string> = {
   followup: '跟进记录',
   integration: '外部集成',
   integration_diff: '集成差异',
-  // 定制询价 OA 对象（3ef972c 引入）：中文名与业务词典对齐
-  // （backend/app/modules/dingtalk/model.py 与 oa/business_gates.py 都叫「定制询价」）
-  inquiry: '定制询价',
   lead: '线索',
   logistics_quote: '物流试算',
   logistics_rate: '运费费率',
@@ -428,7 +426,7 @@ export function auditChangeSummary(row: {
   before_data?: unknown
   after_data?: unknown
 }): string | null {
-  const type = row.business_type ?? null
+  const type = row.business_type === 'inquiry' ? 'custom_inquiry' : row.business_type ?? null
   const before = (row.before_data ?? {}) as Record<string, unknown>
   const after = (row.after_data ?? {}) as Record<string, unknown>
 
@@ -483,7 +481,7 @@ export function auditHiddenFieldCount(row: {
   before_data?: unknown
   after_data?: unknown
 }): number {
-  const type = row.business_type ?? null
+  const type = row.business_type === 'inquiry' ? 'custom_inquiry' : row.business_type ?? null
   const before = (row.before_data ?? {}) as Record<string, unknown>
   const after = (row.after_data ?? {}) as Record<string, unknown>
   let hidden = 0

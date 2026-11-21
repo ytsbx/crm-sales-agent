@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.textfit import fit_column
+from app.core.draft_visibility import ensure_draft_access, private_draft
 from app.core.errors import AppError, ErrorCode
 from app.core.money import line_amount
 from app.core.timebase import today_business
@@ -509,7 +510,8 @@ async def get_visible_quote(
         # 统一按商机 → 报价 → 版本加锁，与确认成交入口保持一致。
         # 正式发送会推进商机，反向加锁会与确认成交形成死锁。
         initial = await get_quote_or_404(session, quote_id)
-        await ensure_in_scope(session, user, owner_id=initial.owner_id, label="报价单")
+        if not await ensure_draft_access(session, Quote, initial.id, user.id):
+            await ensure_in_scope(session, user, owner_id=initial.owner_id, label="报价单")
         if initial.opportunity_id:
             await session.execute(select(Opportunity).where(
                 Opportunity.id == initial.opportunity_id
@@ -520,7 +522,8 @@ async def get_visible_quote(
             raise AppError(ErrorCode.NOT_FOUND, "报价单不存在", 404)
     else:
         quote = await get_quote_or_404(session, quote_id)
-    await ensure_in_scope(session, user, owner_id=quote.owner_id, label="报价单")
+    if not await ensure_draft_access(session, Quote, quote.id, user.id):
+        await ensure_in_scope(session, user, owner_id=quote.owner_id, label="报价单")
     return quote
 
 
@@ -536,11 +539,14 @@ async def get_visible_version(
 ) -> QuoteVersion:
     """取报价版本并校验其所属报价在数据范围内（版本自己没有负责人）。"""
     version = await get_version_or_404(session, version_id)
-    await get_visible_quote(session, user, version.quote_id, for_update=for_update)
+    quote = await get_visible_quote(session, user, version.quote_id, for_update=for_update)
     if for_update:
         # 先锁单据再锁版本；锁等待结束后重读，不能按等待前的状态执行。
         version = (await session.execute(select(QuoteVersion).where(QuoteVersion.id == version_id)
                    .with_for_update().execution_options(populate_existing=True))).scalar_one()
+    creator_id = version.created_by or quote.created_by or quote.owner_id
+    if version.approval_status == "not_submitted" and version.sent_at is None and creator_id != user.id:
+        raise AppError(ErrorCode.NOT_FOUND, "报价版本不存在", 404)
     return version
 
 
@@ -2896,7 +2902,8 @@ def strip_comparison_cost(payload: dict) -> dict:
     return payload
 
 
-async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
+async def version_comparison(session: AsyncSession, quote_id: int, *,
+                             viewer_id: int | None = None, fallback_creator: int | None = None) -> dict:
     """报价多方案对比（PRD §15.2 + UI 设计稿 What-if A/B/C）。
 
     逐版本汇总「数量 / SKU 数 / 报价总额 / 成本 / 毛利 / 综合毛利率 / 均价」，
@@ -2908,15 +2915,12 @@ async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
     从前这个接口只要求 `quote:view`，普通销售能直接读到完整成本、单位成本、
     利润与毛利率 —— 与核价接口的脱敏口径不一致，等于留了条后门。
     """
-    versions = list(
-        (
-            await session.execute(
-                select(QuoteVersion)
-                .where(QuoteVersion.quote_id == quote_id)
-                .order_by(QuoteVersion.version_no.asc())
-            )
-        ).scalars().all()
-    )
+    stmt = select(QuoteVersion).where(QuoteVersion.quote_id == quote_id)
+    if viewer_id is not None:
+        stmt = stmt.where(or_(
+            ~private_draft(QuoteVersion), func.coalesce(QuoteVersion.created_by, fallback_creator) == viewer_id,
+        ))
+    versions = list((await session.execute(stmt.order_by(QuoteVersion.version_no.asc()))).scalars().all())
     if not versions:
         return {"versions": [], "diffs": [], "latest_version_id": None}
 

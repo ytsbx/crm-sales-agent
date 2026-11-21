@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
+from app.core.draft_visibility import draft_scope
 from app.core.errors import AppError
 from app.modules.customer.model import Customer
 from app.modules.file.model import BusinessFile
@@ -302,6 +303,9 @@ async def visible_object(
         # 也不能再往上挂新的。此前这里不过滤，软删对象上的附件照样能下载。
         # （销售订单没有 deleted_at，所以要用 getattr 取，别写死。）
         stmt = stmt.where(deleted_at.is_(None))
+    if business_type == "quote":
+        scope = Quote.owner_id.in_(owner_ids) if owner_ids is not None else None
+        return (await session.execute(stmt.where(draft_scope(Quote, user.id, scope)))).first() is not None
     if owner_ids is not None:
         # ⚠️ **公海对象（`owner_id IS NULL`）必须放行**（2026-10-14 审查修，实测复现）。
         #
@@ -386,19 +390,18 @@ async def can_access_file(
         ):
             return True
 
-    docs = (
-        await session.execute(
-            select(BizDoc.doc_type, BizDoc.owner_id).where(BizDoc.file_id == file_id)
-        )
-    ).all()
-    permitted_docs = [doc for doc in docs if has_doc_permission(user, doc.doc_type)]
-    if permitted_docs:
-        owner_ids = await scoped_owner_ids(session, user)
-        if owner_ids is None or any(
-            doc.owner_id is not None and doc.owner_id in owner_ids
-            for doc in permitted_docs
-        ):
-            return True
+    docs = (await session.execute(select(BizDoc).where(BizDoc.file_id == file_id))).scalars().all()
+    if docs:
+        from app.modules.bizdoc.router import _ensure_doc_access
+
+        for doc in docs:
+            if not has_doc_permission(user, doc.doc_type):
+                continue
+            try:
+                await _ensure_doc_access(session, user, doc)
+                return True
+            except AppError:
+                continue
 
     if links or docs:
         return False

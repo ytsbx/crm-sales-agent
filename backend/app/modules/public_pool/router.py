@@ -264,7 +264,7 @@ async def assign_public_lead(
 ):
     """把公海线索指派给某人（`owner_id` 为空表示放回线索池）。"""
     # 同上：取数用带数据范围校验的那个，与 `/leads/{id}/assign` 一致
-    lead = await lead_service.get_visible_lead(session, user, lead_id)
+    lead = await lead_service.lock_lead(session, user, lead_id)
     before_owner = lead.owner_id
     await lead_service.assign_lead(
         session,

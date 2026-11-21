@@ -5,12 +5,13 @@ import pytest
 from sqlalchemy.orm import Session
 
 from app.core.audit import AuditLog
-from app.modules.customer.model import Customer, CustomerOwnerHistory
+from app.modules.customer.model import Contact, Customer, CustomerOwnerHistory
 from app.modules.followup.model import FollowUp
 from app.modules.lead.model import Lead
 from app.modules.opportunity.model import Opportunity, OpportunityStage, OpportunityStageHistory
 from app.modules.sample.model import SampleRequest
 from app.modules.task.model import Task
+from app.modules.timeline.router import contact_timeline
 from app.modules.timeline.service import build_timeline
 from tests.conftest import SyncSessionAsAsync, make_engine, make_user
 
@@ -89,3 +90,24 @@ async def test_followup_priority_scope_precedes_limit(timeline_db):
     events = await build_timeline(SyncSessionAsAsync(db), 'opportunity', 1, limit=1,
                                   user=make_user(101, permissions={'followup:view'}))
     assert len(events) == 1 and events[0]['detail'] == 'COLLABORATIVE_FOLLOWUP'
+
+
+@pytest.mark.anyio
+async def test_contact_audit_uses_the_same_contact_masking_as_detail(timeline_db):
+    timeline_db.add_all([
+        Contact(id=1, customer_id=1, name="联系人"),
+        AuditLog(
+            action="update", business_type="contact", business_id=1,
+            before_data={"mobile": "13800001234"}, after_data={"mobile": "13900005678"},
+        ),
+    ])
+    timeline_db.flush()
+    session = SyncSessionAsAsync(timeline_db)
+    masked = await contact_timeline(1, make_user(101), session)
+    # 一个非负责人的共享客户按公海规则可看，联系方式仍须脱敏。
+    timeline_db.get(Customer, 1).owner_id = None
+    timeline_db.flush()
+    public = await contact_timeline(1, make_user(102), session)
+    assert "13900005678" in str(masked["data"])
+    assert "13800001234" not in str(public["data"])
+    assert "13900005678" not in str(public["data"])

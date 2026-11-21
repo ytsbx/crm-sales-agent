@@ -245,7 +245,7 @@ async def main() -> None:
                 competitor=rng.choice(['本地一家同行', '暂无', '宁波供应商']),
                 risk_level=rng.choice(['low', 'medium', 'medium', 'high']),
                 next_action=rng.choice(['确认用量', '安排打样', '等客户回价', '准备合同']),
-                status='won' if is_won else 'open',
+                status='win' if is_won else 'open',
                 created_at=created,
                 updated_at=created,
             )

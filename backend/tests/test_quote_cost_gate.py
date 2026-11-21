@@ -474,6 +474,60 @@ async def test_auto_quote_price_and_price_snapshots_keep_decimal_rule(case, monk
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("source, margin, expected_price, target_price", [
+    ("computed", None, 180.1234, 180.1234),
+    ("guidance", None, 150, 180.1234),
+    ("agreement", None, 160, 180.1234),
+    ("computed", Decimal("0.20"), 125.15425, None),
+    ("incomplete", None, None, None),
+])
+async def test_absolute_profit_target_fills_only_missing_applicable_price(
+    case, source, margin, expected_price, target_price,
+):
+    from app.modules.pricing.model import CustomerPriceRule, PriceRule
+
+    raw, session, _, _ = case
+    raw.add(ProductCost(
+        sku_id=1, effective_from=date(2020, 1, 1), purchase_cost=Decimal("100.1234"),
+        production_cost=None if source == "incomplete" else Decimal(0),
+        package_cost=Decimal(0), processing_cost=Decimal(0),
+    ))
+    if source in {"guidance", "agreement"}:
+        raw.add(PriceRule(sku_id=1, guide_price=Decimal(150)))
+    if source == "agreement":
+        raw.add(CustomerPriceRule(customer_id=1, sku_id=1, agreed_price=Decimal(160)))
+    raw.flush()
+    result = await pricing.calculate_price(
+        session, sku_id=1, customer_id=1, quantity=Decimal(1), logistics_cost=Decimal(0),
+        target_profit_amount=Decimal(80), target_margin=margin,
+    )
+    assert result["recommended_price"] == expected_price
+    assert result["inputs"]["target_profit_price"] == target_price
+    assert result["inputs"]["profit_target_met"] is (
+        expected_price == target_price if target_price is not None else None
+    )
+
+
+@pytest.mark.anyio
+async def test_simulation_without_price_permission_does_not_turn_cost_into_a_candidate(case):
+    from app.modules.pricing import router
+    from app.modules.pricing.schema import PricingSimulation
+    from tests.conftest import make_user
+
+    raw, session, _, _ = case
+    raw.add(ProductCost(
+        sku_id=1, effective_from=date(2020, 1, 1), purchase_cost=Decimal(100),
+        production_cost=Decimal(0), package_cost=Decimal(0), processing_cost=Decimal(0),
+    ))
+    raw.flush()
+    actor = make_user(1, permissions=("product:view",), data_scope="all")
+    payload = PricingSimulation(base={"sku_id": 1, "quantity": 1, "logistics_cost": 0, "target_profit_amount": 80})
+    result = (await router.simulate_pricing(payload, actor, session))["data"]
+    assert result["recommended_price"] is None
+    assert result["scenarios"] == []
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize('changes,expected_source', [
     ({'quoted_price': Decimal('101')}, None),
     ({'quoted_price': Decimal('100'), 'quantity': Decimal('2')}, 'general'),

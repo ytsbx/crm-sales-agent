@@ -5,17 +5,23 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from sqlalchemy.orm import Session
+from starlette.requests import Request
 
+from app.core.audit import AuditLog
 from app.core.base import Base
 from app.core.config import settings
+from app.core.errors import AppError
 from app.modules.contract.model import ContractDocument
+from app.modules.contract.router import delete_document
 from app.modules.customer.model import Customer
 from app.modules.dingtalk.model import OaInstance
 from app.modules.file.model import FileRecord
 from app.modules.oa import client as oa_client
 from app.modules.oa import service as oa_service
+from app.modules.task.model import Task
 from app.modules.user.model import User
-from tests.conftest import SyncSessionAsAsync, _register_sqlite_bigint_as_integer
+from tests.conftest import SyncSessionAsAsync, _register_sqlite_bigint_as_integer, make_user
 
 
 def _engine():
@@ -40,7 +46,38 @@ def _engine():
     return engine
 
 
-def test_start_contract_creates_self_oa_row_and_sign_gate(tmp_path, monkeypatch):
+@pytest.mark.anyio
+async def test_contract_delete_waits_until_approval_withdrawal():
+    engine = _engine()
+    for model in (Task, AuditLog):
+        model.__table__.create(engine, checkfirst=True)
+    with Session(engine) as raw:
+        doc = ContractDocument(id=1, doc_no="CT-001", title="隔离合同", customer_id=1,
+                               status="draft", created_by=101, created_at=datetime.now(UTC), content_snapshot="正文")
+        approval = OaInstance(id=1, oa_type="contract", inquiry_id=1, inquiry_version=1,
+                              provider="self_oa", status="pending", submit_round=1,
+                              idempotency_key="isolated-contract", created_by=101, created_at=datetime.now(UTC))
+        raw.add_all([doc, approval])
+        raw.commit()
+        session = SyncSessionAsAsync(raw)
+        request = Request({"type": "http", "headers": []})
+        user = make_user(roles=("admin",), data_scope="all")
+
+        for status, message in (("pending", "先撤回审批"), ("needs_review", "先核对审批进度")):
+            approval.status = status
+            raw.commit()
+            with pytest.raises(AppError, match=message):
+                await delete_document(doc.id, request, user, session)
+            assert doc.deleted_at is None
+
+        approval.status = "withdrawn"
+        raw.commit()
+        assert (await delete_document(doc.id, request, user, session))["code"] == 0
+        assert doc.deleted_at is not None
+
+
+@pytest.mark.parametrize("outcome", ["success", "unknown", "failed", "upload_unknown"])
+def test_start_contract_creates_self_oa_row_and_sign_gate(tmp_path, monkeypatch, outcome):
     from sqlalchemy.orm import Session
 
     engine = _engine()
@@ -54,12 +91,20 @@ def test_start_contract_creates_self_oa_row_and_sign_gate(tmp_path, monkeypatch)
     monkeypatch.setattr(oa_client, "configured", lambda: True)
 
     async def fake_upload(*_args, **_kwargs):
+        assert not raw.in_transaction()
+        if outcome == "upload_unknown":
+            raise oa_client.OaUnknownOutcome("附件回执超时")
         return {"id": str(uuid.uuid4()), "name": "contract.pdf", "size": 14}
 
     captured = []
 
     async def fake_create(payload):
+        assert not raw.in_transaction()
         captured.append(payload)
+        if outcome == "unknown":
+            raise oa_client.OaUnknownOutcome("发单回执超时")
+        if outcome == "failed":
+            raise oa_client.OaError("表单遭拒")
         assert payload["applicant_dingtalk_user_id"] == "ding-user-1"
         assert payload["attachment_ids"]
         assert payload["approver_dingtalk_user_id"] == "ding-fixed-approver"
@@ -92,10 +137,25 @@ def test_start_contract_creates_self_oa_row_and_sign_gate(tmp_path, monkeypatch)
             id = 1
             dingtalk_userid = "ding-user-1"
 
-        row, message = asyncio.run(oa_service.start_contract_approval(
-            session, Actor(), doc,
-            our_company="手工填写的我方主体", counterparty_name="手工填写的对方主体",
-        ))
+        def start():
+            return asyncio.run(oa_service.start_contract_approval(
+                session, Actor(), doc,
+                our_company="手工填写的我方主体", counterparty_name="手工填写的对方主体",
+            ))
+
+        if outcome != "success":
+            with pytest.raises(AppError, match="结果未知" if outcome == "unknown" else "发起失败"):
+                start()
+            assert raw.query(OaInstance).one().status == ("needs_review" if outcome == "unknown" else "failed")
+            if outcome == "unknown":
+                with pytest.raises(AppError, match="待核对"):
+                    start()
+                assert len(captured) == 1
+            if outcome == "upload_unknown":
+                assert not captured
+            return
+
+        row, message = start()
         assert row.provider == "self_oa"
         assert row.status == "pending"
         assert row.instance_id

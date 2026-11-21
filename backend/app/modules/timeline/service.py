@@ -94,8 +94,8 @@ async def _visible_sources(
         stmt = select(model.id).where(model.id.in_(ids))
         if owner_ids is not None:
             stmt = stmt.where(model.owner_id.in_(owner_ids))
-        if kind == "quote":
-            stmt = stmt.where(Quote.deleted_at.is_(None))
+        if kind in ("quote", "opportunity", "sample"):
+            stmt = stmt.where(model.deleted_at.is_(None))
         for source_id in (await session.execute(stmt)).scalars():
             visible[(kind, source_id)] = {"type": kind, "id": source_id}
     return visible
@@ -116,6 +116,7 @@ async def build_timeline(
     limit: int = 100,
     *,
     user: CurrentUser,
+    mask_contacts: bool = False,
 ) -> list[dict]:
     events: list[dict] = []
 
@@ -305,7 +306,7 @@ async def build_timeline(
     for event in events:
         audit_row = event.pop("_audit_row", None)
         if audit_row is not None:
-            event["detail"] = _audit_detail(audit_row, names)
+            event["detail"] = _audit_detail(audit_row, names, mask_contacts=mask_contacts)
         event["operator_name"] = (
             names.get(event["operator_id"], "未知用户") if event["operator_id"] else "系统"
         )
@@ -352,7 +353,9 @@ def _human_time(value: datetime) -> str:
     return to_business(value).strftime("%Y-%m-%d %H:%M")
 
 
-def _audit_detail(row: AuditLog, names: dict[int, str] | None = None) -> str | None:
+def _audit_detail(
+    row: AuditLog, names: dict[int, str] | None = None, *, mask_contacts: bool = False
+) -> str | None:
     """把审计里的关键变更压成一行可读文本，避免前端直接铺原始 JSON。
 
     键名走 AUDIT_FIELD_LABEL 翻成中文，值走 _audit_value（负责人查成人名）。
@@ -361,6 +364,11 @@ def _audit_detail(row: AuditLog, names: dict[int, str] | None = None) -> str | N
     """
     after = row.after_data if isinstance(row.after_data, dict) else {}
     before = row.before_data if isinstance(row.before_data, dict) else {}
+    if mask_contacts:
+        from app.modules.contact_util import mask_contact_fields
+
+        after = mask_contact_fields(after)
+        before = mask_contact_fields(before)
     names = names or {}
     for field, label in AUDIT_FIELD_LABEL.items():
         value = after.get(field)

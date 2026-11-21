@@ -149,6 +149,7 @@ export interface SkuMasterField {
 
 export interface SkuMasterDiff {
   id: number
+  system_type: string
   diff_type: string
   field_name: string | null
   field_label: string | null

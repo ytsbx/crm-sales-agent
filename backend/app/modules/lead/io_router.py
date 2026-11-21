@@ -6,6 +6,7 @@
 """
 
 import hashlib
+import re
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
@@ -145,6 +146,9 @@ async def import_leads(
         name = (row.get("线索名称") or "").strip()
         company = (row.get("公司名称") or "").strip() or None
         mobile = (row.get("手机号") or "").strip() or None
+        # 只还原导出时加了防公式前缀的国际号码。
+        if mobile and re.fullmatch(r"'\+[0-9][0-9 ()-]*[0-9]", mobile):
+            mobile = mobile[1:]
         errs = RowErrors(index, name)
         if not name:
             errs.add("线索名称不能为空")

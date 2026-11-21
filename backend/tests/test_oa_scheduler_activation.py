@@ -17,6 +17,7 @@ def test_only_requested_jobs_are_started(monkeypatch,general,oa,expected):
     monkeypatch.setattr(module,'scheduler',fake)
     monkeypatch.setattr(module.settings,'scheduler_enabled',general)
     monkeypatch.setattr(module.settings,'scheduler_oa_sync_enabled',oa)
+    monkeypatch.setattr(module.settings,'wecom_callback_token','')
     module.start_scheduler()
     ids=[call.kwargs['id'] for call in fake.add_job.call_args_list]
     assert set(ids)==expected
@@ -26,6 +27,23 @@ def test_only_requested_jobs_are_started(monkeypatch,general,oa,expected):
         call=next(call for call in fake.add_job.call_args_list if call.kwargs['id']=='oa_sync')
         assert call.kwargs['minutes']==module.settings.scheduler_oa_sync_minutes
         assert call.kwargs['max_instances']==1
+
+
+def test_wecom_events_can_run_without_general_scheduler(monkeypatch):
+    fake = Mock()
+    monkeypatch.setattr(module, 'scheduler', fake)
+    settings = module.settings
+    monkeypatch.setattr(settings, 'scheduler_enabled', False)
+    monkeypatch.setattr(settings, 'scheduler_oa_sync_enabled', False)
+    monkeypatch.setattr(settings, 'wecom_corp_id', 'test-corp')
+    monkeypatch.setattr(settings, 'wecom_callback_token', 'test-token')
+    monkeypatch.setattr(settings, 'wecom_callback_aes_key', 'test-aes-key')
+    monkeypatch.setattr(settings, 'wecom_external_contact_secret', 'test-contact-secret')
+    module.start_scheduler()
+    fake.add_job.assert_called_once()
+    assert fake.add_job.call_args.kwargs['id'] == 'wecom_contact_events'
+    assert fake.add_job.call_args.kwargs['minutes'] == 1
+    fake.start.assert_called_once()
 
 
 @pytest.mark.parametrize('push_off,login_off',[(False,True),(True,False),(False,False)])

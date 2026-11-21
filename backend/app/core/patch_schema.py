@@ -666,6 +666,13 @@ class PatchModel(BaseModel):
 
 #: Create 类名 → 表名时后缀要去掉的部分。
 _CREATE_SUFFIXES = ("Create", "Input", "Add", "Request", "In", "New")
+_CREATE_TABLE_OVERRIDES = {
+    "MilestoneUpdate": "order_milestones",
+    "NumberingRuleCreate": "numbering_rules",
+    "PublicPoolRuleInput": "public_pool_rules",
+    "SampleUpdate": "sample_requests",
+    "TaskRuleInput": "task_rules",
+}
 
 
 def _create_table_for(cls: type[BaseModel]) -> str | None:
@@ -685,6 +692,8 @@ def _create_table_for(cls: type[BaseModel]) -> str | None:
     for klass in cls.__mro__:
         if klass is object or not issubclass(klass, BaseModel):
             continue
+        if klass.__name__ in _CREATE_TABLE_OVERRIDES:
+            return _CREATE_TABLE_OVERRIDES[klass.__name__]
         base = klass.__name__
         for suffix in _CREATE_SUFFIXES:
             if base.endswith(suffix) and len(base) > len(suffix):

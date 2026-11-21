@@ -1122,7 +1122,10 @@ async def repurchase(
     这条路径原来直接插需求行，停用/删除的 SKU 照样被带进新商机（实测可用性检查
     调用次数为 0），要到核价/报价才被拦住。放在**创建商机之前**，失败就整次不写。
     """
+    from app.core.trade_mode import ensure_currency_allowed
+
     order = await svc.get_visible_order(session, user, order_id)
+    await ensure_currency_allowed(session, order.currency, label="原订单币种")
     order_items = list(
         (
             await session.execute(

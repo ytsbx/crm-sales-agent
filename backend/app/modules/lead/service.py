@@ -235,13 +235,10 @@ async def assign_lead(
         lead.status = "assigned"
 
 
-def mark_discarded(session: AsyncSession, lead: Lead, *, reason: str, operator_id: int) -> None:
+def mark_discarded(lead: Lead, *, reason: str) -> None:
     lead.status = "invalid"
     lead.invalid_reason = reason
     lead.deleted_at = datetime.now(UTC)
-    record_assignment(
-        session, lead=lead, to_user_id=None, operator_id=operator_id, reason=f"废弃：{reason}"
-    )
 
 
 #: 可领取的线索状态。**只认 `pending`（待分配）**：

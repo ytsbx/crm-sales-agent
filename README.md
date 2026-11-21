@@ -4,7 +4,7 @@
 **客户 → 商机 → 选品 → 核价 → 报价（多版本 + 审批）→ 跟进 → 成交 → 订单 → 回款**
 这条链管住，上面再盖一层能查数据、算价、提议动作的 Sales Agent（DeepSeek）。
 
-**规模**：79 张 ORM 表、约 30 个后端业务模块、28 个前端页面组件；
+**规模**：103 张 ORM 表、约 30 个后端业务模块、31 个前端页面组件；
 回归清单见 `ops/check_suites.txt`，单元测试见 `backend/tests`，UI 冒烟见 `ops/smoke_ui.mjs`，另有 GitHub Actions CI
 （接口对账用 `ops/api_gap.py`，2026-09-29 复核"文档有、代码没有"0 条）。
 
@@ -12,15 +12,17 @@
 
 | 你是谁 | 读这份 |
 |---|---|
-| **新接手的开发者 / agent** | 本 README 的启动与验证说明；长期业务口径与工程约定见 [10-项目现状与交接说明](./10-项目现状与交接说明.md)，当前实现以代码、测试和 Git 提交为准 |
-| **要用它 / 给别人演示的人** | [13-上手指南-V1.1.md](./13-上手指南-V1.1.md)（怎么登录、点哪里、数字从哪来） |
-| 想知道项目整体设计、口径、踩坑 | [10-项目现状与交接说明](./10-项目现状与交接说明.md)（第六~八节长期有效） |
-| 要带去开会拍板的事项 | [15-待领导确认清单-2026-09-28.md](./15-待领导确认清单-2026-09-28.md)（当前有效条目）；决策汇总见 [08 号](./08-待领导确认清单-V1.1.md) 的"已确认决策"表 |
-| 要改业务规则参数 | [09-业务参数配置说明](./09-业务参数配置说明-V1.1.md) |
-| 要加接口 | [11-审计日志覆盖说明](./11-审计日志覆盖说明.md) |
+| **新接手的开发者 / agent** | 本 README 的启动与验证说明；质量审查与改动纪律见 [AGENTS](./AGENTS.md)；当前实现以代码、测试和 Git 提交为准 |
+| 想知道当前质量状态和已修问题 | [QUALITY_GOAL](./QUALITY_GOAL.md)（目标与固定业务约束）、[QUALITY_PROGRESS](./QUALITY_PROGRESS.md)（逐轮记录） |
+| 想知道整体设计与主流程 | [开发总设计文档](./CRM-Sales-Agent-V1.1-开发总设计文档.md)；需求 / 数据模型 / 接口 / UI / 架构基线见 01–05 号文档 |
+| 要用它 / 给别人演示的人 | 本 README 的「启动」「演示账号」；界面自查与验收见 [31-前端视觉优化-接手说明](./31-前端视觉优化-接手说明.md) |
 | **要写前端页面** | [30-前端约定-灰按钮要解释为什么](./30-前端约定-灰按钮要解释为什么.md)（禁用控件一律用 `GuardedButton`） |
-| 要改打样单/做打印样指令 | [19-打样指令单字段清单](./19-打样指令单字段清单-V1.1-行业通用占位.md)（**行业通用占位，待简道云正式清单替换**） |
+| 要知道报价 / 核价口径 | [CRM完整实现方案](./CRM完整实现方案.md)；接口细节见 [03-API](./03-API-V1.1-接口设计文档.md) |
+| OA、询价与打样的当前口径 | `docs/` 下的专项说明（如 `OA_QUOTATION_STAGE.md`、`恢复版OA联动-20261117.md`） |
 | 需求 / 数据模型 / 接口 / UI / 架构基线 | 01–05 号文档（source of truth） |
+
+> 历史修复记录和交接快照不再单独保留在根目录；需要追溯时用
+> `git log --all -- <文件路径>` 查看。当前有效的专项说明集中在 `docs/`。
 
 ---
 
@@ -29,12 +31,15 @@
 ```text
 CRM-Sales-Agent-V1.1/
 ├── 01…05 设计文档      PRD / ER / API / UI / 技术架构
-├── 07…09/15 计划与确认  开发计划 / 待领导确认清单 / 业务参数
-├── 10…30 使用与约定      全景与踩坑 / 审计覆盖 / 上手指南 / 打样字段 / 前端约定
+├── 30 / 31            前端约定与视觉优化接手说明
+├── QUALITY_*          质量目标与逐轮审查记录
+├── CRM完整实现方案.md  业务口径与实现方案（代码注释有引用）
+├── CRM-Sales-Agent-V1.1-开发总设计文档.md  总体设计基线
+├── docs/              当前专项说明与交接（OA、报价精度、审批前端）
 ├── backend/            FastAPI + SQLAlchemy(async) + Alembic
 │   ├── app/core/       配置、数据库、统一响应、错误码、认证、审计、数据范围、
 │   │                   相似度打分、引用校验、取号、定时调度
-│   ├── app/modules/    21 个业务模块（model + schema + router + service）
+│   ├── app/modules/    33 个业务模块（model + schema + router + service）
 │   ├── scripts/        seed.py 主数据 / seed_demo.py 全链路演示数据 / check_* 回归套件
 │   └── tests/          pytest 纯函数单元测试（不连库不连网）
 ├── frontend/           React 19 + TypeScript + Vite + Semi Design
@@ -68,7 +73,7 @@ CRM-Sales-Agent-V1.1/
 cd backend
 cp .env.example .env.development.local    # 改 DATABASE_URL，指向独立开发库
 uv venv --python 3.12 .venv               # 或 python -m venv .venv
-uv pip install --python .venv/bin/python -r requirements.txt
+uv pip install --python .venv/bin/python -r requirements.lock.txt
 # 让迁移与种子使用同一份开发配置（不读取领导环境的数据库连接）
 set -a
 source .env.development.local
@@ -81,6 +86,13 @@ PYTHONPATH=. .venv/bin/python -m uvicorn app.main:app --env-file .env.developmen
 
 `.env.development.local` 必须指定独立开发数据库；迁移、种子和接口回归也要显式指向开发库或一次性测试库。
 Windows 把 `.venv/bin/` 换成 `.venv\Scripts\`。开发接口文档：<http://127.0.0.1:8008/docs>（仅 `DEBUG=true`）。
+
+运行依赖以 Python 3.12 的 `backend/requirements.lock.txt` 为准。调整 `backend/requirements.txt` 后，在仓库根目录更新锁文件并提交两份文件。
+
+```bash
+uv pip compile backend/requirements.txt --python-version 3.12 --universal \
+  --no-annotate --output-file backend/requirements.lock.txt
+```
 
 **改 Python 代码必须重启后端**（没有 `--reload`）。
 
@@ -170,7 +182,8 @@ node ops/smoke_ui.mjs           # 28 页 + 4 交互逐页截图、抓控制台�
   "旁边常驻一行灰字"与"点一下弹提示"，不要手写包装 div；细节与例外清单见
   [30 号文档](./30-前端约定-灰按钮要解释为什么.md)。
 
-完整约定与踩坑清单见 [10 号文档第七、八节](./10-项目现状与交接说明.md)。
+完整约定与踩坑见 [30 号文档](./30-前端约定-灰按钮要解释为什么.md) 与
+[31-前端视觉优化-接手说明](./31-前端视觉优化-接手说明.md)。
 
 ## 文件存储
 

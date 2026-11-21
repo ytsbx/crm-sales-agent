@@ -1,10 +1,11 @@
 import type { ReactNode } from 'react'
-import { createBrowserRouter, Navigate } from 'react-router-dom'
+import { createBrowserRouter, Navigate, useLocation } from 'react-router-dom'
 
 import AppLayout from './layout/AppLayout'
 import RoutePermissionGuard from './RoutePermissionGuard'
 import { lazyPage } from './lazyPage'
 import { useAuthStore } from '../shared/store/auth'
+import { loginUrl } from '../shared/safe-url'
 
 // ---------------------------------------------------------------------------
 // 页面按需加载（第九批 §9.11）
@@ -39,6 +40,7 @@ const WeComPage = lazyPage(() => import('../modules/wecom/WeComPage'))
 const ProductListPage = lazyPage(() => import('../modules/product/ProductListPage'))
 const ProductDetailPage = lazyPage(() => import('../modules/product/ProductDetailPage'))
 const RecycleBinPage = lazyPage(() => import('../modules/recycle/RecycleBinPage'))
+const PoolRecyclePage = lazyPage(() => import('../modules/recycle/PoolRecyclePage'))
 const PriceCenterPage = lazyPage(() => import('../modules/pricing/PriceCenterPage'))
 const PricingPage = lazyPage(() => import('../modules/pricing/PricingPage'))
 const LogisticsPage = lazyPage(() => import('../modules/logistics/LogisticsPage'))
@@ -50,8 +52,9 @@ const SettingsPage = lazyPage(() => import('../modules/settings/SettingsPage'))
 
 function RequireAuth({ children }: { children: ReactNode }) {
   const token = useAuthStore((state) => state.token)
+  const { pathname, search, hash } = useLocation()
   if (!token) {
-    return <Navigate to="/login" replace />
+    return <Navigate to={loginUrl(pathname + search + hash)} replace />
   }
   return <>{children}</>
 }
@@ -118,6 +121,7 @@ export const router = createBrowserRouter([
       },
       { path: 'products/:id', element: <ProductDetailPage /> },
       { path: 'recycle-bin', element: <RecycleBinPage /> },
+      { path: 'pool-recycle', element: <PoolRecyclePage /> },
       {
         path: 'prices',
         element: <PriceCenterPage />,

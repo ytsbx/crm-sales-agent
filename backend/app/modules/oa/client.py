@@ -56,12 +56,12 @@ def _path_with_query(path: str, params: dict | None) -> str:
     return f"{path}?{urlencode(params)}"
 
 
-def _signature(timestamp: str, method: str, path: str, body: bytes) -> str:
+def _signature(timestamp: str, method: str, path: str, body: bytes, *, secret: str | None = None) -> str:
     canonical = "\n".join(
         [timestamp, method.upper(), path, hashlib.sha256(body or b"").hexdigest()]
     )
     return hmac.new(
-        settings.oa_integration_secret.encode(), canonical.encode(), hashlib.sha256
+        (secret if secret is not None else settings.oa_integration_secret).encode(), canonical.encode(), hashlib.sha256
     ).hexdigest()
 
 
@@ -72,8 +72,10 @@ async def _request(
     body: bytes | None = None,
     content_type: str | None = None,
     params: dict | None = None,
+    connection: tuple[str, str] | None = None,
 ) -> dict:
-    if not configured():
+    base_url, secret = connection or (settings.oa_base_url, settings.oa_integration_secret)
+    if not base_url or not secret:
         raise OaNotConfigured("还没配置自研 OA 对接地址或密钥，请联系管理员")
     full_path = _path_with_query(path, params)
     # OA 用 request.get_full_path() 签名，路径含 /api/v1/integrations/crm 前缀；
@@ -83,11 +85,11 @@ async def _request(
     timestamp = str(int(time.time()))
     headers = {
         "X-CRM-Timestamp": timestamp,
-        "X-CRM-Signature": _signature(timestamp, method, signed_path, payload),
+        "X-CRM-Signature": _signature(timestamp, method, signed_path, payload, secret=secret),
     }
     if content_type:
         headers["Content-Type"] = content_type
-    url = settings.oa_base_url.rstrip("/") + "/api/v1/integrations/crm" + full_path
+    url = base_url.rstrip("/") + "/api/v1/integrations/crm" + full_path
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
             response = await client.request(method, url, content=payload, headers=headers)
@@ -98,6 +100,10 @@ async def _request(
     try:
         data = response.json()
     except ValueError as exc:
+        if method == "POST" and path == "/approvals/" and response.is_success:
+            raise OaUnknownOutcome("OA 可能已有审批单，但发起回执无法解析") from exc
+        if method == "POST" and path.endswith("/withdraw/") and response.is_success:
+            raise OaUnknownOutcome("OA 撤回回执无法解析") from exc
         raise OaError("OA 返回了无法解析的响应", status=502) from exc
     if response.status_code >= 400:
         raise OaError(
@@ -118,8 +124,17 @@ async def create_approval(payload: dict) -> dict:
     )
 
 
+def _existing_connection(approval_id: str) -> dict:
+    ids = {value.strip() for value in settings.oa_legacy_instance_ids.split(',') if value.strip()}
+    if approval_id not in ids:
+        return {}
+    if not settings.oa_legacy_base_url or not settings.oa_legacy_integration_secret:
+        raise OaNotConfigured("历史审批连接未配置，请联系管理员")
+    return {'connection': (settings.oa_legacy_base_url, settings.oa_legacy_integration_secret)}
+
+
 async def get_approval(approval_id: str) -> dict:
-    return await _request("GET", f"/approvals/{approval_id}/")
+    return await _request("GET", f"/approvals/{approval_id}/", **_existing_connection(approval_id))
 
 
 async def withdraw_approval(approval_id: str, note: str) -> dict:
@@ -128,6 +143,7 @@ async def withdraw_approval(approval_id: str, note: str) -> dict:
         f"/approvals/{approval_id}/withdraw/",
         body=_json_body({"note": note}),
         content_type="application/json",
+        **_existing_connection(approval_id),
     )
 
 

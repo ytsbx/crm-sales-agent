@@ -22,6 +22,7 @@ import {
   type TrendRow,
 } from '../../shared/api/analytics'
 import { getFunnel, listOpportunities } from '../../shared/api/opportunity'
+import MaskedContact from '../../shared/components/MaskedContact'
 import PageHeader from '../../shared/components/PageHeader'
 import GroupHead from '../../shared/components/SectionGroupHead'
 import KpiStrip, { type KpiItem } from '../../shared/components/KpiStrip'
@@ -95,30 +96,41 @@ function TrendChart({ data }: { data: TrendRow[] }) {
 export default function WorkbenchPage() {
   /** 正在提交"完成"的任务 id：用于禁用勾选框，防连点重复请求 */
   const [completingId, setCompletingId] = useState<number | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
+  const [lastRefreshAt, setLastRefreshAt] = useState<Date>()
 
   const navigate = useNavigate()
   const user = useAuthStore((state) => state.user)
   const { can } = usePermissions()
+  const canViewCustomers = can('customer:view')
+  const canViewOpportunities = can('opportunity:view')
+  const canViewTasks = can('task:view')
 
-  const summaryQuery = useQuery({ queryKey: ['dashboard-summary'], queryFn: getDashboardSummary })
-  const tasksQuery = useQuery({ queryKey: ['dashboard-tasks'], queryFn: getDashboardTasks })
-  const risksQuery = useQuery({ queryKey: ['dashboard-risks'], queryFn: getDashboardRisks })
-  const funnelQuery = useQuery({ queryKey: ['funnel'], queryFn: getFunnel })
-  const trendQuery = useQuery({ queryKey: ['dashboard-trend'], queryFn: () => getDashboardTrend(6) })
+  const summaryQuery = useQuery({ queryKey: ['dashboard-summary'], queryFn: getDashboardSummary, enabled: canViewCustomers })
+  const tasksQuery = useQuery({ queryKey: ['dashboard-tasks'], queryFn: getDashboardTasks, enabled: canViewCustomers })
+  const risksQuery = useQuery({
+    queryKey: ['dashboard-risks'], queryFn: getDashboardRisks,
+    enabled: canViewCustomers && canViewOpportunities && can('agent:use'),
+  })
+  const funnelQuery = useQuery({ queryKey: ['funnel'], queryFn: getFunnel, enabled: canViewOpportunities })
+  const trendQuery = useQuery({ queryKey: ['dashboard-trend'], queryFn: () => getDashboardTrend(6), enabled: canViewCustomers })
   const activitiesQuery = useQuery({
     queryKey: ['dashboard-activities'],
     queryFn: () => getDashboardActivities(6),
+    enabled: canViewCustomers,
   })
   const opportunitiesQuery = useQuery({
     queryKey: ['workbench-opportunities'],
     queryFn: () => listOpportunities({ status: 'open', page_size: 5 }),
+    enabled: canViewOpportunities,
   })
   // PRD §4.2 主管视图：数据范围是 self 的人会拿到 is_team_view=false
-  const teamQuery = useQuery({ queryKey: ['dashboard-team'], queryFn: getTeamSummary })
+  const teamQuery = useQuery({ queryKey: ['dashboard-team'], queryFn: getTeamSummary, enabled: canViewCustomers })
 
   const summary = summaryQuery.data
   const team = teamQuery.data
-  const isTeamView = Boolean(team?.is_team_view)
+  const disabledMembers = team?.disabled_members
+  const isTeamView = canViewCustomers && Boolean(team?.is_team_view)
   const tasks = tasksQuery.data ?? []
   // ⚠️ 不再按 `count > 0` 过滤（2026-10-14 审查修）：`GET /opportunities/funnel`
   // 返回的是**全部阶段**（含 count=0 的档），把后面的空档滤掉会让下面
@@ -146,21 +158,53 @@ export default function WorkbenchPage() {
   const staleQuery = useQuery({
     queryKey: ['stale-customers', stalePage, stalePageSize],
     queryFn: () => getStaleCustomers({ page: stalePage, page_size: stalePageSize }),
-    enabled: staleOpen,
+    enabled: staleOpen && canViewCustomers,
   })
+
+  const refreshWorkbench = async () => {
+    setRefreshing(true)
+    const requests = [
+      ...(canViewCustomers ? [
+        summaryQuery.refetch(), tasksQuery.refetch(), trendQuery.refetch(),
+        activitiesQuery.refetch(), teamQuery.refetch(),
+      ] : []),
+      ...(canViewOpportunities ? [funnelQuery.refetch(), opportunitiesQuery.refetch()] : []),
+      ...(risksQuery.isEnabled ? [risksQuery.refetch()] : []),
+      ...(staleQuery.isEnabled ? [staleQuery.refetch()] : []),
+    ]
+    const results = await Promise.allSettled(requests)
+    setRefreshing(false)
+    const failed = results.filter((result) => result.status === 'rejected' || result.value.isError).length
+    if (failed === 0) {
+      setLastRefreshAt(new Date())
+      Toast.success('已刷新')
+    } else if (failed === results.length) {
+      Toast.error('工作台刷新失败，请重试。')
+    } else {
+      Toast.warning('部分工作台数据未刷新，请重试。')
+    }
+  }
+
+  /* 「今日待办」原来取的是 summary.todo_count —— 那是**全团队** 11 个人的未完成待办
+     之和（实测 83），卡片却叫"今日待办"，看着像我一个人今天要干 83 件。
+     我自己其实只有 15 件（成员明细里那一行）。这里改成从成员明细里取"我"的那一行，
+     并改名叫「我的待办」；团队口径留在下面「团队概览 › 团队待办 83」，不再重复。
+     （2026-11-19 巡检，主人确认按这个改） */
+  const myRow = (team?.members ?? []).find((m) => m.user_id === user?.id)
 
   const cards: KpiItem[] = [
     {
-      label: '今日待办',
-      value: String(summary?.todo_count ?? '-'),
-      hint: `逾期 ${summary?.overdue_task_count ?? 0} 项`,
-      tone: (summary?.overdue_task_count ?? 0) > 0 ? 'error' : 'default',
-      onClick: () => navigate('/tasks?mine=false&status=active'),
-      href: '/tasks?mine=false&status=active&overdue=true',
+      label: '我的待办',
+      value: String(myRow?.todo_count ?? '-'),
+      hint: `逾期 ${myRow?.overdue_count ?? 0} 项`,
+      tone: (myRow?.overdue_count ?? 0) > 0 ? 'error' : 'default',
+      onClick: () => navigate('/tasks?mine=true&status=active'),
+      href: '/tasks?mine=true&status=active&overdue=true',
     },
     {
       label: '待跟进客户',
       value: String(summary?.stale_customer_count ?? '-'),
+      help: '超过设定天数没有有效跟进或业务进展的客户。点这张卡可以直接看是哪几家。',
       hint: `${summary?.stale_customer_days ?? '-'} 天无有效跟进或业务进展`,
       tone: (summary?.stale_customer_count ?? 0) > 0 ? 'warning' : 'default',
       // ⚠️ 从前这里跳 `/customers`（不带任何筛选），而客户列表既没有「待跟进」
@@ -176,25 +220,42 @@ export default function WorkbenchPage() {
       onClick: () => navigate('/opportunities'),
     },
     {
-      label: '待审批报价',
+      // 名字从「待审批报价」改成「待我审批」：下面团队概览原来也有一张同名的 1，
+      // 两张卡摆在同一屏、数字一样，看着像重复计数。这里明确是"轮到我处理的"。
+      label: '待我审批',
       value: String(summary?.pending_approval_count ?? '-'),
       hint: '需要你处理',
       tone: (summary?.pending_approval_count ?? 0) > 0 ? 'warning' : 'default',
       onClick: () => navigate('/approvals'),
     },
     {
+      // 名字里带"订单"，是为了和下面团队概览的「本月团队成交」（商机口径）分开：
+      // 两张卡原来一个叫"本月订单金额"一个叫"团队成交"，都是钱、差 10 倍，像算错了。
       label: '本月订单金额',
       // 统计卡金额走整数（主人 2026-11-17 拍板的口径）：概览大数字只用来看量级，
       // 加 .00 只会让六张卡显得啰嗦；带小数的账在单据页看。`money` 就是整数写法。
       value: money(summary?.month_won_amount),
-      hint: orderAmountBreakdown(summary),
+      help: '本月创建的订单金额，按签约口径统计；不是商机的预估金额。',
+      hint: `订单签约额 · ${orderAmountBreakdown(summary)}`,
       tone: 'default',
       onClick: () => navigate('/orders'),
     },
     {
       label: '本月回款金额',
       value: money(summary?.month_received_amount),
-      hint: `应收期未结 ${money(summary?.pending_receivable_amount)}（含已到账待分配）`,
+      // 两个日子会算出两个数（2026-11-21 主人要求显式并列）：
+      // 主数字按**财务确认时间**归月（会计确认口径，与目标页一致）；
+      // 下面小字按**实际到账日**归月（现金流口径）。差额 = 上月已到账、本月才点确认的那几笔。
+      // 不并列的话，财务和出纳各报一个数会像"系统算错"。
+      help: '本月财务已确认到账的金额，按财务确认时间归属。「按到账日」是同一笔钱按实际到账日统计，差额来自上月到账、本月才确认的笔数。「应收未结」含已到账待分配。',
+      hint: (
+        <div style={{ display: 'grid', gap: 2 }}>
+          <span className="chip">
+            按到账日 {money(summary?.month_received_by_arrival_amount)}
+          </span>
+          <span className="chip">应收未结 {money(summary?.pending_receivable_amount)}</span>
+        </div>
+      ),
       tone: 'default',
       onClick: () => navigate('/receivables'),
     },
@@ -207,7 +268,7 @@ export default function WorkbenchPage() {
           这块**根本不出现**。它是给"万一"准备的：外币金额与人民币直接相加得到的
           数字是错的，但页面上看不出来 —— 宁可明说"可能不准"，也不静默出错数。
           数据来自报表接口的 `currency_warnings`（见 shared/api/analytics.ts）。 */}
-      {(summaryQuery.data?.currency_warnings ?? []).map((note) => (
+      {canViewCustomers && (summary?.currency_warnings ?? []).map((note) => (
         <div key={note} style={{ marginBottom: 14 }}>
           <Banner
             type="warning"
@@ -240,31 +301,46 @@ export default function WorkbenchPage() {
         subtitle={`这里是您今天的工作概览 · ${formatBeijingDate(today)} ${formatBeijingWeekdayCN(today)}`}
         extra={
           <>
-            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-              数据同步时间：{formatBeijingClock(new Date(), { hour: '2-digit', minute: '2-digit' })}
-            </span>
-            <Button
+            {lastRefreshAt && <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+              上次完整刷新：{formatBeijingClock(lastRefreshAt, { hour: '2-digit', minute: '2-digit' })}
+            </span>}
+            {(canViewCustomers || canViewOpportunities) && <Button
+              aria-label="刷新工作台"
+              loading={refreshing}
               icon={<IconRefresh />}
-              onClick={() => {
-                void summaryQuery.refetch()
-                void tasksQuery.refetch()
-                void trendQuery.refetch()
-                void activitiesQuery.refetch()
-                void teamQuery.refetch()
-                Toast.success('已刷新')
-              }}
-            />
-            {/* 原来叫「快速创建」，点了只是跳到线索列表 —— 既不快、也没创建，
-                用户点完会以为自己点错了（2026-11-17 视觉审视 D2-04）。
-                现在名字和行为对上：叫「新建线索」，点开就是新建表单。 */}
-            <Button type="primary" theme="outline" onClick={() => navigate('/leads?new=1')}>
+              onClick={() => void refreshWorkbench()}
+            />}
+            {can('lead:view') && can('lead:create') && <Button type="primary" theme="outline" onClick={() => navigate('/leads?new=1')}>
               新建线索
-            </Button>
+            </Button>}
           </>
         }
       />
 
-      <GroupHead
+      {(can('lead:view') || canViewCustomers || canViewOpportunities) && (
+        <details className="workbench-start">
+          <summary>第一次使用？看看从哪里开始</summary>
+          <ul>
+            {can('lead:view') && <li>
+              <span>{can('lead:create') ? '手上只有一个名字或联系方式，先在「线索中心」记下来。' : '手上只有一个名字或联系方式，可以先查找已有线索。'}</span>
+              {can('lead:create') ? <Link to="/leads?new=1">新建线索</Link> : <Link to="/leads">查看线索</Link>}
+            </li>}
+            {canViewCustomers && <li>
+              <span>知道是哪家客户，先打开客户。如果对方有这次采购需求，再到客户的「商机」页处理。</span>
+              <Link to="/customers">查找客户</Link>
+            </li>}
+            {canViewOpportunities && <li>
+              <span>已经在谈一笔采购，找这笔商机。客户要的商品、报价和进展都集中在商机详情。</span>
+              <Link to="/opportunities">查找商机</Link>
+            </li>}
+          </ul>
+        </details>
+      )}
+
+      {!canViewCustomers && <Banner closeIcon={null} type="info"
+        description="当前账号没有客户查看权限，工作台的业务概览不显示。你仍可从左侧菜单打开已授权的功能。"
+      />}
+      {canViewCustomers && <><GroupHead
         index="01"
         title="今天要做什么"
         note="先看要处理的数，再看下面的走势和安排"
@@ -276,7 +352,7 @@ export default function WorkbenchPage() {
         className="kpi-grid kpi-cols-6"
         tintValues={false}
         style={{ marginTop: 'var(--crm-space-2)' }}
-      />
+      /></>}
 
       {/* PRD §4.2 主管视图：只有数据范围 ≥ 部门的人才会拿到 is_team_view */}
       {isTeamView && team && (
@@ -297,8 +373,9 @@ export default function WorkbenchPage() {
             </div>
           </div>
 
+          {/* kpi-inline：这四格是"一张卡里的统计"，不是四张卡（2026-11-21 巡检） */}
           <KpiStrip
-            className="kpi-grid kpi-cols-5"
+            className="kpi-grid kpi-cols-4 kpi-inline"
             tintValues={false}
             items={[
               {
@@ -306,13 +383,6 @@ export default function WorkbenchPage() {
                 value: team.team_task_count ?? 0,
                 hint: `逾期 ${team.team_overdue_count ?? 0} 项`,
                 tone: (team.team_overdue_count ?? 0) > 0 ? 'error' : 'default',
-              },
-              {
-                label: '待审批报价',
-                value: team.pending_approval_count ?? 0,
-                hint: '需要你处理',
-                tone: (team.pending_approval_count ?? 0) > 0 ? 'warning' : 'default',
-                onClick: () => navigate('/approvals'),
               },
               {
                 label: '客户分配',
@@ -324,8 +394,8 @@ export default function WorkbenchPage() {
                 label: '本月团队成交',
                 // 大数字给金额、小字给笔数：这张卡的名字是「成交」，一眼要能看出成交额；
                 // 原来大数字是笔数（10），旁边小字才是金额，读起来像「成交 10 元」。
-                value: money(team.team_won_amount_this_month),
-                hint: `${team.team_won_count_this_month ?? 0} 笔`,
+                value: exactMoney(team.team_won_amount_this_month),
+                hint: `商机成交额 · ${team.team_won_count_this_month ?? 0} 笔`,
               },
               {
                 label: '风险商机',
@@ -340,18 +410,23 @@ export default function WorkbenchPage() {
           {/* 成员明细：谁忙、谁逾期、谁没跟客户 */}
           <div style={{ marginTop: 18 }}>
             <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10 }}>成员明细</div>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }} className="team-table">
               <thead>
                 <tr style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
                   {/* 数字列给固定宽：整表只有 5 列，不给宽度就会五等分，
                       「待跟进客户」占 170px 只放一个数，中间空得厉害 */}
-                  <th style={{ textAlign: 'left', padding: '6px 0', fontWeight: 500 }}>成员</th>
-                  <th style={{ textAlign: 'right', padding: '6px 0', fontWeight: 500, width: 100 }}>待办</th>
-                  <th style={{ textAlign: 'right', padding: '6px 0', fontWeight: 500, width: 100 }}>逾期</th>
-                  <th style={{ textAlign: 'right', padding: '6px 0', fontWeight: 500, width: 120 }}>
+                  {/* 列宽按比例给：原来是「成员」列不设宽、把剩下的 670px 全吃了，
+                      右边四个数字列挤在 480px 里，一左一右失衡（2026-11-21 巡检）。 */}
+                  <th style={{ textAlign: 'left', padding: '6px 12px', fontWeight: 500, width: '32%' }}>成员</th>
+                  <th style={{ textAlign: 'right', padding: '6px 12px', fontWeight: 500, width: '17%' }}>待办</th>
+                  <th style={{ textAlign: 'right', padding: '6px 12px', fontWeight: 500, width: '17%' }}>逾期</th>
+                  <th style={{ textAlign: 'right', padding: '6px 12px', fontWeight: 500, width: '17%' }}>
                     待跟进客户
                   </th>
-                  <th style={{ textAlign: 'right', padding: '6px 0', fontWeight: 500, width: 160 }}>
+                  {/* 金额列挂 .cell-right：2246 行那条「原生表格一律居中」的
+                      !important 规则会把这里的内联右对齐压掉（2026-11-19 实测
+                      computed 仍是 center），必须靠 index.css 里同名的豁免拿回来。 */}
+                  <th className="cell-right" style={{ textAlign: 'right', padding: '6px 12px', fontWeight: 500, width: '17%' }}>
                     本月成交额
                   </th>
                 </tr>
@@ -359,12 +434,12 @@ export default function WorkbenchPage() {
               <tbody>
                 {(team.members ?? []).map((member) => (
                   <tr key={member.user_id} style={{ borderTop: '1px solid var(--crm-surface-high)' }}>
-                    <td style={{ padding: '8px 0' }}>{member.name}</td>
-                    <td style={{ textAlign: 'right', padding: '8px 0' }}>{member.todo_count}</td>
+                    <td style={{ padding: '8px 12px' }}>{member.name}</td>
+                    <td style={{ textAlign: 'right', padding: '8px 12px' }}>{member.todo_count}</td>
                     <td
                       style={{
                         textAlign: 'right',
-                        padding: '8px 0',
+                        padding: '8px 12px',
                         color: member.overdue_count > 0 ? 'var(--crm-error)' : undefined,
                       }}
                     >
@@ -373,18 +448,36 @@ export default function WorkbenchPage() {
                     <td
                       style={{
                         textAlign: 'right',
-                        padding: '8px 0',
+                        padding: '8px 12px',
                         color: member.stale_customer_count > 0 ? 'var(--crm-warning)' : undefined,
                       }}
                     >
                       {member.stale_customer_count}
                     </td>
-                    <td style={{ textAlign: 'right', padding: '8px 0' }}>
-                      ¥{Math.round(member.won_amount_this_month).toLocaleString('zh-CN')}
+                    <td className="cell-right" style={{ textAlign: 'right', padding: '8px 12px' }}>
+                      {exactMoney(member.won_amount_this_month)}
                     </td>
                   </tr>
                 ))}
-                {(team.members ?? []).length === 0 && (
+                {disabledMembers && (
+                  <tr style={{ borderTop: '1px solid var(--crm-surface-high)', fontWeight: 600 }}>
+                    <th scope="row" style={{ padding: '8px 12px' }}>停用员工合计</th>
+                    <td style={{ padding: '8px 12px' }}>{disabledMembers.todo_count}</td>
+                    <td
+                      style={{
+                        padding: '8px 12px',
+                        color: disabledMembers.overdue_count > 0 ? 'var(--crm-error)' : undefined,
+                      }}
+                    >
+                      {disabledMembers.overdue_count}
+                    </td>
+                    <td style={{ padding: '8px 12px' }}>—</td>
+                    <td className="cell-right" style={{ textAlign: 'right', padding: '8px 12px' }}>
+                      {exactMoney(disabledMembers.won_amount_this_month)}
+                    </td>
+                  </tr>
+                )}
+                {(team.members ?? []).length === 0 && !disabledMembers && (
                   <tr>
                     <td colSpan={5} style={{ padding: '12px 0', color: 'var(--crm-text-3)' }}>
                       数据范围内没有成员
@@ -397,10 +490,10 @@ export default function WorkbenchPage() {
         </SectionCard>
       )}
 
-      <GroupHead index="02" title="业务走势" note="漏斗、趋势与最近动态" />
+      {(canViewCustomers || canViewOpportunities) && <><GroupHead index="02" title="业务走势" note="查看有权限的业务数据" />
       {/* 漏斗 / 趋势 / 动态 */}
       <div className="wb-tri-grid" style={{ marginTop: 'var(--crm-space-2)' }}>
-        <SectionCard>
+        {canViewOpportunities && <SectionCard>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 14 }}>
             {/* 标题原本是「全链路销售转化漏斗」，但画的是**存量分布** ——
                 叫"转化漏斗"会让人以为每档是转化来的（2026-10-14 审查修）。
@@ -447,9 +540,9 @@ export default function WorkbenchPage() {
             })}
             {funnel.length === 0 && <div style={{ color: 'var(--crm-text-3)' }}>暂无商机数据</div>}
           </div>
-        </SectionCard>
+        </SectionCard>}
 
-        <SectionCard className="card-fill">
+        {canViewCustomers && <><SectionCard className="card-fill">
           {/* 标题右边原来手写了一份图例（■ 订单金额 / ● 回款金额）——那是给
               老的手写 SVG 补的（它自己画不出图例）。换成 ECharts 之后图例由图表
               自己出、还能点选隐藏，留着这份就成了两行重复的图例。 */}
@@ -505,21 +598,21 @@ export default function WorkbenchPage() {
             ))}
             {activities.length === 0 && <div style={{ color: 'var(--crm-text-3)' }}>暂无动态</div>}
           </div>
-        </SectionCard>
-      </div>
+        </SectionCard></>}
+      </div></>}
 
-      <GroupHead index="03" title="待办与安排" note="我的任务、重点商机、今日日程" />
+      {(canViewCustomers || canViewTasks || canViewOpportunities) && <><GroupHead index="03" title="待办与安排" note="查看有权限的任务与业务安排" />
       {/* 待办 / 重点商机 / 日程与 AI */}
       <div className="wb-tri-grid" style={{ marginTop: 'var(--crm-space-2)' }}>
-        <SectionCard>
+        {(canViewCustomers || canViewTasks) && <SectionCard>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
             <span className="card-title">我的待办任务</span>
-            <Link to="/tasks" style={{ fontSize: 12, color: 'var(--crm-primary)' }}>
-              全部 {tasks.length}
-            </Link>
+            {canViewTasks && <Link to="/tasks" style={{ fontSize: 12, color: 'var(--crm-primary)' }}>
+              查看任务
+            </Link>}
           </div>
           <div style={{ display: 'grid', gap: 10 }}>
-            {tasks.slice(0, 5).map((task: DashboardTask) => (
+            {canViewCustomers && tasks.slice(0, 5).map((task: DashboardTask) => (
               <div
                 key={task.id}
                 style={{
@@ -531,7 +624,7 @@ export default function WorkbenchPage() {
                   borderRadius: 'var(--crm-radius-sm)',
                 }}
               >
-                <Popconfirm
+                {can('task:manage') && <Popconfirm
                   title={`确认完成「${task.title}」？`}
                   content="完成后任务会从未完成列表中移除。"
                   disabled={completingId === task.id}
@@ -555,7 +648,7 @@ export default function WorkbenchPage() {
                   <span style={{ display: 'inline-flex' }}>
                     <Checkbox checked={false} disabled={completingId === task.id} aria-label={`完成任务：${task.title}`} />
                   </span>
-                </Popconfirm>
+                </Popconfirm>}
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div style={{ fontSize: 13, lineHeight: 1.5 }}>{task.title}</div>
                   <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center' }}>
@@ -573,13 +666,14 @@ export default function WorkbenchPage() {
                 </div>
               </div>
             ))}
-            {tasks.length === 0 && (
+            {canViewCustomers && tasksQuery.isSuccess && tasks.length === 0 && (
               <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>今天没有待办，轻松一下</div>
             )}
+            {!canViewCustomers && <div className="workflow-guide">去「查看任务」查看自己的待办。</div>}
           </div>
-        </SectionCard>
+        </SectionCard>}
 
-        <SectionCard>
+        {canViewOpportunities && <SectionCard>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
             <span className="card-title">重点跟进商机</span>
             <Link to="/opportunities" style={{ fontSize: 12, color: 'var(--crm-primary)' }}>
@@ -627,9 +721,9 @@ export default function WorkbenchPage() {
               <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>暂无进行中的商机</div>
             )}
           </div>
-        </SectionCard>
+        </SectionCard>}
 
-        <div style={{ display: 'grid', gap: 16 }}>
+        {canViewCustomers && <div style={{ display: 'grid', gap: 16 }}>
           <SectionCard>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
               <span className="card-title">
@@ -668,7 +762,7 @@ export default function WorkbenchPage() {
             </div>
           </SectionCard>
 
-          {can('agent:use') && <SectionCard>
+          {canViewOpportunities && can('agent:use') && <SectionCard>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
               <span className="card-title">
                 <IconComment /> AI Sales Agent
@@ -704,15 +798,15 @@ export default function WorkbenchPage() {
               点击后查询当前账号有权限查看的业务数据
             </div>
           </SectionCard>}
-        </div>
-      </div>
+        </div>}
+      </div></>}
 
       {/* 待跟进客户清单（审查指出：卡片只报数、点进去看不到是哪几个）。
           口径与卡片数字**同源**（同一个 `/dashboard/stale-customers` 背后的条件），
           所以不会出现"卡片说 2 个、这里列出 3 个"。 */}
       <SideSheet
         title={`待跟进客户${staleQuery.data ? `（${staleQuery.data.total} 个）` : ''}`}
-        visible={staleOpen}
+        visible={staleOpen && canViewCustomers}
         onCancel={() => setStaleOpen(false)}
         width={680}
       >
@@ -755,9 +849,13 @@ export default function WorkbenchPage() {
                 </div>
                 <div style={{ marginTop: 4, fontSize: 12, color: 'var(--crm-text-2)' }}>
                   负责人：{row.owner_name ?? '（无）'}
-                  {row.contact_name
-                    ? ` · 主联系人：${row.contact_name}${row.contact_phone ? `（${row.contact_phone}）` : ''}`
-                    : ''}
+                  {row.contact_name ? ' · 主联系人：' : ''}
+                  {row.contact_name}
+                  {row.contact_name && row.contact_phone ? (
+                    <>
+                      （<MaskedContact value={row.contact_phone} />）
+                    </>
+                  ) : null}
                   {row.next_followup_at
                     ? ` · 约定下次跟进：${formatBeijingDate(row.next_followup_at)}`
                     : ''}

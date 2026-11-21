@@ -1,7 +1,7 @@
 """定制询价库接口（领导模块③：产品知识库 · 定制询价类）。"""
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -23,7 +23,7 @@ from app.modules.user.model import User
 router = APIRouter(tags=["CustomInquiry"])
 
 
-async def _ctx_names(session: AsyncSession, rows: list[CustomInquiry]) -> dict[int, dict]:
+async def _ctx_names(session: AsyncSession, rows: list[CustomInquiry], *, viewer_id: int) -> dict[int, dict]:
     customer_ids = [r.customer_id for r in rows if r.customer_id]
     creator_ids = [r.created_by for r in rows if r.created_by]
     customer_names: dict[int, str] = {}
@@ -36,7 +36,7 @@ async def _ctx_names(session: AsyncSession, rows: list[CustomInquiry]) -> dict[i
     if creator_ids:
         rows_ = await session.execute(select(User.id, User.name).where(User.id.in_(creator_ids)))
         creator_names = {uid: name for uid, name in rows_.all()}
-    quote_links = await svc.linked_quotes_for(session, [r.id for r in rows]) if rows else {}
+    quote_links = await svc.linked_quotes_for(session, [r.id for r in rows], viewer_id=viewer_id) if rows else {}
     return {
         r.id: {
             "customer_name": customer_names.get(r.customer_id),
@@ -57,8 +57,11 @@ async def list_inquiries(
     page_size: int = Query(20, ge=1, le=200),
     user: CurrentUser = Depends(require_permission("quote:view")),
     session: AsyncSession = Depends(get_db),
+    inquiry_id: int | None = None,
 ):
     stmt = svc.not_deleted(select(CustomInquiry))
+    if inquiry_id is not None:
+        stmt = stmt.where(or_(CustomInquiry.id == inquiry_id, CustomInquiry.root_id == inquiry_id))
     if opportunity_id is not None:
         stmt = stmt.where(CustomInquiry.opportunity_id == opportunity_id)
     if customer_id is not None:
@@ -71,7 +74,7 @@ async def list_inquiries(
     stmt = await svc.apply_scope(stmt, user, session)
     stmt = stmt.order_by(CustomInquiry.id.desc())
     rows, total = await paginate(session, stmt, page, page_size)
-    ctx = await _ctx_names(session, rows)
+    ctx = await _ctx_names(session, rows, viewer_id=user.id)
     return ok(
         page_data(
             [svc.serialize(r, **ctx.get(r.id, {})) for r in rows],
@@ -311,6 +314,12 @@ async def delete_inquiry(
     session: AsyncSession = Depends(get_db),
 ):
     inquiry = await svc.get_visible_or_404(session, user, inquiry_id)
+    if inquiry.source_insight_id is not None:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "这张询价是新品洞察的原始需求，请用「归档」结束处理，保留来源记录",
+            409,
+        )
     root_id = inquiry.root_id or inquiry.id
     # 与修订抢同一把链级锁：一边删、一边修订错开跑，"当前版是谁"就会算错。
     await session.execute(
@@ -499,7 +508,7 @@ async def inquiry_history(
             stmt.order_by(CustomInquiry.version.asc(), CustomInquiry.id.asc())
         )
     ).scalars().all()
-    ctx = await _ctx_names(session, rows)
+    ctx = await _ctx_names(session, rows, viewer_id=user.id)
     return ok([svc.serialize(r, **ctx.get(r.id, {})) for r in rows])
 
 
@@ -511,5 +520,5 @@ async def get_inquiry(
 ):
     """单条详情（前端修订表单用它回填当前版内容）。"""
     inquiry = await svc.get_visible_or_404(session, user, inquiry_id)
-    ctx = await _ctx_names(session, [inquiry])
+    ctx = await _ctx_names(session, [inquiry], viewer_id=user.id)
     return ok(svc.serialize(inquiry, **ctx.get(inquiry.id, {})))

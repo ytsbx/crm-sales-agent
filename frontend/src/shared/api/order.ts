@@ -250,6 +250,10 @@ export function cancelOrder(orderId: number) {
   return api.post<Order>(`/orders/${orderId}/cancel`)
 }
 
+export function getErpReadiness() {
+  return api.get<{ configured: boolean }>('/integrations/erp/readiness')
+}
+
 /**
  * 推送 ERP/MES。
  *

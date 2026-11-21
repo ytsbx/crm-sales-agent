@@ -23,7 +23,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -39,6 +39,7 @@ from app.modules.customer.model import Contact, Customer
 from app.modules.product.model import Product, Sku
 from app.modules.quote.model import Quote, QuoteCharge, QuoteItem, QuoteVersion
 from app.modules.user.model import User
+from tests.conftest import SyncSessionAsAsync
 
 _BIGINT_REGISTERED = False
 _JSONB_REGISTERED = False
@@ -98,7 +99,7 @@ def _tables(*, with_files: bool = True):
     return [model.__table__ for model in models]
 
 
-class _AsyncSession:
+class _AsyncSession(SyncSessionAsAsync):
     """把同步 SQLite 会话包成异步会话（被测代码只 await 这几个方法）。
 
     `bind` 要暴露出来：`_lock_sequence` 靠方言名判断"有没有咨询锁"，
@@ -106,35 +107,8 @@ class _AsyncSession:
     """
 
     def __init__(self, session):
-        self._session = session
+        super().__init__(session)
         self.bind = session.get_bind()
-
-    async def execute(self, stmt, *args, **kwargs):
-        return self._session.execute(stmt, *args, **kwargs)
-
-    async def get(self, entity, ident, *args, **kwargs):
-        return self._session.get(entity, ident, *args, **kwargs)
-
-    async def scalar(self, stmt, *args, **kwargs):
-        return self._session.scalar(stmt, *args, **kwargs)
-
-    async def scalars(self, stmt, *args, **kwargs):
-        return self._session.scalars(stmt, *args, **kwargs)
-
-    async def flush(self):
-        self._session.flush()
-
-    async def commit(self):
-        self._session.commit()
-
-    async def rollback(self):
-        self._session.rollback()
-
-    async def refresh(self, obj):
-        self._session.refresh(obj)
-
-    def add(self, obj):
-        self._session.add(obj)
 
     async def delete(self, obj):
         self._session.delete(obj)
@@ -325,6 +299,15 @@ def run_case(case, *, with_files: bool = True, **extra):
 
     _sqlite_compat()
     engine = create_engine("sqlite+pysqlite:///:memory:")
+
+    @event.listens_for(engine, "connect")
+    def _disable_implicit_transactions(connection, _record):
+        connection.isolation_level = None
+
+    @event.listens_for(engine, "begin")
+    def _begin_outer_transaction(connection):
+        connection.exec_driver_sql("BEGIN")
+
     from app.core.base import Base
 
     Base.metadata.create_all(engine, tables=_tables(with_files=with_files))

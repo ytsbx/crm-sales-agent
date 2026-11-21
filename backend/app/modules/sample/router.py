@@ -42,6 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import write_audit
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
+from app.core.draft_visibility import draft_scope
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
 from app.core.timebase import business_day_start, to_business, today_business
@@ -219,7 +220,7 @@ async def list_samples(
         # "历史版本可核对"这条要求不受影响。
         stmt = stmt.where(
             SampleRequest.id.not_in(
-                select(SampleRequest.parent_id).where(SampleRequest.parent_id.is_not(None))
+                select(SampleRequest.parent_id).where(SampleRequest.parent_id.is_not(None), draft_scope(SampleRequest, user.id))
             )
         )
     stmt = await svc.apply_data_scope(stmt, user, session)
@@ -731,7 +732,12 @@ async def revise_sample(
     没有制作/寄出事实时不给开：那种情况直接改就行（改完自动退回重审），
     多开一版只会让台账变脏。要开就得先有"必须冻结"的事实。
     """
-    parent = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
+    from app.modules.oa.business_gates import require_sample_approved
+    from app.modules.sample.dingtalk import META_KEY, metadata
+
+    parent = await svc.get_visible_or_404(
+        session, user, sample_id, for_update=True, allow_external_flow=True
+    )
     if parent.made_at is None and parent.status not in ("shipped", "signed"):
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
@@ -739,6 +745,14 @@ async def revise_sample(
             "不必开修订版",
             422,
         )
+
+    source_context = parent.source_context
+    if metadata(parent):
+        await require_sample_approved(session, parent)
+        source_context = {
+            **source_context,
+            META_KEY: {"mode": "standalone", "fields": {}, "requires_self_oa": True},
+        }
 
     parent_items = (
         await session.execute(
@@ -754,7 +768,7 @@ async def revise_sample(
         # 新版本从待审批开始：它的资料还没被主管批过
         status="pending",
         remark=(payload.remark if payload and payload.remark else parent.remark),
-        source_context=parent.source_context,
+        source_context=source_context,
         version=(parent.version or 1) + 1,
         parent_id=parent.id,
         purpose=parent.purpose,
@@ -762,6 +776,13 @@ async def revise_sample(
         acceptance_criteria=parent.acceptance_criteria,
         sample_fee=parent.sample_fee,
         production_owner_id=parent.production_owner_id,
+        material_spec=parent.material_spec,
+        product_size=parent.product_size,
+        printing=parent.printing,
+        accessories=parent.accessories,
+        packaging=parent.packaging,
+        craft_requirement=parent.craft_requirement,
+        product_name=parent.product_name,
         created_by=user.id,
         requested_at=svc.now(),
     )
@@ -798,16 +819,17 @@ async def revise_sample(
         after={"id": child.id, "version": child.version, "parent_id": parent.id},
         ip=client_ip(request),
     )
-    await followup_service.record_and_notify(
-        session, customer_id=child.customer_id, owner_id=child.owner_id,
-        operator_id=user.id,
-        title="打样单开了新修订版",
-        content=f"打样编号 {parent.id}（第 {parent.version or 1} 版）已开第 "
-                f"{child.version} 版待审批；原版制作/寄送事实冻结保留",
-        business_type="sample", business_id=child.id, sample_id=child.id,
-        opportunity_id=child.opportunity_id, exclude_user_id=user.id,
-        event_key=f"sample:revise:{parent.id}:v{child.version}",
-    )
+    if not ((source_context or {}).get(META_KEY) or {}).get("mode"):
+        await followup_service.record_and_notify(
+            session, customer_id=child.customer_id, owner_id=child.owner_id,
+            operator_id=user.id,
+            title="打样单开了新修订版",
+            content=f"打样编号 {parent.id}（第 {parent.version or 1} 版）已开第 "
+                    f"{child.version} 版待审批；原版制作/寄送事实冻结保留",
+            business_type="sample", business_id=child.id, sample_id=child.id,
+            opportunity_id=child.opportunity_id, exclude_user_id=user.id,
+            event_key=f"sample:revise:{parent.id}:v{child.version}",
+        )
     await session.commit()
     await notification_service.dispatch_pending(session)
     return ok(after, f"已开第 {child.version} 版（原版冻结保留，等审批）")
@@ -1013,6 +1035,14 @@ async def register_sample_made(
     if any((item or {}).get("key") == event_key for item in events):
         # 重发同一个请求（弱网下客户端重试很常见）：不重复留痕、不重复通知。
         return ok(await svc.detail(session, sample), "制作完成记录没有变化")
+    basis_ids = [int(fid) for fid in (payload.basis_file_ids or [])]
+    if basis_ids and sample.basis_files is not None:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "这张打样单已经登记过制作依据，不能改。要换依据请开修订版——"
+            "新版用新依据，旧版的凭证原样留着，这样每批样按什么做的都查得到",
+            422,
+        )
     events.append(
         {
             "key": event_key,
@@ -1030,15 +1060,7 @@ async def register_sample_made(
     #   ② 文件本身存在；
     #   ③ 之前没登记过（登记即固化，要换开修订版）。
     # 快照里存 sha256：光有文件名证明不了是哪一份，文件可以被同名替换。
-    basis_ids = [int(fid) for fid in (payload.basis_file_ids or [])]
     if basis_ids:
-        if sample.basis_files:
-            raise AppError(
-                ErrorCode.STATUS_NOT_ALLOWED,
-                "这张打样单已经登记过制作依据，不能改。要换依据请开修订版——"
-                "新版用新依据，旧版的凭证原样留着，这样每批样按什么做的都查得到",
-                422,
-            )
         attached = {
             link.file_id: link.category
             for link in (

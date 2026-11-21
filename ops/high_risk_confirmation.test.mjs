@@ -29,7 +29,6 @@ for (const [file, mutation, action] of [
   ['settings/SettingsPage.tsx', 'userStatusMutation'],
   ['settings/NotificationSettingsPanel.tsx', 'retryMutation'],
   ['common/NotificationBell.tsx', 'redispatchMutation'],
-  ['wecom/WeComPage.tsx', 'syncMutation'],
   ['wecom/WeComPage.tsx', 'bindMutation'],
   ['cases/CasesPage.tsx', 'submitMutation'],
   ['cases/CasesPage.tsx', 'reviseMutation'],

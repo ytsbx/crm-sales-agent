@@ -3,8 +3,9 @@
 import math
 from datetime import date
 from decimal import Decimal
+from typing import Annotated
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, Field, field_validator, model_validator
 
 from app.core.patch_schema import PatchModel
 
@@ -70,10 +71,23 @@ class PaymentAllocationUpdate(BaseModel):
         return self
 
 
+def _ratios_must_be_finite(value: list[float]) -> list[float]:
+    bad = [ratio for ratio in value if not math.isfinite(ratio)]
+    if bad:
+        raise ValueError(
+            f"每期比例必须是有限数（收到了 {', '.join(str(ratio) for ratio in bad)}）——"
+            "NaN / Infinity 不是合法比例"
+        )
+    return value
+
+
+FiniteReceivableRatios = Annotated[list[float], AfterValidator(_ratios_must_be_finite)]
+
+
 class ReceivableGenerate(BaseModel):
     """按比例生成应收计划，例如 30% 定金 + 70% 尾款。"""
 
-    ratios: list[float]
+    ratios: FiniteReceivableRatios
     """各期比例，例如 [0.3, 0.7]，合计必须是 1。
 
     ⚠️ `list[float]` **放得进 NaN / Infinity**（它们是合法 JSON 里合法写出来的
@@ -91,17 +105,31 @@ class ReceivableGenerate(BaseModel):
     first_name: str = Field(default="定金", max_length=64)
     second_name: str = Field(default="尾款", max_length=64)
     #: **整份计划一次提交**（第九批问题 ⑥）：给全了就不用"先生成、再逐条 PATCH"。
-    #: 与 `ratios` 按下标对齐；不给则回落（到期日 → `first_due_date`、
-    #: 名称 → 「第 N 期」）。两项都给时必须与 `ratios` 等长。
+    #: 与 `ratios` 按下标对齐。三期及以上必须提供整份到期日，名称省略时按期号生成。
     due_dates: list[date] | None = None
     names: list[str] | None = None
 
+    @field_validator("due_dates", mode="before")
+    @classmethod
+    def _require_date_entries(cls, value):
+        if isinstance(value, list):
+            for index, due in enumerate(value, start=1):
+                if due is None or (isinstance(due, str) and not due.strip()):
+                    raise ValueError(f"第 {index} 期缺少到期日")
+        return value
+
     @model_validator(mode="after")
     def _full_plan_lengths(self):
-        if self.due_dates is not None and len(self.due_dates) != len(self.ratios):
-            raise ValueError("每期都要有一个到期日（due_dates 与 ratios 个数要一致）")
+        periods = len(self.ratios)
+        if self.due_dates is None and periods >= 3:
+            raise ValueError("三期及以上的应收计划必须提供每一期的到期日")
+        if self.due_dates is not None:
+            if len(self.due_dates) < periods:
+                raise ValueError(f"从第 {len(self.due_dates) + 1} 期起缺少到期日，请补齐后再生成")
+            if len(self.due_dates) > periods:
+                raise ValueError("到期日的个数不能多于应收期数")
         if self.names is not None:
-            if len(self.names) != len(self.ratios):
+            if len(self.names) != periods:
                 raise ValueError("每期都要有一个名称（names 与 ratios 个数要一致）")
             for name in self.names:
                 if not str(name).strip():
@@ -112,18 +140,6 @@ class ReceivableGenerate(BaseModel):
     #: 弱网重试的请求键（第七批 7.9）：双击"生成计划"带同一把键时，
     #: 第二次拿回第一次的结果，而不是撞"该订单已有应收计划"的报错。
     request_key: str | None = Field(default=None, max_length=idempotency.MAX_KEY_LENGTH)
-
-    @field_validator("ratios")
-    @classmethod
-    def _ratios_must_be_finite(cls, value: list[float]) -> list[float]:
-        """只收**有限数**（C5-08）。NaN/Infinity 一律当参数错误，不放它们往下走。"""
-        bad = [v for v in value if not math.isfinite(v)]
-        if bad:
-            raise ValueError(
-                f"每期比例必须是有限数（收到了 {', '.join(str(v) for v in bad)}）——"
-                f"NaN / Infinity 不是合法比例"
-            )
-        return value
 
 
 class PaymentCreate(BaseModel):

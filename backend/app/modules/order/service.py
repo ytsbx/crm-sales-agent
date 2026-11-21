@@ -79,8 +79,14 @@ def serialize_order(
         "pricing_basis": order.pricing_basis,
         "received_amount": _f(received),
         "received_amount_exact": str(received),
-        "unreceived_amount_exact": str((order.total_amount or Decimal(0)) - received),
-        "unreceived_amount": _f((order.total_amount or Decimal(0)) - received),
+        # 取消是终态：应收计划已随单作废，订单不再有待收金额。
+        # 继续按 `总额 - 已收` 算会让已取消订单在详情/列表里显示"还要收 17 万"。
+        "unreceived_amount_exact": str(
+            Decimal(0) if order.status == "cancelled" else (order.total_amount or Decimal(0)) - received
+        ),
+        "unreceived_amount": _f(
+            Decimal(0) if order.status == "cancelled" else (order.total_amount or Decimal(0)) - received
+        ),
         "currency": order.currency,
         "status": order.status,
         "status_label": ORDER_STATUS_LABEL.get(order.status, order.status),
