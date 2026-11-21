@@ -916,6 +916,17 @@ export default function OrderDetailPage() {
         tags={
           <>
             <Tag color={STATUS_TONE[order.status] ?? 'grey'}>{order.status_label}</Tag>
+            {/* 履约完成 ≠ 钱货两清：未收金额不为 0 时补一个标签，与列表同口径。 */}
+            {order.status === 'completed' &&
+              Number(order.unreceived_amount_exact ?? order.unreceived_amount ?? 0) > 0 && (
+                <Tag color="orange">
+                  款未清{' '}
+                  {formatMoney(
+                    Number(order.unreceived_amount_exact ?? order.unreceived_amount ?? 0),
+                    order.currency,
+                  )}
+                </Tag>
+              )}
             {order.erp_order_id ? <Tag color="blue">ERP/MES：{order.erp_order_id}</Tag> : <Tag>未推送 ERP/MES</Tag>}
           </>
         }

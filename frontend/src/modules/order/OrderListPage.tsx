@@ -315,9 +315,21 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       title: '履约状态',
       dataIndex: 'status_label',
       width: compact ? 96 : 120,
-      render: (value: string, record: Order) => (
-        <StatusDot label={value} tone={ORDER_TONE[record.status] ?? 'grey'} />
-      ),
+      render: (value: string, record: Order) => {
+        // 履约完成 ≠ 钱货两清：completed 但还有未收款的，状态下面补一行小字，
+        // 免得把「已完成」理解成钱已经到账（2026-11-21 主人拍板方案三）。
+        const unpaid = Number(record.unreceived_amount_exact ?? record.unreceived_amount ?? 0)
+        return (
+          <div style={{ display: 'grid', gap: 2, justifyItems: 'start' }}>
+            <StatusDot label={value} tone={ORDER_TONE[record.status] ?? 'grey'} />
+            {record.status === 'completed' && unpaid > 0 && (
+              <span style={{ fontSize: 11, lineHeight: 1.4, color: '#B25E09', whiteSpace: 'nowrap' }}>
+                款未清 {formatMoney(unpaid, record.currency)}
+              </span>
+            )}
+          </div>
+        )
+      },
     },
     ...(compact
       ? []
