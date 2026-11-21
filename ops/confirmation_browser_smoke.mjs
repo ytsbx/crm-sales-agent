@@ -789,7 +789,9 @@ try {
   console.log('BROWSER_QUOTE_COST_HINT_CANCEL_NO_WRITE_EXPLICIT_REFRESH=true')
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/products/201`})
   await waitFor(`document.body.innerText.includes('成本未维护')`)
-  await evaluate(`Array.from(document.querySelectorAll('a')).find(a=>a.innerText.trim()==='维护成本').click()`)
+  // 产品 2026-11-21 巡检：成本状态并成一行后入口改文案（未维护叫「去维护」、
+  // 已齐叫「成本明细」），不再叫「维护成本」。
+  await evaluate(`Array.from(document.querySelectorAll('a')).find(a=>a.innerText.trim()==='去维护').click()`)
   await waitFor(`location.pathname==='/prices' && document.body.innerText.includes('新增成本')`)
   assert.equal(await evaluate('location.search'),'?tab=costs&sku_id=1')
   assert.ok(costPageRequests.length>0,'cost shortcut loads the exact SKU costs')
@@ -1130,7 +1132,11 @@ try {
     }
     throw Error('输入值被回填冲掉且重试无效：'+selector)
   }
-  await setStable(`Array.from(document.querySelectorAll('textarea')).at(-1)`,'只改备注','HTMLTextAreaElement')
+  // Semi autosize（2026-11-21 起规格/备注都开了）会在 DOM 末尾留一个
+  // visibility:hidden 的测量影子 textarea——裸 textarea 的 at(-1) 会误中
+  // 影子，值写进去不触发 React onChange、dirty 永远不亮、保存按钮白等到
+  // 超时。锁 .semi-input-textarea 只拿真正的输入本体。
+  await setStable(`Array.from(document.querySelectorAll('textarea.semi-input-textarea')).at(-1)`,'只改备注','HTMLTextAreaElement')
   await waitFor(saveDraft);await sleep(250);await evaluate(`${saveDraft}.click()`)
   // 断言请求体前先等记录落地，读到的才不是上一笔的旧值
   for(let i=0;draftPrecisionBodies.length<1 && i<30;i++)await sleep(100)
