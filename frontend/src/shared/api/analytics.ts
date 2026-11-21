@@ -350,7 +350,6 @@ export interface LeadStats {
   total: number
   converted_count: number
   conversion_rate: number
-  average_conversion_days: number | null
   by_source: NameValue[]
   by_status: NameValue[]
   invalid_reasons: NameValue[]

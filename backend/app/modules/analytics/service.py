@@ -1501,10 +1501,13 @@ async def loss_reason_stats(session: AsyncSession, user: CurrentUser) -> list[di
 # 03-API §35 里列出但此前缺失的三个整接口：leads / pricing / payments
 
 async def lead_stats(session: AsyncSession, user: CurrentUser) -> dict:
-    """线索分析：来源分布、状态分布、转化率、平均转化时长、无效原因。
+    """线索分析：来源分布、状态分布、转化率、无效原因。
 
     线索池里 owner_id 为空的（未分配）也算进总量，否则管理员看到的
     "待分配线索"会凭空消失；但已分配的按数据范围过滤。
+
+    不统计"平均转化天数"（2026-11-21 主人明确：这个不需要统计）：
+    线索表没有 converted_at，用 created→updated 近似不可靠，干脆不算。
     """
     stmt = select(Lead).where(Lead.deleted_at.is_(None))
     owner_ids = await scoped_owner_ids(session, user)
@@ -1517,7 +1520,6 @@ async def lead_stats(session: AsyncSession, user: CurrentUser) -> dict:
     by_source: dict[str, int] = {}
     by_status: dict[str, int] = {}
     invalid_reasons: dict[str, int] = {}
-    conversion_days: list[float] = []
 
     for lead in leads:
         by_source[lead.source or "未填写"] = by_source.get(lead.source or "未填写", 0) + 1
@@ -1525,16 +1527,6 @@ async def lead_stats(session: AsyncSession, user: CurrentUser) -> dict:
         if lead.status == "invalid":
             key = (lead.invalid_reason or "未填写").strip()
             invalid_reasons[key] = invalid_reasons.get(key, 0) + 1
-        if lead.status == "converted" and lead.created_at and lead.updated_at:
-            # 转化时长用「创建 → 最后更新」近似。线索表没有单独的 converted_at，
-            # 转化时会更新该行，所以这是最接近的可用口径。
-            created = lead.created_at
-            updated = lead.updated_at
-            if created.tzinfo is None:
-                created = created.replace(tzinfo=UTC)
-            if updated.tzinfo is None:
-                updated = updated.replace(tzinfo=UTC)
-            conversion_days.append((updated - created).total_seconds() / 86400)
 
     total = len(leads)
     converted = by_status.get("converted", 0)
@@ -1542,9 +1534,6 @@ async def lead_stats(session: AsyncSession, user: CurrentUser) -> dict:
         "total": total,
         "converted_count": converted,
         "conversion_rate": round(converted / total, 4) if total else 0,
-        "average_conversion_days": (
-            round(sum(conversion_days) / len(conversion_days), 1) if conversion_days else None
-        ),
         "by_source": [
             {"name": k, "value": v} for k, v in sorted(by_source.items(), key=lambda x: -x[1])
         ],
