@@ -54,11 +54,10 @@
   --crm-secondary-soft: #ecdcff;
   --crm-error: #ba1a1a;
   --crm-error-soft: #ffdad6;
-  /* 原来 #9e3300 是深棕红，跟 --crm-error #ba1a1a 并排时几乎分不出来 ——
-     订单详情那排金额卡里「尚未到账」（还没到期，只是没收到）和「逾期应收节点 1」
-     （真出事）亮着同一个红，看着像两个警报。改成琥珀色，警告归警告、错误归错误。 */
-  --crm-warning: #b45309;
-  --crm-warning-soft: #ffdbcf;
+  --crm-warning: #b33c19;
+  --crm-warning-bg: #fff5f0;
+  --crm-warning-soft: #ffe7dd;
+  --crm-warning-border: #f4c2ad;
   /* 状态色：用于"已回款/已完成"这类正向态，以及"待处理/需关注"这类提醒态 */
   --crm-success: #00b42a;
   --crm-caution: #ff7d00;
@@ -136,6 +135,7 @@
   --semi-color-primary-light-hover: #edf3fb;
   --semi-color-danger: var(--crm-error);
   --semi-color-warning: var(--crm-warning);
+  --semi-color-warning-light-default: var(--crm-warning-bg);
   --semi-color-info: var(--crm-primary);
   --semi-color-text-0: var(--crm-text);
   --semi-color-text-1: var(--crm-text-2);
@@ -151,6 +151,23 @@
   --semi-border-radius-large: var(--crm-radius);
 }
 
+.semi-tag.semi-tag-orange-light {
+  background-color: var(--crm-warning-soft);
+  color: var(--crm-warning);
+}
+.semi-tag.semi-tag-orange-ghost {
+  border-color: var(--crm-warning-border);
+  color: var(--crm-warning);
+}
+.semi-tag.semi-tag-orange-solid {
+  background-color: var(--crm-warning);
+  color: #fff;
+}
+.semi-tag.semi-tag-yellow-light,
+.semi-tag.semi-tag-yellow-ghost,
+.semi-tag.semi-tag-yellow-solid { color: var(--crm-text); }
+
+
 * {
   box-sizing: border-box;
 }
@@ -163,7 +180,10 @@ body,
 }
 
 body {
-  background: var(--crm-bg);
+  /* 底色不再是一块纯灰：极淡的三段渐变（冷灰 → 微蓝 → 冷灰），
+     大面积留白时页面也有层次，而不是"一张白纸"（2026-11-19 主人反馈"全是蓝白"）。
+     浓度只有 2~3%，不抢内容。 */
+  background: linear-gradient(160deg, #f4f5f8 0%, #eef2f9 34%, #f1f3f7 62%, #f4f5f8 100%) fixed;
   color: var(--crm-text);
   font-family: Inter, -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei',
     'Segoe UI', Roboto, sans-serif;
@@ -292,6 +312,33 @@ a:not([href]) {
   margin-top: 8px;
   color: var(--crm-text-2);
   font-size: var(--crm-font-note);
+}
+
+.quote-payment-terms {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.quote-payment-terms-edit {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  min-height: 26px;
+  padding: 2px 5px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--crm-primary);
+  font: inherit;
+  cursor: pointer;
+}
+.quote-payment-terms-edit:hover { background: var(--crm-primary-soft); }
+.quote-payment-terms-edit:focus-visible {
+  outline: 2px solid var(--crm-primary);
+  outline-offset: 1px;
 }
 
 .card-block {
@@ -524,6 +571,25 @@ a:not([href]) {
   margin-bottom: 14px;
 }
 
+.price-lookup-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+}
+.price-lookup-form > .blocked-hint-compact {
+  flex-basis: 100%;
+}
+.price-lookup-form > .semi-select { min-width: 0; }
+.price-lookup-result {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--crm-border);
+  border-radius: var(--crm-radius-sm);
+  background: var(--crm-surface-low);
+}
+.price-lookup-opportunity-link { color: var(--crm-primary); }
+
 /* 导出权限说明独占工具栏末行，避免长说明撑高按钮列或重复挤占横向空间。 */
 .customer-list-toolbar > .blocked-hint-compact {
   order: 1;
@@ -654,6 +720,26 @@ a:not([href]) {
 .kpi-card.tone-warning,
 .kpi-card.tone-error {
   border-top: 2px solid color-mix(in srgb, var(--kpi-accent) 38%, #fff);
+}
+
+/* 卡中卡消除：工作台「团队概览」外面已经是一张 SectionCard，
+   里面再摆四张带阴影、带色带的卡片就是"卡中卡"，层次糊成一片（2026-11-21 巡检）。
+   传 .kpi-inline 之后：去底色去阴影去色带，靠竖分隔线和区块标题站在同一平面。 */
+.kpi-grid.kpi-inline .kpi-card {
+  background: transparent;
+  border: 0;
+  border-left: 1px solid var(--crm-surface-high);
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0 20px;
+}
+.kpi-grid.kpi-inline .kpi-card:first-child {
+  border-left: 0;
+  padding-left: 0;
+}
+.kpi-grid.kpi-inline .kpi-card:hover {
+  box-shadow: none;
+  transform: none;
 }
 
 .kpi-value {
@@ -1017,32 +1103,143 @@ a:not([href]) {
   flex-shrink: 0;
 }
 
-/* 弹出面板：四周留白，条目不再贴着边框 */
 .notice-panel {
-  width: 360px;
-  max-height: 440px;
-  overflow: auto;
-  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  width: min(416px, calc(100vw - 24px));
+  max-height: min(540px, 74dvh);
+  min-height: 0;
 }
 
-.notice-panel-head {
+.notice-panel-head,
+.notice-filters,
+.notice-pagination {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 4px;
-  padding: 6px 8px 8px;
-  border-bottom: 1px solid var(--crm-surface-high);
+  gap: 8px;
+  padding: 8px 12px;
+  flex: none;
+}
+
+.notice-panel-head strong {
+  font-size: 15px;
+}
+
+.notice-actions,
+.notice-views {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.notice-filters {
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--crm-border);
+}
+
+.notice-views {
+  padding: 3px;
+  background: var(--crm-surface-low);
+  border-radius: var(--crm-radius-sm);
+}
+
+.notice-views button {
+  border: 0;
+  background: transparent;
+  color: var(--crm-text-2);
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.notice-views button[aria-pressed='true'] {
+  color: var(--crm-primary);
+  background: var(--crm-surface);
+  font-weight: 600;
+}
+
+.notice-list {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .notice-item {
-  padding: 10px 10px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--crm-surface-high);
-  border-radius: var(--crm-radius-sm);
-  cursor: pointer;
 }
 
 .notice-item:hover {
   background: var(--crm-surface-low);
+}
+
+.notice-item-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.notice-item-head > .semi-button {
+  flex: none;
+}
+
+.notice-item-main {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+button.notice-item-main {
+  cursor: pointer;
+}
+
+.notice-item-action {
+  display: block;
+  margin-top: 6px;
+  color: var(--crm-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+button.notice-item-main:hover .notice-item-action {
+  text-decoration: underline;
+}
+
+.notice-item-title {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  font-size: 13px;
+}
+
+.notice-item-content {
+  display: block;
+  margin-top: 4px;
+  color: var(--crm-text-2);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.notice-unread-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--crm-primary);
+  align-self: center;
+}
+
+.notice-pagination {
+  justify-content: center;
+  border-top: 1px solid var(--crm-border);
+  color: var(--crm-text-2);
+  font-size: 12px;
 }
 
 .notice-empty {
@@ -1083,14 +1280,11 @@ a:not([href]) {
 .tab-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
   max-width: 240px;
-  padding: 6px 12px;
   border-radius: var(--crm-radius-sm) var(--crm-radius-sm) 0 0;
   font-size: 13px;
   color: var(--crm-text-2);
   background: var(--crm-surface-mid);
-  cursor: pointer;
   white-space: nowrap;
   flex: 0 0 auto;
 }
@@ -1098,14 +1292,50 @@ a:not([href]) {
 /* 详情页签：比模块入口小一号、底色更淡，并带一枚“详情”角标。
    这样一眼能看出“这条是点进去的记录，不是一个模块”。 */
 .tab-chip.detail {
-  gap: 5px;
-  padding: 4px 9px;
   margin-left: 2px;
   border: 1px solid var(--crm-surface-high);
   border-bottom: 0;
   font-size: 12px;
   color: var(--crm-text-3);
   background: #f6f8fb;
+}
+
+.tab-open,
+.tab-close,
+.tab-more {
+  border: 0;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.tab-open,
+.tab-close {
+  font: inherit;
+  background: transparent;
+  color: inherit;
+}
+
+.tab-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 6px 12px;
+}
+
+.tab-chip.detail .tab-open {
+  padding: 4px 9px;
+}
+
+.tab-open:has(+ .tab-close) {
+  padding-right: 4px;
+}
+
+.tab-open:focus-visible,
+.tab-close:focus-visible,
+.tab-more:focus-visible {
+  outline: 2px solid var(--crm-primary);
+  outline-offset: -2px;
 }
 
 .tab-kind {
@@ -1152,6 +1382,8 @@ a:not([href]) {
 
 .tab-close {
   flex: 0 0 auto;
+  align-self: stretch;
+  padding: 0 8px 0 2px;
   color: var(--crm-text-3);
   font-size: 11px;
 }
@@ -1238,23 +1470,32 @@ a:not([href]) {
   gap: 16px;
 }
 
-/* 输入表单：字段竖排。同样要 minmax(0, 1fr) 才收得住里面的控件 */
+/* 输入表单：三列。字段竖排时整卡 648 高、像一根窄条；
+   三列铺开高度对折，一屏就能连结果区一起看到（2026-11-20）。 */
 .pricing-form {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px 24px;
+  align-items: start;
 }
 
-/* 两列：视口 1200 以下（扣掉侧栏和左右留白，每列已不足 300） */
+/* 1200 以下：输入三列降到两列，结果区仍是两列 */
 @media (max-width: 1200px) {
-  .pricing-grid {
+  .pricing-form {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* 900 以下：结果区也收成一列，别把两张卡挤到 300 以下 */
+@media (max-width: 900px) {
+  .pricing-side {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
 /* 一列：与全站手机断点保持一致 */
 @media (max-width: 768px) {
-  .pricing-grid {
+  .pricing-form {
     grid-template-columns: minmax(0, 1fr);
   }
 }
@@ -1363,6 +1604,22 @@ a:not([href]) {
   margin-top: -2.5px;
   border-radius: 50%;
   background: currentColor;
+}
+
+/* 蓝色 / 绿色的卡内提示降成次要灰（2026-11-21 巡检）
+   ------------------------------------------------------------
+   数据分析一屏 12 张卡，10 段提示全带彩色圆点（蓝"成交 11 / 失单 10"、
+   绿"报价单 25 张"…），整页像挂了十个信号灯。这两类提示本来就只是口径补充，
+   不是"要留意"：信息交给灰字，颜色只留给 warning / error（真要人动手的两类）。 */
+.kpi-card .chip-primary,
+.kpi-card .chip-success {
+  padding-left: 0;
+  color: var(--crm-text-2);
+}
+
+.kpi-card .chip-primary::before,
+.kpi-card .chip-success::before {
+  display: none;
 }
 
 /* 行内危险链接（设置页每行的「停用」）：平时跟普通次要文字一样灰，
@@ -1841,6 +2098,322 @@ a:not([href]) {
   table-layout: fixed;
 }
 
+/* 报价中心列表：Semi 的 tableLayout 属性在本版本没生效（实测还是 auto），
+   商机第二行会把客户列按内容撑到 327px，整表 804px 溢出 699px 的容器，
+   右列「有效期 / 负责人」被裁。用 CSS 强制 fixed + 单行截断，列宽才按
+   columns 里写的数字分配。 */
+.quotes-table .semi-table {
+  width: 100% !important;
+  table-layout: fixed;
+}
+
+/* 客户中心列表：九列合计 975px > 1024 宽的内容区 699px，
+   「标签 / 负责人 / 状态」被裁在卡片外。窄屏已并列，这里再强制
+   固定布局 + 单行截断，保证列宽按 columns 数字分配、不出横向滚动条。 */
+
+/* 订单中心销售订单列表：八列合计 1114px > 1024 宽的内容区 699px，
+   右侧「待回款 / 交期 / 负责人」被裁、底部常驻横向滚动条。
+   窄屏已并列，这里强制固定布局 + 单行截断。 */
+
+/* 订单中心「应收计划」：七列合计 920px，1024 宽同样溢出。
+   窄屏已把「已收 / 未收」并两行，这里强制固定布局。 */
+
+/* 订单中心「回款记录」：八列合计 1130px，1024 宽只露出五列。
+   窄屏已并列，这里强制固定布局。 */
+
+
+/* 产品中心列表：七列合计 730px+ > 1024 宽内容区 699px，
+   「状态 / 创建时间」被裁。窄屏已并列，这里强制固定布局。 */
+@media (max-width: 1200px) {
+  .products-table .semi-table {
+    width: 100% !important;
+    table-layout: fixed;
+  }
+  .products-table .semi-table-row-head,
+  .products-table .semi-table-row-cell {
+    overflow: hidden;
+  }
+}
+
+/* 线索中心列表：八列合计 1066px > 1024 宽内容区 699px，
+   「状态 / 负责人 / 操作」被裁。窄屏已并列，这里强制固定布局。 */
+@media (max-width: 1200px) {
+  .leads-table .semi-table {
+    width: 100% !important;
+    table-layout: fixed;
+  }
+  .leads-table .semi-table-row-head,
+  .leads-table .semi-table-row-cell {
+    overflow: hidden;
+  }
+}
+.lead-row-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.lead-row-actions-compact {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px 6px;
+  white-space: nowrap;
+}
+.lead-mobile-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+.lead-mobile-record {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--crm-border);
+  border-radius: var(--crm-radius-sm);
+}
+.lead-mobile-record-heading,
+.lead-mobile-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+.lead-mobile-record-heading strong {
+  overflow-wrap: anywhere;
+}
+.lead-mobile-details {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0 10px;
+  font-size: 13px;
+}
+.lead-mobile-details > div {
+  display: grid;
+  grid-template-columns: 4em minmax(0, 1fr);
+  gap: 4px;
+}
+.lead-mobile-details dt,
+.lead-mobile-pagination > span { color: var(--crm-text-2); }
+.lead-mobile-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.lead-mobile-record .lead-row-actions {
+  border-top: 1px solid var(--crm-border);
+  padding-top: 6px;
+}
+.lead-mobile-pagination .semi-page {
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
+
+/* 销售任务：宽屏（1440）这张表也被内容撑宽 —— 任务名、关联链接、操作列三个链接
+   各自不换行，合计超过 1132 的内容区，右边「延期 / 删除」被切。固定布局后列宽
+   按设定走，长文本走省略号，不再横向溢出。 */
+.tasks-table .semi-table {
+  width: 100% !important;
+  table-layout: fixed;
+}
+.tasks-table .semi-table-row-head .semi-table-row-cell,
+.tasks-table .semi-table-row .semi-table-row-cell {
+  overflow: hidden;
+}
+
+/* 销售任务列表：七列合计 909px+ > 1024 宽内容区 699px，
+   「状态 / 操作」整列被裁，底部还挂横向滚动条。窄屏已并列，这里强制固定布局。 */
+@media (max-width: 1200px) {
+  .tasks-table .semi-table {
+    width: 100% !important;
+    table-layout: fixed;
+  }
+  .tasks-table .semi-table-row-head,
+  .tasks-table .semi-table-row-cell {
+    overflow: hidden;
+  }
+}
+
+/* 合同台账：九列合计 1123px - 窄屏并列后仍 > 1024 内容区，
+   强制固定布局，操作列 fixed:right 才不会跟着横向拖动跑。 */
+@media (max-width: 1200px) {
+  .documents-table .semi-table {
+    width: 100% !important;
+    table-layout: fixed;
+  }
+  .documents-table .semi-table-row-head,
+  .documents-table .semi-table-row-cell {
+    overflow: hidden;
+  }
+}
+
+/* 定制需求列表：八列合计 1103px > 1024 宽内容区 699px，
+   「记录人 / 记录时间 / 操作」整块被裁。窄屏已并列，这里强制固定布局。 */
+@media (max-width: 1200px) {
+  .inquiries-table .semi-table {
+    width: 100% !important;
+    table-layout: fixed;
+  }
+  .inquiries-table .semi-table-row-head,
+  .inquiries-table .semi-table-row-cell {
+    overflow: hidden;
+  }
+}
+
+/* 案例库列表：七列合计 1026px > 1024 宽内容区 699px，
+   「作者 / 行业·产品线 / 操作」被裁。窄屏已并列，这里强制固定布局。 */
+@media (max-width: 1200px) {
+  .cases-table .semi-table {
+    width: 100% !important;
+    table-layout: fixed;
+  }
+  .cases-table .semi-table-row-head,
+  .cases-table .semi-table-row-cell {
+    overflow: hidden;
+  }
+}
+
+/* 新品洞察列表：七列合计 770px+ > 1024 宽内容区 699px，
+   「状态 / 操作」被裁。窄屏已并列，这里强制固定布局。 */
+@media (max-width: 1200px) {
+  .insights-table .semi-table {
+    width: 100% !important;
+    table-layout: fixed;
+  }
+  .insights-table .semi-table-row-head,
+  .insights-table .semi-table-row-cell {
+    overflow: hidden;
+  }
+}
+/* 商机中心列表：六列合计 890px+ > 1024 宽内容区 699px，
+   「成交日 / 风险 / 负责人」被裁在卡片外。窄屏已并列，这里强制固定布局。 */
+@media (max-width: 1200px) {
+  .opportunities-table .semi-table {
+    width: 100% !important;
+    table-layout: fixed;
+  }
+  .opportunities-table .semi-table-row-head,
+  .opportunities-table .semi-table-row-cell {
+    overflow: hidden;
+  }
+}
+.payments-table .semi-table {
+  width: 100% !important;
+  table-layout: fixed;
+}
+.payments-table .semi-table-row-head,
+.payments-table .semi-table-row-cell {
+  overflow: hidden;
+}
+.receivables-table .semi-table {
+  width: 100% !important;
+  table-layout: fixed;
+}
+.receivables-table .semi-table-row-head,
+.receivables-table .semi-table-row-cell {
+  overflow: hidden;
+}
+.orders-table .semi-table {
+  width: 100% !important;
+  table-layout: fixed;
+}
+.orders-table .semi-table-row-head,
+.orders-table .semi-table-row-cell {
+  overflow: hidden;
+}
+.customers-table .semi-table {
+  width: 100% !important;
+  table-layout: fixed;
+}
+.customers-table .semi-table-row-head,
+.customers-table .semi-table-row-cell {
+  overflow: hidden;
+}
+.quotes-table .semi-table-row-head,
+.quotes-table .semi-table-row-cell {
+  overflow: hidden;
+}
+
+/* 规则配置表：六列在 1024 宽也要完整可见，不许出横向滚动条。
+   全站默认单元格左右 16px 内边距 + 单行省略号，对这张表太奢侈：
+   「操作」四个链接 108px，加 32px 内边距就要 140；这里收到 8px，
+   列宽就能整体收紧，把省出来的宽度还给规则名。
+   规则列（第一列）例外地允许换行 —— 名称下面那行说明是配置依据，
+   截成省略号等于把"为什么这么配"藏掉了；窄屏折两行比丢字好。 */
+.rules-table .semi-table-thead .semi-table-row-head,
+.rules-table .semi-table-tbody .semi-table-row-cell {
+  padding-left: 8px !important;
+  padding-right: 8px !important;
+}
+.rules-table .semi-table-tbody .semi-table-row-cell:first-child {
+  white-space: normal;
+}
+.rules-table .semi-table-tbody .semi-table-row-cell:first-child > div {
+  word-break: break-word;
+}
+
+/* ≤900px：规则表改成"一条规则一张卡"。
+   六列固定宽加起来 540px，手机宽度下规则列只剩几十像素，
+   说明文字会被压成一字一行的竖排（主人明令禁止的"文字倒转"）。
+   表格骨架整个拆成块级：表头藏掉，每行一张圆角卡，
+   各字段用 ::before 贴上中文标签，读起来和详情页一个语感。 */
+@media (max-width: 900px) {
+  .rules-table .semi-table-thead,
+  .rules-table colgroup {
+    display: none;
+  }
+  .rules-table table,
+  .rules-table .semi-table-tbody,
+  .rules-table .semi-table-row,
+  .rules-table .semi-table-row-cell {
+    /* !important：Semi 自己的 display:table-cell 与本文件同级特异性，
+       谁后加载谁赢；不加重就压不住（2026-11-18 实拍单元格仍横排）。 */
+    display: block !important;
+    width: auto !important;
+  }
+  .rules-table .semi-table-row {
+    border: 1px solid #e5e6eb;
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    background: #fff !important;
+  }
+  .rules-table .semi-table-row-cell {
+    padding: 3px 0 !important;
+    border-bottom: none !important;
+    white-space: normal;
+    overflow: visible;
+    background: transparent !important;
+  }
+  /* 全站居中那条是三层选择器 + !important（.semi-table-tbody > .semi-table-row >
+     .semi-table-row-cell），两层压不住；这里加到四层，卡片内才真的左对齐。 */
+  .rules-table .semi-table-tbody > .semi-table-row > .semi-table-row-cell {
+    text-align: left !important;
+  }
+  .rules-table .rules-col-kind::before,
+  .rules-table .rules-col-cond::before,
+  .rules-table .rules-col-prio::before,
+  .rules-table .rules-col-state::before,
+  .rules-table .rules-col-ops::before {
+    color: var(--crm-text-3);
+    font-size: 12px;
+    margin-right: 6px;
+  }
+  .rules-table .rules-col-kind::before { content: '类型'; }
+  .rules-table .rules-col-cond::before { content: '触发条件'; }
+  .rules-table .rules-col-prio::before { content: '优先级'; }
+  .rules-table .rules-col-state::before { content: '生效状态'; }
+  .rules-table .rules-col-ops::before { content: '操作'; }
+  /* 卡片里状态/操作不再居中，跟标签左对齐 */
+  .rules-table .rules-col-state > div,
+  .rules-table .rules-col-ops > div {
+    display: inline-flex !important;
+    justify-content: flex-start !important;
+  }
+  .rules-table .rules-col-cond > div {
+    display: inline-grid !important;
+  }
+}
+
 /* 规则沙盒那一行：搜索 / 报价 / 版本 / 试算。
    四列按内容比例分，报价下拉最宽（单号 + 客户名要能一行放下）；
    窄屏（≤1100）拆成两行两列，按钮靠左，不撑出横向滚动。 */
@@ -2287,7 +2860,12 @@ table:not(.semi-table) td {
   gap: 24px;
 }
 .detail-split > .split-main {
-  flex: 1 1 360px;
+  /* 基准从 360 提到 460（2026-11-19）：客户详情「联系人」tab 的左栏是一张
+     五列表（姓名/职位/手机/邮箱/操作），并排时左栏被压到 396，表里 422 宽的
+     列装不下，底部冒出一条横向滚动条。460 是这张表不横滚的最小值；
+     1024 视口内容区约 700，460 + 280 + 24 = 764 排不下 → 右栏自动落到下方通栏，
+     1440 照旧并排。 */
+  flex: 1 1 460px;
   min-width: 0;
 }
 .detail-split > .split-side {
@@ -2406,6 +2984,15 @@ table:not(.semi-table) td {
 .kpi-pair-hint {
   margin-top: var(--crm-space-3);
 }
+
+/* 「准时 0 / 延迟 1」原来装在绿胶囊里 —— 绿色胶囊包着"延迟 1"，颜色和内容对不上；
+   而且上面一排卡的小字刚统一成灰字，这里再来两个色块就成了孤岛（2026-11-21 巡检）。
+   并卡之后口径本来就在标题旁边，纯文字即可。 */
+.kpi-pair-cell .chip {
+  padding: 0;
+  background: transparent;
+  color: var(--crm-text-2);
+}
 .kpi-group .kpi-grid > .kpi-card {
   /* 基准 25% 必须扣掉卡间距（每行 4 张有 3 个 16px 空隙，摊到每张约 12px），
      否则 25%×4 + 间隙 > 100%，只能放下三张 */
@@ -2416,12 +3003,44 @@ table:not(.semi-table) td {
   max-width: 100%;
 }
 
+/* 分析页「成交与转化」的 7 张指标：一个网格装 4 + 3（2026-11-19）
+   ------------------------------------------------------------
+   上一版把它拆成「4 列 flex」+「3 列 flex」两个容器：
+   - 第二行三张 flex-grow 撑到 378 宽，比第一行 280 宽出一整圈，一列比一列宽；
+   - 两个容器之间没有行间距，上下两行卡片直接贴住。
+   主人原话「布局怎么变丑了，这样设计更丑」。
+   现在合成一个 CSS 网格：4 列、行距列距都 12，7 张自然排成 4 + 3，
+   第二行三张与第一行**同宽**（右端空出一格背景色），高度由网格拉齐。 */
+.kpi-group .kpi-grid.kpi-grid-fixed {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--crm-space-3);
+}
+@media (max-width: 1370px) {
+  .kpi-group .kpi-grid.kpi-grid-fixed {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  /* 7 张在 2 列下会剩最后一张独占左边、右下空一整格（1024 实拍很难看）。
+     奇数张时让最后一张跨满整行，把它变成一条"末行横幅"，不留空洞。 */
+  .kpi-group .kpi-grid.kpi-grid-fixed > .kpi-card:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+}
+
 /* 7 张指标卡用 4 列（4+3）比自动排的 5+2 平衡，第二行不会只剩两张孤零零 */
 .kpi-cols-4 {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
+/* 六张指标卡挤一行会截数字：1440 宽的屏上每张只剩 185px，
+   扣掉左右内边距只剩 137px，「本月订单金额 ¥1,596,301」直接顶到卡边外面
+   （2026-11-21 工作台实测）。6 列只在 1500px 以上成立，其余先排 3 列 × 2 行，
+   每张 370 宽，金额和副标题都能整行放下。 */
+@media (max-width: 1500px) {
+  .kpi-cols-6 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
 @media (max-width: 1370px) {
-  .kpi-cols-6,
   .kpi-cols-5,
   .kpi-cols-4 {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2579,9 +3198,6 @@ table:not(.semi-table) td {
     padding: 0 10px;
     gap: 4px;
   }
-  .notice-panel {
-    width: 300px;
-  }
 }
 
 /* ---------------------------------------------------------------- 权限选择器
@@ -2701,6 +3317,19 @@ table:not(.semi-table) td {
   cursor: pointer;
 }
 .permission-picker-row:hover { background: var(--crm-surface-low); }
+/* 勾上「用户管理」这类高危权限后，在选项下方紧跟一句说明：
+   跨满整行、左侧缩进对齐复选框，用中性浅底 + 主色左边线，只提示不报错。 */
+.permission-picker-note {
+  grid-column: 1 / -1;
+  margin: 2px 0 6px 22px;
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--crm-text-2);
+  background: var(--crm-surface-low);
+  border-left: 2px solid var(--crm-primary);
+  border-radius: var(--crm-radius-sm);
+}
 .permission-picker-name {
   font-size: 13px;
   color: var(--crm-text-1);
@@ -2932,6 +3561,9 @@ table:not(.semi-table) td {
   padding-top: 16px;
   border-top: 1px solid var(--crm-surface-high);
 }
+.agent-input-wrap {
+  position: relative;
+}
 .agent-composer textarea {
   width: 100% !important;
   min-height: 92px;
@@ -2957,105 +3589,441 @@ table:not(.semi-table) td {
   .agent-empty { margin: 28px auto; }
 }
 
-/* 设置页：左侧按「谁的事」分组，右侧是内容。
-   低频页也要能一眼看出「用户/角色/部门」和「标签/字典/规则」不是一类东西。 */
+.settings-page { container: settings-page / inline-size; }
+.settings-search-input { width: 272px; max-width: 100%; }
+.settings-search-results {
+  border: 1px solid var(--crm-border);
+  border-radius: 12px;
+  background: var(--crm-surface);
+  padding: 4px 14px;
+  max-height: 320px;
+  overflow: auto;
+}
+.settings-search-results ul { list-style: none; padding: 0; margin: 0; }
+.settings-search-results li { padding: 10px 0; }
+.settings-search-results li + li { border-top: 1px solid var(--crm-border); }
+.settings-search-results a { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--crm-primary); }
+.settings-search-results a span, .settings-search-results p { color: var(--crm-text-2); font-size: 12px; }
+.settings-search-results p { margin: 4px 0 0; }
+.settings-search-results > p { margin: 10px 0; }
 .settings-shell {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--crm-space-5);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--crm-space-4);
+}
+.settings-shell.is-personal .settings-nav { display: none; }
+.settings-nav,
+.settings-nav-compact,
+.settings-content {
+  min-width: 0;
+  border: 1px solid var(--crm-border);
+  border-radius: 12px;
+  background: var(--crm-surface);
+}
+.settings-nav-compact { display: none; }
+@container settings-page (max-width: 740px) {
+  .settings-shell .settings-nav { display: none; }
+  .settings-nav-compact {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    font-size: 13px;
+    color: var(--crm-text-2);
+  }
+  .settings-nav-compact select {
+    flex: 1;
+    min-width: 0;
+    min-height: 36px;
+    padding: 0 10px;
+    border: 1px solid var(--crm-border);
+    border-radius: 7px;
+    background: var(--crm-surface-low);
+    color: var(--crm-text);
+    font: inherit;
+  }
 }
 .settings-nav {
-  flex: 0 0 168px;
-  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 10px;
 }
-/* 组与组之间拉一条分隔线：光靠字号和 6px 缩进，「个人」和下面的「我的」、
-   「系统」和下面的「通知」永远像平级条目。分隔线把每一组框成一段，
-   读起来是"分区标题 + 分区里的几项"（2026-11-16 主人反馈：区分太不明显）。 */
-.settings-nav-group + .settings-nav-group {
-  margin-top: var(--crm-space-4);
-  padding-top: var(--crm-space-4);
-  border-top: 1px solid var(--crm-border);
+.settings-nav-group {
+  --settings-nav-accent: var(--crm-primary);
+  display: flex;
+  flex-wrap: wrap;
+  align-content: start;
+  gap: 2px;
+  max-width: 100%;
+  padding: 4px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--settings-nav-accent) 6%, var(--crm-surface));
 }
-/* 分组标题：11px 灰字 + 左侧一根 2px 短竖条。
-   字号差 2px 在中文里几乎看不出（汉字没有 x-height 那种明显差异），
-   竖条是"形态"上的差异 —— 一眼就知道这行不是可以点的条目。 */
+.settings-nav-group[data-group="personal"] { --settings-nav-accent: #6b3fb3; }
+.settings-nav-group[data-group="organization"] { --settings-nav-accent: #2359ba; }
+.settings-nav-group[data-group="business"] { --settings-nav-accent: #137666; }
+.settings-nav-group[data-group="system"] { --settings-nav-accent: #465875; }
 .settings-nav-title {
+  flex-basis: 100%;
+  padding: 2px 8px 4px;
+  color: var(--settings-nav-accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+.settings-nav .settings-nav-item {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 0 10px 8px;
-  color: var(--crm-text-3);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.4px;
-}
-
-.settings-nav-title::before {
-  content: '';
-  flex: 0 0 auto;
-  width: 2px;
-  height: 10px;
-  border-radius: 1px;
-  background: var(--crm-text-3);
-}
-/* 用 a + onClick 的项目写法（不带 href），这里要压过全局 a:not([href]) 的主色 */
-.settings-nav .settings-nav-item {
-  display: block;
-  /* 左缩进 16 而不是 10：页签比分组名往里退一级，层级从缩进上就能看出来 */
-  padding: 7px 10px 7px 16px;
-  border-radius: var(--crm-radius-sm);
+  min-height: 32px;
+  padding: 5px 8px;
+  border-radius: 6px;
   color: var(--crm-text-2);
   font-size: 13px;
-  cursor: pointer;
-  transition:
-    background-color var(--crm-dur-fast) var(--crm-ease),
-    color var(--crm-dur-fast) var(--crm-ease);
+  text-decoration: none;
 }
-.settings-nav .settings-nav-item:hover {
-  background: var(--crm-surface-low);
-  color: var(--crm-text);
+.settings-nav-item .semi-icon {
+  flex: 0 0 auto;
+  color: var(--settings-nav-accent);
+}
+.settings-nav .settings-nav-item:hover { color: var(--crm-text); background: var(--crm-surface); }
+.settings-nav .settings-nav-item:focus-visible {
+  outline: 2px solid var(--settings-nav-accent);
+  outline-offset: 1px;
 }
 .settings-nav .settings-nav-item.active {
-  background: var(--crm-primary-soft);
-  color: var(--crm-primary);
+  background: color-mix(in srgb, var(--settings-nav-accent) 13%, var(--crm-surface));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--settings-nav-accent) 28%, var(--crm-surface));
+  color: var(--settings-nav-accent);
   font-weight: 600;
 }
-.settings-content {
-  flex: 1 1 auto;
+.settings-content { padding: clamp(14px, 2vw, 24px); }
+.settings-content .semi-table-wrapper { overflow-x: auto; }
+.settings-pane-header {
+  margin: 0 0 18px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--crm-border);
+}
+.settings-content-heading {
+  margin: 0;
+  font-size: 19px;
+  line-height: 1.4;
+  font-weight: 650;
+  color: var(--crm-text);
+}
+.settings-pane-header p {
+  margin: 4px 0 0;
+  color: var(--crm-text-2);
+  font-size: 13px;
+}
+.settings-content .settings-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--crm-surface-low);
+}
+.settings-content .settings-toolbar > * { max-width: 100%; }
+.settings-content .settings-list-table {
+  border: 1px solid var(--crm-border);
+  border-radius: 8px;
+}
+.settings-profile {
+  display: grid;
+  grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr);
+  gap: 16px;
+}
+.settings-profile > .card-block {
   min-width: 0;
-  /* 设置页里几张表（角色/业务规则/回收候选…）没开 Semi 的 scroll.x，
-     窄屏下会顶破卡片、逼整页左右拖。让横向滚动发生在表格壳里，
-     页面主体不跟着滚（2026-11-17 视觉审视 5.1）。 */
-  overflow-x: hidden;
+  border: 1px solid var(--crm-border);
+  border-radius: 10px;
+  box-shadow: none;
+}
+.settings-profile-permissions { grid-column: 1 / -1; }
+.settings-permission-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  gap: 14px;
+}
+.settings-permission-groups > :first-child { grid-column: 1 / -1; }
+.settings-account-form {
+  display: grid;
+  gap: 12px;
+}
+.settings-account-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.settings-account-fields > div {
+  flex: 1 0 calc(50% - 6px);
+  min-width: min(100%, 185px);
 }
 
-.settings-content .semi-table-wrapper {
-  overflow-x: auto;
+.settings-help {
+  color: var(--crm-text-2);
+  font-size: 12px;
+  line-height: 1.65;
 }
-/* 窄屏：左侧竖排变一组可换行的横排标签，分组标题收起（组本身不丢） */
-@media (max-width: 900px) {
-  .settings-shell {
-    flex-direction: column;
-    /* 基础样式里有 align-items: flex-start（竖排时给左栏用），
-       换成 column 之后它会让右栏按内容宽度撑开、顶破页面 ——
-       所以这里必须改成 stretch，让内容区老老实实占满可用宽度
-       （2026-11-17 视觉审视 5.1：设置各页签横向溢出）。 */
-    align-items: stretch;
-    gap: var(--crm-space-4);
-  }
-  .settings-nav {
-    flex: 1 1 auto;
-    width: 100%;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-  }
-  .settings-nav-group {
-    display: contents;
-  }
-  .settings-nav-title {
-    display: none;
-  }
+.workflow-guide {
+  margin: 0 0 10px;
+  color: var(--crm-text-2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.workflow-guide a { color: var(--crm-primary); text-decoration: underline; }
+.sample-shipping-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr));
+  gap: 12px;
+}
+.sample-shipping-fields label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: var(--crm-text-2);
+  font-size: 13px;
+}
+.sample-add-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 76px auto;
+  align-items: start;
+  gap: 8px;
+  margin-top: 8px;
+}
+.sample-add-item > :last-child:not(.blocked-hint-click) {
+  grid-column: 1 / -1;
+}
+.contract-oa-history {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.contract-oa-history > li {
+  padding: 10px 12px;
+  border: 1px solid var(--crm-border);
+  border-radius: var(--crm-radius-sm);
+  overflow-wrap: anywhere;
+}
+.contract-oa-history-heading {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+.contract-oa-history-heading span {
+  color: var(--crm-text-2);
+  font-size: 12px;
+}
+.contract-oa-history p {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+}
+.workflow-next {
+  padding: 12px 14px;
+  border-inline-start: 3px solid var(--crm-primary);
+  border-radius: var(--crm-radius-sm);
+  background: var(--crm-primary-soft);
+}
+.workflow-next > strong { display: block; margin-bottom: 4px; }
+/* 2026-11-20：带按钮的「下一步」块（订单详情「收款下一步」）原来是三行竖排
+   —— 标题、说明、按钮全挤在左边 300px 里，右边整片浅蓝空着（主人："左边太挤，右边又空"）。
+   有按钮时改成一行：标题 → 说明（吃掉剩余宽度）→ 按钮贴右。
+   只匹配"直接挂按钮"的块，纯文字版仍是原来的竖排，不受影响。 */
+.workflow-next:has(> .semi-button) {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.workflow-next:has(> .semi-button) > strong {
+  display: inline;
+  margin-bottom: 0;
+  white-space: nowrap;
+}
+.workflow-next:has(> .semi-button) > p {
+  margin: 0;
+  flex: 1 1 320px;
+  min-width: 0;
+}
+.workflow-next .workflow-guide:last-child { margin-bottom: 0; }
+.approval-assignee {
+  color: var(--crm-text-2);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.quote-approval-rejection {
+  margin-top: 12px;
+  border-inline-start-color: var(--crm-error);
+  background: var(--crm-error-soft);
+}
+.quote-approval-rejection > div {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+.quote-approval-opinion {
+  margin: 4px 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.quote-approval-rejection .workflow-guide {
+  margin: 4px 0 0;
+}
+.workbench-start {
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--crm-surface-high);
+  border-radius: var(--crm-radius-sm);
+  background: var(--crm-surface-low);
+}
+.workbench-start summary { width: fit-content; color: var(--crm-primary); cursor: pointer; }
+.workbench-start ul { display: grid; gap: 8px; margin: 12px 0 0; padding: 0; list-style: none; }
+.workbench-start li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 16px;
+  padding-top: 8px;
+  border-top: 1px solid var(--crm-surface-high);
+  color: var(--crm-text-2);
+}
+.workbench-start a { color: var(--crm-primary); white-space: nowrap; text-decoration: underline; }
+.workflow-help-toggle {
+  margin-inline-start: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--crm-primary);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.settings-warning {
+  margin-top: 6px;
+  color: var(--crm-warning);
+}
+.settings-notifications {
+  display: grid;
+  grid-template-columns: minmax(0, 1.8fr) minmax(300px, 1fr);
+  align-items: start;
+  gap: 16px;
+}
+.settings-content:has(.settings-notifications) { container-type: inline-size; }
+.settings-notice-card {
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid var(--crm-border);
+  border-radius: 10px;
+}
+.settings-notice-card h4 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  font-size: 15px;
+}
+.settings-notice-card h4 .semi-icon {
+  padding: 6px;
+  border-radius: 7px;
+  background: var(--crm-primary-soft);
+  color: var(--crm-primary);
+}
+.settings-notice-card .settings-help { margin: 4px 0 12px; }
+.settings-notice-channels,
+.settings-notice-header,
+.settings-notice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.settings-notice-channels { margin: 12px 0; }
+.settings-notice-channels .settings-control-row {
+  flex: 1 1 220px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--crm-surface-low);
+}
+.settings-notice-card .settings-notice-heading { margin: 20px 0 10px; }
+.settings-notice-events {
+  width: 100%;
+  margin-bottom: 10px;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.settings-notice-events th,
+.settings-notice-events td {
+  padding: 8px;
+  border-bottom: 1px solid var(--crm-border);
+  text-align: start;
+}
+.settings-notice-events thead th {
+  background: var(--crm-surface-low);
+  color: var(--crm-text-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+.settings-notice-events thead th:first-child { border-start-start-radius: 7px; }
+.settings-notice-events thead th:last-child { border-start-end-radius: 7px; width: 45%; }
+.settings-notice-events th:nth-child(2),
+.settings-notice-events td:nth-child(2) { width: 76px; text-align: center; }
+.settings-notice-events tbody th { font-weight: 500; overflow-wrap: anywhere; }
+.settings-notice-events .settings-notice-select { width: 100%; max-width: 250px; }
+.settings-notice-events .semi-select-selection-text { white-space: normal; }
+.settings-notice-header { justify-content: space-between; }
+.settings-notice-card .settings-notice-header h4 { margin: 0; }
+.settings-control-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  min-height: 42px;
+  padding: 6px 0;
+  border-top: 1px solid var(--crm-border);
+}
+.settings-control-row small {
+  display: block;
+  color: var(--crm-text-2);
+  font-size: 12px;
+}
+.settings-notice-select { width: min(100%, 200px); }
+.settings-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.settings-notice-side {
+  background: var(--crm-surface-low);
+}
+.settings-delivery-status { margin: 0 0 8px; font-weight: 600; }
+.settings-delivery-counts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0 0 8px;
+}
+.settings-delivery-counts > div {
+  padding: 8px 12px;
+  border: 1px solid var(--crm-border);
+  border-radius: 8px;
+  background: var(--crm-surface);
+}
+.settings-delivery-counts dt { color: var(--crm-text-2); font-size: 12px; }
+.settings-delivery-counts dd { margin: 2px 0 0; font-size: 19px; font-weight: 650; }
+@container (max-width: 790px) {
+  .settings-notifications { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 1080px) {
+  .settings-profile { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* 列表空态：图标 + 一句结论 + 一句怎么开始，比一行灰字有落点 */
@@ -3070,13 +4038,14 @@ table:not(.semi-table) td {
 .empty-state-icon {
   display: grid;
   place-items: center;
-  width: 56px;
-  height: 56px;
-  margin-bottom: var(--crm-space-2);
-  border-radius: 50%;
-  background: var(--crm-surface-low);
-  color: var(--crm-text-3);
+  width: 52px;
+  height: 52px;
+  margin-bottom: var(--crm-space-3);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(47, 109, 246, .14), rgba(107, 92, 231, .09));
+  color: #2f6df6;
   font-size: 24px;
+  box-shadow: inset 0 0 0 1px rgba(47, 109, 246, .12);
 }
 .empty-state-title {
   color: var(--crm-text);
@@ -3357,6 +4326,26 @@ table:not(.semi-table) td {
   background: var(--crm-card-border);
 }
 
+
+/* 商机阶段漏斗：auto-fit 在 1024 宽会排成 5~6 列，8 个阶段变成「6 + 2」，
+   第二行右边空四格（2026-11-18 截图）。窄屏固定 4 列，8 格正好 4×2 填满；
+   换行后第一格的左侧分隔线要藏掉，否则贴着卡片左边悬一条线。 */
+@media (max-width: 1200px) {
+  .stage-strip {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .stage-strip > .stage-tile:nth-child(4n + 1)::before {
+    display: none;
+  }
+}
+@media (max-width: 760px) {
+  .stage-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .stage-strip > .stage-tile:nth-child(2n + 1)::before {
+    display: none;
+  }
+}
 .stage-tile-label {
   color: var(--crm-text-3);
   font-size: 12px;
@@ -3451,11 +4440,9 @@ table:not(.semi-table) td {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  /* 原来是一个扁平黄圆，像贴纸；换成"浅琥珀底 + 内侧高光"的圆角方块，
-     和标题的方头字更配，也不抢橙色风险句的注意力。 */
-  background: linear-gradient(180deg, #FEF3C7, #FDE68A);
+  background: var(--crm-warning-soft);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .9);
-  color: #B45309;
+  color: var(--crm-warning);
   font-size: 15px;
   font-weight: 800;
 }
@@ -3493,7 +4480,7 @@ table:not(.semi-table) td {
   list-style: none;
 }
 /* 要点不再用系统圆点（每个字号都长得不一样）：自己画一个 5px 的菱形小点，
-   和文字起点对齐，色用中性灰蓝，风险条那一行才变琥珀。 */
+   和文字起点对齐，色用中性灰蓝，风险条那一行用警示色。 */
 .crm-confirm-list li {
   position: relative;
   margin-bottom: 11px;
@@ -3525,13 +4512,13 @@ table:not(.semi-table) td {
   .crm-confirm-list li { animation: none; }
 }
 .crm-confirm-body .crm-confirm-risk {
-  color: #B45309;
+  color: var(--crm-warning);
 }
 .crm-confirm-body .crm-confirm-risk::before {
-  background: #F59E0B;
+  background: var(--crm-caution);
 }
 .crm-confirm-body .crm-confirm-risk strong {
-  color: #B45309;
+  color: var(--crm-warning);
 }
 .crm-confirm-body p:last-child {
   margin-bottom: 0;
@@ -3673,19 +4660,19 @@ table:not(.semi-table) td {
   align-items: flex-start;
   padding: 10px 14px;
   border-radius: 10px;
-  background: #FFF8EC;
-  border: 1px solid #F6D9A8;
+  background: var(--crm-warning-bg);
+  border: 1px solid var(--crm-warning-border);
   font-size: 13px;
   line-height: 1.7;
-  color: #8A5300;
+  color: var(--crm-warning);
 }
 .crm-mp-blocked-icon {
   flex: 0 0 auto;
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background: rgba(180, 83, 9, .15);
-  color: #B45309;
+  background: var(--crm-warning-soft);
+  color: var(--crm-warning);
   font-size: 12px;
   font-weight: 700;
   display: inline-flex;
@@ -3722,8 +4709,8 @@ table:not(.semi-table) td {
 .crm-mp-note {
   font-size: 12px;
   line-height: 1.7;
-  color: #8A5300;
-  background: #FFF8EC;
+  color: var(--crm-warning);
+  background: var(--crm-warning-bg);
   border-radius: 6px;
   padding: 6px 10px;
 }
@@ -3853,15 +4840,15 @@ table:not(.semi-table) td {
   margin-bottom: 16px;
   padding: 14px 18px;
   border-radius: 10px;
-  background: var(--crm-warning-bg, #FFF8EC);
-  border: 1px solid var(--crm-warning-border, #F6D9A8);
+  background: var(--crm-warning-bg);
+  border: 1px solid var(--crm-warning-border);
 }
 .qmw-main { flex: 1 1 420px; min-width: 0; }
 .qmw-title {
   font-size: 13.5px;
   font-weight: 600;
   line-height: 1.7;
-  color: #8A5300;
+  color: var(--crm-warning);
 }
 .qmw-item {
   position: relative;
@@ -3869,7 +4856,7 @@ table:not(.semi-table) td {
   padding-left: 12px;
   font-size: 13px;
   line-height: 1.8;
-  color: #8A5300;
+  color: var(--crm-warning);
   overflow-wrap: anywhere;
 }
 .qmw-item::before {
@@ -3880,12 +4867,12 @@ table:not(.semi-table) td {
 .qmw-side { flex: 0 0 auto; }
 .qmw-side .semi-button {
   background: #fff;
-  border-color: rgba(180, 83, 9, .32);
-  color: #8A5300;
+  border-color: var(--crm-warning-border);
+  color: var(--crm-warning);
 }
 .qmw-side .semi-button:hover {
-  background: #FFFDF7;
-  border-color: rgba(180, 83, 9, .5);
+  background: var(--crm-warning-bg);
+  border-color: var(--crm-warning);
 }
 
 /* ===== 版本行：左切换、右事实 ===== */
@@ -3935,27 +4922,29 @@ table:not(.semi-table) td {
 /* 说明一行、动作一行：原来说明与「下一步：… / 去处理」同一条基线，
    句子一长就把两个标签压在最右边（1440 下只剩一条缝，2026-11-18 主人
    一直指这里"挤"）。现在说明独占整宽，动作另起一行、贴右对齐。 */
+/* 2026-11-21：原来是两列 grid（dot | 说明），动作块也写死在第二列 ——
+   三行待办里第二行的说明会跟第一行的动作挤到同一视觉行，动作掉到下一格，
+   右下的「去处理」看着像给上一句配的。改成 flex：说明可换行、动作永远贴右同一行。 */
 .quote-todo-row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  column-gap: 10px;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
   padding: 6px 0;
 }
-.quote-todo-dot { grid-column: 1; }
+.quote-todo-dot { flex: 0 0 auto; }
 .quote-todo-reason {
-  grid-column: 2;
+  flex: 1 1 auto;
   min-width: 0;
   line-height: 1.8;
 }
 .quote-todo-side {
-  grid-column: 2;
+  flex: 0 0 auto;
   display: flex;
-  justify-content: flex-end;
   align-items: center;
   gap: 14px;
-  margin-top: 2px;
   white-space: nowrap;
 }
+.quote-todo-side:empty { display: none; }
 .qt-next { color: var(--crm-text-3); }
 .qt-link {
   color: var(--crm-primary);
@@ -3963,7 +4952,8 @@ table:not(.semi-table) td {
 }
 @media (max-width: 760px) {
   .quote-todo-row { flex-wrap: wrap; }
-  .quote-todo-side { margin-left: 16px; }
+  .quote-todo-reason { flex-basis: 0; }
+  .quote-todo-side { width: 100%; justify-content: flex-end; padding-left: 16px; }
 }
 
 /* ===== 金额汇总的合计块 =====
@@ -4075,4 +5065,3084 @@ table:not(.semi-table) td {
 @media (max-width: 760px) {
   .wi-bench { grid-template-columns: minmax(120px, 1fr) 88px 54px; }
   .wi-bench-delta { grid-column: 1 / -1; padding-left: 2px; }
+}
+
+/* 企业微信：窄屏下 6 个同步按钮会排成「5 + 1」，最后一颗单独占一行；
+   限宽后自动成 3 + 3。五项指标卡在 1370 以下原本 3 + 2，第二行右边空一格。
+   给这张卡 6 格网格：前三张各占 2 格（3×2 满行），后两张各占 3 格（3+3 满行）。
+   放在文件末尾，才能盖住前面 .kpi-cols-5 的媒体查询。 */
+@media (max-width: 1370px) {
+  .page-header.wecom-header .page-header-actions {
+    max-width: 350px;
+  }
+  .kpi-grid.wecom-kpi {
+    grid-template-columns: repeat(6, minmax(0, 1fr)) !important;
+  }
+  .kpi-grid.wecom-kpi > .kpi-card {
+    grid-column: span 2;
+  }
+  .kpi-grid.wecom-kpi > .kpi-card:nth-child(4),
+  .kpi-grid.wecom-kpi > .kpi-card:nth-child(5) {
+    grid-column: span 3;
+  }
+}
+@media (max-width: 900px) {
+  .kpi-grid.wecom-kpi { grid-template-columns: minmax(0, 1fr) !important; }
+  .kpi-grid.wecom-kpi > .kpi-card:nth-child(n) { grid-column: auto; }
+}
+
+/* 回收站三张表（线索 / 产品 / SKU）在 1024 下合计 870～1000px，
+   右侧「删除人」「操作」被推到卡片外。窄屏列宽已在页面里收紧并合并次要列，
+   这里再固定布局兜底，保证表格宽度等于容器、不横向溢出。 */
+@media (max-width: 1200px) {
+  .recycle-table .semi-table {
+    width: 100% !important;
+    table-layout: fixed;
+  }
+  .recycle-table .semi-table-row-head .semi-table-row-cell,
+  .recycle-table .semi-table-row .semi-table-row-cell {
+    overflow: hidden;
+  }
+}
+
+/* 回收复核候选表（设置 › 业务规则 › 回收复核）
+   1440 下原来会横向滚动：客户名带「【演示造数】」+「A 级 · 超 30 天未跟进」挤一行，
+   把「最早可回收」和「操作」推到卡片外。现在副信息换行、列宽收紧，
+   再用固定布局兜底 —— 宽度永远等于容器，不出现横向滚动条（2026-11-18）。 */
+.recycle-cand-table .semi-table {
+  width: 100% !important;
+  table-layout: fixed;
+}
+.recycle-cand-table .semi-table-row-head .semi-table-row-cell,
+.recycle-cand-table .semi-table-row .semi-table-row-cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.recycle-cand-table .recycle-cand-name {
+  /* 客户名允许折两行：名称里带「【演示造数】」这类长后缀，
+     强行单行 + 省略号等于把客户名截成「天津建材48厂【演示...」，
+     复核时认不出是谁（2026-11-18）。 */
+  white-space: normal;
+  word-break: break-all;
+}
+
+/* 回收节奏与恢复权限：三行「名称 210 / 控件 240 / 说明自适应」。
+   1024 下二级导航吃掉一半宽度，剩给说明列不到 50px，文字被挤成一列竖排。
+   窄屏改成单列堆叠：名称一行、控件一行、说明一行（2026-11-18）。 */
+.recycle-pace-row {
+  display: grid;
+  grid-template-columns: 210px 240px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 1280px) {
+  .recycle-pace-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+}
+
+/* 公海回收规则表（设置 › 业务规则）
+   最后一列「说明」写的是「A 级客户 30 天未跟进回收」——和前两列完全重复。
+   1024 下前两列固定宽一占，说明列只剩 30px，把表撑出横向滚动条、右侧还被裁。
+   窄屏直接隐藏这一列：信息没丢（等级 + 天数 + 开关都在），表格也不再滚。 */
+.pool-rule-table .semi-table {
+  width: 100% !important;
+  table-layout: fixed;
+}
+/* 未分级客户规则：名称 200 / 天数 130 / 开关 / 右侧说明。
+   1024 下说明被挤成 40px 宽、逐字换行，天数输入框也被压成「未...」。
+   窄屏把说明整行下移，输入框固定不收缩。 */
+.unrated-rule-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.unrated-rule-name {
+  flex: 0 0 200px;
+  font-size: 13px;
+}
+.unrated-rule-note {
+  flex: 1 1 200px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--crm-text-3);
+}
+@media (max-width: 1280px) {
+  .unrated-rule-row {
+    gap: 8px;
+  }
+  .unrated-rule-name {
+    flex: 0 0 116px;
+  }
+  .unrated-rule-note {
+    flex: 1 1 100%;
+  }
+}
+
+/* 回收复核表窄屏（1024）字号收一档：客户名两行、日期 16 字符、三个操作链接，
+   12px 下才塞得进内容区，避免最右列被裁（2026-11-18）。 */
+@media (max-width: 1280px) {
+  .recycle-cand-table .semi-table-row .semi-table-row-cell {
+    font-size: 12px;
+  }
+}
+
+/* 一组 KPI 卡数量不是列数的整数倍时，最后一行会空出格子。
+   曾经用 .kpi-fill-last 让末张跨列补洞，但主人 2026-11-19 明确否掉了：
+   补完洞之后那张卡会变成旁人的两倍宽，字号和量级全被拉变形 ——
+   「不要让那一个卡片适应窗口，三个一起更好看」。所以这条规则停用，
+   空出来的格子就让它空着（背景色一致，不见网格线，不会像缺一块）。 */
+
+/* 工作台「成员明细」：五列只有名字 + 四个数，表格撑满整张卡时列间全是空气
+   （主人 2026-11-18：「空太多了，也没有对齐」）。加浅色列分隔线 + 斑马纹，
+   「空」变成「格子」，视线能顺着列往下走。 */
+.team-table th + th,
+.team-table td + td {
+  /* 五列数字表不需要竖分隔线：列宽按比例摊开后，一条条线正好压在数字旁边，
+    比数字本身还显眼（2026-11-21 巡检）。斑马纹已经足够分行。 */
+  border-left: 0;
+}
+.team-table tbody tr:nth-child(even) {
+  background: var(--crm-surface-low);
+}
+.team-table tbody tr:hover {
+  background: var(--crm-surface-high);
+}
+.team-table th,
+.team-table td {
+  white-space: nowrap;
+}
+
+/* 三张卡的 KPI 行（数据分析「成交与转化」第二行）。
+   3 列在窄屏会掉成 2 列、第三张单独占半行，配合 .kpi-fill-last 让它跨满整行。 */
+.kpi-cols-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+@media (max-width: 1370px) {
+  .kpi-cols-3 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+/* 数据分析的指标行用的是 flex（.kpi-group .kpi-grid 里卡各占 25%，不足四张就平分）。
+   1024 窄屏下四张卡会挤成 3 + 1：第四张孤零零占满一整行，卡里只有一个数 ——
+   正是主人反复说的"内容少却给大卡"。窄屏统一两张一行，
+   四张变 2 + 2、三张变 2 + 1 且第三张自然长满整行，任何行都不留孤卡。 */
+@media (max-width: 1370px) {
+  .kpi-group .kpi-grid > .kpi-card {
+    flex: 1 1 calc(50% - 8px);
+  }
+}
+
+/* 金额列右对齐的兜底（2026-11-19）。
+   全站表格内容默认居中（见 1762 行那段），而 Semi 的列 align:'right'
+   **只写 class、不写 inline style**，于是被那条全局 text-align 压掉 ——
+   实测 1024 下「报价总额」「应收金额」「已收/未收」全是居中，右边界参差，
+   主人反复说的"读不出量级"就是这么来的。
+   这里给这些列挂 .cell-right，用 !important 把对齐拿回来。 */
+.semi-table-tbody .semi-table-row-cell.cell-right,
+.semi-table-thead .semi-table-row-head.cell-right {
+  text-align: right !important;
+}
+
+/* 同一把钥匙要开手写的原生表（工作台「成员明细」那种）。
+   2246 行那条 `table:not(.semi-table) td { text-align: center !important }`
+   是"全站表格一律居中"的实现，但它同时把金额列也压成居中 ——
+   下面这条选择器多一个类、优先级更高，只给明确挂了 .cell-right 的格子放行。 */
+table:not(.semi-table) th.cell-right,
+table:not(.semi-table) td.cell-right {
+  text-align: right !important;
+}
+
+/* 客户详情「跟进」tab：窄屏整列隐藏「记录时约定」。
+   七列里这一列是纯时间戳、信息价值最低，而 1024 卡内只有 699 —— 全塞进去
+   会让内容/反馈/下一步三列全变成省略号。等宽屏再显示。 */
+@media (max-width: 1199px) {
+  .followup-col-due,
+  .followup-col-minor {
+    display: none !important;
+  }
+}
+
+/* 订单详情各 tab（跟单节点 / 发货批次 / 应收计划 / 回款记录 / 对外单据）：
+   这些表列多、每列内容又长，Semi 默认 auto 布局会把列按内容撑开，1024 就顶出
+   横向滚动条、最后一两列整列被切。fixed 之后列宽按定义走。
+   窄屏再隐藏 .col-hide-narrow 标记的次要列（跟单节点：责任人 / 逾期原因）。 */
+.order-tab-table table {
+  table-layout: fixed !important;
+}
+.order-shipment-toolbar {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.order-shipment-quantities {
+  font-size: 13px;
+  color: var(--crm-text-2);
+}
+.order-shipment-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(90px, 120px);
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--crm-border);
+}
+.order-shipment-item label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.order-shipment-item label span {
+  display: block;
+  margin-top: 2px;
+  color: var(--crm-text-2);
+  font-size: 12px;
+}
+@media (max-width: 1199px) {
+  .col-hide-narrow {
+    display: none !important;
+  }
+}
+
+/* ============================================================
+   详情页配色（2026-11-19）
+   主人反馈「全是蓝白，太单调」。做法不是给整页刷底色（那会变成
+   "大色块"，之前明确否过），而是把颜色压在**结构和语义**上：
+   1) 四个详情页共用的头卡：顶部一条 3px 蓝→青→紫的细渐变线，
+      下面一层 5% 极淡同色渐变，卡片立刻从"白卡叠白卡"里立起来；
+   2) 客户详情「业务全景」四张数字卡各一条左边缘色线（蓝/紫/橙/绿），
+      颜色只标类别，不铺满整块；
+   3) 跟进记录「方式」按电话/微信/拜访/邮件给底色。
+   浓度都控制在 6%~12%，保证还是原来的浅色风格。
+   ============================================================ */
+.detail-header-card {
+  position: relative;
+  overflow: hidden;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--crm-primary) 5%, #ffffff) 0%,
+      #ffffff 46%
+    );
+}
+.detail-header-card::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3px;
+  background: linear-gradient(90deg, #2f6df6 0%, #2ea6d6 42%, #7431d3 100%);
+  opacity: 0.55;
+}
+
+/* 业务全景数字卡：左边缘色线 + 极淡底（悬停时略加深） */
+.cust-pano-tile.tone-primary   { --tile-accent: #2f6df6; --tile-wash: #eaf1fe; }
+.cust-pano-tile.tone-secondary { --tile-accent: #7431d3; --tile-wash: #f1e9fd; }
+.cust-pano-tile.tone-caution   { --tile-accent: var(--crm-warning); --tile-wash: var(--crm-warning-bg); }
+.cust-pano-tile.tone-success   { --tile-accent: #00b42a; --tile-wash: #e9f9ed; }
+.cust-pano-tile.tone-teal      { --tile-accent: #0d9488; --tile-wash: #e6f6f2; }
+/* 中性：数量为 0 的卡退回灰线（2026-11-20）。四条语义色线同时亮着，
+   读起来像四个业务都"有事发生"，而实际是空单 —— 颜色不该替业务下判断。 */
+.cust-pano-tile.tone-neutral   { --tile-accent: #c9cdd4; --tile-wash: transparent; }
+
+/* 2026-11-20：上一版整块浅色填充（wash），四/五张并排时像一排彩纸。
+   现在底色统一（不染色），颜色只留**左侧 3px 语义色线** ——
+   点得到是哪一类数，又不会把整块界面变成调色盘。 */
+.cust-pano-tile.tone-primary,
+.cust-pano-tile.tone-secondary,
+.cust-pano-tile.tone-caution,
+.cust-pano-tile.tone-success,
+.cust-pano-tile.tone-teal {
+  background: var(--crm-surface-low);
+  border-left: 3px solid var(--tile-accent);
+}
+.cust-pano-tile.tone-primary:hover,
+.cust-pano-tile.tone-secondary:hover,
+.cust-pano-tile.tone-caution:hover,
+.cust-pano-tile.tone-success:hover,
+.cust-pano-tile.tone-teal:hover {
+  background: var(--crm-surface);
+  border-color: var(--crm-outline);
+  border-left-color: var(--tile-accent);
+}
+.cust-pano-tile.tone-primary .cust-pano-label,
+.cust-pano-tile.tone-secondary .cust-pano-label,
+.cust-pano-tile.tone-caution .cust-pano-label,
+.cust-pano-tile.tone-success .cust-pano-label,
+.cust-pano-tile.tone-teal .cust-pano-label {
+  /* 标签统一灰：颜色的语义已经由左边那条线表达，文字再染色就是重复强调 */
+  color: var(--crm-text-3);
+}
+.cust-pano-tile.tone-primary .cust-pano-value,
+.cust-pano-tile.tone-secondary .cust-pano-value,
+.cust-pano-tile.tone-caution .cust-pano-value,
+.cust-pano-tile.tone-success .cust-pano-value,
+.cust-pano-tile.tone-teal .cust-pano-value {
+  /* 数字也回到正文色：一排数字都染成五种颜色时，读数字反而更费眼 */
+  color: var(--crm-text);
+}
+
+/* ============================================================
+   联系方式打码：默认只露前 3 后 4，点一下展开（2026-11-19）
+   ------------------------------------------------------------
+   打码态用正文次级色、字距略松，看上去是"遮住了"而不是"少了几位"；
+   悬停才染主色 + 极淡底，暗示这是可以点开的，不点也不抢注意。
+   展开后回到正文色，再点一下收回原样。
+   ============================================================ */
+.masked-contact {
+  cursor: pointer;
+  color: var(--crm-text-2);
+  border-radius: 3px;
+  padding: 0 2px;
+  letter-spacing: 0.4px;
+  transition: color var(--crm-dur-fast) var(--crm-ease),
+    background var(--crm-dur-fast) var(--crm-ease);
+}
+
+.masked-contact:hover {
+  color: var(--crm-primary);
+  background: var(--crm-primary-soft);
+}
+
+.masked-contact.is-open {
+  color: var(--crm-text-1);
+  letter-spacing: 0;
+  background: transparent;
+}
+
+/* ============================================================
+   填写说明弹窗（NotePromptModal）—— 替掉浏览器原生的 window.prompt
+   ------------------------------------------------------------
+   外壳直接复用确认弹窗那套（圆角 14、软阴影、头身脚三段的细线），
+   只补三样：头部图标的颜色变体、输入框的呼吸位、下方"必填/字数"那行小字。
+   ============================================================ */
+/* 普通填写用主色，确认弹窗使用警示色，
+   问一句原因不该带风险暗示。⚠️ 必须带 .note-prompt-modal 前缀：
+   不带的话会连 ConfirmRequiredModal 的警示图标一起染蓝（2026-11-19 差点踩）。 */
+.note-prompt-modal .crm-confirm-icon:not(.is-warning):not(.is-danger) {
+  background: linear-gradient(180deg, #E8F0FE, #DBE8FD);
+  color: var(--crm-primary);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .9);
+}
+
+.note-prompt-body {
+  line-height: 1.6;
+}
+
+.note-prompt-field > label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--crm-text-2);
+  letter-spacing: .2px;
+}
+
+/* 默认 32px 高的一行输入框，在"填原因"这件事上太窄：写两句就看不见上下文。
+   96 是四行的高度，够写清"履约未完成，客户已确认下周付款"。 */
+.note-prompt-field .semi-textarea {
+  min-height: 96px !important;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.note-prompt-field .semi-textarea:focus-within {
+  box-shadow: 0 0 0 3px var(--crm-primary-soft);
+}
+
+/* 下面这行左边是"必填 / 选填 / 红字报错"，右边是字数 —— 两件事并排，
+   不再各自占一行把弹窗撑高。 */
+.note-prompt-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--crm-text-3);
+}
+
+.note-prompt-error {
+  color: var(--crm-error);
+  font-weight: 500;
+}
+
+/* 危险动作的确认键：浅红底 + 红字，不用实心大红块（一整块红在浅色页面里最刺眼） */
+.note-prompt-danger-btn.semi-button {
+  color: var(--crm-error);
+  background: rgba(220, 38, 38, .08);
+  border: 1px solid rgba(220, 38, 38, .24);
+}
+
+.note-prompt-danger-btn.semi-button:hover {
+  background: rgba(220, 38, 38, .14);
+}
+
+.note-prompt-modal .crm-confirm-icon.is-warning {
+  background: var(--crm-warning-soft);
+  color: var(--crm-warning);
+}
+
+.note-prompt-modal .crm-confirm-icon.is-danger {
+  background: linear-gradient(180deg, #FEE2E2, #FECACA);
+  color: #B91C1C;
+}
+
+/* 标题带客户名时可能很长（"暂缓「天津建材48厂【演示造数】」"）：
+   给它留出右上角那句说明的位置，超出就截断，别把"会记入审计记录"挤成两行。 */
+.note-prompt-modal .crm-confirm-title {
+  min-width: 0;
+  max-width: calc(100% - 132px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ============================================================
+   商机转化台阶（分析页 05）
+   ------------------------------------------------------------
+   四段"包含关系"：累计创建 → 有过报价 → 成交 → 已转订单。
+   取代原来的漏斗图 —— 那个图形暗示"越往下越窄"，可数据是按
+   "阶段历史里出现过"算的，商机跳级时会倒挂（29 > 13）。
+
+   视觉上有三处刻意：条限宽 780（不铺满整卡，否则像进度条不像漏斗）、
+   同一条色系按透明度分层、段与段之间写明"这一段落掉 N 单"。
+   ============================================================ */
+.deal-steps-body {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 56px;
+  flex-wrap: wrap;
+}
+
+.deal-flow {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* 一级一行：缩进逐级 +24，靠缩进表达"子集"；不再用任何条形 */
+.deal-flow {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 0 0 404px;
+  min-width: 0;
+}
+
+/* 三列：名称（可缩进）| 数量（右对齐）| 比例（右对齐）
+   数字必须竖着对齐 —— 缩进只影响名称，不带着数字一起斜着走。 */
+.deal-flow-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px 116px;
+  align-items: center;
+  column-gap: 12px;
+  padding: 8px 0;
+  min-width: 0;
+}
+
+.deal-flow-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.deal-flow-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  transform: translateY(-1px);
+}
+
+.deal-flow-dot.is-0 { background: color-mix(in srgb, var(--crm-primary) 30%, #fff); box-shadow: 0 0 0 3px color-mix(in srgb, var(--crm-primary) 6%, transparent); }
+.deal-flow-dot.is-1 { background: color-mix(in srgb, var(--crm-primary) 55%, #fff); }
+.deal-flow-dot.is-2 { background: color-mix(in srgb, var(--crm-primary) 78%, #fff); }
+.deal-flow-dot.is-3 { background: var(--crm-primary); }
+
+.deal-flow-name {
+  font-size: 12.5px;
+  color: var(--crm-text-2);
+  letter-spacing: .2px;
+}
+
+.deal-flow-count {
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--crm-text-1);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.deal-flow-count i {
+  margin-left: 2px;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 400;
+  color: var(--crm-text-3);
+}
+
+.deal-flow-rate {
+  font-size: 11px;
+  text-align: right;
+  color: var(--crm-text-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.deal-flow-rate.is-full {
+  color: var(--crm-success);
+}
+
+/* 落差：贴着下一级的缩进位置写，前面一条短竖线表示"往下走一级" */
+.deal-flow-drop {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 0 1px 0;
+}
+
+.deal-flow-drop-text {
+  position: relative;
+  padding-left: 14px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--crm-warning);
+  letter-spacing: .2px;
+}
+
+.deal-flow-drop-text::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 3px;
+  bottom: 3px;
+  width: 2px;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--crm-warning) 45%, #fff);
+}
+
+.deal-summary {
+  flex: 0 0 176px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 14px 16px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--crm-primary) 4%, #fff);
+  border: 1px solid color-mix(in srgb, var(--crm-primary) 12%, #fff);
+  margin-top: 2px;
+}
+
+.deal-summary-label {
+  font-size: 11px;
+  letter-spacing: .4px;
+  color: var(--crm-text-3);
+}
+
+.deal-summary-value {
+  font-size: 28px;
+  font-weight: 650;
+  line-height: 1.2;
+  color: var(--crm-text-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.deal-summary-value i {
+  font-style: normal;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--crm-text-3);
+  margin-left: 1px;
+}
+
+.deal-summary-foot {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--crm-text-3);
+}
+
+.deal-step {
+  display: grid;
+  /* 第二列就 620：原来写 1fr，列宽吃满剩余空间，数字被推到条尾 300px 之外，
+     一块内容横跨整张卡，读着"稀"。 */
+  grid-template-columns: 84px minmax(0, 620px) 82px 52px;
+  align-items: center;
+  column-gap: 14px;
+  margin-top: 7px;
+}
+
+.deal-step-name {
+  font-size: 12.5px;
+  color: var(--crm-text-2);
+  letter-spacing: .2px;
+  white-space: nowrap;
+}
+
+/* 条不铺满整行：1157 宽的卡里拉满 1100px 就变成"进度条"了，
+   限到 780 之后，右侧数字与百分比才和条挨得近，眼睛不用横跨屏幕。 */
+.deal-step-track {
+  position: relative;
+  height: 16px;
+  border-radius: 5px;
+  background: rgba(17, 24, 39, .05);
+  box-shadow: inset 0 1px 2px rgba(17, 24, 39, .045);
+  overflow: hidden;
+}
+
+.deal-step-fill {
+  display: block;
+  height: 100%;
+  border-radius: 5px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .28);
+  transition: width .45s cubic-bezier(.22, .61, .36, 1);
+}
+
+/* 同一色系四档透明度：越往下越实，读起来是"同一条路走到底"，
+   而不是四根不一样颜色的条 */
+.deal-step-fill-0 { background: color-mix(in srgb, var(--crm-primary) 30%, #fff); }
+.deal-step-fill-1 { background: color-mix(in srgb, var(--crm-primary) 50%, #fff); }
+.deal-step-fill-2 { background: color-mix(in srgb, var(--crm-primary) 72%, #fff); }
+.deal-step-fill-3 { background: var(--crm-primary); }
+
+.deal-step-count {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--crm-text-1);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.deal-step-count i {
+  margin-left: 2px;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 400;
+  color: var(--crm-text-3);
+}
+
+.deal-step-rate {
+  font-size: 11.5px;
+  color: var(--crm-text-3);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 100% 那格：不是"厉害"，是"这一段没人掉" */
+.deal-step-rate.is-full {
+  color: var(--crm-success);
+}
+
+/* 落差：用警示色突出落差。它回答的是"到底掉了多少"，比百分比更有信息量 */
+.deal-step-drop {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 620px);
+  column-gap: 14px;
+  margin-top: -1px;
+  padding-left: 1px;
+}
+
+.deal-step-drop span {
+  grid-column: 2;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--crm-warning);
+  letter-spacing: .2px;
+}
+
+.deal-steps-note {
+  margin: 16px 0 0;
+  font-size: 12px;
+  line-height: 1.8;
+  color: var(--crm-text-3);
+}
+
+.deal-steps-toggle {
+  margin-top: 4px;
+  margin-left: -6px;
+}
+
+/* 原始明细里"跳过上一级 N 单"：使用警示色 */
+.deal-skip {
+  color: var(--crm-warning);
+}
+
+@media (max-width: 720px) {
+  .deal-step {
+    grid-template-columns: 72px minmax(0, 1fr) 68px;
+    column-gap: 10px;
+  }
+  .deal-step-rate {
+    display: none;
+  }
+  .deal-step-drop {
+    grid-template-columns: 72px minmax(0, 1fr);
+    column-gap: 10px;
+  }
+}
+
+/* 分析页卡片头：标题一行、注释一行（原来是「标题（注释）」拼一起，
+   四列布局卡宽 210 时整句被截，连标题都读不全） */
+.an-card-head {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.an-card-head .card-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.an-card-note {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--crm-text-3);
+  white-space: normal;
+}
+
+/* 明细报表的统计范围说明：范围是权限决定的，数字会因人而异，
+   所以放在页签上方常驻，不能只写在某张表的注释里。 */
+.analytics-scope-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-left: 3px solid var(--crm-primary);
+  border-radius: var(--crm-radius-sm);
+  background: var(--crm-surface-low);
+  color: var(--crm-text-2);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.analytics-scope-note > span:first-child {
+  color: var(--crm-text);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.analytics-basis-notes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px 24px;
+  margin: 16px 0 0;
+  padding: 14px 16px;
+  border-radius: var(--crm-radius-sm);
+  background: var(--crm-surface-low);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.analytics-basis-notes dt {
+  color: var(--crm-text);
+  font-weight: 600;
+}
+
+.analytics-basis-notes dd {
+  margin: 2px 0 0;
+  color: var(--crm-text-2);
+}
+
+.analytics-report-link {
+  display: inline-block;
+  padding: 7px 12px;
+  border-radius: var(--crm-radius-sm);
+  background: var(--crm-surface);
+  border: 1px solid var(--crm-border);
+  color: var(--crm-primary);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.analytics-header-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.analytics-report-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.analytics-report-filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  border-radius: var(--crm-radius-sm);
+  background: var(--crm-surface-low);
+}
+
+.analytics-report-picker button {
+  padding: 7px 12px;
+  background: var(--crm-surface);
+  border: 1px solid var(--crm-border);
+  border-radius: var(--crm-radius-sm);
+  color: var(--crm-text-2);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.analytics-report-picker button[aria-pressed='true'] {
+  border-color: var(--crm-primary);
+  color: var(--crm-primary);
+  font-weight: 600;
+}
+
+.analytics-report-subtitle {
+  margin: 20px 0 10px;
+  font-size: 13px;
+}
+
+@media (max-width: 600px) {
+  .analytics-page > .page-header {
+    flex-wrap: wrap;
+    gap: 10px !important;
+  }
+  .analytics-basis-notes {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 14px;
+  }
+  .analytics-page .kpi-grid > .kpi-card {
+    min-width: 0;
+    padding: 14px;
+    overflow-wrap: anywhere;
+  }
+  .analytics-page .kpi-card .kpi-value {
+    font-size: 24px;
+  }
+}
+
+/* 规则页里"复核不在这里"的指路条（2026-11-19 复核搬去 /pool-recycle） */
+.rule-block-hint {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--crm-primary) 4%, #fff);
+  border: 1px solid color-mix(in srgb, var(--crm-primary) 12%, #fff);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--crm-text-2);
+}
+
+.rule-block-hint a {
+  color: var(--crm-primary);
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+/* ============================================================
+   系统配置：分组卡片（设置页 · 业务规则）
+   ------------------------------------------------------------
+   原来 29 项挤在一张表里，没有分类、每行一个横跨整格的大输入框。
+   现在按业务域分六组，每组一张卡；组内每一行是
+   「名称 118 | 控件 ≤240 | 一句话说明」——控件不再撑满整行。
+   ============================================================ */
+.settings-groups {
+  display: grid;
+  gap: 14px;
+  margin-top: 2px;
+}
+
+/* 药丸切换（业务规则页顶部）：
+   一页九块从下往上摞是"堆料"，不是设计。改成先选"改哪件事"，再改。
+   药丸上那一点色 = 该组的色相，选中时只铺 8% 的淡底 —— 有颜色但不花。 */
+.rule-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 16px;
+  padding: 4px;
+  border: 1px solid var(--crm-border);
+  border-radius: 8px;
+  background: var(--crm-surface-low);
+}
+
+.rule-tab {
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--crm-text-2);
+  cursor: pointer;
+}
+
+.rule-tab:hover { color: var(--crm-text); }
+
+.rule-tab.is-on {
+  background: var(--crm-surface);
+  border-color: var(--crm-border);
+  color: var(--crm-primary);
+  font-weight: 600;
+}
+@container settings-page (max-width: 740px) {
+  .rule-tab { flex: 1 0 auto; }
+}
+
+/* 一次只显示一块：用 class 控制而不是条件渲染 ——
+   六组配置共用一个 map，条件渲染得改它的结构，隐藏只会多一行 CSS。 */
+.panel-hidden {
+  display: none;
+}
+
+.rule-block.is-plain {
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+
+/* 这一块的标题不再用"竖线 + 小字"的表格语法：竖线是给表头用的，
+   六张分组卡已经各自带了一个色点，标题再挂一条就显得重复。 */
+.rule-block.is-plain > .rule-block-title {
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: .2px;
+  margin: 0 0 14px;
+}
+
+.rule-block.is-plain > .rule-block-title::before {
+  display: none;
+}
+
+.settings-group {
+  /* 不是纯描边卡：一层贴地的 1px 阴影 + 一层很远很淡的扩散影，
+     白卡才会"浮"起来；只有描边时，白卡和白卡贴在一起就糊成一片。 */
+  border: 1px solid rgba(17, 24, 39, .07);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, .04), 0 10px 26px -20px rgba(16, 24, 40, .22);
+  overflow: hidden;
+}
+
+.settings-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 13px 20px 12px;
+  /* 原来铺一整条淡蓝底：六张卡就是六条蓝带，页面发"后台"。改成白底 +
+     一条发丝分隔线，色只在标题前那一个小圆点上。 */
+  background: #fff;
+  border-bottom: 1px solid rgba(17, 24, 39, .065);
+}
+
+.settings-group-title {
+  position: relative;
+  padding-left: 13px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--crm-text-1);
+  letter-spacing: .2px;
+}
+
+.settings-group-title::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 50%;
+  background: var(--group-color, var(--crm-primary));
+  opacity: .9;
+}
+
+.settings-group-note {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--crm-text-3);
+}
+
+.settings-group-body {
+  padding: 4px 20px 8px;
+}
+
+/* 组尾注：这组值影响哪些地方。视觉上把卡片底部收住 ——
+   没有它，卡内最后一行下面就是一截没有内容的空白，看着"没填完"。 */
+.settings-group-foot {
+  margin: 0;
+  padding: 11px 20px 12px;
+  border-top: 1px solid rgba(17, 24, 39, .055);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--crm-text-3);
+  background: color-mix(in srgb, var(--group-color, var(--crm-primary)) 3%, #fff);
+}
+
+.setting-field {
+  display: grid;
+  /* 三列：名字对齐成一列，控件封顶 236，剩下全给说明。
+     名字列固定宽度是为了让同组里的"30 天"竖着对齐；
+     112 是这一页最长那批标签（"建议报价浮动范围" 8 字）刚好放下的宽度 ——
+     原来 128 时，五字标签和输入框之间空出一截，整行看过去是"散"的
+     （对比「报价审批分级」那种"标签紧挨控件"的密度）。 */
+  grid-template-columns: 112px minmax(0, 236px) minmax(0, 1fr);
+  column-gap: 14px;
+  align-items: center;
+  padding: 11px 10px;
+  margin: 0 -10px;
+  border-radius: 9px;
+  /* 虚线分隔换成"整行浮起来"：虚线是表格的语法，设置面板靠留白和 hover 区分 */
+  transition: background .15s ease;
+}
+
+.setting-field:hover {
+  background: rgba(47, 109, 246, .035);
+}
+
+
+
+.setting-field-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--crm-text-1);
+  line-height: 1.4;
+  letter-spacing: .1px;
+}
+
+.setting-field-value {
+  min-width: 0;
+}
+
+/* 控件自己也要"干净"：默认的 1px 灰框 + 6px 圆角是标准后台长相，
+   换成 8px 圆角、极淡底、发丝边；聚焦时变白底 + 主色边（Semi 自带光晕）。 */
+.settings-group .semi-input-wrapper,
+.settings-group .semi-select {
+  border-radius: 8px;
+  background: #fbfcfe;
+  border-color: rgba(17, 24, 39, .1);
+}
+
+.settings-group .semi-input-wrapper:hover,
+.settings-group .semi-select:hover {
+  background: #fff;
+}
+
+.settings-group .semi-input-wrapper-focus,
+.settings-group .semi-select-focus {
+  background: #fff;
+}
+
+.settings-group .semi-input-wrapper .semi-input {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-group .semi-textarea-wrapper {
+  border-radius: 8px;
+  background: #fbfcfe;
+  border-color: rgba(17, 24, 39, .1);
+}
+
+.setting-field-value .setting-value-stack {
+  gap: 3px;
+}
+
+.setting-field-desc {
+  /* 说明比标题淡一档、小一档：层次靠这个，不靠分隔线 */
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--crm-text-3);
+  min-width: 0;
+}
+
+.customer-score-details {
+  margin: 0 0 12px;
+  border: 1px solid var(--crm-border);
+  border-radius: 8px;
+  background: var(--crm-surface-low);
+}
+.customer-score-details summary {
+  padding: 9px 12px;
+  color: var(--crm-primary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.customer-score-details summary:focus-visible {
+  outline: 2px solid var(--crm-primary);
+  outline-offset: -2px;
+  border-radius: 8px;
+}
+.customer-score-body,
+.customer-score-details > .settings-help { padding: 0 12px 12px; }
+.customer-score-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 10px;
+}
+.customer-score-groups section {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--crm-border);
+  border-radius: 8px;
+  background: var(--crm-surface);
+}
+.customer-score-groups h5 { margin: 0 0 6px; font-size: 13px; }
+.customer-score-groups dl { margin: 0; }
+.customer-score-groups dl > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--crm-border);
+  font-size: 12px;
+}
+.customer-score-groups dl > div:last-child { border: 0; }
+.customer-score-groups dd {
+  margin: 0;
+  color: var(--crm-text);
+  font-weight: 600;
+  text-align: end;
+  white-space: nowrap;
+}
+.customer-score-groups p,
+.customer-score-total { margin: 8px 0 0; color: var(--crm-text-2); font-size: 12px; line-height: 1.6; }
+
+/* "当前用不上""历史遗留"这类橙色说明：单独占一行。
+   原来 inline 跟在描述后面，说明一长就把 Tag 压成"历史…"三个字。 */
+.setting-field-tag {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 5px;
+  line-height: 1.55;
+}
+
+.setting-field-tag .semi-tag {
+  flex: 0 0 auto;
+}
+
+/* 多行文本（默认交货条款）：值占满整行，说明落到值下面。
+   塞在 240 宽的列里会被压成三行、整行高度飙到 180px。 */
+.setting-field.is-multiline {
+  /* 宽屏：和其他行同一套三列，说明就在右边那一列（同一条视线扫下来）。
+     文本框 440 而不是 560 —— 留出说明列，不然它也撑到 1100。 */
+  grid-template-columns: 128px minmax(0, 440px) minmax(0, 1fr);
+  align-items: start;
+  padding: 12px 10px 14px;
+}
+
+.setting-field.is-multiline .setting-field-label {
+  padding-top: 8px;
+}
+
+.setting-field.is-multiline .setting-field-desc {
+  padding-top: 8px;
+}
+
+
+
+@media (max-width: 1180px) {
+  /* 窄屏放不下三列：文本框压到 100%，说明落到它下面（只两列，不会竖排） */
+  .setting-field.is-multiline {
+    grid-template-columns: 104px minmax(0, 1fr);
+    row-gap: 2px;
+  }
+
+  .setting-field.is-multiline .setting-field-desc {
+    grid-column: 2;
+  }
+
+  /* 1024 下三列会把说明列压到 ~150px，中文变成三四字一行的窄条 ——
+     说明改到控件下面，只留「名字 | 控件」两列。 */
+  .setting-field {
+    grid-template-columns: 104px minmax(0, 1fr);
+    row-gap: 3px;
+    column-gap: 14px;
+    align-items: start;
+  }
+
+  .setting-field-desc {
+    grid-column: 2;
+  }
+}
+
+/* ============================================================
+   系统配置表（设置页 · 业务规则 · 系统配置）
+   ------------------------------------------------------------
+   原来 20 多项配置共用同一个裸输入框：30 是天？还是次？
+   0.15 是 15% 还是 0.15%？CNY 该填什么？全靠猜。
+   现在每项带单位、按类型用对控件，并且每行自己有保存状态。
+   ============================================================ */
+.setting-key-name {
+  text-align: left;
+  font-weight: 600;
+}
+
+.setting-desc {
+  text-align: left;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  line-height: 1.65;
+}
+
+.setting-value-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.setting-value-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.setting-value-row .setting-value-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* 天 / % / 分 这类只放三四位数字：撑满 236 太宽，一个"15"漂在大框里。
+   收紧到 150（含单位后缀），标签和框挨得近，一行读下来是"名称 → 值 → 说明"。 */
+.setting-value-input.is-num {
+  flex: 0 0 150px;
+  max-width: 150px;
+}
+
+/* 天数 / 比例 / 分数：一列数字左对齐读不出量级，右对齐才像账 */
+.setting-value-input.is-num .semi-input {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 单位挂成输入框里的后缀（灰字），不额外占一列，也不会被误当成值的一部分 */
+.setting-value-input .semi-input-suffix {
+  color: var(--crm-text-3);
+  font-size: 12px;
+}
+
+.setting-save-state {
+  flex: 0 0 46px;
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: right;
+  white-space: nowrap;
+  color: transparent;
+  transition: color .2s ease;
+}
+
+.setting-save-state.is-dirty { color: var(--crm-warning); }
+.setting-save-state.is-saving { color: var(--crm-text-3); }
+.setting-save-state.is-saved { color: var(--crm-success); }
+.setting-save-state.is-error { color: var(--crm-error); }
+
+.setting-field-hint {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--crm-text-3);
+  text-align: left;
+}
+
+.setting-object-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--crm-text-3);
+}
+
+/* ============================================================
+   报价审批分级：一档一行（2026-11-19 重做）
+   ------------------------------------------------------------
+   原来是"一档一张卡、卡里两行"：级别+上限挤第一行、角色第二行，
+   右边留一截空、删除飘在右上角。一档看不出是一条链上的一环，
+   三档就开始糊。
+
+   现在一档一行：序号徽章 + 级别名称 + 金额上限 + 审批角色 + 删除，
+   四段共用一套上下小标签，竖着看是整齐的四列，横着看是一条判定链。
+   ============================================================ */
+.approval-chain {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.approval-level {
+  display: grid;
+  /* 序号 34 / 级别 168 / 上限 196 / 角色吃剩下的 / 删除 40 */
+  grid-template-columns: 34px 168px 196px minmax(0, 1fr) 40px;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(17, 24, 39, .07);
+  border-radius: 12px;
+  background: #fff;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+
+.approval-level:hover {
+  border-color: rgba(47, 109, 246, .26);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, .05);
+}
+
+.approval-level-index {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--crm-primary) 8%, #fff);
+  color: var(--crm-primary);
+  font-size: 12px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.approval-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.approval-cell-label {
+  font-size: 11px;
+  color: var(--crm-text-3);
+  line-height: 1.2;
+  letter-spacing: .2px;
+}
+
+.approval-amount {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.approval-amount-op {
+  font-size: 13px;
+  color: var(--crm-text-3);
+  flex: 0 0 auto;
+}
+
+.approval-amount-unit {
+  font-size: 12px;
+  color: var(--crm-text-3);
+  flex: 0 0 auto;
+}
+
+.approval-level-del {
+  font-size: 12px;
+  color: var(--crm-text-3);
+  cursor: pointer;
+  text-align: right;
+  transition: color .15s ease, opacity .15s ease;
+  opacity: .55;
+}
+
+.approval-level-del:hover {
+  color: var(--crm-danger, #d4380d);
+  opacity: 1;
+}
+
+.approval-chain-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 2px;
+  flex-wrap: wrap;
+}
+
+/* 虚线"增加一档"：这是补一条规则，不是主操作，所以不跟保存争主色 */
+.approval-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 14px;
+  border-radius: 9px;
+  border: 1px dashed rgba(47, 109, 246, .35);
+  background: #fff;
+  color: var(--crm-primary);
+  font-size: 12.5px;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease;
+}
+
+.approval-add:hover {
+  background: color-mix(in srgb, var(--crm-primary) 4%, #fff);
+  border-color: rgba(47, 109, 246, .55);
+}
+
+.approval-chain-tip {
+  font-size: 11.5px;
+  color: var(--crm-text-3);
+}
+
+.approval-chain-hint {
+  margin-top: 2px;
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: #f7f8fa;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--crm-text-3);
+}
+
+.approval-chain-hint b {
+  color: var(--crm-text-2);
+  font-weight: 600;
+}
+
+@media (max-width: 1180px) {
+  /* 窄屏：四段排不下，压成两行（序号 + 级别 / 上限 / 角色），删除换到行尾 */
+  .approval-level {
+    grid-template-columns: 28px minmax(0, 1fr) minmax(0, 1fr) 34px;
+    grid-template-areas:
+      'idx label amount del'
+      'idx role  role   role';
+    row-gap: 8px;
+  }
+
+  .approval-level-index { grid-area: idx; }
+  .approval-level-del { grid-area: del; }
+
+  .approval-level > .approval-cell:nth-of-type(1) { grid-area: label; }
+  .approval-level > .approval-cell:nth-of-type(2) { grid-area: amount; }
+  .approval-level > .approval-cell:nth-of-type(3) { grid-area: role; }
+}
+
+/* ============================================================
+   同序 OA 模板编号：从"只读状态"变成能改（2026-11-19）
+   原来这里只有一个 Tag + "在下方对应区块填写后生效"，而
+   那个区块根本不存在 —— 主人：显示在一起有什么意义。
+   ============================================================ */
+.setting-code-field { display: flex; flex-direction: column; gap: 6px; }
+
+.setting-object-value .setting-code-brief {
+  font-size: 11.5px;
+  color: var(--crm-text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* 小号 chip，不用蓝字链接：这一行是"改一个参数"，不是主操作 */
+.setting-code-toggle {
+  flex: 0 0 auto;
+  margin-left: 6px;
+  padding: 1px 8px;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--crm-text-2);
+  background: #fff;
+  border: 1px solid var(--crm-border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color .15s, border-color .15s, background .15s;
+}
+.setting-code-toggle:hover {
+  color: var(--crm-primary);
+  border-color: color-mix(in srgb, var(--crm-primary) 45%, #fff);
+  background: color-mix(in srgb, var(--crm-primary) 4%, #fff);
+}
+
+/* 展开编辑：值列吃掉说明列的宽度，编号才看得全；说明挪到下一行 */
+.setting-field:has(.setting-code-field.is-open) {
+  grid-template-columns: 112px minmax(0, 1fr);
+}
+.setting-field:has(.setting-code-field.is-open) .setting-field-value { grid-column: 2; }
+.setting-field:has(.setting-code-field.is-open) .setting-field-desc { grid-column: 2; }
+
+.setting-code-edit { display: flex; flex-direction: column; gap: 6px; }
+.setting-code-actions { display: flex; align-items: center; gap: 8px; }
+.setting-code-error { font-size: 11px; color: var(--crm-danger, #f93920); }
+.setting-code-tip {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--crm-text-3);
+}
+
+@media (max-width: 1180px) {
+  .setting-field:has(.setting-code-field.is-open) { grid-template-columns: 96px minmax(0, 1fr); }
+}
+
+/* 值列里的 Tag 不许被挤扁（236 宽塞 Tag + 字 + chip 时先压 Tag） */
+.setting-object-value > .semi-tag { flex: 0 0 auto; }
+.setting-code-detail {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--crm-text-3);
+}
+
+/* 展开时就地给说明，不必再把右侧那行描述顶在脸上 */
+.setting-field:has(.setting-code-field.is-open) .setting-field-desc { display: none; }
+
+/* ============================================================
+   值单元格：静止态只是一行字（2026-11-19）
+   主人：现在全是框框，没有美感，按最适合的做。
+   所以把"每一行顶一个输入框"改成"点一下才长控件"。
+   ============================================================ */
+.setting-value-cell { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+
+.setting-value-view {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 100%;
+  margin-left: -6px;
+  padding: 1px 6px 2px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--crm-text);
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  text-align: left;
+  cursor: pointer;
+  transition: background .15s;
+}
+.setting-value-view:hover {
+  background: var(--crm-primary-soft);
+}
+.setting-value-view:focus-visible {
+  outline: 2px solid var(--crm-primary);
+  outline-offset: 2px;
+}
+.setting-value-text { min-width: 0; overflow-wrap: anywhere; }
+.setting-value-view.is-empty .setting-value-text { color: var(--crm-text-3); font-weight: 400; }
+.setting-value-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  color: var(--crm-primary);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* 编辑态：只在点开那一刻出现 */
+.setting-markup-editor {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: minmax(0, 1fr);
+}
+.setting-markup-editor .semi-input-wrapper { width: min(132px, 100%); }
+.setting-value-actions { display: flex; align-items: center; gap: 6px; }
+.setting-value-cell.is-editing { gap: 8px; }
+.setting-value-cell.is-editing .setting-value-input.is-num { flex: 0 0 132px; width: 132px; }
+
+.setting-preset-row, .setting-option-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.setting-preset, .setting-option-chip {
+  padding: 3px 10px;
+  font-size: 11.5px;
+  line-height: 18px;
+  color: var(--crm-text-2);
+  background: #fff;
+  border: 1px solid rgba(17, 24, 39, .12);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color .15s, border-color .15s, background .15s;
+}
+.setting-preset:hover, .setting-option-chip:hover {
+  color: var(--crm-primary);
+  border-color: rgba(47, 109, 246, .45);
+  background: rgba(47, 109, 246, .04);
+}
+.setting-preset.is-on {
+  color: var(--crm-primary);
+  border-color: rgba(47, 109, 246, .42);
+  background: rgba(47, 109, 246, .10);
+  font-weight: 600;
+}
+.setting-option-chip.is-on {
+  color: #fff;
+  background: var(--crm-primary);
+  border-color: var(--crm-primary);
+  font-weight: 600;
+}
+
+/* 编辑时把说明列让出来：输入框 + 两个按钮在 236 宽里会挤成两行 */
+.setting-field:has(.setting-value-cell.is-editing) { grid-template-columns: 112px minmax(0, 1fr); }
+.setting-field:has(.setting-value-cell.is-editing) .setting-field-value { grid-column: 2; grid-row: 1; }
+.setting-field:has(.setting-value-cell.is-editing) .setting-field-desc { grid-column: 2; grid-row: 2; }
+
+@media (max-width: 1180px) {
+  .setting-field:has(.setting-value-cell.is-editing) { grid-template-columns: 96px minmax(0, 1fr); }
+}
+
+/* 编辑态：名称顶对齐（否则名称被垂直居中到整块中间，看着"沉"下去） */
+.setting-field:has(.setting-value-cell.is-editing) { align-items: start; }
+.setting-field:has(.setting-value-cell.is-editing) .setting-field-label { padding-top: 3px; }
+
+@container settings-page (max-width: 520px) {
+  .settings-group-head,
+  .settings-group-foot { padding-inline: 12px; }
+  .settings-group-body { padding-inline: 12px; }
+  .setting-field,
+  .setting-field.is-multiline,
+  .setting-field:has(.setting-code-field.is-open),
+  .setting-field:has(.setting-value-cell.is-editing) {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+  .setting-field .setting-field-value,
+  .setting-field .setting-field-desc,
+  .setting-field.is-multiline .setting-field-desc,
+  .setting-field:has(.setting-value-cell.is-editing) .setting-field-value,
+  .setting-field:has(.setting-value-cell.is-editing) .setting-field-desc {
+    grid-column: 1;
+    grid-row: auto;
+  }
+  .setting-field.is-multiline .setting-field-label,
+  .setting-field.is-multiline .setting-field-desc { padding-top: 0; }
+  .setting-value-row { flex-wrap: wrap; }
+  .setting-value-row .setting-value-input { flex-basis: 100%; }
+  .setting-value-actions { flex-wrap: wrap; }
+}
+
+/* ============================================================
+   商机转化台阶：改成四列清单（2026-11-19 重排）
+   上一版挤在中间、落差写成缩进行，读不出主次 ——
+   主人：「布局不够明了，让人有看不明白的感觉」。
+   ============================================================ */
+.deal-table { display: flex; flex-direction: column; }
+
+.deal-table-head,
+.deal-table-row {
+  display: grid;
+  /* 四列铺满整卡：上一版阶段列一个人吃掉剩余宽度，名字在左、数字全在右，
+     中间空出一大截，读起来像两块不相干的东西 —— 均匀分列更像一张表。 */
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: 18px;
+  align-items: center;
+}
+.deal-table-head {
+  padding: 0 10px 8px;
+  font-size: 11px;
+  color: var(--crm-text-3);
+  border-bottom: 1px solid rgba(17, 24, 39, .07);
+}
+.deal-table-row {
+  padding: 11px 10px;
+  border-bottom: 1px solid rgba(17, 24, 39, .05);
+  border-radius: 9px;
+  transition: background .15s;
+}
+.deal-table-row:hover { background: rgba(47, 109, 246, .035); }
+
+.deal-stage {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--crm-text);
+  min-width: 0;
+}
+.deal-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--crm-primary);
+  opacity: .35;
+}
+.deal-dot.is-1 { opacity: .55; }
+.deal-dot.is-2 { opacity: .78; }
+.deal-dot.is-3 { opacity: 1; }
+
+.deal-count {
+  font-size: 17px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--crm-text);
+}
+.deal-count i {
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--crm-text-3);
+  margin-left: 3px;
+}
+.deal-rate {
+  font-size: 12px;
+  color: var(--crm-text-2);
+  font-variant-numeric: tabular-nums;
+}
+.deal-rate.is-full { color: var(--crm-success); }
+.deal-drop {
+  font-size: 12px;
+  color: #ff7d00;
+  font-variant-numeric: tabular-nums;
+}
+.deal-drop.is-none { color: var(--crm-text-3); }
+
+/* 卡片右上角：整体转化 */
+.deal-total {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--crm-primary) 6%, #fff);
+  border: 1px solid color-mix(in srgb, var(--crm-primary) 14%, #fff);
+}
+.deal-total-label { font-size: 11px; color: var(--crm-text-3); }
+.deal-total-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--crm-primary);
+  font-variant-numeric: tabular-nums;
+}
+.deal-total-value i { font-style: normal; font-size: 12px; font-weight: 600; margin-left: 1px; }
+.deal-total-foot { font-size: 11px; color: var(--crm-text-3); }
+
+@media (max-width: 1180px) {
+  .deal-table-head, .deal-table-row { grid-template-columns: minmax(0, 1fr) 72px 96px 96px; gap: 12px; }
+  .deal-total-foot { display: none; }
+}
+
+/* 展开明细那只按钮：原来是蓝字链接，看着像"随手一句"，其实是个开关 */
+.deal-toggle-btn.semi-button {
+  padding: 3px 12px;
+  font-size: 12px;
+  border-radius: 999px;
+  border: 1px dashed rgba(47, 109, 246, .38);
+  background: rgba(47, 109, 246, .04);
+  color: var(--crm-primary);
+}
+.deal-toggle-btn.semi-button:hover { background: rgba(47, 109, 246, .09); }
+
+/* 明细表：三列右对齐，别再让"较上一阶段"被推到最右 */
+.deal-steps-detail .semi-table { margin-top: 4px; }
+
+/* 全站表格默认居中（index.css 开头的约定），明细这里要求数字右对齐 */
+.deal-detail-table .semi-table-thead > tr > th:nth-child(n + 2),
+.deal-detail-table .semi-table-tbody > tr > td:nth-child(n + 2) { text-align: right; }
+.deal-detail-table .semi-table-thead > tr > th:nth-child(1),
+.deal-detail-table .semi-table-tbody > tr > td:nth-child(1) { text-align: left; padding-left: 20px; }
+
+/* 四列清单的右对齐（上一版写了 is-right 却没给规则，数字全挤在列左） */
+.deal-table-head .is-right,
+.deal-table-row .is-right { text-align: right; }
+
+/* 「自定义」这枚胶囊要和预设区分开：虚线，表示"这里还能填别的" */
+.setting-preset.is-custom {
+  border-style: dashed;
+  color: var(--crm-text-3);
+}
+.setting-preset.is-custom:hover { color: var(--crm-primary); border-color: rgba(47, 109, 246, .45); }
+.setting-preset.is-custom.is-on {
+  color: var(--crm-primary);
+  border-style: solid;
+  border-color: rgba(47, 109, 246, .42);
+  background: rgba(47, 109, 246, .10);
+}
+
+/* 同序 OA 模板编号：只读展示，等宽小字，长码截断（全码在 title 里） */
+.setting-code-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  color: var(--crm-text-2);
+  letter-spacing: .2px;
+}
+.setting-code-empty { font-size: 12px; color: var(--crm-text-3); }
+
+/* 只读设置项：值是一句人话，不给编辑入口（2026-11-19 恢复「通知与导出」组时定的） */
+.setting-readonly-value { font-size: 13px; color: var(--crm-text-2); line-height: 1.65; }
+/* 选项类末尾的「更多权限…」：虚线胶囊，跟「自定义…」同一套语言，不抢主选项的颜色 */
+
+/* 弹窗副标题：一句话交代"最少填什么"，放在标题下面、12px 灰（2026-11-19） */
+.modal-subtitle {
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--crm-text-3);
+  line-height: 1.5;
+}
+/* 表单分段标题：小字 + 一条淡线，把"基础信息 / 归属 / 补充"这些段落分开。
+   一堆字段平铺在 520 宽的弹窗里时，人看不出哪几项是一组。 */
+.form-block-title {
+  grid-column: 1 / -1;   /* 两列栅格的弹窗里也要占满一整行（否则那条淡线只画到一半） */
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--crm-text-3);
+  letter-spacing: .5px;
+  margin-top: 2px;
+}
+.form-block-title::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(17, 24, 39, 0.06);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   弹窗质感（2026-11-19 主人：「这种弹窗一片白，有什么办法弄好看一点吗」）
+   原因不是配色，是**层次缺失**：标题区、表单区、按钮区全是一个白，输入框也是
+   白底 + 浅灰描边，一眼看过去只有一堆线框，没有"块"。
+   做法（只在弹窗内生效，列表页的筛选框/内联编辑不受影响）：
+   1) 输入框静止态改成浅灰底、无描边 —— 控件从"白纸上的线框"变成"纸上的凹槽"；
+   2) 聚焦时变白底 + 主色描边 + 3px 光晕，编辑中的那个格子才亮起来；
+   3) 标题区一层极淡的主色（4% → 0 的竖向渐变），跟正文拉开；
+   4) 底部按钮区浅灰底 + 一条上边线，按钮"落"在弹窗底上，不再悬着。
+   ───────────────────────────────────────────────────────────────────────── */
+.semi-modal .semi-input-wrapper,
+.semi-modal .semi-input-textarea-wrapper,
+.semi-modal .semi-select,
+.semi-modal .semi-datepicker {
+  background: #f3f5f7;
+  border: 1px solid transparent;
+  transition: background .16s ease, border-color .16s ease, box-shadow .16s ease;
+}
+.semi-modal .semi-input-wrapper:hover,
+.semi-modal .semi-input-textarea-wrapper:hover,
+.semi-modal .semi-select:hover,
+.semi-modal .semi-datepicker:hover {
+  background: #eceff2;
+}
+.semi-modal .semi-input-wrapper-focus,
+.semi-modal .semi-input-wrapper-error,
+.semi-modal .semi-input-textarea-wrapper-focus,
+.semi-modal .semi-select-focus,
+.semi-modal .semi-select-open,
+.semi-modal .semi-datepicker-focus {
+  background: #fff !important;
+  border-color: var(--crm-primary) !important;
+  box-shadow: 0 0 0 3px rgba(47, 109, 246, .12);
+}
+/* 输入框里的实际 input 要透明，否则灰底被它盖住 */
+.semi-modal .semi-input,
+.semi-modal .semi-select-selection,
+.semi-modal .semi-datepicker-input {
+  background: transparent;
+}
+.semi-modal-header {
+  background: linear-gradient(180deg, rgba(47, 109, 246, .045), rgba(47, 109, 246, 0));
+  border-bottom: 1px solid rgba(17, 24, 39, .06);
+  padding-bottom: 14px;
+}
+.semi-modal-footer {
+  background: #fafbfc;
+  border-top: 1px solid rgba(17, 24, 39, .06);
+}
+
+/* ─────────────── 弹窗视觉再上一层（2026-11-19 主人：「还是不够」）───────────────
+   上一版只把输入框做成凹槽、头脚分区，还是"一张白纸上摆几个灰块"。
+   这一版给弹窗三样东西：
+   1) 顶部 3px 彩色细带（主色 → 紫 → 青绿），像给窗口戴了个身份条；
+   2) 段标题变成浅色胶囊（不再只是"小字 + 一条线"）；
+   3) 弹窗圆角加大、阴影加软，主按钮带一点同色投影 —— 按钮从"贴平"变成"能按"。
+   ───────────────────────────────────────────────────────────────────────────── */
+.semi-modal .semi-modal-content {
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 24px 64px -24px rgba(15, 23, 42, .38), 0 2px 8px rgba(15, 23, 42, .06);
+}
+.semi-modal-header {
+  position: relative;
+  padding-top: 18px;
+}
+.semi-modal-header::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 3px;
+  background: linear-gradient(90deg, #2f6df6 0%, #6b5ce7 48%, #12b5a0 100%);
+}
+.semi-modal-title {
+  font-size: 17px !important;
+  font-weight: 600 !important;
+  letter-spacing: .2px;
+}
+/* 段标题：浅色胶囊 */
+.form-block-title {
+  margin-top: 6px;
+}
+.form-block-title > span {
+  background: rgba(47, 109, 246, .09);
+  color: #2f6df6;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  letter-spacing: .3px;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+/* 主按钮带同色投影 */
+.semi-modal .semi-modal-footer-ok .semi-button-primary,
+.semi-modal .semi-button-primary {
+  box-shadow: 0 6px 16px -6px rgba(47, 109, 246, .55);
+}
+
+/* 弹窗头部："圆角图标块 + 标题"（2026-11-19 主人说层次还是不够，加一个身份标识） */
+.modal-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.modal-head-icon {
+  width: 38px;
+  height: 38px;
+  flex: none;
+  border-radius: 11px;
+  display: grid;
+  place-items: center;
+  color: #2f6df6;
+  background: linear-gradient(135deg, rgba(47, 109, 246, .16), rgba(107, 92, 231, .10));
+  box-shadow: inset 0 0 0 1px rgba(47, 109, 246, .12);
+}
+
+/* 行式表单：标签在左、控件在右（2026-11-19 主人说「还是不够」，选了 D 方案）
+   56 宽的标签列把弹窗从"一堆上下叠的字段"变成"一张能横向扫读的清单"，
+   行间一条极淡的分隔线负责节奏，既不是白纸也不是框套框。 */
+.form-rows {
+  display: block;
+}
+.form-row {
+  display: grid;
+  grid-template-columns: 88px 1fr;
+  gap: 14px;
+  align-items: center;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(17, 24, 39, .045);
+}
+.form-row:last-child {
+  border-bottom: 0;
+}
+.form-row.is-textarea {
+  align-items: start;
+}
+.form-row.is-textarea .form-row-label {
+  padding-top: 9px;
+}
+.form-row-label {
+  font-size: 12.5px;
+  color: var(--crm-text-2);
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.form-row-label .req {
+  color: #f53f3f;
+  margin-left: 2px;
+}
+.form-row-control {
+  min-width: 0;
+}
+.form-row-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--crm-text-3);
+}
+.form-row-note {
+  margin: 1px 0 9px;
+  background: var(--crm-warning-soft);
+  color: var(--crm-warning);
+  padding: 9px 11px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.form-rows .form-block-title {
+  margin: 15px 0 3px;
+}
+.form-rows .form-block-title.first {
+  margin-top: 0;
+}
+
+/* 分区小标题行："标题 + 一句说明 + 右侧动作"，用在分期/多行清单这类区块前 */
+.form-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 4px 0 8px;
+}
+.form-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--crm-text-1, #1d2129);
+}
+.form-section-hint {
+  font-size: 12px;
+  color: var(--crm-text-3);
+}
+
+/* ─────────────── 分组卡片式表单（2026-11-19 主人给的参考图：浅蓝卡片 + 竖条标题 + 两列）───────
+   行式解决的是"排得乱"，这一套解决"一块块分不清"：
+   每段是一个浅蓝底圆角卡片，段标题左边 3px 主色竖条，卡内字段两列排，
+   提示类信息用浅蓝小块占一格 —— 弹窗不再是"一张白纸 + 一堆线框"。 */
+.form-cards {
+  display: grid;
+  gap: 14px;
+}
+.form-card {
+  background: #f6f8fd;
+  border-radius: 10px;
+  padding: 14px 16px 16px;
+}
+.form-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--crm-text-1, #1d2129);
+  margin-bottom: 12px;
+}
+.form-card-title::before {
+  content: '';
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #2f6df6, #6b8cf7);
+}
+.form-card-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px 16px;
+  align-items: start;
+}
+.form-card-grid .full {
+  grid-column: 1 / -1;
+}
+.form-field-label {
+  font-size: 12.5px;
+  color: var(--crm-text-1, #1d2129);
+  margin-bottom: 6px;
+  line-height: 1.4;
+}
+.form-field-label .req {
+  color: #f53f3f;
+  margin-left: 2px;
+}
+.form-tip {
+  background: #edf3ff;
+  color: #2b62d6;
+  border-radius: 8px;
+  padding: 9px 11px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+}
+/* 卡片是浅蓝底，输入框在卡片里必须是白底 + 淡描边，否则灰底会糊成一片 */
+.semi-modal .form-card .semi-input-wrapper,
+.semi-modal .form-card .semi-input-textarea-wrapper,
+.semi-modal .form-card .semi-select,
+.semi-modal .form-card .semi-datepicker {
+  background: #fff;
+  border: 1px solid rgba(17, 24, 39, .1);
+}
+.semi-modal .form-card .semi-input-wrapper:hover,
+.semi-modal .form-card .semi-select:hover {
+  background: #fff;
+  border-color: rgba(47, 109, 246, .45);
+}
+
+/* 确认弹窗（Popconfirm）：全站几十处删除/停用确认都用它，原来是原生感很强的小白框。
+   2026-11-21：原来边框和阴影加在 `.semi-popover-content` 上，而 Semi 的 `.semi-popover`
+   本身已经带一层白底圆角框 —— 于是每个气泡都是「框套框」，帮问号旁边尤其明显。
+   改为只留最外一层：`.semi-popover` 拿边框与阴影，content 只留圆角与留白。 */
+/* 真正的外层是 `.semi-popover-wrapper`（Semi 默认给它白底 + 大阴影 + 圆角），
+   里面的 `.semi-popover` 才是内容面板 —— 两层都带框，视觉上就是框套框。
+   把外壳剥成透明，只留内层一块。 */
+.semi-popover-wrapper {
+  background: transparent !important;
+  background-color: transparent !important;
+  box-shadow: none !important;
+}
+/* Semi 的 Tooltip / Popover 是两层壳：外面 `.semi-tooltip-*` 铺了一层灰底和 8/12 内边距，
+   里面 `.semi-popover` 又是一块白色圆角面板 —— 所以每个气泡看着都是「框套框」。
+   这里把外壳剥掉（透明、零内边距），只让里面的面板作为唯一一层。 */
+.semi-tooltip-wrapper,
+.semi-tooltip-content {
+  background: transparent;
+  background-color: transparent;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  color: inherit;
+}
+.semi-popover-wrapper .semi-popover-content {
+  background: transparent;
+  border-radius: 0;
+  border: 0;
+  box-shadow: none;
+}
+.semi-popover-wrapper .semi-popover {
+  /* 之前这里没写底色，气泡是透明的：下面的卡片白底透上来，
+     看上去就像外灰框里又嵌了一个白框。显式给白底，整块只剩一层。 */
+  background-color: #fff;
+  overflow: hidden;
+  border-radius: 12px;
+  /* 带箭头的气泡默认留 12px 内边距，那圈空白透出侧影，看着就是第二个框 */
+  padding: 0;
+  border: 1px solid rgba(17, 24, 39, .06);
+  box-shadow: 0 16px 40px -16px rgba(15, 23, 42, .32), 0 2px 6px rgba(15, 23, 42, .05);
+}
+.semi-popconfirm .semi-popconfirm-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--crm-text-1, #1d2129);
+  line-height: 1.5;
+  margin-bottom: 4px;
+}
+.semi-popconfirm .semi-popconfirm-inner {
+  padding: 14px 16px 12px;
+}
+.semi-popconfirm .semi-popconfirm-footer {
+  gap: 8px;
+  padding: 0 16px 14px;
+}
+.semi-popconfirm .semi-button {
+  border-radius: 6px;
+}
+
+/* ─────────────── 表格：行的"存在感"与行内操作的主次（2026-11-19）───────────────
+   现状：鼠标扫过一行只有极淡的灰（#f5f7fa），选中行同色系、看不出选了谁；
+   行内操作是一排同款描边小按钮，四个动作长得一样，没有主次。 */
+/* 1) 悬停：淡主色底 + 左边缘 2px 主色指示条（整行的"我在哪"一眼可见） */
+.semi-table-tbody > .semi-table-row:hover > .semi-table-row-cell {
+  background: #f2f6ff;
+}
+.semi-table-tbody > .semi-table-row:hover > .semi-table-row-cell:first-child {
+  box-shadow: inset 2px 0 0 0 #2f6df6;
+}
+/* 2) 选中行：明确的一层蓝，和 hover 区分开 */
+.semi-table-tbody > .semi-table-row.semi-table-row-selected > .semi-table-row-cell,
+.semi-table-tbody > .semi-table-row.semi-table-row-selected:hover > .semi-table-row-cell {
+  background: #eaf1ff !important;
+}
+.semi-table-tbody > .semi-table-row.semi-table-row-selected > .semi-table-row-cell:first-child {
+  box-shadow: inset 2px 0 0 0 #2f6df6;
+}
+/* 3) 行内操作：描边小按钮 → 文字按钮（悬停才出浅底），一排动作不再像四个框 */
+.semi-table-tbody .semi-button {
+  border-radius: 6px;
+  font-size: 12.5px;
+  padding-left: 6px;
+  padding-right: 6px;
+  transition: background-color .14s ease, color .14s ease;
+}
+.semi-table-tbody .semi-button:not(.semi-button-primary):not(.semi-button-danger):not(.semi-button-warning) {
+  border-color: transparent !important;
+  background: transparent !important;
+  color: #2f6df6;
+}
+.semi-table-tbody .semi-button:not(.semi-button-primary):not(.semi-button-danger):hover {
+  background: rgba(47, 109, 246, .08) !important;
+}
+.semi-table-tbody .semi-button-danger {
+  border-color: transparent !important;
+  background: transparent !important;
+}
+.semi-table-tbody .semi-button-danger:hover {
+  background: rgba(245, 63, 63, .08) !important;
+}
+
+/* Toast：默认那版是一块直角黑边卡片，跟这套语言差得远 */
+.semi-toast-content {
+  border-radius: 10px;
+  box-shadow: 0 12px 32px -12px rgba(15, 23, 42, .3), 0 2px 6px rgba(15, 23, 42, .06);
+  padding: 10px 14px;
+  font-size: 13px;
+}
+/* 加载：Semi 的转圈默认是灰的，换成主色，和按钮/进度一致 */
+.semi-spin-children > .semi-spin {
+  color: #2f6df6;
+}
+
+/* 详情页顶部的一排按钮：现在全是同款描边（"记录跟进 / 去核价 / 推进阶段 / 新建任务"
+   四个长得一样，真正要点的那个反而看不出来）。
+   次级动作统一成文字按钮，只有 1 个实心主操作；文字按钮悬停才浮出浅底。 */
+.page-header .semi-button-borderless,
+.page-header-actions .semi-button-borderless,
+.detail-head .semi-button-borderless {
+  border-color: transparent;
+  background: transparent;
+  padding-left: 8px;
+  padding-right: 8px;
+  transition: background-color .14s ease;
+}
+.page-header .semi-button-borderless:hover {
+  background: rgba(47, 109, 246, .08);
+}
+
+/* 详情页头部（DetailHeader 的 .dh-actions）：总目录的前几项动作都是"次要动作"，
+   统一成无底无边的文字按钮；只有实心主操作（.semi-button-primary.semi-button-solid）
+   保留色块。Semi 的 borderless 在当前主题下仍带一层浅底，这里一并抹掉。 */
+.dh-actions .semi-button-borderless,
+.dh-actions .semi-button-tertiary {
+  background: transparent !important;
+  border-color: transparent !important;
+  padding-left: 8px;
+  padding-right: 8px;
+  transition: background-color .14s ease;
+}
+.dh-actions .semi-button-borderless:hover,
+.dh-actions .semi-button-tertiary:hover {
+  background: rgba(47, 109, 246, .08) !important;
+}
+.dh-actions .semi-button-danger:hover {
+  background: rgba(245, 63, 63, .08) !important;
+}
+
+/* 报价详情页头部的动作排（.quote-actions）：这里本来就按 quoteActions() 分了
+   primary / secondary，但所有按钮都是描边款，分完还是"一排一样重的框"。
+   现在：primary 组用实心主色（这一阶段就该点的那一个），secondary 组收成文字按钮，
+   危险动作（客户拒绝）留红字。 */
+/* 只有实心款（.semi-button-solid）是主操作；Semi 的 Button 默认 type=primary，
+   早先按 type 判断会把「新建版本 / 下载 PDF」也刷成实心蓝块。 */
+.quote-actions .semi-button-solid {
+  background: #fff !important;
+  border: 1px solid rgba(47, 109, 246, .5) !important;
+  color: #2f6df6 !important;
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(47, 109, 246, .12);
+}
+.quote-actions .semi-button-solid:hover {
+  background: #f3f7ff !important;
+  border-color: #2f6df6 !important;
+}
+.quote-actions .semi-button:not(.semi-button-solid):not(.semi-button-danger) {
+  background: transparent !important;
+  border-color: transparent !important;
+  color: #2f6df6;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+.quote-actions .semi-button:not(.semi-button-solid):not(.semi-button-danger):hover {
+  background: rgba(47, 109, 246, .08) !important;
+}
+.quote-actions .semi-button-danger {
+  background: transparent !important;
+  border-color: transparent !important;
+}
+
+/* 订单详情页头的「更多操作 ▾」：原来是带浅底的 borderless，和旁边的主操作抢注意力。
+   这边单独压低成文字按钮（Dropdown 触发器，点击区不变）。 */
+.dh-actions .semi-button-tertiary {
+  color: var(--crm-text-2, #4e5969);
+}
+
+/* ─────────────── 全站主按钮：不要"蓝色整块填充"（2026-11-19 主人）
+   「我并不喜欢蓝色全底的这种，有这种的都要改」。
+   凡是 .semi-button-primary.semi-button-solid（真·实心蓝）统一成
+   「白底 + 主色描边 + 主色文字 + 一道极轻投影」：
+   仍然是页面上唯一"有形"的按钮，但不再是一整块蓝。
+   —— 这条放在最后，优先级压过前面所有给 solid 加底的规则。 */
+.semi-button-primary.semi-button-solid {
+  background: #fff !important;
+  background-image: none !important;
+  color: #2f6df6 !important;
+  border: 1px solid rgba(47, 109, 246, .5) !important;
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(47, 109, 246, .12) !important;
+  transition: background-color .14s ease, border-color .14s ease, box-shadow .14s ease;
+}
+.semi-button-primary.semi-button-solid:hover {
+  background: #f3f7ff !important;
+  border-color: #2f6df6 !important;
+  box-shadow: 0 2px 6px -2px rgba(47, 109, 246, .22) !important;
+}
+.semi-button-primary.semi-button-solid:active {
+  background: #eaf1ff !important;
+  transform: none !important;
+  box-shadow: 0 1px 2px rgba(47, 109, 246, .12) !important;
+}
+/* 弹窗底部的确定按钮跟着同一条规则走（它也是 solid primary） */
+.semi-modal-footer .semi-button-primary.semi-button-solid {
+  color: #2f6df6 !important;
+}
+
+/* type="tertiary" 的本质是"文字按钮"：Semi 默认再叠一层 theme=light，于是每个
+   文字按钮都带一块浅灰底（下载模板 / 导出 / 批量导入 三个看着像小卡片）。
+   全站抹掉这层底 —— 文字按钮就该只有字，悬停才浮一层浅主色。 */
+.semi-button-tertiary.semi-button-light,
+.semi-button-tertiary.semi-button-borderless {
+  background: transparent !important;
+  border-color: transparent !important;
+  color: var(--crm-primary) !important;
+  box-shadow: none !important;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+.semi-button-tertiary.semi-button-light:hover,
+.semi-button-tertiary.semi-button-borderless:hover {
+  background: rgba(47, 109, 246, .08) !important;
+}
+
+/* ─────────────── 表格里的"名称链接"（2026-11-19 二稿）───────────────
+   一稿把它改成深色，结果整张表"一片黑"，看不出哪些名字能点进去。
+   二稿：能跳转的仍是主色，但**去掉粗体**（一稿前的"蓝字海"主要怪 600 字重），
+   再压到 13px 的常规字重；不能跳转的普通文本保持深色。于是：
+   蓝 = 可点，黑 = 纯信息；悬停才出现下划线。 */
+.semi-table-tbody .semi-table-row-cell a {
+  color: #2c62d9 !important;
+  font-weight: 400;
+  text-decoration: none;
+  transition: color .14s ease;
+}
+.semi-table-tbody .semi-table-row-cell a:hover {
+  color: #1f4fc4 !important;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+/* 名称列的两个字副标题（如"华东复购 · 待补核"）保持灰，别被链接色带跑 */
+.semi-table-tbody .semi-table-row-cell a span {
+  color: inherit;
+}
+
+/* 表格行内操作：Semi 的 theme="borderless" 对 primary / danger 仍然带一层浅底 + 圆角，
+   于是「详情 / 删除」变成一白一红的小药丸（样品管理整张表 12 行都是）。
+   表格里一律按文字按钮处理：透明底、无边框、无投影，悬停才浮浅色。 */
+.semi-table-tbody .semi-button.semi-button-borderless {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  color: #2f6df6;
+  padding-left: 6px;
+  padding-right: 6px;
+}
+.semi-table-tbody .semi-button.semi-button-borderless.semi-button-danger {
+  color: #f53f3f;
+}
+.semi-table-tbody .semi-button.semi-button-borderless:hover {
+  background: rgba(47, 109, 246, .08) !important;
+}
+.semi-table-tbody .semi-button.semi-button-borderless.semi-button-danger:hover {
+  background: rgba(245, 63, 63, .08) !important;
+}
+
+.logistics-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 440px) minmax(0, 1fr);
+  gap: 16px;
+  margin-top: 16px;
+}
+.logistics-layout > * { min-width: 0; }
+.sku-master-overview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+}
+.sku-master-status {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--crm-border);
+  border-radius: var(--crm-radius-sm);
+  background: var(--crm-surface-low);
+}
+.sku-master-status-attention { border-inline-start: 3px solid var(--crm-warning); }
+.sku-master-status .workflow-guide { margin: 4px 0 0; }
+.sku-master-checkboxes {
+  display: flex;
+  flex-wrap: wrap;
+  row-gap: 6px;
+  margin-top: 8px;
+}
+.sku-master-optional {
+  margin-top: 10px;
+}
+.sku-master-optional summary {
+  width: fit-content;
+  color: var(--crm-primary);
+  cursor: pointer;
+  font-size: 13px;
+}
+.sku-master-differences,
+.sku-master-diff {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+.sku-master-diff {
+  padding: 14px;
+  border: 1px solid var(--crm-border);
+  border-radius: var(--crm-radius-sm);
+}
+.sku-master-diff-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  font-size: 14px;
+}
+.sku-master-diff-heading > span:not(.semi-tag),
+.sku-master-diff-detail {
+  margin: 0;
+  color: var(--crm-text-2);
+  font-size: 13px;
+}
+.sku-master-diff-values,
+.sku-master-diff-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 8px 12px;
+  margin: 0;
+}
+.sku-master-diff-values > div {
+  padding: 10px 12px;
+  border-radius: var(--crm-radius-sm);
+  background: var(--crm-surface-low);
+  overflow-wrap: anywhere;
+}
+.sku-master-diff-values dt {
+  color: var(--crm-text-2);
+  font-size: 12px;
+}
+.sku-master-diff-values dd {
+  margin: 4px 0 0;
+  font-weight: 600;
+}
+.sku-master-diff .blocked-hint-click { justify-self: start; }
+.order-draft-confirm-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  justify-items: start;
+}
+.order-draft-confirm-body .workflow-guide { margin: 0; }
+.order-draft-quote-picker { width: min(100%, 380px); }
+.order-draft-quote-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 8px 12px;
+  border-radius: var(--crm-radius-sm);
+  background: var(--crm-surface-low);
+  font-size: 13px;
+}
+.receivable-picker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+.receivable-installment {
+  padding: 10px 12px 12px;
+  border: 1px solid var(--crm-border);
+  border-radius: var(--crm-radius-sm);
+  background: var(--crm-surface-low);
+}
+.receivable-installment-heading,
+.receivable-picker-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+.receivable-installment-heading {
+  min-height: 28px;
+  margin-bottom: 6px;
+}
+.receivable-installment-amount {
+  margin-inline-start: auto;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.receivable-installment-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, .65fr) minmax(0, 1fr);
+  gap: 8px 10px;
+}
+.receivable-picker-guide {
+  margin: 0;
+  color: var(--crm-text-2);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.receivable-picker-unbalanced { color: var(--crm-error); }
+.workflow-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.workflow-modal-actions > .blocked-hint-compact {
+  flex-basis: 100%;
+  text-align: right;
+}
+.order-cancel-details {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+.order-cancel-details > .workflow-guide { margin: 0; }
+.order-cancel-impact {
+  margin: 0;
+  padding: 4px 12px;
+  border-radius: var(--crm-radius-sm);
+  background: var(--crm-surface-low);
+}
+.order-cancel-impact > div {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  padding: 6px 0;
+}
+.order-cancel-impact > div + div { border-top: 1px solid var(--crm-border); }
+.order-cancel-impact dd {
+  margin: 0;
+  color: var(--crm-text-2);
+}
+.payment-allocation-heading,
+.payment-allocation-total {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.payment-allocation-plan {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 150px);
+  align-items: center;
+  gap: 8px 16px;
+  padding: 8px 12px;
+  border: 1px solid var(--crm-border);
+  border-radius: var(--crm-radius-sm);
+}
+.payment-allocation-meta,
+.payment-allocation-input > span {
+  font-size: 12px;
+  color: var(--crm-text-2);
+}
+.payment-allocation-total {
+  padding: 8px 12px;
+  border-radius: var(--crm-radius-sm);
+  background: var(--crm-surface-low);
+}
+@media (max-width: 480px) {
+  .payment-allocation-plan { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 560px) {
+  .receivable-installment-fields {
+    grid-template-columns: minmax(0, 1fr) minmax(0, .65fr);
+  }
+  .receivable-installment-date { grid-column: 1 / -1; }
+}
+.wecom-import-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.wecom-import-summary > div,
+.wecom-import-reasons > div {
+  padding: 8px 12px;
+  border: 1px solid var(--crm-border);
+  border-radius: var(--crm-radius-sm);
+}
+.wecom-import-summary > div {
+  background: var(--crm-surface-low);
+}
+.wecom-import-summary span {
+  display: block;
+  font-size: 12px;
+  color: var(--crm-text-2);
+}
+.wecom-import-summary strong { font-size: 17px; }
+.wecom-import-reasons {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+.wecom-import-reasons dt {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+}
+.wecom-import-reasons dd {
+  margin: 3px 0 0;
+  color: var(--crm-text-2);
+}
+.wecom-customer-search {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+.wecom-customer-result {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--crm-border);
+  border-radius: var(--crm-radius-sm);
+  overflow-wrap: anywhere;
+}
+@media (max-width: 560px), (max-height: 740px) {
+  :is(.receivable-plan-modal, .order-cancel-modal, .payment-allocation-modal, .wecom-import-modal, .workflow-scroll-modal) .semi-modal { margin-block: 16px; }
+  :is(.receivable-plan-modal, .order-cancel-modal, .payment-allocation-modal, .wecom-import-modal, .workflow-scroll-modal) .semi-modal-content {
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100dvh - 32px);
+  }
+  :is(.receivable-plan-modal, .order-cancel-modal, .payment-allocation-modal, .wecom-import-modal, .workflow-scroll-modal) .semi-modal-body {
+    min-height: 0;
+    overflow-y: auto;
+  }
+  :is(.receivable-plan-modal, .order-cancel-modal, .payment-allocation-modal, .wecom-import-modal, .workflow-scroll-modal) .semi-modal-footer { flex-shrink: 0; }
+}
+.logistics-reference {
+  margin-top: 12px;
+  border-inline-start-color: var(--crm-warning);
+  background: var(--crm-warning-soft);
+}
+.logistics-field-error {
+  margin: 4px 0 0;
+  color: var(--crm-error);
+  font-size: 12px;
+}
+.logistics-rate-link {
+  display: inline-block;
+  padding: 5px 12px;
+  border: 1px solid var(--crm-primary);
+  border-radius: var(--crm-radius-sm);
+  color: var(--crm-primary);
+}
+.logistics-rate-link:hover { background: var(--crm-primary-soft); }
+@media (max-width: 1100px) {
+  .logistics-layout { grid-template-columns: minmax(0, 1fr); }
+}
+/* 物流试算条件按货物、线路和可选设置分组。 */
+.calc-step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--crm-border, #f0f2f5);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--crm-text-2, #4e5969);
+}
+.calc-step::before {
+  content: '';
+  width: 3px;
+  height: 12px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #6b8cf7, #6b5ce7);
+}
+.calc-step:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+/* ─────────────── 表体文字分三档，避免整张表"一片黑"（2026-11-19）───────────────
+   原来表体所有文字都是主文本色（近黑），一屏十几行看下去是一块深灰的砖：
+   名称、等级、阶段、负责人、状态、金额全是同一个重量，谁也不突出。
+   现在分三档：
+   · 主标识（名称/单号，可点）→ 上一条规则里的主色蓝；
+   · 金额（列上声明了 align:right 的）→ 深色 #1d2129，钱要看清；
+   · 其余正文（等级/阶段/负责人/标签/状态文字）→ 中灰 #4e5969。
+   这样扫一行是"蓝一个点 + 黑一个数 + 一片灰"，重点自己浮出来。 */
+.semi-table-tbody .semi-table-row-cell {
+  color: #4e5969;
+}
+.semi-table-tbody .semi-table-row-cell.cell-right {
+  color: #1d2129;
+}
+
+
+/* ─────────────── 主标识：名称不是链接时也要"跳出来"（2026-11-20）
+   表体统一灰字（#4e5969）是为了让数字和状态不抢眼，但"这是哪条记录"的那一格
+   跟着一起灰，扫表时就找不到落点（主人在公海回收/销售任务上说过"看着都一样"）。
+   规则：**能点的名称** = 蓝字（已有 a 规则）；**不能点的名称** = 深色 500 字重。
+   两者都跳出来，但用"蓝/不蓝"区分可点与不可点，不再出现"一片灰"或"一片蓝"。 */
+.semi-table-tbody .semi-table-row-cell.cell-strong {
+  color: var(--crm-text-1) !important;
+  font-weight: 500;
+}
+.semi-table-tbody .semi-table-row-cell .cell-strong {
+  color: var(--crm-text-1) !important;
+  font-weight: 500;
+}
+/* 公海回收的客户名是两行结构（名字 + 「A 级 · 超 60 天未跟进」），
+   名字那行同样按主标识处理 */
+.recycle-cand-table .recycle-cand-name {
+  color: var(--crm-text-1);
+  font-weight: 500;
+}
+
+
+/* 详情页加载态：转圈 + 一行字（见 shared/components/PageLoading.tsx） */
+.page-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 80px 0;
+  color: var(--crm-text-3);
+  font-size: 13px;
+}
+
+/* ─────────────── 表格里的小红字（2026-11-20）───────────────
+   上面 `.semi-table-row-cell a { color:#2c62d9 !important }` 把「能跳转的蓝」定死了，
+   代价是**危险动作也被染成蓝**：定制需求的「删除」本来写了
+   `style={{ color:'var(--crm-error)' }}`，inline style 撞不过 !important，
+   整张表里 20 多个红字删除全成了普通蓝链接 —— 主人一眼看不出哪个会删数据。
+   这里只给显式标了危险色的链接开一条口子（属性选择器认 inline style 原文），
+   其余链接不受影响。 */
+.semi-table-tbody .semi-table-row-cell a[style*="crm-error"],
+.semi-table-tbody .semi-table-row-cell a[style*="#f53f3f"],
+.semi-table-tbody .semi-table-row-cell a[style*="#ff4d4f"] {
+  color: var(--crm-error) !important;
+}
+.semi-table-tbody .semi-table-row-cell a[style*="crm-error"]:hover,
+.semi-table-tbody .semi-table-row-cell a[style*="#f53f3f"]:hover,
+.semi-table-tbody .semi-table-row-cell a[style*="#ff4d4f"]:hover {
+  color: var(--crm-error) !important;
+  text-decoration: underline;
+}
+
+/* ─────────────── 浅蓝底药丸：一次收干净（2026-11-20 主人）
+   Semi 的 Button 不写 theme 时默认是 light —— 浅蓝底 + 蓝字的"药丸"。
+   全站还有几十处是 <Button onClick={...}>查询</Button> 这种写法
+   （产品列表的「查询」、产品详情的「编辑资料」、样品抽屉的「重新读取…」…），
+   它们一直是浅蓝底，跟"白底描边主按钮"的语言对不上，也正是主人说的
+   「我并不喜欢蓝色全底的这种，有这种的都要改」。
+   之前那条规则只认 solid，漏了 light，这里补齐：统一成白底 + 描边 + 主色字。
+   danger / default / tertiary / borderless 都不在这一条里，不受影响。 */
+.semi-button-primary.semi-button-light {
+  background: #fff !important;
+  background-image: none !important;
+  color: #2f6df6 !important;
+  border: 1px solid rgba(47, 109, 246, .5) !important;
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(47, 109, 246, .12) !important;
+  transition: background-color .14s ease, border-color .14s ease, box-shadow .14s ease;
+}
+.semi-button-primary.semi-button-light:hover {
+  background: #f3f7ff !important;
+  border-color: #2f6df6 !important;
+  box-shadow: 0 2px 6px -2px rgba(47, 109, 246, .22) !important;
+}
+.semi-button-primary.semi-button-light:active {
+  background: #eaf1ff !important;
+  box-shadow: 0 1px 2px rgba(47, 109, 246, .12) !important;
+}
+.semi-button-primary.semi-button-light.semi-button-disabled,
+.semi-button-primary.semi-button-light:disabled {
+  background: #f5f6f8 !important;
+  color: #a9b1bd !important;
+  border-color: #e3e6eb !important;
+  box-shadow: none !important;
+}
+
+/* ─────────────── 核价页：上下堆叠，别再挤成一根窄竖条（2026-11-20 主人）
+   三轮改下来定在这里：左 380 的窄栏把七个字段拉成 648 高的一条竖带，
+   右边只摆一张空态 —— 主人原话「这一页这么长你为啥做这么窄呢」。
+   现在：
+     ① 输入卡占满一整行，字段排三列 → 高度从 648 掉到 300 上下；
+     ② 结果区两列并排：成本结构 / 核价结果，AI 解读 / 权限校验；
+     ③ 选完 SKU 才展开，没选时只有一张全宽引导卡。 */
+.pricing-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.pricing-side {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+  min-width: 0;
+}
+/* 抽屉里的核价（价格中心「核价试算」）：只有 860 宽，三列会挤成三个窄格子，
+   表单降到两列、结果区收成一列，从下往上读。 */
+.pricing-grid--drawer .pricing-form {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.pricing-grid--drawer .pricing-side {
+  grid-template-columns: minmax(0, 1fr);
+}
+@media (max-width: 520px) {
+  .pricing-grid--drawer .pricing-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ─────────────── 列表页「一个搜索框占一整行」（2026-11-20 主人「右边又空」）
+   回收站六个面板都是：380 宽的搜索框贴在卡片左边，右面 700 像素纯白。
+   收成一行：搜索框 + 条数/范围说明，右侧不再空。 */
+.list-search-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.list-search-note {
+  color: var(--crm-text-3);
+  font-size: 12px;
+}
+
+/* 空态表格别再多一条底线：0 条时下面那条线看着像还有数据没显示出来 */
+.semi-table-wrapper:has(.semi-table-empty) .semi-table-tbody,
+.semi-table-wrapper:has(.semi-table-placeholder) .semi-table-tbody {
+  border-bottom: none !important;
+}
+
+/* 只去 tbody 不够：Semi 在空态下渲染的是占位行，那一行的单元格自己还挂着
+   下边框，空表格底下就留了一条淡线（撞单裁定、商机"跟进"页签都见过）。
+   占位行、占位容器一起清掉。 */
+.semi-table-wrapper:has(.semi-table-placeholder) .semi-table-placeholder,
+.semi-table-wrapper:has(.semi-table-placeholder) .semi-table-tbody > tr > td,
+.semi-table-wrapper:has(.semi-table-empty) .semi-table-placeholder,
+.semi-table-wrapper:has(.semi-table-empty) .semi-table-tbody > tr > td {
+  border-bottom: none !important;
+}
+
+/* ─────────────── 文字按钮别再带"凸起"（2026-11-20）
+   文件开头那条 .semi-button-primary 的「高光 + 短投影」是按"实心块"写的，
+   但它是挂在 .semi-button-primary 上的 —— borderless / tertiary 这些文字按钮
+   也继承了它。结果表格里的「延期 / 转交」明明是纯蓝字，却因为底下有投影，
+   远看像一排小药丸（销售任务页三个动作挤成三个框就是这么来的）。
+   文字按钮：无高光、无投影、无底色。 */
+.semi-button-primary.semi-button-borderless,
+.semi-button-primary.semi-button-tertiary {
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  border: none !important;
+}
+.semi-button-primary.semi-button-borderless:hover,
+.semi-button-primary.semi-button-tertiary:hover {
+  background: rgba(47, 109, 246, .08) !important;
+  box-shadow: none !important;
+}
+.semi-button-primary.semi-button-borderless:active,
+.semi-button-primary.semi-button-tertiary:active {
+  transform: none !important;
+  box-shadow: none !important;
+}
+
+/* ─────────────── 表格里禁用的按钮要真是灰的（2026-11-20）
+   样品管理里"不能删的行"原来摆一个禁用的「删除」，但禁用色没压住，
+   和旁边可点的「删除」一样是蓝字 —— 同一列出现"一行红、其余蓝"，
+   主人以为是两套规则。禁用态统一灰字、无底、无投影。 */
+.semi-table-tbody .semi-button.semi-button-disabled,
+.semi-table-tbody .semi-button:disabled {
+  color: #a9b1bd !important;
+  background: transparent !important;
+  background-image: none !important;
+  border: none !important;
+  box-shadow: none !important;
+  cursor: not-allowed !important;
+}
+
+/* Compact explanations beside selected business terms. */
+.crm-help-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.crm-help-tip {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--crm-text-3);
+  font-family: inherit;
+  font-weight: 600;
+  font-size: 11px;
+  line-height: 1;
+  cursor: help;
+}
+
+.crm-help-tip:hover,
+.crm-help-tip:focus-visible,
+.crm-help-tip[aria-expanded="true"] {
+  color: var(--crm-primary);
+  background: var(--crm-surface-low);
+}
+
+.crm-help-tip:focus-visible {
+  outline: 2px solid var(--crm-primary);
+  outline-offset: 2px;
+}
+
+.crm-help-tip-content {
+  max-width: min(260px, calc(100vw - 40px));
+  padding: 9px 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: normal;
+}
+
+
+.wecom-transfer-note {
+  padding: 12px;
+  border-radius: var(--crm-radius-sm);
+  background: var(--crm-surface-low);
+  color: var(--crm-text-2);
+  line-height: 1.6;
+}
+.wecom-transfer-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  overflow-wrap: anywhere;
+}
+.wecom-transfer-row > span { min-width: min(140px, 100%); }
+
+.wecom-transfer-results,
+.wecom-transfer-result-list {
+  display: grid;
+  gap: 10px;
+}
+.wecom-transfer-result-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.wecom-transfer-result-item {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--crm-border);
+  border-radius: var(--crm-radius-sm);
+  overflow-wrap: anywhere;
+}
+.wecom-transfer-result-heading {
+  display: grid;
+  gap: 2px;
+}
+.wecom-transfer-result-heading > span,
+.wecom-transfer-result-status {
+  color: var(--crm-text-2);
+  font-size: 12px;
+}
+.wecom-transfer-result-status,
+.wecom-transfer-pagination {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.wecom-transfer-pagination {
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.pool-scan-result {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--crm-border);
+  border-radius: var(--crm-radius-sm);
+  background: var(--crm-surface-low);
+  color: var(--crm-text-2);
+}
+.pool-scan-result-heading {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.pool-scan-result-heading strong { color: var(--crm-text-1); }
+.pool-scan-result-heading a { color: var(--crm-primary); }
+.pool-scan-result ul { margin: 0; padding-inline-start: 20px; }
+
+.pool-scan-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 12px;
+}
+.pool-scan-toolbar > span { color: var(--crm-text-2); font-size: 12px; }
+@media (max-width: 680px) {
+  .pool-rule-table col:nth-child(1),
+  .pool-rule-table col:nth-child(3) { width: 26% !important; }
+  .pool-rule-table col:nth-child(2) { width: 48% !important; }
+  .pool-rule-table .semi-table-row-cell { padding-inline: 4px; }
+}
+
+.lead-conversion-actions {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+.semi-modal-footer .lead-conversion-actions > .semi-button {
+  margin-inline: 0;
+  min-width: 0;
+  padding-inline: 6px;
+}
+
+.customer-handover {
+  display: grid;
+  gap: 14px;
+}
+.customer-handover-context {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  background: var(--crm-surface-low);
+  border-radius: var(--crm-radius-sm);
+  color: var(--crm-text-2);
+  overflow-wrap: anywhere;
+}
+.customer-handover-context strong { color: var(--crm-text-1); }
+
+.customer-handover-selection {
+  margin: 0;
+  padding-inline-start: 18px;
+  max-height: 132px;
+  overflow-y: auto;
+}
+
+.settings-account-error {
+  margin-top: 4px;
+  color: var(--crm-error);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
