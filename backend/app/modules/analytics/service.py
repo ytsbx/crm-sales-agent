@@ -1265,18 +1265,29 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
     quoted: dict[int, dict] = {}
     # 同一报价单的 V1/V2 是修订，不是两次独立报价；正式毛利只取该报价单该产品的最新正式版本。
     latest_formal: dict[tuple[int | None, int], int] = {}
-    name_fallback: dict[int | None, tuple] = {}
-    for sku_id, quote_id, version_id, version_no, formal, quantity, q_name, q_spec, profit in quote_rows:
-        if sku_id is None and (q_name or q_spec):
-            # 同一个 None 桶里取**第一条**有名有姓的明细，避免顺序一变名字就跳
-            name_fallback.setdefault(sku_id, (q_name, q_spec))
-        if formal:
-            key = (sku_id, quote_id)
-            latest_formal[key] = max(latest_formal.get(key, 0), version_no or 0)
+    # 无 SKU 的定制项**不能都塞进同一个"None 桶"**：它们的产品完全不同
+    # （中空板箱、纸托、围板箱、家电外箱…），混成一行会把"防静电周转箱"当代表，
+    # 其余产品全被算到它头上（2026-11-21 巡检实测）。用快照名当分组键，
+    # 每个定制项单独成行；有 SKU 的仍按 SKU 归并。
+    def _bucket(sid: int | None, nm: str | None) -> object:
+        return sid if sid is not None else f"n:{nm or '定制项'}"
 
-    for sku_id, quote_id, version_id, version_no, formal, quantity, _q_name, _q_spec, profit in quote_rows:
+    name_fallback: dict[object, tuple] = {}
+    for row in quote_rows:
+        sku_id, quote_id, version_id, version_no, formal, quantity, q_name, q_spec, profit = row
+        bid = _bucket(sku_id, q_name)
+        if sku_id is None and (q_name or q_spec):
+            name_fallback.setdefault(bid, (q_name, q_spec))
+        if formal:
+            latest_formal[(bid, quote_id)] = max(
+                latest_formal.get((bid, quote_id), 0), version_no or 0
+            )
+
+    for row in quote_rows:
+        sku_id, quote_id, version_id, version_no, formal, quantity, q_name, q_spec, profit = row
+        bid = _bucket(sku_id, q_name)
         acc = quoted.setdefault(
-            sku_id,
+            bid,
             {
                 "draft_times": 0,
                 "formal_times": 0,
@@ -1290,7 +1301,7 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
         if formal:
             acc["formal_times"] += 1
             acc["formal_quotes"].add(quote_id)
-            if (version_no or 0) == latest_formal[(sku_id, quote_id)]:
+            if (version_no or 0) == latest_formal[(bid, quote_id)]:
                 acc["profit"] += float(profit or 0)
         else:
             acc["draft_times"] += 1
@@ -1328,13 +1339,18 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
     if not sku_ids:
         return []
 
-    meta_rows = (
-        await session.execute(
-            select(Sku.id, Sku.sku_code, Sku.specification, Product.name)
-            .join(Product, Product.id == Sku.product_id)
-            .where(Sku.id.in_(sku_ids))
-        )
-    ).all()
+    # `quoted` 的键可能是 int（有 SKU）或 "n:名称"（无 SKU 的定制项），
+    # 查 SKU 主数据只取 int 的那部分。
+    int_ids = [sid for sid in sku_ids if isinstance(sid, int)]
+    meta_rows = []
+    if int_ids:
+        meta_rows = (
+            await session.execute(
+                select(Sku.id, Sku.sku_code, Sku.specification, Product.name)
+                .join(Product, Product.id == Sku.product_id)
+                .where(Sku.id.in_(int_ids))
+            )
+        ).all()
     meta = {row[0]: row[1:] for row in meta_rows}
 
     # 成本口径字段按权限（与查价/报价详情同判据，issue #5）
@@ -1344,31 +1360,34 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
         "versions": set(), "formal_quotes": set(), "profit": 0.0,
     }
     items = []
-    for sku_id in sku_ids:
-        code, spec, product_name = meta.get(sku_id, (None, None, None))
-        if sku_id is None:
-            # 无 SKU 的定制明细：用明细快照名顶上，别再叫"未命名产品"
-            fb_name, fb_spec = name_fallback.get(None, (None, None))
-            code = code or fb_name
-            spec = spec or fb_spec
-        acc = quoted.get(sku_id, empty)
+    for bid in sku_ids:
+        sid: int | None
+        if isinstance(bid, int):
+            code, spec, product_name = meta.get(bid, (None, None, None))
+            sid = bid
+        else:
+            # 定制项：名称/规格取明细快照；产品名留空（没有主数据可挂）
+            fb_name, fb_spec = name_fallback.get(bid, (None, None))
+            code, spec, product_name = fb_name, fb_spec, None
+            sid = None
+        acc = quoted.get(bid, empty)
         items.append(
             {
-                "sku_id": sku_id,
+                "sku_id": sid,
                 "sku_code": code,
                 "specification": spec,
                 "product_name": product_name,
                 # 需求热度（客户问过）
-                "inquiry_times": inquiry.get(sku_id, 0),
+                "inquiry_times": inquiry.get(bid, 0),
                 # 报价侧：草稿与正式分开；正式按**报价单**去重
                 "quote_draft_times": acc["draft_times"],
                 "quote_formal_times": len(acc["formal_quotes"]),
                 "version_revision_times": len(acc["versions"]),
                 "quote_quantity": round(acc["quantity"], 2),
                 # 成交（商机事实）与实际卖出的量（订单事实）
-                "won_times": won.get(sku_id, 0),
-                "lost_times": lost.get(sku_id, 0),
-                "order_won_quantity": order_won.get(sku_id, 0.0),
+                "won_times": won.get(bid, 0),
+                "lost_times": lost.get(bid, 0),
+                "order_won_quantity": order_won.get(bid, 0.0),
                 # 报价预估毛利 —— 不是实际利润。无权限者为 None
                 "quote_estimated_profit": (
                     round(acc["profit"], 2) if can_see_cost else None
