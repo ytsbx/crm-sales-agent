@@ -6156,17 +6156,41 @@ table:not(.semi-table) td.cell-right {
   border-color: rgba(47, 109, 246, .45);
 }
 
-/* 确认弹窗（Popconfirm）：全站几十处删除/停用确认都用它。
-   2026-11-21：原来边框和阴影加在 `.semi-popover-content` 上，而 Semi 的 `.semi-popover`
-   本身已经带一层白底圆角框 —— 每个气泡都是「框套框」，指标卡问号旁边尤其明显。
-   改为只留最外一层：`.semi-popover` 拿边框与阴影，content 只留圆角与留白。 */
+/* 真正的外层是 `.semi-popover-wrapper`（Semi 默认给它白底 + 大阴影 + 圆角），
+   里面的 `.semi-popover` 才是内容面板 —— 两层都带框，视觉上就是框套框。
+   把外壳剥成透明，只留内层一块。 */
+.semi-popover-wrapper {
+  background: transparent !important;
+  background-color: transparent !important;
+  box-shadow: none !important;
+}
+/* Semi 的 Tooltip / Popover 是两层壳：外面 `.semi-tooltip-*` 铺了一层灰底和 8/12 内边距，
+   里面 `.semi-popover` 又是一块白色圆角面板 —— 所以每个气泡看着都是「框套框」。
+   这里把外壳剥掉（透明、零内边距），只让里面的面板作为唯一一层。 */
+.semi-tooltip-wrapper,
+.semi-tooltip-content {
+  background: transparent;
+  background-color: transparent;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  color: inherit;
+}
 .semi-popover-wrapper .semi-popover-content {
-  border-radius: 12px;
+  background: transparent;
+  border-radius: 0;
   border: 0;
   box-shadow: none;
 }
 .semi-popover-wrapper .semi-popover {
+  /* 之前这里没写底色，气泡是透明的：下面的卡片白底透上来，
+     看上去就像外灰框里又嵌了一个白框。显式给白底，整块只剩一层。 */
+  background-color: #fff;
+  overflow: hidden;
   border-radius: 12px;
+  /* 带箭头的气泡默认留 12px 内边距，那圈空白透出侧影，看着就是第二个框 */
+  padding: 0;
   border: 1px solid rgba(17, 24, 39, .06);
   box-shadow: 0 16px 40px -16px rgba(15, 23, 42, .32), 0 2px 6px rgba(15, 23, 42, .05);
 }
