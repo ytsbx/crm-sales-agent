@@ -6156,8 +6156,16 @@ table:not(.semi-table) td.cell-right {
   border-color: rgba(47, 109, 246, .45);
 }
 
-/* 确认弹窗（Popconfirm）：全站几十处删除/停用确认都用它，原来是原生感很强的小白框 */
+/* 确认弹窗（Popconfirm）：全站几十处删除/停用确认都用它。
+   2026-11-21：原来边框和阴影加在 `.semi-popover-content` 上，而 Semi 的 `.semi-popover`
+   本身已经带一层白底圆角框 —— 每个气泡都是「框套框」，指标卡问号旁边尤其明显。
+   改为只留最外一层：`.semi-popover` 拿边框与阴影，content 只留圆角与留白。 */
 .semi-popover-wrapper .semi-popover-content {
+  border-radius: 12px;
+  border: 0;
+  box-shadow: none;
+}
+.semi-popover-wrapper .semi-popover {
   border-radius: 12px;
   border: 1px solid rgba(17, 24, 39, .06);
   box-shadow: 0 16px 40px -16px rgba(15, 23, 42, .32), 0 2px 6px rgba(15, 23, 42, .05);
