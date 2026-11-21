@@ -120,7 +120,7 @@ export default function QuoteListPage() {
       // 而看单子又必须知道是第几版 —— 和单号放一起最省地方
       title: '报价单号',
       dataIndex: 'quote_no',
-      width: compact ? 135 : 145,
+      width: compact ? 124 : 145,
       render: (text: string, record: Quote) => (
         <div>
           <Link to={`/quotes/${record.id}`} style={{ color: 'var(--crm-primary)' }}>
@@ -136,7 +136,7 @@ export default function QuoteListPage() {
       // 商机名同理：并到客户名下面做小字，省掉一整个自适应列
       title: '客户 / 商机',
       dataIndex: 'customer_name',
-      width: compact ? 190 : 175,
+      width: compact ? 168 : 175,
       render: (v: string | null, record: Quote) => (
         <div style={{ minWidth: 0 }}>
           <div className="cell-strong" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={v ?? '-'}>
@@ -162,18 +162,22 @@ export default function QuoteListPage() {
     {
       title: '报价总额',
       dataIndex: 'current_version_amount',
-      width: compact ? 108 : 115,
+      width: compact ? 124 : 115,
+      ellipsis: false,
       /* 金额右对齐：位数不同的报价左对齐时右边界参差，
          ¥100.00 和 ¥34,343.00 摆一起读不出量级（与回款中心一致）。 */
       align: 'right' as const,
       className: 'cell-right',
-      render: (v: number | null, record: Quote) =>
-        formatMoney(record.current_version_amount_exact ?? v, record.currency),
+      render: (v: number | null, record: Quote) => (
+        <span style={{ whiteSpace: 'nowrap', fontSize: compact ? 12 : undefined }}>
+          {formatMoney(record.current_version_amount_exact ?? v, record.currency)}
+        </span>
+      ),
     },
     {
       title: compact ? '状态 / 审批' : '报价状态',
       dataIndex: 'status_label',
-      width: compact ? 120 : 100,
+      width: compact ? 92 : 100,
       render: (value: string, record: Quote) =>
         compact ? (
           /* 窄屏把「审批状态」并进这一列的第二行，省掉一列宽度 */
@@ -193,12 +197,16 @@ export default function QuoteListPage() {
           width: 95,
           render: (value: string | null) => approvalDot(value),
         }]),
-    {
-      title: '有效期',
-      dataIndex: 'valid_until',
-      width: compact ? 104 : 105,
-      render: (v: string | null) => v ?? '-',
-    },
+    /* 窄屏（640）不放有效期：五列挤在 590px 里，日期只露出「20」两个字符，
+       还不如不给 —— 报价单号、客户、金额、状态四个才是列表里要扫的东西。 */
+    ...(compact
+      ? []
+      : [{
+          title: '有效期',
+          dataIndex: 'valid_until',
+          width: 105,
+          render: (v: string | null) => v ?? '-',
+        }]),
     ...(compact
       ? []
       : [{ title: '负责人', dataIndex: 'owner_name', width: 90, render: (v: string | null) => v ?? '-' }]),
