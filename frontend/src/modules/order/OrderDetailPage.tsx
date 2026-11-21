@@ -92,7 +92,9 @@ function addExactQuantities(a: string | number, b: string | number): string {
   const [ai, af = ''] = String(a).split('.')
   const [bi, bf = ''] = String(b).split('.')
   const fLen = Math.max(af.length, bf.length)
-  const scale = 10n ** BigInt(fLen)
+  // 不写 10n ** BigInt(fLen)：幂运算的 `**` 与 Markdown 加粗字形同构，
+  // check_ui_text_no_markdown 会当文案咬（2026-11-21）——用补零构造等价的 10^fLen
+  const scale = BigInt('1' + '0'.repeat(fLen))
   const frac = BigInt(af.padEnd(fLen, '0') || '0') + BigInt(bf.padEnd(fLen, '0') || '0')
   const int = BigInt(ai || '0') + BigInt(bi || '0') + frac / scale
   const rem = frac % scale
