@@ -16,7 +16,6 @@ from decimal import Decimal
 from sqlalchemy import Select, and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.audit import AuditLog
 from app.core.draft_visibility import draft_scope, private_draft
 from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
