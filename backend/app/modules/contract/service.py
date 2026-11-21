@@ -8,7 +8,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import logging
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 

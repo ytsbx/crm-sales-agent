@@ -35,6 +35,7 @@ function setup(unitCost = 1) {
       if (id === '@tanstack/react-query') return { useQuery: () => ({ data: { versions: [] } }) }
       if (id === '@douyinfe/semi-ui') return Object.fromEntries(['Button', 'Input', 'Slider', 'Table', 'Tag', 'Toast'].map((name) => [name, name]))
       if (id.endsWith('/SectionCard')) return { default: 'SectionCard' }
+      if (id.endsWith('/HelpTip')) return { default: 'HelpTip' }
       if (id.endsWith('/money')) return money
       if (id.endsWith('/api/quote')) return {}
       return require(id)
@@ -54,7 +55,7 @@ function setup(unitCost = 1) {
       input: nodes.find((node) => node.type === 'Input').props,
       button: (label) => nodes.find((node) => node.type === 'Button' && node.props.children === label)?.props,
       save: (index) => nodes.filter((node) => node.type === 'Button' && Array.isArray(node.props.children) && node.props.children[0] === '记为方案 ')[index].props.onClick(),
-      scenarios: nodes.find((node) => node.type === 'Table' && node.props.rowKey === 'label').props,
+      scenarios: () => nodes.find((node) => node.type === 'Table' && node.props.rowKey === 'label').props,
     }
   }
 }
@@ -67,11 +68,11 @@ test('four-decimal baseline and saved scenario keep amount and profit', () => {
   assert.equal(view.slider.tipFormatter(1.2345), '¥1.2345')
   view.save(0)
   view = render()
-  const row = view.scenarios.dataSource[0]
+  const row = view.scenarios().dataSource[0]
   assert.equal(row.price, 1.2345)
   assert.ok(Math.abs(row.amount - 12345) < 1e-8)
   assert.ok(Math.abs(row.profit - 2345) < 1e-8)
-  assert.equal(view.scenarios.columns.find((col) => col.dataIndex === 'price').render(row.price), '¥1.2345')
+  assert.equal(view.scenarios().columns.find((col) => col.dataIndex === 'price').render(row.price), '¥1.2345')
 })
 
 test('slider, manual input, scenarios and reset use the same four-decimal price', () => {
@@ -80,7 +81,7 @@ test('slider, manual input, scenarios and reset use the same four-decimal price'
   let view = render()
   assert.equal(view.input.value, '1.2346')
   view.save(1)
-  assert.equal(render().scenarios.dataSource[1].price, 1.2346)
+  assert.equal(render().scenarios().dataSource[1].price, 1.2346)
   render().input.onChange('1.23456')
   view = render()
   assert.equal(view.input.value, '1.2346')
@@ -91,7 +92,7 @@ test('slider, manual input, scenarios and reset use the same four-decimal price'
 test('unknown cost remains unknown in saved four-decimal scenario', () => {
   const render = setup(null)
   render().save(0)
-  const row = render().scenarios.dataSource[0]
+  const row = render().scenarios().dataSource[0]
   assert.equal(row.price, 1.2345)
   assert.equal(row.profit, null)
   assert.equal(row.margin, null)

@@ -1,7 +1,6 @@
 """线索中心接口（对齐 03-API §6）。"""
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit

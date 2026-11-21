@@ -322,7 +322,7 @@ export function PoolRecyclePanel() {
           {receipt && (
             <div className="recycle-review-receipt" role="status">
               <div>
-                <strong>{receipt.customer_name ?? `客户 #${receipt.customer_id}`} · {receipt.restored_at ? '已恢复' : receipt.status_label}</strong>
+                <strong>{receipt.customer_name ?? `客户编号 ${receipt.customer_id}`} · {receipt.restored_at ? '已恢复' : receipt.status_label}</strong>
                 {receipt.status === 'deferred' && <div>下次可批准时间 {fmtDay(receipt.earliest_action_at)}</div>}
                 {receipt.status === 'rejected' && <div>可再次评估时间 {fmtDay(receipt.reconsider_at)}</div>}
                 {receipt.restored_at && <div>已交还{receipt.owner_name ?? '原负责人'}</div>}
@@ -401,7 +401,7 @@ export function PoolRecyclePanel() {
               <div>成功 {batchResult.done.length} 条；未处理 {batchResult.failed.length} 条。</div>
               {batchResult.failed.map((row) => (
                 <div key={row.candidate_id} style={{ color: 'var(--crm-danger, #d45)' }}>
-                  {batchResult.names.get(row.candidate_id) ?? `候选 #${row.candidate_id}`} · {row.reason}
+                  {batchResult.names.get(row.candidate_id) ?? `候选编号 ${row.candidate_id}`} · {row.reason}
                 </div>
               ))}
             </div>
@@ -414,7 +414,7 @@ export function PoolRecyclePanel() {
                     {candidatesQuery.data.items.map((row) => (
                       <li key={row.id} className="recycle-mobile-item">
                         <div className="recycle-mobile-heading">
-                          <Link to={`/customers/${row.customer_id}`}>{row.customer_name ?? `客户 #${row.customer_id}`}</Link>
+                          <Link to={`/customers/${row.customer_id}`}>{row.customer_name ?? `客户编号 ${row.customer_id}`}</Link>
                           {isReviewQueue && <Checkbox aria-label={`选择${row.customer_name ?? row.id}`}
                             checked={selectedCandidateIds.includes(row.id)}
                             onChange={(event) => {

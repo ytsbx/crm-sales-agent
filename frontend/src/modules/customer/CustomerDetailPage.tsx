@@ -478,8 +478,8 @@ export default function CustomerDetailPage() {
   const customerError = customerQuery.error
   const customerUnavailable = customerError instanceof ApiError && (customerError.status === 403 || customerError.status === 404)
   const customer = customerUnavailable ? undefined : customerQuery.data
-  const transferUsers = (usersQuery.data?.items ?? []).filter((user) => user.id !== customer?.owner_id)
-  if (transferTo && transferTo.id !== customer?.owner_id && !transferUsers.some((user) => user.id === transferTo.id)) {
+  const transferUsers = (usersQuery.data?.items ?? []).filter((row) => row.id !== customer?.owner_id)
+  if (transferTo && transferTo.id !== customer?.owner_id && !transferUsers.some((row) => row.id === transferTo.id)) {
     transferUsers.unshift(transferTo)
   }
   const receipt = transferReceipt?.customerId === customerId ? transferReceipt : null
@@ -1640,14 +1640,14 @@ export default function CustomerDetailPage() {
               aria-label="新负责人"
               placeholder="输入姓名或登录名查找在职员工"
               value={transferTo?.id}
-              onChange={(value) => setTransferTo(transferUsers.find((user) => user.id === value) ?? null)}
+              onChange={(value) => setTransferTo(transferUsers.find((row) => row.id === value) ?? null)}
               disabled={transferMutation.isPending}
               filter
               remote
               onSearch={setTransferSearch}
-              optionList={transferUsers.map((user) => ({
-                value: user.id,
-                label: `${user.name}（${user.username}） · ${user.department ?? '未分配部门'}`,
+              optionList={transferUsers.map((row) => ({
+                value: row.id,
+                label: `${row.name}（${row.username}） · ${row.department ?? '未分配部门'}`,
               }))}
               loading={usersQuery.isFetching}
               style={{ width: '100%' }}

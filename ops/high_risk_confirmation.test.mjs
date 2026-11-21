@@ -25,9 +25,8 @@ for (const [file, mutation, action] of [
   ['recycle/RecycleBinPage.tsx', 'restoreSkuMutation'],
   ['settings/SettingsPage.tsx', 'dtSyncMutation'],
   ['settings/SettingsPage.tsx', 'recycleMutation'],
-  ['settings/SettingsPage.tsx', 'autoTaskMutation'],
   ['settings/SettingsPage.tsx', 'userStatusMutation'],
-  ['settings/NotificationSettingsPanel.tsx', 'retryMutation'],
+  ['settings/NotificationSettingsPanel.tsx', 'retryDelivery'],
   ['common/NotificationBell.tsx', 'redispatchMutation'],
   ['wecom/WeComPage.tsx', 'bindMutation'],
   ['cases/CasesPage.tsx', 'submitMutation'],
@@ -64,8 +63,18 @@ for (const [file, mutation, action] of [
         if (!confirmedByModal) {
           let attribute = node.parent
           while (attribute && !ts.isJsxAttribute(attribute)) attribute = attribute.parent
-          assert.equal(attribute?.name.getText(source), 'onConfirm', `${mutation} must not run on the initial click`)
-          assert.equal(attribute.parent.parent.tagName.getText(source), 'Popconfirm')
+          // 自定义弹窗里的 GuardedButton 也是"点过确认才执行"：用户先开弹窗、
+          // 选好对象，再点 footer 的确认按钮；不是首击即发。允许这种确认方式，
+          // 但仍然要求按钮是 GuardedButton 且位于 Modal 内。
+          const tagName = attribute?.parent?.parent?.tagName?.getText(source)
+          const guardedInModal = tagName === 'GuardedButton' && Boolean(
+            findAncestor(attribute, (n) =>
+              ts.isJsxElement(n) && n.openingElement.tagName.getText(source) === 'Modal'),
+          )
+          if (!guardedInModal) {
+            assert.equal(attribute?.name.getText(source), 'onConfirm', `${mutation} must not run on the initial click`)
+            assert.equal(attribute.parent.parent.tagName.getText(source), 'Popconfirm')
+          }
         }
       }
       ts.forEachChild(node, visit)
@@ -74,3 +83,27 @@ for (const [file, mutation, action] of [
     assert.ok(sites > 0, 'request site must exist; update this regression if the workflow moves')
   })
 }
+
+// 自动待办扫描的确认按钮搬到了子组件：SettingsPage 只把 `onScan` 回调传下去，
+// 真正的点击入口在 AutoTaskRulesPanel。这里守住子组件：onScan 只能挂在
+// Popconfirm 的 onConfirm 上，不能挂在按钮 onClick 上首击即发。
+test('settings/AutoTaskRulesPanel.tsx: onScan runs only after confirmation', () => {
+  const file = 'settings/AutoTaskRulesPanel.tsx'
+  const source = ts.createSourceFile(file, readFileSync(new URL(`../frontend/src/modules/${file}`, import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  let confirmed = false
+  let firstClick = false
+  function visit(node) {
+    if (ts.isJsxAttribute(node)) {
+      const name = node.name.getText(source)
+      const text = node.getText(source)
+      if (name === 'onConfirm' && text.includes('onScan')) {
+        if (node.parent.parent.tagName?.getText(source) === 'Popconfirm') confirmed = true
+      }
+      if (name === 'onClick' && text.includes('onScan')) firstClick = true
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(source)
+  assert.ok(confirmed, 'onScan must be bound to Popconfirm onConfirm')
+  assert.equal(firstClick, false, 'onScan must not run on the initial click')
+})

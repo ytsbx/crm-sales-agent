@@ -61,7 +61,7 @@ _COMMON_NON_COLUMNS = {
     'metadata', 'registry', 'query', 'columns', 'c', 'table', '__dict__',
     # 这些是 （认证用的数据类，**不是 ORM 模型**）上的真实成员：
     # 参数注解写成 User 时会误报。宁可少报。
-    'roles', 'permissions', 'sid', 'has', 'scalars', 'unique', 'first', 'all',
+    'roles', 'permissions', 'sid', 'token_id', 'has', 'scalars', 'unique', 'first', 'all',
 }
 
 

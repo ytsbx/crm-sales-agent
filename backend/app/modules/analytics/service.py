@@ -633,9 +633,6 @@ async def recent_activities(
     不加过滤的话 `self` 范围的业务员也能看到全公司（含管理员）的操作。
     口径与列表一致——只展示**数据范围内的人**做出的操作。
     """
-    from app.core.audit import AuditLog
-    from app.core.data_scope import scoped_owner_ids
-
     conditions = [
         AuditLog.business_type.is_not(None),
         AuditLog.action.not_in(["login", "logout"]),
@@ -1154,6 +1151,11 @@ async def customer_stats(session: AsyncSession, user: CurrentUser) -> dict:
     }
 
 
+def _product_bucket(sid: int | None, nm: str | None) -> object:
+    """产品统计的分组键：有 SKU 按 SKU 归并，无 SKU 的定制项按快照名单独成行。"""
+    return sid if sid is not None else f"n:{nm or '定制项'}"
+
+
 async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 10) -> list[dict]:
     """PRD §23「产品：询盘 / 报价 / 成交 / 失单 / 利润」。
 
@@ -1250,14 +1252,13 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
     # 无 SKU 的定制项**不能都塞进同一个"None 桶"**：它们的产品完全不同
     # （中空板箱、纸托、围板箱、家电外箱…），混成一行会把"防静电周转箱"当代表，
     # 其余产品全被算到它头上（2026-11-21 巡检实测）。用快照名当分组键，
-    # 每个定制项单独成行；有 SKU 的仍按 SKU 归并。
-    def _bucket(sid: int | None, nm: str | None) -> object:
-        return sid if sid is not None else f"n:{nm or '定制项'}"
+    # 每个定制项单独成行；有 SKU 的仍按 SKU 归并。分组键抽成模块级 `_product_bucket`，
+    # 避免嵌套函数把 `product_stats` 的聚合代码切成两段、让软删静态检查误报。
 
     name_fallback: dict[object, tuple] = {}
     for row in quote_rows:
         sku_id, quote_id, version_id, version_no, formal, quantity, q_name, q_spec, profit = row
-        bid = _bucket(sku_id, q_name)
+        bid = _product_bucket(sku_id, q_name)
         if sku_id is None and (q_name or q_spec):
             name_fallback.setdefault(bid, (q_name, q_spec))
         if formal:
@@ -1267,7 +1268,7 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
 
     for row in quote_rows:
         sku_id, quote_id, version_id, version_no, formal, quantity, q_name, q_spec, profit = row
-        bid = _bucket(sku_id, q_name)
+        bid = _product_bucket(sku_id, q_name)
         acc = quoted.setdefault(
             bid,
             {

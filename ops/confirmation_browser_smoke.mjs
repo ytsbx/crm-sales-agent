@@ -335,16 +335,16 @@ try {
     console.log('BROWSER_INQUIRY_LATEST_REVISION_AND_ORIGINAL_QUOTE=true')
 
     await navigate('products/201')
-    await clickText('a', '来源/待核实/差异')
+    await clickText('a', '来源 / 差异')
     await waitFor(`document.querySelector('.semi-modal-content')?.innerText.includes('CRM 名称')`)
-    await evaluate(`Array.from(document.querySelectorAll('.semi-modal-content .semi-select')).find(el=>el.innerText.includes('选择核定结论')).click()`)
+    await evaluate(`Array.from(document.querySelectorAll('.semi-modal-content .semi-select')).find(el=>el.innerText.includes('选择处理方式')).click()`)
     await clickText('.semi-select-option', '以本地为准')
-    await waitFor(`Array.from(document.querySelectorAll('.semi-modal-content .semi-select')).some(el=>el.innerText.trim()==='以本地为准')`)
-    const noteInput = `document.querySelector('.semi-modal-content input[placeholder*="依据"]')`
+    await waitFor(`Array.from(document.querySelectorAll('.semi-modal-content .semi-select')).some(el=>el.innerText.includes('以本地为准'))`)
+    const noteInput = `document.querySelector('.semi-modal-content input[aria-label="核定依据"]')`
     await evaluate(`${noteInput}.focus()`)
     await send('Input.insertText',{text:'隔离核定依据'})
     await waitFor(`${noteInput}.value === '隔离核定依据'`)
-    await clickText('.semi-modal-content button', '核定')
+    await clickText('.semi-modal-content button', '确认结论')
     await sleep(250)
     assert.deepEqual(skuDiffWrites,[{resolution:'keep_local',note:'隔离核定依据'}],await evaluate('document.body.innerText.slice(-900)'))
     await waitFor(`document.querySelector('.semi-modal-content')?.innerText.includes('该差异已过期，请刷新后重新核定')`)
@@ -353,10 +353,22 @@ try {
     await waitFor(`document.querySelector('.semi-modal-content')?.innerText.includes('没有待确认差异')`)
     console.log('BROWSER_SKU_DIFF_BLOCKED_WITH_REASON_AND_REFRESH=true')
 
+    // 先以普通业务员（案例作者、非审核人）查看：自己的待审案例只能看到“等待审核”，没有驳回。
+    user.roles=['salesperson'];user.permissions=['quote:view']
+    const caseAuthorAuth=JSON.stringify({state:{token:'isolated-local-only',user},version:0})
+    await send('Page.addScriptToEvaluateOnNewDocument',{source:`localStorage.setItem('crm-auth',${JSON.stringify(caseAuthorAuth)})`})
     await navigate('cases')
     await waitFor(`document.body.innerText.includes('隔离本人案例')`)
-    assert.ok(await evaluate(`!Array.from(document.querySelectorAll('tr')).find(row=>row.innerText.includes('隔离本人案例')).innerText.includes('驳回')`))
-    await clickText('a', '撤下')
+    const authorRow=await evaluate(`Array.from(document.querySelectorAll('tr')).find(row=>row.innerText.includes('隔离本人案例')).innerText`)
+    assert.ok(!authorRow.includes('驳回'),'author must not see reject action on own pending case')
+    assert.ok(authorRow.includes('等待有权限的同事审核'),'author sees the waiting hint')
+    // 再切回管理员（审核人）执行撤下，验证发布版可撤下并保留历史。
+    user.roles=['admin'];user.permissions=[]
+    const caseReviewerAuth=JSON.stringify({state:{token:'isolated-local-only',user},version:0})
+    await send('Page.addScriptToEvaluateOnNewDocument',{source:`localStorage.setItem('crm-auth',${JSON.stringify(caseReviewerAuth)})`})
+    await navigate('cases')
+    await waitFor(`document.body.innerText.includes('隔离培训案例')`)
+    await clickText('button', '撤下')
     await waitFor(`document.querySelector('.semi-popconfirm')?.innerText.includes('撤下这个案例版本')`)
     assert.equal(caseFixture.status,'published')
     await clickText('.semi-popconfirm button', '确定')
@@ -432,7 +444,7 @@ try {
   assert.equal(restored,1)
   console.log('BROWSER_RESTORE_CANCEL_NO_WRITE_CONFIRM_ONCE=true')
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/tasks?mine=false&status=active`})
-  const finishLink=`Array.from(document.querySelectorAll('.semi-table-tbody a')).find(a=>a.innerText.trim()==='完成')`
+  const finishLink=`Array.from(document.querySelectorAll('.semi-table-tbody button')).find(a=>a.innerText.trim()==='完成')`
   await waitFor(finishLink)
   assert.equal(await evaluate(`Array.from(document.querySelectorAll('.semi-table-tbody a')).find(a=>a.innerText.trim()==='隔离任务客户')?.getAttribute('href')`),'/customers/2')
   assert.equal(await evaluate(`document.querySelector('.semi-table-tbody').innerText.includes('客户编号')`),false)
@@ -471,7 +483,7 @@ try {
   assert.deepEqual(batchBodies[0].task_ids,[7])
   console.log('BROWSER_BATCH_CANCEL_NO_WRITE_CONFIRM_EXACT_IDS=true')
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/leads`})
-  const claimLead=`Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes('线索乙'))?.querySelector('a')`
+  const claimLead=`Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes('线索乙'))?.querySelector('button')`
   await waitFor(claimLead)
   await evaluate(`${claimLead}.click()`)
   await waitFor(`document.body.innerText.includes('确认领取线索「线索乙」')`)
@@ -505,7 +517,7 @@ try {
   assert.deepEqual(claimedCustomers,[9])
   console.log('BROWSER_CUSTOMER_CLAIM_CANCEL_NO_WRITE_CONFIRM_CORRECT_ID=true')
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/approvals`})
-  const approveLink=`Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes('隔离审批-52')) && Array.from(Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes('隔离审批-52')).querySelectorAll('a')).find(a=>a.innerText.trim()==='通过')`
+  const approveLink=`Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes('隔离审批-52')) && Array.from(Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes('隔离审批-52')).querySelectorAll('button')).find(a=>a.innerText.trim()==='通过')`
   await waitFor(approveLink)
   await evaluate(`${approveLink}.click()`)
   await waitFor(`document.body.innerText.includes('通过这份报价的审批')`)
@@ -520,7 +532,7 @@ try {
   assert.deepEqual(approvalsApproved,[52])
   console.log('BROWSER_APPROVE_CANCEL_NO_WRITE_CONFIRM_CORRECT_ID=true')
   await sleep(250)
-  const rejectLink=`Array.from(Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes('隔离审批-51')).querySelectorAll('a')).find(a=>a.innerText.trim()==='拒绝')`
+  const rejectLink=`Array.from(Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes('隔离审批-51')).querySelectorAll('button')).find(a=>a.innerText.trim()==='拒绝')`
   await evaluate(`${rejectLink}.click()`)
   const reasonInput=`document.querySelector('input[placeholder="拒绝原因，例如：低于成本，不可让价"]')`
   await waitFor(reasonInput)
@@ -749,7 +761,7 @@ try {
   assert.equal(recycleRequests.length,beforeReassign+1,await evaluate('document.body.innerText.slice(-2400)'))
   assert.deepEqual(recycleRequests.at(-1),{path:'/api/v1/customers/106/restore',body:{owner_id:311}})
   console.log('BROWSER_RECYCLE_INACTIVE_OWNER_CANCEL_AND_REQUIRED_SELECTION_CORRECT_ID=true')
-  await send('Page.navigate',{url:`http://127.0.0.1:${port}/settings?tab=rules`})
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/pool-recycle`})
   for(const [label,decision,title] of [
     ['批量批准','approve','批准选中的 2 条回收候选'],
     ['批量暂缓','defer','暂缓选中的 2 条回收候选'],

@@ -8,30 +8,30 @@ import { useState, type CSSProperties } from 'react'
    也不该一眼把号码全摊开：录屏、截屏、同事路过，都会带走一串真人手机号。
    所以默认只露前 3 位和后 4 位，真要拨号再点开。
 
-   打码规则对齐直觉：手机号 11 位 → 138****3633；座机/短号这类长度不齐的
-   → 留前 3 位和后 2 位；邮箱 → 首字母 + *** + @域名。 */
+   打码规则对齐直觉：手机号 11 位 → 138＊＊＊＊3633；座机/短号这类长度不齐的
+   → 留前 3 位和后 2 位；邮箱 → 首字母 + ＊＊＊ + @域名。 */
 
 export function maskPhone(value?: string | null): string {
   const s = String(value ?? '').replace(/\s/g, '')
   if (!s) return ''
-  if (s.length >= 11) return `${s.slice(0, 3)}****${s.slice(-4)}`
-  if (s.length > 4) return `${s.slice(0, 3)}***${s.slice(-2)}`
-  return '***'
+  if (s.length >= 11) return `${s.slice(0, 3)}＊＊＊＊${s.slice(-4)}`
+  if (s.length > 4) return `${s.slice(0, 3)}＊＊＊${s.slice(-2)}`
+  return '＊＊＊'
 }
 
 export function maskEmail(value?: string | null): string {
   const s = String(value ?? '').trim()
   if (!s) return ''
   const at = s.indexOf('@')
-  if (at <= 0) return `${s.slice(0, 2)}***`
-  return `${s.slice(0, 1)}***${s.slice(at)}`
+  if (at <= 0) return `${s.slice(0, 2)}＊＊＊`
+  return `${s.slice(0, 1)}＊＊＊${s.slice(at)}`
 }
 
 export function maskWechat(value?: string | null): string {
   const s = String(value ?? '').trim()
   if (!s) return ''
-  if (s.length <= 3) return '***'
-  return `${s.slice(0, 2)}***${s.slice(-2)}`
+  if (s.length <= 3) return '＊＊＊'
+  return `${s.slice(0, 2)}＊＊＊${s.slice(-2)}`
 }
 
 type MaskedContactProps = {

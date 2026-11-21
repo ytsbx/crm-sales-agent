@@ -73,6 +73,7 @@
   "merge": "合并",
   "milestone_revoked": "撤销节点完成",
   "oa:resolve": "处理OA审批异常",
+  "resolve_oa_adopt": "认领同序OA审批结果",
   "open_customer_duplicate_cases": "发起撞单裁定",
   "pool_assign": "公海分配",
   "pool_claim": "公海领取",

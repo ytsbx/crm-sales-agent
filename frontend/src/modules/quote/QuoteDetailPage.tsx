@@ -2659,7 +2659,7 @@ export default function QuoteDetailPage() {
                     enabled={itemsVisible && Boolean(quoteCustomerId)}
                     placeholder={customerHasInquiries ? '输入需求标题或编号搜索' : '本客户暂无可选定制需求'}
                     value={row.inquiry_id}
-                    fallbackLabel={row.inquiry_id ? `原关联需求 #${row.inquiry_id}` : undefined}
+                    fallbackLabel={row.inquiry_id ? `原关联需求 编号 ${row.inquiry_id}` : undefined}
                     list={(input) => listCustomInquiries({ ...input, customer_id: quoteCustomerId })}
                     labelOf={(item) => `${item.inquiry_no ?? `编号 ${item.id}`} · ${item.title}`}
                     accept={inquiryAccepted}

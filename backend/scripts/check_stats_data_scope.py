@@ -100,6 +100,11 @@ OWNER_IN = re.compile(r"\.in_\(\s*\w*owner", re.I)
 
 #: 已核实的例外：这些统计**故意**是全公司口径（或不按负责人划分）。
 EXCEPTIONS: dict[tuple[str, str], str] = {
+    ("app/modules/opportunity/service.py", "recommend_products"): (
+        "商品推荐里的「公司整体成交频次」是**产品维度**聚合（SKU/次数/价格区间），"
+        "不返回客户或负责人明细；客户自身历史那一段已按 `opportunity.customer_id` 收窄，"
+        "`opportunity` 本身也经过 `get_visible_opportunity`。"
+    ),
     ("app/modules/customer/service.py", "count_of"): (
         "它把**明细的 base 语句**折成计数（`select(func.count()).select_from(base...)`）——"
         "范围由调用方在建 base 时套好（`scoped(select(Opportunity...), Opportunity)`）。"

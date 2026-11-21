@@ -111,6 +111,7 @@ export const SHARED_ACTION_LABELS: Record<string, string> = {
   'repurchase': '复购开新商机',
   'resend': '重发',
   'resolve_customer_duplicate': '裁定撞单',
+  'resolve_oa_adopt': '认领同序OA审批结果',
   'restore': '恢复',
   'restore_pool_candidate': '恢复回收候选',
   'restore_pool_candidate_conflict': '恢复冲突的回收候选',

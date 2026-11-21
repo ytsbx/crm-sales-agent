@@ -335,7 +335,8 @@ async def delete_followup(
     if followup.customer_id is not None:
         await session.flush()
         customer = await session.get(Customer, followup.customer_id)
-        if customer is not None:
+        # 客户已软删时不必再回写"最近跟进时间"：列表和提醒都不再读这条客户。
+        if customer is not None and customer.deleted_at is None:
             latest = await session.scalar(select(func.max(FollowUp.created_at)).where(
                 FollowUp.customer_id == customer.id, FollowUp.followup_type != "系统",
             ))

@@ -179,9 +179,9 @@ function SampleProductName({ item, skuChoices, scope, enabled, onChange }: {
         ? selectedInquiry.label
         : selectedRow
           ? `定制需求 · ${selectedRow.inquiry_no ?? `编号 ${selectedRow.id}`} · ${selectedRow.title}`
-          : `定制需求 #${item.inquiry_id}`)
+          : `定制需求 编号 ${item.inquiry_id}`)
     : item.sku_id
-      ? (skuChoices.find((choice) => choice.value === item.sku_id)?.label ?? `产品 #${item.sku_id}`)
+      ? (skuChoices.find((choice) => choice.value === item.sku_id)?.label ?? `产品 编号 ${item.sku_id}`)
       : item.item_name ?? ''
   const typeName = (name: string) => {
     setSearch(name)

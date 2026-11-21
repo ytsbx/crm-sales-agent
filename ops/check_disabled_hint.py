@@ -127,6 +127,22 @@ EXEMPT: dict[str, str] = {
     # 而"你还没填单号"这句话本身没有信息量（用户看得见输入框是空的），
     # 加了只会变成噪音 —— 正是 GuardedButton 说明里"眼睛一看就明白的别用它"那一类。
     "shared/components/ResolveOaActions.tsx": "禁用原因就在旁边（空输入框 / 提交中 loading）",
+    # 通用搜索下拉：disabled 由调用方传入（表单锁定/无权限），控件本身不拥有业务条件
+    "shared/components/RecordSearchSelect.tsx": "通用搜索下拉，disabled 由调用方传入；控件本身不判断业务条件",
+    # CSV 导入预览：确认按钮灰着时，弹窗里同时列着可导入/待确认条数
+    "shared/components/CsvImportButtons.tsx": "确认导入按钮的禁用对应「没有可导入行」，弹窗正文列着可导入/待确认条数",
+    # 报价列表新建弹窗：没选商机时按钮灰，按钮上方常驻一行说明缺什么
+    "modules/quote/QuoteListPage.tsx": "未选商机时生成按钮禁用，按钮上方常驻说明「报价必须关联商机」及去哪里建商机",
+    # 公海回收复核：批量按钮的禁用对应"未勾选"（工具栏显示已选条数），其余为提交中
+    "modules/recycle/PoolRecyclePage.tsx": "批量按钮未勾选时禁用，工具栏显示已选条数；其余为提交中瞬时禁用",
+    # 自动待办：扫描/保存中的瞬时禁用，按钮自带 loading
+    "modules/settings/AutoTaskRulesPanel.tsx": "仅保存/扫描请求中的瞬时禁用，按钮自带 loading",
+    # 审批转交：未选合格接收人时确认按钮禁用，弹窗里列着接收人选择与说明
+    "modules/approval/ApprovalPage.tsx": "转交弹窗未选合格接收人时禁用，接收人选择与说明就在同一弹窗",
+    # 合同 OA 表单：文件上传中的瞬时禁用
+    "modules/contract/ContractOaForm.tsx": "只有文件上传中的瞬时禁用，输入框自身显示上传状态",
+    # 撞单裁定：未选结论时提交按钮禁用，结论选项就在同一卡片
+    "modules/customer/DuplicateCasePage.tsx": "未选择裁定结论时提交按钮禁用，结论选项就在同一卡片；其余为提交中瞬时禁用",
 }
 
 

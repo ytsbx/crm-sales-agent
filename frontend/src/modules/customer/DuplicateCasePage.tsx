@@ -47,8 +47,8 @@ function CaseCustomers({ record, customers }: { record: DuplicateCase; customers
         return (
           <div className="duplicate-case-customer" key={entry.id}>
             <span>{entry.title} · #{entry.id}</span>
-            <Link to={`/customers/${entry.id}`}>{detail?.name ?? entry.name ?? `查看客户 #${entry.id}`}</Link>
-            {detail && <span>{detail.region || '未填写地区'} · {detail.owner_name || (detail.owner_id ? `负责人 #${detail.owner_id}` : '暂无负责人')}</span>}
+            <Link to={`/customers/${entry.id}`}>{detail?.name ?? entry.name ?? `客户编号 ${entry.id}`}</Link>
+            {detail && <span>{detail.region || '未填写地区'} · {detail.owner_name || (detail.owner_id ? `负责人编号 ${detail.owner_id}` : '暂无负责人')}</span>}
           </div>
         )
       })}
@@ -241,7 +241,7 @@ export default function DuplicateCasePage() {
               <strong>{record.decision_label ?? '已裁定'}</strong>
               {record.resolved_at && <span>{formatBeijingTime(record.resolved_at)}</span>}
               {record.resolved_owner_id && <span>裁定接手人 {form.owner?.value === record.resolved_owner_id
-                ? form.owner.label : `员工 #${record.resolved_owner_id}`}</span>}
+                ? form.owner.label : `员工编号 ${record.resolved_owner_id}`}</span>}
               <div>{record.remark || '没有登记备注。'}</div>
               {transferOrigin?.fromWeComTransfer && <span>返回离职交接，重新核对清单和接手人后再执行。</span>}
             </div>
@@ -263,7 +263,7 @@ export default function DuplicateCasePage() {
                 {form.decision && <p className="duplicate-case-hint">{DECISIONS[form.decision].description}</p>}
                 {form.decision === 'assign_existing' && customersQuery.isSuccess && !assignExistingBlocked &&
                   <p className="duplicate-case-hint">{existingCustomer?.owner_id
-                    ? `两条档案将交给${existingCustomer.owner_name || `负责人 #${existingCustomer.owner_id}`}。`
+                    ? `两条档案将交给${existingCustomer.owner_name || `负责人编号 ${existingCustomer.owner_id}`}。`
                     : '已有档案暂无负责人，请改选「指定同一位负责人」。'}</p>}
               </div>
               {form.decision === 'assign_new' && <div>

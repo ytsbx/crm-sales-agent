@@ -39,7 +39,7 @@ export default function PersonalAccountPanel() {
   })
 
   const name = (username ?? user?.username ?? '').trim().toLowerCase()
-  const changing = Boolean(user && (name !== user.username || password || confirmation))
+  const changing = Boolean(user && (name !== (user?.username ?? '') || password || confirmation))
   const invalidName = !/^[a-z][a-z0-9_]{0,63}$/.test(name)
   const invalidPassword = Boolean(password && (password.length < 6 || new TextEncoder().encode(password).length > 72))
   const mismatch = password !== confirmation
@@ -56,7 +56,7 @@ export default function PersonalAccountPanel() {
       mutation.mutate({ username: name, current_password: currentPassword, ...(password ? { new_password: password } : {}) })
     }}>
       {user?.initial_password_pending && (
-        <Banner type="info" description={<>你的登录名：<strong style={{ overflowWrap: 'anywhere' }}>{user.username}</strong>，初始密码：<strong>123456</strong>。可在下方自行修改。</>} />
+        <Banner type="info" description={<>你的登录名：<strong style={{ overflowWrap: 'anywhere' }}>{user?.username ?? '-'}</strong>，初始密码：<strong>123456</strong>。可在下方自行修改。</>} />
       )}
       <div className="settings-account-fields">
         <div>

@@ -532,7 +532,7 @@ export default function TaskListPage() {
           expandAllGroupRows={handover}
           renderGroupSection={handover ? (key) => {
             const employee = query.data?.items.find((row) => `employee-${row.handover_from_user_id}` === key)
-            return <span>原负责人 · {employee?.handover_from_user_name ?? `员工 #${employee?.handover_from_user_id}`}</span>
+            return <span>原负责人 · {employee?.handover_from_user_name ?? `员工编号 ${employee?.handover_from_user_id}`}</span>
           } : undefined}
           dataSource={query.data?.items ?? []}
           loading={query.isLoading}

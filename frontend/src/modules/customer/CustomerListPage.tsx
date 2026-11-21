@@ -837,7 +837,7 @@ export default function CustomerListPage() {
               const ids = (keys ?? []) as number[]
               const visibleNames = new Map(query.data?.items.map((customer) => [customer.id, customer.name]))
               setSelectedNames((previous) => Object.fromEntries(ids.map((id) => [
-                id, visibleNames.get(id) ?? previous[id] ?? `客户 #${id}`,
+                id, visibleNames.get(id) ?? previous[id] ?? `客户编号 ${id}`,
               ])))
               setSelectedIds(ids)
             },
@@ -1191,7 +1191,7 @@ export default function CustomerListPage() {
           <div className="customer-handover-context">
             <strong>已选 {selectedIds.length} 个客户</strong>
             <ul className="customer-handover-selection">
-              {selectedIds.map((id) => <li key={id}>{selectedNames[id] ?? `客户 #${id}`}</li>)}
+              {selectedIds.map((id) => <li key={id}>{selectedNames[id] ?? `客户编号 ${id}`}</li>)}
             </ul>
           </div>
           <UserSearchSelect
