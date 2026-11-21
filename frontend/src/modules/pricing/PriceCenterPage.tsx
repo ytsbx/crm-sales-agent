@@ -28,6 +28,7 @@ import {
   requiredNumberOrThrow,
 } from '../../shared/number-input'
 import { calendarDayOrToday } from '../../shared/calendar-day'
+import PriceTerm from './PriceTerm'
 import { formatMoney, formatUnitPrice, toTwoDecimals } from '../../shared/components/money'
 import { listCustomers } from '../../shared/api/customer'
 import { createItem, createOpportunity, listOpportunities } from '../../shared/api/opportunity'
@@ -56,17 +57,18 @@ import {
   type CostRecord,
   type CustomerPriceRow,
   type LogisticsRateRow,
-  type PriceLookupResult,
   type PricePermissionRow,
   type PriceRuleRow,
   type PricingHistoryRow,
 } from '../../shared/api/pricing'
 import PageHeader from '../../shared/components/PageHeader'
+import HelpTip from '../../shared/components/HelpTip'
 import CsvImportButtons from '../../shared/components/CsvImportButtons'
 import { usePermissions } from '../../shared/hooks/permissions'
 import SectionCard from '../../shared/components/SectionCard'
 import StatusDot from '../../shared/components/StatusDot'
 import FormLabel from '../../shared/components/FormLabel'
+import GuardedButton from '../../shared/components/GuardedButton'
 import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
 import { listDictionaries } from '../../shared/api/settings'
 
@@ -383,6 +385,19 @@ function historySummary(row: PricingHistoryRow): string {
    * 所以最省事也最准的做法是：**认得这两个动作，就把那句话端出来**。
    * （同时保留下面的专用分支做兜底：老记录里可能没有 message 字段。）
    */
+  // 修数 / 整批操作只带一句人写的 `note`，没有逐字段可比：
+  // 直接端出那句话，别拼成「note: xxx; sku_id: 空 → null」这种键值堆。
+  const plainText =
+    (typeof after.note === 'string' ? after.note.trim() : '')
+    || (typeof after.message === 'string' ? after.message.trim() : '')
+  if (plainText) {
+    const others = Object.keys(after).filter((key) => key !== 'note' && key !== 'message')
+    const othersEmpty = others.every(
+      (key) => after[key] === null || after[key] === undefined || after[key] === '',
+    )
+    if (othersEmpty) return plainText
+  }
+
   const backendMessage = typeof after.message === 'string' ? after.message.trim() : ''
   if (row.action === 'price_refresh') {
     const refreshed = after.refreshed ?? 0
@@ -549,7 +564,8 @@ export default function PriceCenterPage() {
 
   // 默认落在「客户查价」：这是价格中心最高频的入口，
   // 之前默认停在「成本」，用户进来得先自己找页签。
-  const [activeKey, setActiveKey] = useState(searchParams.get('tab') === 'costs' ? 'costs' : 'lookup')
+  const initialTab = searchParams.get('tab')
+  const [activeKey, setActiveKey] = useState(initialTab === 'costs' || initialTab === 'logistics' ? initialTab : 'lookup')
   // 核价试算：这台工具的所有依据（成本、标准价、客户特殊价、让价权限）都在本页，
   // 没有理由再开一整个页面 —— 抽屉里就地算（主人 2026-11-21「不用为核价单独做一个大模块呀」）。
   const [pricingVisible, setPricingVisible] = useState(false)
@@ -589,8 +605,14 @@ export default function PriceCenterPage() {
   const [lookupCustomerKeyword, setLookupCustomerKeyword] = useState('')
   const [lookupSkuId, setLookupSkuId] = useState<number | undefined>()
   const [lookupQty, setLookupQty] = useState('1')
-  const [lookupResult, setLookupResult] = useState<PriceLookupResult | null>(null)
-  const [lookupLoading, setLookupLoading] = useState(false)
+  const lookupQuantity = parseQuantity(lookupQty)
+  const lookupReady = Boolean(lookupCustomerId && lookupSkuId && lookupQuantity !== null && lookupQuantity > 0)
+  const lookupMutation = useMutation({ mutationFn: lookupPrice })
+  const lastLookup = lookupMutation.variables
+  const isCurrentLookup = lastLookup?.customer_id === lookupCustomerId && lastLookup?.sku_id === lookupSkuId
+    && lastLookup?.quantity === lookupQuantity
+  const lookupResult = isCurrentLookup ? lookupMutation.data : undefined
+  const canManageOpportunity = can('opportunity:manage')
   // 选品打通（§7 行 2）：查价结果一键加入商机需求
   const [lookupOppId, setLookupOppId] = useState<number | undefined>()
   const [addingToOpp, setAddingToOpp] = useState(false)
@@ -621,8 +643,9 @@ export default function PriceCenterPage() {
 
   const skusQuery = useQuery({ queryKey: ['skus-for-pricing'], queryFn: listSkusForPricing })
   const lookupOppQuery = useQuery({
-    queryKey: ['opportunities-for-lookup'],
-    queryFn: () => listOpportunities({ status: 'open', page: 1, page_size: 100 }),
+    queryKey: ['opportunities-for-lookup', lookupCustomerId],
+    queryFn: () => listOpportunities({ customer_id: lookupCustomerId, status: 'open', page: 1, page_size: 100 }),
+    enabled: canManageOpportunity && lookupResult?.status === 'ok',
   })
   const customersQuery = useQuery({
     // 客户选择器必须服务端搜索；只取前 100 条会让合法客户在第 101 条后
@@ -1010,9 +1033,10 @@ export default function PriceCenterPage() {
     label: skuLabel(sku),
   }))
 
-  // 查价的两个必填项。按钮在没选齐时是禁用态，但**禁用≠可以不解释**：
-  // 见下面 Button 外那层 span 的注释（主人 2026-10-06 反馈「灰着没有任何解释」）。
-  const lookupReady = Boolean(lookupCustomerId && lookupSkuId)
+  const lookupIssue = !lookupCustomerId || !lookupSkuId
+    ? '选好客户和产品后才能查价。'
+    : !lookupReady ? '数量须大于 0，最多三位小数。' : ''
+  const lookupOpp = lookupOppQuery.data?.items.find((item) => item.id === lookupOppId)
 
   return (
     <div className="page-container">
@@ -1026,7 +1050,7 @@ export default function PriceCenterPage() {
         }
       />
 
-      {/* 核价试算抽屉：宽 780，内容区自己滚。嵌进去的是同一个 PricingTool，
+      {/* 核价试算抽屉：宽 860，内容区自己滚。嵌进去的是同一个 PricingTool，
           和 /pricing 页是同一段代码，不存在两份实现各自跑偏的可能。 */}
       <SideSheet
         title="核价试算"
@@ -1067,12 +1091,15 @@ export default function PriceCenterPage() {
 
         <div style={{ marginTop: 16 }}>
           {activeKey === 'lookup' && (
-            <div style={{ display: 'grid', gap: 16 }}>
-              <div className="toolbar">
+            <div className="price-lookup-content">
+              <div className="toolbar price-lookup-form">
                 <Select
                   placeholder="选择客户"
                   value={lookupCustomerId}
-                  onChange={(value) => setLookupCustomerId(value as number)}
+                  onChange={(value) => {
+                    setLookupCustomerId(value as number)
+                    setLookupOppId(undefined)
+                  }}
                   remote
                   loading={customersQuery.isFetching}
                   onSearch={setLookupCustomerKeyword}
@@ -1082,7 +1109,7 @@ export default function PriceCenterPage() {
                     (item) => item.id,
                   )}
                   filter={optionMatcher}
-                  style={{ width: 280 }}
+                  style={{ width: 280, maxWidth: '100%' }}
                 />
                 <Select
                   placeholder="选择 SKU"
@@ -1090,7 +1117,7 @@ export default function PriceCenterPage() {
                   onChange={(value) => setLookupSkuId(value as number)}
                   optionList={skuOptions}
                   filter={optionMatcher}
-                  style={{ width: 360 }}
+                  style={{ width: 360, maxWidth: '100%' }}
                 />
                 <Input
                   value={lookupQty}
@@ -1098,61 +1125,31 @@ export default function PriceCenterPage() {
                   // flex: none：工具栏是 flex 布局，两个大下拉一挤，数量框会被压成一小条
                   style={{ width: 120, flex: 'none' }}
                   placeholder="数量"
+                  aria-label="查价数量"
+                  inputMode="decimal"
+                  aria-invalid={lookupQuantity === null || !(lookupQuantity > 0)}
                 />
-                {/* 禁用按钮必须能解释自己（主人 2026-10-06：「查价按钮灰着没有任何解释
-                    ——你填了数量还以为是自己错」）。两个要点：
-                    ① 禁用时按钮旁给一行灰字，说清缺什么；
-                    ② 禁用时点一下要**有反应**，而不是石沉大海。
-                    难点：这个组件库的禁用按钮用的是原生 `disabled` 属性，浏览器对
-                    原生禁用控件**根本不派发点击事件**，所以外面这层 span 收不到。
-                    破法是在禁用态下给按钮加 `pointerEvents: 'none'` —— 按钮对点击
-                    透明，点击的落点就变成外层 span，span 上的 onClick 才接得住。
-                    可用态则不加这个样式，按钮自己处理点击（冒泡上来的那次由
-                    `lookupReady` 判断挡掉，不会重复触发）。 */}
-                <span
-                  style={{ cursor: lookupReady ? undefined : 'not-allowed' }}
+                <GuardedButton type="primary"
+                  theme="outline"
+                  loading={lookupMutation.isPending}
+                  disabled={!lookupReady}
+                  hintBelow
+                  blockedReasons={[lookupIssue]}
                   onClick={() => {
-                    if (!lookupReady) {
-                      Toast.warning(
-                        !lookupCustomerId && !lookupSkuId
-                          ? '请先选择客户和产品，再点查价'
-                          : !lookupCustomerId
-                            ? '请先选择客户，再点查价'
-                            : '请先选择产品，再点查价',
-                      )
+                    if (lookupCustomerId && lookupSkuId && lookupQuantity !== null && lookupQuantity > 0) {
+                      lookupMutation.mutate({ customer_id: lookupCustomerId, sku_id: lookupSkuId, quantity: lookupQuantity })
                     }
                   }}
                 >
-                  <Button type="primary"
-                    theme="outline"
-                    loading={!lookupResult && lookupLoading}
-                    disabled={!lookupReady}
-                    style={lookupReady ? undefined : { pointerEvents: 'none' }}
-                    onClick={async () => {
-                      setLookupLoading(true)
-                      try {
-                        const result = await lookupPrice({
-                          customer_id: lookupCustomerId!,
-                          sku_id: lookupSkuId!,
-                          quantity: Number(lookupQty || 1),
-                        })
-                        setLookupResult(result)
-                      } catch (error) {
-                        Toast.error(error instanceof Error ? error.message : '查价失败')
-                      } finally {
-                        setLookupLoading(false)
-                      }
-                    }}
-                  >
-                    查价
-                  </Button>
-                </span>
-                {!lookupReady && (
-                  <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                    选好客户和产品后才能查价
-                  </span>
-                )}
+                  查价
+                </GuardedButton>
               </div>
+              {lastLookup && !isCurrentLookup && (
+                <p className="workflow-guide" role="status">查价条件已修改，请重新查价。</p>
+              )}
+              {isCurrentLookup && lookupMutation.isError && (
+                <p className="workflow-guide" role="alert">查价失败。{lookupMutation.error.message} 可再次点「查价」。</p>
+              )}
               {/* 查价前下方整片是空的（结果区只在有 lookupResult 时渲染）。
                   放一个朴素的说明块：告诉用户这个工具算什么、算完会看到什么，
                   而不是留 60% 白屏。不加图标、不做装饰 —— 只讲人话。 */}
@@ -1173,7 +1170,7 @@ export default function PriceCenterPage() {
                   <div
                     style={{
                       display: 'grid',
-                      gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))',
+                      gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 190px), 1fr))',
                       gap: 18,
                     }}
                   >
@@ -1252,9 +1249,62 @@ export default function PriceCenterPage() {
                   ))}
                 </div>
               )}
-              {lookupResult?.status === 'ok' && (
+              {lookupResult && (
+                <div className="price-lookup-result">
+                  {lookupResult.status === 'ok' ? (
+                    <>
+                      <div>
+                        <span style={{ fontSize: 28, fontWeight: 700 }}>
+                          {formatUnitPrice(lookupResult.unit_price, lookupResult.currency)}
+                        </span>
+                        <span style={{ marginLeft: 6, color: 'var(--crm-text-3)' }}>
+                          ／{lookupResult.sku.unit ?? '件'} · 数量 {lookupResult.quantity}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', gap: '6px 12px', flexWrap: 'wrap', alignItems: 'center' }}>
+                        <div style={{ flexShrink: 0 }}><Tag color="blue">{lookupResult.source_label}</Tag></div>
+                        <span style={{ color: 'var(--crm-text-3)' }}>
+                          {lookupResult.customer.name}
+                          {lookupResult.customer.level ? `（${lookupResult.customer.level} 级）` : ''} ·{' '}
+                          {lookupResult.sku.sku_code} · 有效期{' '}
+                          {lookupResult.effective_from ?? '即日'} ~ {lookupResult.effective_to ?? '长期'}
+                        </span>
+                      </div>
+                      {lookupResult.source === 'general' && lookupResult.fallback_note && lookupResult.customer.level && (
+                        <div style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
+                          当前数量没有适用的 {lookupResult.customer.level} 级专用价，本次按通用指导价报价。
+                        </div>
+                      )}
+                      {lookupResult.can_see_cost && (
+                        <div style={{ color: 'var(--crm-text-3)' }}>
+                          货成本：
+                          {lookupResult.cost ?? '-'}
+                          {lookupResult.cost_note ? `（${lookupResult.cost_note}）` : ''}
+                          {lookupResult.minimum_price != null
+                            ? ` · 保护价 ${lookupResult.minimum_price}`
+                            : ''}
+                        </div>
+                      )}
+                      <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
+                        可用这个单价准备报价。改价时，系统会检查你的报价权限。
+                      </div>
+                    </>
+                  ) : (
+                    <div
+                      style={{
+                        background: 'var(--crm-warning-soft)',
+                        padding: '12px 16px',
+                        borderRadius: 6,
+                      }}
+                    >
+                      当前客户和数量暂无可用售价。请联系价格管理员维护适用的指导价或客户专属价。
+                    </div>
+                  )}
+                </div>
+              )}
+              {lookupResult?.status === 'ok' && canManageOpportunity && (
                 <div className="toolbar">
-                  <span style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>选品下单：</span>
+                  <span style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>加入商机需求</span>
                   <Select
                     placeholder="选择要加入的商机（可选）"
                     value={lookupOppId}
@@ -1265,30 +1315,32 @@ export default function PriceCenterPage() {
                       (item) => item.id,
                     )}
                     filter={optionMatcher}
-                    style={{ width: 320 }}
+                    style={{ width: 320, maxWidth: '100%' }}
                   />
                   {/* 同一个页面里同款毛病，一起修：禁用按钮外面包一层，
                       禁用态下让按钮对点击透明，点击落到外层 span 上给提示。 */}
                   <span
-                    style={{ cursor: lookupOppId ? undefined : 'not-allowed' }}
+                    style={{ cursor: lookupOpp ? undefined : 'not-allowed' }}
                     onClick={() => {
-                      if (!lookupOppId) {
+                      if (!lookupOpp) {
                         Toast.warning('请先选择一个商机，或点右边的「新建快捷商机」')
                       }
                     }}
                   >
                     <Button
-                      disabled={!lookupOppId}
+                      disabled={!lookupOpp}
                       loading={addingToOpp}
-                      style={lookupOppId ? undefined : { pointerEvents: 'none' }}
+                      style={lookupOpp ? undefined : { pointerEvents: 'none' }}
                       onClick={async () => {
+                        if (!lookupOpp) return
                         setAddingToOpp(true)
                         try {
-                          await createItem(lookupOppId!, {
+                          await createItem(lookupOpp.id, {
                             sku_id: lookupResult.sku.id,
-                            quantity: Number(lookupQty || 1),
+                            quantity: lookupResult.quantity,
                             target_price: lookupResult.unit_price,
                           })
+                          void queryClient.invalidateQueries({ queryKey: ['opportunity-items', lookupOpp.id] })
                           Toast.success(
                             // toast 里同样是单价：走 formatUnitPrice，别拿金额口径去装单价
                             `已把 ${lookupResult.sku.sku_code}（${formatUnitPrice(lookupResult.unit_price, 'CNY')}）加入商机需求`,
@@ -1314,24 +1366,22 @@ export default function PriceCenterPage() {
                       // D8：报价必须挂商机。没有现成商机时当场一键生成极简商机
                       //（客户名+日期+询价、首个阶段=初始阶段、SKU/数量写入需求明细），
                       // 让"合规"比"绕开"更省事，而不是让销售回去填一套表
-                      const customer = (customersQuery.data?.items ?? []).find(
-                        (item) => item.id === lookupCustomerId,
-                      )
                       const d = new Date()
                       const dateLabel = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
                       setCreatingQuickOpp(true)
                       try {
                         const opp = await createOpportunity({
-                          customer_id: lookupCustomerId,
-                          title: `${customer?.name ?? '客户'}-${dateLabel}-询价`,
+                          customer_id: lookupResult.customer.id,
+                          title: `${lookupResult.customer.name}-${dateLabel}-询价`,
                         })
                         await createItem(opp.id, {
                           sku_id: lookupResult.sku.id,
-                          quantity: Number(lookupQty || 1),
+                          quantity: lookupResult.quantity,
                           target_price: lookupResult.unit_price,
                         })
                         setLookupOppId(opp.id)
-                        refreshAll()
+                        void queryClient.invalidateQueries({ queryKey: ['opportunities-for-lookup', lookupResult.customer.id] })
+                        void queryClient.invalidateQueries({ queryKey: ['opportunities'] })
                         Toast.success(
                           `快捷商机已创建并加入 ${lookupResult.sku.sku_code}，可直接去报价`,
                         )
@@ -1347,67 +1397,7 @@ export default function PriceCenterPage() {
                   <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
                     以系统适用价写入需求明细，销售在商机页可再调整目标价
                   </span>
-                </div>
-              )}
-              {lookupResult && (
-                <div style={{ display: 'grid', gap: 10, maxWidth: 640 }}>
-                  {lookupResult.status === 'ok' ? (
-                    <>
-                      <div>
-                        <span style={{ fontSize: 28, fontWeight: 700 }}>
-                          {lookupResult.unit_price}
-                        </span>
-                        <span style={{ marginLeft: 6, color: 'var(--crm-text-3)' }}>
-                          {lookupResult.currency} / {lookupResult.sku.unit ?? '件'}（数量 {lookupResult.quantity}）
-                        </span>
-                      </div>
-                      <div style={{ display: 'flex', gap: 16 }}>
-                        <Tag color="blue">{lookupResult.source_label}</Tag>
-                        <span style={{ color: 'var(--crm-text-3)' }}>
-                          {lookupResult.customer.name}
-                          {lookupResult.customer.level ? `（${lookupResult.customer.level} 级）` : ''} ·{' '}
-                          {lookupResult.sku.sku_code} · 有效期{' '}
-                          {lookupResult.effective_from ?? '即日'} ~ {lookupResult.effective_to ?? '长期'}
-                        </span>
-                      </div>
-                      {lookupResult.fallback_note && (
-                        <div
-                          style={{
-                            background: 'var(--crm-warning-soft, #fff7e6)',
-                            padding: '8px 12px',
-                            borderRadius: 6,
-                          }}
-                        >
-                          {lookupResult.fallback_note}
-                        </div>
-                      )}
-                      {lookupResult.can_see_cost && (
-                        <div style={{ color: 'var(--crm-text-3)' }}>
-                          货成本：
-                          {lookupResult.cost ?? '-'}
-                          {lookupResult.cost_note ? `（${lookupResult.cost_note}）` : ''}
-                          {lookupResult.minimum_price != null
-                            ? ` · 保护价 ${lookupResult.minimum_price}`
-                            : ''}
-                        </div>
-                      )}
-                      <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
-                        以上为系统适用价；对外拟报价默认带入，销售调整时将按权限检查。
-                      </div>
-                    </>
-                  ) : (
-                    <div
-                      style={{
-                        background: 'var(--crm-warning-soft, #fff7e6)',
-                        padding: '12px 16px',
-                        borderRadius: 6,
-                      }}
-                    >
-                      待定价：该条件下没有维护有效售价
-                      {lookupResult.fallback_note ? `（${lookupResult.fallback_note}）` : ''}
-                      ，请联系价格管理员维护；系统不会用成本推算价冒充有效售价。
-                    </div>
-                  )}
+                  {lookupOpp && <Link className="price-lookup-opportunity-link" to={`/opportunities/${lookupOpp.id}`}>打开商机</Link>}
                 </div>
               )}
             </div>
@@ -1567,10 +1557,10 @@ export default function PriceCenterPage() {
                       `${record.min_qty} ~ ${record.max_qty ?? '不限'}`,
                   },
                   // 标准价/指导价/最低保护价都是**单价**：口径同订单明细，保真不截断
-                  { title: '标准价', dataIndex: 'standard_price', width: 100, render: (v: number) => formatUnitPrice(v, 'CNY') },
-                  { title: '指导价', dataIndex: 'guide_price', width: 100, render: (v: number) => formatUnitPrice(v, 'CNY') },
+                  { title: <PriceTerm term="标准价" />, dataIndex: 'standard_price', width: 100, render: (v: number) => formatUnitPrice(v, 'CNY') },
+                  { title: <PriceTerm term="指导价" />, dataIndex: 'guide_price', width: 100, render: (v: number) => formatUnitPrice(v, 'CNY') },
                   {
-                    title: '最低保护价',
+                    title: <PriceTerm term="最低保护价" />,
                     dataIndex: 'minimum_price',
                     width: 120,
                     render: (value: number | null) => (
@@ -1578,7 +1568,7 @@ export default function PriceCenterPage() {
                     ),
                   },
                   {
-                    title: '目标利润率',
+                    title: <PriceTerm term="目标利润率" />,
                     dataIndex: 'target_margin',
                     width: 110,
                     render: (v: number | null) => (v === null ? '-' : `${(v * 100).toFixed(0)}%`),
@@ -1715,12 +1705,27 @@ export default function PriceCenterPage() {
                     width: 110,
                   },
                   {
-                    title: '约定价',
+                    title: (
+                      <span className="crm-help-label">
+                        约定价
+                        <HelpTip forLabel="约定价" text="给这家客户谈定的专属单价。客户查价时优先用它，高于等级价和通用指导价。" />
+                      </span>
+                    ),
                     dataIndex: 'agreed_price',
                     width: 110,
                     render: (value: number) => <span style={{ fontWeight: 600 }}>{formatUnitPrice(value, 'CNY')}</span>,
                   },
-                  { title: '最低价', dataIndex: 'minimum_price', width: 110, render: (v: number) => formatUnitPrice(v, 'CNY') },
+                  {
+                    title: (
+                      <span className="crm-help-label">
+                        最低价
+                        <HelpTip forLabel="最低价" text="这家客户专属的底价。拟报价低于它时，不能直接按专属价报，需要走审批。" />
+                      </span>
+                    ),
+                    dataIndex: 'minimum_price',
+                    width: 110,
+                    render: (v: number) => formatUnitPrice(v, 'CNY'),
+                  },
                   { title: '备注', dataIndex: 'remark', render: (v: string | null) => v ?? '-' },
                   {
                     title: '操作',
@@ -1775,13 +1780,23 @@ export default function PriceCenterPage() {
                 { title: '角色', dataIndex: 'role_name', width: 160 },
                 { title: '角色码', dataIndex: 'role_code', width: 160, render: (v: string | null) => v ?? '-' },
                 {
-                  title: '最低利润率',
+                  title: (
+                    <span className="crm-help-label">
+                      最低利润率
+                      <HelpTip forLabel="最低利润率" text="这个角色能批准的最低利润率。低于它的报价，需要更高层级审批。" />
+                    </span>
+                  ),
                   dataIndex: 'minimum_margin',
                   width: 140,
                   render: (value: number) => `${(value * 100).toFixed(0)}%`,
                 },
                 {
-                  title: '最大折扣',
+                  title: (
+                    <span className="crm-help-label">
+                      最大折扣
+                      <HelpTip forLabel="最大折扣" text="相对标准价允许的最大让价比例。超过这个比例，报价会转审批。" />
+                    </span>
+                  ),
                   dataIndex: 'discount_limit',
                   width: 120,
                   render: (v: number | null) => (v === null ? '-' : `${(v * 100).toFixed(0)}%`),
@@ -2151,7 +2166,7 @@ export default function PriceCenterPage() {
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>标准价</div>
+              <div style={{ marginBottom: 4 }}><PriceTerm term="标准价" /></div>
               <Input
                 value={ruleForm.standard_price}
                 onChange={(value) => setRuleForm({ ...ruleForm, standard_price: value })}
@@ -2159,7 +2174,7 @@ export default function PriceCenterPage() {
               />
             </div>
             <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>指导价</div>
+              <div style={{ marginBottom: 4 }}><PriceTerm term="指导价" /></div>
               <Input
                 value={ruleForm.guide_price}
                 onChange={(value) => setRuleForm({ ...ruleForm, guide_price: value })}
@@ -2169,7 +2184,7 @@ export default function PriceCenterPage() {
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>最低保护价</div>
+              <div style={{ marginBottom: 4 }}><PriceTerm term="最低保护价" /></div>
               <Input
                 value={ruleForm.minimum_price}
                 onChange={(value) => setRuleForm({ ...ruleForm, minimum_price: value })}
@@ -2177,7 +2192,7 @@ export default function PriceCenterPage() {
               />
             </div>
             <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>目标利润率（如 0.30）</div>
+              <div style={{ marginBottom: 4 }}><PriceTerm term="目标利润率" /></div>
               <Input
                 value={ruleForm.target_margin}
                 onChange={(value) => setRuleForm({ ...ruleForm, target_margin: value })}
