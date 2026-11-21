@@ -455,6 +455,30 @@ async def dashboard_summary(session: AsyncSession, user: CurrentUser) -> dict:
         )
     ).scalar_one()
 
+    # 本月回款（按**实际到账日**统计）—— 供工作台在"按确认时间"的主数字下补一行小字。
+    # 两个数的差 = 上月末到账、本月才确认的那几笔，不是算错（2026-11-21 主人要求显式并列）。
+    # ⚠️ `received_date` 是 `date` 列，不能用 `business_month()`（它只给 timestamptz 用，
+    # 对 date 再套时区会整月偏移），直接 `extract` 即可。
+    month_received_by_arrival = (
+        await session.execute(
+            await _scope_filter(
+                select(func.coalesce(func.sum(PaymentRecord.received_amount), 0))
+                .select_from(PaymentRecord)
+                .join(SalesOrder, SalesOrder.id == PaymentRecord.order_id)
+                .where(
+                    PaymentRecord.status == "confirmed",
+                    func.extract("year", PaymentRecord.received_date)
+                    == func.extract("year", func.now()),
+                    func.extract("month", PaymentRecord.received_date)
+                    == func.extract("month", func.now()),
+                ),
+                user,
+                _sales_owner_col(),
+                session,
+            )
+        )
+    ).scalar_one()
+
     # 逾期口径（2026-10-13 主人拍板统一）：**到期日已过且没收齐**即逾期，
     # 收过部分款也算。从前这里比的是 `status == "overdue"`，而状态列既会被
     # "收过 1 元"挡住（旧口径），也可能因"时间自己走过、没人写库"而过期没刷新
@@ -513,6 +537,7 @@ async def dashboard_summary(session: AsyncSession, user: CurrentUser) -> dict:
         "month_order_discount_amount": _f(month_order_discount_amount),
         "month_order_unverified_count": int(month_order_unverified_count),
         "month_received_amount": _f(month_received),
+        "month_received_by_arrival_amount": _f(month_received_by_arrival),
         "pending_receivable_amount": _f(pending_receivable),
         "overdue_receivable_count": int(overdue_receivable),
         "open_lead_count": int(open_leads),

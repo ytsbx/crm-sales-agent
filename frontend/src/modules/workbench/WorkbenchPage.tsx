@@ -204,7 +204,18 @@ export default function WorkbenchPage() {
     {
       label: '本月回款金额',
       value: money(summary?.month_received_amount),
-      hint: `应收期未结 ${money(summary?.pending_receivable_amount)}（含已到账待分配）`,
+      // 两个日子会算出两个数（2026-11-21 主人要求显式并列）：
+      // 主数字按**财务确认时间**归月（会计确认口径，与目标页一致）；
+      // 下面小字按**实际到账日**归月（现金流口径）。差额 = 上月已到账、本月才点确认的那几笔。
+      // 不并列的话，财务和出纳各报一个数会像"系统算错"。
+      hint: (
+        <div style={{ display: 'grid', gap: 2 }}>
+          <span className="chip">
+            按到账日 {money(summary?.month_received_by_arrival_amount)}
+          </span>
+          <span className="chip">应收未结 {money(summary?.pending_receivable_amount)}</span>
+        </div>
+      ),
       tone: 'default',
       onClick: () => navigate('/receivables'),
     },

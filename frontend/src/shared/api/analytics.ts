@@ -28,6 +28,8 @@ export interface DashboardSummary extends WithCurrencyWarnings {
   month_order_discount_amount: number
   month_order_unverified_count: number
   month_received_amount: number
+  /** 同一口径下按「实际到账日」统计的本月回款，与按确认时间的主数字并列展示 */
+  month_received_by_arrival_amount: number
   pending_receivable_amount: number
   overdue_receivable_count: number
   open_lead_count: number
