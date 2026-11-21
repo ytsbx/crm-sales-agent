@@ -1528,8 +1528,12 @@ async function main() {
       const quote = await checkedJson(`/custom-inquiries/${inquiry.id}/create-quote`, auth.token, {
         method: 'POST', body: JSON.stringify({ unit_cost: 10, quoted_price: 20 }),
       })
+      // expect 验的是流程末尾的打样详情页。产品 9f3000fc（2026-11-20）把详情表头
+      // 收窄成「原数量」「本次样品」（原「原采购数量」「本次样品数量」，抽屉 716 宽
+      // 塞不下）——断言跟上新文案。弹窗里仍是全称，下面 waitForText('原采购数量 10,000')
+      // 咬的是弹窗，不受影响。
       INTERACTIONS.push({ name: '48-sample-source-quantities', path: `/quotes/${quote.quote_id}`, clicks: [],
-        expect: ['原采购数量', '本次样品数量', '打样来源'], expectAll: true,
+        expect: ['原数量', '本次样品', '打样来源'], expectAll: true,
         sampleSource: { ...quote, inquiryId: inquiry.id, opportunityId: quote.opportunity_id },
       })
     }
