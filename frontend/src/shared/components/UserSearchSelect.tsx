@@ -4,11 +4,12 @@ import { Button, Select } from '@douyinfe/semi-ui'
 import { listUsers } from '../api/system'
 
 /** 按需搜索用户；每页 20 人，选中项在切换关键词时继续保留。 */
-export default function UserSearchSelect({ queryScope, activeOnly, enabled, value, onChange, placeholder, className, style, disabled }: {
+export default function UserSearchSelect({ queryScope, activeOnly, enabled, value, fallbackLabel, onChange, placeholder, className, style, disabled }: {
   queryScope: string
   activeOnly?: boolean
   enabled: boolean
   value?: number
+  fallbackLabel?: string
   onChange: (value: number | undefined, name?: string) => void
   placeholder?: string
   className?: string
@@ -40,6 +41,9 @@ export default function UserSearchSelect({ queryScope, activeOnly, enabled, valu
     label: `${user.name}（${user.username} · ${user.department ?? '未分配部门'}）`,
   }))
   if (selected && selected.value === value && !options.some((option) => option.value === value)) options.push(selected)
+  if (value != null && fallbackLabel && !options.some((option) => option.value === value)) {
+    options.push({ value, label: fallbackLabel, name: fallbackLabel })
+  }
   return <Select
     className={className}
     style={style}

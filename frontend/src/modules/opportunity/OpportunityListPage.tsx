@@ -19,7 +19,7 @@ import { usePermissions } from '../../shared/hooks/permissions'
 import { emptyNode } from '../../shared/components/EmptyState'
 import OpportunityBoard from './OpportunityBoard'
 import SectionCard from '../../shared/components/SectionCard'
-import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
+import RecordSearchSelect from '../../shared/components/RecordSearchSelect'
 import StatusDot from '../../shared/components/StatusDot'
 import { formatMoney, toTwoDecimals } from '../../shared/components/money'
 
@@ -82,11 +82,6 @@ export default function OpportunityListPage() {
     enabled: fromCustomer,
   })
   const customerId = fromCustomer ? selectedCustomerQuery.data?.id : form.customer_id
-  const customersQuery = useQuery({
-    queryKey: ['customers-for-select'],
-    queryFn: () => listCustomers({ page: 1, page_size: 100 }),
-    enabled: createVisible,
-  })
 
   const query = useQuery({
     queryKey: ['opportunities', { keyword, status, stageId, page, pageSize }],
@@ -352,6 +347,7 @@ export default function OpportunityListPage() {
         {view === 'board' ? (
           <OpportunityBoard
             keyword={keyword}
+            stageId={stageId}
             canManage={can('opportunity:manage')}
             onChanged={() => {
               void queryClient.invalidateQueries({ queryKey: ['opportunity-board'] })
@@ -445,18 +441,16 @@ export default function OpportunityListPage() {
                       {selectedCustomerQuery.data?.name ?? '正在读取客户资料…'}
                     </div>
                   )
-                ) : <Select
-                  placeholder="选择客户"
+                ) : <RecordSearchSelect
+                  key={`opportunity-customer-${createVisible}`}
+                  scope="opportunity-customer"
+                  enabled={createVisible}
+                  placeholder="按客户名称或编号搜索"
                   value={form.customer_id ?? undefined}
-                  onChange={(value) => setForm({ ...form, customer_id: value as number })}
-                  optionList={optionsWithCodeOnDuplicate(
-                    customersQuery.data?.items ?? [],
-                    (item) => item.name,
-                    (item) => item.id,
-                  )}
-                  loading={customersQuery.isLoading}
-                  filter={optionMatcher}
-                  style={{ width: '100%' }}
+                  list={listCustomers}
+                  lookup={getCustomer}
+                  labelOf={(customer) => customer.name}
+                  onChange={(customer) => setForm({ ...form, customer_id: customer?.id ?? null })}
                 />}
               </div>
               <div className="full">

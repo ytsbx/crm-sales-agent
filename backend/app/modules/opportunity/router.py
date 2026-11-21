@@ -379,6 +379,62 @@ async def funnel(
 
 # ---------------------------------------------------------------- 商机
 
+@router.get("/opportunities/board-stats")
+async def board_stats(
+    keyword: str | None = None,
+    stage_id: int | None = None,
+    search_customer_name: bool = False,
+    user: CurrentUser = Depends(require_permission("opportunity:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """看板列头：按当前筛选条件和数据权限统计每个阶段的完整数量与金额。
+
+    看板卡片改为每列独立分页后，列头不能再拿"已加载的这几张卡"求和 ——
+    那样加载前显示 20、加载后变成 40，数字会跟着翻页跳动。这里与列表接口
+    共用同一个筛选构造器（关键词、进行中、数据范围），一次算全。
+    """
+    stages = (
+        await session.execute(
+            select(OpportunityStage)
+            .where(OpportunityStage.is_loss.is_(False))
+            .order_by(OpportunityStage.sequence.asc())
+        )
+    ).scalars().all()
+    base = await svc.apply_data_scope(
+        svc.build_opportunity_stmt(
+            keyword=keyword,
+            stage_id=stage_id,
+            status="open",
+            search_customer_name=search_customer_name,
+        ),
+        user,
+        session,
+    )
+    sub = base.order_by(None).subquery()
+    rows = (
+        await session.execute(
+            select(
+                sub.c.stage_id,
+                func.count(sub.c.id),
+                func.coalesce(func.sum(sub.c.expected_amount), 0),
+            ).group_by(sub.c.stage_id)
+        )
+    ).all()
+    stats = {int(sid): (int(count), float(amount or 0)) for sid, count, amount in rows}
+    return ok(
+        [
+            {
+                "stage_id": stage.id,
+                "stage_name": stage.name,
+                "sequence": stage.sequence,
+                "count": stats.get(stage.id, (0, 0.0))[0],
+                "amount": stats.get(stage.id, (0, 0.0))[1],
+            }
+            for stage in stages
+        ]
+    )
+
+
 @router.get("/opportunities")
 async def list_opportunities(
     keyword: str | None = None,
@@ -964,7 +1020,7 @@ async def _confirm_win_core(
     # 转单时 service 里写了自动跟进留痕 + 主管通知（followup 事件），这里统一投递
     from app.modules.notification import service as notification_service
 
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(
         {
             "opportunity_id": opportunity.id,
@@ -1211,8 +1267,9 @@ async def create_item(
     session: AsyncSession = Depends(get_db),
 ):
     await svc.get_visible_opportunity(session, user, opportunity_id)
-    # SKU 先验存在（第十二批 12.5）：不验就是撞外键的 500，用户看不出哪条错了
-    await svc.ensure_skus_exist(session, [payload.sku_id])
+    from app.modules.product.service import ensure_skus_for_new_business
+
+    await ensure_skus_for_new_business(session, [payload.sku_id])
     item = OpportunityItem(**payload.model_dump(), opportunity_id=opportunity_id)
     session.add(item)
     await session.flush()

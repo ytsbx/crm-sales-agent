@@ -370,10 +370,17 @@ export function compareLogistics(payload: Record<string, unknown>) {
   return api.post<LogisticsCompareResult>('/logistics/compare', payload)
 }
 
-export function listLogisticsQuotes(params?: Record<string, unknown>) {
+export function listLogisticsQuotes(params?: {
+  customer_id?: number
+  opportunity_id?: number
+  page?: number
+  page_size?: number
+}) {
+  // 与其它列表接口一致：查询参数直接交给 axios；再包一层 `{ params }`
+  // 会变成 `params[page]=…`，后端读不到，分页永远停在第 1 页。
   return api.get<{ items: LogisticsQuoteRow[]; total: number; page: number; page_size: number }>(
     '/logistics/quotes',
-    { params },
+    params,
   )
 }
 

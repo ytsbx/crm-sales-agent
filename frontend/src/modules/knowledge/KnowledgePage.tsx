@@ -45,7 +45,7 @@ import {
   type CustomInquiryPayload,
   type CustomInquiryRow,
 } from '../../shared/api/inquiry'
-import { listCustomers } from '../../shared/api/customer'
+import { getCustomer, listCustomers } from '../../shared/api/customer'
 import { getOpportunity, listOpportunities } from '../../shared/api/opportunity'
 import {
   listInquiryApprovals,
@@ -60,7 +60,7 @@ import FormLabel from '../../shared/components/FormLabel'
 import OaFormSnapshot from '../../shared/components/OaFormSnapshot'
 import SyncOaButton from '../../shared/components/SyncOaButton'
 import { useBlockedNotify } from '../../shared/components/BlockedHint'
-import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
+import RecordSearchSelect from '../../shared/components/RecordSearchSelect'
 
 type TagColor = ComponentProps<typeof Tag>['color']
 const STATUS_TONE: Record<string, TagColor> = {
@@ -264,22 +264,9 @@ export default function KnowledgePage() {
     queryKey: ['opportunity', opportunityFilter],
     queryFn: () => getOpportunity(opportunityFilter!), enabled: Boolean(opportunityFilter),
   })
-  const opportunitiesQuery = useQuery({
-    queryKey: ['opportunities-for-inquiry', form.customer_id],
-    // 只列「进行中」的商机（理由同「新建样品申请」：已失单/已成交的不该再作为
-    // 「本次采购需求」的关联对象，其它选商机的地方也都带这道过滤）。
-    queryFn: () => listOpportunities({
-      customer_id: form.customer_id ?? undefined, status: 'open', page_size: 100,
-    }),
-    enabled: editVisible && Boolean(form.customer_id),
-  })
   const selectedOpportunity = useQuery({
     queryKey: ['opportunity', form.opportunity_id],
     queryFn: () => getOpportunity(form.opportunity_id!), enabled: editVisible && Boolean(form.opportunity_id),
-  })
-  const customersQuery = useQuery({
-    queryKey: ['customers-for-inquiry'],
-    queryFn: () => listCustomers({ page: 1, page_size: 100 }),
   })
 
   const refresh = () => {
@@ -1110,20 +1097,18 @@ export default function KnowledgePage() {
           {nativeFields && <div style={{ borderTop: '1px solid var(--crm-border)', paddingTop: 12, fontWeight: 600 }}>CRM 关联资料</div>}
           <div>
             <div style={{ marginBottom: 4 }}>客户（用于关联 CRM）</div>
-            <Select
+            <RecordSearchSelect
+              key={`inquiry-customer-${editVisible}`}
+              scope="inquiry-customer"
+              enabled={editVisible}
+              placeholder="按客户名称或编号搜索"
               value={form.customer_id ?? undefined}
-              onChange={(value) => setForm({ ...form, customer_id: (value as number) ?? null, opportunity_id: null })}
-              optionList={Array.from(new Map([
-                ...(customersQuery.data?.items ?? []).map((item) => [item.id, { value: item.id, label: item.name }] as const),
-                ...(selectedOpportunity.data ? [[selectedOpportunity.data.customer_id, {
-                  value: selectedOpportunity.data.customer_id,
-                  label: selectedOpportunity.data.customer_name ?? `客户编号 ${selectedOpportunity.data.customer_id}`,
-                }] as const] : []),
-              ]).values())}
-              filter={optionMatcher}
+              fallbackLabel={selectedOpportunity.data?.customer_name ?? undefined}
+              list={listCustomers}
+              lookup={getCustomer}
+              labelOf={(customer) => customer.name}
+              onChange={(customer) => setForm({ ...form, customer_id: customer?.id ?? null, opportunity_id: null })}
               style={{ width: '100%' }}
-              showClear
-              placeholder="关联客户"
             />
           </div>
           <div>
@@ -1131,21 +1116,26 @@ export default function KnowledgePage() {
             {/* 客户没选时这个框是灰的（判据没动）。灰着的时候外面包一层接点击：
                 点它就弹一句「先选客户，才能关联该客户的商机」，而不是毫无反应。 */}
             <div className="blocked-hint-click" onClick={notifyOpportunityBlocked} style={{ display: 'block' }}>
-              <Select value={form.opportunity_id ?? undefined} disabled={!form.customer_id}
-                onChange={(value) => setForm({ ...form, opportunity_id: (value as number) ?? null })}
-                optionList={optionsWithCodeOnDuplicate(
-                  Array.from(new Map([
-                    ...(opportunitiesQuery.data?.items ?? []),
-                    ...(selectedOpportunity.data && selectedOpportunity.data.customer_id === form.customer_id ? [selectedOpportunity.data] : []),
-                  ].map((item) => [item.id, item])).values()),
-                  // 显示文案就是商机名：同一客户底下同名商机必然撞车，
-                  // 按项目规矩撞车才补「编号 N」。
-                  (item) => item.title,
-                  (item) => item.id,
-                )}
-                filter showClear
-                style={{ width: '100%', ...(form.customer_id ? null : { pointerEvents: 'none' }) }}
-                placeholder="选择该客户的商机，避免重复创建" />
+              <RecordSearchSelect
+                key={`inquiry-opportunity-${form.customer_id ?? 'none'}`}
+                scope={`inquiry-opportunity-${form.customer_id ?? 'none'}`}
+                enabled={editVisible && Boolean(form.customer_id)}
+                disabled={!form.customer_id}
+                placeholder="按商机名称搜索，避免重复创建"
+                value={form.opportunity_id ?? undefined}
+                fallbackLabel={selectedOpportunity.data?.title}
+                // 只列「进行中」的商机（已失单/已成交的不该再作为本次采购需求的关联对象）。
+                list={(input) => listOpportunities({
+                  ...input, customer_id: form.customer_id ?? undefined, status: 'open',
+                })}
+                lookup={async (id) => {
+                  const row = await getOpportunity(id)
+                  return row.status === 'open' && row.customer_id === form.customer_id ? row : undefined
+                }}
+                labelOf={(item) => item.title}
+                onChange={(item) => setForm({ ...form, opportunity_id: item?.id ?? null })}
+                style={{ width: '100%', ...(form.customer_id ? {} : { pointerEvents: 'none' }) }}
+              />
             </div>
             {/* 常驻灰字：为什么灰、下一步先做哪一步。上面的客户框就在正上方，
                 所以只说"先选客户"，不重复怎么选。 */}

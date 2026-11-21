@@ -1,6 +1,5 @@
 """系统设置与业务规则接口。"""
 
-from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
@@ -26,8 +25,9 @@ from app.modules.settings.model import (
     SystemSetting,
     TaskRule,
 )
+from app.core.timebase import now_business
 from app.modules.settings.numbering import (
-    RESET_PERIODS, period_key, serialize_rule, validate_rule_length,
+    RESET_PERIODS, period_key, serialize_rule, validate_rule_length, validate_rule_period,
 )
 from app.modules.settings.schema import (
     CustomerLevelCreate,
@@ -244,7 +244,7 @@ async def upsert_setting(
 
 @router.get("/public-pool/rules")
 async def list_pool_rules(
-    _: CurrentUser = Depends(require_permission("customer:view")),
+    _: CurrentUser = Depends(require_permission("customer:view", "settings:manage")),
     session: AsyncSession = Depends(get_db),
 ):
     rows = (
@@ -508,7 +508,7 @@ async def restore_recycle_candidate(
 
 @router.get("/task-rules")
 async def list_task_rules(
-    _: CurrentUser = Depends(require_permission("task:view")),
+    _: CurrentUser = Depends(require_permission("task:view", "settings:manage")),
     session: AsyncSession = Depends(get_db),
 ):
     rows = (await session.execute(select(TaskRule).order_by(TaskRule.id.asc()))).scalars().all()
@@ -634,7 +634,8 @@ async def run_task_rules(
 
 
 async def _rule_with_current(session: AsyncSession, rule: NumberingRule) -> dict:
-    key = period_key(rule.reset_period, datetime.now(UTC))
+    moment = now_business()
+    key = period_key(rule.reset_period, moment)
     current = (
         await session.execute(
             select(NumberSequence.current_no).where(
@@ -643,7 +644,7 @@ async def _rule_with_current(session: AsyncSession, rule: NumberingRule) -> dict
             )
         )
     ).scalar_one_or_none()
-    return serialize_rule(rule, key, int(current) if current is not None else None)
+    return serialize_rule(rule, key, int(current) if current is not None else None, now=moment)
 
 
 @router.get("/numbering-rules")
@@ -682,6 +683,7 @@ async def create_numbering_rule(
         raise AppError(ErrorCode.DUPLICATE, f"编号规则 {payload.code} 已存在", 409)
 
     row = NumberingRule(**payload.model_dump())
+    validate_rule_period(row)
     preview = await _rule_with_current(session, row)
     validate_rule_length(row, preview["current_no"])
     session.add(row)
@@ -718,7 +720,13 @@ async def update_numbering_rule(
         raise AppError(ErrorCode.NOT_FOUND, "编号规则不存在", 404)
 
     data = payload.model_dump(exclude_unset=True)
-    if data.get("reset_period") is not None and data["reset_period"] not in RESET_PERIODS:
+    for field, label in {
+        "name": "规则名称", "prefix": "前缀", "date_format": "日期格式",
+        "seq_length": "流水位数", "reset_period": "重置周期", "enabled": "启用状态",
+    }.items():
+        if field in data and data[field] is None:
+            raise AppError(ErrorCode.PARAM_ERROR, f"{label}不能为 null", 422)
+    if "reset_period" in data and data["reset_period"] not in RESET_PERIODS:
         raise AppError(
             ErrorCode.PARAM_ERROR, f"重置周期只能是 {list(RESET_PERIODS)} 之一", 422
         )
@@ -730,6 +738,8 @@ async def update_numbering_rule(
         **{field: getattr(row, field) for field in NumberingRuleCreate.model_fields},
         **data,
     })
+    if candidate.enabled or {"date_format", "reset_period"} & data.keys():
+        validate_rule_period(candidate)
     preview = await _rule_with_current(session, candidate)
     validate_rule_length(candidate, preview["current_no"])
     for field, value in data.items():

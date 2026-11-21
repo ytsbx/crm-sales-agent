@@ -1,3 +1,4 @@
+import { showDownloadResult } from '../../shared/download-feedback'
 import { formatBeijingTime } from '../../shared/beijing-time'
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -315,7 +316,7 @@ export default function AttachmentPanel({
               <a
                 style={{ color: 'var(--crm-primary)' }}
                 onClick={() =>
-                  record.previewable ? void openPreview(record) : downloadFile(record.id, name)
+                  record.previewable ? void openPreview(record) : void showDownloadResult(downloadFile(record.id, name))
                 }
               >
                 {name}
@@ -366,7 +367,7 @@ export default function AttachmentPanel({
                 )}
                 <a
                   style={{ color: 'var(--crm-primary)' }}
-                  onClick={() => downloadFile(record.id, record.file_name)}
+                  onClick={() => void showDownloadResult(downloadFile(record.id, record.file_name))}
                 >
                   下载
                 </a>

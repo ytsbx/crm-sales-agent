@@ -1,3 +1,4 @@
+import { showDownloadResult } from '../../shared/download-feedback'
 import { formatBeijingDate, formatBeijingTime } from '../../shared/beijing-time'
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
@@ -149,14 +150,35 @@ export default function DocumentsPage() {
   })
   // 订单 / 报价 / 报价版本三级联动，全部跟着所选客户走——
   // 不这么做的话，跨客户把别家的单子挂上来，只能等提交时被后端拒掉。
+  // 同一客户下单据可能超过一页：循环取全，不能只取前 50 条。
   const genOrdersQuery = useQuery({
     queryKey: ['contract-gen-orders', uploadForm.customer_id],
-    queryFn: () => listOrders({ customer_id: uploadForm.customer_id, page: 1, page_size: 50 }),
+    queryFn: async () => {
+      const filter = { customer_id: uploadForm.customer_id, page_size: 100 }
+      const first = await listOrders({ ...filter, page: 1 })
+      const all = [...first.items]
+      for (let page = 2; all.length < first.total; page += 1) {
+        const next = await listOrders({ ...filter, page })
+        if (!next.items.length) break
+        all.push(...next.items)
+      }
+      return { ...first, items: all }
+    },
     enabled: Boolean(uploadForm.customer_id) && uploadVisible,
   })
   const genQuotesQuery = useQuery({
     queryKey: ['contract-gen-quotes', uploadForm.customer_id],
-    queryFn: () => listQuotes({ customer_id: uploadForm.customer_id, page: 1, page_size: 50 }),
+    queryFn: async () => {
+      const filter = { customer_id: uploadForm.customer_id, page_size: 100 }
+      const first = await listQuotes({ ...filter, page: 1 })
+      const all = [...first.items]
+      for (let page = 2; all.length < first.total; page += 1) {
+        const next = await listQuotes({ ...filter, page })
+        if (!next.items.length) break
+        all.push(...next.items)
+      }
+      return { ...first, items: all }
+    },
     enabled: Boolean(uploadForm.customer_id) && uploadVisible,
   })
   const genVersionsQuery = useQuery({
@@ -257,6 +279,10 @@ export default function DocumentsPage() {
     setOriginalFile(null)
     setOriginalFileId(null)
     setContractTitle('')
+    setContractNumber('')
+    setNumberRuleType('manual')
+    setOurCompany('')
+    setCounterparty('')
     setContractOrigin(undefined)
     setUploadForm({ customer_id: undefined, order_id: undefined, quote_id: undefined,
       quote_version_id: undefined, expiry_date: '', effective_date: '' })
@@ -1235,7 +1261,7 @@ export default function DocumentsPage() {
                 signedFiles.map((row) => (
                   <div key={row.file_id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     {can('file:view') ? (
-                      <a onClick={() => void downloadFile(row.file_id, row.file_name)}>{row.file_name}</a>
+                      <a onClick={() => void showDownloadResult(downloadFile(row.file_id, row.file_name))}>{row.file_name}</a>
                     ) : (
                       <span>{row.file_name}</span>
                     )}

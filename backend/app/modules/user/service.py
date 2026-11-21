@@ -306,10 +306,15 @@ async def set_user_status(
     return user
 
 
-async def set_user_roles(session: AsyncSession, user: User, role_ids: list[int]) -> list[Role]:
+async def set_user_roles(
+    session: AsyncSession, user: User, role_ids: list[int]
+) -> tuple[list[str], list[Role]]:
+    # 与停用账号保持相同的锁顺序。账号锁也让两次角色替换串行执行。
+    await _lock_admin_guard(session)
+    await lock_user_row(session, user.id)
     roles = await _validate_roles(session, role_ids)
     # 摘掉 admin 角色前要确认系统里还有别的管理员
-    current = {r.code for r in await roles_of_user(session, user.id)}
+    current = [r.code for r in await roles_of_user(session, user.id)]
     new_codes = {r.code for r in roles}
     if "admin" in current and "admin" not in new_codes:
         await _assert_not_last_admin(session, user, reason="移除管理员角色")
@@ -318,7 +323,7 @@ async def set_user_roles(session: AsyncSession, user: User, role_ids: list[int])
     for role in roles:
         await session.execute(user_roles.insert().values(user_id=user.id, role_id=role.id))
     await session.flush()
-    return roles
+    return current, roles
 
 
 async def roles_of_user(session: AsyncSession, user_id: int) -> list[Role]:

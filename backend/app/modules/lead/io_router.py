@@ -10,11 +10,12 @@ import re
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
 from app.core.csvio import csv_bytes, parse_csv_bytes, read_upload_bytes
+from app.core.data_scope import scoped_owner_ids
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, ensure_permission, require_permission
 from app.core.errors import AppError, ErrorCode
@@ -142,6 +143,14 @@ async def import_leads(
     #: 用行号做键，避免与 RowSkipped 的语义混在一起（那是"没进来"，这是"进来了但有情况"）。
     company_hints: dict[int, str] = {}
 
+    can_view_leads = "admin" in getattr(user, "roles", ()) or "lead:view" in getattr(user, "permissions", ())
+    visible_owners = await scoped_owner_ids(session, user) if can_view_leads else set()
+
+    def can_identify(lead: Lead) -> bool:
+        return can_view_leads and (
+            visible_owners is None or lead.owner_id is None or lead.owner_id in visible_owners
+        )
+
     for index, row in enumerate(rows, start=2):  # 第 1 行是表头
         name = (row.get("线索名称") or "").strip()
         company = (row.get("公司名称") or "").strip() or None
@@ -176,10 +185,13 @@ async def import_leads(
                         )
                     ).scalars().first()
                     if dup_mobile is not None:
-                        raise RowSkipped(
-                            f"手机号「{mobile}」已存在（{dup_mobile.name or '未命名'}，"
-                            f"id={dup_mobile.id}）"
-                        )
+                        reason = "该手机号已存在，已跳过"
+                        if can_identify(dup_mobile):
+                            reason = (
+                                f"手机号「{mobile}」已存在（{dup_mobile.name or '未命名'}，"
+                                f"id={dup_mobile.id}）"
+                            )
+                        raise RowSkipped(reason)
                 if company:
                     dup_company = (
                         await session.execute(
@@ -195,17 +207,21 @@ async def import_leads(
                         )
                     ).scalars().first()
                     if dup_company is not None:
-                        raise RowSkipped(
-                            f"「{company}」的同一联系人已存在（id={dup_company.id}）"
+                        reason = "该公司的同一联系人已存在，已跳过"
+                        if can_identify(dup_company):
+                            reason = f"「{company}」的同一联系人已存在（id={dup_company.id}）"
+                        raise RowSkipped(reason)
+                    # 同公司但联系人不同：放行，只汇报当前可见的线索。
+                    same_company = 0
+                    if can_view_leads:
+                        count_stmt = select(func.count(Lead.id)).where(
+                            Lead.deleted_at.is_(None), Lead.company_name == company
                         )
-                    # 同公司但联系人不同：**放行**，只提示
-                    same_company = (
-                        await session.execute(
-                            select(func.count(Lead.id)).where(
-                                Lead.deleted_at.is_(None), Lead.company_name == company
+                        if visible_owners is not None:
+                            count_stmt = count_stmt.where(
+                                or_(Lead.owner_id.is_(None), Lead.owner_id.in_(visible_owners))
                             )
-                        )
-                    ).scalar_one()
+                        same_company = (await session.execute(count_stmt)).scalar_one()
                     if same_company:
                         company_hints[index] = (
                             f"「{company}」已有 {int(same_company)} 条线索，"
@@ -299,13 +315,13 @@ async def restore_lead(
     session: AsyncSession = Depends(get_db),
 ):
     """从回收站恢复线索。"""
-    lead = await session.get(Lead, lead_id)
-    if lead is None:
-        raise AppError(ErrorCode.NOT_FOUND, "线索不存在", 404)
+    lead = await svc.lock_lead(session, user, lead_id, include_deleted=True)
     if lead.deleted_at is None:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该线索没有被删除，无需恢复")
-    # 恢复也是写操作，同样要过数据范围（先恢复再校验会让越权者得手）
-    await svc.assert_lead_visible(session, user, lead)
+    before = svc.serialize_lead(lead)
+    if lead.status == "invalid":
+        lead.status = "assigned" if lead.owner_id is not None else "pending"
+        lead.invalid_reason = None
     lead.deleted_at = None
     await session.flush()
     await write_audit(
@@ -314,6 +330,7 @@ async def restore_lead(
         action="restore",
         business_type="lead",
         business_id=lead.id,
+        before=before,
         after=svc.serialize_lead(lead),
         ip=client_ip(request),
     )

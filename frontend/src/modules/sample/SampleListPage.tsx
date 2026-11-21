@@ -1,10 +1,11 @@
 import { skuLabel } from '../../shared/sku-label'
+import { requiredQuantityText } from '../../shared/number-input'
 import { humanizeBackendText } from '../../shared/humanize-text'
 import { formatBeijingTime, formatBeijingDate } from '../../shared/beijing-time'
 import SampleDingTalkModal from './SampleDingTalkModal'
 import FormLabel from '../../shared/components/FormLabel'
 import { useEffect, useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
 import {
@@ -31,8 +32,8 @@ import {
 } from '@douyinfe/semi-ui'
 import { IconHelpCircle } from '@douyinfe/semi-icons'
 
-import { listCustomers } from '../../shared/api/customer'
-import { listCustomInquiries } from '../../shared/api/inquiry'
+import { getCustomer, listCustomers } from '../../shared/api/customer'
+import { listCustomInquiries, type CustomInquiryRow } from '../../shared/api/inquiry'
 import { getOpportunity, listOpportunities } from '../../shared/api/opportunity'
 import { listSkusForPricing } from '../../shared/api/pricing'
 import {
@@ -65,7 +66,8 @@ import { formatMoney, toTwoDecimals } from '../../shared/components/money'
 import { usePermissions } from '../../shared/hooks/permissions'
 import BizDocPanel from '../../shared/components/BizDocPanel'
 import type { TagTone } from '../../shared/types'
-import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
+import { optionMatcher } from '../../shared/components/optionMatch'
+import RecordSearchSelect from '../../shared/components/RecordSearchSelect'
 import GuardedButton from '../../shared/components/GuardedButton'
 
 /** 样品（PRD §19 / 03-API §26）。 */
@@ -111,15 +113,76 @@ type ItemDraft = {
   quantity: string
 }
 
-/** 产品名称随输入写入草稿，已有产品仍可从候选项关联。 */
-function SampleProductName({ item, choices, onChange }: {
+type SampleProductChoice = {
+  value: string | number
+  label: string
+  inquiry?: CustomInquiryRow
+}
+
+/**
+ * 产品名称随输入写入草稿，已有产品 / 定制需求按需搜索后选择。
+ *
+ * 原来定制需求只拉第一页 100 条、在本地过滤：第 101 条以后的需求，
+ * 无论输编号还是标题都选不中，只能当自由文本新产品打进去（关联就丢了）。
+ * 现在 SKU 仍用完整选项（`/pricing/sku-options` 不分页），
+ * 定制需求改成服务端关键词 + 翻页，输入即查。
+ */
+function SampleProductName({ item, skuChoices, scope, enabled, onChange }: {
   item: ItemDraft
-  choices: { value: string | number; label: string }[]
+  skuChoices: { value: number; label: string }[]
+  scope: string
+  enabled: boolean
   onChange: (fields: Pick<ItemDraft, 'sku_id' | 'inquiry_id' | 'item_name'>) => void
 }) {
   const [search, setSearch] = useState('')
-  const selected = item.sku_id ?? (item.inquiry_id ? `custom:${item.inquiry_id}` : undefined)
-  const text = selected === undefined ? item.item_name ?? '' : choices.find((choice) => choice.value === selected)?.label ?? item.item_name ?? ''
+  const [keyword, setKeyword] = useState('')
+  const [open, setOpen] = useState(false)
+  const [selectedInquiry, setSelectedInquiry] = useState<{ id: number; label: string } | null>(null)
+  useEffect(() => {
+    const timer = setTimeout(() => setKeyword(search.trim()), 250)
+    return () => clearTimeout(timer)
+  }, [search])
+  const inquiryQuery = useInfiniteQuery({
+    queryKey: ['sample-inquiry-search', scope, keyword],
+    enabled: enabled && open,
+    initialPageParam: 1,
+    queryFn: ({ pageParam }) => listCustomInquiries({ keyword, page: pageParam, page_size: 20 }),
+    getNextPageParam: (last) => last.page * last.page_size < last.total ? last.page + 1 : undefined,
+  })
+  const inquiryRows = inquiryQuery.data?.pages.flatMap((page) => page.items) ?? []
+  const currentSearch = search.trim()
+  const choices: SampleProductChoice[] = [
+    ...skuChoices
+      .filter((choice) => optionMatcher(currentSearch, choice))
+      .map((choice) => ({ value: choice.value, label: choice.label })),
+    ...inquiryRows
+      .filter((row) => optionMatcher(currentSearch, {
+        value: row.inquiry_no ?? row.id,
+        label: `${row.inquiry_no ?? ''} ${row.title}`,
+      }))
+      .map((row) => ({
+        value: `custom:${row.id}`,
+        label: `定制需求 · ${row.inquiry_no ?? `编号 ${row.id}`} · ${row.title}`,
+        inquiry: row,
+      })),
+  ]
+  // 哨兵项：选中它们只触发翻页 / 重试，不当成业务值写进草稿。
+  if (inquiryQuery.isError) choices.push({ value: '__retry__', label: '需求搜索失败，点击重试' })
+  else if (inquiryQuery.hasNextPage) choices.push({ value: '__more__', label: '加载更多需求' })
+
+  const selectedRow = item.inquiry_id
+    ? inquiryRows.find((row) => row.id === item.inquiry_id)
+    : undefined
+  // 已选项换关键词/翻页后可能不在当前结果里：用记住的标签，不能显示成空。
+  const text = item.inquiry_id
+    ? (selectedInquiry?.id === item.inquiry_id
+        ? selectedInquiry.label
+        : selectedRow
+          ? `定制需求 · ${selectedRow.inquiry_no ?? `编号 ${selectedRow.id}`} · ${selectedRow.title}`
+          : `定制需求 #${item.inquiry_id}`)
+    : item.sku_id
+      ? (skuChoices.find((choice) => choice.value === item.sku_id)?.label ?? `产品 #${item.sku_id}`)
+      : item.item_name ?? ''
   const typeName = (name: string) => {
     setSearch(name)
     onChange({ sku_id: undefined, inquiry_id: undefined, item_name: name })
@@ -129,24 +192,38 @@ function SampleProductName({ item, choices, onChange }: {
     aria-label="产品名称"
     placeholder="产品名称：能搜到就选，搜不到就直接打字"
     value={text}
-    data={choices.filter((choice) => optionMatcher(search, choice))}
+    data={choices}
     showClear
+    loading={inquiryQuery.isFetching || currentSearch !== keyword}
     defaultActiveFirstOption={false}
-    onFocus={() => setSearch('')}
+    onFocus={() => { setSearch(''); setOpen(true) }}
+    onDropdownVisibleChange={setOpen}
     onSearch={typeName}
     onClear={() => typeName('')}
     onSelectWithObject
     renderSelectedItem={(choice) => choice.label}
     onSelect={(choice) => {
       const raw = choice.value
+      if (raw === '__more__') {
+        if (!inquiryQuery.isFetching && currentSearch === keyword) void inquiryQuery.fetchNextPage()
+        return
+      }
+      if (raw === '__retry__') {
+        if (inquiryQuery.isFetchNextPageError) void inquiryQuery.fetchNextPage()
+        else void inquiryQuery.refetch()
+        return
+      }
+      const inquiry = choice.inquiry
       setSearch('')
-      onChange({
-        sku_id: typeof raw === 'number' ? raw : undefined,
-        inquiry_id: typeof raw === 'string' ? Number(raw.slice(7)) : undefined,
-        item_name: undefined,
-      })
+      if (typeof raw === 'number') {
+        setSelectedInquiry(null)
+        onChange({ sku_id: raw, inquiry_id: undefined, item_name: undefined })
+      } else if (inquiry) {
+        setSelectedInquiry({ id: inquiry.id, label: choice.label })
+        onChange({ sku_id: undefined, inquiry_id: inquiry.id, item_name: undefined })
+      }
     }}
-    emptyContent="将使用输入的产品名称"
+    emptyContent={inquiryQuery.isFetching ? '搜索中…' : '没有匹配的产品或需求；继续输入将作为新产品名称'}
   />
 }
 
@@ -155,8 +232,8 @@ function draftReady(item: ItemDraft): boolean {
   return Boolean(item.sku_id ?? item.inquiry_id ?? item.item_name?.trim())
 }
 
-function draftPayload(item: ItemDraft): Record<string, unknown> {
-  const quantity = Number(item.quantity) || 1
+function draftPayload(item: ItemDraft, index?: number): Record<string, unknown> {
+  const quantity = requiredQuantityText(item.quantity, index === undefined ? '打样数量' : `第 ${index + 1} 行打样数量`)
   if (item.sku_id) return { sku_id: item.sku_id, quantity }
   if (item.inquiry_id) {
     return {
@@ -193,7 +270,11 @@ function dash(value?: string | null) {
 
 function sampleNextStep(row: SampleRequestRow) {
   const oa = (row.source_context as unknown as { dingtalk_oa?: { submitted?: boolean; requires_self_oa?: boolean } } | null)?.dingtalk_oa
-  if (row.superseded_by) return { hint: '原版的制作与寄送记录已保留。审批和后续操作请到新版本办理。' }
+  if (row.revision_locked || row.superseded_by) {
+    return { hint: row.superseded_by
+      ? '原版的制作与寄送记录已保留。审批和后续操作请到新版本办理。'
+      : '原版记录已锁定，可查看制作与寄送记录。如需继续办理，请联系负责人。' }
+  }
   if (row.status === 'pending') {
     if (!oa) return { hint: '等待负责审批的同事处理。审批通过后才能登记制作完成。' }
     return oa.submitted
@@ -340,29 +421,15 @@ export default function SampleListPage() {
   })
   const detail: SampleRequestRow | undefined = listDetail ?? detailQuery.data
   const nextStep = detail ? sampleNextStep(detail) : null
-  const canUpdateSample = canManage && !detail?.superseded_by
+  const revisionLocked = Boolean(detail?.revision_locked || detail?.superseded_by)
+  const canUpdateSample = canManage && !revisionLocked
 
-  const customersQuery = useQuery({
-    queryKey: ['customers-for-select'],
-    queryFn: () => listCustomers({ page: 1, page_size: 100 }),
-    enabled: createVisible,
-  })
-  const opportunitiesQuery = useQuery({
-    queryKey: ['opportunities-for-select'],
-    // 只列「进行中」的商机：已失单 / 已成交的不该再拿来开新的样品申请。
-    // 项目里其它选商机的地方都带这道过滤（报价中心、报价列表、商机看板、工作台
-    // 都是 `status: 'open'`），只有这里原先漏了 —— 于是已失单的商机也会出现在下拉里，
-    // 跟同名的进行中商机长得一模一样（主人 2026-10-15 截图问「为什么两个一样的」）。
-    queryFn: () => listOpportunities({ status: 'open', page: 1, page_size: 100 }),
-    enabled: createVisible,
+  const selectedCustomerQuery = useQuery({
+    queryKey: ['customer', form.customer_id],
+    queryFn: () => getCustomer(form.customer_id!),
+    enabled: createVisible && Boolean(form.customer_id) && !form.opportunity_id,
   })
   const skusQuery = useQuery({ queryKey: ['skus-for-pricing'], queryFn: listSkusForPricing })
-  // 定制需求下拉：只有打开新建弹窗或详情抽屉时才拉
-  const inquiriesQuery = useQuery({
-    queryKey: ['inquiries-for-sample'],
-    queryFn: () => listCustomInquiries({ page: 1, page_size: 100 }),
-    enabled: createVisible || detailId !== null,
-  })
 
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ['timeline', 'customer'] })
@@ -825,7 +892,7 @@ export default function SampleListPage() {
         // 摆一个「详情」也是死的，点了只会报错。
         if (record.is_deleted) {
           // 恢复要走 `sample:manage`（与删除共用同一把钥匙），没权限就不摆按钮
-          return canManage ? (
+          return canManage && !record.revision_locked ? (
             <Popconfirm
               title="恢复这张打样单？恢复后会重新出现在列表里。"
               onConfirm={() => restoreMutation.mutate(record.id)}
@@ -871,25 +938,6 @@ export default function SampleListPage() {
     // 下拉里带上 SKU 名称：只有 `编码 · 规格` 时，一个产品下几个 SKU 认不出区别
     label: skuLabel(sku),
   }))
-  const inquiryOptions = (inquiriesQuery.data?.items ?? []).map((row) => ({
-    value: row.id,
-    label: `${row.inquiry_no ?? `编号 ${row.id}`} · ${row.title}`,
-  }))
-  /**
-   * 「产品名称」那**一个框**的全部候选项：产品库 + 定制需求。
-   *
-   * 为什么合成一个（2026-10-16 主人：「我不明白为什么还要选择这个」）：
-   * 申请单原件上就一格「产品名称」，业务员不该先回答"我这是现货还是定制"。
-   * 选项值用**类型区分**，不靠用户选模式：
-   *   · `number`         = 产品库里的 SKU（`sku_id`）
-   *   · `'custom:<id>'`  = 某条定制需求（`inquiry_id`）
-   *   · 其它字符串        = 手填的新产品名（`item_name`，后端有"只有名字"的路径）
-   * 定制需求那条**必须留着**：从定制需求发起打样时，后端靠它校验客户/商机归属一致。
-   */
-  const productChoices = [
-    ...skuOptions,
-    ...inquiryOptions.map((row) => ({ value: `custom:${row.value}`, label: `定制需求 · ${row.label}` })),
-  ]
 
   useEffect(() => {
     if (detail && searchParams.get('oa') === '1') {
@@ -997,51 +1045,39 @@ export default function SampleListPage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div>
             <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>关联商机</div>
-            <Select
-              style={{ width: '100%' }}
-              placeholder="选择商机（会自动带出客户）"
-              filter={optionMatcher}
-              showClear
+            <RecordSearchSelect
+              key={String(createVisible)}
+              scope="sample-opportunity"
+              enabled={createVisible}
+              placeholder="按商机名称、客户名称或商机编号搜索"
               value={form.opportunity_id}
-              onChange={(value) => {
-                const id = value as number | undefined
-                const opp = opportunitiesQuery.data?.items.find((row) => row.id === id)
-                  ?? (selectedOpportunityQuery.data?.id === id ? selectedOpportunityQuery.data : undefined)
-                setForm({ ...form, opportunity_id: id, customer_id: opp?.customer_id ?? form.customer_id })
+              fallbackLabel={selectedOpportunityQuery.data?.title}
+              list={(input) => listOpportunities({ ...input, status: 'open', search_customer_name: true })}
+              lookup={async (id) => {
+                const row = await getOpportunity(id)
+                return row.status === 'open' ? row : undefined
               }}
-              optionList={optionsWithCodeOnDuplicate(
-                Array.from(new Map([
-                  ...(opportunitiesQuery.data?.items ?? []),
-                  ...(selectedOpportunityQuery.data ? [selectedOpportunityQuery.data] : []),
-                ].map((opp) => [opp.id, opp])).values()),
-                // 显示文案是「商机名 · 客户名」：同一个客户底下有同名商机时，
-                // 两条会渲染成一模一样的文字，选哪条全靠猜。
-                // 按项目规矩来 —— **撞车才补「编号 N」**（不撞车的仍然只显示文案，
-                // 也不影响按编号搜：搜索走 optionMatcher，编号挂在 value 上）。
-                (opp) => `${opp.title}${opp.customer_name ? ` · ${opp.customer_name}` : ''}`,
-                (opp) => opp.id,
-              )}
+              labelOf={(row) => row.customer_name ? `${row.title} · ${row.customer_name}` : row.title}
+              onChange={(row) => setForm({ ...form, opportunity_id: row?.id, customer_id: row?.customer_id ?? form.customer_id })}
             />
           </div>
           <div>
             <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>
               客户（不选商机时必填）
             </div>
-            <Select
-              style={{ width: '100%' }}
-              placeholder="选择客户"
-              filter={optionMatcher}
-              showClear
+            <RecordSearchSelect
+              key={String(createVisible)}
+              scope="sample-customer"
+              enabled={createVisible}
+              placeholder="按客户名称或编号搜索"
               value={form.customer_id}
               disabled={Boolean(form.opportunity_id)}
-              onChange={(value) => setForm({ ...form, customer_id: value as number | undefined })}
-              optionList={Array.from(new Map([
-                ...(customersQuery.data?.items ?? []).map((customer) => [customer.id, { value: customer.id, label: customer.name }] as const),
-                ...(selectedOpportunityQuery.data ? [[selectedOpportunityQuery.data.customer_id, {
-                  value: selectedOpportunityQuery.data.customer_id,
-                  label: selectedOpportunityQuery.data.customer_name ?? `客户编号 ${selectedOpportunityQuery.data.customer_id}`,
-                }] as const] : []),
-              ]).values())}
+              fallbackLabel={selectedOpportunityQuery.data?.customer_name ?? selectedCustomerQuery.data?.name
+                ?? (form.customer_id ? `客户编号 ${form.customer_id}` : undefined)}
+              list={listCustomers}
+              lookup={getCustomer}
+              labelOf={(customer) => customer.name}
+              onChange={(customer) => setForm({ ...form, customer_id: customer?.id })}
             />
           </div>
 
@@ -1056,7 +1092,9 @@ export default function SampleListPage() {
                     （当新品，后端有一条"只有名字"的路径，打完样才可能建档）。 */}
                 <SampleProductName
                   item={item}
-                  choices={productChoices}
+                  skuChoices={skuOptions}
+                  scope={`sample-create-${index}`}
+                  enabled={createVisible}
                   onChange={(fields) => setForm((current) => ({
                     ...current,
                     items: current.items.map((row, rowIndex) => rowIndex === index ? { ...row, ...fields } : row),
@@ -1144,7 +1182,7 @@ export default function SampleListPage() {
               </span>
             </div>
             {nextStep && <div className="workflow-next">
-              <strong>{detail.superseded_by ? '历史版本' : '下一步'}</strong>
+              <strong>{revisionLocked ? '原版只读' : '下一步'}</strong>
               <p className="workflow-guide">{nextStep.hint}</p>
               {detail.superseded_by && <Button size="small" type="primary" theme="outline"
                 onClick={() => navigate(`/samples/${detail.superseded_by}`)}>打开下一版</Button>}
@@ -1272,7 +1310,9 @@ export default function SampleListPage() {
                       2026-10-16 主人：「我不明白为什么还要选择这个」） */}
                   <SampleProductName
                     item={newItem}
-                    choices={productChoices}
+                    skuChoices={skuOptions}
+                    scope={`sample-add-${detail?.id ?? 'new'}`}
+                    enabled={Boolean(detail)}
                     onChange={(fields) => setNewItem((current) => ({ ...current, ...fields }))}
                   />
                   <Input
@@ -1712,9 +1752,7 @@ export default function SampleListPage() {
                       )}
                       <div>
                         版本：第 {detail.version ?? 1} 版
-                        {detail.superseded_by
-                          ? `（已被新修订版编号 ${detail.superseded_by} 取代，只读）`
-                          : ''}
+                        {revisionLocked && '（只读）'}
                       </div>
                     </div>
                   )}

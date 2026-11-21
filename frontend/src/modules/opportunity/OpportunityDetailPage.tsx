@@ -1,7 +1,7 @@
 import { skuLabel } from '../../shared/sku-label'
 import { formatBeijingTime } from '../../shared/beijing-time'
 import { useTabLabel } from '../../shared/hooks/useTabLabel'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -42,6 +42,7 @@ import DetailHeader from '../../shared/components/DetailHeader'
 import HelpTip from '../../shared/components/HelpTip'
 import { calendarDay } from '../../shared/calendar-day'
 import GuardedButton from '../../shared/components/GuardedButton'
+import { parseOptionalDecimal } from '../../shared/number-input'
 import ReceivablePlanPicker, {
   defaultPlanRows,
   planBlockedReasons,
@@ -66,7 +67,7 @@ import DecisionMakerCard from '../common/DecisionMakerCard'
 import OpportunityRecords from './OpportunityRecords'
 import type { TagTone } from '../../shared/types'
 import FormLabel from '../../shared/components/FormLabel'
-import { optionMatcher } from '../../shared/components/optionMatch'
+import RecordSearchSelect from '../../shared/components/RecordSearchSelect'
 import { formatMoney, toTwoDecimals } from '../../shared/components/money'
 import PageLoading from '../../shared/components/PageLoading'
 
@@ -92,6 +93,14 @@ export default function OpportunityDetailPage() {
   const canManage = can('opportunity:manage')
 
   const [activeKey, setActiveKey] = useState('overview')
+  // 跟进与任务改服务端分页：50 条一页；切换商机回到第 1 页。
+  const LIST_PAGE_SIZE = 50
+  const [followupPage, setFollowupPage] = useState(1)
+  const [taskPage, setTaskPage] = useState(1)
+  useEffect(() => {
+    setFollowupPage(1)
+    setTaskPage(1)
+  }, [opportunityId])
   const [followupVisible, setFollowupVisible] = useState(false)
 
   // AI 分析（API §37 专用接口，需 agent:use）
@@ -151,14 +160,14 @@ export default function OpportunityDetailPage() {
     enabled: Number.isFinite(opportunityId),
   })
   const followupsQuery = useQuery({
-    queryKey: ['followups', { opportunity_id: opportunityId }],
-    queryFn: () => listFollowups({ opportunity_id: opportunityId, page_size: 100 }),
-    enabled: Number.isFinite(opportunityId),
+    queryKey: ['followups', { opportunity_id: opportunityId, page: followupPage }],
+    queryFn: () => listFollowups({ opportunity_id: opportunityId, page: followupPage, page_size: LIST_PAGE_SIZE }),
+    enabled: Number.isFinite(opportunityId) && can('followup:view'),
   })
   const tasksQuery = useQuery({
-    queryKey: ['tasks', { opportunity_id: opportunityId }],
-    queryFn: () => listTasks({ opportunity_id: opportunityId, page_size: 100 }),
-    enabled: Number.isFinite(opportunityId),
+    queryKey: ['tasks', { opportunity_id: opportunityId, page: taskPage }],
+    queryFn: () => listTasks({ opportunity_id: opportunityId, page: taskPage, page_size: LIST_PAGE_SIZE }),
+    enabled: Number.isFinite(opportunityId) && can('task:view'),
   })
   // 概览「商机全景」要报"这单开了几张报价、出了几张订单"。
   // 这两个数只有 total 有用，page_size 压到 1，别把整张表拉回来。
@@ -183,11 +192,6 @@ export default function OpportunityDetailPage() {
     queryKey: ['loss-reasons'],
     queryFn: listLossReasons,
     enabled: loseVisible,
-  })
-  const skusQuery = useQuery({
-    queryKey: ['skus-for-select'],
-    queryFn: () => listSkus({ page: 1, page_size: 100 }),
-    enabled: itemVisible,
   })
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ['opportunity', opportunityId] })
@@ -271,11 +275,13 @@ export default function OpportunityDetailPage() {
   })
 
   const itemMutation = useMutation({
-    mutationFn: () =>
-      createItem(opportunityId, {
+    mutationFn: () => {
+      const targetPrice = parseOptionalDecimal(itemForm.target_price)
+      if (Number.isNaN(targetPrice)) throw new Error('客户目标价只能填数字，留空表示暂未确定')
+      return createItem(opportunityId, {
         sku_id: itemForm.sku_id,
         quantity: itemForm.quantity ? Number(itemForm.quantity) : 1,
-        target_price: itemForm.target_price ? Number(itemForm.target_price) : null,
+        target_price: targetPrice,
         specification: itemForm.specification || null,
         color: itemForm.color || null,
         package_requirement: itemForm.package_requirement || null,
@@ -284,7 +290,8 @@ export default function OpportunityDetailPage() {
           : null,
         destination: itemForm.destination || null,
         remark: itemForm.remark || null,
-      }),
+      })
+    },
     onSuccess: () => {
       Toast.success('需求明细已添加')
       setItemVisible(false)
@@ -739,7 +746,11 @@ export default function OpportunityDetailPage() {
                   跟进记的是「客户说了什么」：每次通话、拜访、发出报价后记一条，谁记的、什么时候记的都有痕
                 </div>
                 <div style={{ flex: 1 }} />
-                <Button type="primary" theme="outline" onClick={() => setFollowupVisible(true)}>记录跟进</Button>
+                <GuardedButton type="primary" theme="outline"
+                  disabled={!can('followup:create')}
+                  blockedReasons={['需要「记录跟进」权限。']}
+                  onClick={() => setFollowupVisible(true)}
+                >记录跟进</GuardedButton>
               </div>
               <Table<FollowUp>
                 columns={[
@@ -756,11 +767,19 @@ export default function OpportunityDetailPage() {
                     ),
                   },
                 ]}
-                dataSource={followupsQuery.data?.items ?? []}
+                dataSource={can('followup:view') ? followupsQuery.data?.items ?? [] : []}
                 loading={followupsQuery.isLoading}
                 rowKey="id"
-                pagination={false}
-                empty={emptyLine('还没有跟进记录', '每记一条，时间线上就多一个节点。')}
+                pagination={can('followup:view') ? {
+                  currentPage: followupPage,
+                  pageSize: LIST_PAGE_SIZE,
+                  total: followupsQuery.data?.total ?? 0,
+                  showSizeChanger: false,
+                  onPageChange: (nextPage: number) => setFollowupPage(nextPage),
+                } : false}
+                empty={can('followup:view')
+                  ? emptyLine('还没有跟进记录', '每记一条，时间线上就多一个节点。')
+                  : '需要「查看跟进」权限才能查看已有记录。'}
               />
             </>
           )}
@@ -772,15 +791,27 @@ export default function OpportunityDetailPage() {
                   这个商机接下来要做什么 —— 记成任务：带优先级和截止时间，到期前提醒，过期标红
                 </div>
                 <div style={{ flex: 1 }} />
-                <Button type="primary" theme="outline" onClick={() => setTaskVisible(true)}>新建任务</Button>
+                <GuardedButton type="primary" theme="outline"
+                  disabled={!can('task:manage')}
+                  blockedReasons={['需要「管理任务」权限。']}
+                  onClick={() => setTaskVisible(true)}
+                >新建任务</GuardedButton>
               </div>
               <Table<Task>
                 columns={taskColumns}
-                dataSource={tasksQuery.data?.items ?? []}
+                dataSource={can('task:view') ? tasksQuery.data?.items ?? [] : []}
                 loading={tasksQuery.isLoading}
                 rowKey="id"
-                pagination={false}
-                empty={emptyLine('还没有任务', '建好的任务会同时出现在「销售任务」里，那边能批量完成和交接。')}
+                pagination={can('task:view') ? {
+                  currentPage: taskPage,
+                  pageSize: LIST_PAGE_SIZE,
+                  total: tasksQuery.data?.total ?? 0,
+                  showSizeChanger: false,
+                  onPageChange: (nextPage: number) => setTaskPage(nextPage),
+                } : false}
+                empty={can('task:view')
+                  ? emptyLine('还没有任务', '建好的任务会同时出现在「销售任务」里，那边能批量完成和交接。')
+                  : '需要「查看任务」权限才能查看已有任务。'}
               />
             </>
           )}
@@ -1049,25 +1080,22 @@ export default function OpportunityDetailPage() {
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
             <FormLabel required>SKU</FormLabel>
-            <Select
-              placeholder="选择 SKU"
+            <RecordSearchSelect
+              key={`opportunity-sku-${itemVisible}`}
+              scope="opportunity-sku"
+              enabled={itemVisible}
+              placeholder="按产品名称、SKU 编码或规格搜索"
               value={itemForm.sku_id ?? undefined}
-              onChange={(value) => {
-                const sku = (skusQuery.data?.items ?? []).find((item) => item.id === value)
+              list={listSkus}
+              labelOf={skuLabel}
+              onChange={(sku) => {
                 setItemForm({
                   ...itemForm,
-                  sku_id: value as number,
+                  sku_id: sku?.id ?? null,
                   specification: sku?.specification ?? itemForm.specification,
                   color: sku?.color ?? itemForm.color,
                 })
               }}
-              optionList={(skusQuery.data?.items ?? []).map((sku) => ({
-                value: sku.id,
-                label: skuLabel(sku),
-              }))}
-              loading={skusQuery.isLoading}
-              filter={optionMatcher}
-              style={{ width: '100%' }}
             />
           </div>
           <div style={{ display: 'flex', gap: 12 }}>

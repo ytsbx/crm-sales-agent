@@ -116,3 +116,4 @@ class TaskBatchComplete(BaseModel):
 
     task_ids: list[int]
     completion_note: str | None = None
+    expected_versions: dict[int, datetime] | None = None

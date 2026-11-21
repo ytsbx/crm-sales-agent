@@ -1,9 +1,9 @@
 import { skuLabel } from '../../shared/sku-label'
 import { formatBeijingTime } from '../../shared/beijing-time'
 import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
-import { Banner, Button, Input, Select, Table, Tabs, Tag } from '@douyinfe/semi-ui'
+import { Banner, Button, Input, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
 
 import {
   calculateLogistics,
@@ -19,6 +19,7 @@ import EmptyState, { emptyTextNode } from '../../shared/components/EmptyState'
 import { usePermissions } from '../../shared/hooks/permissions'
 import SectionCard from '../../shared/components/SectionCard'
 import { optionMatcher } from '../../shared/components/optionMatch'
+import { parseOptionalNumber } from '../../shared/number-input'
 
 /**
  * 物流试算（PRD §14 / 03-API §19）。
@@ -52,6 +53,11 @@ function money(value?: number | null) {
 
 export default function LogisticsPage() {
   const [activeKey, setActiveKey] = useState('calc')
+  // 试算历史改服务端分页；试算页的空态另取最近 3 条，避免翻到第 3 页时
+  // 空态却显示第 3 页的开头三条。
+  const HISTORY_PAGE_SIZE = 50
+  const [historyPage, setHistoryPage] = useState(1)
+  const queryClient = useQueryClient()
   const { can } = usePermissions()
   const canManageRates = can('price:manage')
 
@@ -84,15 +90,20 @@ export default function LogisticsPage() {
   const skusQuery = useQuery({ queryKey: ['skus-for-pricing'], queryFn: listSkusForPricing })
   const routesQuery = useQuery({ queryKey: ['logistics-routes'], queryFn: listLogisticsRoutes })
   const historyQuery = useQuery({
-    queryKey: ['logistics-quotes'],
-    queryFn: () => listLogisticsQuotes({ page: 1, page_size: 50 }),
-    // 试算页也要用它填空态（最近算过的三条），所以不再只在「试算历史」页签里拉。
-    enabled: activeKey === 'history' || activeKey === 'calc',
+    queryKey: ['logistics-quotes', historyPage, HISTORY_PAGE_SIZE],
+    queryFn: () => listLogisticsQuotes({ page: historyPage, page_size: HISTORY_PAGE_SIZE }),
+    enabled: activeKey === 'history',
+  })
+  // 试算页空态只关心"最近算过的三条"，与历史页的页码无关。
+  const recentHistoryQuery = useQuery({
+    queryKey: ['logistics-quotes', 'recent'],
+    queryFn: () => listLogisticsQuotes({ page: 1, page_size: 3 }),
+    enabled: activeKey === 'calc',
   })
 
   const quantityNumber = Number(quantity)
-  const weightNumber = weightOverride.trim() ? Number(weightOverride) : null
-  const volumeNumber = volumeOverride.trim() ? Number(volumeOverride) : null
+  const weightNumber = parseOptionalNumber(weightOverride)
+  const volumeNumber = parseOptionalNumber(volumeOverride)
   const weightInvalid = weightNumber !== null && (!Number.isFinite(weightNumber) || weightNumber <= 0)
   const volumeInvalid = volumeNumber !== null && (!Number.isFinite(volumeNumber) || volumeNumber <= 0)
   const productReady = Boolean(skuId) && Number.isFinite(quantityNumber) && quantityNumber > 0
@@ -112,18 +123,38 @@ export default function LogisticsPage() {
     [skuId, quantityNumber, origin, destination, shippingMethod, packageType, weightNumber, volumeNumber, weightInvalid, volumeInvalid],
   )
 
-  const resultQuery = useQuery({
-    queryKey: ['logistics-calc', payload],
-    queryFn: () => calculateLogistics(payload),
-    enabled: canCalc,
+  const calculation = useMutation({
+    mutationFn: (values: typeof payload) => calculateLogistics(values),
   })
-  const result = canCalc && !resultQuery.isError ? resultQuery.data : undefined
+  const matchesInputs = canCalc && JSON.stringify(calculation.variables) === JSON.stringify(payload)
+  const result = matchesInputs ? calculation.data : undefined
+  const calculationError = matchesInputs ? calculation.error : null
+  const startCalculation = () => {
+    if (canCalc && !calculation.isPending) calculation.mutate(payload)
+  }
+  const savePlan = useMutation({
+    mutationFn: async (option: LogisticsOption) => {
+      if (!result || !calculation.variables) throw new Error('请先试算当前条件')
+      const saved = await calculateLogistics({
+        ...calculation.variables,
+        save: true,
+        selected_rate_id: option.rate_id,
+        expected_amount: option.amount,
+      })
+      if (!saved.quoted_id) throw new Error('方案没有保存，请重新试算')
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['logistics-quotes'] })
+      Toast.success('方案已保存，可在「试算历史」查看')
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
   const referenceOnly = Boolean(result?.options.length && (result.match_level ?? 0) >= 2)
   const matchWarnings = result?.match_warnings ?? []
   const warnings = (result?.warnings ?? []).filter((warning) =>
     !((referenceOnly || !result?.options.length) && matchWarnings.includes(warning)),
   )
-  const missingSku = (resultQuery.error as { status?: number } | null)?.status === 404
+  const missingSku = (calculationError as { status?: number } | null)?.status === 404
 
   // 运输方式选项来自费率表，避免出现"选了却没有方案"的空选项
   const methodOptions = useMemo(() => {
@@ -196,6 +227,20 @@ export default function LogisticsPage() {
             </Tag>
           )}
         </span>
+      ),
+    },
+    {
+      title: '操作',
+      width: 112,
+      render: (_: unknown, option: LogisticsOption) => (
+        <Button
+          size="small"
+          theme="borderless"
+          type="primary"
+          loading={savePlan.isPending && savePlan.variables?.rate_id === option.rate_id}
+          disabled={savePlan.isPending && savePlan.variables?.rate_id !== option.rate_id}
+          onClick={() => savePlan.mutate(option)}
+        >保存此方案</Button>
       ),
     },
   ]
@@ -371,9 +416,9 @@ export default function LogisticsPage() {
                   theme="solid"
                   type="primary"
                   block
-                  loading={resultQuery.isFetching}
+                  loading={calculation.isPending}
                   disabled={!canCalc}
-                  onClick={() => resultQuery.refetch()}
+                  onClick={startCalculation}
                 >
                   试算
                 </Button>
@@ -390,19 +435,19 @@ export default function LogisticsPage() {
             <SectionCard style={{ display: 'flex', flexDirection: 'column' }}>
               <div className="card-title">试算结果</div>
 
-              {canCalc && resultQuery.isError && (
-                <EmptyState title="试算失败" hint={resultQuery.error.message || '请稍后再试。'}
+              {calculationError && (
+                <EmptyState title="试算失败" hint={calculationError.message || '请稍后再试。'}
                   action={missingSku ? (
                     <Button size="small" theme="outline" onClick={() => setSkuId(undefined)}>重新选择 SKU</Button>
                   ) : (
-                    <Button size="small" theme="outline" loading={resultQuery.isFetching} onClick={() => void resultQuery.refetch()}>
+                    <Button size="small" theme="outline" loading={calculation.isPending} onClick={startCalculation}>
                       重新试算
                     </Button>
                   )} />
               )}
-              {canCalc && resultQuery.isPending && <p className="workflow-guide" role="status">正在试算运费…</p>}
+              {matchesInputs && calculation.isPending && <p className="workflow-guide" role="status">正在试算运费…</p>}
 
-              {!canCalc && (
+              {!matchesInputs && (
                 // 「还要填数量」这半句必须留着：只说"选择 SKU"时，光选了 SKU
                 // 点不动「试算」，用户会以为坏了。
                 <div
@@ -418,11 +463,13 @@ export default function LogisticsPage() {
                 >
                   <EmptyState
                     title="还没有试算结果"
-                    hint={productReady ? '修正或清空可选设置后，可继续试算。' : '选好 SKU 和数量后，这里会显示计费重与各承运商方案。'}
+                    hint={canCalc ? '确认左侧条件后，点「试算」查看承运方案。'
+                      : productReady ? '修正或清空可选设置后，可继续试算。'
+                        : '选好 SKU 和数量后，这里会显示计费重与各承运商方案。'}
                   />
                   {/* 2026-11-21：右卡整片空着（主人说"太空了"）。空态下面接三条
                       "最近算过的"，点一下就把条件填回左边表单 —— 填空，也省得重填。 */}
-                  {(historyQuery.data?.items ?? []).length > 0 && (
+                  {(recentHistoryQuery.data?.items ?? []).length > 0 && (
                     <div
                       style={{
                         marginTop: 18,
@@ -435,9 +482,9 @@ export default function LogisticsPage() {
                       }}
                     >
                       <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>
-                        最近算过的，点一下填回左边
+                        最近保存的方案，点一下带回试算条件
                       </div>
-                      {(historyQuery.data?.items ?? []).slice(0, 3).map((row) => (
+                      {(recentHistoryQuery.data?.items ?? []).slice(0, 3).map((row) => (
                         <div
                           key={row.id}
                           style={{
@@ -524,7 +571,7 @@ export default function LogisticsPage() {
                       columns={optionColumns}
                       dataSource={result.options}
                       pagination={false}
-                      scroll={{ x: 600 }}
+                      scroll={{ x: 700 }}
                     />
                   ) : <EmptyState title="没有匹配到运费费率"
                     hint={canManageRates ? '维护对应线路的费率后，可以回来重新试算。' : '请让价格管理员维护对应线路的费率，再回来试算。'}
@@ -543,7 +590,13 @@ export default function LogisticsPage() {
             loading={historyQuery.isLoading}
             columns={historyColumns}
             dataSource={historyQuery.data?.items ?? []}
-            pagination={false}
+            pagination={{
+              currentPage: historyPage,
+              pageSize: HISTORY_PAGE_SIZE,
+              total: historyQuery.data?.total ?? 0,
+              showSizeChanger: false,
+              onPageChange: (nextPage: number) => setHistoryPage(nextPage),
+            }}
             empty={emptyTextNode(historyQuery, '还没有试算记录')}
           />
         </Tabs.TabPane>

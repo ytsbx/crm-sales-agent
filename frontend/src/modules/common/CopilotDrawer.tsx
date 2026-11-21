@@ -6,10 +6,12 @@ import { Button, Card, Input, Tag, Toast } from '@douyinfe/semi-ui'
 import {
   confirmAgentAction,
   createAgentSession,
+  getAgentOlderMessages,
   getAgentSession,
   rejectAgentAction,
   sendAgentMessage,
   type AgentActionRow,
+  type AgentMessageRow,
 } from '../../shared/api/agent'
 import { useCopilotStore } from '../../shared/store/copilot'
 import type { TagTone } from '../../shared/types'
@@ -125,6 +127,47 @@ export default function CopilotDrawer() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [detailQuery.data?.messages.length])
 
+  // 与 /agent 页同一口径：详情只给最新 200 条，更早的按消息 id 往上游标加载。
+  const [olderMessages, setOlderMessages] = useState<AgentMessageRow[]>([])
+  const [olderHasMore, setOlderHasMore] = useState(false)
+  const [olderLoading, setOlderLoading] = useState(false)
+  const [olderError, setOlderError] = useState<string | null>(null)
+  const copilotScrollRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    setOlderMessages([])
+    setOlderHasMore(false)
+    setOlderError(null)
+  }, [sessionId, contextKey])
+  useEffect(() => {
+    if (olderMessages.length === 0 && detailQuery.data?.session.id === sessionId) {
+      setOlderHasMore(Boolean(detailQuery.data.messages_has_more))
+    }
+  }, [detailQuery.data, olderMessages.length, sessionId])
+  const loadOlderMessages = async () => {
+    if (!sessionId || olderLoading) return
+    const oldest = olderMessages[0] ?? detailQuery.data?.messages?.[0]
+    if (!oldest) return
+    const scroller = copilotScrollRef.current
+    const distanceFromBottom = scroller ? scroller.scrollHeight - scroller.scrollTop : 0
+    setOlderLoading(true)
+    setOlderError(null)
+    try {
+      const page = await getAgentOlderMessages(sessionId, { before_id: oldest.id, limit: 100 })
+      setOlderMessages((current) => {
+        const known = new Set(current.map((message) => message.id))
+        return [...page.items.filter((message) => !known.has(message.id)), ...current]
+      })
+      setOlderHasMore(page.has_more)
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (scroller) scroller.scrollTop = scroller.scrollHeight - distanceFromBottom
+      }))
+    } catch (error) {
+      setOlderError(error instanceof Error ? error.message : '加载失败')
+    } finally {
+      setOlderLoading(false)
+    }
+  }
+
   const sendMutation = useMutation({
     mutationFn: ({ id, content }: { id: number; content: string }) => sendAgentMessage(id, content),
     onSuccess: async () => {
@@ -222,7 +265,12 @@ export default function CopilotDrawer() {
 
   if (!mounted) return null
 
-  const messages = detailQuery.data?.messages ?? []
+  const messages = (() => {
+    const detailMessages = detailQuery.data?.messages ?? []
+    const byId = new Map<number, AgentMessageRow>()
+    for (const message of [...olderMessages, ...detailMessages]) byId.set(message.id, message)
+    return [...byId.values()].sort((a, b) => a.id - b.id)
+  })()
   // L2 待确认 + L3 需审批都要出确认按钮——只认 awaiting_confirmation 的话，
   // 挂在全局抽屉里的 L3 动作永远确认不了（Agent 页才有完整状态列表）
   const pending = (detailQuery.data?.actions ?? []).filter(
@@ -325,7 +373,19 @@ export default function CopilotDrawer() {
           </Button>
         </div>
 
-        <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
+        <div ref={copilotScrollRef} style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
+          {(olderHasMore || olderError) && (
+            <div style={{ textAlign: 'center', marginBottom: 12 }}>
+              <Button
+                size="small"
+                theme="borderless"
+                loading={olderLoading}
+                onClick={() => void loadOlderMessages()}
+              >
+                {olderError ? '加载失败，点击重试' : '加载更早的消息'}
+              </Button>
+            </div>
+          )}
           {messages.length === 0 && !sending && (
             <div style={{ display: 'grid', gap: 8 }}>
               <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>

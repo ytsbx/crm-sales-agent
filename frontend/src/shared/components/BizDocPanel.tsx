@@ -1,3 +1,4 @@
+import { showDownloadResult } from '../download-feedback'
 import { formatBeijingTime } from '../beijing-time'
 /**
  * 对外单据面板（打样需求单 / 下单文件）——文档 §3.5、场景12。
@@ -231,11 +232,11 @@ export default function BizDocPanel({
             width: 200,
             render: (_: unknown, r: BizDocRow) => (
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                <a onClick={() => void downloadBizDoc(r)}>下载原件</a>
+                <a onClick={() => void showDownloadResult(downloadBizDoc(r))}>下载原件</a>
                 {r.status === 'void' && (
                   // 作废件：原件上印的是生成当时的"有效"。要看到"已作废"必须走状态副本，
                   // 而且那份是**重出的**，不能和原件混为一谈。
-                  <a onClick={() => void downloadBizDoc(r, { mode: 'state' })}>状态副本</a>
+                  <a onClick={() => void showDownloadResult(downloadBizDoc(r, { mode: 'state' }))}>状态副本</a>
                 )}
                 {canManage && r.status === 'active' && (
                   <Popconfirm title="作废这份文件？（内容与校验值不变）" onConfirm={() => voidMutation.mutate(r.id)}>

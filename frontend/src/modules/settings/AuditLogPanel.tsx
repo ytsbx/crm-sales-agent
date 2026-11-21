@@ -221,7 +221,17 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
 
   const usersQuery = useQuery({
     queryKey: ['audit-operator-options'],
-    queryFn: () => listUsers({ page: 1, page_size: 200 }),
+    // 操作人筛选要覆盖全部员工：超过一页时继续翻，不能只取前 200 个。
+    queryFn: async () => {
+      const first = await listUsers({ page: 1, page_size: 200 })
+      const all = [...first.items]
+      for (let page = 2; all.length < first.total; page += 1) {
+        const next = await listUsers({ page, page_size: 200 })
+        if (!next.items.length) break
+        all.push(...next.items)
+      }
+      return { ...first, items: all }
+    },
     enabled: active,
     staleTime: 5 * 60 * 1000,
   })

@@ -63,10 +63,11 @@ export interface SampleRequestRow {
   status_label: string
   /** 审批轮次（§3.2）：驳回后重提 / 已批准后改车间依据会自增。 */
   review_round?: number
-  /** 修订版（§3.3）：第几版、取代了谁、又被谁取代（superseded_by 有值即冻结只读）。 */
+  /** 原版可能锁定，而当前用户无权打开下一版。 */
   version?: number
   parent_id?: number | null
   superseded_by?: number | null
+  revision_locked?: boolean
   remark?: string | null
   reject_reason?: string | null
   requested_at?: string | null

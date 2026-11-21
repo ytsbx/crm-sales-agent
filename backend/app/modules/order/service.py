@@ -478,11 +478,11 @@ async def create_order(
 
     total = Decimal(0)
     rows: list[SalesOrderItem] = []
-    from app.modules.product.service import require_available_sku
+    from app.modules.product.service import require_sku_for_new_business
 
     for entry in items:
         # 停用/删除的 SKU 不能手工建单（issue #7：从前只判 `deleted_at`）
-        sku = await require_available_sku(session, entry.sku_id)
+        sku = await require_sku_for_new_business(session, entry.sku_id)
         # 先归一再看金额：货款必须等于"**落库的那个数量** × 单价"，
         # 否则接口报的金额与库里能算出来的金额对不上（审查 B2-02）。
         quantity = normalized_quantity(entry.quantity)

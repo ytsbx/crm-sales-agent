@@ -228,3 +228,24 @@ async def test_file_usage_tolerates_old_sample_json_and_keeps_real_references():
         for file_id in (101, 102, 103):
             assert "打样的制作依据" in (await inspect_file_usage(session, file_id)).other_holders
         assert (await inspect_file_usage(session, 104)).other_holders == []
+
+
+@pytest.mark.anyio
+async def test_discard_reasons_use_lead_scope_without_changing_daily_totals(db_session):
+    from app.modules.analytics.service import lead_stats
+    from app.modules.lead.service import mark_discarded
+
+    current = Lead(name="日常跟进", owner_id=101, status="assigned", source="网站")
+    discarded = Lead(name="已废弃", owner_id=101, source="展会")
+    other = Lead(name="同事已废弃", owner_id=102)
+    deleted = Lead(name="普通删除", owner_id=101, status="assigned", deleted_at=datetime.now(UTC))
+    mark_discarded(discarded, reason="号码无效")
+    mark_discarded(other, reason="同事的原因")
+    db_session.add_all([current, discarded, other, deleted])
+    db_session.flush()
+
+    result = await lead_stats(SyncSessionAsAsync(db_session), make_user())
+    assert result["total"] == 1 and result["conversion_rate"] == 0
+    assert result["by_source"] == [{"name": "网站", "value": 1}]
+    assert result["by_status"] == [{"name": "已分配", "value": 1}]
+    assert result["invalid_reasons"] == [{"name": "号码无效", "value": 1}]

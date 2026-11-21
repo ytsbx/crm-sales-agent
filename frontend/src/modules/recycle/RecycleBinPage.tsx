@@ -170,6 +170,7 @@ function LeadsPanel() {
       // 恢复之后它就该回到线索列表里 —— 两个列表都要刷
       void queryClient.invalidateQueries({ queryKey: ['recycle', 'leads'] })
       void queryClient.invalidateQueries({ queryKey: ['leads'] })
+      void queryClient.invalidateQueries({ queryKey: ['an-leads'] })
     },
     onError: (error: Error) => Toast.error(error.message),
   })
@@ -227,7 +228,13 @@ function LeadsPanel() {
             title: '操作',
             width: compact ? 82 : 70,
             render: (_: unknown, record: RecycleLead) => (
-              <Popconfirm title="确认恢复这条线索？" onConfirm={() => restoreMutation.mutate(record.id)}>
+              <Popconfirm
+                title="确认恢复这条线索？"
+                content={record.status === 'invalid'
+                  ? (record.owner_id != null ? '恢复后由原负责人继续跟进。' : '恢复后回到待领取的线索池。')
+                  : undefined}
+                onConfirm={() => restoreMutation.mutate(record.id)}
+              >
                 <a>恢复</a>
               </Popconfirm>
             ),
@@ -845,7 +852,9 @@ function SamplesPanel() {
       columns={[{ title: '客户', dataIndex: 'customer_name' }, { title: '商机', dataIndex: 'opportunity_title' },
         { title: '负责人', dataIndex: 'owner_name' }, { title: '原状态', dataIndex: 'status_label' },
         { title: '删除时间', dataIndex: 'deleted_at', render: fmt },
-        ...(can('sample:manage') ? [{ title: '操作', render: (_: unknown, row: SampleRequestRow) => <Popconfirm title="确认恢复这张样品申请？" onConfirm={() => restore.mutate(row.id)}><a>恢复</a></Popconfirm> }] : [])]}
+        ...(can('sample:manage') ? [{ title: '操作', render: (_: unknown, row: SampleRequestRow) => row.revision_locked
+          ? <span style={HINT}>原版只读</span>
+          : <Popconfirm title="确认恢复这张样品申请？" onConfirm={() => restore.mutate(row.id)}><a>恢复</a></Popconfirm> }] : [])]}
       pagination={((query.data?.total ?? 0) <= pager.pageSize) ? false : { currentPage: pager.page, pageSize: pager.pageSize, total: query.data?.total ?? 0, showSizeChanger: true,
         onPageChange: pager.setPage, onPageSizeChange: pager.changePageSize }} />
   </SectionCard>

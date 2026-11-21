@@ -283,6 +283,7 @@ export default function LeadListPage() {
       setDiscardTarget(null)
       setDiscardReason('')
       refresh()
+      void queryClient.invalidateQueries({ queryKey: ['an-leads'] })
     },
     onError: (error: Error) => Toast.error(error.message),
   })

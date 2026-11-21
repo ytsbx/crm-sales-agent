@@ -54,8 +54,7 @@ import {
   type ShipmentBatchRow,
   type ShipmentOverview,
 } from '../../shared/api/order'
-import { listUsers } from '../../shared/api/system'
-import { optionMatcher } from '../../shared/components/optionMatch'
+import UserSearchSelect from '../../shared/components/UserSearchSelect'
 import { usePermissions } from '../../shared/hooks/permissions'
 import DetailHeader from '../../shared/components/DetailHeader'
 import KpiStrip, { type KpiItem } from '../../shared/components/KpiStrip'
@@ -74,6 +73,7 @@ const PAYMENT_METHODS = ['银行转账', '承兑汇票', '现金', '支票', '�
 import PaymentVoucherControl from '../common/PaymentVoucherControl'
 import { newRequestKey } from '../../shared/api/requestKey'
 import { calendarDay, calendarDayOrToday } from '../../shared/calendar-day'
+import { requiredQuantityText } from '../../shared/number-input'
 import ReceivablePlanPicker, { defaultPlanRows, planBlockedReasons } from '../../shared/components/ReceivablePlanPicker'
 import EmptyState from '../../shared/components/EmptyState'
 import PageLoading from '../../shared/components/PageLoading'
@@ -81,6 +81,19 @@ import PageLoading from '../../shared/components/PageLoading'
 /** 数量按十进制原文显示，沿用原来不显示尾零的格式。 */
 function shipmentQuantity(value: number | string): string {
   return String(value).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1')
+}
+
+function shipmentQuantityUnits(value: string): bigint {
+  const [whole, fraction = ''] = value.replace(/^\+/, '').split('.')
+  return BigInt(whole || '0') * 1000n + BigInt(fraction.padEnd(3, '0').slice(0, 3))
+}
+
+function shipmentDifference(planned: string, actual: string): string {
+  const delta = shipmentQuantityUnits(planned) - shipmentQuantityUnits(actual)
+  if (delta === 0n) return '与计划一致'
+  const units = delta > 0n ? delta : -delta
+  const amount = shipmentQuantity(`${units / 1000n}.${String(units % 1000n).padStart(3, '0')}`)
+  return delta > 0n ? `少发 ${amount}，可重新排批` : `比计划多发 ${amount}`
 }
 
 /**
@@ -318,13 +331,8 @@ export default function OrderDetailPage() {
     queryFn: () => listScheduleChanges(orderId),
     enabled: Number.isFinite(orderId) && activeKey === 'milestones',
   })
-  // 节点责任人从用户里选（方案 :103）：手填人名对不上人，逾期了也不知道催谁
-  const milestoneUsersQuery = useQuery({
-    queryKey: ['assignable-users'],
-    queryFn: () => listUsers({ page: 1, page_size: 100 }),
-    // 表格里也要把责任人显示成人名（不只是弹窗里），所以跟着页签加载
-    enabled: Number.isFinite(orderId) && activeKey === 'milestones',
-  })
+  // 节点责任人按需搜索（姓名 / 登录账号），不再只取前 100 个用户：
+  // 人员多时，第 101 位以后的人既不进下拉、也反查不到姓名。
   const schedulePreviewMutation = useMutation({
     mutationFn: () => previewScheduleChange(orderId, scheduleForm),
     onSuccess: (data) => setSchedulePreview(data),
@@ -544,13 +552,47 @@ export default function OrderDetailPage() {
   // ---- 发货批次（§3.5/场景13）----
   const [createShipmentVisible, setCreateShipmentVisible] = useState(false)
   const shipmentKeyRef = useRef('')
+  const [shipmentPlanDate, setShipmentPlanDate] = useState<string | null>(null)
   const [plannedQtys, setPlannedQtys] = useState<Record<number, string>>({})
+  const plannedShipmentRows = (shipmentsQuery.data?.items ?? []).flatMap((item) => {
+    const raw = plannedQtys[item.order_item_id]?.trim()
+    if (!raw) return []
+    try {
+      return [{ order_item_id: item.order_item_id, planned_qty: requiredQuantityText(raw), error: '' }]
+    } catch (error) {
+      return [{ order_item_id: item.order_item_id, planned_qty: raw, error: (error as Error).message }]
+    }
+  })
+  const invalidPlannedRow = plannedShipmentRows.find((row) => row.error)
   const [shipTarget, setShipTarget] = useState<ShipmentBatchRow | null>(null)
-  const [shipForm, setShipForm] = useState<{ date: Date | undefined; company: string; tracking: string }>({
-    date: new Date(),
+  const [shipForm, setShipForm] = useState<{ date: string | null; company: string; tracking: string; quantities: Record<number, string> }>({
+    date: null,
     company: '',
     tracking: '',
+    quantities: {},
   })
+  const actualShipmentRows = (shipTarget?.items ?? []).map((item) => {
+    const planned = shipmentQuantity(item.planned_qty_exact ?? item.planned_qty)
+    const raw = shipForm.quantities[item.order_item_id] ?? ''
+    try {
+      const quantity = requiredQuantityText(raw, '实发数量', true)
+      return { item, planned, raw, quantity, difference: shipmentDifference(planned, quantity), error: '' }
+    } catch (error) {
+      return { item, planned, raw, quantity: '', difference: '', error: (error as Error).message }
+    }
+  })
+  const openShipment = (batch: ShipmentBatchRow) => {
+    const quantities = Object.fromEntries(batch.items.map((item) => [
+      item.order_item_id,
+      shipmentQuantity(item.planned_qty_exact ?? item.planned_qty),
+    ]))
+    setShipForm({ date: calendarDay(new Date()), company: '', tracking: '', quantities })
+    setShipTarget(batch)
+  }
+  const closeShipment = () => {
+    setShipTarget(null)
+    setShipForm({ date: null, company: '', tracking: '', quantities: {} })
+  }
 
   const shipmentsRefresh = () => {
     milestonesRefresh()
@@ -559,38 +601,48 @@ export default function OrderDetailPage() {
     void queryClient.invalidateQueries({ queryKey: ['order-status', orderId] })
   }
   const createShipmentMutation = useMutation({
-    mutationFn: () =>
-      createOrderShipment(orderId, {
+    mutationFn: () => {
+      if (invalidPlannedRow) throw new Error('请先改正标红的发货数量')
+      if (!plannedShipmentRows.length) throw new Error('请至少填写一项本批发货数量')
+      return createOrderShipment(orderId, {
         request_key: shipmentKeyRef.current || (shipmentKeyRef.current = newRequestKey()),
-        items: Object.entries(plannedQtys)
-          .filter(([, qty]) => Number(qty) > 0)
-          .map(([orderItemId, qty]) => ({ order_item_id: Number(orderItemId), planned_qty: qty })),
-      }),
+        planned_date: shipmentPlanDate,
+        items: plannedShipmentRows.map(({ order_item_id, planned_qty }) => ({ order_item_id, planned_qty })),
+      })
+    },
     onSuccess: () => {
       Toast.success('发货批次已排')
       setCreateShipmentVisible(false)
       setPlannedQtys({})
+      setShipmentPlanDate(null)
       shipmentKeyRef.current = ''
       shipmentsRefresh()
     },
     onError: (error: Error) => Toast.error(error.message),
   })
   const shipShipmentMutation = useMutation({
-    mutationFn: (batchId: number) =>
-      shipOrderShipment(orderId, batchId, {
-        actual_ship_date: calendarDay(shipForm.date),
+    mutationFn: (batchId: number) => {
+      if (actualShipmentRows.some((row) => row.error)) throw new Error('请先改正标红的实发数量')
+      if (!actualShipmentRows.some((row) => shipmentQuantityUnits(row.quantity) > 0n)) {
+        throw new Error('本批至少要有一项实际发出')
+      }
+      return shipOrderShipment(orderId, batchId, {
+        actual_ship_date: shipForm.date,
         logistics_company: shipForm.company || null,
         tracking_no: shipForm.tracking || null,
-        // 缺省按计划量全发；后端校验累计不超订购量
-        items: null,
-      }),
+        items: actualShipmentRows.map(({ item, quantity }) => ({
+          order_item_id: item.order_item_id,
+          shipped_qty: quantity,
+        })),
+      })
+    },
     onSuccess: (result) => {
       Toast.success(
         result.summary.all_shipped
           ? '已全部发完，可以确认完成交付'
           : `已登记发货，剩余未发 ${shipmentQuantity(result.summary.remaining_exact ?? result.summary.remaining)}`,
       )
-      setShipTarget(null)
+      closeShipment()
       shipmentsRefresh()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -1606,11 +1658,8 @@ export default function OrderDetailPage() {
                         width: 100,
                         className: 'col-hide-narrow',
                         onHeaderCell: () => ({ className: 'col-hide-narrow' }),
-                        render: (v: number | null) =>
-                          v
-                            ? ((milestoneUsersQuery.data?.items ?? []).find((u) => u.id === v)
-                                ?.name ?? '-')
-                            : '-',
+                        render: (v: number | null, row: OrderMilestoneRow) =>
+                          v ? (row.owner_name ?? '-') : '-',
                       }]
                     : []),
                   ...((milestonesQuery.data ?? []).some((row) => row.overdue_reason)
@@ -1655,6 +1704,7 @@ export default function OrderDetailPage() {
                   <Button type="primary" size="small" theme="outline" disabled={Boolean(shipmentPlanBlocked)} onClick={() => {
                     shipmentKeyRef.current = newRequestKey()
                     setPlannedQtys({})
+                    setShipmentPlanDate(null)
                     setCreateShipmentVisible(true)
                   }}>
                     排发货批次
@@ -1751,7 +1801,7 @@ export default function OrderDetailPage() {
                           render: (_: unknown, record: ShipmentBatchRow) =>
                             record.status === 'planned' ? (
                               <span style={{ display: 'inline-flex', gap: 12 }}>
-                                <a onClick={() => setShipTarget(record)}>登记发货</a>
+                                <a onClick={() => openShipment(record)}>登记发货</a>
                                 <Popconfirm
                                   title={`取消第 ${record.batch_no} 批发货安排？`}
                                   content="这一批会从发货列表移出，计划数量可以重新安排发货。"
@@ -1795,21 +1845,40 @@ export default function OrderDetailPage() {
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
             填本批准备发出的数量，其他产品可留空。实际发出后，再回到批次登记发货。
           </div>
-          {(shipmentsQuery.data?.items ?? []).map((item) => (
-            <div key={item.order_item_id} className="order-shipment-item">
-              <label htmlFor={`planned-quantity-${item.order_item_id}`}>
-                <strong>{item.sku}</strong>
-                <span>订购 {shipmentQuantity(item.ordered_exact ?? item.ordered)} · 还可安排 {shipmentQuantity(item.unplanned_exact ?? item.unplanned)}</span>
-              </label>
-              <Input
-                id={`planned-quantity-${item.order_item_id}`}
-                inputMode="decimal"
-                placeholder="本批数量"
-                value={plannedQtys[item.order_item_id] ?? ''}
-                onChange={(value) => setPlannedQtys({ ...plannedQtys, [item.order_item_id]: value })}
-              />
-            </div>
-          ))}
+          <div>
+            <div style={{ marginBottom: 4 }}>计划发货日期（选填）</div>
+            <DatePicker
+              aria-label="计划发货日期"
+              type="date"
+              format="yyyy-MM-dd"
+              value={shipmentPlanDate ?? undefined}
+              onChange={(_, day) => setShipmentPlanDate((day as string) || null)}
+              style={{ width: '100%' }}
+              placeholder="日期未定可留空"
+            />
+          </div>
+          {(shipmentsQuery.data?.items ?? []).map((item) => {
+            const error = plannedShipmentRows.find((row) => row.order_item_id === item.order_item_id)?.error
+            return (
+              <div key={item.order_item_id} className="order-shipment-item">
+                <label htmlFor={`planned-quantity-${item.order_item_id}`}>
+                  <strong>{item.sku}</strong>
+                  <span>订购 {shipmentQuantity(item.ordered_exact ?? item.ordered)} · 还可安排 {shipmentQuantity(item.unplanned_exact ?? item.unplanned)}</span>
+                </label>
+                <Input
+                  id={`planned-quantity-${item.order_item_id}`}
+                  inputMode="decimal"
+                  placeholder="本批数量"
+                  value={plannedQtys[item.order_item_id] ?? ''}
+                  validateStatus={error ? 'error' : 'default'}
+                  aria-invalid={Boolean(error)}
+                  aria-describedby={error ? `planned-error-${item.order_item_id}` : undefined}
+                  onChange={(value) => setPlannedQtys({ ...plannedQtys, [item.order_item_id]: value })}
+                />
+                {error && <span id={`planned-error-${item.order_item_id}`} style={{ color: 'var(--crm-error)', gridColumn: '1 / -1' }}>{error}</span>}
+              </div>
+            )
+          })}
         </div>
       </Modal>
 
@@ -1818,7 +1887,7 @@ export default function OrderDetailPage() {
         style={{ maxWidth: 'calc(100vw - 32px)' }}
         title={`第 ${shipTarget?.batch_no ?? ''} 批登记发货`}
         visible={Boolean(shipTarget)}
-        onCancel={() => setShipTarget(null)}
+        onCancel={() => { if (!shipShipmentMutation.isPending) closeShipment() }}
         onOk={() => {
           if (shipTarget) shipShipmentMutation.mutate(shipTarget.id)
         }}
@@ -1828,11 +1897,33 @@ export default function OrderDetailPage() {
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-            默认按计划量全发；批次发货后整单推进到「已发货」，全部发完才能确认完成交付
+            实发数量预填计划量，请按这次实际发出的数量修改。某项没发可填 0，剩余数量可以再排下一批。
           </div>
+          {actualShipmentRows.map(({ item, planned, raw, difference, error }) => (
+            <div key={item.order_item_id} className="order-shipment-item">
+              <label htmlFor={`shipped-quantity-${item.order_item_id}`}>
+                <strong>{item.sku ?? '订单商品'}</strong>
+                <span>计划 {planned}{difference ? ` · ${difference}` : ''}</span>
+              </label>
+              <Input
+                id={`shipped-quantity-${item.order_item_id}`}
+                inputMode="decimal"
+                placeholder="实发数量"
+                value={raw}
+                aria-invalid={Boolean(error)}
+                aria-describedby={error ? `shipped-error-${item.order_item_id}` : undefined}
+                validateStatus={error ? 'error' : 'default'}
+                onChange={(quantity) => setShipForm((form) => ({
+                  ...form, quantities: { ...form.quantities, [item.order_item_id]: quantity },
+                }))}
+              />
+              {error && <span id={`shipped-error-${item.order_item_id}`} style={{ color: 'var(--crm-error)', gridColumn: '1 / -1' }}>{error}</span>}
+            </div>
+          ))}
           <div>
             <div style={{ marginBottom: 4 }}>实际发货日期</div>
             <DatePicker
+              aria-label="实际发货日期"
               type="date"
               // 这里原来写的是 `disabled={milestoneForm.skipped}` —— **拿错了变量**：
               // milestoneForm 是「登记里程碑」那个弹窗的状态，用户在那边勾过一次
@@ -1843,19 +1934,19 @@ export default function OrderDetailPage() {
               // null），所以直接放开，是正确的行为而不是放宽口径。
               format="yyyy-MM-dd"
               style={{ width: '100%' }}
-              value={shipForm.date}
+              value={shipForm.date ?? undefined}
               onChange={(_, dateStr) =>
-                setShipForm({ ...shipForm, date: dateStr ? new Date(dateStr as string) : undefined })
+                setShipForm({ ...shipForm, date: (dateStr as string) || null })
               }
             />
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>承运商</div>
-            <Input value={shipForm.company} onChange={(v) => setShipForm({ ...shipForm, company: v })} />
+            <label htmlFor="shipment-company" style={{ display: 'block', marginBottom: 4 }}>承运商</label>
+            <Input id="shipment-company" value={shipForm.company} onChange={(v) => setShipForm({ ...shipForm, company: v })} />
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>运单号</div>
-            <Input value={shipForm.tracking} onChange={(v) => setShipForm({ ...shipForm, tracking: v })} />
+            <label htmlFor="shipment-tracking" style={{ display: 'block', marginBottom: 4 }}>运单号</label>
+            <Input id="shipment-tracking" value={shipForm.tracking} onChange={(v) => setShipForm({ ...shipForm, tracking: v })} />
           </div>
         </div>
       </Modal>
@@ -2044,18 +2135,16 @@ export default function OrderDetailPage() {
           </div>
           <div>
             <div style={{ marginBottom: 4 }}>责任人</div>
-            <Select
-              style={{ width: '100%' }}
+            <UserSearchSelect
+              queryScope="order-milestone-owner"
+              enabled={Boolean(milestoneEdit)}
+              placeholder="按姓名或登录账号搜索（逾期时催他）"
               value={milestoneForm.owner_id ?? undefined}
-              placeholder="选一个具体的人（逾期时催他）"
-              filter={optionMatcher}
+              fallbackLabel={milestoneEdit?.owner_name ?? undefined}
               onChange={(value) =>
-                setMilestoneForm({ ...milestoneForm, owner_id: (value as number) ?? null })
+                setMilestoneForm({ ...milestoneForm, owner_id: value ?? null })
               }
-              optionList={(milestoneUsersQuery.data?.items ?? []).map((u) => ({
-                value: u.id,
-                label: u.name,
-              }))}
+              style={{ width: '100%' }}
             />
           </div>
           <div>

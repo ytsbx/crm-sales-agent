@@ -81,3 +81,50 @@ async def test_product_with_only_order_is_included_and_cancelled_order_excluded(
     result = (await read_stats(stats_db))[0]
     assert result['order_won_quantity'] == 3
     assert result['quote_formal_times'] == 0
+
+
+@pytest.mark.anyio
+async def test_stage_reach_counts_survive_skipping_stages(db_session):
+    from app.modules.analytics.service import stage_conversion
+    from app.modules.opportunity.model import Opportunity, OpportunityStage, OpportunityStageHistory
+
+    OpportunityStageHistory.__table__.create(db_session.get_bind())
+    db_session.add_all([
+        OpportunityStage(id=1, code="start", name="新询盘", sequence=1),
+        OpportunityStage(id=2, code="quoted", name="已报价", sequence=2),
+        *[Opportunity(id=i, customer_id=1, title=f"测试商机{i}", owner_id=101, stage_id=2)
+          for i in (1, 2, 3)],
+    ])
+    now = datetime.now(UTC)
+    for stage_id, opportunity_id in [(1, 1), (2, 1), (2, 1), (2, 2), (2, 3)]:
+        db_session.add(OpportunityStageHistory(
+            to_stage_id=stage_id, opportunity_id=opportunity_id, entered_at=now,
+        ))
+    db_session.flush()
+    result = await stage_conversion(SyncSessionAsAsync(db_session), make_user())
+    assert [row["reached_count"] for row in result] == [1, 3]
+    assert all(row["conversion_from_previous"] is None for row in result)
+
+
+@pytest.mark.anyio
+async def test_repeat_count_follows_active_customer_scope_after_handover(db_session):
+    from app.modules.analytics.service import customer_stats
+    from app.modules.settings.model import SystemSetting
+
+    SystemSetting.__table__.create(db_session.get_bind())
+    db_session.add_all([
+        Customer(id=1, name="已交接客户", owner_id=101),
+        Customer(id=2, name="已删除客户", owner_id=101, deleted_at=datetime.now(UTC)),
+        Customer(id=3, name="同事的客户", owner_id=102),
+        Customer(id=4, name="曾有订单被取消", owner_id=101),
+    ])
+    for customer_id, order_owner in [(1, 102), (2, 101), (3, 101), (4, 101)]:
+        for n in (1, 2):
+            db_session.add(SalesOrder(
+                order_no=f"R32-{customer_id}-{n}", customer_id=customer_id, owner_id=order_owner,
+                status="cancelled" if (customer_id, n) == (4, 2) else "completed",
+            ))
+    db_session.flush()
+    result = await customer_stats(SyncSessionAsAsync(db_session), make_user())
+    assert result["total"] == 2
+    assert result["repeat_customer_count"] == 1

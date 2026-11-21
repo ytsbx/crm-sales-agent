@@ -90,7 +90,7 @@ async def create_followup(
 ):
     followup, replayed = await create_manual_followup(session, user, payload, ip=client_ip(request))
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok({"followup": serialize(followup, user.name), "task_id": followup.next_task_id,
                "replayed": replayed}, "跟进已记录")
 
@@ -160,7 +160,7 @@ async def update_followup(
     if before != serialize(followup):
         await notify_manual_followup(session, followup, user, action="update")
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(serialize(followup), "已保存")
 
 

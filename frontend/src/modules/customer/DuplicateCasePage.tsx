@@ -108,6 +108,7 @@ export default function DuplicateCasePage() {
   const owners = (usersQuery.data?.items ?? []).map((user) => ({ value: user.id, label: `${user.name}（${user.username}）` }))
   if (form.owner && !owners.some((owner) => owner.value === form.owner?.value)) owners.unshift(form.owner)
   const existingCustomer = customersQuery.data?.[1]
+  const assignExistingBlocked = query.data?.items.find((item) => item.id === record?.id)?.assign_existing_blocked_reason
 
   function showStatus(nextStatus: string) {
     const next = new URLSearchParams(params)
@@ -141,10 +142,14 @@ export default function DuplicateCasePage() {
         void queryClient.invalidateQueries({ queryKey: key })
       }
     },
+    onError: () => {
+      void query.refetch()
+      void customersQuery.refetch()
+    },
   })
   const canSubmit = Boolean(isReviewing && customersQuery.isSuccess && form.decision
     && (form.decision !== 'assign_new' || form.owner)
-    && (form.decision !== 'assign_existing' || existingCustomer?.owner_id))
+    && (form.decision !== 'assign_existing' || (existingCustomer?.owner_id && !assignExistingBlocked)))
   const rows = query.data?.items ?? []
 
   return (
@@ -248,10 +253,15 @@ export default function DuplicateCasePage() {
               } />}
               <div>
                 <FormLabel required>裁定方式</FormLabel>
-                <Select aria-label="裁定方式" value={form.decision} placeholder="请选择裁定方式" optionList={DECISION_OPTIONS}
+                <Select aria-label="裁定方式" value={form.decision} placeholder="请选择裁定方式"
+                  optionList={DECISION_OPTIONS.map((option) => ({
+                    ...option,
+                    disabled: option.value === 'assign_existing' && Boolean(assignExistingBlocked),
+                  }))}
                   onChange={(value) => setForm({ ...form, decision: value as Decision })} style={{ width: '100%' }} />
+                {assignExistingBlocked && <p className="duplicate-case-hint">{assignExistingBlocked}</p>}
                 {form.decision && <p className="duplicate-case-hint">{DECISIONS[form.decision].description}</p>}
-                {form.decision === 'assign_existing' && customersQuery.isSuccess &&
+                {form.decision === 'assign_existing' && customersQuery.isSuccess && !assignExistingBlocked &&
                   <p className="duplicate-case-hint">{existingCustomer?.owner_id
                     ? `两条档案将交给${existingCustomer.owner_name || `负责人 #${existingCustomer.owner_id}`}。`
                     : '已有档案暂无负责人，请改选「指定同一位负责人」。'}</p>}

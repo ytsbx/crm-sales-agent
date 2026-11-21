@@ -2,10 +2,11 @@
 
 import asyncio
 import json
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -49,13 +50,12 @@ MESSAGE_ROLE_LABEL = {
 
 
 async def _get_session(session: AsyncSession, session_id: int, user_id: int) -> AgentSession:
-    row = await session.get(AgentSession, session_id)
-    if row is None or row.user_id != user_id:
-        raise AppError(ErrorCode.NOT_FOUND, "会话不存在", 404)
-    return row
+    return await runtime.get_active_session(session, session_id, user_id)
 
 
-async def _get_action(session: AsyncSession, action_id: int, user_id: int) -> AgentAction:
+async def _get_action(
+    session: AsyncSession, action_id: int, user_id: int, *, for_update: bool = False
+) -> AgentAction:
     """取动作并校验归属。
 
     动作归属跟着会话走：不是自己的会话，连"这个 id 存在"都不该暴露，
@@ -64,25 +64,34 @@ async def _get_action(session: AsyncSession, action_id: int, user_id: int) -> Ag
     action = await session.get(AgentAction, action_id)
     if action is None:
         raise AppError(ErrorCode.NOT_FOUND, "动作不存在", 404)
-    agent_session = await session.get(AgentSession, action.session_id)
-    if agent_session is None or agent_session.user_id != user_id:
-        raise AppError(ErrorCode.NOT_FOUND, "动作不存在", 404)
+    try:
+        await runtime.get_active_session(session, action.session_id, user_id, for_update=for_update)
+    except AppError as error:
+        raise AppError(ErrorCode.NOT_FOUND, "动作不存在", 404) from error
     return action
 
 
 @router.get("/agent/sessions")
 async def list_sessions(
+    before_id: int | None = Query(None, ge=1),
+    limit: int = Query(30, ge=1, le=100),
     user: CurrentUser = Depends(require_permission("agent:use")),
     session: AsyncSession = Depends(get_db),
 ):
-    rows = (
-        await session.execute(
-            select(AgentSession)
-            .where(AgentSession.user_id == user.id)
-            .order_by(AgentSession.id.desc())
-            .limit(30)
-        )
-    ).scalars().all()
+    """当前用户的会话，按 id 倒序；用 `before_id` 游标加载更早的会话。
+
+    默认仍返回最近 30 条（老前端不受影响）。翻页用游标而不是 offset：
+    新建会话会插到最前面，用 offset 翻页会把同一条会话挤到两页或漏掉。
+    """
+    stmt = (
+        select(AgentSession)
+        .where(AgentSession.user_id == user.id, AgentSession.deleted_at.is_(None))
+        .order_by(AgentSession.id.desc())
+        .limit(limit)
+    )
+    if before_id is not None:
+        stmt = stmt.where(AgentSession.id < before_id)
+    rows = (await session.execute(stmt)).scalars().all()
     return ok(
         [
             {
@@ -120,7 +129,6 @@ async def create_session(
         business_type="agent_session",
         business_id=row.id,
         after={
-            "title": row.title,
             "context_type": row.context_type,
             "context_id": row.context_id,
         },
@@ -137,14 +145,19 @@ async def get_session_detail(
     session: AsyncSession = Depends(get_db),
 ):
     row = await _get_session(session, session_id, user.id)
-    messages = (
+    # 长对话默认给**最新** 200 条可见消息（user/assistant，不含 tool），
+    # 更早的由 `/messages/older` 按游标补。此前是升序 limit(200)，
+    # 超过 200 条后最新消息反而打不开，且 tool 消息会占掉可见条数。
+    message_rows = (
         await session.execute(
             select(AgentMessage)
-            .where(AgentMessage.session_id == session_id)
-            .order_by(AgentMessage.id.asc())
-            .limit(200)
+            .where(AgentMessage.session_id == session_id, AgentMessage.role != "tool")
+            .order_by(AgentMessage.id.desc())
+            .limit(201)
         )
     ).scalars().all()
+    messages_has_more = len(message_rows) > 200
+    messages = list(reversed(message_rows[:200]))
     actions = (
         await session.execute(
             select(AgentAction)
@@ -169,8 +182,8 @@ async def get_session_detail(
                     "created_at": m.created_at,
                 }
                 for m in messages
-                if m.role != "tool"
             ],
+            "messages_has_more": messages_has_more,
             "actions": [
                 {**runtime.serialize_action(a), "display": await runtime.action_display(session, a, user=user)}
                 for a in actions
@@ -186,9 +199,16 @@ async def delete_session(
     user: CurrentUser = Depends(require_permission("agent:use")),
     session: AsyncSession = Depends(get_db),
 ):
-    row = await _get_session(session, session_id, user.id)
-    title = row.title
-    await session.delete(row)
+    row = await runtime.get_active_session(session, session_id, user.id, for_update=True)
+    await session.execute(delete(AgentMessage).where(AgentMessage.session_id == session_id))
+    await session.execute(delete(AgentAction).where(
+        AgentAction.session_id == session_id,
+        AgentAction.status.in_(("proposed", *runtime.PENDING_ACTION_STATUSES, "expired")),
+    ))
+    row.deleted_at = datetime.now(UTC)
+    row.title = "已删除的会话"
+    row.context_type = None
+    row.context_id = None
     await write_audit(
         session,
         operator_id=user.id,
@@ -196,7 +216,6 @@ async def delete_session(
         action="delete",
         business_type="agent_session",
         business_id=session_id,
-        before={"title": title},
         ip=client_ip(request),
     )
     await session.commit()
@@ -262,6 +281,51 @@ async def list_messages(
     )
 
 
+@router.get("/agent/sessions/{session_id}/messages/older")
+async def list_older_messages(
+    session_id: int,
+    before_id: int = Query(..., ge=1),
+    limit: int = Query(100, ge=1, le=200),
+    user: CurrentUser = Depends(require_permission("agent:use")),
+    session: AsyncSession = Depends(get_db),
+):
+    """按消息 id 游标向前翻，补会话详情里最新 200 条之外的更早消息。
+
+    与详情同一口径：只回 user/assistant，tool 过程不占可见条数。
+    多取一条判断 `has_more`，返回时仍按 id 升序，前端可以直接 prepend。
+    """
+    await _get_session(session, session_id, user.id)
+    rows = (
+        await session.execute(
+            select(AgentMessage)
+            .where(
+                AgentMessage.session_id == session_id,
+                AgentMessage.role != "tool",
+                AgentMessage.id < before_id,
+            )
+            .order_by(AgentMessage.id.desc())
+            .limit(limit + 1)
+        )
+    ).scalars().all()
+    has_more = len(rows) > limit
+    items = list(reversed(rows[:limit]))
+    return ok(
+        {
+            "items": [
+                {
+                    "id": m.id,
+                    "role": m.role,
+                    "content": m.content,
+                    "tool_name": m.tool_name,
+                    "created_at": m.created_at,
+                }
+                for m in items
+            ],
+            "has_more": has_more,
+        }
+    )
+
+
 @router.get("/agent/actions/{action_id}")
 async def get_action(
     action_id: int,
@@ -295,7 +359,7 @@ async def cancel_action(
     只有未执行、未拒绝、未失败的动作能取消 —— 已经落地的动作不能"取消"，
     那是业务回滚，得走各自的业务接口。
     """
-    action = await _get_action(session, action_id, user.id)
+    action = await _get_action(session, action_id, user.id, for_update=True)
     # 与确认、拒绝共享动作行锁，锁后重读，避免取消覆盖已执行结果。
     await session.refresh(action, with_for_update=True)
     before = runtime.require_action_not_expired(action)
@@ -391,6 +455,7 @@ async def retry_execution(
     # 但工具与页面都在）。原来那道门让"重试"按钮在这种部署里**永久 422**，
     # 而它想防的"模型没配"与这次操作毫无关系。
 
+    agent_session = await runtime.get_active_session(session, row.session_id, user.id, for_update=True)
     result = await runtime.retry_tool_call(
         session, execution_row=row, user=user, agent_session=agent_session
     )
@@ -454,7 +519,7 @@ async def list_actions(
     stmt = (
         select(AgentAction)
         .join(AgentSession, AgentSession.id == AgentAction.session_id)
-        .where(AgentSession.user_id == user.id)
+        .where(AgentSession.user_id == user.id, AgentSession.deleted_at.is_(None))
     )
     cutoff = runtime.action_expiry_cutoff()
     if status == "expired":
@@ -485,7 +550,7 @@ async def confirm_action(
     action = await session.get(AgentAction, action_id)
     if action is None:
         raise AppError(ErrorCode.NOT_FOUND, "动作不存在", 404)
-    agent_session = await _get_session(session, action.session_id, user.id)
+    agent_session = await runtime.get_active_session(session, action.session_id, user.id, for_update=True)
     if agent_session.user_id != user.id:
         raise AppError(ErrorCode.FORBIDDEN, "只能确认自己的会话", 403)
     result = await runtime.execute_action(session, action=action, user=user)
@@ -503,7 +568,7 @@ async def reject_action(
     action = await session.get(AgentAction, action_id)
     if action is None:
         raise AppError(ErrorCode.NOT_FOUND, "动作不存在", 404)
-    await _get_session(session, action.session_id, user.id)
+    await runtime.get_active_session(session, action.session_id, user.id, for_update=True)
     # 确认与拒绝共享动作行锁；等待后重读，避免用旧状态覆盖已完成动作。
     await session.refresh(action, with_for_update=True)
     if runtime.require_action_not_expired(action) not in runtime.PENDING_ACTION_STATUSES:

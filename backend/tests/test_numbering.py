@@ -59,3 +59,42 @@ class TestFormatNumber:
         rule = make_rule(prefix="SP", date_format="%Y%m", seq_length=3)
         now = datetime(2026, 9, 27)
         assert format_number(rule, 11, now) == "SP202609011"
+
+
+def test_reset_period_requires_date_to_distinguish_cycles():
+    import pytest
+
+    from app.core.errors import AppError
+    from app.modules.settings.numbering import validate_rule_period
+
+    for cycle, bad_format, good_format in [
+        ("daily", "%Y%m", "%Y%m%d"),
+        ("monthly", "%m", "%Y%m"),
+        ("yearly", "%%Y", "%Y"),
+    ]:
+        with pytest.raises(AppError, match="编号日期必须能区分"):
+            validate_rule_period(make_rule(reset_period=cycle, date_format=bad_format))
+        validate_rule_period(make_rule(reset_period=cycle, date_format=good_format))
+    validate_rule_period(make_rule(reset_period="none", date_format=""))
+
+
+def test_next_number_rolls_over_at_beijing_midnight():
+    import asyncio
+    from datetime import UTC
+
+    from sqlalchemy.orm import Session
+    from conftest import SyncSessionAsAsync, make_engine
+    from app.modules.settings.model import NumberSequence
+    from app.modules.settings.numbering import next_number
+
+    engine = make_engine()
+    for model in (NumberingRule, NumberSequence):
+        model.__table__.create(engine)
+    with Session(engine) as raw:
+        session = SyncSessionAsAsync(raw)
+        before = datetime(2026, 11, 20, 15, 59, tzinfo=UTC)
+        after = datetime(2026, 11, 20, 16, 0, tzinfo=UTC)
+        assert asyncio.run(next_number(session, "order", now=before)) == "SO202611200001"
+        assert asyncio.run(next_number(session, "order", now=after)) == "SO202611210001"
+        assert asyncio.run(next_number(session, "order", now=after)) == "SO202611210002"
+    engine.dispose()

@@ -131,8 +131,12 @@ async def update_user(
     session: AsyncSession = Depends(get_db),
 ):
     target = await svc.get_user_or_404(session, user_id)
-    before = svc.serialize_user(target)
     data = payload.model_dump(exclude_unset=True)
+    roles = None
+    if "role_ids" in data:
+        roles = await _save_user_roles(session, target, data.pop("role_ids"), user.id, request)
+        await session.refresh(target)
+    before = svc.serialize_user(target)
     await svc.update_user(session, target, data)
 
     after = svc.serialize_user(target)
@@ -150,7 +154,7 @@ async def update_user(
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(after, "已保存")
+    return ok(after if roles is None else {**after, "roles": roles}, "已保存")
 
 
 @router.post("/users/{user_id}/enable")
@@ -217,6 +221,30 @@ async def get_user_roles(
     )
 
 
+async def _save_user_roles(
+    session: AsyncSession,
+    target: User,
+    role_ids: list[int],
+    operator_id: int,
+    request: Request,
+) -> list[dict]:
+    before, roles = await svc.set_user_roles(session, target, role_ids)
+    await write_audit(
+        session,
+        operator_id=operator_id,
+        action="set_roles",
+        business_type="user",
+        business_id=target.id,
+        before={"roles": before},
+        after={"roles": [r.code for r in roles]},
+        ip=client_ip(request),
+    )
+    return [
+        {"id": r.id, "code": r.code, "name": r.name, "data_scope": r.data_scope, "status": r.status}
+        for r in roles
+    ]
+
+
 @router.put("/users/{user_id}/roles")
 async def set_user_roles(
     user_id: int,
@@ -226,27 +254,9 @@ async def set_user_roles(
     session: AsyncSession = Depends(get_db),
 ):
     target = await svc.get_user_or_404(session, user_id)
-    before = [r.code for r in await svc.roles_of_user(session, target.id)]
-    roles = await svc.set_user_roles(session, target, payload.role_ids)
-    after = [r.code for r in roles]
-    await write_audit(
-        session,
-        operator_id=user.id,
-        action="set_roles",
-        business_type="user",
-        business_id=target.id,
-        before={"roles": before},
-        after={"roles": after},
-        ip=client_ip(request),
-    )
+    roles = await _save_user_roles(session, target, payload.role_ids, user.id, request)
     await session.commit()
-    return ok(
-        [
-            {"id": r.id, "code": r.code, "name": r.name, "data_scope": r.data_scope, "status": r.status}
-            for r in roles
-        ],
-        "角色已更新",
-    )
+    return ok(roles, "角色已更新")
 
 
 @router.get("/users/{user_id}/data-scope")

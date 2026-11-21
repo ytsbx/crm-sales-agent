@@ -1069,7 +1069,7 @@ async def calculate_price(
     # 实测（2026-10-14）：规则里写 `standard_price=0` 时返回 `28.57`
     # （成本 ÷ (1−利润率)），与规则里写的数不一致。判"有没有填"只能看 `is None`。
     standard_price = rule.standard_price if rule else None
-    if standard_price is None:
+    if standard_price is None and cost_trustworthy:
         standard_price = base_cost / (Decimal(1) - margin)
     # 同样逐级判 `is not None`：`agreed_price` 是 `gt=0`（不能为 0），
     # 但 `guide_price` / `standard_price` 是 `ge=0` —— 把"协议价/指导价 0 元"
@@ -1078,7 +1078,7 @@ async def calculate_price(
     if recommended is None and rule is not None:
         recommended = rule.guide_price
     amount_target = target_profit_amount if target_margin is None else None
-    if recommended is None and has_cost and amount_target is None:
+    if recommended is None and cost_trustworthy and amount_target is None:
         recommended = base_cost / (Decimal(1) - margin)
 
     # 已维护的协议价或指导价优先。只有缺少适用售价时，才以达标价作为建议价。

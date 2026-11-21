@@ -63,6 +63,10 @@ export default function GlobalSearch() {
       navigate(`/customers/${item.customer_id}`)
       return
     }
+    if (route === '/leads') {
+      navigate(`/leads?lead=${item.id}`)
+      return
+    }
     navigate(`${route}/${item.id}`)
   }
 

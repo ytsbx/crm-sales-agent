@@ -137,20 +137,24 @@ def test_each_sku_gets_distinct_idempotent_difference():
 
 
 def test_reconciliation_closes_proven_correction_and_preserves_recurrence_history():
-    def batch(qty):
-        return [fx._order_record("O1", "CRM1"), fx._order_item("O1", "1", "A", "1"),
-                fx._shipment("S1", "O1"), fx._shipment_item("S1", "1", "O1", "A", qty)]
+    def batch(qty, session=None):
+        session = collect([fx._order_record("O1", "CRM1"),
+                           fx._order_item("O1", "1", "A", "1")], session=session)
+        fx._collect(session, fx.FakeCollectAdapter([[
+            fx._shipment("S1", "O1"), fx._shipment_item("S1", "1", "O1", "A", qty),
+        ]]), object_type="shipment")
+        return session
 
-    s = collect(batch("2"))
+    s = batch("2")
     assert run(s)["counters"]["over_shipped"] == 1
     criteria = IntegrationDiff.diff_type == "over_shipped"
     old = rows_of(s, IntegrationDiff, criteria)[0]
     assert old.status == "open"
 
-    collect(batch(None), session=s)
+    batch(None, session=s)
     assert run(s)["counters"]["diffs_auto_closed"] == 0
     assert old.status == "open"
-    collect(batch("1"), session=s)
+    batch("1", session=s)
     cursor = rows_of(s, ExternalSyncWatermark)[0]
     for status, page_token in [("failed", None), ("idle", "more-pages")]:
         cursor.status, cursor.page_token = status, page_token
@@ -166,13 +170,13 @@ def test_reconciliation_closes_proven_correction_and_preserves_recurrence_histor
     assert run(s)["counters"]["diffs_auto_closed"] == 0
 
     for expected_count in (2, 3):
-        collect(batch("2"), session=s)
+        batch("2", session=s)
         assert run(s)["counters"]["over_shipped"] == 1
         run(s)
         rows = rows_of(s, IntegrationDiff, criteria)
         assert len(rows) == expected_count
         assert sum(row.status == "open" for row in rows) == 1
-        collect(batch("1"), session=s)
+        batch("1", session=s)
         assert run(s)["counters"]["diffs_auto_closed"] == 1
         assert all(row.status == "resolved" for row in rows)
 
@@ -189,6 +193,51 @@ def test_amount_auto_close_keeps_manual_aftersale_for_review():
     by_type = {row.diff_type: row for row in rows_of(s, IntegrationDiff)}
     assert by_type["amount_mismatch"].resolution == "auto_reconciled"
     assert by_type["aftersale_needs_review"].status == "open"
+
+
+def test_amount_cannot_close_using_newer_shipment_watermark():
+    session = collect([fx._order_record("O1", "CRM1", "110")])
+    local = fx._order("CRM1", amount="100")
+    session.add(local)
+    asyncio.run(session.commit())
+    assert run(session)["counters"]["amount_mismatch"] == 1
+    local.total_amount = 110
+    asyncio.run(session.commit())
+
+    fx._collect(session, fx.FakeCollectAdapter([[]]), object_type="shipment")
+    assert run(session)["counters"]["diffs_auto_closed"] == 0
+    [diff] = rows_of(session, IntegrationDiff, IntegrationDiff.diff_type == "amount_mismatch")
+    assert diff.status == "open"
+
+    collect([fx._order_record("O1", "CRM1", "110")], session=session)
+    assert run(session)["counters"]["diffs_auto_closed"] == 1
+    assert set(diff.evidence["auto_resolution"]["collection_finished_by_source"]) == {"order"}
+
+
+def test_over_return_cannot_close_until_both_shipment_and_aftersale_are_current():
+    session = collect([fx._order_record("O1", "CRM1"),
+                       fx._order_item("O1", "1", "SKU-A", "10")])
+
+    def shipment(quantity):
+        fx._collect(session, fx.FakeCollectAdapter([[
+            fx._shipment("S1", "O1"), fx._shipment_item("S1", "1", "O1", "SKU-A", quantity),
+        ]]), object_type="shipment")
+
+    def aftersale():
+        fx._collect(session, fx.FakeCollectAdapter([[
+            fx._aftersale("AS1", "O1", "return"), fx._aftersale_item("AS1", "1", "O1", "return", "2"),
+        ]]), object_type="aftersale")
+
+    shipment("1")
+    aftersale()
+    assert run(session)["counters"]["over_returned"] == 1
+    shipment("2")
+    assert run(session)["counters"]["diffs_auto_closed"] == 0
+    [diff] = rows_of(session, IntegrationDiff, IntegrationDiff.diff_type == "over_returned")
+    assert diff.status == "open"
+    aftersale()
+    assert run(session)["counters"]["diffs_auto_closed"] == 1
+    assert set(diff.evidence["auto_resolution"]["collection_finished_by_source"]) == {"shipment", "aftersale"}
 
 
 @pytest.mark.parametrize('currency',['USD','usd','EUR'])

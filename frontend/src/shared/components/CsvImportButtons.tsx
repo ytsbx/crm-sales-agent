@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 
 import { calendarDay } from '../calendar-day'
@@ -15,6 +15,12 @@ interface ImportRowIssue {
   row: number
   name: string
   reason: string
+}
+
+interface ImportTarget {
+  url: string
+  label?: string
+  hint?: string
 }
 
 interface ImportSummary {
@@ -70,18 +76,21 @@ export default function CsvImportButtons({
   importUrl,
   invalidateQueryKeys,
   onDone,
+  renderControls,
 }: {
-  templateUrl: string
-  templateName: string
-  importUrl: string
+  templateUrl?: string
+  templateName?: string
+  importUrl?: string
   invalidateQueryKeys: string[]
   onDone?: () => void
+  renderControls?: (openImport: (target: ImportTarget) => void, importing: boolean) => ReactNode
 }) {
   const queryClient = useQueryClient()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [importing, setImporting] = useState(false)
   const [preview, setPreview] = useState<ImportSummary | null>(null)
-  const [previewFile, setPreviewFile] = useState<File | null>(null)
+  const chosenTarget = useRef<ImportTarget | null>(null)
+  const [previewFile, setPreviewFile] = useState<{ file: File; target: ImportTarget } | null>(null)
   const [result, setResult] = useState<ImportSummary | null>(null)
 
   const tokenHeader = () => {
@@ -104,7 +113,12 @@ export default function CsvImportButtons({
 
   const downloadFailedCsv = (rows: ImportRowIssue[]) => {
     const header = '行号,标识,失败原因'
-    const lines = rows.map((r) => `${r.row},"${(r.name ?? '').replace(/"/g, '""')}","${r.reason.replace(/"/g, '""')}"`)
+    const textCell = (value: string) => {
+      // 引号处理 CSV 分隔符，前导单引号让表格软件把类似公式的内容当成文本。
+      const text = /^[=+\-@\t\r\n]|^\s+[=+\-@]/.test(value) ? "'" + value : value
+      return `"${text.replace(/"/g, '""')}"`
+    }
+    const lines = rows.map((r) => `${r.row},${textCell(r.name ?? '')},${textCell(r.reason)}`)
     const blob = new Blob(['\ufeff' + [header, ...lines].join('\n')], { type: 'text/csv;charset=utf-8' })
     const blobUrl = window.URL.createObjectURL(blob)
     const link = document.createElement('a')
@@ -119,7 +133,7 @@ export default function CsvImportButtons({
     window.URL.revokeObjectURL(blobUrl)
   }
 
-  const postImport = async (file: File, isPreview: boolean, previewToken?: string) => {
+  const postImport = async (url: string, file: File, isPreview: boolean, previewToken?: string) => {
     const { default: axios } = await import('axios')
     const formData = new FormData()
     formData.append('file', file)
@@ -128,7 +142,7 @@ export default function CsvImportButtons({
     // 是否仍与预览一致；不带的话它只能看到一次普通导入，预览就等于没校验。
     if (!isPreview && previewToken) formData.append('preview_token', previewToken)
     try {
-      const response = await axios.post(importUrl, formData, { headers: tokenHeader() })
+      const response = await axios.post(url, formData, { headers: tokenHeader() })
       const body = response.data
       if (body.code !== 0) throw new ImportError(body.message ?? '导入失败', Number(body.code ?? 0))
       return body.data as ImportSummary
@@ -139,12 +153,19 @@ export default function CsvImportButtons({
     }
   }
 
-  const handleFile = async (file: File) => {
+  const openImport = (target: ImportTarget) => {
+    if (importing) return
+    chosenTarget.current = target
+    fileInputRef.current?.click()
+  }
+
+  const handleFile = async (file: File, target: ImportTarget) => {
     setImporting(true)
     try {
-      const summary = await postImport(file, true)
+      const summary = await postImport(target.url, file, true)
+      if (!summary.preview_token) throw new Error('没有收到导入预览，请重新选择文件')
       setPreview(summary)
-      setPreviewFile(file)
+      setPreviewFile({ file, target })
     } catch (error) {
       Toast.error(error instanceof Error ? error.message : '文件解析失败')
     } finally {
@@ -153,12 +174,13 @@ export default function CsvImportButtons({
     }
   }
 
+  const importableCount = (preview?.created_count ?? 0) + (preview?.updated_count ?? 0)
   const confirmImport = async () => {
-    if (!previewFile) return
-    const previewToken = preview?.preview_token
+    if (!previewFile || !preview?.preview_token || !importableCount || importing) return
+    const previewToken = preview.preview_token
     setImporting(true)
     try {
-      const summary = await postImport(previewFile, false, previewToken)
+      const summary = await postImport(previewFile.target.url, previewFile.file, false, previewToken)
       setPreview(null)
       setPreviewFile(null)
       setResult(summary)
@@ -226,10 +248,18 @@ export default function CsvImportButtons({
 
   return (
     <>
-      <Button onClick={() => downloadCsv(templateUrl, templateName)}>下载模板</Button>
-      <Button loading={importing} onClick={() => fileInputRef.current?.click()}>
-        批量导入
-      </Button>
+      {renderControls ? renderControls(openImport, importing) : (
+        <>
+          {templateUrl && templateName && (
+            <Button onClick={() => downloadCsv(templateUrl, templateName)}>下载模板</Button>
+          )}
+          {importUrl && (
+            <Button loading={importing} onClick={() => openImport({ url: importUrl })}>
+              批量导入
+            </Button>
+          )}
+        </>
+      )}
       <input
         ref={fileInputRef}
         type="file"
@@ -237,32 +267,43 @@ export default function CsvImportButtons({
         style={{ display: 'none' }}
         onChange={(e) => {
           const file = e.target.files?.[0]
-          if (file) void handleFile(file)
+          if (file && chosenTarget.current) void handleFile(file, chosenTarget.current)
         }}
       />
 
       {/* 预览弹窗：只校验未落库，用户确认后才真正导入 */}
       <Modal
-        title="导入预览（尚未写入）"
+        title={previewFile?.target.label ? `${previewFile.target.label}导入预览` : '导入预览（尚未写入）'}
         visible={Boolean(preview)}
         onCancel={() => {
+          if (importing) return
           setPreview(null)
           setPreviewFile(null)
         }}
         onOk={() => void confirmImport()}
-        okText={preview?.failed_count ? `仍要导入 ${preview.created_count} 条` : `确认导入 ${preview?.created_count ?? 0} 条`}
+        okText="确认导入"
+        okButtonProps={{ disabled: !importableCount }}
         cancelText="取消"
+        cancelButtonProps={{ disabled: importing }}
+        closable={!importing}
+        maskClosable={!importing}
         confirmLoading={importing}
         width={680}
       >
         {preview && (
           <div style={{ display: 'grid', gap: 12 }}>
-            <div style={{ display: 'flex', gap: 16 }}>
-              <span className="chip chip-primary">将导入 {preview.created_count} 条</span>
+            <div className="label-hint" style={{ overflowWrap: 'anywhere' }}>
+              {previewFile?.file.name} · 确认后才会写入
+            </div>
+            {previewFile?.target.hint && <div className="label-hint">{previewFile.target.hint}</div>}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              <span className="chip chip-primary">新增 {preview.created_count} 条</span>
+              {Boolean(preview.updated_count) && <span className="chip chip-primary">更新 {preview.updated_count} 条</span>}
               <span className="chip chip-warning">
                 跳过 {preview.skipped_count} 条 · 失败 {preview.failed_count} 条
               </span>
             </div>
+            {!importableCount && <div className="label-hint">没有可导入的记录。可检查下方原因，修改文件后重新选择。</div>}
             {failedSection(preview)}
           </div>
         )}
@@ -282,7 +323,8 @@ export default function CsvImportButtons({
         {result && (
           <div style={{ display: 'grid', gap: 12 }}>
             <div style={{ display: 'flex', gap: 16 }}>
-              <span className="chip chip-primary">成功 {result.created_count} 条</span>
+              <span className="chip chip-primary">新增 {result.created_count} 条</span>
+              {Boolean(result.updated_count) && <span className="chip chip-primary">更新 {result.updated_count} 条</span>}
               <span className="chip chip-warning">
                 跳过 {result.skipped_count} 条 · 失败 {result.failed_count} 条
               </span>

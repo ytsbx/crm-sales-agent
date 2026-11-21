@@ -56,6 +56,8 @@ class UserUpdate(PatchModel):
     wecom_userid: str | None = None
     password: str | None = Field(default=None, min_length=6)
     """传了才重置密码；不传保持原密码。"""
+    role_ids: list[int] = Field(default_factory=list)
+    """省略时保留角色；空列表表示移除所有角色。"""
 
     @field_validator("password")
     @classmethod

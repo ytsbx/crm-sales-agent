@@ -34,6 +34,7 @@ class AgentSession(Base, IdMixin, TimestampMixin):
     title: Mapped[str] = mapped_column(String(200), default="新会话")
     context_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     context_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AgentMessage(Base, IdMixin):

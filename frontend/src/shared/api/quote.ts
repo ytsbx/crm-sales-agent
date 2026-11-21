@@ -88,6 +88,7 @@ export interface QuoteItemRow {
   is_custom?: boolean
   specification?: string | null
   quantity: number
+  quantity_exact?: string
   cost_snapshot: number | null
   logistics_cost_snapshot: number | null
   standard_price_snapshot?: number | null

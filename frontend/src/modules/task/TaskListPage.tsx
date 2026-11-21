@@ -19,7 +19,7 @@ import {
   transferTask,
   type Task,
 } from '../../shared/api/task'
-import { listUsers } from '../../shared/api/system'
+import UserSearchSelect from '../../shared/components/UserSearchSelect'
 import type { TagTone } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
@@ -104,7 +104,9 @@ export default function TaskListPage() {
   const [transferTarget, setTransferTarget] = useState<Task | null>(null)
   const [transferOwner, setTransferOwner] = useState<number | null>(null)
   // 批量完成（审查 B2-06）：勾选 + 批量操作入口
-  const [selectedIds, setSelectedIds] = useState<number[]>([])
+  const [selectedVersions, setSelectedVersions] = useState<Record<number, string>>({})
+  const selectedIds = Object.keys(selectedVersions).map(Number)
+  const clearSelection = () => setSelectedVersions({})
   const [handoverVisible, setHandoverVisible] = useState(false)
   const [candidateKeyword, setCandidateKeyword] = useState('')
 
@@ -119,12 +121,6 @@ export default function TaskListPage() {
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['tasks'] })
 
-  // 转交目标只列**在职**人员：停用的人接不了任务（后端也会拦）
-  const usersQuery = useQuery({
-    queryKey: ['users', { status: 'active' }],
-    queryFn: () => listUsers({ status: 'active', page_size: 200 }),
-    enabled: transferTarget !== null,
-  })
   const candidatesQuery = useQuery({
     queryKey: ['task-handover-candidates', candidateKeyword],
     queryFn: () => listHandoverCandidates(candidateKeyword),
@@ -160,7 +156,7 @@ export default function TaskListPage() {
   })
 
   const batchCompleteMutation = useMutation({
-    mutationFn: () => batchCompleteTasks(selectedIds),
+    mutationFn: () => batchCompleteTasks(selectedIds, undefined, selectedVersions),
     onSuccess: (result) => {
       // 成功 / 跳过 / 原因都要说清，否则操作的人不知道哪几条没成（审查 B2-06 的要求）
       const done = result.completed?.length ?? 0
@@ -176,7 +172,7 @@ export default function TaskListPage() {
           `已完成 ${done} 条，跳过 ${skipped.length} 条：${detail}${skipped.length > 3 ? ' …' : ''}`,
         )
       }
-      setSelectedIds([])
+      clearSelection()
       void refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -187,7 +183,7 @@ export default function TaskListPage() {
     onSuccess: ({ task_ids }) => {
       Toast.success(`已交接 ${task_ids.length} 条待办`)
       setHandoverVisible(false)
-      setSelectedIds([])
+      clearSelection()
       void refresh()
     },
   })
@@ -239,9 +235,12 @@ export default function TaskListPage() {
           title={!handover && record.task_type === 'contract_signed_upload' ? '上传回签件归档后自动完成' : undefined}
           onChange={(e) => {
             const on = (e.target as HTMLInputElement).checked
-            setSelectedIds((prev) =>
-              on ? [...prev, record.id] : prev.filter((id) => id !== record.id),
-            )
+            setSelectedVersions((prev) => {
+              if (on) return { ...prev, [record.id]: record.updated_at }
+              const next = { ...prev }
+              delete next[record.id]
+              return next
+            })
           }}
         />
       ),
@@ -441,7 +440,7 @@ export default function TaskListPage() {
               theme="borderless"
               style={handover ? { color: 'var(--crm-primary)', fontWeight: 600 } : undefined}
               onClick={() => {
-              setSelectedIds([])
+              clearSelection()
               setFilter('handover', String(!handover))
             }}>
               {handover ? '返回任务列表' : '待办交接'}
@@ -562,11 +561,11 @@ export default function TaskListPage() {
             total: query.data?.total ?? 0,
             showSizeChanger: true,
             onPageChange: (next: number) => {
-              if (handover) setSelectedIds([])
+              if (handover) clearSelection()
               setPage(next)
             },
             onPageSizeChange: (size: number) => {
-              if (handover) setSelectedIds([])
+              if (handover) clearSelection()
               setPageSize(size)
               setPage(1)
             },
@@ -611,7 +610,7 @@ export default function TaskListPage() {
         {handoverMutation.isError && (
           <Button theme="borderless" onClick={() => {
             setHandoverVisible(false)
-            setSelectedIds([])
+            clearSelection()
             void refresh()
           }}>刷新交接清单</Button>
         )}
@@ -728,21 +727,15 @@ export default function TaskListPage() {
         okText="确认转交"
       >
         <FormLabel>转交给</FormLabel>
-        <Select
-          placeholder="选择在职同事"
+        <UserSearchSelect
+          queryScope="task-transfer"
+          activeOnly
+          enabled={transferTarget !== null}
+          placeholder="按姓名或登录账号搜索在职同事"
           value={transferOwner ?? undefined}
-          onChange={(value) => setTransferOwner((value as number) ?? null)}
-          loading={usersQuery.isLoading}
+          onChange={(value) => setTransferOwner(value ?? null)}
           style={{ width: '100%' }}
-          filter
-        >
-          {(usersQuery.data?.items ?? []).map((user) => (
-            <Select.Option key={user.id} value={user.id} label={user.name}>
-              {user.name}
-              {user.department ? `（${user.department}）` : ''}
-            </Select.Option>
-          ))}
-        </Select>
+        />
         <div style={{ marginTop: 8, color: 'var(--crm-text-secondary)', fontSize: 12 }}>
           转交只改「谁来做」；这条任务原来是谁的、什么时候建的，审计里都留着。
         </div>

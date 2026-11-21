@@ -658,12 +658,17 @@ async def replace_items(
     ⚠️ 但"清空"之前必须**先把整批验完**（第十二批 12.5）：从前一条坏 SKU 会先删掉
     全部原明细、再在外键上炸掉 —— 用户既丢了原数据、又没存上新数据。
     """
-    await ensure_skus_exist(session, [item.get("sku_id") for item in items])
     existing = (
         await session.execute(
             select(OpportunityItem).where(OpportunityItem.opportunity_id == opportunity_id)
         )
     ).scalars().all()
+    from app.modules.product.service import ensure_skus_for_new_business
+
+    existing_sku_ids = {row.sku_id for row in existing}
+    sku_ids = {item.get("sku_id") for item in items}
+    await ensure_skus_exist(session, list(sku_ids & existing_sku_ids))
+    await ensure_skus_for_new_business(session, list(sku_ids - existing_sku_ids))
     for row in existing:
         await session.delete(row)
     await session.flush()
@@ -704,7 +709,7 @@ async def copy_items_from(
             )
         )
     ).scalars().all()
-    if sku_ids:
+    if sku_ids is not None:
         wanted = set(sku_ids)
         source_rows = [row for row in source_rows if row.sku_id in wanted]
 
@@ -725,6 +730,12 @@ async def copy_items_from(
         row.sku_id for row in source_rows
         if on_conflict != "skip" or row.sku_id not in existing
     ])
+    from app.core.trade_mode import reject_foreign_currency
+
+    reject_foreign_currency(
+        *(row.currency for row in source_rows if on_conflict == "add" or row.sku_id not in existing),
+        label="商机需求明细",
+    )
     added = skipped = replaced = 0
     for row in source_rows:
         current = existing.get(row.sku_id)
@@ -733,12 +744,6 @@ async def copy_items_from(
             continue
         if current is not None and on_conflict == "replace":
             current.quantity = row.quantity
-            current.target_price = row.target_price
-            current.specification = row.specification
-            current.color = row.color
-            current.package_requirement = row.package_requirement
-            current.delivery_date = row.delivery_date
-            current.destination = row.destination
             replaced += 1
             continue
         session.add(

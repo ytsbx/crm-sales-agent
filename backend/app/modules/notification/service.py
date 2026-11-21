@@ -15,6 +15,7 @@
 
 import logging
 import math
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import and_, func, or_, select
@@ -448,23 +449,30 @@ async def materialize_business_notifications(
 
 async def _check_process_recipients(session: AsyncSession, rows: list[Notification]) -> set[int]:
     from app.core.deps import CurrentUser
-    from app.modules.notification.visibility import process_notification_filter
+    from app.modules.notification.visibility import direct_notification_visible, process_notification_filter
     from app.modules.user.service import get_user_permission_codes, get_user_roles, resolve_data_scope
 
-    allowed = {row.id for row in rows if row.business_event_id is None}
-    recipients = {row.user_id for row in rows if row.business_event_id is not None}
-    for uid in recipients:
+    allowed = {row.id for row in rows if row.business_event_id is None and row.business_id is None}
+    recipients = {}
+    for row in rows:
+        if row.id not in allowed:
+            recipients.setdefault(row.user_id, []).append(row)
+    for uid, recipient_rows in recipients.items():
         user = await session.get(User, uid)
         if user is None or user.status != 'active':
             continue
         roles = await get_user_roles(session, uid)
         viewer = CurrentUser(user, await get_user_permission_codes(session, uid),
                              [r.code for r in roles], resolve_data_scope(roles))
-        ids = (await session.execute(select(Notification.id).where(
-            Notification.id.in_([row.id for row in rows if row.user_id == uid]),
-            await process_notification_filter(session, viewer),
-        ))).scalars().all()
-        allowed.update(ids)
+        process_ids = [row.id for row in recipient_rows if row.business_event_id is not None]
+        if process_ids:
+            ids = (await session.execute(select(Notification.id).where(
+                Notification.id.in_(process_ids), await process_notification_filter(session, viewer),
+            ))).scalars().all()
+            allowed.update(ids)
+        for row in recipient_rows:
+            if row.business_event_id is None and await direct_notification_visible(session, viewer, row):
+                allowed.add(row.id)
     for row in rows:
         if row.id not in allowed:
             row.wecom_status = 'skipped'
@@ -603,6 +611,14 @@ async def dispatch_pending(
         }
 
 
+async def dispatch_after_commit(session: AsyncSession) -> None:
+    """已保存的业务照常回应，待处理通知由定时投递继续处理。"""
+    try:
+        await dispatch_pending(session)
+    except Exception:
+        logging.getLogger(__name__).exception("业务已提交，通知投递暂未完成")
+
+
 def build_digest(rows: list[Notification], *, max_items: int = 20) -> tuple[str, str]:
     """把一批通知合成一条日报（标题, 正文）。
 
@@ -636,17 +652,31 @@ async def send_digest(
     async with SessionLocal() as own:
         policy = await retry_policy(own)
         now = datetime.now(UTC)
-        rows = (
-            await own.execute(
-                select(Notification)
-                .where(
-                    Notification.wecom_status == "pending",
-                    Notification.level == LEVEL_DIGEST,
-                )
-                .order_by(Notification.id.asc())
-                .with_for_update(skip_locked=True)
+        pending = (Notification.wecom_status == "pending", Notification.level == LEVEL_DIGEST)
+        recipients = (
+            select(Notification.user_id).where(*pending).distinct()
+            .order_by(Notification.user_id).limit(max(limit_users, 0))
+        )
+        candidates = (
+            select(
+                Notification.id,
+                func.count().over(partition_by=Notification.user_id).label("expected_count"),
             )
-        ).scalars().all()
+            .where(*pending, Notification.user_id.in_(recipients))
+            .subquery()
+        )
+        locked = (
+            await own.execute(
+                select(Notification, candidates.c.expected_count)
+                .join(candidates, Notification.id == candidates.c.id)
+                .where(*pending)
+                .order_by(Notification.id.asc())
+                .with_for_update(of=Notification, skip_locked=True)
+            )
+        ).all()
+        # 任一行已被其他投递占用时，整位收件人延后，避免把一份日报拆开发。
+        locked_counts = Counter(row.user_id for row, _ in locked)
+        rows = [row for row, expected_count in locked if locked_counts[row.user_id] == expected_count]
         if not rows:
             return {"users": 0, "messages": 0, "items": 0, "sent": 0, "skipped": 0, "failed": 0}
 
@@ -659,7 +689,7 @@ async def send_digest(
         grouped: dict[int, list[Notification]] = {}
         for row in rows:
             grouped.setdefault(row.user_id, []).append(row)
-        user_ids = sorted(grouped)[:limit_users]
+        user_ids = sorted(grouped)
         users = {
             user.id: user
             for user in (

@@ -1,10 +1,10 @@
 import { formatBeijingTime } from '../../shared/beijing-time'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { emptyText } from '../../shared/hooks/emptyText'
-import { Button, Dropdown, Input, Modal, Table, Tag, Toast } from '@douyinfe/semi-ui'
+import { Button, Dropdown, Input, Modal, Table, Toast } from '@douyinfe/semi-ui'
 
 import { createProduct, listProducts, type ProductPayload } from '../../shared/api/product'
 import PageHeader from '../../shared/components/PageHeader'
@@ -15,6 +15,7 @@ import FormLabel from '../../shared/components/FormLabel'
 import { useBlockedNotify } from '../../shared/components/BlockedHint'
 import { getPersistedAuthToken } from '../../shared/auth-token'
 import StatusDot from '../../shared/components/StatusDot'
+import CsvImportButtons from '../../shared/components/CsvImportButtons'
 
 const EMPTY_FORM: ProductPayload = {
   name: '',
@@ -38,13 +39,6 @@ const EMPTY_FORM: ProductPayload = {
 const PRODUCT_MANAGE_PERMISSION_REASON =
   '产品与 SKU 的模板下载、导入、导出需要「产品管理」权限；请联系管理员开通或由产品负责人操作。「新建产品」同样需要这个权限。'
 
-interface ImportResult {
-  created_count: number
-  updated_count?: number
-  skipped_count: number
-  failed: Array<{ name: string; reason: string }>
-}
-
 export default function ProductListPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -62,22 +56,8 @@ export default function ProductListPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [modalVisible, setModalVisible] = useState(false)
+  const [importMenuOpen, setImportMenuOpen] = useState(false)
   const [form, setForm] = useState<ProductPayload>(EMPTY_FORM)
-
-  // 批量导入/导出（产品报价中心 · 第一批：资料库整理入口）
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const [importKind, setImportKind] = useState<'products' | 'skus'>('products')
-  // 菜单里点「导入 SKU」后会立刻打开文件选择器，用户选完文件触发 onChange。
-  // 这条链跨了两次异步（setState + 系统文件框），用 state 会读到上一次的种类；
-  // 所以用 ref 同步记住「这次点的是哪一种」，state 只留着给界面提示文字用。
-  const importKindRef = useRef<'products' | 'skus'>('products')
-  const openImport = (kind: 'products' | 'skus') => {
-    importKindRef.current = kind
-    setImportKind(kind)
-    fileInputRef.current?.click()
-  }
-  const [importing, setImporting] = useState(false)
-  const [importResult, setImportResult] = useState<ImportResult | null>(null)
 
   const tokenHeader = () => {
     const token = getPersistedAuthToken()
@@ -95,29 +75,6 @@ export default function ProductListPage() {
     link.click()
     link.remove()
     window.URL.revokeObjectURL(blobUrl)
-  }
-
-  const handleImport = async (file: File, kind: 'products' | 'skus') => {
-    setImporting(true)
-    try {
-      const { default: axios } = await import('axios')
-      const formData = new FormData()
-      formData.append('file', file)
-      const response = await axios.post(`/api/v1/${kind}/import`, formData, {
-        headers: tokenHeader(),
-      })
-      const body = response.data
-      if (body.code !== 0) throw new Error(body.message)
-      Toast.success(body.message)
-      setImportResult(body.data)
-      void queryClient.invalidateQueries({ queryKey: ['products'] })
-      void queryClient.invalidateQueries({ queryKey: ['skus'] })
-    } catch (error) {
-      Toast.error(error instanceof Error ? error.message : '导入失败')
-    } finally {
-      setImporting(false)
-      if (fileInputRef.current) fileInputRef.current.value = ''
-    }
   }
 
   const query = useQuery({
@@ -240,64 +197,50 @@ export default function ProductListPage() {
             </div>
           )}
           {can('product:manage') && (
-            <>
-              {/* 模板下载 / 导出 / 导入都是低频动作：从前 5 个控件平铺在工具栏，
-                  和「查询」「新建产品」抢视线，窄屏还会挤成两行。
-                  收进一个下拉 —— 功能一个不少，右侧只剩「导入 / 导出」+「新建产品」。 */}
-              <Dropdown
-                trigger="click"
-                position="bottomRight"
-                render={
-                  <Dropdown.Menu>
-                    <Dropdown.Item
-                      onClick={() =>
-                        void downloadCsv('/api/v1/products/import-template', '产品导入模板.csv')
-                      }
-                    >
-                      下载产品导入模板
-                    </Dropdown.Item>
-                    <Dropdown.Item
-                      onClick={() => void downloadCsv('/api/v1/skus/import-template', 'SKU导入模板.csv')}
-                    >
-                      下载 SKU 导入模板
-                    </Dropdown.Item>
-                    <Dropdown.Item
-                      onClick={() => void downloadCsv('/api/v1/products/export', '产品导出.csv')}
-                    >
-                      导出全部产品
-                    </Dropdown.Item>
-                    <Dropdown.Item onClick={() => openImport('products')}>导入产品</Dropdown.Item>
-                    <Dropdown.Item onClick={() => openImport('skus')}>导入 SKU</Dropdown.Item>
-                  </Dropdown.Menu>
-                }
-              >
-                {/* 工具栏一行原来并着三个白底描边按钮（查询 / 导入导出 / 新建产品），
-                    分不出谁主谁次（2026-11-20）。导入导出是低频工具，降成文字按钮。 */}
-                <Button
-                  loading={importing}
-                  type="tertiary"
-                  theme="borderless"
-                  style={{ color: 'var(--crm-primary)' }}
+            <CsvImportButtons
+              invalidateQueryKeys={['products', 'skus']}
+              renderControls={(openImport, importing) => (
+                <Dropdown
+                  trigger="click"
+                  visible={importMenuOpen}
+                  onVisibleChange={setImportMenuOpen}
+                  position="bottomRight"
+                  render={
+                    <Dropdown.Menu>
+                      <Dropdown.Item onClick={() => void downloadCsv('/api/v1/products/import-template', '产品导入模板.csv')}>
+                        下载产品导入模板
+                      </Dropdown.Item>
+                      <Dropdown.Item onClick={() => void downloadCsv('/api/v1/skus/import-template', 'SKU导入模板.csv')}>
+                        下载 SKU 导入模板
+                      </Dropdown.Item>
+                      <Dropdown.Item onClick={() => void downloadCsv('/api/v1/products/export', '产品导出.csv')}>
+                        导出全部产品
+                      </Dropdown.Item>
+                      <Dropdown.Item onClick={() => {
+                        setImportMenuOpen(false)
+                        openImport({ url: '/api/v1/products/import', label: '产品' })
+                      }}>
+                        导入产品
+                      </Dropdown.Item>
+                      <Dropdown.Item onClick={() => {
+                        setImportMenuOpen(false)
+                        openImport({
+                          url: '/api/v1/skus/import',
+                          label: 'SKU',
+                          hint: 'SKU 编码可留空，系统会自动生成；重复行按产品和规格跳过。',
+                        })
+                      }}>
+                        导入 SKU
+                      </Dropdown.Item>
+                    </Dropdown.Menu>
+                  }
                 >
-                  导入 / 导出 ▾
-                </Button>
-              </Dropdown>
-              {importKind === 'skus' && (
-                <span style={{ color: 'var(--crm-text-3)', fontSize: 12, maxWidth: 250 }}>
-                  SKU编码可留空；系统会自动生成，重复行按产品和规格跳过
-                </span>
+                  <Button loading={importing} type="tertiary" theme="borderless" style={{ color: 'var(--crm-primary)' }}>
+                    导入 / 导出 ▾
+                  </Button>
+                </Dropdown>
               )}
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".csv"
-                style={{ display: 'none' }}
-                onChange={(e) => {
-                  const file = e.target.files?.[0]
-                  if (file) void handleImport(file, importKindRef.current)
-                }}
-              />
-            </>
+            />
           )}
           {can('product:manage') && (
             <Button type="primary" theme="outline" onClick={() => setModalVisible(true)}>
@@ -380,42 +323,6 @@ export default function ProductListPage() {
         </div>
       </Modal>
 
-      <Modal
-        title="导入结果"
-        visible={Boolean(importResult)}
-        onCancel={() => setImportResult(null)}
-        onOk={() => setImportResult(null)}
-        okText="知道了"
-        cancelText="关闭"
-        footer={null}
-        width={680}
-      >
-        {importResult && (
-          <div style={{ display: 'grid', gap: 12 }}>
-            <div style={{ display: 'flex', gap: 16 }}>
-              <span className="chip chip-primary">成功 {importResult.created_count} 条</span>
-              {importResult.updated_count ? (
-                <span className="chip chip-primary">更新 {importResult.updated_count} 条</span>
-              ) : null}
-              <span className="chip chip-warning">
-                跳过/失败 {importResult.skipped_count + (importResult.failed?.length ?? 0)} 条
-              </span>
-            </div>
-            {importResult.failed?.length > 0 && (
-              <div style={{ maxHeight: 260, overflow: 'auto' }}>
-                {importResult.failed.map((row, index) => (
-                  <div key={index} style={{ marginBottom: 6 }}>
-                    <Tag color="red" style={{ marginRight: 8 }}>
-                      {row.name}
-                    </Tag>
-                    {row.reason}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-      </Modal>
     </div>
   )
 }

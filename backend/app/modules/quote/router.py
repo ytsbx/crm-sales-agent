@@ -18,6 +18,7 @@ from app.core.draft_visibility import draft_scope
 from app.core.errors import AppError, ErrorCode
 from app.core.money import line_amount
 from app.core.response import ok, page_data, paginate
+from app.core.trade_mode import reject_foreign_currency
 from app.modules.customer import service as customer_service
 from app.modules.customer.model import Customer
 from app.modules.opportunity.model import Opportunity
@@ -1579,7 +1580,7 @@ async def submit_approval(
         event_key=f"quote:submit:{version.id}:{instance.id if instance else 'auto'}",
     )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     if required and instance is not None and (instance.summary or {}).get("auto_passed"):
         rule_name = (instance.summary or {}).get("rule_trace", {}).get("rule_name")
         message = f"命中免审规则「{rule_name}」，报价已自动通过"
@@ -1659,7 +1660,7 @@ async def mark_sent(
     changed = await lifecycle.mark_version_sent(session, quote=quote, version=version,
                                                 operator_id=user.id, payload=payload, ip=client_ip(request))
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(svc.serialize_version(version), "已标记为已发送" if changed else "该次发送已记录")
 
 
@@ -1705,7 +1706,7 @@ async def accept_quote(
     await lifecycle.accept_version(session, quote=quote, version=version,
                                    operator_id=user.id, ip=client_ip(request))
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(svc.serialize_version(version), "客户已接受，可以转订单了")
 
 
@@ -1722,7 +1723,7 @@ async def reject_quote(
     await lifecycle.decline_version(session, quote=quote, version=version,
                                     operator_id=user.id, reason=payload.reason, ip=client_ip(request))
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(svc.serialize_version(version), "已记录客户拒绝")
 
 
@@ -1734,6 +1735,7 @@ async def download_pdf(
 ):
     """生成并下载报价单 PDF。数据全部取快照，不回查当前价格。"""
     version = await svc.get_visible_version(session, user, version_id)
+    reject_foreign_currency(version.currency, label="该报价单")
     if version.approval_status != "approved":
         raise AppError(
             ErrorCode.APPROVAL_PENDING,

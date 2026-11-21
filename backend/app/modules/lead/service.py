@@ -133,7 +133,9 @@ async def get_visible_lead(session: AsyncSession, user, lead_id: int) -> Lead:
     return lead
 
 
-async def lock_lead(session: AsyncSession, user, lead_id: int) -> Lead:
+async def lock_lead(
+    session: AsyncSession, user, lead_id: int, *, include_deleted: bool = False
+) -> Lead:
     """取线索**行锁** + 校验可见性（转化等"先判状态、再写一堆东西"的场景第一步）。
 
     为什么必须先锁：转化是「先看这条线索转过没有 → 没有就建客户/联系人/商机 →
@@ -145,13 +147,11 @@ async def lock_lead(session: AsyncSession, user, lead_id: int) -> Lead:
     会话里先读过这条线索，少了它拿回来的就是内存里的旧值（`status` 还是转化前的），
     行锁等于白加。写法与 `claim_lead` 完全一致 —— 锁线索只有这一处出口。
     """
+    stmt = select(Lead).where(Lead.id == lead_id)
+    if not include_deleted:
+        stmt = stmt.where(Lead.deleted_at.is_(None))
     row = (
-        await session.execute(
-            select(Lead)
-            .where(Lead.id == lead_id, Lead.deleted_at.is_(None))
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
+        await session.execute(stmt.with_for_update().execution_options(populate_existing=True))
     ).scalars().first()
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, "线索不存在", 404)

@@ -4,7 +4,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { Banner, Button, Input, Toast } from '@douyinfe/semi-ui'
 import { updatePersonalAccount } from '../../shared/api/auth'
 import { loginUrl } from '../../shared/safe-url'
-import { useAuthStore } from '../../shared/store/auth'
+import { currentAuthEpoch, useAuthStore } from '../../shared/store/auth'
 import { useTabsStore } from '../../shared/store/tabs'
 import FormLabel from '../../shared/components/FormLabel'
 
@@ -17,8 +17,13 @@ export default function PersonalAccountPanel() {
   const [password, setPassword] = useState('')
   const [confirmation, setConfirmation] = useState('')
   const mutation = useMutation({
-    mutationFn: updatePersonalAccount,
-    onSuccess: (result) => {
+    mutationFn: async (payload: Parameters<typeof updatePersonalAccount>[0]) => {
+      const sentAt = currentAuthEpoch()
+      const result = await updatePersonalAccount(payload)
+      return { result, sentAt }
+    },
+    onSuccess: ({ result, sentAt }) => {
+      if (sentAt !== currentAuthEpoch()) return
       setCurrentPassword('')
       setPassword('')
       setConfirmation('')

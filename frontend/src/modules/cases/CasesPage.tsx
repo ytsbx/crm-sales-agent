@@ -36,9 +36,10 @@ import {
 import { listQuotes } from '../../shared/api/quote'
 import { listOrders } from '../../shared/api/order'
 import { listSamples } from '../../shared/api/sample'
-import { listCustomers } from '../../shared/api/customer'
+import { getCustomer, listCustomers } from '../../shared/api/customer'
 import { getCustomerTimeline } from '../../shared/api/followup'
-import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
+import { optionMatcher } from '../../shared/components/optionMatch'
+import RecordSearchSelect from '../../shared/components/RecordSearchSelect'
 
 const EMPTY_FILTERS = {
   keyword: '',
@@ -142,11 +143,6 @@ export default function CasesPage() {
     queryFn: () =>
       listCases({ ...filters, page, page_size: pageSize, include_history: includeHistory }),
   })
-  const customersQuery = useQuery({
-    queryKey: ['case-customers'],
-    queryFn: () => listCustomers({ page: 1, page_size: 200 }),
-  })
-
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ['cases'] })
   }
@@ -194,21 +190,34 @@ export default function CasesPage() {
     }
   }
 
-  // 证据单据（§3.7）：选了客户才去拉这个客户的报价/订单/打样
+  // 证据单据（§3.7）：选了客户才去拉这个客户的报价/订单/打样。
+  // 同一客户下单据可能超过一页，循环取全，避免第 101 条以后选不到。
   const evidenceCustomerId = editVisible ? form.customer_id : undefined
+  const fetchAll = async <T extends { id: number }>(
+    load: (page: number) => Promise<{ items: T[]; total: number; page: number; page_size: number }>,
+  ) => {
+    const first = await load(1)
+    const all = [...first.items]
+    for (let page = 2; all.length < first.total; page += 1) {
+      const next = await load(page)
+      if (!next.items.length) break
+      all.push(...next.items)
+    }
+    return { ...first, items: all }
+  }
   const quotesQuery = useQuery({
     queryKey: ['case-quotes', evidenceCustomerId],
-    queryFn: () => listQuotes({ customer_id: evidenceCustomerId, page_size: 100 }),
+    queryFn: () => fetchAll((page) => listQuotes({ customer_id: evidenceCustomerId, page, page_size: 100 })),
     enabled: Boolean(evidenceCustomerId),
   })
   const ordersQuery = useQuery({
     queryKey: ['case-orders', evidenceCustomerId],
-    queryFn: () => listOrders({ customer_id: evidenceCustomerId, page_size: 100 }),
+    queryFn: () => fetchAll((page) => listOrders({ customer_id: evidenceCustomerId, page, page_size: 100 })),
     enabled: Boolean(evidenceCustomerId),
   })
   const samplesQuery = useQuery({
     queryKey: ['case-samples', evidenceCustomerId],
-    queryFn: () => listSamples({ customer_id: evidenceCustomerId, page_size: 100 }),
+    queryFn: () => fetchAll((page) => listSamples({ customer_id: evidenceCustomerId, page, page_size: 100 })),
     enabled: Boolean(evidenceCustomerId),
   })
   // 表单里那份时间线（「从时间线挑」用）：跟着表单选的客户走
@@ -800,27 +809,26 @@ export default function CasesPage() {
           </div>
           <div>
             <FormLabel hint="看案例的人可按权限跳转过去">关联客户</FormLabel>
-            <Select
-              style={{ width: '100%' }}
-              placeholder="选择客户"
-              filter={optionMatcher}
-              showClear
+            <RecordSearchSelect
+              key={`case-customer-${editVisible}`}
+              scope="case-customer"
+              enabled={editVisible}
+              placeholder="按客户名称或编号搜索"
               value={form.customer_id}
-              onChange={(v) =>
+              list={listCustomers}
+              lookup={getCustomer}
+              labelOf={(customer) => customer.name}
+              onChange={(customer) =>
                 setForm({
                   ...form,
-                  customer_id: v as number | undefined,
+                  customer_id: customer?.id,
                   // 换客户时清掉旧证据，避免挂到别的客户的单据上
                   quote_id: undefined,
                   order_id: undefined,
                   sample_id: undefined,
                 })
               }
-              optionList={optionsWithCodeOnDuplicate(
-                customersQuery.data?.items ?? [],
-                (c) => c.name,
-                (c) => c.id,
-              )}
+              style={{ width: '100%' }}
             />
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))', gap: 10 }}>

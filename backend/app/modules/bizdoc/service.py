@@ -1355,7 +1355,7 @@ async def _persist(
     为什么闸门放在 `_persist` 而不是各入口：三个入口（打样/订单/报价）
     加订单草稿路径都走这里，漏一个就等于漏一条合法的"印出模板语法"的路。
     """
-    from app.modules.settings import numbering
+    from app.modules.settings import numbering, service as settings_service
 
     rule_code = {
         "sample_request": "sample_doc",
@@ -1441,6 +1441,7 @@ async def _persist(
     # 本该 422 的请求变成 200）。两者必须是**独立**的信号。
     as_draft = bool(unresolved) or bool(draft_reason)
     snapshot = _snapshot_for_storage(built, body, template)
+    snapshot["company_name"] = await settings_service.get_text(session, "company_name", "text", "")
     if draft_reason:
         # 为什么是草稿，跟着文件一起存下来（页面上要能解释，事后也查得到）
         snapshot["draft_reason"] = draft_reason
@@ -1945,8 +1946,11 @@ async def doc_pdf_data(
     }
     frozen = snapshot.get("frozen") or {}
     header = frozen.get("header") or {}
+    company_name = snapshot.get("company_name")
+    if "company_name" not in snapshot:
+        company_name = await settings_service.get_text(session, "company_name", "text", "")
     return {
-        "company_name": await settings_service.get_text(session, "company_name", "text", ""),
+        "company_name": company_name,
         "title": doc.title,
         "doc_no": doc.doc_no,
         "version": doc.version,

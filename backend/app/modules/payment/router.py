@@ -1180,7 +1180,7 @@ async def confirm_payment(
     # 那时再取属性可能触发额外的同步 IO（异步会话里会报 MissingGreenlet）。
     serialized = await svc.serialize_payment(session, record)
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(serialized, "财务已确认回款")
 
 

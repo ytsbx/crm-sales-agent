@@ -18,8 +18,31 @@ from app.modules.customer.model import (
     Customer,
     CustomerDuplicateCase,
 )
+from app.modules.user.model import ROLE_ACTIVE, Role, user_roles
 
 DECISIONS = tuple(DECISION_LABEL)
+IMPORTED_ADMIN_OWNER_MESSAGE = (
+    "新导入的客户目前由管理员负责。请选「指定同一位负责人」，未完成待办会随档案转交。"
+)
+
+
+def _imported_owner_needing_selection(
+    case: CustomerDuplicateCase, imported_owner: int | None, existing_owner: int | None
+) -> int | None:
+    if case.source == "import" and existing_owner is not None and imported_owner != existing_owner:
+        return imported_owner
+    return None
+
+
+async def _admin_owner_ids(session: AsyncSession, owner_ids: set[int]) -> set[int]:
+    if not owner_ids:
+        return set()
+    stmt = (
+        select(user_roles.c.user_id)
+        .join(Role, Role.id == user_roles.c.role_id)
+        .where(user_roles.c.user_id.in_(owner_ids), Role.code == "admin", Role.status == ROLE_ACTIVE)
+    )
+    return set((await session.execute(stmt)).scalars().all())
 
 
 async def is_disputed(session: AsyncSession, customer_id: int) -> bool:
@@ -221,13 +244,30 @@ async def list_cases(
         ).scalars().all()
     )
     ids = {c.customer_id for c in cases} | {c.candidate_id for c in cases}
-    names = {
-        row.id: row.name
+    customers = {
+        row.id: row
         for row in (
             await session.execute(select(Customer).where(Customer.id.in_(ids)))
         ).scalars().all()
     } if ids else {}
-    return [serialize_case(case, names) for case in cases], int(total)
+    names = {cid: customer.name for cid, customer in customers.items()}
+    owners_to_check = {
+        case.id: _imported_owner_needing_selection(
+            case, customers[case.customer_id].owner_id, customers[case.candidate_id].owner_id
+        )
+        for case in cases
+        if case.status == "pending" and case.customer_id in customers and case.candidate_id in customers
+    }
+    admins = await _admin_owner_ids(session, {uid for uid in owners_to_check.values() if uid is not None})
+    return [
+        {
+            **serialize_case(case, names),
+            "assign_existing_blocked_reason": (
+                IMPORTED_ADMIN_OWNER_MESSAGE if owners_to_check.get(case.id) in admins else None
+            ),
+        }
+        for case in cases
+    ], int(total)
 
 
 async def resolve_case(
@@ -303,6 +343,11 @@ async def resolve_case(
                 raise AppError(
                     ErrorCode.PARAM_ERROR, "已有客户没有负责人，无法按它归属", 422
                 )
+            imported_owner = _imported_owner_needing_selection(
+                case, locked_customers[case.customer_id].owner_id, target.owner_id
+            )
+            if imported_owner is not None and await _admin_owner_ids(session, {imported_owner}):
+                raise AppError(ErrorCode.PARAM_ERROR, IMPORTED_ADMIN_OWNER_MESSAGE, 422)
             owner_id = target.owner_id
         elif owner_id is None:
             raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "裁定归属必须指定负责人", 422)

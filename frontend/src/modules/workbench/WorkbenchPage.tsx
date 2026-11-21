@@ -497,7 +497,7 @@ export default function WorkbenchPage() {
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 14 }}>
             {/* 标题原本是「全链路销售转化漏斗」，但画的是**存量分布** ——
                 叫"转化漏斗"会让人以为每档是转化来的（2026-10-14 审查修）。
-                要看累计转化率请去分析页（那边用 `reached_count`）。 */}
+                要看曾到达各阶段的商机数，可以去分析页。 */}
             <span className="card-title">各阶段在谈商机分布</span>
             <Link to="/analytics" style={{ fontSize: 12, color: 'var(--crm-primary)' }}>
               查看分析
@@ -505,16 +505,7 @@ export default function WorkbenchPage() {
           </div>
           <div style={{ display: 'grid', gap: 14 }}>
             {funnel.map((row, index) => {
-              // ⚠️ 这里原来是「转化 {rate}%」，用**相邻两档存量相除**算出来的
-              // （2026-10-14 审查修）。但 `/opportunities/funnel` 是
-              // `status == "open"` 的**当前阶段存量分布**，不是"到达过该阶段"的
-              // 累计量 —— 存量之比没有转化含义，后一档比前一档多时会显示
-              // 「转化 267%」这种不可能的数。真正的累计口径后端另有
-              // `stage_conversion[].reached_count` + `conversion_from_previous`
-              // （分析页就是这么画的，charts/options.ts 的注释也写明
-              // "存量分布用漏斗画会误导"）。
-              // 这里只改**口径与文案**（不动数据源）：报「占在谈 X%」，与"存量分布"
-              // 这个事实一致，也不会出现大于 100% 的数。
+              // 阶段现存数量占当前全部在谈商机的比例。
               const rate = funnelTotal > 0 ? Math.round((row.count / funnelTotal) * 100) : null
               return (
                 <div key={row.stage_id}>

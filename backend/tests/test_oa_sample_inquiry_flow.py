@@ -125,7 +125,7 @@ async def test_shipped_oa_sample_revision_requires_its_own_approval(monkeypatch)
         assert revised["made_at"] is None and revised["shipments"] == []
         assert raw.get(SampleRequest, 1).source_context == original_context
         assert raw.query(SampleShipment).one().tracking_no == "OLD-001"
-        with pytest.raises(AppError, match="已被新修订版"):
+        with pytest.raises(AppError, match="原版记录已锁定"):
             await sample_router.revise_sample(1, request, user=actor, session=session)
         with pytest.raises(AppError, match="尚未通过"):
             await require_sample_approved(session, child)

@@ -42,7 +42,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import write_audit
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
-from app.core.draft_visibility import draft_scope
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
 from app.core.timebase import business_day_start, to_business, today_business
@@ -166,8 +165,8 @@ async def create_sample_from_source(payload: SampleFromSource, request: Request,
     from app.modules.sample import sources
     sample, replayed = await sources.create_from_source(session, user, payload, ip=client_ip(request))
     await session.commit()
-    await notification_service.dispatch_pending(session)
-    result = await svc.detail(session, sample)
+    await notification_service.dispatch_after_commit(session)
+    result = await svc.detail(session, sample, user)
     return ok({**result, 'replayed': replayed}, '此前已创建该打样申请' if replayed else '打样申请已创建')
 
 
@@ -218,15 +217,15 @@ async def list_samples(
         # 默认只列**当前版本**：开过修订版的单子（§3.3）否则会在列表里出现两份，
         # 看着像重复造单。历史版本仍可按 id 打开、也可显式传 include_history=true 列出——
         # "历史版本可核对"这条要求不受影响。
-        stmt = stmt.where(
-            SampleRequest.id.not_in(
-                select(SampleRequest.parent_id).where(SampleRequest.parent_id.is_not(None), draft_scope(SampleRequest, user.id))
-            )
+        visible_parent_ids = await svc.apply_data_scope(
+            select(SampleRequest.parent_id).where(SampleRequest.parent_id.is_not(None)),
+            user, session,
         )
+        stmt = stmt.where(SampleRequest.id.not_in(visible_parent_ids))
     stmt = await svc.apply_data_scope(stmt, user, session)
     rows, total = await paginate(session, stmt.order_by(SampleRequest.id.desc()), page, page_size)
 
-    return ok(page_data(await svc.list_payload(session, rows), total, page, page_size))
+    return ok(page_data(await svc.list_payload(session, rows, user), total, page, page_size))
 
 
 @router.delete("/samples/{sample_id}")
@@ -254,7 +253,7 @@ async def delete_sample(
             "仅未提交审批的草稿，或已拒绝、已撤回且未制作和寄送的申请可以删除",
             400,
         )
-    before = await svc.detail(session, sample)
+    before = await svc.detail(session, sample, user)
     sample.deleted_at = datetime.now(UTC)
     await write_audit(
         session,
@@ -287,7 +286,7 @@ async def restore_sample(
     )
     if sample.deleted_at is None:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "这张单没有被删除，不需要恢复", 400)
-    before = await svc.detail(session, sample)
+    before = await svc.detail(session, sample, user)
     sample.deleted_at = None
     await write_audit(
         session,
@@ -377,7 +376,7 @@ async def create_sample(
         action="create",
         business_type="sample",
         business_id=sample.id,
-        after=await svc.detail(session, sample),
+        after=await svc.detail(session, sample, user),
         ip=client_ip(request),
     )
     if not payload.use_dingtalk:
@@ -397,8 +396,8 @@ async def create_sample(
             event_key=f"sample:create:{sample.id}",
         )
     await session.commit()
-    await notification_service.dispatch_pending(session)
-    return ok(await svc.detail(session, sample), "样品申请已创建")
+    await notification_service.dispatch_after_commit(session)
+    return ok(await svc.detail(session, sample, user), "样品申请已创建")
 
 
 @router.get("/samples/{sample_id}")
@@ -408,7 +407,7 @@ async def get_sample(
     session: AsyncSession = Depends(get_db),
 ):
     sample = await svc.get_visible_or_404(session, user, sample_id)
-    return ok(await svc.detail(session, sample))
+    return ok(await svc.detail(session, sample, user))
 
 
 @router.get("/samples/{sample_id}/application-form")
@@ -479,7 +478,7 @@ async def update_sample(
     sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
     from app.modules.sample.dingtalk import ensure_editable
     ensure_editable(sample)
-    before = await svc.detail(session, sample)
+    before = await svc.detail(session, sample, user)
     data = payload.model_dump(exclude_unset=True)
     # ---- 落库前校验关联完整性（审查 C3-02）----
     #
@@ -534,7 +533,7 @@ async def update_sample(
         if field in data:
             setattr(sample, field, data[field])
     await session.flush()
-    after = await svc.detail(session, sample)
+    after = await svc.detail(session, sample, user)
     changed = [field for field in data if before.get(field) != after.get(field)]
     if not changed:
         return ok(after, "打样资料没有变化")
@@ -555,7 +554,7 @@ async def update_sample(
         _reopen(sample)
         reopened = True
         await session.flush()
-        after = await svc.detail(session, sample)
+        after = await svc.detail(session, sample, user)
 
     await write_audit(
         session,
@@ -588,12 +587,12 @@ async def update_sample(
             opportunity_id=sample.opportunity_id, exclude_user_id=user.id, event_key=f"sample:update:{sample.id}:{uuid4().hex}",
         )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     if reopened:
         message = "已重新提交，需重新审批" if was_rejected else "已退回待审批，需重新审批"
     else:
         message = "已保存"
-    return ok(await svc.detail(session, sample), message)
+    return ok(await svc.detail(session, sample, user), message)
 
 
 @router.post("/samples/{sample_id}/approve")
@@ -622,7 +621,7 @@ async def approve_sample(
     )
     await session.flush()
 
-    after = await svc.detail(session, sample)
+    after = await svc.detail(session, sample, user)
     await write_audit(
         session,
         operator_id=user.id,
@@ -639,7 +638,7 @@ async def approve_sample(
         opportunity_id=sample.opportunity_id, exclude_user_id=user.id, event_key=f"sample:approve:{sample.id}:r{sample.review_round}",
     )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(after, "样品已批准" if payload.approved else "样品已拒绝")
 
 
@@ -674,18 +673,18 @@ async def resubmit_sample(
         # 只有**带了同一个键**才认幂等——不带键（或换了一把键）时行为完全不变，
         # 下面 ensure_transition 照旧拦住"待审批的单子又来重提"。
         # 用状态本身当幂等信号是错的，那会把这条既有口径悄悄改掉。
-        return ok(await svc.detail(session, sample), "已重新提交，等待审批")
+        return ok(await svc.detail(session, sample, user), "已重新提交，等待审批")
     # 状态规则的唯一出处是 SAMPLE_TRANSITIONS，这里不另写一套判断。
     # 非"已驳回"的单子调到这儿会被它拦住（待审批/已批准不支持这个动作）。
     svc.ensure_transition(sample.status, "pending")
-    before = await svc.detail(session, sample)
+    before = await svc.detail(session, sample, user)
 
     # 走 _reopen：轮次自增与状态回流是同一件事，别在这里再写一遍
     _reopen(sample)
     # _reopen 会把键清空（新的一轮），这里再登记本次提交的键
     sample.review_request_key = request_key
     await session.flush()
-    after = await svc.detail(session, sample)
+    after = await svc.detail(session, sample, user)
 
     await write_audit(
         session,
@@ -706,7 +705,7 @@ async def resubmit_sample(
         event_key=f"sample:resubmit:{sample.id}:r{sample.review_round}",
     )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(after, "已重新提交，等待审批")
 
 
@@ -807,7 +806,7 @@ async def revise_sample(
             )
         )
     await session.flush()
-    after = await svc.detail(session, child)
+    after = await svc.detail(session, child, user)
 
     await write_audit(
         session,
@@ -831,7 +830,7 @@ async def revise_sample(
             event_key=f"sample:revise:{parent.id}:v{child.version}",
         )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(after, f"已开第 {child.version} 版（原版冻结保留，等审批）")
 
 
@@ -867,7 +866,7 @@ async def ship_sample(
     await svc.record_opportunity_touch(session, sample, "已寄出")
     await session.flush()
 
-    after = await svc.detail(session, sample)
+    after = await svc.detail(session, sample, user)
     await write_audit(
         session,
         operator_id=user.id,
@@ -892,7 +891,7 @@ async def ship_sample(
         event_key=f"sample:ship:{sample.id}",
     )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(after, "已登记寄样")
 
 
@@ -925,7 +924,7 @@ async def sign_sample(
     await svc.record_opportunity_touch(session, sample, "客户已签收")
     await session.flush()
 
-    after = await svc.detail(session, sample)
+    after = await svc.detail(session, sample, user)
     await write_audit(
         session,
         operator_id=user.id,
@@ -942,7 +941,7 @@ async def sign_sample(
         opportunity_id=sample.opportunity_id, exclude_user_id=user.id, event_key=f"sample:sign:{sample.id}",
     )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(after, "已登记签收")
 
 
@@ -962,12 +961,12 @@ async def feedback_sample(
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "反馈内容不能为空")
 
     if sample.feedback == payload.feedback:
-        return ok(await svc.detail(session, sample), "反馈没有变化")
+        return ok(await svc.detail(session, sample, user), "反馈没有变化")
     sample.feedback = payload.feedback
     await svc.record_opportunity_touch(session, sample, "客户已反馈")
     await session.flush()
 
-    after = await svc.detail(session, sample)
+    after = await svc.detail(session, sample, user)
     await write_audit(
         session,
         operator_id=user.id,
@@ -984,7 +983,7 @@ async def feedback_sample(
         opportunity_id=sample.opportunity_id, exclude_user_id=user.id, event_key=f"sample:feedback:{sample.id}:{uuid4().hex}",
     )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(after, "反馈已登记")
 
 
@@ -1034,7 +1033,7 @@ async def register_sample_made(
     events = list(sample.made_events or [])
     if any((item or {}).get("key") == event_key for item in events):
         # 重发同一个请求（弱网下客户端重试很常见）：不重复留痕、不重复通知。
-        return ok(await svc.detail(session, sample), "制作完成记录没有变化")
+        return ok(await svc.detail(session, sample, user), "制作完成记录没有变化")
     basis_ids = [int(fid) for fid in (payload.basis_file_ids or [])]
     if basis_ids and sample.basis_files is not None:
         raise AppError(
@@ -1123,7 +1122,7 @@ async def register_sample_made(
         prefix = f"{sample.remark}\n" if sample.remark else ""
         sample.remark = f"{prefix}制作说明：{note}"
     await session.flush()
-    after = await svc.detail(session, sample)
+    after = await svc.detail(session, sample, user)
     await write_audit(
         session,
         operator_id=user.id,
@@ -1140,7 +1139,7 @@ async def register_sample_made(
         opportunity_id=sample.opportunity_id, exclude_user_id=user.id, event_key=f"sample:made:{sample.id}:{event_key}",
     )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(after, "已登记制作完成")
 
 
@@ -1207,7 +1206,7 @@ async def confirm_sample(
         )
     decision = CONFIRM_ACCEPTED if payload.accepted else CONFIRM_REJECTED
     if sample.customer_confirmed_at and sample.confirm_status == decision and sample.confirm_remark == payload.remark and (payload.confirmed_at is None or payload.confirmed_at == sample.customer_confirmed_at):
-        return ok(await svc.detail(session, sample), "客户确认记录没有变化")
+        return ok(await svc.detail(session, sample, user), "客户确认记录没有变化")
     # 客户确认不能早于签收（审查 C3-04）
     confirmed_at = (
         _parse_business_date(payload.confirmed_at) if payload.confirmed_at else datetime.now(UTC)
@@ -1225,7 +1224,7 @@ async def confirm_sample(
         session, sample, "客户已确认样品" if payload.accepted else "客户未通过样品"
     )
     await session.flush()
-    after = await svc.detail(session, sample)
+    after = await svc.detail(session, sample, user)
     await write_audit(
         session,
         operator_id=user.id,
@@ -1245,7 +1244,7 @@ async def confirm_sample(
         opportunity_id=sample.opportunity_id, exclude_user_id=user.id, event_key=f"sample:confirm:{sample.id}:{uuid4().hex}",
     )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(after, "客户确认已登记")
 
 
@@ -1328,8 +1327,8 @@ async def add_sample_item(
         opportunity_id=sample.opportunity_id, exclude_user_id=user.id, event_key=f"sample:item_create:{item.id}",
     )
     await session.commit()
-    await notification_service.dispatch_pending(session)
-    return ok(await svc.detail(session, sample), "明细已添加")
+    await notification_service.dispatch_after_commit(session)
+    return ok(await svc.detail(session, sample, user), "明细已添加")
 
 
 def _parse_business_date(value) -> datetime:
@@ -1597,7 +1596,7 @@ async def update_sample_item(
     after = svc.serialize_item(item)
     changed = [field for field in data if before.get(field) != after.get(field)]
     if not changed:
-        return ok(await svc.detail(session, sample), "车间依据没有变化")
+        return ok(await svc.detail(session, sample, user), "车间依据没有变化")
 
     # 闸门放在"确实有改动"之后：同一个值重发一次不该被判违规（它什么都没改）
     reopened = _gate_part_lock(sample)
@@ -1626,8 +1625,8 @@ async def update_sample_item(
         event_key=f"sample:item_update:{item.id}:{uuid4().hex}",
     )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(
-        await svc.detail(session, sample),
+        await svc.detail(session, sample, user),
         "已退回待审批，需重新审批" if reopened else "已保存",
     )

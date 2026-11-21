@@ -312,6 +312,7 @@ def serialize_item(item: QuoteItem, *, can_see_cost: bool = True) -> dict:
         "is_custom": item.sku_id is None,
         "specification": item.spec_snapshot,
         "quantity": _f(item.quantity),
+        "quantity_exact": format(item.quantity, "f"),
         "cost_snapshot": _f(item.cost_snapshot),
         "package_cost_snapshot": _f(item.package_cost_snapshot),
         "logistics_cost_snapshot": _f(item.logistics_cost_snapshot),

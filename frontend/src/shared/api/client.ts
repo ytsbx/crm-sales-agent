@@ -80,6 +80,22 @@ function readableMessage(raw: unknown, code: number): string {
  */
 const GENERIC_VALIDATION_MESSAGE = '参数校验失败'
 
+const MAX_ERROR_BLOB_BYTES = 64 * 1024
+
+async function readBlobError(blob: Blob, contentType: unknown): Promise<Partial<Envelope<unknown>>> {
+  const type = (blob.type || (typeof contentType === 'string' ? contentType : ''))
+    .split(';', 1)[0].trim().toLowerCase()
+  if (blob.size > MAX_ERROR_BLOB_BYTES || (type !== 'application/json' && !type.endsWith('+json'))) {
+    return {}
+  }
+  try {
+    const parsed = JSON.parse(await blob.text())
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
 /**
  * 这次 401 是否属于**当前**登录态？（第十批审查 ⑩）
  *
@@ -130,10 +146,13 @@ http.interceptors.request.use((config) => {
 
 http.interceptors.response.use(
   (response) => response,
-  (error) => {
+  async (error) => {
     const status: number | undefined = error.response?.status
-    const body = error.response?.data
-    const code: number = body?.code ?? status ?? 0
+    const data = error.response?.data
+    const body = typeof Blob !== 'undefined' && data instanceof Blob
+      ? await readBlobError(data, error.response?.headers?.['content-type'])
+      : data
+    const code = typeof body?.code === 'number' ? body.code : status ?? 0
     const baseMessage: string = readableMessage(body?.message, code)
     // 后端只回一句笼统的「参数校验失败」时，把出问题的字段名一并带上 ——
     // 只显示那句等于什么都没说。

@@ -644,7 +644,18 @@ export default function PriceCenterPage() {
   const skusQuery = useQuery({ queryKey: ['skus-for-pricing'], queryFn: listSkusForPricing })
   const lookupOppQuery = useQuery({
     queryKey: ['opportunities-for-lookup', lookupCustomerId],
-    queryFn: () => listOpportunities({ customer_id: lookupCustomerId, status: 'open', page: 1, page_size: 100 }),
+    // 同一客户下的进行中商机可能超过一页：循环取全，不能只拿前 100 条。
+    queryFn: async () => {
+      const filter = { customer_id: lookupCustomerId, status: 'open', page_size: 100 }
+      const first = await listOpportunities({ ...filter, page: 1 })
+      const all = [...first.items]
+      for (let page = 2; all.length < first.total; page += 1) {
+        const next = await listOpportunities({ ...filter, page })
+        if (!next.items.length) break
+        all.push(...next.items)
+      }
+      return { ...first, items: all }
+    },
     enabled: canManageOpportunity && lookupResult?.status === 'ok',
   })
   const customersQuery = useQuery({
@@ -981,15 +992,19 @@ export default function PriceCenterPage() {
         // 公斤单价是必填：原来 Number('' || 0) = 0，清空后保存会静默建一条 0 元/kg
         // 的费率，所有走这条线路的运费都算成 0（2026-10-14 审查修）。
         unit_price_per_kg: requiredNumberOrThrow(rateForm.unit_price_per_kg, '公斤单价'),
-        unit_price_per_volume: rateForm.unit_price_per_volume.trim()
-          ? parseOptionalNumber(rateForm.unit_price_per_volume)
-          : null,
+        unit_price_per_volume: parseOptionalNumber(rateForm.unit_price_per_volume),
         min_charge: requiredNumberOrThrow(rateForm.min_charge, '最低收费'),
-        eta_days: rateForm.eta_days.trim() ? parseOptionalNumber(rateForm.eta_days) : null,
-        eta_days_max: rateForm.eta_days_max.trim() ? parseOptionalNumber(rateForm.eta_days_max) : null,
+        eta_days: parseOptionalNumber(rateForm.eta_days),
+        eta_days_max: parseOptionalNumber(rateForm.eta_days_max),
         status: rateForm.status,
         remark: rateForm.remark.trim() || null,
       }
+      const error = invalidNumberMessage({
+        unit_price_per_volume: payload.unit_price_per_volume,
+        eta_days: payload.eta_days,
+        eta_days_max: payload.eta_days_max,
+      })
+      if (error) throw new Error(error)
       return rateEditing
         ? updateLogisticsRate(rateEditing.id, payload)
         : createLogisticsRate(payload)

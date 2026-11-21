@@ -173,26 +173,40 @@ async def test_team_summary_reports_disabled_employee_subtotal_in_scope(db_sessi
 
 
 @pytest.mark.anyio
-async def test_discard_and_restore_keep_the_lead_owner_without_recording_a_release(db_session):
+@pytest.mark.parametrize("assigned", [True, False])
+async def test_discard_and_restore_keep_the_lead_owner_without_recording_a_release(db_session, assigned):
     for model in (LeadAssignment, AuditLog):
         model.__table__.create(db_session.get_bind(), checkfirst=True)
     user = make_user(permissions=("lead:assign",))
-    lead = Lead(id=1, name="待废弃线索", owner_id=user.id, status="assigned")
-    db_session.add(lead)
+    owner_id = user.id if assigned else None
+    initial_status = "assigned" if assigned else "pending"
+    lead = Lead(id=1, name="待废弃线索", owner_id=owner_id, status=initial_status)
+    db_session.add_all([lead, User(
+        id=user.id, username="lead-recovery", name="线索经办人", password_hash="test",
+    )])
     db_session.commit()
     session = SyncSessionAsAsync(db_session)
     request = Request({"type": "http", "headers": []})
 
     await discard_lead(lead.id, LeadDiscard(reason="重复线索"), request, user, session)
     assert lead.deleted_at is not None
-    assert lead.owner_id == user.id
+    assert lead.owner_id == owner_id
     assert db_session.scalar(select(LeadAssignment)) is None
     discard_audit = db_session.scalar(select(AuditLog).where(AuditLog.action == "discard"))
-    assert discard_audit.after_data == {"reason": "重复线索", "owner_id": user.id}
+    assert discard_audit.after_data == {"reason": "重复线索", "owner_id": owner_id}
 
     restored = await restore_lead(lead.id, request, user, session)
     assert lead.deleted_at is None
-    assert restored["data"]["owner_id"] == user.id
+    assert restored["data"]["owner_id"] == owner_id
+    assert restored["data"]["status"] == initial_status
+    assert restored["data"]["invalid_reason"] is None
+    restore_audit = db_session.scalar(select(AuditLog).where(AuditLog.action == "restore"))
+    assert restore_audit.before_data["invalid_reason"] == "重复线索"
+
+    if not assigned:
+        from app.modules.lead.service import claim_lead
+        row, changed = await claim_lead(session, user, lead.id)
+        assert changed and row.owner_id == user.id and row.status == "assigned"
 
 
 @pytest.mark.anyio

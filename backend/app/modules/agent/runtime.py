@@ -38,6 +38,17 @@ PENDING_ACTION_STATUSES = ("awaiting_confirmation", "approval_required")
 ACTION_EXPIRED_MESSAGE = "该操作已过期，请重新发起（待确认操作有效期为 24 小时）"
 
 
+async def get_active_session(
+    session: AsyncSession, session_id: int, user_id: int, *, for_update: bool = False
+) -> AgentSession:
+    row = await session.get(
+        AgentSession, session_id, populate_existing=for_update, with_for_update=for_update
+    )
+    if row is None or row.deleted_at is not None or row.user_id != user_id:
+        raise AppError(ErrorCode.NOT_FOUND, "会话不存在或已删除", 404)
+    return row
+
+
 def action_expiry_cutoff() -> datetime:
     return datetime.now(UTC) - timedelta(hours=24)
 
@@ -245,12 +256,14 @@ async def run_turn_events(
     "写动作挂起等确认"的语义不受影响。
     """
     chat_id = agent_session.id
+    await get_active_session(session, chat_id, user.id, for_update=True)
     user_message = AgentMessage(session_id=chat_id, role="user", content=text)
     session.add(user_message)
     await session.commit()
     yield ("user_message", {"content": text})
 
     if not model_ready():
+        await get_active_session(session, chat_id, user.id, for_update=True)
         reply = (
             "Agent 还没有配置模型。请在 backend/.env 里填好 DEEPSEEK_API_KEY 后重试"
             "（会话、工具与风控机制已经就绪，只差模型这一环）。"
@@ -372,6 +385,8 @@ async def run_turn_events(
                 }
             )
 
+            # 每次写入前重新校验，模型回复期间允许另一请求删除会话。
+            await get_active_session(session, chat_id, user.id, for_update=True)
             for call in calls:
                 name = call["name"]
                 spec = TOOLS.get(name)
@@ -572,6 +587,7 @@ async def run_turn_events(
                     raise AppError(ErrorCode.EXTERNAL_ERROR, 'AI 未返回有效回复，请稍后重试', 502)
                 reply_text = "本轮工具结果已返回，请查看上面的记录；AI 总结暂时不可用。"
 
+        await get_active_session(session, chat_id, user.id, for_update=True)
         reply_message = AgentMessage(session_id=chat_id, role="assistant", content=reply_text)
         session.add(reply_message)
         if agent_session.title in ("", "新会话"):
@@ -602,8 +618,8 @@ async def run_turn_events(
                     # A cancelled commit may already have succeeded. Its mapped
                     # identity survives rollback; don't duplicate that reply.
                     saved = await session.get(AgentMessage, identity[0]) if identity else None
-                    chat = await session.get(AgentSession, chat_id)
-                    if saved is None and chat is not None:
+                    chat = await session.get(AgentSession, chat_id, populate_existing=True, with_for_update=True)
+                    if saved is None and chat is not None and chat.deleted_at is None:
                         session.add(AgentMessage(
                             session_id=chat_id, role="assistant",
                             content=partial + "\n\n（连接中断，以上为已生成的部分）",
@@ -904,8 +920,8 @@ async def execute_action(
     )
     await session.commit()
     if action.tool_name == "create_followup":
-        from app.modules.notification.service import dispatch_pending
-        await dispatch_pending(session)
+        from app.modules.notification.service import dispatch_after_commit
+        await dispatch_after_commit(session)
     return result
 
 

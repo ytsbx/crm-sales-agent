@@ -121,7 +121,7 @@ async def calculate(
     )
 
     options = prepared["options"]
-    if not options:
+    if not options and payload.selected_rate_id is None:
         return ok(
             {
                 **prepared,
@@ -132,7 +132,11 @@ async def calculate(
         )
 
     selected = None
-    if payload.selected_provider:
+    if payload.selected_rate_id is not None:
+        selected = next((opt for opt in options if opt["rate_id"] == payload.selected_rate_id), None)
+        if selected is None:
+            raise AppError(ErrorCode.PARAM_ERROR, "这条承运方案已不可用，请重新试算", 409)
+    elif payload.selected_provider:
         selected = next(
             (opt for opt in options if opt["provider"] == payload.selected_provider), None
         )
@@ -147,6 +151,8 @@ async def calculate(
 
     quoted_id = None
     if payload.save:
+        if payload.expected_amount is not None and Decimal(str(selected["amount"])) != payload.expected_amount:
+            raise AppError(ErrorCode.PARAM_ERROR, "这条方案的运费已变化，请重新试算后再保存", 409)
         quote = await svc.save_quote(
             session,
             user=user,

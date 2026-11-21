@@ -417,10 +417,18 @@ def test_state_copy_is_always_rerendered_and_marked(isolated_file_root):
     """§8.10：作废件的"已作废"看**状态副本**，那份不是原件，必须标明。"""
 
     async def _case(session, current_user, version, **_):
+        from app.modules.settings.model import SystemSetting
+
+        name = SystemSetting(key="company_name", value={"text": "出单时公司"})
+        session.add(name)
+        await session.flush()
         doc = await bizdoc.generate_quote_doc(
             session, quote_version_id=version.id, user=current_user
         )
         await session.commit()
+        assert doc.input_snapshot["company_name"] == "出单时公司"
+        name.value = {"text": "改名后公司"}
+        await session.flush()
         await bizdoc.void_doc(session, doc, reason="回归作废")
         await session.commit()
 
@@ -432,11 +440,13 @@ def test_state_copy_is_always_rerendered_and_marked(isolated_file_root):
         data = await bizdoc.doc_pdf_data(session, doc, copy_notice=plan.notice)
         assert data["copy_notice"] == bizdoc.STATE_COPY_NOTICE
         assert data["status_label"] == "已作废"
+        assert data["company_name"] == "出单时公司"
         # 纸面上真的印出来了吗？Excel 可以回读单元格；PDF 走"加了标记字节就不同"
         rendered = bizdoc.render_document(doc.doc_type, data)
         from openpyxl import load_workbook
 
         sheet = load_workbook(BytesIO(rendered)).active
+        assert sheet["A1"].value == "出单时公司"
         texts = [
             str(sheet.cell(row=row, column=column).value)
             for row in range(1, sheet.max_row + 1)

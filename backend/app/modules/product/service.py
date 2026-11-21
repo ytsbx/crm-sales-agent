@@ -272,17 +272,8 @@ def product_blocked_reason(product: Product | None) -> str | None:
 async def require_sku_for_new_business(session: AsyncSession, sku_id: int) -> Sku:
     """**新业务入口的完整判据**：SKU 可用 **且** 所属产品可用。
 
-    与 `require_available_sku` 的关系（第三批审查 P2，2026-10-12）：
-
-    - 后者只判 SKU 自身（`deleted_at` / `status`），是查价、报价明细、手工订单
-      一直用的口径；
-    - **产品停用/删除从来没有任何入口判过** —— 一个停用产品下的在用 SKU 照样能被
-      加进新需求，等于停用没生效。
-    - 这里在它的基础上补判产品，供"整批写入"的新业务入口（复制商机、订单复购）使用。
-
-    ⚠️ 是否把产品这一条**并入全项目统一判据**要单独决定：并进 `require_available_sku`
-    会连带拦住"历史报价再来一版 / 刷新价格"这类既有业务的续做（`build_item_snapshot`
-    也被那些路径调用），属于口径变更，不在这里顺手改。
+    新建手工订单、添加或复制商机商品、复购等入口使用此校验。
+    历史报价回看、新版和刷新使用 `require_available_sku`，沿用原业务校验。
     """
     sku = await require_available_sku(session, sku_id)
     product = await session.get(Product, sku.product_id)

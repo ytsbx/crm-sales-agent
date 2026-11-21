@@ -192,7 +192,7 @@ async def create_order(
         event_key=f"order:create:{order.id}",
     )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(
         {
             "order_id": order.id,
@@ -300,7 +300,7 @@ async def convert_to_order(
         ip=client_ip(request),
     )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok({"order_id": order.id, "order_no": order.order_no}, "已生成销售订单")
 
 
@@ -459,6 +459,17 @@ async def list_milestones(
     # 说明：同步改的就是上面这批行对象（会话是 expire_on_commit=False，
     # 提交后属性仍在内存里，值与库一致），所以下面直接序列化它们，不用再查一遍。
     today = today_business()
+    # 责任人姓名随节点一起返回：前端下拉已改成按需搜索，不能再用「前 100 个用户」
+    # 去反查姓名，否则第 101 位以后的责任人在表里显示成横杠。
+    owner_ids = {r.owner_id for r in rows if r.owner_id}
+    owner_names: dict[int, str] = {}
+    if owner_ids:
+        owner_names = {
+            uid: name
+            for uid, name in (
+                await session.execute(select(User.id, User.name).where(User.id.in_(owner_ids)))
+            ).all()
+        }
     items = [
         {
             "id": r.id,
@@ -472,6 +483,7 @@ async def list_milestones(
             ],
             # 方案 :103：责任人 / 来源证据 / 逾期原因
             "owner_id": r.owner_id,
+            "owner_name": owner_names.get(r.owner_id) if r.owner_id else None,
             "evidence": r.evidence,
             "overdue_reason": r.overdue_reason,
             "remark": r.remark,
@@ -754,7 +766,7 @@ async def confirm_schedule_change(
         ip=client_ip(request),
     )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(schedule_svc.serialize_change(row), "已确认，节点与批次计划日已重排")
 
 
@@ -1321,7 +1333,7 @@ async def ship_batch(
         ip=client_ip(request),
     )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     overview = await svc.order_shipments(session, order)
     return ok(
         {"order_status": order.status, "summary": overview["summary"]},

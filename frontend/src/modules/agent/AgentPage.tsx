@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Card, Modal, Popconfirm, Tag, Toast, Tooltip } from '@douyinfe/semi-ui'
 
 import {
@@ -8,11 +8,14 @@ import {
   createAgentSession,
   deleteAgentSession,
   getAgentSession,
+  getAgentOlderMessages,
   listAgentSessions,
   listAgentTools,
   rejectAgentAction,
   streamAgentMessage,
   type AgentActionRow,
+  type AgentMessageRow,
+  type AgentSessionRow,
   type AgentToolCall,
   type AgentTurnResult,
 } from '../../shared/api/agent'
@@ -33,7 +36,8 @@ export default function AgentPage() {
   const location = useLocation()
   const [searchParams] = useSearchParams()
   const queryClient = useQueryClient()
-  const [sessionId, setSessionId] = useState<number | null>(null)
+  const [selectedSession, setSelectedSession] = useState<Pick<AgentSessionRow, 'id' | 'context_type' | 'context_id'> | null>(null)
+  const sessionId = selectedSession?.id ?? null
   const [input, setInput] = useState('')
   const [toolsOpen, setToolsOpen] = useState(false)
   const [lastTools, setLastTools] = useState<AgentToolCall[]>([])
@@ -45,45 +49,110 @@ export default function AgentPage() {
   const [streamText, setStreamText] = useState('')
   const [streamTools, setStreamTools] = useState<AgentToolCall[]>([])
   const busyRef = useRef(false)
-  const previousLocationKey = useRef(location.key)
+  const streamAbortRef = useRef<AbortController | null>(null)
 
-  const contextType = searchParams.get('context')
-  const contextId = searchParams.get('id') ? Number(searchParams.get('id')) : undefined
+  useEffect(() => () => streamAbortRef.current?.abort(), [])
+  const routeContextType = searchParams.get('context')
+  const routeContextId = Number(searchParams.get('id')) || undefined
+  const [entry, setEntry] = useState({ key: location.key, type: routeContextType, id: routeContextId })
+  const changingEntry = entry.key !== location.key
 
   /* 从客户详情「跳到 AI」带过来的上下文（/agent?context=customer&id=270）。
      以前 URL 上有参数、页面上却什么标识都没有：用户看到的还是「宏远包装」的示例，
      根本不知道自己问的是哪个客户（2026-11-17 视觉审视 V2-05）。
      这里把来源客户读出来，顶部亮明「当前客户」，示例也换成围绕这家客户的。 */
-  const customerContextQuery = useQuery({
-    queryKey: ['customer', contextId],
-    queryFn: () => getCustomer(contextId!),
-    enabled: contextType === 'customer' && Boolean(contextId),
-  })
-  const contextCustomerName = customerContextQuery.data?.name as string | undefined
   const navigate = useNavigate()
 
-  const sessionsQuery = useQuery({ queryKey: ['agent-sessions'], queryFn: listAgentSessions })
+  // 会话列表按 id 游标加载更早的：默认最近 30 条，点「加载更早的会话」继续取。
+  const sessionsQuery = useInfiniteQuery({
+    queryKey: ['agent-sessions'],
+    initialPageParam: undefined as number | undefined,
+    queryFn: ({ pageParam }) =>
+      listAgentSessions(pageParam ? { before_id: pageParam, limit: 30 } : { limit: 30 }),
+    getNextPageParam: (last) => (last.length === 30 ? last[last.length - 1]?.id : undefined),
+  })
+  const sessions = sessionsQuery.data?.pages.flatMap((page) => page) ?? []
+
   const toolsQuery = useQuery({ queryKey: ['agent-tools'], queryFn: listAgentTools })
   const detailQuery = useQuery({
     queryKey: ['agent-session', sessionId],
     queryFn: () => getAgentSession(sessionId!),
     enabled: Boolean(sessionId),
   })
-
+  // 单会话默认只给最新 200 条；更早的按消息 id 游标往「上」补。
+  // 加载时保持当前阅读位置，不要把视口拉回顶部/底部。
+  const [olderMessages, setOlderMessages] = useState<AgentMessageRow[]>([])
+  const [olderHasMore, setOlderHasMore] = useState(false)
+  const [olderLoading, setOlderLoading] = useState(false)
+  const [olderError, setOlderError] = useState<string | null>(null)
+  const chatScrollRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    if (previousLocationKey.current === location.key) return
-    previousLocationKey.current = location.key
-    if (busyRef.current) return
-    setSessionId(null)
+    setOlderMessages([])
+    setOlderHasMore(false)
+    setOlderError(null)
+  }, [sessionId])
+  useEffect(() => {
+    if (olderMessages.length === 0 && detailQuery.data?.session.id === sessionId) {
+      setOlderHasMore(Boolean(detailQuery.data.messages_has_more))
+    }
+  }, [detailQuery.data, olderMessages.length, sessionId])
+  const loadOlderMessages = async () => {
+    if (!sessionId || olderLoading) return
+    const oldest = olderMessages[0] ?? detailQuery.data?.messages?.[0]
+    if (!oldest) return
+    const scroller = chatScrollRef.current
+    const distanceFromBottom = scroller ? scroller.scrollHeight - scroller.scrollTop : 0
+    setOlderLoading(true)
+    setOlderError(null)
+    try {
+      const page = await getAgentOlderMessages(sessionId, { before_id: oldest.id, limit: 100 })
+      setOlderMessages((current) => {
+        const known = new Set(current.map((message) => message.id))
+        return [...page.items.filter((message) => !known.has(message.id)), ...current]
+      })
+      setOlderHasMore(page.has_more)
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (scroller) scroller.scrollTop = scroller.scrollHeight - distanceFromBottom
+      }))
+    } catch (error) {
+      setOlderError(error instanceof Error ? error.message : '加载失败')
+    } finally {
+      setOlderLoading(false)
+    }
+  }
+  const activeSession = detailQuery.data?.session ?? selectedSession
+  const contextType = activeSession ? activeSession.context_type : entry.type
+  const contextId = activeSession ? activeSession.context_id : entry.id
+  const customerContextQuery = useQuery({
+    queryKey: ['customer', contextId],
+    queryFn: () => getCustomer(contextId!),
+    enabled: contextType === 'customer' && Boolean(contextId),
+  })
+  const contextCustomerName = customerContextQuery.data?.name as string | undefined
+  useEffect(() => {
+    // 正在回复时继续展示原会话。忙完后再打开新入口，期间禁止向旧会话发送。
+    if (!changingEntry || busyRef.current || streaming) return
+    setEntry({ key: location.key, type: routeContextType, id: routeContextId })
+    setSelectedSession(null)
     setInput('')
     setLastTools([])
-  }, [location.key])
+  }, [changingEntry, location.key, routeContextType, routeContextId, streaming])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [detailQuery.data?.messages.length, streamText])
 
   const runStream = async (id: number, content: string) => {
+    const controller = new AbortController()
+    streamAbortRef.current = controller
+    const aborted = new Promise<void>((resolve) => controller.signal.addEventListener('abort', () => resolve(), { once: true }))
+    const idleReason = '一段时间没有收到回复，已停止。可以重新发送问题。'
+    let idleTimer: ReturnType<typeof setTimeout> | undefined
+    const resetIdleTimer = () => {
+      clearTimeout(idleTimer)
+      idleTimer = setTimeout(() => controller.abort(idleReason), 120_000)
+    }
+    resetIdleTimer()
     busyRef.current = true
     setStreaming(true)
     setStreamText('')
@@ -92,6 +161,7 @@ export default function AgentPage() {
     let result: AgentTurnResult | null = null
     try {
       result = await streamAgentMessage(id, content, (kind, data) => {
+        resetIdleTimer()
         if (kind === 'delta') {
           textAcc += String(data.text ?? '')
           setStreamText(textAcc)
@@ -104,7 +174,7 @@ export default function AgentPage() {
         } else if (kind === 'error') {
           Toast.error(String(data.message ?? '对话失败'))
         }
-      })
+      }, controller.signal)
       if (result) {
         setLastTools(result.tool_calls)
         // 中间轮次的话不在最终回复里：气泡以权威回复收口，
@@ -114,11 +184,18 @@ export default function AgentPage() {
         Toast.error('连接中断，未拿到完整回复')
       }
     } catch (error) {
-      Toast.error((error as Error).message)
+      if (controller.signal.reason === idleReason) Toast.warning(idleReason)
+      else if (!controller.signal.aborted) Toast.error((error as Error).message)
     } finally {
+      clearTimeout(idleTimer)
       // 拉到服务端消息后再撤掉流式气泡，避免"气泡还在、正式消息也来了"的重影
-      await queryClient.invalidateQueries({ queryKey: ['agent-session', id] })
-      await queryClient.invalidateQueries({ queryKey: ['agent-sessions'] })
+      const refreshHistory = Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['agent-session', id] }),
+        queryClient.invalidateQueries({ queryKey: ['agent-sessions'] }),
+      ])
+      // 网络卡住时也需要能继续输入，停止不等历史查询返回。
+      if (!controller.signal.aborted) await Promise.race([refreshHistory, aborted])
+      streamAbortRef.current = null
       busyRef.current = false
       setStreaming(false)
       setStreamText('')
@@ -128,7 +205,7 @@ export default function AgentPage() {
 
   const handleSend = (text: string) => {
     const content = text.trim()
-    if (!content || busyRef.current) return
+    if (!content || busyRef.current || changingEntry) return
     setInput('')
     if (!sessionId) {
       busyRef.current = true
@@ -136,10 +213,10 @@ export default function AgentPage() {
       createAgentSession({
         title: content.slice(0, 20),
         context_type: contextType ?? undefined,
-        context_id: contextId,
+        context_id: contextId ?? undefined,
       })
         .then(async (created) => {
-          setSessionId(created.id)
+          setSelectedSession({ id: created.id, context_type: contextType, context_id: contextId })
           await runStream(created.id, content)
         })
         .catch((error: Error) => {
@@ -175,17 +252,28 @@ export default function AgentPage() {
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (id: number) => deleteAgentSession(id),
+    mutationFn: (id: number) => {
+      if (id === sessionId && busyRef.current) throw new Error('等这轮回复结束后再删除会话')
+      return deleteAgentSession(id)
+    },
     onSuccess: (_data, deletedId) => {
       if (sessionId === deletedId) {
-        setSessionId(null)
+        setSelectedSession(null)
+        setInput('')
         setLastTools([])
       }
+      queryClient.removeQueries({ queryKey: ['agent-session', deletedId] })
       void queryClient.invalidateQueries({ queryKey: ['agent-sessions'] })
     },
+    onError: (error: Error) => Toast.error(error.message),
   })
 
-  const messages = detailQuery.data?.messages ?? []
+  const messages = (() => {
+    const detailMessages = detailQuery.data?.messages ?? []
+    const byId = new Map<number, AgentMessageRow>()
+    for (const message of [...olderMessages, ...detailMessages]) byId.set(message.id, message)
+    return [...byId.values()].sort((a, b) => a.id - b.id)
+  })()
   const actions = detailQuery.data?.actions ?? []
   // L3（转审批）动作落库状态是 approval_required，和 L2 的 awaiting_confirmation
   // 一样都等用户表态——之前只过滤了后者，L3 的确认按钮永远出不来，链路前端断
@@ -266,10 +354,10 @@ export default function AgentPage() {
           theme="outline"
           type="primary"
           style={{ marginBottom: 12, flexShrink: 0, alignSelf: 'flex-start' }}
-          disabled={streaming}
+          disabled={streaming || changingEntry}
           onClick={() => {
             if (busyRef.current) return
-            setSessionId(null)
+            setSelectedSession(null)
             setInput('')
             setLastTools([])
           }}
@@ -278,15 +366,16 @@ export default function AgentPage() {
         </Button>
         {/* 会话列表自己滚，把卡片中间那块空间占住；列表短的时候也不至于空一片。 */}
         <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', marginBottom: 4 }}>
-        {(sessionsQuery.data ?? []).map((item) => (
+        {(sessions ?? []).map((item) => (
           <div
             key={item.id}
             onClick={() => {
-              if (busyRef.current) {
+              if (busyRef.current || changingEntry) {
                 Toast.warning('正在回复中，等这轮结束再切换会话')
                 return
               }
-              setSessionId(item.id)
+              if (item.id !== sessionId) setInput('')
+              setSelectedSession(item)
               setLastTools([])
             }}
             className="agent-session-item"
@@ -304,13 +393,34 @@ export default function AgentPage() {
             <span style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {item.title}
             </span>
-            <Popconfirm title="删除这个会话？" onConfirm={() => deleteMutation.mutate(item.id)}>
+            <Popconfirm
+              title="删除这个会话？"
+              content="聊天和待确认操作会删除，已执行的记录会保留。"
+              onConfirm={() => deleteMutation.mutate(item.id)}
+            >
               <span style={{ color: 'var(--crm-text-3)', fontSize: 12 }} onClick={(e) => e.stopPropagation()}>
                 ✕
               </span>
             </Popconfirm>
           </div>
         ))}
+        {sessionsQuery.isError && (
+          <Button size="small" theme="borderless" onClick={() => void sessionsQuery.refetch()}>
+            会话加载失败，点击重试
+          </Button>
+        )}
+        {sessionsQuery.hasNextPage && (
+          <Button
+            size="small"
+            theme="borderless"
+            loading={sessionsQuery.isFetchingNextPage}
+            onClick={() => {
+              if (!sessionsQuery.isFetching) void sessionsQuery.fetchNextPage()
+            }}
+          >
+            加载更早的会话
+          </Button>
+        )}
         </div>
         {/* 原来是一个 <details> 折叠：主人明确说过「不要这种折叠，巨丑」，
             而且 20 项能力一展开就把左栏撑得老高、把会话列表挤没。
@@ -387,9 +497,21 @@ export default function AgentPage() {
             </Button>
           </div>
         )}
-        <div className="agent-chat-scroll" style={{ flex: 1, overflow: 'auto' }}>
+        <div ref={chatScrollRef} className="agent-chat-scroll" style={{ flex: 1, overflow: 'auto' }}>
           {sessionId && detailQuery.isPending && (
             <div className="agent-empty">正在加载会话…</div>
+          )}
+          {sessionId && (olderHasMore || olderError) && (
+            <div style={{ textAlign: 'center', marginBottom: 12 }}>
+              <Button
+                size="small"
+                theme="borderless"
+                loading={olderLoading}
+                onClick={() => void loadOlderMessages()}
+              >
+                {olderError ? '加载失败，点击重试' : '加载更早的消息'}
+              </Button>
+            </div>
           )}
           {messages.length === 0 && (!sessionId || !detailQuery.isPending) && (
             <div className="agent-empty">
@@ -412,7 +534,7 @@ export default function AgentPage() {
                   }
                   return EXAMPLES
                 })().map((text) => (
-                  <button key={text} type="button" disabled={streaming} onClick={() => handleSend(text)}>
+                  <button key={text} type="button" disabled={streaming || changingEntry} onClick={() => handleSend(text)}>
                     {text}
                   </button>
                 ))}
@@ -538,14 +660,23 @@ export default function AgentPage() {
           />
           {/* 发送是这一页唯一的主操作，实心蓝；原来用描边蓝（theme="outline"），
               未填内容时几乎看不见按钮在哪（2026-11-21 巡检） */}
-          <Button type="primary"
+          {streaming && streamAbortRef.current ? (
+            <Button
+              className="agent-send"
+              theme="outline"
+              onClick={() => {
+                streamAbortRef.current?.abort()
+                Toast.info('已停止生成，已收到的内容可能稍后出现在历史里')
+              }}
+            >停止生成</Button>
+          ) : <Button type="primary"
             className="agent-send"
             loading={streaming}
-            disabled={!input.trim()}
+            disabled={!input.trim() || changingEntry}
             onClick={() => handleSend(input)}
           >
             {streaming ? '回复中…' : '发送'}
-          </Button>
+          </Button>}
           </div>
           {/* 说清楚它到底在干什么：这页最容易被误解成「能随便聊的客服机器人」。 */}
           <p className="agent-composer-hint">

@@ -4,11 +4,27 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from app.core.errors import AppError
 from app.modules.quote import pdf, router, service
 from app.modules.quote.model import QuoteCharge
 from test_batch7_cost_lifecycle import case as cost_case, build, USER, NOW
 
 case = cost_case
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("endpoint", [router.download_pdf, router.generate_pdf_alias])
+async def test_historical_non_cny_quote_cannot_generate_cny_pdf(case, monkeypatch, endpoint):
+    raw, session, _, version = case
+    version.currency = "USD"
+    version.approval_status = "approved"
+    raw.flush()
+    render = AsyncMock()
+    monkeypatch.setattr(router, "render_quote_pdf", render)
+
+    with pytest.raises(AppError, match="只支持人民币"):
+        await endpoint(version.id, USER, session)
+    render.assert_not_called()
 
 
 @pytest.mark.anyio

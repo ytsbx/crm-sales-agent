@@ -67,6 +67,20 @@ export function parseQuantity(raw: unknown): number | null {
   return decimals > 3 ? NaN : n
 }
 
+/** 校验明细数量并保留十进制文本，对齐 Numeric(16,3)。 */
+export function requiredQuantityText(raw: string, label = '数量', allowZero = false): string {
+  const text = raw.trim()
+  const decimal = /^\+?(\d*)(?:\.(\d*))?$/.exec(text)
+  if (!decimal || !(allowZero ? /\d/ : /[1-9]/).test(text)) {
+    throw new Error(`${label}必须填${allowZero ? '大于或等于' : '大于'} 0 的数字`)
+  }
+  const [, whole, fraction = ''] = decimal
+  if (whole.replace(/^0+/, '').length > 13 || fraction.replace(/0+$/, '').length > 3) {
+    throw new Error(`${label}整数最多 13 位，小数最多 3 位`)
+  }
+  return text
+}
+
 /**
  * 必填数字：空串或坏输入都**抛错并点名**（不给"静默变 0"的机会）。
  *
@@ -100,7 +114,10 @@ export const NUMBER_FIELD_LABEL: Record<string, string> = {
   processing_cost: '加工成本',
   minimum_margin: '最低利润率',
   unit_price_per_kg: '公斤单价',
+  unit_price_per_volume: '体积单价',
   min_charge: '最低收费',
+  eta_days: '最短交期',
+  eta_days_max: '最长交期',
   new_customer_target: '新客目标',
   sales_target: '销售额目标',
   repeat_customer_target: '复购目标',

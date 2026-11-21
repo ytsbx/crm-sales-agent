@@ -1,3 +1,4 @@
+import { showDownloadResult } from '../../shared/download-feedback'
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -329,7 +330,7 @@ export default function OrderDraftsPage() {
         >
           生成草稿需求单
         </GuardedButton>}
-      {(docs.data ?? []).map(doc => <p key={doc.id}>{doc.doc_no} V{doc.version} · <a onClick={() => downloadBizDoc(doc)}>下载 PDF</a></p>)}
+      {(docs.data ?? []).map(doc => <p key={doc.id}>{doc.doc_no} V{doc.version} · <a onClick={() => void showDownloadResult(downloadBizDoc(doc))}>下载 PDF</a></p>)}
     </SectionCard>
   </div>
 }

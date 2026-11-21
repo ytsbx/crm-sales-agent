@@ -1,3 +1,5 @@
+import { showDownloadResult } from '../../shared/download-feedback'
+import { requiredQuantityText } from '../../shared/number-input'
 import { IconEditStroked, IconExport, IconFile, IconMail } from '@douyinfe/semi-icons'
 import { formatMoney, formatUnitPrice } from '../../shared/components/money'
 import { skuLabel } from '../../shared/sku-label'
@@ -59,7 +61,7 @@ import {
 } from '../../shared/api/quote'
 import { listContacts } from '../../shared/api/customer'
 import { useAuthStore } from '../../shared/store/auth'
-import { listCustomInquiries } from '../../shared/api/inquiry'
+import { listCustomInquiries, type CustomInquiryRow } from '../../shared/api/inquiry'
 import { listInquiryApprovals } from '../../shared/api/dingtalk'
 import AutoOaSync from '../../shared/components/AutoOaSync'
 import { approvalProgress } from '../knowledge/approval-progress'
@@ -78,6 +80,7 @@ import PageLoading from '../../shared/components/PageLoading'
 import WhatIfPanel from './WhatIfPanel'
 import DecisionMakerCard from '../common/DecisionMakerCard'
 import { optionMatcher } from '../../shared/components/optionMatch'
+import RecordSearchSelect from '../../shared/components/RecordSearchSelect'
 import { otherOption } from '../../shared/components/otherOption'
 import {
   orderedChannels,
@@ -294,11 +297,18 @@ export default function QuoteDetailPage() {
    * 列表闪一下再换。
    */
   const quoteCustomerId = detailQuery.data?.quote?.customer_id
-  const inquiriesQuery = useQuery({
-    queryKey: ['inquiries-for-quote', quoteCustomerId],
-    queryFn: () => listCustomInquiries({ customer_id: quoteCustomerId, page: 1, page_size: 100 }),
+  // 只取本客户需求的**总数**，用于空态说明；选项本身改为按需搜索（见下方下拉），
+  // 不能再拿"第一页 100 条"充当全部。
+  const inquiriesCountQuery = useQuery({
+    queryKey: ['inquiries-for-quote-count', quoteCustomerId],
+    queryFn: () => listCustomInquiries({ customer_id: quoteCustomerId, page: 1, page_size: 1 }),
     enabled: itemsVisible && Boolean(quoteCustomerId),
   })
+  const customerHasInquiries = (inquiriesCountQuery.data?.total ?? 0) > 0
+  /** 与原来本地筛的判据一致：本报价关联过的需求，或未被取代/归档且未挂别家报价的需求。 */
+  const inquiryAccepted = (row: { linked_quotes?: { id: number }[]; is_superseded?: boolean; status?: string }) =>
+    Boolean(row.linked_quotes?.some((link) => link.id === quoteId)) ||
+    (!row.linked_quotes?.length && !row.is_superseded && row.status !== 'archived')
 
   const patchRow = (index: number, patch: Partial<ItemDraftRow>) => {
     setItemRows((rows) => rows.map((row, i) => (i === index ? { ...row, ...patch } : row)))
@@ -309,7 +319,7 @@ export default function QuoteDetailPage() {
       mode: item.is_custom ? 'custom' : 'sku',
       sku_id: item.sku_id ?? undefined,
       inquiry_id: item.inquiry_id ?? undefined,
-      quantity: String(item.quantity ?? ''),
+      quantity: item.quantity_exact ?? String(item.quantity ?? ''),
       quoted_price: item.quoted_price_exact ?? String(item.quoted_price ?? ''),
       // 定制件的成本快照就是当初人工填的核价成本，回填出来方便改
       unit_cost: item.is_custom ? String(item.cost_snapshot ?? '') : '',
@@ -323,8 +333,8 @@ export default function QuoteDetailPage() {
     mutationFn: () =>
       setQuoteVersionItems(
         version!.id,
-        itemRows.map((row) => {
-          const quantity = Number(row.quantity) || 1
+        itemRows.map((row, index) => {
+          const quantity = requiredQuantityText(row.quantity, `第 ${index + 1} 行数量`)
           const price = row.quoted_price.trim() === '' ? null : row.quoted_price.trim()
           if (row.mode === 'custom') {
             return {
@@ -567,17 +577,27 @@ export default function QuoteDetailPage() {
     // 顺序：先接主数据。它只动名称/规格/单位和版本号，不会因为查不到价而失败；
     // 放在后面的话，②一旦抛错就会把①一起回滚，用户又回到"点了没反应"。
     mutationFn: async () => {
-      const link = await linkMasterData(version!.id)
-      const price = await refreshPrices(version!.id)
-      return { link, price }
+      const id = version!.id
+      const link = await linkMasterData(id)
+      try {
+        return { id, link, price: await refreshPrices(id) }
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : '请稍后重试'
+        return { id, link, reason }
+      }
     },
-    onSuccess: ({ link, price }) => {
+    onSuccess: ({ id, link, price, reason }) => {
+      refresh()
+      void queryClient.invalidateQueries({ queryKey: ['price-drift', id] })
+      void queryClient.invalidateQueries({ queryKey: ['quote-master-preview', id] })
+      if (!price) {
+        Toast.warning({ content: `${link.message} 重新核价未完成：${reason}`, duration: 8 })
+        return
+      }
       Toast.success(link.message)
       if (price.refreshed || price.skipped) {
         Toast.info(`重新核价：${price.refreshed} 条已刷新、${price.skipped} 条未动（手工价）`)
       }
-      refresh()
-      void queryClient.invalidateQueries({ queryKey: ['price-drift', version?.id] })
     },
     onError: (error: Error) => Toast.error(error.message),
   })
@@ -1033,14 +1053,6 @@ export default function QuoteDetailPage() {
     // 下拉里带上 SKU 名称：只有 `编码 · 规格` 时，一个产品下几个 SKU 认不出区别
     label: skuLabel(sku),
   }))
-  const inquiryOptions = (inquiriesQuery.data?.items ?? [])
-    .filter((row) => row.linked_quotes?.some((link) => link.id === quoteId) ||
-      (!row.linked_quotes?.length && !row.is_superseded && row.status !== 'archived'))
-    .map((row) => ({
-      value: row.id,
-      label: `${row.inquiry_no} · ${row.title}`,
-    }))
-
   return (
     <div className="page-container">
       {/* 与客户/商机详情页同排布：标题 + 标签一行，关键信息行在标题下方左对齐 */}
@@ -1291,7 +1303,7 @@ export default function QuoteDetailPage() {
               label: '下载 PDF',
               element: (
                 <Button
-                  onClick={() => downloadQuotePdf(version.id, `${quote.quote_no}-V${version.version_no}.pdf`)}
+                  onClick={() => void showDownloadResult(downloadQuotePdf(version.id, `${quote.quote_no}-V${version.version_no}.pdf`))}
                 >
                   下载 PDF
                 </Button>
@@ -2641,20 +2653,24 @@ export default function QuoteDetailPage() {
               {row.mode === 'custom' ? (
                 <>
                   <ItemField label="定制需求">
-                  <Select
-                    style={{ width: 240 }}
-                    placeholder={inquiryOptions.length > 0 ? '选择定制需求' : '本客户暂无可选定制需求'}
-                    filter={optionMatcher}
+                  <RecordSearchSelect<CustomInquiryRow>
+                    key={`quote-inquiry-${quoteId}-${index}-${quoteCustomerId}`}
+                    scope={`quote-inquiry-${quoteCustomerId}`}
+                    enabled={itemsVisible && Boolean(quoteCustomerId)}
+                    placeholder={customerHasInquiries ? '输入需求标题或编号搜索' : '本客户暂无可选定制需求'}
                     value={row.inquiry_id}
-                    onChange={(value) => patchRow(index, { inquiry_id: value as number })}
-                    optionList={row.inquiry_id && !inquiryOptions.some((option) => option.value === row.inquiry_id)
-                      ? [{ value: row.inquiry_id, label: `原关联需求 #${row.inquiry_id}` }, ...inquiryOptions]
-                      : inquiryOptions}
+                    fallbackLabel={row.inquiry_id ? `原关联需求 #${row.inquiry_id}` : undefined}
+                    list={(input) => listCustomInquiries({ ...input, customer_id: quoteCustomerId })}
+                    labelOf={(item) => `${item.inquiry_no ?? `编号 ${item.id}`} · ${item.title}`}
+                    accept={inquiryAccepted}
+                    onChange={(item) => patchRow(index, { inquiry_id: item?.id })}
+                    style={{ width: 240 }}
                   />
                   </ItemField>
                   {/* 下拉只列**本客户**的需求（2026-10-12 主人提问核实）：空的时候要说清
-                      是"这个客户还没有需求"，而不是让用户以为系统里没数据、或者去别处找。 */}
-                  {!inquiriesQuery.isLoading && inquiryOptions.length === 0 && !row.inquiry_id && (
+                      是"这个客户还没有需求"，而不是让用户以为系统里没数据、或者去别处找。
+                      改成服务端搜索后，依据总数判断空态，不再看"第一页有没有"。 */}
+                  {!inquiriesCountQuery.isLoading && !customerHasInquiries && !row.inquiry_id && (
                     <span style={{ fontSize: 12, color: 'var(--crm-text-3)', alignSelf: 'center' }}>
                       请到「定制需求」选择客户的当前版本，或打开该需求已经关联的原报价。
                     </span>

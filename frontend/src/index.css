@@ -5833,6 +5833,304 @@ table:not(.semi-table) td.cell-right {
   white-space: nowrap;
 }
 
+.analytics-view-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  border-bottom: 1px solid var(--crm-border);
+  margin-bottom: 14px;
+}
+
+.analytics-view-nav button {
+  padding: 9px 4px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  font: inherit;
+  color: var(--crm-text-2);
+  cursor: pointer;
+}
+
+.analytics-view-nav button:hover,
+.analytics-view-nav button[aria-current="page"] {
+  color: var(--crm-primary);
+}
+
+.analytics-view-nav button[aria-current="page"] {
+  border-bottom-color: var(--crm-primary);
+  font-weight: 600;
+}
+
+.analytics-view {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+}
+
+.analytics-section {
+  min-width: 0;
+  padding: 14px 0 0;
+  border-top: 1px solid var(--crm-border);
+}
+
+.analytics-section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-bottom: 12px;
+}
+
+.analytics-section-heading h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.analytics-section-heading p { margin: 4px 0 0; }
+
+.analytics-sales-breakdown {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 20px 32px;
+}
+
+.analytics-stage-chart {
+  --stage-accent: #16736b;
+  --stage-label-width: clamp(76px, 10vw, 108px);
+  --stage-value-width: clamp(56px, 8vw, 92px);
+  max-width: 860px;
+  margin: 14px 0 0;
+}
+
+.analytics-stage-axis {
+  padding: 0 calc(var(--stage-value-width) + 12px) 6px calc(var(--stage-label-width) + 12px);
+  color: var(--crm-text-2);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.analytics-stage-axis > div {
+  position: relative;
+  height: 16px;
+}
+
+.analytics-stage-axis span {
+  position: absolute;
+  left: 0;
+  transform: translateX(-50%);
+}
+
+.analytics-stage-axis span:nth-child(2) { left: 25%; }
+.analytics-stage-axis span:nth-child(3) { left: 50%; }
+.analytics-stage-axis span:nth-child(4) { left: 75%; }
+.analytics-stage-axis span:nth-child(5) { left: 100%; }
+
+.analytics-stage-chart dl { margin: 0; }
+
+.analytics-stage-chart dl > div {
+  display: grid;
+  grid-template-columns: var(--stage-label-width) minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-height: 30px;
+  font-size: 13px;
+}
+
+.analytics-stage-chart dt {
+  color: var(--crm-text-2);
+  overflow-wrap: anywhere;
+}
+
+.analytics-stage-chart dd {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--stage-value-width);
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+}
+
+.analytics-stage-chart dd strong {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.analytics-stage-plot {
+  position: relative;
+  height: 30px;
+  border-right: 1px solid var(--crm-border);
+  background-image: linear-gradient(to right, var(--crm-border) 1px, transparent 1px);
+  background-size: 25% 100%;
+}
+
+.analytics-stage-plot > span {
+  position: absolute;
+  top: 50%;
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--crm-surface);
+  border-radius: 50%;
+  background: var(--stage-accent);
+  box-shadow: 0 0 0 1px var(--stage-accent);
+  transform: translate(-50%, -50%);
+}
+
+.analytics-stage-plot > .is-zero {
+  width: 7px;
+  height: 7px;
+  border: 0;
+  background: var(--crm-surface);
+  box-shadow: 0 0 0 1px var(--crm-text-3);
+}
+
+.analytics-report-rows {
+  margin: 0;
+  font-size: 13px;
+}
+
+.analytics-report-rows > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--crm-border);
+}
+
+.analytics-report-rows dt span {
+  margin-inline-start: 8px;
+  color: var(--crm-text-2);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.analytics-report-rows dd {
+  margin: 0;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.analytics-price-notes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 12px 0 0;
+  font-size: 12px;
+  color: var(--crm-text-2);
+}
+
+.analytics-price-notes > div { display: flex; gap: 6px; }
+.analytics-price-notes dd { margin: 0; }
+
+@media (max-width: 930px) {
+  .analytics-sales-breakdown { grid-template-columns: minmax(0, 1fr); }
+}
+
+.analytics-summary,
+.analytics-page .analytics-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px 20px;
+  margin: 0 0 10px;
+}
+
+.analytics-summary dt { color: var(--crm-text-2); }
+.analytics-summary dd {
+  margin: 4px 0 0;
+  font-size: clamp(18px, 2vw, 25px);
+  line-height: 1.25;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+.analytics-page .analytics-metrics > .kpi-card {
+  padding: 0;
+  min-width: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  transform: none;
+}
+
+.analytics-page .analytics-metrics > .kpi-card::before { content: none; }
+.analytics-page .analytics-metrics .kpi-value { font-size: 22px; }
+
+.analytics-page .analytics-target-row {
+  border: 0;
+  border-bottom: 1px solid var(--crm-border);
+  border-radius: 0;
+  padding-inline: 0;
+}
+
+@media (max-width: 760px) {
+  .analytics-summary,
+  .analytics-page .analytics-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+.analytics-status-group {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px 24px;
+  padding: 10px 0;
+}
+
+.analytics-status-group + .analytics-status-group {
+  border-top: 1px solid var(--crm-border);
+}
+
+.analytics-status-group h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.analytics-status-group p {
+  margin: 3px 0 0;
+  color: var(--crm-text-2);
+  font-size: 12px;
+}
+
+.analytics-status-group dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 22px;
+  margin: 0;
+}
+
+.analytics-status-group dl > div {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.analytics-status-group dt,
+.analytics-status-group dd span {
+  color: var(--crm-text-2);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.analytics-status-group dd {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.analytics-status-group .is-empty dd {
+  color: var(--crm-text-2);
+  font-weight: 400;
+}
+
+@media (max-width: 600px) {
+  .analytics-status-group { grid-template-columns: minmax(0, 1fr); }
+}
+
 .analytics-basis-notes {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -5855,21 +6153,75 @@ table:not(.semi-table) td.cell-right {
   color: var(--crm-text-2);
 }
 
-.analytics-report-link {
-  display: inline-block;
-  padding: 7px 12px;
-  border-radius: var(--crm-radius-sm);
-  background: var(--crm-surface);
-  border: 1px solid var(--crm-border);
-  color: var(--crm-primary);
-  font-size: 13px;
-  white-space: nowrap;
-}
-
-.analytics-header-links {
+.analytics-target-toolbar,
+.analytics-target-row-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
+}
+
+.analytics-target-toolbar {
+  margin: 12px 0 16px;
+}
+
+.analytics-target-list {
+  display: grid;
+  gap: 10px;
+}
+
+.analytics-target-row {
+  display: grid;
+  grid-template-columns: minmax(105px, .9fr) repeat(3, minmax(0, 1fr)) auto;
+  align-items: center;
+  gap: 12px 20px;
+  padding: 14px 16px;
+  border: 1px solid var(--crm-border);
+  border-radius: var(--crm-radius-sm);
+}
+
+.analytics-target-person,
+.analytics-target-progress {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.analytics-target-progress > strong {
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.analytics-target-person > span,
+.analytics-target-progress > span,
+.analytics-target-progress > small {
+  color: var(--crm-text-2);
+  font-size: 12px;
+}
+
+@media (max-width: 1000px) {
+  .analytics-target-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .analytics-target-person,
+  .analytics-target-row-actions {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 550px) {
+  .analytics-target-row {
+    grid-template-columns: 1fr;
+  }
+  .analytics-target-progress {
+    grid-template-columns: minmax(0, 1fr) auto;
+    border-top: 1px solid var(--crm-border);
+    padding-top: 8px;
+  }
+  .analytics-target-progress > small {
+    grid-column: 1 / -1;
+  }
 }
 
 .analytics-report-picker {
@@ -7976,28 +8328,44 @@ table:not(.semi-table) td.cell-right {
 }
 
 .crm-help-tip {
+  /* 原来是一圈灰描边 + 灰问号，跟正文一个色号，既像脏点又看不出能点。
+     改成蓝系：浅蓝底、蓝问号 —— 「有说明、可以点」一眼能认。 */
   display: inline-grid;
   place-items: center;
   flex: none;
-  width: 16px;
-  height: 16px;
+  width: 15px;
+  height: 15px;
   padding: 0;
-  border: 1px solid currentColor;
+  border: 1px solid var(--crm-border);
   border-radius: 50%;
   background: transparent;
   color: var(--crm-text-3);
   font-family: inherit;
-  font-weight: 600;
+  font-weight: 700;
   font-size: 11px;
   line-height: 1;
   cursor: help;
+  transition:
+    background var(--crm-dur-fast) var(--crm-ease),
+    color var(--crm-dur-fast) var(--crm-ease);
+}
+
+/* 两级区分：指标口径（metric）用实心蓝，表单/字段说明用浅蓝描边。
+   同一页里两者并存时，读者一眼能分出「这个数怎么算的」和「这一栏怎么填」。 */
+.crm-help-tip--metric {
+  width: 16px;
+  height: 16px;
+  background: transparent;
+  border-color: var(--crm-primary);
+  color: var(--crm-primary);
 }
 
 .crm-help-tip:hover,
 .crm-help-tip:focus-visible,
 .crm-help-tip[aria-expanded="true"] {
+  background: var(--crm-primary-soft);
+  border-color: var(--crm-primary);
   color: var(--crm-primary);
-  background: var(--crm-surface-low);
 }
 
 .crm-help-tip:focus-visible {

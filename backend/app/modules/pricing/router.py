@@ -1534,8 +1534,9 @@ async def simulate_pricing(
     # 显式传成交价（`candidates`）的那条路**保留**：那是"我想报这个价，
     # 帮我看看赚不赚、要不要审批"的正当用法，且用户本来就知道自己传了什么。
     margin_derived = bool(payload.margins) and not candidates
-    blocked_margin_simulation = margin_derived and not user.has("price:manage")
-    if margin_derived and user.has("price:manage"):
+    can_simulate_margin = user.has("price:manage") and baseline["cost"]["cost_complete"]
+    blocked_margin_simulation = margin_derived and not can_simulate_margin
+    if margin_derived and can_simulate_margin:
         cost = Decimal(str(baseline["cost_in_quote_currency"] or 0))
         for margin in payload.margins:
             if margin is None or margin <= 0 or margin >= 1:
@@ -1550,8 +1551,9 @@ async def simulate_pricing(
         # 明确回"算不了 + 为什么"，而不是给一个空列表让人猜（主人反复提过的口径：
         # 点不了 / 出不来结果都必须说明原因）。
         blocked_reason = (
-            "按利润率反推候选价需要成本，只有价格管理员能用；"
-            "你仍可以直接传想报的成交价（candidates），系统会算出它赚不赚、要不要审批"
+            "按利润率反推候选价需要完整的生效成本，请先补齐成本。"
+            if user.has("price:manage")
+            else "按利润率反推候选价仅价格管理员可用，可直接输入想试算的报价。"
         )
     _sanitize_pricing_result(baseline, user)
     if not candidates and not blocked_margin_simulation:

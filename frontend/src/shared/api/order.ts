@@ -423,6 +423,8 @@ export interface OrderMilestoneRow {
   skipped_at?: string | null
   // 方案 :103 要求节点记录责任人、来源证据、逾期原因
   owner_id?: number | null
+  /** 责任人姓名（后端随节点返回，避免前端再用"前 100 个用户"反查） */
+  owner_name?: string | null
   evidence?: string | null
   overdue_reason?: string | null
   remark?: string | null
@@ -538,7 +540,7 @@ export function shipOrderShipment(
     logistics_company?: string | null
     tracking_no?: string | null
     remark?: string | null
-    items?: Array<{ order_item_id: number; shipped_qty: number }> | null
+    items?: Array<{ order_item_id: number; shipped_qty: number | string }> | null
   },
 ) {
   return api.post<{ order_status: string; summary: ShipmentOverview['summary'] }>(

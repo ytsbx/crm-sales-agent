@@ -1,14 +1,13 @@
 import { useState, type ReactNode } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Banner, Button, Input, Modal, Select, Table, Toast } from '@douyinfe/semi-ui'
 
 import { parseOptionalDecimal, parseOptionalNumber } from '../../shared/number-input'
+import { formatBeijingDate } from '../../shared/beijing-time'
 import { formatMoney, formatWholeCny, toTwoDecimals } from '../../shared/components/money'
 import PageHeader from '../../shared/components/PageHeader'
 import KpiStrip from '../../shared/components/KpiStrip'
-import SectionCard from '../../shared/components/SectionCard'
-import GroupHead from '../../shared/components/SectionGroupHead'
 import HelpTip from '../../shared/components/HelpTip'
 import EChart from '../../shared/components/charts/EChart'
 import DonutLegend from '../../shared/components/charts/DonutLegend'
@@ -16,7 +15,6 @@ import {
   asMoney,
   asPercent,
   asPercentValue,
-  columnChartOption,
   comboBarLineOption,
   compactMoney,
   donutChartOption,
@@ -44,6 +42,7 @@ import {
   refreezeSalesActuals,
   upsertSalesTarget,
   type NameValue,
+  type StageConversionRow,
   type DeliveryOwnerRow,
   type DeliveryRiskOrder,
   type DeliveryTrendRow,
@@ -75,39 +74,24 @@ function Row({ columns = 4, children }: { columns?: 1 | 2 | 3 | 4; children: Rea
   return <div className={`row-${columns}`}>{children}</div>
 }
 
-/**
- * 卡片：图表/表格都塞在这里，**强制撑满行高**（`height: '100%'`）——
- * 不写这一句，网格里矮的那张卡会缩成自己内容的高度，一行就高矮不齐了。
- */
-function Card({
-  title,
-  note,
-  children,
-  extra,
-}: {
+function ReportSection({ title, note, children, extra, id }: {
   title: string
   note?: string
   children: ReactNode
   extra?: ReactNode
+  id?: string
 }) {
   return (
-    <SectionCard
-      /* note 原来是括号拼在标题后面的：四列布局卡宽只有 210，标题缝上括号注释
-         直接被截成「进行中商机的阶段分布（顺序即…」，连标题本身都读不全。
-         改成标题一行、note 一行 11px 小灰字，标题始终完整。 */
-      title={(
-        <span style={{ display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0 }}>
-          <span className="card-title" title={title} style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {title}
-          </span>
-          {note && <span className="an-card-note">{note}</span>}
-        </span>
-      )}
-      extra={extra}
-      style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
-    >
+    <section className="analytics-section" id={id}>
+      <div className="analytics-section-heading">
+        <div>
+          <h3>{title}</h3>
+          {note && <p className="an-card-note">{note}</p>}
+        </div>
+        {extra}
+      </div>
       {children}
-    </SectionCard>
+    </section>
   )
 }
 
@@ -160,30 +144,74 @@ function Donut({
 const centerMoney: ValueFormat = (value) =>
   Math.abs(value) >= 10_000 ? `¥${(value / 10_000).toFixed(1)}万` : asMoney(value)
 
-/** 纵向柱：**分档 / 分阶段**的量。分类名横着排不开时可以斜 30 度。 */
-function Columns({
-  data,
-  unit,
-  height = 220,
-  rotateLabels = false,
-}: {
+function StatusCounts({ title, note, data, unit }: {
+  title: string
+  note?: string
   data: NameValue[]
   unit: string
-  height?: number
-  rotateLabels?: boolean
 }) {
-  if (!data.length) return <NoData />
   return (
-    <EChart
-      height={height}
-      ariaLabel={`柱状图：${data.map((item) => `${item.name} ${item.value}`).join('，')}`}
-      option={columnChartOption({
-        categories: data.map((item) => item.name),
-        series: [{ name: unit, values: data.map((item) => item.value) }],
-        format: asCount(unit),
-        rotateLabels,
-      })}
-    />
+    <section className="analytics-status-group" aria-label={title}>
+      <div>
+        <h3>{title}</h3>
+        {note && <p>{note}</p>}
+      </div>
+      {data.length ? (
+        <dl>
+          {data.map(({ name, value }) => (
+            <div key={name} className={value === 0 ? 'is-empty' : undefined}>
+              <dt>{name}</dt>
+              <dd>{value.toLocaleString('zh-CN')} <span>{unit}</span></dd>
+            </div>
+          ))}
+        </dl>
+      ) : <NoData />}
+    </section>
+  )
+}
+
+function ReportRows({ rows }: { rows: { label: string; detail?: string; value: string }[] }) {
+  if (!rows.length) return <NoData />
+  return (
+    <dl className="analytics-report-rows">
+      {rows.map(({ label, detail, value }) => (
+        <div key={label}>
+          <dt>{label}{detail && <span>{detail}</span>}</dt>
+          <dd>{value}</dd>
+        </div>
+      ))}
+    </dl>
+  )
+}
+
+function OpportunityStageChart({ stages }: { stages: StageConversionRow[] }) {
+  if (stages.length === 0) return <NoData />
+  const maxCount = Math.max(...stages.map((stage) => stage.reached_count))
+  const tickUnit = maxCount >= 20 ? 5 : 1
+  const tickStep = Math.max(1, Math.ceil(maxCount / (4 * tickUnit))) * tickUnit
+  const ticks = Array.from({ length: 5 }, (_, index) => index * tickStep)
+  return (
+    <div id="analytics-stage-chart" className="analytics-stage-chart">
+      <div className="analytics-stage-axis" aria-hidden="true">
+        <div>{ticks.map((tick) => <span key={tick}>{tick.toLocaleString('zh-CN')}</span>)}</div>
+      </div>
+      <dl aria-label="到达过各阶段的商机数">
+        {stages.map((stage) => (
+          <div key={stage.stage_id}>
+            <dt>{stage.stage_name}</dt>
+            <dd>
+              <span className="analytics-stage-plot" aria-hidden="true">
+                <span
+                  className={stage.reached_count === 0 ? 'is-zero' : undefined}
+                  style={{ left: `${stage.reached_count / (4 * tickStep) * 100}%` }}
+                />
+              </span>
+              <strong>{asCount('个')(stage.reached_count)}</strong>
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </div>
   )
 }
 
@@ -225,21 +253,74 @@ const ANALYTICS_REPORTS = [
   { id: 'target', label: '目标完成情况', search: '公司、部门或姓名' },
 ] as const
 
+const ANALYTICS_VIEWS = [
+  { id: 'overview', label: '经营概览' },
+  { id: 'sales', label: '商机与报价' },
+  { id: 'customers', label: '客户与线索' },
+  { id: 'payments', label: '回款与应收' },
+  { id: 'delivery', label: '发货与交期' },
+  { id: 'reports', label: '明细报表' },
+  { id: 'target', label: '销售目标' },
+] as const
+type AnalyticsView = (typeof ANALYTICS_VIEWS)[number]['id']
+type AnalyticsReport = (typeof ANALYTICS_REPORTS)[number]['id']
+
+const TARGET_SCOPES = [
+  { value: 'company', label: '全公司' },
+  { value: 'department', label: '部门' },
+  { value: 'person', label: '个人' },
+  { value: 'all', label: '全部对象' },
+] as const
+
+function TargetProgress({ label, actual, target, achievement }: {
+  label: string
+  actual: string
+  target: string
+  achievement: number | null
+}) {
+  return (
+    <div className="analytics-target-progress">
+      <span>{label}</span>
+      <strong>{actual}</strong>
+      <small>{achievement == null ? '未设目标' : `目标 ${target} · 已完成 ${Math.round(achievement * 100)}%`}</small>
+    </div>
+  )
+}
+
 export default function AnalyticsPage() {
   const { can, dataScopeLabel } = usePermissions()
   // 钩子里的「全部」是给权限配置用的词；报表上写「全公司」才是业务看得懂的话。
   const scopeLabel = dataScopeLabel === '全部' ? '全公司' : dataScopeLabel
   const canSetTarget = can('settings:manage')
   const queryClient = useQueryClient()
-  const [activeReport, setActiveReport] = useState<(typeof ANALYTICS_REPORTS)[number]['id']>('basis')
+  const [params, setParams] = useSearchParams()
+  const view = ANALYTICS_VIEWS.find(({ id }) => id === params.get('view'))?.id ?? 'overview'
+  const reportId = ANALYTICS_REPORTS.find(({ id }) => id !== 'target' && id === params.get('report'))?.id
+  const activeReport: AnalyticsReport = view === 'target' ? 'target' : reportId ?? 'basis'
+  const [showTargetDetails, setShowTargetDetails] = useState(false)
   const [reportKeyword, setReportKeyword] = useState('')
   const [reportMonth, setReportMonth] = useState<string>()
-  const selectReport = (id: typeof activeReport) => {
-    if (activeReport !== id) {
-      setReportKeyword('')
-      setReportMonth(undefined)
-      setActiveReport(id)
-    }
+  const [targetScope, setTargetScope] = useState<(typeof TARGET_SCOPES)[number]['value']>()
+  const currentMonth = formatBeijingDate(new Date()).slice(5, 7)
+  const selectView = (nextView: AnalyticsView, nextReport?: AnalyticsReport) => {
+    setParams((previous) => {
+      const next = new URLSearchParams(previous)
+      if (nextView === 'overview') next.delete('view')
+      else next.set('view', nextView)
+      if (nextView === 'reports' && nextReport) next.set('report', nextReport)
+      else next.delete('report')
+      return next
+    })
+    document.getElementById('analytics-view-nav')?.scrollIntoView({ block: 'nearest' })
+  }
+  const filterContext = `${view}:${activeReport}`
+  const [previousFilterContext, setPreviousFilterContext] = useState<typeof filterContext>()
+  if (previousFilterContext !== filterContext) {
+    setPreviousFilterContext(filterContext)
+    setReportKeyword('')
+    setReportMonth(view === 'target' ? currentMonth : undefined)
+    setTargetScope(undefined)
+    setShowTargetDetails(false)
   }
   const report = ANALYTICS_REPORTS.find((item) => item.id === activeReport)
   const reportSearch = report && 'search' in report ? report.search : undefined
@@ -299,7 +380,18 @@ export default function AnalyticsPage() {
   })
   const usersQuery = useQuery({
     queryKey: ['assignable-users'],
-    queryFn: () => listUsers({ page: 1, page_size: 100 }),
+    // 「全公司或个人」是同一个下拉：人员超过一页时循环取全，否则第 101 位
+    // 以后的人无法被选为目标对象。
+    queryFn: async () => {
+      const first = await listUsers({ page: 1, page_size: 100 })
+      const all = [...first.items]
+      for (let page = 2; all.length < first.total; page += 1) {
+        const next = await listUsers({ page, page_size: 100 })
+        if (!next.items.length) break
+        all.push(...next.items)
+      }
+      return { ...first, items: all }
+    },
     enabled: targetModal.visible,
   })
   // 团队目标要选部门（文档 §六 :121「目标按团队、业务员、周期设置」）
@@ -454,7 +546,7 @@ export default function AnalyticsPage() {
     } else {
       setTargetForm({
         user_id: undefined,
-        period: `${targetYear}-${String(new Date().getMonth() + 1).padStart(2, '0')}`,
+        period: `${targetYear}-${reportMonth ?? currentMonth}`,
         new_customer_target: '',
         sales_target: '',
         repeat_customer_target: '',
@@ -522,42 +614,87 @@ export default function AnalyticsPage() {
   // 交期趋势：单量柱 + 准时率线，只用有发货记录的那几个月
   const deliveryTrend = (delivery?.trend ?? []).filter((row) => row.on_time + row.late > 0)
 
+  const targetRowsInYear = targetsQuery.data?.rows ?? []
+  const scopeOfTarget = (row: SalesTargetRow) => row.department_id ? 'department' : row.user_id ? 'person' : 'company'
+  const defaultTargetScope = TARGET_SCOPES.find(({ value }) =>
+    targetRowsInYear.some((row) => value === scopeOfTarget(row)))?.value ?? 'company'
+  const selectedTargetScope = targetScope ?? defaultTargetScope
+  const targetRows = targetRowsInYear.filter((row) =>
+    (!reportMonth || row.period.slice(5) === reportMonth)
+    && (selectedTargetScope === 'all' || scopeOfTarget(row) === selectedTargetScope)
+    && matches(row.user_name))
+  const targetEmpty = keyword ? noMatches : '所选月份和对象暂无目标数据'
+  const targetRowKey = (row: SalesTargetRow) => `${row.period}-${row.user_id ?? 'all'}-${row.department_id ?? 'all'}`
+
   return (
     <div className="page-container analytics-page">
-      <PageHeader
-        title="数据分析"
-        subtitle="查看成交、回款走势和发货风险。"
-        extra={
-          <div className="analytics-header-links">
-            <a className="analytics-report-link" href="#analytics-reports" onClick={() => selectReport('target')}>销售目标</a>
-            <a className="analytics-report-link" href="#analytics-reports">查看明细报表 ↓</a>
-          </div>
-        }
-      />
-
+      <PageHeader title="数据分析" />
+      <nav id="analytics-view-nav" className="analytics-view-nav" aria-label="数据分析主题">
+        {ANALYTICS_VIEWS.map(({ id, label }) => (
+          <button key={id} type="button" aria-current={view === id ? 'page' : undefined}
+            onClick={() => selectView(id)}>
+            {label}
+          </button>
+        ))}
+      </nav>
       {currencyWarnings.map((note) => (
         <div key={note} style={{ marginBottom: 14 }}>
           <Banner type="warning" closeIcon={null} description={note} title="汇总里含外币金额" />
         </div>
       ))}
 
-      <GroupHead
-        index="01"
-        title="核心指标"
-        note="先看成交、未到账金额和发货风险。"
-      />
-      {/* 13 个指标按业务口径分三组。顺序按组重排，数值和口径一个没改。 */}
-      <div className="kpi-groups">
-        <div className="kpi-group">
-          <div className="kpi-group-head">成交与转化</div>
+      <p className="analytics-scope-note">
+        <span className="crm-help-label">
+          统计范围：{scopeLabel}
+          <HelpTip
+            forLabel="统计范围"
+            text="数据范围由你的角色决定：全公司＝所有人的记录；本部门＝同部门同事；本部门及下级＝本部门连同所有下级部门；仅本人＝只看自己。可在「设置 → 我的 → 我的信息」查看自己的数据范围。两个同事看到不同数字，正是因为范围不同。"
+          />
+        </span>
+        {(view === 'reports' || view === 'target') && <span>月度业绩和目标金额按签单归属统计，发货风险按当前负责人统计。</span>}
+      </p>
+
+      {view === 'overview' && <div className="analytics-view" aria-label="经营概览">
+        <dl className="analytics-summary">
+          <div><dt>已成交商机</dt><dd>{opportunity ? `${opportunity.won_count} 个` : '—'}</dd></div>
+          <div><dt>尚未到账</dt><dd>{receivable ? money(receivable.unreceived_amount) : '—'}</dd></div>
+          <div><dt>逾期应收</dt><dd>{payment ? money(payment.overdue_amount) : '—'}</dd></div>
+          <div><dt>超期未发首批</dt><dd>{deliverySummary ? `${deliverySummary.risk_order_count} 单` : '—'}</dd></div>
+        </dl>
+        <ReportSection title={`${targetYear} 年业绩走势`} note="签单看建单月，发货看实际发货月，回款看财务确认月。">
+          {trendMonths.length === 0 ? (
+            <NoData />
+          ) : (
+            <EChart
+              height={264}
+              ariaLabel="月度签单、发货、回款与老客净额的折线图"
+              option={lineChartOption({
+                categories: trendMonths.map(monthLabel),
+                series: [
+                  { name: '签单', values: trendMonths.map((m) => basisValue(bases?.signed, m)) },
+                  { name: '发货', values: trendMonths.map((m) => basisValue(bases?.shipped, m)) },
+                  { name: '回款', values: trendMonths.map((m) => basisValue(bases?.received, m)) },
+                  {
+                    name: '老客净额',
+                    values: trendMonths.map((m) => basisValue(bases?.repeat_net, m)),
+                  },
+                ],
+                format: asMoney,
+                axisFormat: compactMoney,
+              })}
+            />
+          )}
+          <div style={{ marginTop: 10, fontSize: 12, color: 'var(--crm-text-3)', lineHeight: 1.8 }}>
+            <Button size="small" theme="borderless" onClick={() => selectView('reports', 'basis')}>查看各月金额</Button>
+          </div>
+        </ReportSection>
+      </div>}
+
+      {view === 'sales' && <div className="analytics-view" aria-label="商机与报价">
+        <ReportSection title="成交与转化">
           <KpiStrip
             tintValues={false}
-            /* 7 张卡在 4 列网格里排成 4 + 3，第二行右边空一格。
-               曾经补过 kpi-fill-last 让末张跨两列去补洞 —— 主人 2026-11-19 说
-               「不要让那一个卡片适应窗口呀，三个一起更好看吧」：一张 770 宽的卡
-               夹在三张 390 宽的卡中间，量级和字号都被拉变形了。
-               现在不补洞：第二行三张等宽，右边就空一格背景色。 */
-            className="kpi-grid kpi-grid-fixed"
+            className="kpi-grid analytics-metrics"
             items={[
               {
                 // 7 张卡排 4 + 3，右下永远空一格（主人 2026-11-19：
@@ -613,7 +750,7 @@ export default function AnalyticsPage() {
                 label: '近期活跃 / 长期未跟进',
                 tone: 'success',
                 value: `${customer?.active_count ?? 0} / ${customer?.dormant_count ?? 0}`,
-                help: `以最近一次跟进或业务进展为准，两者都没有时看建档日。最近 ${customer?.active_days ?? 30} 天算活跃；其余客户超过 ${customer?.dormant_days ?? 30} 天算长期未跟进。`,
+                help: `以最近一次跟进或业务进展为准，两者都没有时看建档日。最近 ${customer?.active_days ?? 30} 天算活跃；其余客户超过 ${customer?.dormant_days ?? 30} 天算长期未跟进。复购按当前范围内的在册客户统计，一家客户有两张及以上未取消订单即算一次。`,
                 hint: `复购客户 ${customer?.repeat_customer_count ?? 0} 家`,
               },
               {
@@ -626,12 +763,99 @@ export default function AnalyticsPage() {
               },
             ]}
           />
+        </ReportSection>
+      <ReportSection title="商机与关联订单" note="前两项数商机，最后一项数订单。一条商机可能关联多张订单。">
+        <KpiStrip
+          tintValues={false}
+          className="kpi-grid analytics-metrics"
+          items={[
+            { label: '累计商机', value: createdTotalQuery.data ? `${createdTotalQuery.data.total} 个` : '—' },
+            { label: '已成交商机', value: opportunity ? `${opportunity.won_count} 个` : '—' },
+            {
+              label: '关联商机的订单',
+              value: orderCountWithOpportunity === null ? '—' : `${orderCountWithOpportunity} 张`,
+              hint: orders && orders.total > orders.items.length ? '订单列表未取全，无法统计全部关联订单' : undefined,
+            },
+          ]}
+        />
+        <div className="deal-steps-toggle">
+          <Button className="deal-toggle-btn" theme="borderless" size="small" aria-expanded={showStageDetail}
+            aria-controls={showStageDetail && opportunity?.stage_conversion?.length ? 'analytics-stage-chart' : undefined}
+            onClick={() => setShowStageDetail((open) => !open)}>
+            {showStageDetail ? '收起阶段图' : '查看商机阶段图'}
+          </Button>
         </div>
-        <div className="kpi-group">
-          <div className="kpi-group-head">回款与应收</div>
+        {showStageDetail && (
+          <>
+            <p className="deal-steps-note">各阶段显示曾经到达过的商机数。同一商机可能经过多个阶段，也可能跳过阶段。</p>
+            <OpportunityStageChart stages={opportunity?.stage_conversion ?? []} />
+          </>
+        )}
+      </ReportSection>
+        <div className="analytics-sales-breakdown">
+          <ReportSection title="进行中商机" note="按业务阶段顺序">
+            <ReportRows rows={(opportunity?.funnel ?? []).map((row) => ({
+              label: row.stage_name, value: asCount('个')(row.count),
+            }))} />
+          </ReportSection>
+          <ReportSection title="失单原因">
+            <ReportRows rows={(lossQuery.data ?? []).map((row) => ({
+              label: row.name, value: asCount('单')(row.value),
+            }))} />
+          </ReportSection>
+          <ReportSection title="平均报价" note="按客户等级">
+            <ReportRows rows={(pricing?.average_quoted_price_by_level ?? []).map((row) => ({
+              label: row.level.endsWith('级') ? row.level : `${row.level} 级`,
+              detail: `${row.item_count} 条明细`,
+              value: asMoney(row.average_price),
+            }))} />
+            {pricing && (
+              <dl className="analytics-price-notes">
+                <div><dt>低价审批率</dt><dd>{asPercent(pricing.low_price_approval_rate)}</dd></div>
+                <div>
+                  <dt>平均{pricing.average_discount_rate >= 0 ? '让价' : '加价'}</dt>
+                  <dd>{Math.abs(pricing.average_discount_rate * 100).toFixed(2)}%</dd>
+                </div>
+                <div>
+                  <dt>最大{pricing.max_discount_rate >= 0 ? '让价' : '加价'}</dt>
+                  <dd>{Math.abs(pricing.max_discount_rate * 100).toFixed(2)}%</dd>
+                </div>
+              </dl>
+            )}
+          </ReportSection>
+        </div>
+      </div>}
+
+      {view === 'customers' && <div className="analytics-view" aria-label="客户与线索">
+        <div className="analytics-status-summary">
+          <StatusCounts title="线索状态" data={lead?.by_status ?? []} unit="条" />
+          {(lead?.invalid_reasons.length ?? 0) > 0 && (
+            <StatusCounts
+              title="线索废弃原因"
+              note="统计仍为无效的线索。已移入回收站的线索只在这里统计原因。"
+              data={lead?.invalid_reasons ?? []}
+              unit="条"
+            />
+          )}
+        </div>
+        <Row columns={2}>
+          <ReportSection title="客户来源分布">
+            <Donut data={customer?.by_source ?? []} format={asCount('家')} centerLabel="家客户" />
+          </ReportSection>
+          <ReportSection title="线索来源分布">
+            <Donut data={lead?.by_source ?? []} format={asCount('条')} centerLabel="条线索" />
+          </ReportSection>
+          <ReportSection title="客户等级分布">
+            <Donut data={customer?.by_level ?? []} format={asCount('家')} centerLabel="家客户" />
+          </ReportSection>
+        </Row>
+      </div>}
+
+      {view === 'payments' && <div className="analytics-view" aria-label="回款与应收">
+        <ReportSection title="应收和到账金额" extra={can('payment:view') && <Link to="/receivables">打开回款中心</Link>}>
           <KpiStrip
             tintValues={false}
-            className="kpi-grid kpi-cols-4"
+            className="kpi-grid analytics-metrics"
             items={[
               {
                 label: '应收合计',
@@ -669,15 +893,34 @@ export default function AnalyticsPage() {
               },
             ]}
           />
+        </ReportSection>
+        <div className="analytics-status-summary">
+          <StatusCounts title="各期应收状态" data={receivable?.by_status ?? []} unit="期" />
+          <StatusCounts title="应收逾期了多久" note="只统计未结清的应收" data={payment?.aging ?? []} unit="期" />
         </div>
-        <div className="kpi-group">
-          <div className="kpi-group-head">履约与风险</div>
-          {/* 2026-11-21：原先两张半屏宽的大卡，每张只有 3 行字，一屏里
-              数它两块最空。改成和上面「回款与应收」同宽的四格 ——
-              准时率、已交付、延迟、交期风险各占一格，行高与上一组对齐。 */}
+        <ReportSection title="回款方式分布" note="按金额">
+          <Donut
+            data={(payment?.by_payment_method ?? []).map((row) => ({
+              name: row.name,
+              value: Math.round(row.value),
+            }))}
+            format={asMoney}
+            /* 中心用紧凑金额：环内直径只有 ~99px，「¥296,830」9 个字会压到环壁
+               （2026-11-20 实拍，数字左半边已经出了圆）。「¥29.7万」6 个字正合适，
+               精确到元的值在右侧图例里给。 */
+            centerValueFormat={centerMoney}
+            centerLabel="合计"
+          />
+        </ReportSection>
+      </div>}
+
+      {view === 'delivery' && <div className="analytics-view" aria-label="发货与交期">
+        <ReportSection title="首批发货与交期风险" extra={
+          <Button size="small" theme="borderless" onClick={() => selectView('reports', 'risk-order')}>查看超期订单</Button>
+        }>
           <KpiStrip
             tintValues={false}
-            className="kpi-grid kpi-cols-4"
+            className="kpi-grid analytics-metrics"
             items={[
               {
                 label: '首批准时发货率',
@@ -708,41 +951,9 @@ export default function AnalyticsPage() {
               },
             ]}
           />
-        </div>
-      </div>
-
-      {/* ── ① 趋势：随时间变的东西，只有折线说得清 ─────────────────────── */}
-      <GroupHead index="02" title="趋势" note="按月查看签单、发货、回款和发货准时情况。" />
-      <Row columns={2}>
-        <Card title="月度业绩走势" note="签单看建单月，发货看实际发货月，回款看财务确认月。">
-          {trendMonths.length === 0 ? (
-            <NoData />
-          ) : (
-            <EChart
-              height={264}
-              ariaLabel="月度签单、发货、回款与老客净额的折线图"
-              option={lineChartOption({
-                categories: trendMonths.map(monthLabel),
-                series: [
-                  { name: '签单', values: trendMonths.map((m) => basisValue(bases?.signed, m)) },
-                  { name: '发货', values: trendMonths.map((m) => basisValue(bases?.shipped, m)) },
-                  { name: '回款', values: trendMonths.map((m) => basisValue(bases?.received, m)) },
-                  {
-                    name: '老客净额',
-                    values: trendMonths.map((m) => basisValue(bases?.repeat_net, m)),
-                  },
-                ],
-                format: asMoney,
-                axisFormat: compactMoney,
-              })}
-            />
-          )}
-          <div style={{ marginTop: 10, fontSize: 12, color: 'var(--crm-text-3)', lineHeight: 1.8 }}>
-            下方「每月签单、发货与回款」可查看各月具体金额。
-          </div>
-        </Card>
-
-        <Card title="交期趋势" note="柱子是发货单数，折线是首批准时发货率。">
+        </ReportSection>
+        <Row columns={2}>
+        <ReportSection title="交期趋势" note="柱子是发货单数，折线是首批准时发货率。">
           {deliveryTrend.length === 0 ? (
             <NoData />
           ) : (
@@ -769,167 +980,8 @@ export default function AnalyticsPage() {
               })}
             />
           )}
-        </Card>
-      </Row>
-
-      {/* ── ② 占比：看"各占几成"，环形比横条直观 ───────────────────────── */}
-      <GroupHead index="03" title="客源、客户等级与回款方式" />
-      {/* 2×2 而不是一行四张（2026-11-19）：四列时卡内只有 232 宽，
-          环图吃掉 107 后图例只剩 115，名字全被省略号截成「官...」「电...」；
-          而"回款方式分布"只有两项，卡被行高拉到 380、下面空两百多像素。
-          两列后卡宽 570，环图与图例左右并排各有余量，四张卡也紧凑成两行。 */}
-      <Row columns={2}>
-        <Card title="客户来源分布">
-          <Donut data={customer?.by_source ?? []} format={asCount('家')} centerLabel="家客户" />
-        </Card>
-        <Card title="客户等级分布">
-          <Donut data={customer?.by_level ?? []} format={asCount('家')} centerLabel="家客户" />
-        </Card>
-        <Card title="线索来源分布">
-          <Donut data={lead?.by_source ?? []} format={asCount('条')} centerLabel="条线索" />
-        </Card>
-        <Card title="回款方式分布" note="按金额">
-          <Donut
-            data={(payment?.by_payment_method ?? []).map((row) => ({
-              name: row.name,
-              value: Math.round(row.value),
-            }))}
-            format={asMoney}
-            /* 中心用紧凑金额：环内直径只有 ~99px，「¥296,830」9 个字会压到环壁
-               （2026-11-20 实拍，数字左半边已经出了圆）。「¥29.7万」6 个字正合适，
-               精确到元的值在右侧图例里给。 */
-            centerValueFormat={centerMoney}
-            centerLabel="合计"
-          />
-        </Card>
-      </Row>
-
-      {/* ── ③ 分档：每一档各多少，且顺序有意义 ───────────────────────────── */}
-      <GroupHead index="04" title="线索与应收状态" />
-      <Row columns={3}>
-        <Card title="线索状态分布">
-          <Columns data={lead?.by_status ?? []} unit="条" />
-        </Card>
-        <Card title="各期应收状态">
-          <Columns data={receivable?.by_status ?? []} unit="期" />
-        </Card>
-        <Card title="应收逾期了多久" note="按未结清的应收期数统计">
-          <Columns data={payment?.aging ?? []} unit="个" rotateLabels />
-        </Card>
-      </Row>
-
-      <GroupHead index="05" title="商机进展" />
-      <Card title="商机与关联订单" note="前两项数商机，最后一项数订单。一条商机可能关联多张订单。">
-        <KpiStrip
-          tintValues={false}
-          className="kpi-grid kpi-cols-3"
-          items={[
-            { label: '累计商机', value: createdTotalQuery.data ? `${createdTotalQuery.data.total} 个` : '—' },
-            { label: '已成交商机', value: opportunity ? `${opportunity.won_count} 个` : '—' },
-            {
-              label: '关联商机的订单',
-              value: orderCountWithOpportunity === null ? '—' : `${orderCountWithOpportunity} 张`,
-              hint: orders && orders.total > orders.items.length ? '订单列表未取全，无法统计全部关联订单' : undefined,
-            },
-          ]}
-        />
-        <div className="deal-steps-toggle">
-          <Button className="deal-toggle-btn" theme="borderless" size="small" aria-expanded={showStageDetail}
-            onClick={() => setShowStageDetail((open) => !open)}>
-            {showStageDetail ? '收起各阶段明细' : '查看各阶段有多少商机到达过'}
-          </Button>
-        </div>
-        {showStageDetail && (
-          <>
-            <p className="deal-steps-note">同一商机可以出现在多个阶段，也可以跳过阶段。每行单独计数。</p>
-            <Table
-              className="deal-detail-table"
-              size="small"
-              pagination={false}
-              rowKey="stage_id"
-              dataSource={opportunity?.stage_conversion ?? []}
-              columns={[
-                { title: '商机阶段', dataIndex: 'stage_name' },
-                { title: '到达过的商机数', dataIndex: 'reached_count', className: 'cell-right' },
-              ]}
-            />
-          </>
-        )}
-      </Card>
-
-      <GroupHead index="06" title="商机、报价与交期明细" />
-      <Row columns={4}>
-        <Card title="进行中商机的阶段分布" note="顺序即阶段先后">
-          {(opportunity?.funnel ?? []).length === 0 ? (
-            <NoData />
-          ) : (
-            <EChart
-              // 九个阶段、名字四五个字：竖着放底下一排标签会互相挤掉，
-              // 横着写才能把每一级都读全（顺序也照阶段先后，不按数量排）
-              height={rankHeight((opportunity?.funnel ?? []).length)}
-              ariaLabel="进行中商机在各阶段的分布条形图"
-              option={rankBarChartOption({
-                data: (opportunity?.funnel ?? []).map((row) => ({
-                  name: row.stage_name,
-                  value: row.count,
-                })),
-                format: asCount('个'),
-              })}
-            />
-          )}
-        </Card>
-
-        <Card title="失单原因分布">
-          {(lossQuery.data ?? []).length === 0 ? (
-            <NoData />
-          ) : (
-            <EChart
-              height={rankHeight(lossQuery.data?.length ?? 0)}
-              ariaLabel="失单原因排名条形图"
-              option={rankBarChartOption({
-                data: lossQuery.data ?? [],
-                format: asCount('单'),
-              })}
-            />
-          )}
-        </Card>
-
-        <Card title="平均报价" note="按客户等级">
-          {(pricing?.average_quoted_price_by_level ?? []).length === 0 ? (
-            <NoData />
-          ) : (
-            <EChart
-              height={rankHeight((pricing?.average_quoted_price_by_level ?? []).length)}
-              ariaLabel="按客户等级的平均报价条形图"
-              option={rankBarChartOption({
-                data: (pricing?.average_quoted_price_by_level ?? []).map((row) => ({
-                  /* 「未分级」这个等级名本身已带「级」，模板再补一个就成「未分级 级」
-                     （2026-11-20 实拍）。有「级」就不补。 */
-                  name: `${row.level}${row.level.endsWith('级') ? '' : ' 级'}（${row.item_count} 条）`,
-                  value: row.average_price,
-                })),
-                format: asMoney,
-                axisFormat: compactMoney,
-              })}
-            />
-          )}
-          <div style={{ marginTop: 14, fontSize: 13, color: 'var(--crm-text-2)', lineHeight: 2 }}>
-            <div>低价审批率：{asPercent(pricing?.low_price_approval_rate ?? 0)}</div>
-            {/* 让价率是「推荐价 - 报单价 / 推荐价」，整体报高了就会是负数。
-                写成「平均让价：-0.20%」看着像算错了 —— 负的时候改成「加价」，
-                一看就懂是报得比推荐价还高（2026-11-20 实拍）。 */}
-            <div>
-              平均{(pricing?.average_discount_rate ?? 0) >= 0 ? '让价' : '加价'}：
-              {Math.abs((pricing?.average_discount_rate ?? 0) * 100).toFixed(2)}%
-            </div>
-            <div>
-              最大{(pricing?.max_discount_rate ?? 0) >= 0 ? '让价' : '加价'}：
-              {Math.abs((pricing?.max_discount_rate ?? 0) * 100).toFixed(2)}%
-            </div>
-          </div>
-        </Card>
-
-        <Card title="哪些履约环节超期" note="只计已过计划日、仍未完成的环节">
+        </ReportSection>
+        <ReportSection title="哪些履约环节超期" note="只计已过计划日、仍未完成的环节">
           {(delivery?.overdue_nodes ?? []).length === 0 ? (
             <NoData />
           ) : (
@@ -958,33 +1010,19 @@ export default function AnalyticsPage() {
               （最长 {deliverySummary?.max_delay_days ?? '-'} 天）
             </div>
           </div>
-        </Card>
-      </Row>
+        </ReportSection>
+        </Row>
+        <Button size="small" theme="borderless" onClick={() => selectView('reports', 'delivery')}>查看首批发货明细</Button>
+      </div>}
 
-      <section id="analytics-reports" aria-label="明细报表">
-        <GroupHead index="07" title="明细报表" />
-        {/* 报表不写范围，业务员会把自己看到的数当成公司合计（2026-11-21 问过）。
-            范围来自账号角色的 data_scope，后端真的按它过滤，这里只是把它说出来。 */}
-        <p className="analytics-scope-note">
-          <span className="crm-help-label">
-            统计范围：{scopeLabel}
-            <HelpTip
-              forLabel="统计范围"
-              text="数据范围由你的角色决定：全公司＝所有人的记录；本部门＝同部门同事；本部门及下级＝本部门连同所有下级部门；仅本人＝只看自己。可在「设置 → 我的 → 我的信息」查看自己的数据范围。两个同事看到不同数字，正是因为范围不同。"
-            />
-          </span>
-          <span>
-            以下报表只汇总这个范围内的记录。月度业绩、目标完成情况的金额按签单归属统计，钱算签单人；
-            首批发货、延迟未发货按当前负责人统计。
-          </span>
-        </p>
-        <div className="analytics-report-picker" role="group" aria-label="选择报表">
-          {ANALYTICS_REPORTS.map(({ id, label }) => (
-            <button key={id} type="button" aria-pressed={activeReport === id} onClick={() => selectReport(id)}>
+      {(view === 'reports' || view === 'target') && <section id="analytics-reports" aria-label={view === 'target' ? '销售目标' : '明细报表'}>
+        {view === 'reports' && <div className="analytics-report-picker" role="group" aria-label="选择报表">
+          {ANALYTICS_REPORTS.filter(({ id }) => id !== 'target').map(({ id, label }) => (
+            <button key={id} type="button" aria-pressed={activeReport === id} onClick={() => selectView('reports', id)}>
               {label}
             </button>
           ))}
-        </div>
+        </div>}
         <div className="analytics-report-filters" role="group" aria-label="筛选当前报表">
           {(activeReport === 'basis' || activeReport === 'target') && (
             <Select aria-label="报表年份" value={targetYear} onChange={(value) => setTargetYear(value as number)}
@@ -995,15 +1033,22 @@ export default function AnalyticsPage() {
           {(activeReport === 'basis' || activeReport === 'target' || activeReport === 'delivery') && (
             <Select aria-label={activeReport === 'delivery' ? '月度发货表月份' : '报表月份'}
               placeholder={activeReport === 'delivery' ? '月度发货表月份' : '全部月份'}
-              value={reportMonth} onChange={(value) => setReportMonth(typeof value === 'string' ? value : undefined)}
-              showClear
+              value={activeReport === 'target' ? reportMonth ?? 'all' : reportMonth}
+              onChange={(value) => setReportMonth(typeof value === 'string' && value !== 'all' ? value : undefined)}
+              showClear={activeReport !== 'target'}
               optionList={activeReport === 'delivery'
                 ? (delivery?.trend ?? []).map((row) => ({ value: row.month, label: row.month.replace('-', ' 年 ') + ' 月' }))
-                : Array.from({ length: 12 }, (_, index) => ({
+                : [...(activeReport === 'target' ? [{ value: 'all', label: '全部月份' }] : []), ...Array.from({ length: 12 }, (_, index) => ({
                     value: String(index + 1).padStart(2, '0'),
                     label: `${index + 1} 月`,
-                  }))}
+                  }))]}
               style={{ width: activeReport === 'delivery' ? 156 : 128 }}
+            />
+          )}
+          {activeReport === 'target' && (
+            <Select aria-label="目标对象" value={selectedTargetScope} optionList={[...TARGET_SCOPES]}
+              onChange={(value) => { setTargetScope(value as typeof targetScope); setReportKeyword('') }}
+              style={{ width: 130 }}
             />
           )}
           {reportSearch && (
@@ -1011,12 +1056,19 @@ export default function AnalyticsPage() {
               value={reportKeyword} onChange={setReportKeyword} style={{ width: 240 }}
             />
           )}
-          {(reportKeyword || reportMonth) && (
+          {activeReport === 'target' ? (
+            (reportKeyword || reportMonth !== currentMonth || selectedTargetScope !== defaultTargetScope) &&
+            <Button theme="borderless" size="small" onClick={() => {
+              setReportKeyword('')
+              setReportMonth(currentMonth)
+              setTargetScope(undefined)
+            }}>重置筛选</Button>
+          ) : (reportKeyword || reportMonth) && (
             <Button theme="borderless" size="small" onClick={() => { setReportKeyword(''); setReportMonth(undefined) }}>清除筛选</Button>
           )}
           {report && 'limited' in report && <span className="an-card-note">搜索范围为当前报表列出的记录。</span>}
         </div>
-        {activeReport === 'delivery' && <SectionCard id="detail-delivery" title="首批发货情况（按负责人）">
+        {activeReport === 'delivery' && <ReportSection id="detail-delivery" title="首批发货情况（按负责人）">
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 10, lineHeight: 1.7 }}>
             统计近 {deliverySummary?.window_months ?? 12} 个月的首批发货。首批在计划发货日当天或之前发出，就算准时。
             客户约的是到货日期时，计划发货日按到货日期减运输天数算。另有 {deliverySummary?.undated_delivered_count ?? 0} 单缺少可核对的计划发货日。
@@ -1067,9 +1119,9 @@ export default function AnalyticsPage() {
             ]}
             empty={reportMonth ? '所选月份没有发货记录' : '近 12 个月还没有发货记录'}
           />
-        </SectionCard>}
+        </ReportSection>}
 
-        {activeReport === 'risk-order' && <SectionCard id="detail-risk-order" title="已过发货日、首批未发的订单">
+        {activeReport === 'risk-order' && <ReportSection id="detail-risk-order" title="已过发货日、首批未发的订单">
           <Table<DeliveryRiskOrder>
             columns={[
               { title: '订单号', dataIndex: 'order_no', width: 170 },
@@ -1103,9 +1155,9 @@ export default function AnalyticsPage() {
             pagination={false}
             empty={keyword ? noMatches : '没有超期未发货的订单'}
           />
-        </SectionCard>}
+        </ReportSection>}
 
-        {activeReport === 'product' && <SectionCard id="detail-product" title="产品表现（询盘 / 报价 / 成交 / 失单 / 利润）">
+        {activeReport === 'product' && <ReportSection id="detail-product" title="产品表现（询盘 / 报价 / 成交 / 失单 / 利润）">
           <Table<ProductStat>
             // 10 列在 1180px 内排得下（2026-11-21 巡检：原来 12 列，右侧「成交数量/失单/毛利」
             // 被容器直接切掉，页面看不到）。同族指标并成一列用「/」隔开：
@@ -1184,9 +1236,9 @@ export default function AnalyticsPage() {
             pagination={false}
             empty={keyword ? noMatches : '还没有报价数据'}
           />
-        </SectionCard>}
+        </ReportSection>}
 
-        {activeReport === 'sales' && <SectionCard id="detail-sales" title="业务员表现">
+        {activeReport === 'sales' && <ReportSection id="detail-sales" title="业务员表现">
           <Table<SalesUserStat>
             columns={[
               { title: '姓名', dataIndex: 'name', width: 120 },
@@ -1223,10 +1275,10 @@ export default function AnalyticsPage() {
             pagination={false}
             empty={keyword ? noMatches : '暂无数据'}
           />
-        </SectionCard>}
+        </ReportSection>}
 
         {/* 场景17：三个销售额口径必须分开看，否则"回款没到但签了单"会被当成已完成 */}
-        {activeReport === 'basis' && <SectionCard id="detail-basis" title="每月签单、发货与回款">
+        {activeReport === 'basis' && <ReportSection id="detail-basis" title="每月签单、发货与回款">
           {(() => {
             const b = basesQuery.data
             if (!b) return <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>暂无数据</div>
@@ -1305,21 +1357,48 @@ export default function AnalyticsPage() {
               </>
             )
           })()}
-        </SectionCard>}
+        </ReportSection>}
 
-        {activeReport === 'target' && <SectionCard id="detail-target" title="月度销售目标">
+        {activeReport === 'target' && <ReportSection id="detail-target" title="月度销售目标">
           <p className="workflow-guide">
-            这里看公司、部门或个人每月的目标，以及实际完成了多少。比如本月确认回款要到 10 万元、要有 3 家新客户下首单。
+            看每月实际完成多少、目标是多少。回款按财务确认计，新客只数下了首单的客户。
           </p>
-          <p className="workflow-guide">
-            {canSetTarget ? '要录入或修改月目标，点「设置月度目标」；也可以从对应月份那一行进入。' : '月度目标由有「系统设置与规则」权限的人设置。'}
-            {can('task:view') && <> 给同事安排一次跟进、催款等具体事项，请到<Link to="/tasks">销售任务</Link>。</>}
-          </p>
-          {canSetTarget && <p className="an-card-note">月度实绩快照用于留存已结束月份的完成数据，日常设置目标时不用保存快照。</p>}
-          {canSetTarget && <div className="toolbar" style={{ marginBottom: 12 }}>
-            <Button onClick={() => openFreezeModal('freeze')}>保存月度实绩快照</Button>
-            <Button type="primary" theme="outline" onClick={() => openTargetModal()}>设置月度目标</Button>
-          </div>}
+          <div className="analytics-target-toolbar">
+            {canSetTarget && <Button type="primary" theme="outline" onClick={() => openTargetModal()}>设置月度目标</Button>}
+            <Button aria-pressed={showTargetDetails} onClick={() => setShowTargetDetails(!showTargetDetails)}>
+              {showTargetDetails ? '返回目标概览' : '查看完整报表'}
+            </Button>
+            {showTargetDetails && canSetTarget && <Button onClick={() => openFreezeModal('freeze')}>保存月度实绩快照</Button>}
+            {can('task:view') && <Link to="/tasks">销售任务</Link>}
+          </div>
+          {!showTargetDetails && (
+            targetsQuery.isPending ? <p role="status">正在读取月度目标…</p>
+              : targetsQuery.isError ? <Button onClick={() => void targetsQuery.refetch()}>读取失败，重试</Button>
+              : targetRows.length === 0 ? <p className="workflow-guide">{targetEmpty}</p>
+              : <div className="analytics-target-list">
+                {targetRows.map((row) => (
+                  <article key={targetRowKey(row)} className="analytics-target-row">
+                    <div className="analytics-target-person">
+                      <strong>{row.user_name}</strong>
+                      <span>{Number(row.period.slice(5))} 月{row.actual_frozen && ' · 已存档'}</span>
+                    </div>
+                    <TargetProgress label="确认回款" actual={formatWholeCny(row.received_actual_exact ?? row.assess_actual ?? row.received_actual)}
+                      target={formatWholeCny(row.sales_target_exact ?? row.sales_target)} achievement={row.sales_achievement} />
+                    <TargetProgress label="新客户首单" actual={`${row.new_customer_actual} 家`}
+                      target={`${row.new_customer_target} 家`} achievement={row.new_customer_achievement} />
+                    <TargetProgress label="老客户订单净额" actual={formatWholeCny(row.repeat_customer_actual_exact ?? row.repeat_customer_actual)}
+                      target={formatWholeCny(row.repeat_customer_target_exact ?? row.repeat_customer_target)} achievement={row.repeat_customer_achievement} />
+                    <div className="analytics-target-row-actions">
+                      <Button size="small" theme="borderless" onClick={() => openDrilldown(row, 'received')}>查看明细</Button>
+                      {canSetTarget && <Button size="small" theme="borderless" onClick={() => openTargetModal(row)}>
+                        {row.target_id ? '修改目标' : '设置本月目标'}
+                      </Button>}
+                    </div>
+                  </article>
+                ))}
+              </div>
+          )}
+          {showTargetDetails && <>
           {/* 包一层横向滚动容器：Semi 自带的 scroll 只让表体可滚，
               表头按 2060px 撑出去的部分仍会把整页顶出 5px——1440 实拍见过
               页面级横向滚动条。让溢出发生在容器里，页面本身不横滚。 */}
@@ -1497,12 +1576,11 @@ export default function AnalyticsPage() {
                   ]
                 : []),
             ]}
-            dataSource={(targetsQuery.data?.rows ?? []).filter((row) =>
-              (!reportMonth || row.period.slice(5) === reportMonth) && matches(row.user_name))}
+            dataSource={targetRows}
             loading={targetsQuery.isLoading}
-            rowKey={(r?: SalesTargetRow) => `${r?.period}-${r?.user_id ?? 'all'}`}
+            rowKey={(row?: SalesTargetRow) => row ? targetRowKey(row) : ''}
             pagination={false}
-            empty={keyword || reportMonth ? noMatches : '还没有目标数据'}
+            empty={targetEmpty}
           />
           </div>
           <div style={{ marginTop: 10, fontSize: 12, color: 'var(--crm-text-3)' }}>
@@ -1518,9 +1596,10 @@ export default function AnalyticsPage() {
               </span>
             )}
           </div>
-        </SectionCard>}
+          </>}
+        </ReportSection>}
 
-      </section>
+      </section>}
 
       <Modal
         width={520}

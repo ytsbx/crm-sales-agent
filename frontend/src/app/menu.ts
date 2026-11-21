@@ -70,6 +70,9 @@ export const MENU_GROUPS: MenuGroup[] = [
     title: '销售作业',
     items: [
       { key: 'workbench', path: '/workbench', label: '工作台', icon: IconHome, ready: true },
+      // 销售任务记录"接下来要做什么"，和客户/商机/订单是同一班人同一条线，
+      // 放在工作台后面作为每天的业务入口，不再归到运营管理。
+      { key: 'tasks', path: '/tasks', label: '销售任务', icon: IconCheckList, ready: true, permission: 'task:view' },
       { key: 'leads', path: '/leads', label: '线索中心', icon: IconFilter, ready: true, permission: 'lead:view' },
       { key: 'customers', path: '/customers', label: '客户中心', icon: IconUserGroup, ready: true, permission: 'customer:view' },
       // 公海回收复核不单列菜单项（2026-11-19 主人："不用单独做一个板块吧"）。
@@ -86,8 +89,9 @@ export const MENU_GROUPS: MenuGroup[] = [
         permission: 'opportunity:view',
       },
       { key: 'quotes', path: '/quotes', label: '报价中心', icon: IconFile, ready: true, permission: 'quote:view' },
-      { key: 'orders', path: '/orders', label: '订单中心', icon: IconBox, ready: true, permission: 'order:view' },
+      // 样品是下单前的动作（进展会回写商机），排在报价与订单之间，顺着业务链路走。
       { key: 'samples', path: '/samples', label: '样品管理', icon: IconGift, ready: true, permission: 'sample:view' },
+      { key: 'orders', path: '/orders', label: '订单中心', icon: IconBox, ready: true, permission: 'order:view' },
       { key: 'receivables', path: '/receivables', label: '回款中心', icon: IconCreditCard, ready: true, permission: 'payment:view' },
     ],
   },
@@ -102,7 +106,6 @@ export const MENU_GROUPS: MenuGroup[] = [
       // —— 主人 2026-11-21「不用为核价单独做一个大模块呀」。
       // 入口在价格中心的页头「核价试算」抽屉；深链 /pricing 仍然可用（报价单会带参跳过来）。
       { key: 'logistics', path: '/logistics', label: '物流试算', icon: IconSend, ready: true, permission: ['price:manage', 'product:view'] },
-      { key: 'tasks', path: '/tasks', label: '销售任务', icon: IconCheckList, ready: true, permission: 'task:view' },
       { key: 'approvals', path: '/approvals', label: '审批中心', icon: IconTickCircle, ready: true, permission: 'quote:view' },
       { key: 'documents', path: '/documents', label: '文档管理', icon: IconFolder, ready: true, permission: 'order:view' },
       { key: 'cases', path: '/cases', label: '案例库', icon: IconStar, ready: true, permission: 'quote:view' },
@@ -122,8 +125,16 @@ export const MENU_GROUPS: MenuGroup[] = [
         // 各分析接口的权限不同，任一可看即给入口
         permission: ['customer:view', 'opportunity:view', 'quote:view', 'payment:view', 'product:view'],
       },
+    ],
+  },
+  {
+    title: '智能与协同',
+    items: [
+      { key: 'agent', path: '/agent', label: 'AI 助手', icon: IconComment, ready: true, permission: 'agent:use' },
+      { key: 'wecom', path: '/wecom', label: '企业微信', icon: IconAt, ready: true, permission: 'wecom:view', hideWithoutPermission: true },
       // 回收站：三块（线索/产品/客户）集中在一个页面。任一业务模块可看即给入口，
       // 页面内部再按各自权限决定显示哪几块（与"数据分析"同一套写法）。
+      // 它是恢复误删记录的系统工具，放最底部、紧挨系统设置，不占业务分组的位置。
       {
         key: 'recycle-bin',
         path: '/recycle-bin',
@@ -132,13 +143,6 @@ export const MENU_GROUPS: MenuGroup[] = [
         ready: true,
         permission: ['lead:view', 'product:view', 'customer:view'],
       },
-    ],
-  },
-  {
-    title: '智能与协同',
-    items: [
-      { key: 'agent', path: '/agent', label: 'AI 助手', icon: IconComment, ready: true, permission: 'agent:use' },
-      { key: 'wecom', path: '/wecom', label: '企业微信', icon: IconAt, ready: true, permission: 'wecom:view', hideWithoutPermission: true },
       {
         key: 'settings',
         path: '/settings',
@@ -228,6 +232,11 @@ export function menuLabel(
   item: MenuItem,
   user: { roles: string[]; permissions?: string[] } | null,
 ): string {
+  if (item.key === 'settings') {
+    const hasManagementTab = hasPermission(user, ['settings:manage', 'user:manage', 'audit:view'])
+      || (hasPermission(user, 'customer:view') && hasPermission(user, 'customer:update'))
+    return hasManagementTab ? item.label : (item.plainLabel ?? item.label)
+  }
   const primary = Array.isArray(item.permission) ? item.permission[0] : item.permission
   // 有主权限 → 就是本名（管理员看到的是「系统设置」）。
   if (primary && hasPermission(user, primary)) return item.label

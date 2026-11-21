@@ -87,6 +87,11 @@ export function listOpportunities(query: {
   return api.get<PageResult<Opportunity>>('/opportunities', query)
 }
 
+/** 看板列头：按当前关键词、阶段与数据范围统计各阶段的完整条数与金额。 */
+export function getOpportunityBoardStats(query: { keyword?: string; stage_id?: number; search_customer_name?: boolean }) {
+  return api.get<FunnelRow[]>('/opportunities/board-stats', query)
+}
+
 export function getOpportunity(id: number) {
   return api.get<Opportunity>(`/opportunities/${id}`)
 }

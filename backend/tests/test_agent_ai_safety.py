@@ -48,8 +48,8 @@ def test_bad_json_shape_becomes_recoverable_tool_result(monkeypatch):
     monkeypatch.setattr(runtime,'_history',AsyncMock(return_value=[{'role':'user','content':'test'}]))
     monkeypatch.setattr(settings,'deepseek_api_key','fake')
     handler=AsyncMock();monkeypatch.setattr(TOOLS['get_customer_overview'],'handler',handler)
-    session=SimpleNamespace(add=lambda row:None,commit=AsyncMock())
-    row=SimpleNamespace(id=1,title='test',context_type=None,context_id=None)
+    row=SimpleNamespace(id=1,user_id=101,deleted_at=None,title='test',context_type=None,context_id=None)
+    session=SimpleNamespace(add=lambda row:None,commit=AsyncMock(),get=AsyncMock(return_value=row))
     result=asyncio.run(runtime.run_turn(session,agent_session=row,user=make_user(permissions={'customer:view'}),text='test'))
     assert result['reply']=='请提供有效的客户编号'
     assert result['actions']==[]
@@ -101,7 +101,7 @@ async def test_stream_cancel_persists_partial_reply_and_propagates(monkeypatch, 
         async def rollback(self):
             self.rollbacks += 1
 
-        async def get(self, model, identity):
+        async def get(self, model, identity, **kwargs):
             assert model.__name__ == 'AgentSession' and identity == 1
             return agent_session
 
@@ -122,7 +122,7 @@ async def test_stream_cancel_persists_partial_reply_and_propagates(monkeypatch, 
             return original_scope(0.01, shield=shield)
         monkeypatch.setattr(runtime.anyio, 'move_on_after', short_scope)
     session = Session()
-    agent_session = SimpleNamespace(id=1, title='新会话', context_type=None, context_id=None)
+    agent_session = SimpleNamespace(id=1, user_id=101, deleted_at=None, title='新会话', context_type=None, context_id=None)
     events = runtime.run_turn_events(
         session,
         agent_session=agent_session,

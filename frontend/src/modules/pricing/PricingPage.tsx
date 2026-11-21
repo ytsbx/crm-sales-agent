@@ -4,7 +4,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Banner, Button, Input, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
 
-import { listCustomers } from '../../shared/api/customer'
+import { getCustomer, listCustomers } from '../../shared/api/customer'
 import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
 import { formatUnitPrice, formatMoney, toTwoDecimals } from '../../shared/components/money'
@@ -21,7 +21,8 @@ import AgentInsight from '../../shared/components/AgentInsight'
 import FormLabel from '../../shared/components/FormLabel'
 import HelpTip from '../../shared/components/HelpTip'
 import PriceTerm from './PriceTerm'
-import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
+import { optionMatcher } from '../../shared/components/optionMatch'
+import RecordSearchSelect from '../../shared/components/RecordSearchSelect'
 
 function validPricingDecimal(value: string, wholeDigits: number, decimals: number, allowZero = false) {
   if (!/^(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)$/.test(value)) return false
@@ -66,10 +67,6 @@ export function PricingTool({ embedded = false }: { embedded?: boolean }) {
     paramNumber('quoted_price') !== undefined ? String(paramNumber('quoted_price')) : '',
   )
 
-  const customersQuery = useQuery({
-    queryKey: ['customers-for-select'],
-    queryFn: () => listCustomers({ page: 1, page_size: 100 }),
-  })
   const skusQuery = useQuery({ queryKey: ['skus-for-pricing'], queryFn: listSkusForPricing })
   const amountError = (value: string, wholeDigits: number, decimals: number, allowZero: boolean) =>
     value.trim() && !validPricingDecimal(value.trim(), wholeDigits, decimals, allowZero)
@@ -161,12 +158,16 @@ export function PricingTool({ embedded = false }: { embedded?: boolean }) {
           </div>
           <div>
             <FormLabel hint="选填">客户</FormLabel>
-            <Select aria-label="客户" placeholder="选择客户，应用其价格规则" value={customerId}
-              onChange={value => setCustomerId(value as number | undefined)}
-              optionList={optionsWithCodeOnDuplicate(customersQuery.data?.items ?? [],
-                item => `${item.name}（${item.level ?? '-'} 级）`, item => item.id)}
-              loading={customersQuery.isLoading} filter={optionMatcher} showClear style={{ width: '100%' }} />
-            {customersQuery.isError && <Button size="small" type="danger" theme="borderless" onClick={() => void customersQuery.refetch()}>客户列表加载失败，重试</Button>}
+            <RecordSearchSelect
+              scope="pricing-customer"
+              enabled
+              placeholder="按客户名称或编号搜索，应用其价格规则"
+              value={customerId}
+              list={listCustomers}
+              lookup={getCustomer}
+              labelOf={(item) => `${item.name}（${item.level ?? '-'} 级）`}
+              onChange={(item) => setCustomerId(item?.id)}
+            />
           </div>
           <div>
             <FormLabel hint="选填">拟报价（元／件）</FormLabel>

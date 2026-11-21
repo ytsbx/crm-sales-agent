@@ -70,7 +70,12 @@ async def list_inquiries(
         svc.ensure_status(status)
         stmt = stmt.where(CustomInquiry.status == status)
     if keyword:
-        stmt = stmt.where(CustomInquiry.title.ilike(f"%{keyword}%"))
+        # 下拉里显示的是「需求编号 · 标题」，所以编号也要能搜 —— 只搜标题时，
+        # 用户照着编号找第 101 条以后的需求永远搜不到（服务端搜索 + 下拉的入口）。
+        stmt = stmt.where(or_(
+            CustomInquiry.title.ilike(f"%{keyword}%"),
+            CustomInquiry.inquiry_no.ilike(f"%{keyword}%"),
+        ))
     stmt = await svc.apply_scope(stmt, user, session)
     stmt = stmt.order_by(CustomInquiry.id.desc())
     rows, total = await paginate(session, stmt, page, page_size)

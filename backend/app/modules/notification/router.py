@@ -1,6 +1,6 @@
 """通知接口（03-API §32 通知 + §33 通知设置）。"""
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select, update
@@ -12,6 +12,7 @@ from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, get_current_user, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
+from app.core.timebase import business_day_start
 from app.modules.notification.visibility import process_notification_filter
 from app.modules.notification.model import (
     CHANNEL_LABEL,
@@ -117,9 +118,10 @@ async def list_notifications(
     if unread_only:
         stmt = stmt.where(Notification.read_at.is_(None))
     if date_from is not None:
-        stmt = stmt.where(func.date(Notification.created_at) >= date_from)
-    if date_to is not None:
-        stmt = stmt.where(func.date(Notification.created_at) <= date_to)
+        stmt = stmt.where(Notification.created_at >= business_day_start(date_from.year, date_from.month, date_from.day))
+    if date_to is not None and date_to < date.max:
+        next_day = date_to + timedelta(days=1)
+        stmt = stmt.where(Notification.created_at < business_day_start(next_day.year, next_day.month, next_day.day))
     rows, total = await paginate(session, stmt.order_by(Notification.id.desc()), page, page_size)
     return ok(page_data([serialize(row) for row in rows], total, page, page_size))
 
@@ -163,7 +165,10 @@ async def mark_all_read(
 ):
     await session.execute(
         update(Notification)
-        .where(Notification.user_id == user.id, Notification.read_at.is_(None), Notification.dismissed_at.is_(None))
+        .where(
+            Notification.user_id == user.id, Notification.read_at.is_(None),
+            Notification.dismissed_at.is_(None), await process_notification_filter(session, user),
+        )
         .values(read_at=datetime.now(UTC))
     )
     await session.commit()

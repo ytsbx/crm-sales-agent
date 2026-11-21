@@ -173,7 +173,6 @@ export interface StageConversionRow {
   stage_name: string
   sequence: number
   reached_count: number
-  conversion_from_previous: number | null
 }
 
 export interface OpportunityCycle {

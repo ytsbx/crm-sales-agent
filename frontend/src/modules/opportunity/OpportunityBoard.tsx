@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
-import { Empty, Tag, Toast } from '@douyinfe/semi-ui'
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
+import { Button, Empty, Tag, Toast } from '@douyinfe/semi-ui'
 
 import {
   changeStage,
+  getOpportunityBoardStats,
   listOpportunities,
   listStages,
+  type FunnelRow,
   type Opportunity,
+  type Stage,
 } from '../../shared/api/opportunity'
 import type { TagTone } from '../../shared/types'
 import { formatMoney, toTwoDecimals } from '../../shared/components/money'
@@ -21,10 +24,15 @@ import { formatMoney, toTwoDecimals } from '../../shared/components/money'
  * 交互上刻意不引入拖拽库（前端没有 dnd 依赖，加包会让构建体积和风格都失控）：
  * 卡片右下角提供"移到下一阶段 / 选择阶段"，落库走的是与详情页同一个
  * `POST /opportunities/{id}/change-stage`，阶段历史、审批与数据权限判定完全一致。
+ *
+ * 分页（F03）：每列各查各的，20 张一页、按需加载更多；列头的条数与金额
+ * 来自 `/opportunities/board-stats`（与列表同一套关键词和数据范围），
+ * 不能拿"当前已加载的卡片"求和 —— 那样翻一页列头就变一次。
  */
 
 const RISK_TONE: Record<string, TagTone> = { high: 'red', medium: 'orange', low: 'green' }
 const RISK_LABEL: Record<string, string> = { high: '高', medium: '中', low: '低' }
+const PAGE_SIZE = 20
 
 const money = (value?: number | null) =>
   value ? formatMoney(toTwoDecimals(value), 'CNY') : '-'
@@ -32,17 +40,218 @@ const money = (value?: number | null) =>
 interface Props {
   /** 关键字/负责人等筛选由列表页统一控制，看板只负责按阶段分列展示。 */
   keyword: string
+  /** 列表页的阶段筛选也要作用到看板：卡片和列头统计一起收窄。 */
+  stageId?: number
   onChanged: () => void
   canManage: boolean
 }
 
-export default function OpportunityBoard({ keyword, onChanged, canManage }: Props) {
+function BoardColumn({
+  stage,
+  keyword,
+  stageId,
+  stats,
+  canManage,
+  onMove,
+  onOpen,
+}: {
+  stage: Stage
+  keyword: string
+  stageId?: number
+  stats?: FunnelRow
+  canManage: boolean
+  onMove: (row: Opportunity, direction: 1 | -1) => void
+  onOpen: (row: Opportunity) => void
+}) {
+  const query = useInfiniteQuery({
+    queryKey: ['opportunity-board', 'stage', stage.id, keyword, stageId],
+    enabled: stageId == null || stageId === stage.id,
+    initialPageParam: 1,
+    queryFn: ({ pageParam }) =>
+      listOpportunities({
+        keyword,
+        status: 'open',
+        stage_id: stage.id,
+        page: pageParam,
+        page_size: PAGE_SIZE,
+      }),
+    getNextPageParam: (last) =>
+      last.page * last.page_size < last.total ? last.page + 1 : undefined,
+  })
+  const rows = query.data?.pages.flatMap((page) => page.items) ?? []
+  const total = stats?.count ?? query.data?.pages[0]?.total ?? 0
+  const amount = stats?.amount ?? 0
+
+  return (
+    <div
+      style={{
+        flex: '0 0 248px',
+        width: 248,
+        background: 'var(--crm-surface-low)',
+        border: '1px solid var(--crm-surface-high)',
+        borderRadius: 'var(--crm-radius)',
+        display: 'flex',
+        flexDirection: 'column',
+        maxHeight: 'calc(100vh - 320px)',
+      }}
+    >
+      <div
+        style={{
+          padding: '10px 12px',
+          borderBottom: '1px solid var(--crm-surface-high)',
+          position: 'sticky',
+          top: 0,
+          background: 'var(--crm-surface-low)',
+          borderTopLeftRadius: 'var(--crm-radius)',
+          borderTopRightRadius: 'var(--crm-radius)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ fontWeight: 600, fontSize: 13 }}>{stage.name}</span>
+          {stage.status !== 'active' && <Tag color="grey" size="small">已停用</Tag>}
+          {stage.is_win && (
+            <Tag color="green" size="small">
+              成交
+            </Tag>
+          )}
+          <span style={{ marginLeft: 'auto', color: 'var(--crm-text-3)', fontSize: 12 }}>
+            {stats ? total : '—'}
+          </span>
+        </div>
+        <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginTop: 2 }}>
+          {stats ? money(amount) : '—'}
+        </div>
+      </div>
+
+      <div style={{ padding: 8, display: 'grid', gap: 8, overflowY: 'auto' }}>
+        {query.isLoading && (
+          <div style={{ color: 'var(--crm-text-3)', fontSize: 12, padding: '8px 4px' }}>
+            加载中…
+          </div>
+        )}
+        {!query.isLoading && rows.length === 0 && (
+          <div style={{ color: 'var(--crm-text-3)', fontSize: 12, padding: '8px 4px' }}>
+            {query.isError ? '这一列加载失败' : '暂无商机'}
+          </div>
+        )}
+        {rows.map((row) => (
+          <div
+            key={row.id}
+            onClick={() => onOpen(row)}
+            style={{
+              background: 'var(--crm-surface)',
+              border: '1px solid var(--crm-outline)',
+              borderRadius: 'var(--crm-radius-sm)',
+              padding: 10,
+              cursor: 'pointer',
+            }}
+          >
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{row.title}</div>
+            <div
+              style={{
+                color: 'var(--crm-text-3)',
+                fontSize: 12,
+                marginBottom: 6,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {row.customer_name ?? '-'}
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              {/* 没填预计金额时原来是「money() 的默认值 '-'」——
+                  一个蓝色粗体的破折号孤零零占一行，看着像个渲染错误。
+                  改成灰色小字「未填金额」：说的是一件事，不是一个符号。 */}
+              {row.expected_amount ? (
+                <span style={{ fontSize: 13, color: 'var(--crm-primary)', fontWeight: 600 }}>
+                  {money(row.expected_amount)}
+                </span>
+              ) : (
+                <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>未填金额</span>
+              )}
+              {row.risk_level && (
+                <Tag color={RISK_TONE[row.risk_level] ?? 'grey'} size="small">
+                  {RISK_LABEL[row.risk_level] ?? row.risk_level}风险
+                </Tag>
+              )}
+            </div>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                marginTop: 8,
+                color: 'var(--crm-text-3)',
+                fontSize: 12,
+              }}
+            >
+              <span>{row.owner_name ?? '未分配'}</span>
+              <span style={{ marginLeft: 'auto' }}>{row.expected_close_date ?? ''}</span>
+            </div>
+            {canManage && (
+              <div
+                style={{ display: 'flex', gap: 8, marginTop: 8 }}
+                onClick={(event) => event.stopPropagation()}
+              >
+                {/* 两个动作原来都是默认链接色 —— 一样蓝、一样重，
+                    于是在卡片底部看不出"哪个是往前的"。
+                    退回是反向/低频动作，降到灰色；推进是这一列唯一该做的事，
+                    保留主色并加粗一点。 */}
+                <a
+                  style={{ fontSize: 12, color: 'var(--crm-text-3)' }}
+                  onClick={() => onMove(row, -1)}
+                >
+                  ← 退回
+                </a>
+                <a
+                  style={{ fontSize: 12, fontWeight: 500 }}
+                  onClick={() => onMove(row, 1)}
+                >
+                  推进 →
+                </a>
+              </div>
+            )}
+          </div>
+        ))}
+
+        {query.isError && (
+          <Button
+            theme="borderless"
+            size="small"
+            onClick={() => {
+              if (query.isFetchNextPageError) void query.fetchNextPage()
+              else void query.refetch()
+            }}
+          >
+            加载失败，点击重试
+          </Button>
+        )}
+        {!query.isError && query.hasNextPage && (
+          <Button
+            theme="borderless"
+            size="small"
+            loading={query.isFetchingNextPage}
+            onClick={() => {
+              if (!query.isFetching) void query.fetchNextPage()
+            }}
+          >
+            加载更多（已显示 {rows.length} / {total}）
+          </Button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+export default function OpportunityBoard({ keyword, stageId, onChanged, canManage }: Props) {
   const navigate = useNavigate()
 
   const stagesQuery = useQuery({ queryKey: ['stages'], queryFn: listStages })
-  const boardQuery = useQuery({
-    queryKey: ['opportunity-board', keyword],
-    queryFn: () => listOpportunities({ keyword, status: 'open', page: 1, page_size: 200 }),
+  // 列头统计由后端按"当前关键词 + 阶段 + 数据范围"算全量；卡片按列分页加载。
+  const statsQuery = useQuery({
+    queryKey: ['opportunity-board', 'stats', keyword, stageId],
+    queryFn: () => getOpportunityBoardStats({ keyword, stage_id: stageId }),
   })
 
   const stages = useMemo(
@@ -52,16 +261,11 @@ export default function OpportunityBoard({ keyword, onChanged, canManage }: Prop
         .sort((a, b) => a.sequence - b.sequence),
     [stagesQuery.data],
   )
-
-  const grouped = useMemo(() => {
-    const map = new Map<number, Opportunity[]>()
-    for (const stage of stages) map.set(stage.id, [])
-    for (const row of boardQuery.data?.items ?? []) {
-      const bucket = map.get(row.stage_id)
-      if (bucket) bucket.push(row)
-    }
-    return map
-  }, [stages, boardQuery.data])
+  const statsById = useMemo(
+    () => new Map((statsQuery.data ?? []).map((row) => [row.stage_id, row])),
+    [statsQuery.data],
+  )
+  const totalCount = (statsQuery.data ?? []).reduce((sum, row) => sum + row.count, 0)
 
   /* 横向滚动提示：ref 挂在滚动容器上，fadeRight 决定右侧渐隐要不要露。
      首次渲染、窗口缩放、阶段列数变化都要重算 —— 少算一次，遮罩就会一直挂着
@@ -86,7 +290,7 @@ export default function OpportunityBoard({ keyword, onChanged, canManage }: Prop
       observer.disconnect()
       window.removeEventListener('resize', updateFade)
     }
-  }, [updateFade, boardQuery.data, stages])
+  }, [updateFade, stages, statsQuery.data])
 
   const move = async (row: Opportunity, direction: 1 | -1) => {
     const index = stages.findIndex((stage) => stage.id === row.stage_id)
@@ -106,12 +310,26 @@ export default function OpportunityBoard({ keyword, onChanged, canManage }: Prop
     }
   }
 
-  if (boardQuery.isLoading || stagesQuery.isLoading) {
+  if (statsQuery.isLoading || stagesQuery.isLoading) {
     return <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>看板加载中…</div>
   }
 
-  if ((boardQuery.data?.items ?? []).length === 0) {
-    return <Empty description="没有进行中的商机" style={{ padding: '32px 0' }} />
+  if (statsQuery.isError) {
+    return (
+      <div style={{ color: 'var(--crm-text-3)', fontSize: 13, padding: '16px 0' }}>
+        看板统计加载失败。
+        <Button theme="borderless" size="small" onClick={() => void statsQuery.refetch()}>
+          重试
+        </Button>
+      </div>
+    )
+  }
+
+  if (totalCount === 0) {
+    return <Empty
+      description={keyword ? '没有匹配的进行中商机' : stageId ? '这个阶段没有进行中的商机' : '没有进行中的商机'}
+      style={{ padding: '32px 0' }}
+    />
   }
 
   return (
@@ -126,141 +344,18 @@ export default function OpportunityBoard({ keyword, onChanged, canManage }: Prop
         onScroll={updateFade}
         style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 8 }}
       >
-      {stages.map((stage) => {
-        const rows = grouped.get(stage.id) ?? []
-        const amount = rows.reduce((sum, row) => sum + (row.expected_amount ?? 0), 0)
-        return (
-          <div
+        {stages.map((stage) => (
+          <BoardColumn
             key={stage.id}
-            style={{
-              flex: '0 0 248px',
-              width: 248,
-              background: 'var(--crm-surface-low)',
-              border: '1px solid var(--crm-surface-high)',
-              borderRadius: 'var(--crm-radius)',
-              display: 'flex',
-              flexDirection: 'column',
-              maxHeight: 'calc(100vh - 320px)',
-            }}
-          >
-            <div
-              style={{
-                padding: '10px 12px',
-                borderBottom: '1px solid var(--crm-surface-high)',
-                position: 'sticky',
-                top: 0,
-                background: 'var(--crm-surface-low)',
-                borderTopLeftRadius: 'var(--crm-radius)',
-                borderTopRightRadius: 'var(--crm-radius)',
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ fontWeight: 600, fontSize: 13 }}>{stage.name}</span>
-                {stage.status !== 'active' && <Tag color="grey" size="small">已停用</Tag>}
-                {stage.is_win && (
-                  <Tag color="green" size="small">
-                    成交
-                  </Tag>
-                )}
-                <span style={{ marginLeft: 'auto', color: 'var(--crm-text-3)', fontSize: 12 }}>
-                  {rows.length}
-                </span>
-              </div>
-              <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginTop: 2 }}>
-                {money(amount)}
-              </div>
-            </div>
-
-            <div style={{ padding: 8, display: 'grid', gap: 8, overflowY: 'auto' }}>
-              {rows.length === 0 && (
-                <div style={{ color: 'var(--crm-text-3)', fontSize: 12, padding: '8px 4px' }}>
-                  暂无商机
-                </div>
-              )}
-              {rows.map((row) => (
-                <div
-                  key={row.id}
-                  onClick={() => navigate(`/opportunities/${row.id}`)}
-                  style={{
-                    background: 'var(--crm-surface)',
-                    border: '1px solid var(--crm-outline)',
-                    borderRadius: 'var(--crm-radius-sm)',
-                    padding: 10,
-                    cursor: 'pointer',
-                  }}
-                >
-                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{row.title}</div>
-                  <div
-                    style={{
-                      color: 'var(--crm-text-3)',
-                      fontSize: 12,
-                      marginBottom: 6,
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {row.customer_name ?? '-'}
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    {/* 没填预计金额时原来是「money() 的默认值 '-'」——
-                        一个蓝色粗体的破折号孤零零占一行，看着像个渲染错误。
-                        改成灰色小字「未填金额」：说的是一件事，不是一个符号。 */}
-                    {row.expected_amount ? (
-                      <span style={{ fontSize: 13, color: 'var(--crm-primary)', fontWeight: 600 }}>
-                        {money(row.expected_amount)}
-                      </span>
-                    ) : (
-                      <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>未填金额</span>
-                    )}
-                    {row.risk_level && (
-                      <Tag color={RISK_TONE[row.risk_level] ?? 'grey'} size="small">
-                        {RISK_LABEL[row.risk_level] ?? row.risk_level}风险
-                      </Tag>
-                    )}
-                  </div>
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 6,
-                      marginTop: 8,
-                      color: 'var(--crm-text-3)',
-                      fontSize: 12,
-                    }}
-                  >
-                    <span>{row.owner_name ?? '未分配'}</span>
-                    <span style={{ marginLeft: 'auto' }}>{row.expected_close_date ?? ''}</span>
-                  </div>
-                  {canManage && (
-                    <div
-                      style={{ display: 'flex', gap: 8, marginTop: 8 }}
-                      onClick={(event) => event.stopPropagation()}
-                    >
-                      {/* 两个动作原来都是默认链接色 —— 一样蓝、一样重，
-                          于是在卡片底部看不出"哪个是往前的"。
-                          退回是反向/低频动作，降到灰色；推进是这一列唯一该做的事，
-                          保留主色并加粗一点。 */}
-                      <a
-                        style={{ fontSize: 12, color: 'var(--crm-text-3)' }}
-                        onClick={() => void move(row, -1)}
-                      >
-                        ← 退回
-                      </a>
-                      <a
-                        style={{ fontSize: 12, fontWeight: 500 }}
-                        onClick={() => void move(row, 1)}
-                      >
-                        推进 →
-                      </a>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        )
-      })}
+            stage={stage}
+            keyword={keyword}
+            stageId={stageId}
+            stats={statsById.get(stage.id)}
+            canManage={canManage}
+            onMove={(row, direction) => void move(row, direction)}
+            onOpen={(row) => navigate(`/opportunities/${row.id}`)}
+          />
+        ))}
       </div>
       {/* 渐隐遮罩：pointer-events:none，不挡点击，只做"还有内容在右边"的提示 */}
       {fadeRight && (

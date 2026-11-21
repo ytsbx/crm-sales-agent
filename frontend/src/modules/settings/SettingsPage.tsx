@@ -23,7 +23,6 @@ import {
   listPermissions,
   listRoles,
   listUsers,
-  setUserRoles,
   updateDepartment,
   updateRole,
   updateUser,
@@ -67,14 +66,14 @@ const TAG_GROUP_LABELS: Record<string, string> = { custom: '自定义', region: 
 
 const PROFILE_TAB = { tab: '我的', itemKey: 'profile', icon: IconIdCard, description: '查看个人资料和权限，修改登录名或密码。' }
 const TABS = [
-  { tab: '用户', itemKey: 'users', icon: IconUser, description: '维护员工账号，分配部门和角色。' },
-  { tab: '角色与数据范围', itemKey: 'roles', icon: IconUserGroup, description: '设置各岗位能做什么、能查看哪些数据。' },
-  { tab: '部门', itemKey: 'departments', icon: IconApartment, description: '维护部门及上下级关系。' },
-  { tab: '客户标签', itemKey: 'tags', icon: IconBookmark, description: '维护客户详情中可选的标签。' },
-  { tab: '数据字典', itemKey: 'dictionaries', icon: IconList, description: '维护业务表单可选择的客户等级。' },
-  { tab: '业务规则', itemKey: 'rules', icon: IconSetting, description: '在这里设置公海回收、待办提醒、报价和其他业务规则。' },
-  { tab: '通知', itemKey: 'notifications', icon: IconBell, description: '设置通知渠道和发送方式，查看企微送达情况。' },
-  { tab: '审计日志', itemKey: 'audit', icon: IconHistory, description: '查看谁在什么时候做了哪些操作。' },
+  { tab: '用户', itemKey: 'users', permission: 'user:manage', icon: IconUser, description: '维护员工账号，分配部门和角色。' },
+  { tab: '角色与数据范围', itemKey: 'roles', permission: 'user:manage', icon: IconUserGroup, description: '设置各岗位能做什么、能查看哪些数据。' },
+  { tab: '部门', itemKey: 'departments', permission: 'user:manage', icon: IconApartment, description: '维护部门及上下级关系。' },
+  { tab: '客户标签', itemKey: 'tags', permission: 'customer:update', icon: IconBookmark, description: '维护客户详情中可选的标签。' },
+  { tab: '数据字典', itemKey: 'dictionaries', permission: 'settings:manage', icon: IconList, description: '维护业务表单可选择的客户等级。' },
+  { tab: '业务规则', itemKey: 'rules', permission: 'settings:manage', icon: IconSetting, description: '在这里设置公海回收、待办提醒、报价和其他业务规则。' },
+  { tab: '通知', itemKey: 'notifications', permission: 'settings:manage', icon: IconBell, description: '设置通知渠道和发送方式，查看企微送达情况。' },
+  { tab: '审计日志', itemKey: 'audit', permission: 'audit:view', icon: IconHistory, description: '查看谁在什么时候做了哪些操作。' },
 ]
 
 /**
@@ -603,10 +602,19 @@ export default function SettingsPage() {
   const notePrompt = useNotePrompt()
   // 支持深链：/settings?tab=rules
   const [searchParams, setSearchParams] = useSearchParams()
-  const { isAdmin } = usePermissions()
+  const { can } = usePermissions()
+  const canManageUsers = can('user:manage')
+  const canManageSettings = can('settings:manage')
+  const canManageTags = can('customer:view') && can('customer:update')
+  const visibleTabs = [PROFILE_TAB, ...TABS.filter((item) =>
+    item.itemKey === 'tags' ? canManageTags : can(item.permission),
+  )]
+  const hasManagementTabs = visibleTabs.length > 1
   const [settingSearch, setSettingSearch] = useState('')
   const searchTerms = settingSearch.trim().toLowerCase().split(/\s+/).filter(Boolean)
   const settingMatches = searchTerms.length > 0 ? SETTINGS_SEARCH.filter((entry) => {
+    const tab = new URLSearchParams(entry.to.split('?')[1]).get('tab')
+    if (!visibleTabs.some((item) => item.itemKey === tab)) return false
     const text = `${entry.label} ${entry.description} ${entry.place}`.toLowerCase()
     return searchTerms.every((term) => text.includes(term))
   }) : []
@@ -615,9 +623,8 @@ export default function SettingsPage() {
   // 第一个页签改叫「我的」而不是「个人账号」：它现在不只有登录名/密码，
   // 还挂着「我的信息」和「我的权限」—— 叫「个人账号」的话，想看自己有哪些
   // 权限的人根本不会往这里点。
-  const visibleTabs = [PROFILE_TAB, ...(isAdmin ? TABS : [])]
   const activeKey = visibleTabs.some((item) => item.itemKey === searchParams.get('tab'))
-    ? searchParams.get('tab')! : (isAdmin ? 'users' : 'profile')
+    ? searchParams.get('tab')! : (visibleTabs[1]?.itemKey ?? 'profile')
   const currentTab = visibleTabs.find((item) => item.itemKey === activeKey) ?? PROFILE_TAB
 
   // 设置页按「这是谁的事」分四组：个人 / 组织与人 / 业务配置 / 系统。
@@ -663,38 +670,38 @@ export default function SettingsPage() {
         page: userPage,
         page_size: userPageSize,
       }),
-    enabled: isAdmin,
+    enabled: canManageUsers,
   })
   // 角色 / 部门：这两个接口一次就把全部数据返回了（角色就几个、部门通常也就几十个），
   // 后端没有搜索参数 —— 在页面上本地筛就够了，不必为它去改后端。
   const [roleKeyword, setRoleKeyword] = useState('')
   const [deptKeyword, setDeptKeyword] = useState('')
-  const rolesQuery = useQuery({ queryKey: ['settings-roles'], queryFn: listRoles, enabled: isAdmin })
+  const rolesQuery = useQuery({ queryKey: ['settings-roles'], queryFn: listRoles, enabled: canManageUsers })
   const deptsQuery = useQuery({
     queryKey: ['settings-departments'],
     queryFn: listDepartments,
-    enabled: isAdmin,
+    enabled: canManageUsers,
   })
   const queryClient = useQueryClient()
   const poolRulesQuery = useQuery({
     queryKey: ['public-pool-rules'],
     queryFn: listPublicPoolRules,
-    enabled: isAdmin && activeKey === 'rules',
+    enabled: canManageSettings && activeKey === 'rules',
   })
   const taskRulesQuery = useQuery({
     queryKey: ['task-rules'],
     queryFn: listTaskRules,
-    enabled: isAdmin && activeKey === 'rules',
+    enabled: canManageSettings && activeKey === 'rules',
   })
   const settingsQuery = useQuery({
     queryKey: ['system-settings'],
     queryFn: listSettings,
-    enabled: isAdmin && activeKey === 'rules',
+    enabled: canManageSettings && activeKey === 'rules',
   })
   const dictionariesQuery = useQuery({
     queryKey: ['settings-dictionaries'],
     queryFn: () => listDictionaries(undefined, false),
-    enabled: isAdmin && activeKey === 'dictionaries',
+    enabled: canManageSettings && activeKey === 'dictionaries',
   })
   const [dictionaryForm, setDictionaryForm] = useState({
     type: 'customer_level', code: '', label: '', sort_no: '0', remark: '',
@@ -709,7 +716,7 @@ export default function SettingsPage() {
   const tagsQuery = useQuery({
     queryKey: ['settings-tags'],
     queryFn: () => listTags(false),
-    enabled: isAdmin && activeKey === 'tags',
+    enabled: canManageTags && activeKey === 'tags',
   })
   const [tagForm, setTagForm] = useState<{ name: string; type: string }>({ name: '', type: 'custom' })
   const tagNameInput = useRef<HTMLInputElement>(null)
@@ -992,6 +999,7 @@ export default function SettingsPage() {
         mobile: userForm.mobile || null,
         email: userForm.email || null,
         department_id: userForm.department_id ?? null,
+        role_ids: userForm.role_ids,
       }
       if (userEditTarget) {
         // 用户管理不修改登录名；本人可在个人设置修改。密码留空不重置。
@@ -1002,14 +1010,9 @@ export default function SettingsPage() {
         ...payload,
         username: userForm.username,
         password: userForm.password,
-        role_ids: userForm.role_ids,
       })
     },
-    onSuccess: async () => {
-      // 编辑时顺带同步角色
-      if (userEditTarget) {
-        await setUserRoles(userEditTarget.id, userForm.role_ids)
-      }
+    onSuccess: () => {
       Toast.success(userEditTarget ? '用户已保存' : '用户已创建')
       setUserModal(false)
       refreshUsers()
@@ -1399,15 +1402,15 @@ export default function SettingsPage() {
         // 主管只有公海回收复核权，他翻到那一页时标题必须写「公海回收复核」，
         // 否则他会以为自己拿到了整个系统设置、跑去点用户和角色。
         // 翻到「我的」时同理 —— 那是他自己的东西，不叫「系统设置」。
-        title={isAdmin ? '系统设置' : '我的'}
-        subtitle={isAdmin ? undefined : '管理登录名、密码，查看资料与权限'}
-        extra={isAdmin && (
+        title={hasManagementTabs ? '系统设置' : '我的'}
+        subtitle={hasManagementTabs ? undefined : '管理登录名、密码，查看资料与权限'}
+        extra={hasManagementTabs && (
           <Input className="settings-search-input" aria-label="查找设置" placeholder="查找设置，如付款条件、查重"
             showClear value={settingSearch} onChange={setSettingSearch} />
         )}
       />
-      <div className={`settings-shell${isAdmin ? '' : ' is-personal'}`}>
-          {isAdmin && searchTerms.length > 0 && (
+      <div className={`settings-shell${hasManagementTabs ? '' : ' is-personal'}`}>
+          {hasManagementTabs && searchTerms.length > 0 && (
             <div className="settings-search-results">
               {settingMatches.length > 0 ? <ul aria-label="设置搜索结果">
                 {settingMatches.map((entry) => (
@@ -1422,7 +1425,7 @@ export default function SettingsPage() {
               </ul> : <p role="status">没有找到相关设置。可以试试「权限」「通知」或「付款条件」。</p>}
             </div>
           )}
-          {isAdmin && (
+          {hasManagementTabs && (
             <label className="settings-nav-compact">
               <span>设置分类</span>
               <select value={activeKey} onChange={(event) => setSearchParams({ tab: event.target.value })}>
@@ -1454,11 +1457,11 @@ export default function SettingsPage() {
           </nav>
           <section className="settings-content" aria-labelledby="settings-pane-title">
           <header className="settings-pane-header">
-            <h3 id="settings-pane-title" className="settings-content-heading">{isAdmin ? currentTab.tab : '个人账号'}</h3>
-            {isAdmin && <p>{currentTab.description}</p>}
+            <h3 id="settings-pane-title" className="settings-content-heading">{hasManagementTabs ? currentTab.tab : '个人账号'}</h3>
+            {hasManagementTabs && <p>{currentTab.description}</p>}
           </header>
           {activeKey === 'profile' && <PersonalProfilePanel />}
-          {activeKey === 'users' && isAdmin && (
+          {activeKey === 'users' && canManageUsers && (
             <>
               <div className="toolbar settings-toolbar">
                 {/* 能搜什么要写在占位符上：不写清楚，等于没做。
@@ -1887,12 +1890,12 @@ export default function SettingsPage() {
                后端一直支持那六个筛选参数，是页面没接。 */
             <AuditLogPanel active={activeKey === 'audit'} />
           )}
-          {activeKey === 'rules' && (
+          {activeKey === 'rules' && canManageSettings && (
             // 必须写 gridTemplateColumns: 'minmax(0, 1fr)'：单列 grid 的默认列宽是 auto，
             // 会被子项的最小宽度撑开 —— 实测被撑到 1320（容器只有 923），
             // 于是整页出现横向滚动条、右边第三列输入框被裁到框外。
             <>
-            {isAdmin && (
+            {canManageSettings && (
               <div className="rule-tabs" role="tablist">
                 {RULE_PANELS.map((panel) => (
                   <button
@@ -1914,7 +1917,7 @@ export default function SettingsPage() {
                   无法读取业务设置。 <Button theme="borderless" onClick={() => void settingsQuery.refetch()}>重新读取</Button>
                 </p>
               )}
-              {isAdmin && (
+              {canManageSettings && (
                 <div className={panelKey === 'unrated' ? undefined : 'panel-hidden'}>
                   <UnratedRulesPanel />
                 </div>
@@ -1924,7 +1927,7 @@ export default function SettingsPage() {
                   主管只有 `customer:pool_review`，看到这些控件也点不动（会吃 403），
                   所以对非管理员**整块不渲染** —— 返修单 R12 要求"主管只进入本团队
                   复核功能"，露着不能用的按钮比藏起来更糟。 */}
-              {isAdmin && (
+              {canManageSettings && (
               <div className={`rule-block${panelKey === 'pool' ? '' : ' panel-hidden'}`}>
                 <div className="rule-block-title">公海回收规则</div>
                 {/* 说明收成两行 + 「展开」：这四句话合起来二十多行灰字，把下面那张表
@@ -2018,7 +2021,7 @@ export default function SettingsPage() {
               </div>
               )}
 
-              {isAdmin && (
+              {canManageSettings && (
                 <div className={`rule-block${panelKey === 'pool' ? '' : ' panel-hidden'}`}>
                   <div className="rule-block-title">回收等待时间</div>
                   {/* 原来用 Typography ellipsis 折叠两行 —— 这段里带 <b>，
@@ -2082,7 +2085,7 @@ export default function SettingsPage() {
                 <Link to="/customers">去客户中心 →</Link>
               </div>
 
-              {isAdmin && panelKey === 'auto' && (
+              {canManageSettings && panelKey === 'auto' && (
                 <AutoTaskRulesPanel
                   rules={(taskRulesQuery.data ?? []).filter((row) => row.code !== 'customer_unrated_silent')}
                   pending={taskRulesQuery.isLoading}
@@ -2095,7 +2098,7 @@ export default function SettingsPage() {
                 />
               )}
 
-              {isAdmin && (
+              {canManageSettings && (
               // is-plain：这一块不再套白卡 —— 六个分组本身就是卡片，
               // 卡中卡（白底套白底、只靠一条描边区分）正是"廉价感"的来源。
               /* 总标题去掉：一次只显示一个组，组自己就有组头，

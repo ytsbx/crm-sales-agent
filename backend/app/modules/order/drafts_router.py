@@ -72,7 +72,7 @@ async def update(draft_id: int, payload: OrderDraftUpdate, user: CurrentUser = D
 async def confirm(draft_id: int, payload: OrderDraftConfirm, user: CurrentUser = Depends(require_permission('order:manage')), session: AsyncSession = Depends(get_db)):
     order = await drafts.confirm(session, user, draft_id, payload)
     await session.commit()
-    await notifications.dispatch_pending(session)
+    await notifications.dispatch_after_commit(session)
     return ok({'order_id': order.id, 'order_no': order.order_no})
 
 

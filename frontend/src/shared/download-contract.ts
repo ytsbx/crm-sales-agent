@@ -12,15 +12,9 @@
  * 合同面板）漏一处，那个入口就又会变成"点了没反应"。
  */
 
-import { Toast } from '@douyinfe/semi-ui'
-
 import { downloadContractDocument } from './api/contract'
+import { showDownloadResult } from './download-feedback'
 
-export async function downloadContractDoc(doc: { id: number; doc_no: string }): Promise<void> {
-  try {
-    await downloadContractDocument(doc)
-  } catch (error) {
-    // 文案兜底由 `toast-guard` 统一负责，这里只管把原因递出去
-    Toast.error(error instanceof Error ? error.message : '下载失败')
-  }
+export function downloadContractDoc(doc: { id: number; doc_no: string }): Promise<void> {
+  return showDownloadResult(downloadContractDocument(doc))
 }

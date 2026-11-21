@@ -641,7 +641,7 @@ async def analytics_leads(
     user: CurrentUser = Depends(require_permission("lead:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    """线索分析：来源分布、状态分布、转化率与平均转化时长。"""
+    """线索分析：来源、状态、转化率及单独统计的废弃原因。"""
     return ok(await svc.lead_stats(session, user))
 
 

@@ -379,7 +379,7 @@ async def approve(
                 ip=client_ip(request),
             )
             await session.commit()
-            await notification_service.dispatch_pending(session)
+            await notification_service.dispatch_after_commit(session)
             return ok({"current_node": "co_sign"}, f"本级已通过，进入「{co_sign.get('label', '会签')}」")
 
     node_code = "co_sign" if instance.current_node == "co_sign" else "manager"
@@ -422,7 +422,7 @@ async def approve(
         ip=client_ip(request),
     )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(None, "已通过，业务员可以发送该报价")
 
 
@@ -477,7 +477,7 @@ async def reject(
         ip=client_ip(request),
     )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(None, "已拒绝，业务员需要调整价格后重新提交")
 
 
@@ -593,7 +593,7 @@ async def transfer(
         ip=client_ip(request),
     )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     ctx = await _context(session, [instance])
     return ok(_serialize(instance, ctx), f"已转交给「{target.name}」")
 

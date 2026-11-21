@@ -909,12 +909,7 @@ async def opportunity_stats(session: AsyncSession, user: CurrentUser) -> dict:
 
 
 async def stage_conversion(session: AsyncSession, user: CurrentUser) -> list[dict]:
-    """PRD §23「商机：阶段转化」。
-
-    口径：每个阶段有多少商机**到达过**（用阶段历史去重），
-    相邻两级的到达数之比就是转化率。比"当前停在该阶段的数量"更准，
-    因为推进过的商机不会停留在中间阶段。
-    """
+    """按阶段统计曾经到达过的商机数。允许跳阶段，每个阶段独立去重。"""
     stages = (
         await session.execute(
             select(OpportunityStage).order_by(OpportunityStage.sequence.asc())
@@ -938,22 +933,17 @@ async def stage_conversion(session: AsyncSession, user: CurrentUser) -> list[dic
         reached.setdefault(stage_id, set()).add(opportunity_id)
 
     result: list[dict] = []
-    previous: int | None = None
     for stage in stages:
-        count = len(reached.get(stage.id, set()))
-        conversion = None
-        if previous is not None and previous > 0:
-            conversion = round(count / previous, 4)
         result.append(
             {
                 "stage_id": stage.id,
                 "stage_name": stage.name,
                 "sequence": stage.sequence,
-                "reached_count": count,
-                "conversion_from_previous": conversion,
+                "reached_count": len(reached.get(stage.id, ())),
+                # 兼容旧客户端；业务允许跳阶段，两个阶段的到达数不能相除。
+                "conversion_from_previous": None,
             }
         )
-        previous = count
     return result
 
 
@@ -1092,16 +1082,10 @@ async def quote_stats(session: AsyncSession, user: CurrentUser) -> dict:
 
 
 async def customer_stats(session: AsyncSession, user: CurrentUser) -> dict:
-    customers = (
-        await session.execute(
-            await _scope_filter(
-                select(Customer).where(Customer.deleted_at.is_(None)),
-                user,
-                Customer.owner_id,
-                session,
-            )
-        )
-    ).scalars().all()
+    customer_scope = await _scope_filter(
+        select(Customer).where(Customer.deleted_at.is_(None)), user, Customer.owner_id, session,
+    )
+    customers = (await session.execute(customer_scope)).scalars().all()
     by_source: dict[str, int] = {}
     by_level: dict[str, int] = {}
     for customer in customers:
@@ -1142,22 +1126,18 @@ async def customer_stats(session: AsyncSession, user: CurrentUser) -> dict:
         elif last < dormant_cutoff:
             dormant_count += 1
 
-    # PRD §23「客户：复购」：同一个客户有 2 张及以上非取消订单 = 发生过复购
-    repeat_customer_ids = set(
-        (
-            await session.execute(
-                await _scope_filter(
-                    select(SalesOrder.customer_id)
-                    .where(SalesOrder.status != "cancelled", SalesOrder.customer_id.is_not(None))
-                    .group_by(SalesOrder.customer_id)
-                    .having(func.count(SalesOrder.id) >= 2),
-                    user,
-                    SalesOrder.owner_id,
-                    session,
-                )
+    # 按在册客户归属统计其全部有效订单，交接客户后仍保留复购事实。
+    repeat_customer_ids = (
+        await session.execute(
+            select(SalesOrder.customer_id)
+            .where(
+                SalesOrder.status != "cancelled",
+                SalesOrder.customer_id.in_(customer_scope.with_only_columns(Customer.id)),
             )
-        ).scalars().all()
-    )
+            .group_by(SalesOrder.customer_id)
+            .having(func.count(SalesOrder.id) >= 2)
+        )
+    ).scalars().all()
 
     return {
         "total": len(customers),
@@ -1575,24 +1555,30 @@ async def lead_stats(session: AsyncSession, user: CurrentUser) -> dict:
     不统计"平均转化天数"（2026-11-21 主人明确：这个不需要统计）：
     `leads` 没有 converted_at 列，只能从审计日志里反推，口径不可靠。
     """
-    stmt = select(Lead).where(Lead.deleted_at.is_(None))
     owner_ids = await scoped_owner_ids(session, user)
-    if owner_ids is not None:
-        stmt = stmt.where(
-            or_(Lead.owner_id.in_(owner_ids), Lead.owner_id.is_(None))
-        )
-    leads = (await session.execute(stmt)).scalars().all()
+    scope = [] if owner_ids is None else [
+        or_(Lead.owner_id.in_(owner_ids), Lead.owner_id.is_(None))
+    ]
+    leads = (await session.execute(
+        select(Lead.source, Lead.status).where(Lead.deleted_at.is_(None), *scope)
+    )).all()
 
     by_source: dict[str, int] = {}
     by_status: dict[str, int] = {}
-    invalid_reasons: dict[str, int] = {}
+    for source, status in leads:
+        source = source or "未填写"
+        by_source[source] = by_source.get(source, 0) + 1
+        by_status[status] = by_status.get(status, 0) + 1
 
-    for lead in leads:
-        by_source[lead.source or "未填写"] = by_source.get(lead.source or "未填写", 0) + 1
-        by_status[lead.status] = by_status.get(lead.status, 0) + 1
-        if lead.status == "invalid":
-            key = (lead.invalid_reason or "未填写").strip()
-            invalid_reasons[key] = invalid_reasons.get(key, 0) + 1
+    # 废弃会移入回收站。只在这项统计保留它；普通删除不改变状态。
+    reason = func.coalesce(func.nullif(func.trim(Lead.invalid_reason), ""), "未填写").label("reason")
+    reason_count = func.count(Lead.id)
+    invalid_reasons = (await session.execute(
+        select(reason, reason_count)
+        .where(Lead.status == "invalid", *scope)
+        .group_by(reason)
+        .order_by(reason_count.desc(), reason)
+    )).all()
 
     total = len(leads)
     converted = by_status.get("converted", 0)
@@ -1609,7 +1595,7 @@ async def lead_stats(session: AsyncSession, user: CurrentUser) -> dict:
         ],
         "invalid_reasons": [
             {"name": k, "value": v}
-            for k, v in sorted(invalid_reasons.items(), key=lambda x: -x[1])
+            for k, v in invalid_reasons
         ],
     }
 
@@ -1642,12 +1628,11 @@ async def pricing_stats(session: AsyncSession, user: CurrentUser) -> dict:
     for item, _version, level in rows:
         if item.approval_required:
             need_approval += 1
+        quoted_price = float(item.quoted_price)
+        by_level.setdefault(level or "未分级", []).append(quoted_price)
         recommended = item.recommended_price_snapshot
         if recommended and float(recommended) > 0:
-            gap = (float(recommended) - float(item.quoted_price)) / float(recommended)
-            discounted.append(gap)
-            key = level or "未分级"
-            by_level.setdefault(key, []).append(float(item.quoted_price))
+            discounted.append((float(recommended) - quoted_price) / float(recommended))
 
     return {
         "item_count": total_items,

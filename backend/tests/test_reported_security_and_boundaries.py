@@ -162,3 +162,52 @@ async def test_changed_sku_not_hidden_by_same_opportunity_source(case):
         raw.add(QuoteItem(quote_version_id=vid,sku_id=sku,opportunity_item_id=99,sku_name_snapshot=f'SKU{sku}',quantity=D(1),quoted_price=D(10)))
     raw.commit();changes=(await quotes.version_comparison(s,1))['diffs'][0]['changes']
     assert {(c['sku_id'],c['field']) for c in changes if c['field'] in ('added','removed')}=={(3,'removed'),(4,'added')}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("can_view,owner,show_identity", [
+    (True, 2, False), (False, 1, False), (True, 1, True),
+])
+async def test_import_duplicates_preserve_lead_visibility(case, can_view, owner, show_identity):
+    raw, session = case
+    raw.add(Lead(id=77, owner_id=owner, name="已有线索名称", company_name="示例公司",
+                 contact_name="示例联系人", mobile="18800001111"))
+    raw.commit()
+    permissions = ("lead:create", "lead:view") if can_view else ("lead:create",)
+    user = make_user(1, permissions=permissions, roles=("salesperson",), data_scope="self")
+    content = (
+        "线索名称,手机号,公司名称,联系人\n"
+        "手机号重复,18800001111,,\n"
+        "同一联系人重复,,示例公司,示例联系人\n"
+    ).encode("utf-8-sig")
+    result = (await io_router.import_leads(
+        REQ, UploadFile(file=BytesIO(content), filename="duplicates.csv"), True, None, user, session
+    ))["data"]
+    assert result["skipped_count"] == 2
+    assert ("已有线索名称" in str(result)) is show_identity
+    assert ("id=77" in str(result)) is show_identity
+    assert raw.query(Lead).count() == 1
+
+
+@pytest.mark.anyio
+async def test_stale_customer_contacts_follow_the_same_owner_scope(case):
+    from datetime import timedelta
+
+    from app.modules.analytics.service import stale_customers
+    from app.modules.contact_util import full_contact_customer_ids
+
+    raw, session = case
+    raw.get(Customer, 1).created_at = NOW - timedelta(days=100)
+    raw.get(Customer, 1).pool_status = "private"
+    raw.get(Contact, 1).mobile = "18800001111"
+    raw.get(Contact, 1).is_primary = True
+    raw.add(Customer(id=2, name="其他负责人的客户", owner_id=2, pool_status="private",
+                     created_at=NOW - timedelta(days=100)))
+    raw.add(Contact(customer_id=2, name="范围外的联系人", mobile="18800002222", is_primary=True))
+    raw.flush()
+
+    user = make_user(1, permissions=("customer:view",), data_scope="self")
+    allowed = await full_contact_customer_ids(session, user, {1, 2})
+    result = await stale_customers(session, user)
+    assert {row["id"] for row in result["items"]} == allowed == {1}
+    assert result["items"][0]["contact_phone"] == "18800001111"

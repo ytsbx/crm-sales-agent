@@ -204,8 +204,8 @@ export default function CustomerListPage() {
   // 两条规矩见 shared/components/BlockedHint.tsx：看得见（常驻灰字）+ 点得动（点了有反应）。
   const canExport = can('customer:export')
   const canImport = can('customer:create')
-  // 回收复核只对能批回收的人开放（主管的 pool_review / 管理员的 settings:manage）
-  const canPoolReview = can('customer:pool_review') || can('settings:manage')
+  // 与回收复核接口使用同一权限，管理员由 can 统一放行。
+  const canPoolReview = can('customer:pool_review')
   const view = canPoolReview && searchParams.get('tab') === 'review' ? 'review' : 'list'
   const exportBlockedReasons = [
     ...(!exportPurpose ? ['请选择导出用途。'] : []),

@@ -75,3 +75,52 @@ async def test_simulation_rejects_non_cny(case):
     _, session, _, _ = case
     with pytest.raises(AppError):
         await router.simulate_pricing(PricingSimulation(base=PricingRequest(sku_id=1, currency='USD'), candidates=['1.2345']), USER, session)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("maintained", [False, True])
+async def test_incomplete_cost_cannot_supply_inferred_prices(case, maintained):
+    from app.modules.pricing.service import calculate_price
+
+    raw, session, _, _ = case
+    raw.add(ProductCost(sku_id=1, effective_from=date(2020, 1, 1), purchase_cost=D(10)))
+    if maintained:
+        raw.add(PriceRule(sku_id=1, effective_from=date(2020, 1, 1),
+                          standard_price=D(30), guide_price=D(25)))
+    raw.flush()
+    result = await calculate_price(session, sku_id=1, quantity=D(1))
+    assert result["cost"]["cost_complete"] is False
+    assert result["standard_price"] == (30 if maintained else None)
+    assert result["recommended_price"] == (25 if maintained else None)
+
+
+@pytest.mark.anyio
+async def test_pricing_stats_uses_actual_quotes_without_a_recommended_price(case):
+    from app.modules.analytics.service import pricing_stats
+    from app.modules.customer.model import Customer
+    from app.modules.quote.model import QuoteItem
+
+    raw, session, quote, version = case
+    raw.get(Customer, quote.customer_id).level = "A"
+    raw.add_all([
+        QuoteItem(quote_version_id=version.id, sku_id=1, quoted_price=D(90),
+                  recommended_price_snapshot=D(100)),
+        QuoteItem(quote_version_id=version.id, sku_id=1, quoted_price=D(300)),
+    ])
+    raw.flush()
+    result = await pricing_stats(session, USER)
+    assert result["average_discount_rate"] == 0.1
+    assert result["average_quoted_price_by_level"] == [
+        {"level": "A", "item_count": 2, "average_price": 195.0},
+    ]
+
+
+@pytest.mark.anyio
+async def test_margin_simulation_requires_complete_cost(case):
+    raw, session, _, _ = case
+    raw.add(ProductCost(sku_id=1, effective_from=date(2020, 1, 1), purchase_cost=D(10)))
+    raw.flush()
+    payload = PricingSimulation(base=PricingRequest(sku_id=1), margins=["0.3"])
+    result = (await router.simulate_pricing(payload, USER, session))["data"]
+    assert result["scenarios"] == []
+    assert "完整的生效成本" in result["blocked_reason"]

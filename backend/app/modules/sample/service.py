@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.data_scope import scoped_owner_ids
@@ -112,15 +112,16 @@ def serialize_request(
     items: list[dict] | None = None,
     shipments: list[dict] | None = None,
     superseded_by: int | None = None,
+    revision_locked: bool = False,
 ) -> dict:
     basis = basis_state(request)
     return {
         "id": request.id,
-        # 修订版（§3.3）：第几版、取代了谁、又被谁取代（superseded_by 有值即冻结只读）。
-        # 由调用方查好传进来——本函数是同步的，拿不到 session。
+        # 原版锁定与可打开的修订版分别判断。
         "version": request.version or 1,
         "parent_id": request.parent_id,
         "superseded_by": superseded_by,
+        "revision_locked": revision_locked,
         "source_context": request.source_context,
         "opportunity_id": request.opportunity_id,
         "opportunity_title": opportunity_title,
@@ -337,8 +338,7 @@ async def get_visible_or_404(
         if child is not None:
             raise AppError(
                 ErrorCode.STATUS_NOT_ALLOWED,
-                f"这是第 {request.version} 版，已被新修订版（编号 {child}）取代、不能再改。"
-                "制作与寄送事实已按当时资料冻结保留；要继续改请在新版本上操作",
+                "这张打样单的原版记录已锁定，仅可查看。请在打样管理查看可办理的版本，或联系负责人。",
                 422,
             )
     return request
@@ -460,7 +460,9 @@ async def skus_map(session: AsyncSession, items: list[SampleItem]) -> dict[int, 
     }
 
 
-async def list_payload(session: AsyncSession, rows: list[SampleRequest]) -> list[dict]:
+async def list_payload(
+    session: AsyncSession, rows: list[SampleRequest], user: CurrentUser
+) -> list[dict]:
     """列表用的批量序列化：把明细、寄样、客户/商机/负责人名一次补齐。
 
     之前列表直接调 serialize_request 却没传 items/shipments，导致接口返回的
@@ -472,19 +474,26 @@ async def list_payload(session: AsyncSession, rows: list[SampleRequest]) -> list
     all_items = [item for items in items_by_request.values() for item in items]
     skus = await skus_map(session, all_items)
     customers, opportunities, owners = await enrichment(session, rows)
-    # 一次查清"谁被谁取代了"（§3.3）：有子版本的那一版冻结只读，
-    # 界面上要标出来。批量一次查询，别在循环里逐条问。
+    locked_ids: set[int] = set()
     child_of: dict[int, int] = {}
     if ids:
-        # 这里**故意不加**软删过滤：`parent_id` 查的是"这一版被哪一版取代了"，
-        # 是既成事实 —— 新版本后来即便被删，也不该让"旧版曾被取代"这件事消失。
-        for child_id, parent_id in (
-            await session.execute(
-                select(SampleRequest.id, SampleRequest.parent_id)
-                .where(SampleRequest.parent_id.in_(ids))
-            )
-        ).all():
-            child_of.setdefault(parent_id, child_id)
+        visible_children = await apply_data_scope(
+            select(SampleRequest.id).where(
+                SampleRequest.parent_id.in_(ids), SampleRequest.deleted_at.is_(None),
+            ),
+            user, session,
+        )
+        # 删除或无权查看的修订版仍会锁住原版，但它的 ID 不进入响应。
+        visible_child_id = case((SampleRequest.id.in_(visible_children), SampleRequest.id))
+        revisions = await session.execute(
+            select(SampleRequest.parent_id, visible_child_id)
+            .where(SampleRequest.parent_id.in_(ids))
+            .order_by(SampleRequest.version.desc(), SampleRequest.id.desc())
+        )
+        for parent_id, child_id in revisions.all():
+            locked_ids.add(parent_id)
+            if child_id is not None:
+                child_of.setdefault(parent_id, child_id)
 
     payload = []
     for row in rows:
@@ -504,6 +513,7 @@ async def list_payload(session: AsyncSession, rows: list[SampleRequest]) -> list
                 for shipment in shipments_by_request.get(row.id, [])
             ],
             superseded_by=child_of.get(row.id),
+            revision_locked=row.id in locked_ids,
         )
         # 「这张单子的附件还能不能上传」（2026-10-08）：
         # 制作/寄出之后新附件只能标「后续补充资料」，界面据此决定上传时带什么类别。
@@ -516,14 +526,14 @@ async def list_payload(session: AsyncSession, rows: list[SampleRequest]) -> list
         # 「这张单现在能不能删」（2026-10-15 加软删）：判据只在后端写一遍
         # （`model.SAMPLE_DELETABLE_STATUSES`），这里下发一个布尔，前端据此决定
         # 显示「删除」还是「恢复」—— 前端不要自己复刻一份状态清单。
-        data["can_delete"] = can_delete_sample(row)
+        data["can_delete"] = row.id not in locked_ids and can_delete_sample(row)
         payload.append(data)
     return payload
 
 
-async def detail(session: AsyncSession, request: SampleRequest) -> dict:
+async def detail(session: AsyncSession, request: SampleRequest, user: CurrentUser) -> dict:
     """单条详情：与列表共用同一套装配逻辑，避免两处字段漂移。"""
-    payload = await list_payload(session, [request])
+    payload = await list_payload(session, [request], user)
     return payload[0]
 
 

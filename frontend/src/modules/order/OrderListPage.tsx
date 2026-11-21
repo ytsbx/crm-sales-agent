@@ -19,9 +19,8 @@ import {
   type Payment,
   type Receivable,
 } from '../../shared/api/order'
-import { listCustomers } from '../../shared/api/customer'
+import { getCustomer, listCustomers } from '../../shared/api/customer'
 import { listSkusForPricing } from '../../shared/api/pricing'
-import { listUsers } from '../../shared/api/system'
 import { useAuthStore } from '../../shared/store/auth'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { TagTone } from '../../shared/types'
@@ -29,7 +28,9 @@ import StatusDot from '../../shared/components/StatusDot'
 import SectionCard from '../../shared/components/SectionCard'
 import PaymentVoucherControl from '../common/PaymentVoucherControl'
 import FormLabel from '../../shared/components/FormLabel'
-import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
+import { optionMatcher } from '../../shared/components/optionMatch'
+import RecordSearchSelect from '../../shared/components/RecordSearchSelect'
+import UserSearchSelect from '../../shared/components/UserSearchSelect'
 // 金额一律带**实际币种**（第九批 §9.9）：列表以前写死 `¥`，
 // 有外币订单时显示的就是错的数字。
 import { formatMoney, toTwoDecimals } from '../../shared/components/money'
@@ -108,20 +109,9 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
     queryFn: () => listPayments({ page: paymentsPage, page_size: 20 }),
     enabled: activeKey === 'payments',
   })
-  // 手工建单的下拉数据：客户 / SKU / 负责人
-  const createCustomersQuery = useQuery({
-    queryKey: ['customers-for-select'],
-    queryFn: () => listCustomers({ page: 1, page_size: 100 }),
-    enabled: createVisible,
-  })
   const createSkusQuery = useQuery({
     queryKey: ['skus-for-pricing'],
     queryFn: listSkusForPricing,
-    enabled: createVisible,
-  })
-  const createUsersQuery = useQuery({
-    queryKey: ['users-for-select'],
-    queryFn: () => listUsers({ page: 1, page_size: 100 }),
     enabled: createVisible,
   })
 
@@ -730,30 +720,27 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))', gap: 12 }}>
             <div>
               <FormLabel required>客户</FormLabel>
-              <Select
-                placeholder="选择客户"
+              <RecordSearchSelect
+                key={String(createVisible)}
+                scope="order-customer"
+                enabled={createVisible}
+                placeholder="按客户名称或编号搜索"
                 value={createForm.customer_id ?? undefined}
-                onChange={(value) => setCreateForm({ ...createForm, customer_id: value as number })}
-                optionList={optionsWithCodeOnDuplicate(
-                  createCustomersQuery.data?.items ?? [],
-                  (item) => item.name,
-                  (item) => item.id,
-                )}
-                filter={optionMatcher}
-                style={{ width: '100%' }}
+                list={listCustomers}
+                lookup={getCustomer}
+                labelOf={(customer) => customer.name}
+                onChange={(customer) => setCreateForm({ ...createForm, customer_id: customer?.id ?? null })}
               />
             </div>
             <div>
               <div style={{ marginBottom: 4 }}>负责人（默认自己）</div>
-              <Select
-                placeholder="选择负责人"
-                value={(createForm.owner_id ?? currentUser?.id) as number}
-                onChange={(value) => setCreateForm({ ...createForm, owner_id: value as number })}
-                optionList={(createUsersQuery.data?.items ?? []).map((item) => ({
-                  value: item.id,
-                  label: item.name,
-                }))}
-                filter={optionMatcher}
+              <UserSearchSelect
+                queryScope="order-owner"
+                enabled={createVisible}
+                placeholder="按姓名或登录账号搜索"
+                value={createForm.owner_id ?? currentUser?.id}
+                fallbackLabel={createForm.owner_id == null ? currentUser?.name : undefined}
+                onChange={(value) => setCreateForm({ ...createForm, owner_id: value ?? null })}
                 style={{ width: '100%' }}
               />
             </div>

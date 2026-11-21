@@ -56,6 +56,7 @@ import AttachmentPanel from '../common/AttachmentPanel'
 import DecisionMakerCard from '../common/DecisionMakerCard'
 import FormLabel from '../../shared/components/FormLabel'
 import BlockedHint from '../../shared/components/BlockedHint'
+import GuardedButton from '../../shared/components/GuardedButton'
 // 金额一律带**实际币种**（第九批 §9.9）：这几张表原来都写死 `¥`，
 // 同一客户同时有 CNY / USD 订单时，旁边那张表显示的就是错的。
 import { formatMoney } from '../../shared/components/money'
@@ -102,7 +103,26 @@ export default function CustomerDetailPage() {
   const queryClient = useQueryClient()
   const { can } = usePermissions()
   const currentUser = useAuthStore((state) => state.user)
-  const [activeKey, setActiveKey] = useState(searchParams.get('tab') ?? 'overview')
+  const requestedTab = searchParams.get('tab')
+  const activeKey = TABS.some((tab) => tab.itemKey === requestedTab) ? requestedTab! : 'overview'
+  const openTab = (key: string) => setSearchParams((previous) => {
+    const next = new URLSearchParams(previous)
+    next.set('tab', key)
+    return next
+  })
+  // 详情页四张业务表都改服务端分页：50 条一页，第 51 条在第 2 页、第 101 条在第 3 页。
+  // 切换客户必须回到第 1 页，否则会停在上一家客户的页码上，看到空页。
+  const LIST_PAGE_SIZE = 50
+  const [oppPage, setOppPage] = useState(1)
+  const [followupPage, setFollowupPage] = useState(1)
+  const [quotePage, setQuotePage] = useState(1)
+  const [orderPage, setOrderPage] = useState(1)
+  useEffect(() => {
+    setOppPage(1)
+    setFollowupPage(1)
+    setQuotePage(1)
+    setOrderPage(1)
+  }, [customerId])
   // 跟进表七列是这套详情页里最宽的一张表：1440 卡内 1130 放得下，1024 卡内 699 放不下，
   // 不做窄屏分档就会在 1024 弹一条横向滚动条、「附件」只剩半个字（2026-11-19 实拍）。
   // 这里只做"读窗口宽度"，不做路由级适配：改宽度时重算列宽即可。
@@ -428,14 +448,14 @@ export default function CustomerDetailPage() {
   })
 
   const opportunitiesQuery = useQuery({
-    queryKey: ['customer-opportunities', customerId],
-    queryFn: () => listOpportunities({ customer_id: customerId, page_size: 50 }),
+    queryKey: ['customer-opportunities', customerId, oppPage],
+    queryFn: () => listOpportunities({ customer_id: customerId, page: oppPage, page_size: LIST_PAGE_SIZE }),
     enabled: Number.isFinite(customerId),
   })
   const followupsQuery = useQuery({
-    queryKey: ['followups', { customer_id: customerId }],
-    queryFn: () => listFollowups({ customer_id: customerId, page_size: 100 }),
-    enabled: Number.isFinite(customerId) && activeKey === 'followups',
+    queryKey: ['followups', { customer_id: customerId, page: followupPage }],
+    queryFn: () => listFollowups({ customer_id: customerId, page: followupPage, page_size: LIST_PAGE_SIZE }),
+    enabled: Number.isFinite(customerId) && activeKey === 'followups' && can('followup:view'),
   })
   const timelineQuery = useQuery({
     queryKey: ['timeline', 'customer', customerId],
@@ -444,14 +464,14 @@ export default function CustomerDetailPage() {
   })
 
   const quotesQuery = useQuery({
-    queryKey: ['customer-quotes', customerId],
-    queryFn: () => listQuotes({ customer_id: customerId, page_size: 50 }),
+    queryKey: ['customer-quotes', customerId, quotePage],
+    queryFn: () => listQuotes({ customer_id: customerId, page: quotePage, page_size: LIST_PAGE_SIZE }),
     // 概览页签也要读它的 total（业务全景四个数字之一），所以 overview 时同样要取
     enabled: Number.isFinite(customerId) && (activeKey === 'quotes' || activeKey === 'overview'),
   })
   const ordersQuery = useQuery({
-    queryKey: ['customer-orders', customerId],
-    queryFn: () => listOrders({ customer_id: customerId, page_size: 50 }),
+    queryKey: ['customer-orders', customerId, orderPage],
+    queryFn: () => listOrders({ customer_id: customerId, page: orderPage, page_size: LIST_PAGE_SIZE }),
     enabled: Number.isFinite(customerId) && (activeKey === 'orders' || activeKey === 'overview'),
   })
 
@@ -788,10 +808,7 @@ export default function CustomerDetailPage() {
         <Tabs
           type="line"
           activeKey={activeKey}
-          onChange={(key) => {
-            setActiveKey(key)
-            setSearchParams({ tab: key })
-          }}
+          onChange={openTab}
           tabList={TABS}
         />
 
@@ -907,10 +924,7 @@ export default function CustomerDetailPage() {
                     { key: 'quotes', label: '报价', value: quotesQuery.data?.total, tone: 'tone-caution' },
                     { key: 'orders', label: '订单', value: ordersQuery.data?.total, tone: 'tone-success' },
                   ] as const).map((tile) => {
-                    const jump = () => {
-                      setActiveKey(tile.key)
-                      setSearchParams({ tab: tile.key })
-                    }
+                    const jump = () => openTab(tile.key)
                     return (
                       <button
                         key={tile.key}
@@ -1047,7 +1061,13 @@ export default function CustomerDetailPage() {
               dataSource={opportunitiesQuery.data?.items ?? []}
               loading={opportunitiesQuery.isLoading}
               rowKey="id"
-              pagination={false}
+              pagination={{
+                currentPage: oppPage,
+                pageSize: LIST_PAGE_SIZE,
+                total: opportunitiesQuery.data?.total ?? 0,
+                showSizeChanger: false,
+                onPageChange: (nextPage: number) => setOppPage(nextPage),
+              }}
               empty={emptyHint(opportunitiesQuery.isError, '该客户还没有商机', opportunitiesQuery.error)}
             />
             </>
@@ -1057,7 +1077,11 @@ export default function CustomerDetailPage() {
             <>
               <div className="toolbar">
                 <div style={{ flex: 1 }} />
-                <Button onClick={() => setFollowupVisible(true)}>记录跟进</Button>
+                <GuardedButton
+                  disabled={!can('followup:create')}
+                  blockedReasons={['需要「记录跟进」权限。']}
+                  onClick={() => setFollowupVisible(true)}
+                >记录跟进</GuardedButton>
               </div>
               <Table<FollowUp>
                 /* 这张表列多、每列内容又长，Semi 默认 table-layout:auto 会按内容把
@@ -1142,11 +1166,19 @@ export default function CustomerDetailPage() {
                     ),
                   },
                 ]}
-                dataSource={followupsQuery.data?.items ?? []}
+                dataSource={can('followup:view') ? followupsQuery.data?.items ?? [] : []}
                 loading={followupsQuery.isLoading}
                 rowKey="id"
-                pagination={false}
-                empty={emptyHint(followupsQuery.isError, '还没有跟进记录', followupsQuery.error)}
+                pagination={can('followup:view') ? {
+                  currentPage: followupPage,
+                  pageSize: LIST_PAGE_SIZE,
+                  total: followupsQuery.data?.total ?? 0,
+                  showSizeChanger: false,
+                  onPageChange: (nextPage: number) => setFollowupPage(nextPage),
+                } : false}
+                empty={can('followup:view')
+                  ? emptyHint(followupsQuery.isError, '还没有跟进记录', followupsQuery.error)
+                  : '需要「查看跟进」权限才能查看已有记录。'}
               />
             </>
           )}
@@ -1187,7 +1219,13 @@ export default function CustomerDetailPage() {
               dataSource={quotesQuery.data?.items ?? []}
               loading={quotesQuery.isLoading}
               rowKey="id"
-              pagination={false}
+              pagination={{
+                currentPage: quotePage,
+                pageSize: LIST_PAGE_SIZE,
+                total: quotesQuery.data?.total ?? 0,
+                showSizeChanger: false,
+                onPageChange: (nextPage: number) => setQuotePage(nextPage),
+              }}
               empty={emptyHint(quotesQuery.isError, '该客户还没有报价', quotesQuery.error)}
             />
           )}
@@ -1238,7 +1276,13 @@ export default function CustomerDetailPage() {
               dataSource={ordersQuery.data?.items ?? []}
               loading={ordersQuery.isLoading}
               rowKey="id"
-              pagination={false}
+              pagination={{
+                currentPage: orderPage,
+                pageSize: LIST_PAGE_SIZE,
+                total: ordersQuery.data?.total ?? 0,
+                showSizeChanger: false,
+                onPageChange: (nextPage: number) => setOrderPage(nextPage),
+              }}
               empty={emptyHint(ordersQuery.isError, '该客户还没有订单', ordersQuery.error)}
             />
           )}

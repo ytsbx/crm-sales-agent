@@ -824,20 +824,49 @@ async def run_reconciliation(
         if key not in open_by_key:
             return
         # 补建本地订单已可直接证实；金额、数量异常仍需完整重采作为依据。
-        last_finish = None
+        finishes = {}
         collected_at = {}
         if diff_type != DIFF_MISSING_LOCAL:
-            applicable = [cursor for cursor in cursors if cursor.shop_id in (order.shop_id, ALL_SHOPS)]
-            if not applicable or any(
-                cursor.status != CURSOR_IDLE or cursor.page_token is not None or not cursor.last_finished_at
-                for cursor in applicable
-            ):
-                return
-            last_finish = max(cursor.last_finished_at.replace(tzinfo=UTC) for cursor in applicable)
-            if any(not row.last_seen_at or row.last_seen_at.replace(tzinfo=UTC) > last_finish for row in records):
-                return
-            refreshed_at = max(row.last_seen_at.replace(tzinfo=UTC) for row in records)
-            collected_at = {"data_seen_at": refreshed_at.isoformat(), "collection_finished_at": last_finish.isoformat()}
+            sources = {
+                DIFF_AMOUNT_MISMATCH: {OBJECT_ORDER: {OBJECT_ORDER}},
+                DIFF_OVER_SHIPPED: {
+                    OBJECT_ORDER: {OBJECT_ORDER, OBJECT_ORDER_ITEM},
+                    OBJECT_SHIPMENT: {OBJECT_SHIPMENT, OBJECT_SHIPMENT_ITEM},
+                },
+                DIFF_OVER_RETURNED: {
+                    OBJECT_SHIPMENT: {OBJECT_SHIPMENT, OBJECT_SHIPMENT_ITEM},
+                    OBJECT_AFTERSALE: {OBJECT_AFTERSALE, OBJECT_AFTERSALE_ITEM},
+                },
+            }[diff_type]
+            seen = []
+            for source, evidence_types in sources.items():
+                applicable = [
+                    cursor for cursor in cursors
+                    if cursor.object_type == source and cursor.shop_id in (order.shop_id, ALL_SHOPS)
+                ]
+                if not applicable or any(
+                    cursor.status != CURSOR_IDLE or cursor.page_token is not None
+                    for cursor in applicable
+                ):
+                    return
+                completed = [cursor.last_finished_at.replace(tzinfo=UTC)
+                             for cursor in applicable if cursor.last_finished_at]
+                if not completed:
+                    return
+                finish = max(completed)
+                source_records = [row for row in records if row.object_type in evidence_types]
+                if not source_records or any(
+                    not row.last_seen_at or row.last_seen_at.replace(tzinfo=UTC) > finish
+                    for row in source_records
+                ):
+                    return
+                finishes[source] = finish
+                seen.extend(row.last_seen_at.replace(tzinfo=UTC) for row in source_records)
+            collected_at = {
+                "data_seen_at": max(seen).isoformat(),
+                "collection_finished_at": min(finishes.values()).isoformat(),
+                "collection_finished_by_source": {source: finish.isoformat() for source, finish in finishes.items()},
+            }
         evidence = build_evidence(records)
         for diff in open_by_key[key]:
             original = (diff.evidence or {}).get("record_keys") or []
@@ -846,7 +875,7 @@ async def run_reconciliation(
                     continue
             elif not original or any(pointer not in evidence["record_keys"] for pointer in original):
                 continue
-            if last_finish is not None and last_finish <= diff.created_at.replace(tzinfo=UTC):
+            if finishes and min(finishes.values()) <= diff.created_at.replace(tzinfo=UTC):
                 continue
             if local_id is not None and diff.internal_id != local_id:
                 continue

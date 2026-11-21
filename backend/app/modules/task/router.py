@@ -549,7 +549,7 @@ async def create_task(
     )
     await session.commit()
     # 业务已经落库，再投企微：投递失败不影响任务创建，失败原因记在通知行上
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     # 负责人姓名要取**最终负责人**（`task_owner`）的名字，不是操作人的（审查 N07）。
     # 代建场景（管理员给张三建任务）下 `user.name` 是"系统管理员"、负责人是"张三"，
     # 于是**新建响应**显示错误负责人，而详情却是对的 —— 同一张任务两个说法，
@@ -683,7 +683,7 @@ async def update_task(
     await session.commit()
     # 有改派才需要投递：业务已落库，投递失败不影响保存
     if reassigned_to is not None:
-        await notification_service.dispatch_pending(session)
+        await notification_service.dispatch_after_commit(session)
     return ok(serialize(task), "已保存")
 
 
@@ -847,7 +847,7 @@ async def assign_task(
     # 于是响应回显 `pending`、库里却是 `done` —— 审查实测到的"改派响应与数据库不一致"。
     # 宁可如实回显"这张单已经被完成了"，也不要给一个和库里不一样的答案。
     payload_out = await _reserialize_fresh(session, task, target.name)
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(payload_out, f"已指派给「{target.name}」")
 
 
@@ -939,6 +939,11 @@ async def batch_complete_tasks(
         if task.task_type == "contract_signed_upload":
             skipped.append({"task_id": task_id, "reason": "请在合同台账上传回签件归档"})
             continue
+        if payload.expected_versions is not None:
+            expected = payload.expected_versions.get(task_id)
+            if expected is None or task.updated_at is None or _as_utc(expected) != _as_utc(task.updated_at):
+                skipped.append({"task_id": task_id, "reason": "任务已变动，请刷新后重新选择"})
+                continue
         task.status = "done"
         task.completed_at = now
         task.completion_note = payload.completion_note
@@ -1051,5 +1056,5 @@ async def transfer_task(
     await session.commit()
     # 同 `/assign`：提交后刷新，避免回显与库内不一致（审查 B2-03）
     payload_out = await _reserialize_fresh(session, task, target.name)
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(payload_out, f"已转交给「{target.name}」")

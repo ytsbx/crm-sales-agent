@@ -469,6 +469,7 @@ export function listCustomerMergeLogs(customerId: number) {
 
 export interface DuplicateCase {
   id: number
+  assign_existing_blocked_reason?: string | null
   customer_id: number
   customer_name?: string | null
   candidate_id: number
