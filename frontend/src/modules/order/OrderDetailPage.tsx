@@ -82,6 +82,24 @@ function shipmentQuantity(value: number | string): string {
 }
 
 /**
+ * 同 SKU 合并求和用**精确十进制字符串加法**（竖式，BigInt）。
+ *
+ * 别用 Number 相加：`planned_qty_exact` 的显示语义是「原文」（见
+ * shipmentQuantity），过 float 就丢尾数——实测 Number('9999999999999.999')
+ * 得 ...998，冒烟「大数量精确显示」门规当场红（2026-11-21）。
+ */
+function addExactQuantities(a: string | number, b: string | number): string {
+  const [ai, af = ''] = String(a).split('.')
+  const [bi, bf = ''] = String(b).split('.')
+  const fLen = Math.max(af.length, bf.length)
+  const scale = 10n ** BigInt(fLen)
+  const frac = BigInt(af.padEnd(fLen, '0') || '0') + BigInt(bf.padEnd(fLen, '0') || '0')
+  const int = BigInt(ai || '0') + BigInt(bi || '0') + frac / scale
+  const rem = frac % scale
+  return fLen ? `${int}.${String(rem).padStart(fLen, '0')}` : String(int)
+}
+
+/**
  * 整单交期结论（§9.8 复审）。
  *
  * 口径（业务 2026-10-07 拍板）：**全部发完**才给「最后一批 vs 交期」的最终结论；
@@ -1551,13 +1569,13 @@ export default function OrderDetailPage() {
                       // 原样拼出来就是「周转箱03-1 实发 1200；周转箱03-1 实发 1800」，
                       // 而列宽只有 232，后半截被截成省略号（2026-11-20 截图）。
                       // 同 SKU 先合并再加总，一行说完。
-                      const bySku = new Map<string, number>()
+                      const bySku = new Map<string, string>()
                       record.items.forEach((item) => {
                         const qty = shipped
                           ? item.shipped_qty_exact ?? item.shipped_qty
                           : item.planned_qty_exact ?? item.planned_qty
                         const key = item.sku ?? String(item.order_item_id)
-                        bySku.set(key, (bySku.get(key) ?? 0) + Number(qty ?? 0))
+                        bySku.set(key, addExactQuantities(bySku.get(key) ?? '0', qty ?? 0))
                       })
                       const tag = shipped ? '实发' : '计划'
                       const text = [...bySku]
