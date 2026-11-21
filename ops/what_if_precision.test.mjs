@@ -30,6 +30,9 @@ function setup(unitCost = 1) {
       if (id === '@tanstack/react-query') return { useQuery: () => ({ data: { versions: [] } }) }
       if (id === '@douyinfe/semi-ui') return Object.fromEntries(['Button', 'Input', 'Slider', 'Table', 'Tag', 'Toast'].map((name) => [name, name]))
       if (id.endsWith('/SectionCard')) return { default: 'SectionCard' }
+      // 「标签全家」再添一员（2026-11-21）：产品给 WhatIfPanel 加了 HelpTip
+      // （默认导出），替身没跟上就 MODULE_NOT_FOUND 连环红。
+      if (id.endsWith('/HelpTip')) return { default: 'HelpTip' }
       // 「标签全家」：mock 必须覆盖 WhatIfPanel 实际用到的 money 全部导出。
       // 2026-11-17 教训：formatUnitPrice/toTwoDecimals 缺席即 TypeError，
       // 三条用例连环红——替身家族要跟着组件真实 import 走。
@@ -56,7 +59,11 @@ function setup(unitCost = 1) {
       input: nodes.find((node) => node.type === 'Input').props,
       button: (label) => nodes.find((node) => node.type === 'Button' && node.props.children === label)?.props,
       save: (index) => nodes.filter((node) => node.type === 'Button' && Array.isArray(node.props.children) && node.props.children[0] === '记为方案 ')[index].props.onClick(),
-      scenarios: nodes.find((node) => node.type === 'Table' && node.props.rowKey === 'label').props,
+      // 产品 2026-11-20 给方案表加了空态（没记方案时只出引导文字、不出 Table）——
+      // 记完方案才有表，所以惰性查找：各用例都是 save 之后才取 scenarios。
+      get scenarios() {
+        return nodes.find((node) => node.type === 'Table' && node.props.rowKey === 'label')?.props
+      },
     }
   }
 }
