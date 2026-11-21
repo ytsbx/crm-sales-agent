@@ -16,6 +16,8 @@ from decimal import Decimal
 from sqlalchemy import Select, and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.audit import AuditLog
+from app.core.draft_visibility import draft_scope, private_draft
 from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.response import paginate
@@ -723,6 +725,7 @@ async def recent_activities(
         "revise": "修订",
         "wecom_sync_follow_relations": "同步",
     }
+    # action 与对象之间要有空格：「更新定制需求」读起来是两个词粘在一起。
     return [
         {
             "id": row.id,
@@ -860,6 +863,10 @@ async def funnel(session: AsyncSession, user: CurrentUser) -> list[dict]:
             "amount": stats.get(stage.id, (0, 0.0))[1],
         }
         for stage in stages
+        # 进行中商机的阶段分布：`status='open'` 已过滤成交商机，这里再把
+        # **成交阶段**本身剔掉，否则图上永远挂一根「成交 0」的空柱
+        # （2026-11-21 巡检；与工作台「各阶段在谈商机分布」同一口径）。
+        if not stage.is_win
     ]
 
 
@@ -1017,7 +1024,7 @@ async def quote_stats(session: AsyncSession, user: CurrentUser) -> dict:
         # 同模块的 `product_stats` 明确写了"已删除的报价整单排除"，两处口径本就该一致。
         await session.execute(
             await _scope_filter(
-                select(Quote).where(Quote.deleted_at.is_(None)),
+                select(Quote).where(Quote.deleted_at.is_(None), draft_scope(Quote, user.id)),
                 user,
                 Quote.owner_id,
                 session,
@@ -1237,6 +1244,10 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
                     QuoteVersion.version_no.label("version_no"),
                     is_formal.label("is_formal"),
                     QuoteItem.quantity,
+                    # 定制项（无 SKU）在库里只有明细快照名，要一起取回来：
+                    # 否则这些明细会被聚成"未命名产品"，明明有名字却显示成无名。
+                    QuoteItem.sku_name_snapshot,
+                    QuoteItem.spec_snapshot,
                     # 预估毛利只在正式版本上累计（草稿的报价还没对外，不该算进"报价毛利"）
                     func.coalesce(QuoteItem.profit_snapshot * QuoteItem.quantity, 0).label(
                         "profit"
@@ -1254,12 +1265,16 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
     quoted: dict[int, dict] = {}
     # 同一报价单的 V1/V2 是修订，不是两次独立报价；正式毛利只取该报价单该产品的最新正式版本。
     latest_formal: dict[tuple[int | None, int], int] = {}
-    for sku_id, quote_id, version_id, version_no, formal, quantity, profit in quote_rows:
+    name_fallback: dict[int | None, tuple] = {}
+    for sku_id, quote_id, version_id, version_no, formal, quantity, q_name, q_spec, profit in quote_rows:
+        if sku_id is None and (q_name or q_spec):
+            # 同一个 None 桶里取**第一条**有名有姓的明细，避免顺序一变名字就跳
+            name_fallback.setdefault(sku_id, (q_name, q_spec))
         if formal:
             key = (sku_id, quote_id)
             latest_formal[key] = max(latest_formal.get(key, 0), version_no or 0)
 
-    for sku_id, quote_id, version_id, version_no, formal, quantity, profit in quote_rows:
+    for sku_id, quote_id, version_id, version_no, formal, quantity, _q_name, _q_spec, profit in quote_rows:
         acc = quoted.setdefault(
             sku_id,
             {
@@ -1331,6 +1346,11 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
     items = []
     for sku_id in sku_ids:
         code, spec, product_name = meta.get(sku_id, (None, None, None))
+        if sku_id is None:
+            # 无 SKU 的定制明细：用明细快照名顶上，别再叫"未命名产品"
+            fb_name, fb_spec = name_fallback.get(None, (None, None))
+            code = code or fb_name
+            spec = spec or fb_spec
         acc = quoted.get(sku_id, empty)
         items.append(
             {
@@ -1386,7 +1406,7 @@ async def sales_user_stats(
         # `customer_count` / `opportunity_count` 都带了，只有它没带 —— 人员榜的
         # "报价数"于是把已删除的报价算成业绩过程量。
         select(func.count(Quote.id))
-        .where(Quote.owner_id == User.id, Quote.deleted_at.is_(None))
+        .where(Quote.owner_id == User.id, Quote.deleted_at.is_(None), draft_scope(Quote, user.id))
         .scalar_subquery(),
         # 签单额按**签单归属**（不是当前负责人）：销售离职交接后，
         # 他谈下来的单子仍算他的成绩（文档 :61「交接后保留历史业绩归属」）
@@ -1532,7 +1552,7 @@ async def lead_stats(session: AsyncSession, user: CurrentUser) -> dict:
     "待分配线索"会凭空消失；但已分配的按数据范围过滤。
 
     不统计"平均转化天数"（2026-11-21 主人明确：这个不需要统计）：
-    线索表没有 converted_at，用 created→updated 近似不可靠，干脆不算。
+    `leads` 没有 converted_at 列，只能从审计日志里反推，口径不可靠。
     """
     stmt = select(Lead).where(Lead.deleted_at.is_(None))
     owner_ids = await scoped_owner_ids(session, user)
@@ -1584,6 +1604,10 @@ async def pricing_stats(session: AsyncSession, user: CurrentUser) -> dict:
         .join(QuoteVersion, QuoteVersion.id == QuoteItem.quote_version_id)
         .join(Quote, Quote.id == QuoteVersion.quote_id)
         .outerjoin(Customer, Customer.id == Quote.customer_id)
+        .where(Quote.deleted_at.is_(None), draft_scope(Quote, user.id),
+               or_(~private_draft(QuoteVersion), func.coalesce(
+                   QuoteVersion.created_by, Quote.created_by, Quote.owner_id,
+               ) == user.id))
     )
     rows = (
         await session.execute(await _scope_filter(stmt, user, Quote.owner_id, session))
@@ -2106,25 +2130,25 @@ async def team_summary(session: AsyncSession, user: CurrentUser) -> dict:
     members = (await session.execute(member_stmt.order_by(User.id.asc()))).scalars().all()
     member_ids = [m.id for m in members]
 
-    # 团队任务 / 逾期
-    team_task_count = (
+    # 用同一批数据计算团队总数和停用员工小计，无负责人任务仍计入原团队口径。
+    disabled = User.status == "disabled"
+    overdue = Task.due_at < now
+    team_task_count, team_overdue_count, disabled_task_count, disabled_overdue_count = (
         await session.execute(
             scoped(
-                select(func.count(Task.id)).where(Task.status.in_(["pending", "doing"])),
+                select(
+                    func.count(Task.id),
+                    func.count(Task.id).filter(overdue),
+                    func.count(Task.id).filter(disabled),
+                    func.count(Task.id).filter(disabled, overdue),
+                )
+                .select_from(Task)
+                .outerjoin(User, User.id == Task.owner_id)
+                .where(Task.status.in_(["pending", "doing"])),
                 Task.owner_id,
             )
         )
-    ).scalar_one()
-    team_overdue_count = (
-        await session.execute(
-            scoped(
-                select(func.count(Task.id)).where(
-                    Task.due_at < now, Task.status.in_(["pending", "doing"])
-                ),
-                Task.owner_id,
-            )
-        )
-    ).scalar_one()
+    ).one()
 
     # 待审批报价（团队提交的）
     pending_approval = (
@@ -2159,13 +2183,18 @@ async def team_summary(session: AsyncSession, user: CurrentUser) -> dict:
     # `Opportunity` 没有 `won_at` 列，正确来源就是阶段历史 —— 与
     # `opportunity_cycle`（:896 用 max(entered_at)）同一份数据。
     won_ids = _won_this_month_cte(month_start)
-    won_count, won_amount = (
+    won_count, won_amount, disabled_won_count, disabled_won_amount = (
         await session.execute(
             scoped(
                 select(
                     func.count(Opportunity.id),
                     func.coalesce(func.sum(Opportunity.expected_amount), 0),
-                ).where(Opportunity.id.in_(won_ids)),
+                    func.count(Opportunity.id).filter(disabled),
+                    func.coalesce(func.sum(Opportunity.expected_amount).filter(disabled), 0),
+                )
+                .select_from(Opportunity)
+                .outerjoin(User, User.id == Opportunity.owner_id)
+                .where(Opportunity.id.in_(won_ids)),
                 Opportunity.owner_id,
             )
         )
@@ -2270,6 +2299,11 @@ async def team_summary(session: AsyncSession, user: CurrentUser) -> dict:
         "team_won_count_this_month": int(won_count),
         "team_won_amount_this_month": _f(won_amount),
         "members": per_member,
+        "disabled_members": {
+            "todo_count": int(disabled_task_count),
+            "overdue_count": int(disabled_overdue_count),
+            "won_amount_this_month": _f(disabled_won_amount),
+        } if disabled_task_count or disabled_won_count else None,
         "risky_opportunities": risky,
         "funnel": team_funnel,
     }

@@ -582,13 +582,16 @@ export default function AnalyticsPage() {
                 label: (quote?.average_discount ?? 0) >= 0 ? '平均让价幅度' : '平均加价幅度',
                 tone: 'warning',
                 value: `${Math.abs((quote?.average_discount ?? 0) * 100).toFixed(2)}%`,
+                help: '让价 =（建议价 − 实际报价）÷ 建议价，按报价明细逐行平均。它反映实际让了多少，不是折扣权限。',
                 hint: `平均版本数 ${quote?.average_versions ?? 0}`,
               },
               {
                 label: '低价审批比例',
                 tone: 'warning',
-                // 同页下方「低价审批率」按报价明细行算（3/44），这里统一，避免两个数打架。
+                // 同页下方「低价审批率」是按报价明细行算的（3/44），这张卡原来用报价版本口径
+                // （12/36），两个数打架。统一按明细行 —— help 文案本来就写的"报价明细占比"。
                 value: `${((pricing?.low_price_approval_rate ?? 0) * 100).toFixed(0)}%`,
+                help: '需要走审批的报价明细占比。拟报价低于授权底价或公司保护价的行，会被标成需要审批。',
                 hint: `需审批 ${pricing?.approval_required_count ?? 0} 行 / 明细 ${pricing?.item_count ?? 0} 行`,
               },
 
@@ -602,6 +605,7 @@ export default function AnalyticsPage() {
                 label: '客户活跃 / 沉睡',
                 tone: 'success',
                 value: `${customer?.active_count ?? 0} / ${customer?.dormant_count ?? 0}`,
+                help: '活跃 = 最近 30 天内有跟进或业务进展；沉睡 = 跟进和业务进展都超过 30 天，且不在公海。天数按系统设置取。',
                 hint: `复购客户 ${customer?.repeat_customer_count ?? 0} 家`,
               },
               {
@@ -637,6 +641,7 @@ export default function AnalyticsPage() {
                 label: '已到账待分配',
                 tone: 'success',
                 value: money(receivable?.unallocated_amount),
+                help: '客户已经付款、但还没分配到具体应收期的钱。分配之后，才会冲减对应账期的应收。',
                 // 只报口径，不带指令：一句"请先核对分配再催款"把卡片撑成两行，
                 // 也会让人以为这卡是个待办（2026-11-21 巡检）
                 // 值为 0 时还挂「应收期未结 131 万」读着像自相矛盾：0 就是没有
@@ -649,6 +654,7 @@ export default function AnalyticsPage() {
                 label: '逾期应收',
                 tone: 'error',
                 value: money(payment?.overdue_amount),
+                help: '已经过了应收日期、仍然没有结清的金额，按应收节点统计。',
                 hint: `逾期节点 ${payment?.overdue_node_count ?? 0} 个`,
               },
             ]}
@@ -1144,59 +1150,56 @@ export default function AnalyticsPage() {
 
       <SectionCard id="detail-product" title="产品表现（询盘 / 报价 / 成交 / 失单 / 利润）" style={{ marginTop: 16 }}>
         <Table<ProductStat>
+          // 10 列在 1180px 内排得下（2026-11-21 巡检：原来 12 列，右侧「成交数量/失单/毛利」
+          // 被容器直接切掉，页面看不到）。同族指标并成一列用「/」隔开：
+          // 报价 = 正式/草稿，成交 = 成交商机/失单。
           columns={[
             {
               title: 'SKU',
               dataIndex: 'sku_code',
-              width: 180,
-              // 原本只有编码。分析页每行是一个 SKU 的汇总，编码认不出是哪个产品；
-              // `product_name` 是**产品**名（如"田字塑料托盘 1200×1000"），
-              // 与 SKU 名（如"田字塑料托盘 1200×1000 黑色"）不是一回事，两个都要有。
+              width: 110,
+              // 编码认不出是哪个产品，第二行带产品名一起读。
               render: (v: string | null, record: ProductStat) => (
                 <div>
                   <div>{record.sku_name || v || '未命名产品'}</div>
                   {v && record.sku_name && (
-                    <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                      {v}
-                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{v}</div>
                   )}
                 </div>
               ),
             },
-            { title: '产品', dataIndex: 'product_name', width: 160, render: (v: string | null) => v ?? '-' },
-            { title: '规格', dataIndex: 'specification', render: (v: string | null) => v ?? '-' },
-            // 拆列（issue #12）：需求热度 / 正式报价 / 版本修订 / 成交数量 / 报价预估毛利
-            // 从前是一个"报价"列数所有报价明细行 —— 草稿和版本修订都算进去，
-            // 复制一个版本统计就翻倍，看起来越改越赚钱。
-            { title: '询盘', dataIndex: 'inquiry_times', width: 76 },
-            { title: '正式报价', dataIndex: 'quote_formal_times', width: 96 },
-            { title: '草稿', dataIndex: 'quote_draft_times', width: 76 },
+            { title: '产品', dataIndex: 'product_name', width: 132, ellipsis: true, render: (v: string | null) => v ?? '-' },
+            { title: '规格', dataIndex: 'specification', width: 152, ellipsis: true, render: (v: string | null) => v ?? '-' },
+            { title: '询盘', dataIndex: 'inquiry_times', width: 60 },
             {
-              title: '版本修订',
-              dataIndex: 'version_revision_times',
-              width: 96,
+              title: '报价（正式/草稿）',
+              width: 104,
+              render: (_: unknown, r: ProductStat) => `${r.quote_formal_times} / ${r.quote_draft_times}`,
             },
             {
               title: '报价数量',
               dataIndex: 'quote_quantity',
-              width: 110,
+              width: 88,
               render: (v: number) => v.toLocaleString('zh-CN'),
             },
-            { title: '成交商机', dataIndex: 'won_times', width: 96 },
+            {
+              title: '成交/失单',
+              width: 92,
+              render: (_: unknown, r: ProductStat) => `${r.won_times} / ${r.lost_times}`,
+            },
             {
               title: '实际成交数量',
               dataIndex: 'order_won_quantity',
-              width: 128,
+              width: 104,
               render: (v: number) => (v ?? 0).toLocaleString('zh-CN'),
             },
-            { title: '失单', dataIndex: 'lost_times', width: 76 },
             // 成本口径：无 price:manage 的人不显示这一列（后端也已返回 null）
             ...(can('price:manage')
               ? [
                   {
                     title: '报价预估毛利',
                     dataIndex: 'quote_estimated_profit',
-                    width: 140,
+                    width: 118,
                     render: (v: number | null) =>
                       v === null || v === undefined
                         ? '-'
@@ -1205,7 +1208,20 @@ export default function AnalyticsPage() {
                 ]
               : []),
           ]}
-          dataSource={productQuery.data ?? []}
+          // 全 0 行不渲染：库里有一批 SKU 一次都没被询过/报过/卖过（ZKB-0041 这类），
+          // 摆十几行 0 只让人以为"系统没数"。有数才上来。
+          dataSource={(productQuery.data ?? []).filter(
+            (r) =>
+              r.inquiry_times +
+                r.quote_draft_times +
+                r.quote_formal_times +
+                r.version_revision_times +
+                r.quote_quantity +
+                r.won_times +
+                r.lost_times +
+                (r.order_won_quantity ?? 0) >
+              0,
+          )}
           loading={productQuery.isLoading}
           rowKey="sku_code"
           pagination={false}
@@ -1233,7 +1249,18 @@ export default function AnalyticsPage() {
               render: (v: number, r: SalesUserStat) => formatWholeCny(r.received_amount_exact ?? v),
             },
           ]}
-          dataSource={salesQuery.data ?? []}
+          // 没有任何客户/跟进/商机/报价/金额的人（周文斌等 4 个空账号）不上表：
+          // 一行行 0 会把"这列是不是坏了"读出来。
+          dataSource={(salesQuery.data ?? []).filter(
+            (r) =>
+              (r.customer_count ?? 0) +
+                (r.followup_count ?? 0) +
+                (r.opportunity_count ?? 0) +
+                (r.quote_count ?? 0) +
+                (r.order_amount ?? 0) +
+                (r.received_amount ?? 0) >
+              0,
+          )}
           loading={salesQuery.isLoading}
           rowKey="user_id"
           pagination={false}

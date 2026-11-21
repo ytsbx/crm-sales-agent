@@ -1,10 +1,13 @@
 import type { CSSProperties, ReactNode } from 'react'
 import { Link } from 'react-router-dom'
+import HelpTip from './HelpTip'
 
 export interface KpiItem {
   label: string
   value: ReactNode
   hint?: ReactNode
+  /** 指标口径不清楚时，用一句话解释它统计的是什么。 */
+  help?: string
   tone?: 'default' | 'primary' | 'success' | 'warning' | 'error'
   onClick?: () => void
   /** 小标签自己要跳的地址；点它不会连带触发整张卡的 onClick。 */
@@ -53,7 +56,10 @@ export default function KpiStrip({
             style={{ cursor: item.onClick ? 'pointer' : 'default' }}
             onClick={item.onClick}
           >
-            <div className="kpi-label">{item.label}</div>
+            <div className="kpi-label crm-help-label">
+              {item.label}
+              {item.help && <HelpTip forLabel={item.label} text={item.help} />}
+            </div>
             <div className="kpi-value" style={{ color: tintValues ? tone.color : undefined }}>
               {item.value}
             </div>
