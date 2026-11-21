@@ -1,5 +1,24 @@
 # CRM 质量审查进度
 
+## 2026-11-21 tmp-seed 全量回归清理（隔离库 + 临时后端 8033，全绿）
+
+- 环境：一次性库 `crm_iso_clean_test`（drop/create → `alembic upgrade head` → `scripts.seed`），临时后端 `127.0.0.1:8033`，按 CI 口径显式给 `JWT_SECRET`、`DINGTALK_PUSH_OFF=1`、`WECOM_PUSH_OFF=1`、`SCHEDULER_ENABLED=false`、`DEEPSEEK_API_KEY=`；`CI=true API_BASE=... DATABASE_URL=... bash ops/run_checks.sh` 最终 `全部通过 ✓`（165 个接口套件 + 静态检查 + 单元测试 + 收尾清扫）。未部署、未改生产/演示库，未碰 8000/8008/8009/5275 与本机 OA 8791。
+- 本机环境差异（不是代码缺陷，按 CI 口径消除）：
+  - worktree 没有 `backend/.venv` 和 `frontend/node_modules`；软链主仓同名目录后，14 个 Node 单测（缺 typescript 报 `MODULE_NOT_FOUND`）恢复通过。
+  - 本机 `crm` 角色原来没有 CREATEDB，`check_overdue_reminder_race`、`check_pool_scan_race` 在 `CREATE DATABASE` 处失败；本地执行 `ALTER ROLE crm CREATEDB`（CI 里 POSTGRES_USER=crm 本身是超级用户）后两套全过。
+  - 本机 `backend/.env` 带真实 OA 配置（`OA_BASE_URL=http://127.0.0.1:8791`、`OA_EXTERNAL_REF_NAMESPACE=restored-20261117` 等）时 pytest 有 17 项失败：OA 单元用例的替身只覆盖“未配置 OA”路径，`test_oa_contract_flow` 又按空 namespace 断言 `crm-contract:1:` 前缀。清空 OA_* 后 17 项全过，与 CI（CI 工作区没有 `.env`）一致。**本地回归不要直接复制主仓 .env。**
+- 静态检查全部通过：pyflakes、check_model_attrs、check_permissions 及 ops 下 Python/Node 静态检查、登记项与输出判据。此前记录的 `auth/router.py user.token_id`、`check_audit_labels` 缺 `resolve_oa_adopt` 在本 HEAD 未复现（相应代码/标签已不存在或被补齐）。
+- 接口套件 165 套全部执行、0 红。此前记录的 `POST /contract-templates` 405、`check_data_scope` 合同端点 401、`check_biz_docs` `_content_hash` MissingGreenlet 均未复现：旧模板创建入口由 `backend/scripts/_legacy_contract_fixture.py` 在多个合同类套件里进程内接管；数据范围、校验值重算等断言按 CI 口径实际执行并通过（`/tmp/crm-check-check_data_scope.log`、`/tmp/crm-check-check_biz_docs.log`）。
+- 修复（仅测试脚本，无业务代码改动）：
+  - `check_cross_entity_scope.py`：`POST /opportunities/{id}/items` 返回的是**单条**明细，旧脚本按“整份列表”解析，导致 `opp_item=None`、第 3 段长期静默 SKIP；改为兼容单条/列表两种形状。
+  - 同一脚本第 3 段补上 B 自己的 `inquiry_id`：否则请求会先被“明细必须关联 SKU 或定制需求编号”挡掉，测不到“别家商机的需求”这一越权点。
+- 新发现（**待决策**，未改业务代码）：报价明细可以引用别家客户的商机需求。证据：B 的报价版本提交 `sku_id=null + inquiry_id=B 的需求 + opportunity_item_id=A 的商机需求`，返回 `code=0 明细已添加`（`/tmp/crm-rerun-crossscope2.log`）。`app/modules/quote/service.py` 的定制分支（`_build_custom_item_snapshot`）和 SKU 分支都只把 `opportunity_item_id` 原样落库，未校验其所属商机的客户是否等于报价客户。最小修法（报价客户 ≠ 商机需求所属客户时拒绝或清空引用）涉及业务口径与存量数据，需人工决定；脚本本身仍是“只打印结论、恒退出 0”的摸查脚本，所以 CI 不会因此变红。
+- 确认是过期套件、本轮未改：
+  - `check_cross_entity_scope4.py` 的合同段：`POST /contract-documents` 的模板生成路径已统一返回“系统模板生成已停用”40001，连“客户 A + A 自己的订单（应放行）”也被拒；脚本只打印结论、恒退出 0。要恢复覆盖需改成“上传原件 + 文件夹具”的链路，属重新设计，记为过期套件。
+  - `_legacy_contract_fixture.py` 仍是合同类旧套件的桥（contract_documents / customer_contact / data_scope / review_regressions / contract_archive_and_fx / c4_round_repairs / attachment_sample_guards / contract_monthly_reminders 等经它或它接管的 `call` 创建旧模板/旧文档）。这些套件测的仍是保留中的归档、签署、范围和幂等逻辑，但创建路径已不是真实 HTTP 入口。
+- 回归噪声：`check_quote_center_acceptance` 会改写仓库根 `产品报价中心验收核验.json`（时间戳与随机测试编号），与 Q-021 记录同一问题；本轮跑完已 `git restore` 该文件，未混入改动。
+- 边界：未做浏览器 UI 回归；临时后端 8033 用后停止，一次性库保留供复查；未对第 3 段发现的越权做任何业务修复。
+
 ## 2026-11-13 生产发布：页签体验 + 客户软删除（a673dde，已验证）
 
 - 用户明确“都要发、OA 先不管”：本次只发页签体验和客户软删除；**不含 OA 合同、Q-110 及其它未发布改动**。生产原基线 `9d13165`，数据库原 head `a1b2c3d4e5f6`。
