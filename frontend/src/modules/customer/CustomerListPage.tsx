@@ -47,7 +47,9 @@ const LEVEL_OPTIONS = [
   { value: 'D', label: 'D 级' },
 ]
 
-const SOURCE_OPTIONS = ['展会', '官网', '老客户介绍', '企业微信', 'Excel 导入', '手工录入', '其他'].map(
+// 与库里的 8 个真实渠道一一对齐（2026-11-21）：原来的「老客户介绍 / 企业微信 /
+// Excel 导入 / 手工录入 / 其他」都是同义旧写法，新建一次客户就把脏数据造回来了。
+const SOURCE_OPTIONS = ['展会', '官网询盘', '客户介绍', '电话开发', '企微添加', '导入', '老客复购', '抖音私信'].map(
   (value) => ({ value, label: value }),
 )
 
@@ -89,7 +91,7 @@ const EMPTY_FORM: CustomerPayload = {
   short_name: '',
   region: '',
   address: '',
-  source: '手工录入',
+  source: '电话开发',
   level: null,
   remark: '',
   // 不选负责人 = 归创建人自己（后端 `create_customer` 的口径）

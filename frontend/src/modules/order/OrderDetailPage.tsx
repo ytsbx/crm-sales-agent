@@ -955,7 +955,7 @@ export default function OrderDetailPage() {
             <span>客户要求{order.delivery_kind === 'arrival' ? '到货日' : order.delivery_kind === 'shipping' ? '发货日' : '交期'}：{order.delivery_date ?? '-'}</span>
             {order.shipment_date && <span>计划发货日：{order.shipment_date}{order.delivery_kind === 'arrival' ? `（运输 ${order.transit_days} 天）` : ''}</span>}
             <span>付款条件：{order.payment_terms ?? '-'}</span>
-            {order.quote_id && (
+            {order.quote_id ? (
               <span>
                 来源报价：
                 <Link
@@ -965,6 +965,9 @@ export default function OrderDetailPage() {
                   查看
                 </Link>
               </span>
+            ) : (
+              // 手工建单没有报价来源。以前整项静默不渲染，看着像"数据丢了"。
+              <span style={{ color: 'var(--crm-text-3)' }}>来源报价：手工建单（无报价单）</span>
             )}
           </>
         }
