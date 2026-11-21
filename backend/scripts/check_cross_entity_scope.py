@@ -108,10 +108,10 @@ def main() -> None:
         })
         opp_item = None
         if res.get('code') == 0:
-            # 这个接口回的是**整份明细列表**（不是单条）
-            data = res.get('data') or []
+            # 新建明细回的是单条；旧版本曾回整份列表，两种形状都兼容。
+            data = res.get('data')
             if isinstance(data, dict):
-                data = data.get('items') or []
+                data = data.get('items') or ([data] if data.get('id') else [])
             opp_item = data[-1]['id'] if data else None
         else:
             print(f'    ⚠️ {tag} 的商机需求没建出来：code={res.get("code")} {res.get("message")!r}'
@@ -164,8 +164,10 @@ def main() -> None:
     print()
     print('=== 3. 报价明细：B 的报价挂 A 的商机需求 ===')
     if ids['A']['opp_item']:
+        # 用 B 自己的需求把"缺需求"这条挡掉，剩下的唯一越权点就是 A 的商机需求。
         status, res = call('POST', f'/quote-versions/{version_b}/items', token=admin, body={
-            'sku_id': None, 'opportunity_item_id': ids['A']['opp_item'],
+            'sku_id': None, 'inquiry_id': ids['B']['inquiry'],
+            'opportunity_item_id': ids['A']['opp_item'],
             'quantity': 1, 'quoted_price': 100, 'unit_cost': 60,
         })
         probe('报价明细挂别家客户的商机需求', status, res, expect_blocked=True,
