@@ -103,6 +103,15 @@ EXCEPTIONS: dict[tuple[str, str], str] = {
         "判据只认字面 `deleted_at`，所以这条是**辅助函数命名**造成的假阳性。"
         "把过滤抽成命名函数是好写法，不该为此报警。"
     ),
+    # ── 切片假阳性（嵌套函数）──
+    ("app/modules/analytics/service.py", "_bucket"): (
+        "嵌套纯函数（2026-11-21 补登记）：它只做 sku_id→分桶键的映射，不查库。"
+        "判据的函数体切片从 `def _bucket` 切到下一个 def，把 product_stats 尾部的"
+        "SKU 取名查询（`select(Sku.id, Sku.sku_code, ..., Product.name)`）算进了它的体。"
+        "聚合本体都在上游：inquiry/quoted 两处已排 `Quote.deleted_at`/`Opportunity.deleted_at`，"
+        "订单侧聚的是 `SalesOrderItem`（无软删）且排了 cancelled。"
+        "Sku/Product 只取显示名——历史统计不因主数据软删而丢行，是正确口径。"
+    ),
 }
 
 
