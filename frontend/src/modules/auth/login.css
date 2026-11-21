@@ -20,8 +20,13 @@
   min-width: 0;
   min-height: 700px;
   padding: clamp(36px, 5vh, 56px) clamp(32px, 4.8vw, 80px) 32px;
-  background: #143568;
-  color: #edf4ff;
+  /* 原来是一整块 #143568 深藏蓝，与全站"天空蓝 + 留白"的基调冲突。
+     改成极浅的天空蓝竖向渐变：左栏仍有层次和光感，但不再抢右侧表单。 */
+  background:
+    radial-gradient(120% 78% at 76% 14%, #ffffff 0%, #f0f6ff 40%, transparent 72%),
+    linear-gradient(172deg, #f8fbff 0%, #e6f0ff 52%, #d3e3fb 100%);
+  border-right: 1px solid #d9e5f7;
+  color: #16243a;
   overflow: hidden;
 }
 
@@ -48,7 +53,7 @@
   font-size: 10px;
   font-weight: 400;
   letter-spacing: 2.4px;
-  color: #b2c9e9;
+  color: #6a83a4;
 }
 
 .crm-login-brand-mark {
@@ -58,26 +63,32 @@
 }
 
 .crm-login-message { margin-top: clamp(56px, 8vh, 100px); }
-.crm-login-eyebrow { display: flex; align-items: center; gap: 8px; color: #afccfa; font-size: 12px; letter-spacing: 1px; }
+.crm-login-eyebrow { display: flex; align-items: center; gap: 8px; color: var(--login-blue); font-size: 12px; letter-spacing: 1px; }
 .crm-login-eyebrow > span { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
-.crm-login-message h1 { margin-top: 22px; font-size: clamp(38px, 3.3vw, 48px); line-height: 1.4; font-weight: 500; letter-spacing: 1px; }
-.crm-login-message p { margin-top: 22px; color: #a4bcdf; font-size: 13px; line-height: 1.9; }
+.crm-login-message h1 { margin-top: 22px; color: #1b2b45; font-size: clamp(34px, 2.9vw, 43px); line-height: 1.4; font-weight: 500; letter-spacing: 1px; }
+.crm-login-message p { margin-top: 22px; color: #5c7391; font-size: 13px; line-height: 1.9; }
 
 .crm-login-art { position: relative; max-width: 420px; height: 235px; flex-shrink: 0; margin-top: 29px; }
-.crm-login-orbit { position: absolute; width: 230px; height: 230px; left: calc(50% - 115px); top: 0; border: 1px solid #40618e; border-radius: 50%; }
-.crm-login-orbit-outer { width: 308px; height: 308px; left: calc(50% - 154px); top: -39px; opacity: .35; }
-.crm-login-orb { position: absolute; width: 135px; height: 135px; left: calc(50% - 67.5px); top: 40px; border-radius: 50%; background: radial-gradient(circle at 35% 28%, #b2d5ff, #588bc8 48%, #234a81 85%); box-shadow: 16px 20px 50px #071b3d55; }
-.crm-login-flow { position: absolute; display: flex; align-items: center; gap: 12px; min-width: 150px; padding: 15px; background: #254a7b; border: 1px solid #ffffff20; border-radius: 13px; color: #e8f1ff; box-shadow: 0 12px 30px #081e4444; }
-.crm-login-flow small { display: block; margin-bottom: 4px; color: #b0c6e5; font-size: 11px; line-height: 1.4; }
+.crm-login-orbit { position: absolute; width: 230px; height: 230px; left: calc(50% - 115px); top: 0; border: 1px solid #c3d8f4; border-radius: 50%; }
+.crm-login-orbit-outer { width: 308px; height: 308px; left: calc(50% - 154px); top: -39px; opacity: .55; }
+.crm-login-orb { position: absolute; width: 135px; height: 135px; left: calc(50% - 67.5px); top: 40px; border-radius: 50%; background: radial-gradient(circle at 30% 24%, #ffffff 4%, #d3e6ff 40%, #86b1e8 88%);
+  box-shadow: 0 22px 46px #2d64ce33, inset -12px -16px 34px #4d79b52e; }
+.crm-login-flow { position: absolute; display: flex; align-items: center; gap: 12px; min-width: 150px; padding: 15px; background: #fff; border: 1px solid #cfdff6; border-radius: 13px; color: #16304f; box-shadow: 0 14px 30px #2d64ce21; }
+.crm-login-flow small { display: block; margin-bottom: 4px; color: #7c93b1; font-size: 11px; line-height: 1.4; }
 .crm-login-flow strong { font-size: 15px; font-weight: 500; letter-spacing: 1px; }
-.crm-login-flow-icon { display: flex; align-items: center; justify-content: center; width: 33px; height: 33px; border-radius: 9px; background: #3e659b; color: #c7dfff; }
+.crm-login-flow-icon { display: flex; align-items: center; justify-content: center; width: 33px; height: 33px; border-radius: 9px; background: #e8f1ff; color: #2d64ce; }
 .crm-login-flow-customer { top: 8px; left: 0; transform: rotate(-5deg); }
-.crm-login-flow-quote { top: 91px; right: 0; min-width: 199px; transform: rotate(4deg); background: #e1eeff; color: #24477a; }
-.crm-login-flow-quote small { color: #607c9f; }
-.crm-login-flow-quote .crm-login-flow-icon { background: #c8dffa; color: #4672ad; }
+.crm-login-flow-quote { top: 91px; right: 0; min-width: 199px; transform: rotate(4deg); background: #eaf3ff; border-color: #b9d3f6; color: #173f76; }
+.crm-login-flow-quote small { color: #5d7a9f; }
+.crm-login-flow-quote .crm-login-flow-icon { background: #d6e8fe; color: #2d64ce; }
+/* 三张卡的小图标各给一个色：客户蓝、报价绿、订单橙——只有 33px 见方，不抢整体蓝调 */
+.crm-login-flow-customer .crm-login-flow-icon { background: #e8f1ff; color: #2d64ce; }
+.crm-login-flow-quote .crm-login-flow-icon { background: #e7f7ef; color: #12925f; }
+.crm-login-flow-order .crm-login-flow-icon { background: #fff1e4; color: #dc7a22; }
 .crm-login-flow-order { top: 169px; left: 35px; transform: rotate(-3deg); }
-.crm-login-flow-dot { width: 5px; height: 5px; margin-left: 8px; border-radius: 50%; background: #afccfa; }
-.crm-login-story-footer { display: flex; justify-content: space-between; gap: 12px; margin-top: auto; padding-top: 32px; color: #9bb5d9; font-size: 11px; line-height: 1.5; }
+/* 这颗点原本想表示"在线"，实际飘在卡片边缘外侧，看着像渲染瑕疵，先藏掉。 */
+.crm-login-flow-dot { display: none; }
+.crm-login-story-footer { display: flex; justify-content: space-between; gap: 12px; margin-top: auto; padding-top: 32px; color: #5b7290; font-size: 11px; line-height: 1.5; }
 
 .crm-login-main { display: flex; flex-direction: column; align-items: center; min-width: 0; padding: clamp(36px, 5vh, 56px) clamp(28px, 4vw, 64px) 32px; }
 .crm-login-workspace { align-self: flex-end; color: var(--login-muted); font-size: 12px; letter-spacing: 1px; }
