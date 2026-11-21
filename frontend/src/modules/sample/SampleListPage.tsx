@@ -35,7 +35,6 @@ import { listCustomers } from '../../shared/api/customer'
 import { listCustomInquiries } from '../../shared/api/inquiry'
 import { getOpportunity, listOpportunities } from '../../shared/api/opportunity'
 import { listSkusForPricing } from '../../shared/api/pricing'
-import { reportOperationTiming } from '../../shared/api/analytics'
 import {
   addSampleItem,
   approveSample,
@@ -242,8 +241,6 @@ export default function SampleListPage() {
   })
   const [oaTarget, setOaTarget] = useState<number | null>(null)
   const [createVisible, setCreateVisible] = useState(false)
-  /** 打样申请的计时起点（场景18 操作耗时埋点） */
-  const createStartedAt = useRef<number | null>(null)
   const [form, setForm] = useState<{
     opportunity_id?: number
     customer_id?: number
@@ -260,7 +257,6 @@ export default function SampleListPage() {
     if (!createOpportunityId || !createOpportunityQuery.data || !canManage) return
     setForm({ opportunity_id: createOpportunityId, customer_id: createOpportunityQuery.data.customer_id,
       remark: '', items: [{ quantity: '1' }] })
-    createStartedAt.current = Date.now()
     setCreateVisible(true)
     const next = new URLSearchParams(searchParams)
     next.delete('create_opportunity_id')
@@ -412,24 +408,6 @@ export default function SampleListPage() {
       })
     },
     onSuccess: (created) => {
-      // 计时上报（场景18）：起点在"点新建"那一刻。上报失败不打扰业务——
-      // 埋点是量尺，不该变成新的故障点。
-      const startedAt = createStartedAt.current
-      createStartedAt.current = null
-      if (startedAt) {
-        const duration = Date.now() - startedAt
-        if (duration > 0 && duration <= 8 * 3600 * 1000) {
-          void reportOperationTiming({
-            operation: 'sample_create',
-            duration_ms: duration,
-            business_type: 'sample',
-            business_id: created?.id ?? null,
-            // 手输字段数：备注 + 每个有 SKU 的明细行各算 1
-            typed_fields:
-              (form.remark.trim() ? 1 : 0) + form.items.filter(draftReady).length,
-          }).catch(() => undefined)
-        }
-      }
       Toast.success('打样草稿已创建，请选择同序 OA 流程并补充申请资料')
       setOaTarget(created.id)
       setCreateVisible(false)
@@ -945,8 +923,6 @@ export default function SampleListPage() {
               theme="outline"
               type="primary"
               onClick={() => {
-                // 耗时埋点（场景18）：起点在这里——点开"新建样品申请"那一刻
-                createStartedAt.current = Date.now()
                 setCreateVisible(true)
               }}
             >

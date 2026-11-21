@@ -40,7 +40,6 @@ import {
   getSalesTargetBases,
   getSalesTargetDrilldown,
   getSalesUserStats,
-  getOperationTimingSummary,
   listSalesTargets,
   refreezeSalesActuals,
   upsertSalesTarget,
@@ -224,7 +223,6 @@ const ANALYTICS_REPORTS = [
   { id: 'product', label: '产品表现', search: '产品、SKU 或规格', limited: true },
   { id: 'sales', label: '业务员表现', search: '业务员姓名', limited: true },
   { id: 'target', label: '目标完成情况', search: '公司、部门或姓名' },
-  { id: 'timing', label: '操作耗时', search: '操作名称' },
 ] as const
 
 export default function AnalyticsPage() {
@@ -298,11 +296,6 @@ export default function AnalyticsPage() {
   const basesQuery = useQuery({
     queryKey: ['sales-target-bases', targetYear],
     queryFn: () => getSalesTargetBases(targetYear),
-  })
-  // 操作耗时（场景18）：回答"系统比表格快多少"，数字来自前端埋点
-  const timingQuery = useQuery({
-    queryKey: ['operation-timings'],
-    queryFn: () => getOperationTimingSummary(30),
   })
   const usersQuery = useQuery({
     queryKey: ['assignable-users'],
@@ -1312,50 +1305,6 @@ export default function AnalyticsPage() {
               </>
             )
           })()}
-        </SectionCard>}
-
-        {activeReport === 'timing' && <SectionCard id="detail-timing" title="系统操作耗时">
-          <p className="an-card-note">统计最近 30 天系统记录的操作，记录次数少时，单次操作对结果影响较大。</p>
-          <Table
-            size="small"
-            pagination={false}
-            dataSource={(timingQuery.data?.summary ?? []).filter((row) => matches(row.operation_label))}
-            empty={keyword ? noMatches : undefined}
-            rowKey="operation"
-            columns={[
-              { title: '流程', dataIndex: 'operation_label', width: 200 },
-              { title: '记录次数', dataIndex: 'samples', width: 80 },
-              {
-                title: '平均耗时',
-                dataIndex: 'avg_ms',
-                width: 110,
-                render: (v: number | null) => (v == null ? '-' : `${Math.round(v / 1000)} 秒`),
-              },
-              {
-                title: '中位数',
-                dataIndex: 'median_ms',
-                width: 100,
-                render: (v: number | null) => (v == null ? '-' : `${Math.round(v / 1000)} 秒`),
-              },
-              {
-                title: <span className="crm-help-label">九成操作耗时<HelpTip forLabel="九成操作耗时" text="把耗时从短到长排，取靠近九成的位置。记录少时，这个数可能就是最慢的一次。" /></span>,
-                dataIndex: 'p90_ms',
-                width: 100,
-                render: (v: number | null) => (v == null ? '-' : `${Math.round(v / 1000)} 秒`),
-              },
-              {
-                title: '平均手动填写项数',
-                dataIndex: 'avg_typed_fields',
-                width: 120,
-                render: (v: number | null) => v ?? '-',
-              },
-            ]}
-          />
-          {timingQuery.data?.note && (
-            <div style={{ marginTop: 8, color: 'var(--crm-text-3)', fontSize: 12 }}>
-              {timingQuery.data.note}
-            </div>
-          )}
         </SectionCard>}
 
         {activeReport === 'target' && <SectionCard id="detail-target" title="月度销售目标">
