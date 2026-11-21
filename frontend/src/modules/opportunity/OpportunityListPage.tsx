@@ -1,10 +1,13 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { parseOptionalNumber } from '../../shared/number-input'
+import { calendarDay } from '../../shared/calendar-day'
 import PageHeader from '../../shared/components/PageHeader'
-import { useNavigate } from 'react-router-dom'
+import HelpTip from '../../shared/components/HelpTip'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, DatePicker, Input, Modal, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
+import { Button, DatePicker, Input, Modal, Select, Table, TextArea, Toast } from '@douyinfe/semi-ui'
 
-import { listCustomers } from '../../shared/api/customer'
+import { getCustomer, listCustomers } from '../../shared/api/customer'
 import {
   createOpportunity,
   getFunnel,
@@ -13,12 +16,12 @@ import {
   type Opportunity,
 } from '../../shared/api/opportunity'
 import { usePermissions } from '../../shared/hooks/permissions'
-import { emptyText } from '../../shared/hooks/emptyText'
-import type { TagTone } from '../../shared/types'
+import { emptyNode } from '../../shared/components/EmptyState'
 import OpportunityBoard from './OpportunityBoard'
 import SectionCard from '../../shared/components/SectionCard'
-import FormLabel from '../../shared/components/FormLabel'
-import { optionMatcher, withCode } from '../../shared/components/optionMatch'
+import RecordSearchSelect from '../../shared/components/RecordSearchSelect'
+import StatusDot from '../../shared/components/StatusDot'
+import { formatMoney, toTwoDecimals } from '../../shared/components/money'
 
 const STATUS_OPTIONS = [
   { value: 'open', label: '进行中' },
@@ -26,13 +29,39 @@ const STATUS_OPTIONS = [
   { value: 'loss', label: '已失单' },
 ]
 
-const RISK_COLOR: Record<string, TagTone> = { high: 'red', medium: 'orange', low: 'green' }
 const RISK_LABEL: Record<string, string> = { high: '高风险', medium: '中风险', low: '低风险' }
+const EMPTY_FORM = {
+  customer_id: null as number | null,
+  title: '',
+  expected_amount: '',
+  expected_close_date: null as Date | null,
+  competitor: '',
+  next_action: '',
+}
+
+/** 空值占位：一条淡灰横线。比 '-' 更像"这里本来就没东西"，不会读成减号。 */
+function EmptyMark() {
+  return <span style={{ color: 'var(--crm-text-3)' }}>-</span>
+}
 
 export default function OpportunityListPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { can } = usePermissions()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const customerFromUrl = Number(searchParams.get('new_for_customer'))
+  const fromCustomer = Number.isSafeInteger(customerFromUrl) && customerFromUrl > 0
+    && can('customer:view') && can('opportunity:manage')
+
+  /* 1024 宽内容区约 700px，商机表六列合计 890px+，「成交日 / 风险 / 负责人」
+     被裁到卡片外。窄屏切紧凑档：负责人并进客户第二行，金额/需求、
+     成交日/风险各拆两行，列宽整体收紧。 */
+  const [compact, setCompact] = useState(() => window.innerWidth < 1200)
+  useEffect(() => {
+    const onResize = () => setCompact(window.innerWidth < 1200)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
 
   const [keywordInput, setKeywordInput] = useState('')
   const [keyword, setKeyword] = useState('')
@@ -40,25 +69,19 @@ export default function OpportunityListPage() {
   const [stageId, setStageId] = useState<number | undefined>()
   const [view, setView] = useState<'table' | 'board'>('table')
   const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(10)
+  const [pageSize, setPageSize] = useState(20)
 
   const [createVisible, setCreateVisible] = useState(false)
-  const [form, setForm] = useState({
-    customer_id: null as number | null,
-    title: '',
-    expected_amount: '',
-    expected_close_date: null as Date | null,
-    competitor: '',
-    next_action: '',
-  })
+  const [form, setForm] = useState(EMPTY_FORM)
 
   const stagesQuery = useQuery({ queryKey: ['stages'], queryFn: listStages })
   const funnelQuery = useQuery({ queryKey: ['funnel'], queryFn: getFunnel })
-  const customersQuery = useQuery({
-    queryKey: ['customers-for-select'],
-    queryFn: () => listCustomers({ page: 1, page_size: 100 }),
-    enabled: createVisible,
+  const selectedCustomerQuery = useQuery({
+    queryKey: ['customer', customerFromUrl],
+    queryFn: () => getCustomer(customerFromUrl),
+    enabled: fromCustomer,
   })
+  const customerId = fromCustomer ? selectedCustomerQuery.data?.id : form.customer_id
 
   const query = useQuery({
     queryKey: ['opportunities', { keyword, status, stageId, page, pageSize }],
@@ -75,78 +98,152 @@ export default function OpportunityListPage() {
   const createMutation = useMutation({
     mutationFn: () =>
       createOpportunity({
-        customer_id: form.customer_id,
+        customer_id: customerId,
         title: form.title,
-        expected_amount: form.expected_amount ? Number(form.expected_amount) : null,
+        // 同类：字母会被静默变成 null（= 清空金额）
+        expected_amount: (() => {
+          const v = parseOptionalNumber(form.expected_amount)
+          if (typeof v === 'number' && Number.isNaN(v)) {
+            throw new Error('预计金额只能填数字')
+          }
+          return v
+        })(),
         expected_close_date: form.expected_close_date
-          ? form.expected_close_date.toISOString().slice(0, 10)
+          ? calendarDay(form.expected_close_date)
           : null,
         competitor: form.competitor || null,
         next_action: form.next_action || null,
       }),
     onSuccess: (opportunity) => {
-      Toast.success('商机已创建')
+      Toast.success('商机已创建。打开详情后，可以添加客户本次要采购的商品。')
       setCreateVisible(false)
-      setForm({
-        customer_id: null,
-        title: '',
-        expected_amount: '',
-        expected_close_date: null,
-        competitor: '',
-        next_action: '',
-      })
+      setForm(EMPTY_FORM)
       void queryClient.invalidateQueries({ queryKey: ['opportunities'] })
       void queryClient.invalidateQueries({ queryKey: ['funnel'] })
-      navigate(`/opportunities/${opportunity.id}`)
+      navigate(`/opportunities/${opportunity.id}`, { replace: fromCustomer })
     },
     onError: (error: Error) => Toast.error(error.message),
   })
+
+  /* 「金额 / 需求」和「成交日 / 风险」这两列，演示库里几乎每条都是空的（只画一条淡灰横线）。
+     460px 的宽度常年摆着一排横杠，把商机名和阶段挤窄。
+     和文档页的到期日一样处理：本次结果里一个值都没有就不出这一列，
+     有一条带值就照常显示 —— 不删信息，只删"一排空位"。
+     （2026-11-19 巡检） */
+  const rows = (query.data?.items ?? []) as Opportunity[]
+  const hasAmountCol = rows.some((r) => Boolean(r.expected_amount) || Boolean(r.item_count))
+  const hasCloseCol = rows.some((r) => Boolean(r.expected_close_date) || Boolean(r.risk_level))
 
   const columns = [
     {
       title: '商机名称',
       dataIndex: 'title',
+      width: compact ? 150 : undefined,
       render: (text: string, record: Opportunity) => (
-        <a style={{ color: 'var(--crm-primary)' }} onClick={() => navigate(`/opportunities/${record.id}`)}>
+        <a
+          title={text}
+          style={{
+            color: 'var(--crm-primary)',
+            display: 'block',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+          onClick={() => navigate(`/opportunities/${record.id}`)}
+        >
           {text}
         </a>
       ),
     },
-    { title: '客户', dataIndex: 'customer_name', width: 220, render: (v: string | null) => v ?? '-' },
     {
-      title: '阶段',
-      dataIndex: 'stage_name',
-      width: 110,
-      render: (value: string | null, record: Opportunity) => (
-        <Tag color={record.status === 'win' ? 'green' : record.status === 'loss' ? 'grey' : 'blue'}>
-          {value ?? '-'}
-        </Tag>
+      title: '客户',
+      dataIndex: 'customer_name',
+      width: compact ? 160 : 220,
+      render: (v: string | null, record: Opportunity) => (
+        <div style={{ minWidth: 0 }}>
+          <div
+            title={v ?? '-'}
+            style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          >
+            {v ?? '-'}
+          </div>
+          {compact && (
+            <div style={{ marginTop: 2, fontSize: 12, color: 'var(--crm-text-3)' }}>
+              负责人 {record.owner_name ?? '-'}
+            </div>
+          )}
+        </div>
       ),
     },
     {
-      title: '预计金额',
-      dataIndex: 'expected_amount',
-      width: 130,
-      render: (value: number | null) => (value ? `¥${value.toLocaleString('zh-CN')}` : '-'),
+      title: '阶段',
+      dataIndex: 'stage_name',
+      width: compact ? 96 : 110,
+      render: (value: string | null, record: Opportunity) => (
+        <StatusDot
+          label={value ?? '-'}
+          tone={record.status === 'win' ? 'green' : record.status === 'loss' ? 'grey' : 'blue'}
+        />
+      ),
     },
-    {
-      title: '需求条数',
-      dataIndex: 'item_count',
-      width: 100,
-    },
-    {
-      title: '预计成交日',
-      dataIndex: 'expected_close_date',
-      width: 130,
-      render: (v: string | null) => v ?? '-',
-    },
-    {
-      title: '风险',
-      dataIndex: 'risk_level',
-      width: 100,
-      render: (v: string | null) => (v ? <Tag color={RISK_COLOR[v] ?? 'grey'}>{RISK_LABEL[v] ?? v}</Tag> : '-'),
-    },
-    { title: '负责人', dataIndex: 'owner_name', width: 100, render: (v: string | null) => v ?? '-' },
+    // 原来这里是四列：预计金额 / 需求条数 / 预计成交日 / 风险。
+    // 演示库里这四列几乎全是 `-` 和 `0`，一行里四个空位并排 ——
+    // 视觉噪音比信息多（2026-11-16 巡检）。两两并成一列：
+    // 「有值就显示、没值就一条淡灰横线」，空的时候一行只剩一个占位符。
+    ...(hasAmountCol ? [{
+      title: (
+        <span className="crm-help-label">
+          金额 / 需求
+          <HelpTip forLabel="金额 / 需求" text="预计成交金额，以及客户在这条商机里提出的需求条数。" />
+        </span>
+      ),
+      width: compact ? 120 : 260,
+      render: (_: unknown, record: Opportunity) => {
+        const amount = record.expected_amount
+          ? formatMoney(toTwoDecimals(record.expected_amount), 'CNY')
+          : null
+        const items = record.item_count ? `${record.item_count} 条需求` : null
+        if (compact) {
+          /* 窄屏拆两行：金额一行、需求条数一行，120px 才放得下完整金额 */
+          if (!amount && !items) return <EmptyMark />
+          return (
+            <div style={{ display: 'grid', gap: 2, justifyItems: 'center' }}>
+              {amount && <span>{amount}</span>}
+              {items && <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{items}</span>}
+            </div>
+          )
+        }
+        const parts = [amount, items].filter(Boolean) as string[]
+        return parts.length ? parts.join(' · ') : <EmptyMark />
+      },
+    }] : []),
+    ...(hasCloseCol ? [{
+      title: (
+        <span className="crm-help-label">
+          成交日 / 风险
+          <HelpTip forLabel="成交日 / 风险" text="预计签约日期；风险是系统按跟进和报价情况提示的赢单风险，不是客户评级。" />
+        </span>
+      ),
+      width: compact ? 116 : 200,
+      render: (_: unknown, record: Opportunity) => {
+        const date = record.expected_close_date ?? null
+        const risk = record.risk_level ? (RISK_LABEL[record.risk_level] ?? record.risk_level) : null
+        if (compact) {
+          if (!date && !risk) return <EmptyMark />
+          return (
+            <div style={{ display: 'grid', gap: 2, justifyItems: 'center' }}>
+              {date && <span>{date}</span>}
+              {risk && <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{risk}</span>}
+            </div>
+          )
+        }
+        const parts = [date, risk].filter(Boolean) as string[]
+        return parts.length ? parts.join(' · ') : <EmptyMark />
+      },
+    }] : []),
+    ...(compact
+      ? []
+      : [{ title: '负责人', dataIndex: 'owner_name', width: 100, render: (v: string | null) => v ?? <EmptyMark /> }]),
   ]
 
   return (
@@ -156,14 +253,20 @@ export default function OpportunityListPage() {
         subtitle="客户需求逐条录入，后续核价与报价都以需求明细为输入"
       />
 
-      <div className="kpi-grid">
+      {/* 阶段漏斗：原来这里是 8 张 kpi-card（4+4 两行、每张 155 高），
+          每张卡里只有「条数 + 金额」两个数 —— 内容少却占了三百像素，
+          主人说的"内容少就别给大卡"就是这个。改成一条 8 格的漏斗条：
+          同一个阶段还是同一个位置，数字和金额都在，只是不再各占一张卡。 */}
+      <div className="stage-strip">
         {(funnelQuery.data ?? [])
           .filter((row) => row.count > 0 || row.sequence <= 4)
           .map((row) => (
-            <div className="kpi-card" key={row.stage_id}>
-              <div className="kpi-label">{row.stage_name}</div>
-              <div className="kpi-value">{row.count}</div>
-              <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginTop: 4 }}>
+            <div className="stage-tile" key={row.stage_id}>
+              <div className="stage-tile-label" title={row.stage_name}>
+                {row.stage_name}
+              </div>
+              <div className="stage-tile-value">{row.count}</div>
+              <div className="stage-tile-amount">
                 ¥{Math.round(row.amount).toLocaleString('zh-CN')}
               </div>
             </div>
@@ -208,9 +311,11 @@ export default function OpportunityListPage() {
             disabled={view === 'board'}
           />
           <Button
+            type="tertiary"
+            theme="borderless"
             onClick={() => {
-              setKeyword(keywordInput.trim())
-              setPage(1)
+            setKeyword(keywordInput.trim())
+            setPage(1)
             }}
           >
             查询
@@ -233,7 +338,7 @@ export default function OpportunityListPage() {
             </Button>
           </div>
           {can('opportunity:manage') && (
-            <Button theme="solid" onClick={() => setCreateVisible(true)}>
+            <Button type="primary" theme="outline" onClick={() => setCreateVisible(true)}>
               新建商机
             </Button>
           )}
@@ -242,6 +347,7 @@ export default function OpportunityListPage() {
         {view === 'board' ? (
           <OpportunityBoard
             keyword={keyword}
+            stageId={stageId}
             canManage={can('opportunity:manage')}
             onChanged={() => {
               void queryClient.invalidateQueries({ queryKey: ['opportunity-board'] })
@@ -250,12 +356,16 @@ export default function OpportunityListPage() {
           />
         ) : (
           <Table<Opportunity>
+            className="opportunities-table"
             columns={columns}
             dataSource={query.data?.items ?? []}
             loading={query.isLoading}
             rowKey="id"
             size="middle"
-            empty={emptyText(query, '还没有商机')}
+            empty={emptyNode(query, {
+              title: '还没有商机',
+              hint: '点右上角「新建商机」，先把客户要什么逐条录进来，后续核价与报价都以它为准。',
+            })}
             pagination={{
               currentPage: page,
               pageSize,
@@ -272,11 +382,36 @@ export default function OpportunityListPage() {
       </SectionCard>
 
       <Modal
-        title="新建商机"
-        visible={createVisible}
-        onCancel={() => setCreateVisible(false)}
+        title={
+          <div className="modal-head">
+            <span className="modal-head-icon" aria-hidden>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
+                <path d="M3 20h18" />
+                <path d="M6 16l5-5 3.5 3.5L21 8" />
+                <path d="M15 8h6v6" />
+              </svg>
+            </span>
+            <div>
+              新建商机
+              <div className="modal-subtitle">客户和名称必填；金额、日期可以后补</div>
+            </div>
+          </div>
+        }
+        width={600}
+        visible={createVisible || fromCustomer}
+        onCancel={() => {
+          setCreateVisible(false)
+          if (fromCustomer) {
+            setForm(EMPTY_FORM)
+            setSearchParams((params) => {
+              const next = new URLSearchParams(params)
+              next.delete('new_for_customer')
+              return next
+            }, { replace: true })
+          }
+        }}
         onOk={() => {
-          if (!form.customer_id) {
+          if (!customerId) {
             Toast.warning('请选择客户')
             return
           }
@@ -287,57 +422,87 @@ export default function OpportunityListPage() {
           createMutation.mutate()
         }}
         confirmLoading={createMutation.isPending}
+        okButtonProps={{ disabled: fromCustomer && !selectedCustomerQuery.isSuccess }}
         okText="创建"
       >
-        <div style={{ display: 'grid', gap: 12 }}>
-          <div>
-            <FormLabel required>客户</FormLabel>
-            <Select
-              placeholder="选择客户"
-              value={form.customer_id ?? undefined}
-              onChange={(value) => setForm({ ...form, customer_id: value as number })}
-              optionList={(customersQuery.data?.items ?? []).map((item) => ({
-                value: item.id,
-                label: withCode(item.name, item.id),
-              }))}
-              loading={customersQuery.isLoading}
-              filter={optionMatcher}
-              style={{ width: '100%' }}
-            />
-          </div>
-          <div>
-            <FormLabel required>商机名称</FormLabel>
-            <Input
-              value={form.title}
-              onChange={(v) => setForm({ ...form, title: v })}
-              placeholder="例如：周转箱年度采购"
-            />
-          </div>
-          <div style={{ display: 'flex', gap: 12 }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>预计金额（元）</div>
-              <Input
-                value={form.expected_amount}
-                onChange={(v) => setForm({ ...form, expected_amount: v })}
-              />
+        <div className="form-cards">
+          <section className="form-card">
+            <div className="form-card-title">这单是什么</div>
+            <div className="form-card-grid">
+              <div className="full">
+                <div className="form-field-label">客户<span className="req">*</span></div>
+                {fromCustomer ? (
+                  selectedCustomerQuery.isError ? (
+                    <div className="workflow-guide" role="alert">
+                      无法读取客户资料。<Button theme="borderless" onClick={() => void selectedCustomerQuery.refetch()}>重试</Button>
+                    </div>
+                  ) : (
+                    <div className="workflow-guide">
+                      {selectedCustomerQuery.data?.name ?? '正在读取客户资料…'}
+                    </div>
+                  )
+                ) : <RecordSearchSelect
+                  key={`opportunity-customer-${createVisible}`}
+                  scope="opportunity-customer"
+                  enabled={createVisible}
+                  placeholder="按客户名称或编号搜索"
+                  value={form.customer_id ?? undefined}
+                  list={listCustomers}
+                  lookup={getCustomer}
+                  labelOf={(customer) => customer.name}
+                  onChange={(customer) => setForm({ ...form, customer_id: customer?.id ?? null })}
+                />}
+              </div>
+              <div className="full">
+                <div className="form-field-label">商机名称<span className="req">*</span></div>
+                <Input
+                  value={form.title}
+                  onChange={(v) => setForm({ ...form, title: v })}
+                  placeholder="例如：周转箱年度采购"
+                />
+              </div>
+              <div>
+                <div className="form-field-label">预计金额</div>
+                <Input
+                  value={form.expected_amount}
+                  onChange={(v) => setForm({ ...form, expected_amount: v })}
+                  placeholder="元，例如 120000"
+                />
+              </div>
+              <div>
+                <div className="form-field-label">预计成交日</div>
+                <DatePicker
+                  placeholder="不确定就空着"
+                  value={form.expected_close_date ?? undefined}
+                  onChange={(date) => setForm({ ...form, expected_close_date: (date as Date) ?? null })}
+                  style={{ width: '100%' }}
+                />
+              </div>
             </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>预计成交日期</div>
-              <DatePicker
-                value={form.expected_close_date ?? undefined}
-                onChange={(date) => setForm({ ...form, expected_close_date: (date as Date) ?? null })}
-                style={{ width: '100%' }}
-              />
+          </section>
+
+          <section className="form-card">
+            <div className="form-card-title">竞争与下一步</div>
+            <div className="form-card-grid">
+              <div className="full">
+                <div className="form-field-label">竞争对手</div>
+                <Input
+                  value={form.competitor}
+                  onChange={(v) => setForm({ ...form, competitor: v })}
+                  placeholder="客户还在比的另一家；没有就空着"
+                />
+              </div>
+              <div className="full">
+                <div className="form-field-label">下一步</div>
+                <TextArea
+                  rows={2}
+                  value={form.next_action}
+                  onChange={(v) => setForm({ ...form, next_action: v })}
+                  placeholder="例如：下周带样箱去客户仓库试装"
+                />
+              </div>
             </div>
-          </div>
-          <div>
-            <div style={{ marginBottom: 4 }}>竞争对手</div>
-            <Input value={form.competitor} onChange={(v) => setForm({ ...form, competitor: v })} />
-          </div>
-          <div>
-            <div style={{ marginBottom: 4 }}>下一步动作</div>
-            <Input value={form.next_action} onChange={(v) => setForm({ ...form, next_action: v })} />
-          </div>
+          </section>
         </div>
       </Modal>
     </div>

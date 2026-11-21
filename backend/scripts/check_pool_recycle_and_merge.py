@@ -23,6 +23,13 @@
 - 客户已确认接受（`accepted`）的打样**不再保护**；仅签收未确认、未通过仍在复样的继续保护；
 - 一张打样结束不影响客户**其他**履约事项的保护；
 - 保护原因能说清是哪张单据拦住的。
+- **2026-10-13 口径收窄**：「在途订单」只认 `pending / in_production / shipped`
+  —— 已**签收**（`delivered`）不再算在途（货到客户手里、就是不点完成，不能永远占位）；
+  「未结应收」只认**还没到期**的 —— 已逾期的本身就是不跟进的证据，不再当免死金牌。
+- **2026-10-13 新增「最长保护期」**（`pool_recycle_max_protect_days`，默认 90 天）：
+  有保护、但从最后活跃算起超过上限仍没动静 → **照常提名**，名单上单独列进
+  `protection_overridden` 并标「破例提名，请重点看」；主管复核那道闸还在
+  （批准时重新查保护、确需回收必须填原因）。保护**没过期**的照旧豁免。
 
 跑法（需要后端在跑）：
     cd backend
@@ -36,7 +43,8 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 
 from sqlalchemy import select, text
 from _test_support import require_api_base, require_isolated_db
@@ -201,6 +209,8 @@ async def main() -> int:
 
     from app.core.security import hash_password
     from app.modules.customer.model import Customer, CustomerDuplicateCase
+    from app.modules.order.model import SalesOrder
+    from app.modules.payment.model import ReceivablePlan
     from app.modules.quote.model import Quote
     from app.modules.sample.model import SampleRequest
     from app.modules.settings.model import PublicPoolRecycleCandidate, PublicPoolRule
@@ -236,6 +246,9 @@ async def main() -> int:
 
         # 长期没跟进（活跃时钟靠 last_progress_at 也会算，所以两个都置旧）
         stale = datetime.now(UTC) - timedelta(days=400)
+        # 只冷落 70 天：已过回收规则（60 天）但**没到**履约保护的最长有效期（90 天）
+        # —— 用来证明"保护还在有效期内时确实守着"，见 §2
+        recent = datetime.now(UTC) - timedelta(days=70)
 
         # ---- 6.5 撞单夹具：同名同域名的两家 ----
         # 命名要保证**查重真的命中**：打分权重 = 名称包含 55 + 域名相同 30 = 85，
@@ -259,22 +272,53 @@ async def main() -> int:
         draft_quote_cust = Customer(name=f"{PREFIX}草稿报价-{stamp}", level="Z",
                                     owner_id=a_id, status="active", pool_status="private",
                                     last_followup_at=stale, last_progress_at=stale)
-        # 有正式发出的有效报价 → 该被保护 → 不提名为候选
+        # 有正式发出的有效报价 → 保护成立；但已冷落 400 天 > 最长保护期 90 天
+        #   → **仍然提名**（2026-10-13 起，名单上要标"破例提名，请重点看"）
         sent_quote_cust = Customer(name=f"{PREFIX}已发报价-{stamp}", level="Z",
                                    owner_id=a_id, status="active", pool_status="private",
                                    last_followup_at=stale, last_progress_at=stale)
-        # 仅签收未确认的打样 → 该被保护
+        # 仅签收未确认的打样 → 保护成立；同样冷落 400 天 → 仍然提名（同上）
         pending_sample_cust = Customer(name=f"{PREFIX}待确认打样-{stamp}", level="Z",
                                        owner_id=a_id, status="active", pool_status="private",
                                        last_followup_at=stale, last_progress_at=stale)
+        # ---- 2026-10-13 主人拍板：保护口径收窄 + 加"最长保护期"，新增五类样本 ----
+        # ① 有**在途订单**（生产中）→ 保护成立，但冷落 400 天 → 破例提名
+        #    （原话："哪怕有在途订单也照样提名，名单上注明…请主管重点看"）
+        wip_order_cust = Customer(name=f"{PREFIX}在途订单-{stamp}", level="Z",
+                                  owner_id=a_id, status="active", pool_status="private",
+                                  last_followup_at=stale, last_progress_at=stale)
+        # ② 订单已**签收**（delivered）→ 不再算"在途" → 不保护 → 直接提名
+        delivered_order_cust = Customer(name=f"{PREFIX}已签收订单-{stamp}", level="Z",
+                                        owner_id=a_id, status="active", pool_status="private",
+                                        last_followup_at=stale, last_progress_at=stale)
+        # ③ 有**已逾期**的未结应收 → 逾期本身是不跟进的证据，不再保护 → 直接提名
+        pastdue_receivable_cust = Customer(name=f"{PREFIX}逾期应收-{stamp}", level="Z",
+                                           owner_id=a_id, status="active",
+                                           pool_status="private",
+                                           last_followup_at=stale, last_progress_at=stale)
+        # ④ 有**未到期**的未结应收 → 仍保护；冷落 400 天 → 破例提名
+        future_receivable_cust = Customer(name=f"{PREFIX}未到期应收-{stamp}", level="Z",
+                                          owner_id=a_id, status="active", pool_status="private",
+                                          last_followup_at=stale, last_progress_at=stale)
+        # ⑤ 有效报价 + 只冷落 70 天（> 规则 60 天、< 上限 90 天）
+        #    → 保护还在有效期内 → 真的豁免、**不**提名
+        recent_quote_cust = Customer(name=f"{PREFIX}新冷落报价-{stamp}", level="Z",
+                                     owner_id=a_id, status="active", pool_status="private",
+                                     last_followup_at=recent, last_progress_at=recent)
         s.add_all([dup_existing, dup_incoming, stale_cust, accepted_sample_cust,
-                   draft_quote_cust, sent_quote_cust, pending_sample_cust])
+                   draft_quote_cust, sent_quote_cust, pending_sample_cust,
+                   wip_order_cust, delivered_order_cust, pastdue_receivable_cust,
+                   future_receivable_cust, recent_quote_cust])
         await s.flush()
         ids = {
             "dup_existing": dup_existing.id, "dup_incoming": dup_incoming.id,
             "stale": stale_cust.id, "accepted_sample": accepted_sample_cust.id,
             "draft_quote": draft_quote_cust.id, "sent_quote": sent_quote_cust.id,
             "pending_sample": pending_sample_cust.id,
+            "wip_order": wip_order_cust.id, "delivered_order": delivered_order_cust.id,
+            "pastdue_receivable": pastdue_receivable_cust.id,
+            "future_receivable": future_receivable_cust.id,
+            "recent_quote": recent_quote_cust.id,
         }
 
         # 打样：一张客户已确认接受、一张仅签收待确认
@@ -284,7 +328,7 @@ async def main() -> int:
             SampleRequest(customer_id=pending_sample_cust.id, owner_id=a_id,
                           status="signed", confirm_status="pending", version=1),
         ])
-        # 报价：一张草稿、一张已发出且在有效期内
+        # 报价：一张草稿、一张已发出且在有效期内、一张"只冷落 70 天"的有效报价
         s.add_all([
             Quote(quote_no=f"{PREFIX}DRAFT{stamp}", customer_id=draft_quote_cust.id,
                   owner_id=a_id, status="draft",
@@ -292,6 +336,43 @@ async def main() -> int:
             Quote(quote_no=f"{PREFIX}SENT{stamp}", customer_id=sent_quote_cust.id,
                   owner_id=a_id, status="sent",
                   valid_until=(datetime.now(UTC) + timedelta(days=30)).date()),
+            Quote(quote_no=f"{PREFIX}RECENT{stamp}", customer_id=recent_quote_cust.id,
+                  owner_id=a_id, status="sent",
+                  valid_until=(datetime.now(UTC) + timedelta(days=30)).date()),
+        ])
+        # 订单 + 应收：验 2026-10-13 收窄后的「在途订单」「未结应收」两条保护。
+        #
+        # 到期日用**不可能歧义**的极早/极晚日期（2019 / 2099），避开"今天"的时区边界。
+        # 订单履约状态刻意分开，让每条只命中一个保护原因：
+        #   - `delivered` / `completed` 都不在"在途订单"集合里；
+        #   - `completed` 那一张用来单独验"未结应收"这条判据。
+        delivered_order = SalesOrder(order_no=f"{PREFIX}SO-DLV-{stamp}",
+                                     customer_id=delivered_order_cust.id,
+                                     total_amount=100, currency="CNY",
+                                     status="delivered", owner_id=a_id)
+        wip_order = SalesOrder(order_no=f"{PREFIX}SO-WIP-{stamp}",
+                               customer_id=wip_order_cust.id,
+                               total_amount=100, currency="CNY",
+                               status="in_production", owner_id=a_id)
+        pastdue_order = SalesOrder(order_no=f"{PREFIX}SO-PAST-{stamp}",
+                                   customer_id=pastdue_receivable_cust.id,
+                                   total_amount=100, currency="CNY",
+                                   status="completed", owner_id=a_id)
+        future_order = SalesOrder(order_no=f"{PREFIX}SO-FUT-{stamp}",
+                                  customer_id=future_receivable_cust.id,
+                                  total_amount=100, currency="CNY",
+                                  status="completed", owner_id=a_id)
+        s.add_all([delivered_order, wip_order, pastdue_order, future_order])
+        await s.flush()
+        s.add_all([
+            ReceivablePlan(order_id=pastdue_order.id, plan_name=f"{PREFIX}逾期未收",
+                           due_date=date(2019, 1, 1), amount=Decimal("100"),
+                           currency="CNY", status="pending",
+                           created_at=datetime.now(UTC)),
+            ReceivablePlan(order_id=future_order.id, plan_name=f"{PREFIX}未到期未收",
+                           due_date=date(2099, 1, 1), amount=Decimal("100"),
+                           currency="CNY", status="pending",
+                           created_at=datetime.now(UTC)),
         ])
         # 待办：一条未完成、一条已完成（用来验裁定后的责任迁移）
         s.add_all([
@@ -339,27 +420,89 @@ async def main() -> int:
                    any("报价" in r or "QT" in r or "SENT" in r
                        for r in detail.get(ids["sent_quote"], [])),
                    str(detail.get(ids["sent_quote"])))
+        # ---- 2026-10-13 口径收窄（主人拍板）：两条保护各自只认"还在办"的事 ----
+        check_true("订单已**签收**（delivered）→ 不再算在途 → 不保护",
+                   ids["delivered_order"] not in detail,
+                   str(detail.get(ids["delivered_order"])))
+        check_true("订单**生产中** → 仍在途 → 保护",
+                   ids["wip_order"] in detail, str(detail.get(ids["wip_order"])))
+        check_true("应收**已逾期** → 不再保护（逾期本身就是不跟进的证据）",
+                   ids["pastdue_receivable"] not in detail,
+                   str(detail.get(ids["pastdue_receivable"])))
+        check_true("应收**未到期** → 仍然保护",
+                   ids["future_receivable"] in detail,
+                   str(detail.get(ids["future_receivable"])))
+        check_true("未到期应收的保护原因写清了到期日",
+                   any("应收" in r for r in detail.get(ids["future_receivable"], [])),
+                   str(detail.get(ids["future_receivable"])))
 
         print("=== 2. 6.3 扫描只提名、不改归属 ===")
         status, res = call("POST", "/public-pool/run-recycle", admin_token)
         check("扫描接口成功", status, 200)
         data = res.get("data") or {}
+        candidates = data.get("candidates") or []
         check("返回里写明本轮是「提名」而不是「回收」", data.get("released_count"), 0)
         check_true("冷落客户被提名为候选",
-                   any(c["customer_id"] == ids["stale"] for c in (data.get("candidates") or [])),
-                   str([c["customer_id"] for c in (data.get("candidates") or [])]))
+                   any(c["customer_id"] == ids["stale"] for c in candidates),
+                   str([c["customer_id"] for c in candidates]))
         check_true("草稿报价的客户也被提名（不再被草稿保护）",
-                   any(c["customer_id"] == ids["draft_quote"] for c in (data.get("candidates") or [])),
-                   str([c["customer_id"] for c in (data.get("candidates") or [])]))
+                   any(c["customer_id"] == ids["draft_quote"] for c in candidates),
+                   str([c["customer_id"] for c in candidates]))
         check_true("已接受打样的客户也被提名",
-                   any(c["customer_id"] == ids["accepted_sample"] for c in (data.get("candidates") or [])),
+                   any(c["customer_id"] == ids["accepted_sample"] for c in candidates),
                    "")
-        check_true("有效报价的客户被豁免（没被提名）",
-                   not any(c["customer_id"] == ids["sent_quote"] for c in (data.get("candidates") or [])),
+        # ⚠️ 口径变更（2026-10-13 最长保护期）：下面这两位已冷落 400 天，
+        #    **超过 90 天的上限**了 —— 保护不再豁免，照样提名，名单上标"破例"。
+        #    改前这里断言的是"被豁免"，退回去一定会红。
+        check_true("保护已过最长有效期的客户**照样被提名**（有有效报价也算）",
+                   any(c["customer_id"] == ids["sent_quote"] for c in candidates),
+                   str([c["customer_id"] for c in candidates]))
+        check_true("同上，仅签收未确认的打样客户也被提名",
+                   any(c["customer_id"] == ids["pending_sample"] for c in candidates),
                    "")
-        check_true("仅签收未确认的打样客户被豁免",
-                   not any(c["customer_id"] == ids["pending_sample"] for c in (data.get("candidates") or [])),
+        check_true("订单签收 / 应收逾期的客户也被提名（已不再保护）",
+                   any(c["customer_id"] == ids["delivered_order"] for c in candidates)
+                   and any(c["customer_id"] == ids["pastdue_receivable"] for c in candidates),
                    "")
+        # 反面对照：保护还在有效期内（70 天 < 90 天）→ 真的豁免、不提名
+        protected_rows = {c["customer_id"]: c for c in (data.get("protected") or [])}
+        check_true("刚冷落 70 天的有效报价客户**没有**被提名",
+                   not any(c["customer_id"] == ids["recent_quote"] for c in candidates),
+                   str([c["customer_id"] for c in candidates]))
+        check_true("它进了「豁免」名单，且带着保护原因（主管看得到是哪张单拦住的）",
+                   ids["recent_quote"] in protected_rows
+                   and any("报价" in r for r in protected_rows[ids["recent_quote"]].get("reasons", [])),
+                   str(protected_rows.get(ids["recent_quote"])))
+        # 「破例提名」单独成名单（主人要求：名单上注明"有在途订单仍被提名，请主管重点看"）
+        overridden_ids = {c["customer_id"] for c in (data.get("protection_overridden") or [])}
+        check_true("「破例提名」名单点到了这些客户（报价/打样/在途订单/未到期应收）",
+                   {ids["sent_quote"], ids["pending_sample"], ids["wip_order"],
+                    ids["future_receivable"]} <= overridden_ids,
+                   str(sorted(overridden_ids)))
+        check_true("保护未过期的客户**不在**破例名单里",
+                   ids["recent_quote"] not in overridden_ids,
+                   str(sorted(overridden_ids)))
+        check_true("破例提名的条目带着保护原因（主管能看出是被哪张单保护的）",
+                   all(c.get("reasons")
+                       for c in (data.get("protection_overridden") or [])
+                       if c["customer_id"] == ids["wip_order"]),
+                   str([c for c in (data.get("protection_overridden") or [])
+                        if c["customer_id"] == ids["wip_order"]]))
+
+        # 复核列表接口也要把这枚标记下发 —— 前端列表就靠它挂「请重点看」的提示条；
+        # 判据只在后端一处（`serialize_candidate`），前端不复刻。
+        status, res = call(
+            "GET", "/public-pool/recycle-candidates?status=pending&page_size=100", admin_token
+        )
+        check("候选列表接口成功", status, 200)
+        listed = {r["customer_id"]: r for r in ((res.get("data") or {}).get("items") or [])}
+        check_true("列表把「破例提名」标记下发了（前端据此挂提示条）",
+                   bool(listed.get(ids["sent_quote"]))
+                   and listed[ids["sent_quote"]].get("protection_overridden") is True,
+                   str(listed.get(ids["sent_quote"], {}).get("protection_overridden")))
+        check_true("保护未过期的候选**不带**这枚标记（别把正常提名也给标上）",
+                   ids["recent_quote"] not in listed,
+                   str(sorted(listed)))
 
         check("**提名后客户仍归原负责人**（没有直接回收）", await owner_of(ids["stale"]), a_id)
 

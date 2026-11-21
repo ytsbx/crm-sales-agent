@@ -218,6 +218,10 @@ def _fixture(session):
         charge_amount=Decimal("80"),
         discount_amount=Decimal("-20"),
         total_amount=Decimal("480"),
+        # 2026-10-12（第二轮审查 P1）：Excel 对客文件现在与正式 PDF 同口径，
+        # **未通过审批的版本只能落草稿**。本文件的用例测的是"正式件"的内容冻结与幂等，
+        # 所以夹具要落成"已审批"状态 —— 补夹具，不去放宽刚加上的闸门。
+        approval_status="approved",
         created_at=datetime.now(UTC),
     )
     session.add(version)
@@ -225,6 +229,7 @@ def _fixture(session):
     quote.current_version_id = version.id
     session.add(
         QuoteItem(
+            cost_present_snapshot=True, cost_complete_snapshot=True,
             quote_version_id=version.id,
             sku_id=sku.id,
             sku_code_snapshot=sku.sku_code,
@@ -246,6 +251,10 @@ def _fixture(session):
             amount=Decimal("80"),
             is_discount=False,
             sort_no=1,
+            # 2026-10-12（第二轮审查 P1）：Excel 对客文件也要求"运费已确认具体金额"
+            # （`QuoteCharge.logistics_confirmed_at`，0 元也要显式确认）。
+            # 夹具里的运费是**确认过的实际金额**，如实带上确认时刻。
+            logistics_confirmed_at=datetime.now(UTC),
         )
     )
     session.add(
@@ -404,6 +413,7 @@ def test_old_version_terms_unaffected_by_current_data_changes():
         await session.flush()
         session.add(
             QuoteItem(
+            cost_present_snapshot=True, cost_complete_snapshot=True,
                 quote_version_id=new_version.id,
                 sku_id=sku.id,
                 sku_name_snapshot=sku.name,

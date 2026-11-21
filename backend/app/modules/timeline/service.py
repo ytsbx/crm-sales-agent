@@ -4,7 +4,9 @@
 阶段历史、负责人变更合并后按时间倒序返回，避免出现「两份真相」。
 """
 
+import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,7 +18,7 @@ from app.core.timebase import to_business
 from app.modules.customer.model import CustomerOwnerHistory
 from app.modules.followup.model import FollowUp
 from app.modules.followup.schema import EXEMPTION_LABELS
-from app.modules.followup.visibility import system_source_filter
+from app.modules.followup.visibility import followup_visibility_filter
 from app.modules.opportunity.model import Opportunity, OpportunityStage, OpportunityStageHistory
 from app.modules.order.model import SalesOrder
 from app.modules.quote.model import Quote
@@ -37,31 +39,19 @@ BUSINESS_LABEL = {
     "sku": "SKU",
 }
 
-ACTION_LABEL = {
-    "create": "创建",
-    "update": "修改",
-    "delete": "删除",
-    "transfer": "转移负责人",
-    "assign": "分配",
-    "claim": "领取",
-    "release": "释放回池",
-    "release_to_pool": "放入公海",
-    "discard": "废弃",
-    "convert": "线索转化",
-    "change_stage": "推进阶段",
-    "win": "标记成交",
-    "lose": "标记失单",
-    "reopen": "重新激活",
-    "enable": "启用",
-    "disable": "停用",
-    "create_item": "添加需求明细",
-    "update_item": "修改需求明细",
-    "delete_item": "删除需求明细",
-    "complete": "完成",
-    "cancel": "取消",
-    "postpone": "延期",
-    "login": "登录",
-}
+#: 动作中文名 —— **读共用那一份**（`app/core/audit_action_labels.json`）。
+#:
+#: 这里原来自己维护了一张 23 条的短表，而后端实际用到 **154 个动作**：
+#: 表里没有的就被 `.get(action, action)` **原样印出英文码**（主人 2026-10-13 截图：
+#: 「客户：merge」「客户：open_customer_duplicate_cases」）。
+#:
+#: 更糟的是前端审计页**另有一份 156 条的表**，两份各自漂移 —— 同一个动作在
+#: "日志"和"审计"两个页面显示不同词。现在合成一份 JSON，两边都读它：
+#:   · 后端：本模块（时间线标题）；
+#:   · 前端：`shared/audit-labels.ts`。
+#: 以后加动作只改 JSON 一处，`ops/check_audit_labels.py` 会盯着"两边一致"。
+_ACTION_LABELS_PATH = Path(__file__).resolve().parents[2] / "core" / "audit_action_labels.json"
+ACTION_LABEL: dict[str, str] = json.loads(_ACTION_LABELS_PATH.read_text(encoding="utf-8"))
 
 #: 审计里这几个键以前是**原样摆给用户看的**（渲染出来长 `owner_id：2`、
 #: `remark：没有备注`），等于把内部字段名和内部编号亮在了时间线上。
@@ -104,8 +94,8 @@ async def _visible_sources(
         stmt = select(model.id).where(model.id.in_(ids))
         if owner_ids is not None:
             stmt = stmt.where(model.owner_id.in_(owner_ids))
-        if kind == "quote":
-            stmt = stmt.where(Quote.deleted_at.is_(None))
+        if kind in ("quote", "opportunity", "sample"):
+            stmt = stmt.where(model.deleted_at.is_(None))
         for source_id in (await session.execute(stmt)).scalars():
             visible[(kind, source_id)] = {"type": kind, "id": source_id}
     return visible
@@ -126,6 +116,7 @@ async def build_timeline(
     limit: int = 100,
     *,
     user: CurrentUser,
+    mask_contacts: bool = False,
 ) -> list[dict]:
     events: list[dict] = []
 
@@ -165,13 +156,13 @@ async def build_timeline(
         "lead": FollowUp.lead_id,
         "opportunity": FollowUp.opportunity_id,
     }.get(business_type)
-    if followup_column is not None:
+    if followup_column is not None and ("admin" in user.roles or user.has("followup:view")):
         followups = (
             await session.execute(
                 select(FollowUp)
                 .where(
                     followup_column == business_id,
-                    await system_source_filter(session, user),
+                    await followup_visibility_filter(session, user),
                 )
                 .order_by(FollowUp.id.desc())
                 .limit(limit)
@@ -208,11 +199,14 @@ async def build_timeline(
         "lead": Task.lead_id,
         "opportunity": Task.opportunity_id,
     }.get(business_type)
-    if task_column is not None:
+    if task_column is not None and ("admin" in user.roles or user.has("task:view")):
+        task_stmt = select(Task).where(task_column == business_id)
+        owner_ids = await scoped_owner_ids(session, user)
+        if owner_ids is not None:
+            task_stmt = task_stmt.where(Task.owner_id.in_(owner_ids))
         tasks = (
             await session.execute(
-                select(Task)
-                .where(task_column == business_id)
+                task_stmt
                 .order_by(Task.id.desc())
                 .limit(limit)
             )
@@ -312,7 +306,7 @@ async def build_timeline(
     for event in events:
         audit_row = event.pop("_audit_row", None)
         if audit_row is not None:
-            event["detail"] = _audit_detail(audit_row, names)
+            event["detail"] = _audit_detail(audit_row, names, mask_contacts=mask_contacts)
         event["operator_name"] = (
             names.get(event["operator_id"], "未知用户") if event["operator_id"] else "系统"
         )
@@ -338,7 +332,7 @@ def _audit_value(field: str, value, names: dict[int, str]) -> str:
     """
     if field == "owner_id":
         try:
-            return names.get(int(value), f"未知用户（#{value}）")
+            return names.get(int(value), f"未知用户（编号 {value}）")
         except (TypeError, ValueError):
             return str(value)
     return str(value)
@@ -359,7 +353,9 @@ def _human_time(value: datetime) -> str:
     return to_business(value).strftime("%Y-%m-%d %H:%M")
 
 
-def _audit_detail(row: AuditLog, names: dict[int, str] | None = None) -> str | None:
+def _audit_detail(
+    row: AuditLog, names: dict[int, str] | None = None, *, mask_contacts: bool = False
+) -> str | None:
     """把审计里的关键变更压成一行可读文本，避免前端直接铺原始 JSON。
 
     键名走 AUDIT_FIELD_LABEL 翻成中文，值走 _audit_value（负责人查成人名）。
@@ -368,6 +364,11 @@ def _audit_detail(row: AuditLog, names: dict[int, str] | None = None) -> str | N
     """
     after = row.after_data if isinstance(row.after_data, dict) else {}
     before = row.before_data if isinstance(row.before_data, dict) else {}
+    if mask_contacts:
+        from app.modules.contact_util import mask_contact_fields
+
+        after = mask_contact_fields(after)
+        before = mask_contact_fields(before)
     names = names or {}
     for field, label in AUDIT_FIELD_LABEL.items():
         value = after.get(field)

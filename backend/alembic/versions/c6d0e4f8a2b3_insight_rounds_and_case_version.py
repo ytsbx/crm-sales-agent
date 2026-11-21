@@ -44,7 +44,8 @@ Create Date: 2026-10-06
 线上这套数据目前是空的（案例与洞察都是 0 条），这段主要为已有环境的库兜底。
 """
 
-from alembic import op
+from alembic import context, op
+import sqlalchemy as sa
 
 revision = "c6d0e4f8a2b3"
 down_revision = "b5c9d3e7f1a2"
@@ -93,21 +94,22 @@ def upgrade() -> None:
     #      等于替一份没审核过的东西伪造了一段发布历史。
     # 改成 **软删**（deleted_at）：一行数据都不丢（仍可查、可恢复），
     # 但退出唯一索引、也不再出现在任何正常视图里。
-    op.execute(
-        """
-        UPDATE sales_cases SET deleted_at = now()
-        WHERE id IN (
-            SELECT id FROM (
-                SELECT id, row_number() OVER (
-                    PARTITION BY revision_of_id, version ORDER BY id
-                ) AS rn
-                FROM sales_cases
-                WHERE revision_of_id IS NOT NULL AND deleted_at IS NULL
-            ) ranked
-            WHERE rn > 1
-        )
-        """
-    )
+    if not context.is_offline_mode():
+        duplicates = op.get_bind().execute(sa.text(
+            "SELECT revision_of_id, version, COUNT(*) AS n, "
+            "string_agg(id::text, ',' ORDER BY id) AS row_ids "
+            "FROM sales_cases WHERE revision_of_id IS NOT NULL AND deleted_at IS NULL "
+            "GROUP BY revision_of_id, version HAVING COUNT(*) > 1"
+        )).fetchall()
+        if duplicates:
+            detail = "; ".join(
+                f"revision_of_id={row[0]} version={row[1]} count={row[2]} ids={row[3]}"
+                for row in duplicates[:20]
+            )
+            raise RuntimeError(
+                "sales_cases 存在重复修订版本，无法建立唯一约束；"
+                f"请人工确认历史记录后重试迁移：{detail}"
+            )
     op.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS uq_case_revision_version

@@ -2,7 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from app.core.patch_schema import PatchModel
 
 
@@ -17,10 +17,10 @@ class CostCreate(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    purchase_cost: Decimal | None = Field(default=None, ge=0)
-    production_cost: Decimal | None = Field(default=None, ge=0)
-    package_cost: Decimal | None = Field(default=None, ge=0)
-    processing_cost: Decimal | None = Field(default=None, ge=0)
+    purchase_cost: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=4)
+    production_cost: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=4)
+    package_cost: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=4)
+    processing_cost: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=4)
     effective_from: date
     effective_to: date | None = None
     remark: str | None = Field(default=None, max_length=255)
@@ -36,10 +36,10 @@ class CostUpdate(PatchModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    purchase_cost: Decimal | None = Field(default=None, ge=0)
-    production_cost: Decimal | None = Field(default=None, ge=0)
-    package_cost: Decimal | None = Field(default=None, ge=0)
-    processing_cost: Decimal | None = Field(default=None, ge=0)
+    purchase_cost: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=4)
+    production_cost: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=4)
+    package_cost: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=4)
+    processing_cost: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=4)
     effective_from: date | None = None
     effective_to: date | None = None
     remark: str | None = Field(default=None, max_length=255)
@@ -57,52 +57,109 @@ class ExchangeRateCreate(BaseModel):
 
     base_currency: str = "CNY"
     quote_currency: str
-    rate: Decimal = Field(gt=0)
+    rate: Decimal = Field(gt=0, max_digits=16, decimal_places=6)
     source: str | None = None
     effective_at: datetime | None = None
 
 
 class PriceRuleCreate(BaseModel):
     sku_id: int
-    customer_level: str | None = None
-    min_qty: Decimal = Decimal(0)
-    max_qty: Decimal | None = None
-    standard_price: Decimal | None = None
-    guide_price: Decimal | None = None
-    minimum_price: Decimal | None = None
-    target_margin: Decimal | None = None
+    #: 与库列 `varchar(8)` 对齐（审查 R07 同类）：从前没有长度约束，
+    #: 超长会一路走到数据库撞 `value too long`，用户看到 500 而不是提示。
+    customer_level: str | None = Field(default=None, max_length=8)
+    #: 数量区间按 `price_rules.min_qty/max_qty` 的列精度（`Numeric(16,3)`）约束
+    #: （2026-10-09 审查 R04）：从前这两个字段**没有任何约束**，填 `1.2349` 会被
+    #: 数据库**静默舍成 1.235** —— 用户以为上限是 1.2349，实际是 1.235；
+    #: 更麻烦的是他自己也复现不出"为什么另一条规则说区间重叠"。
+    #: 与报价明细（`QuoteItemInput`）同一把尺子，写法照抄，不另创一套。
+    min_qty: Decimal = Field(default=Decimal(0), ge=0, max_digits=16, decimal_places=3)
+    max_qty: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=3)
+    standard_price: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=4
+    )
+    guide_price: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=4
+    )
+    minimum_price: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=4
+    )
+    target_margin: Decimal | None = Field(default=None, gt=0, le=1, max_digits=6, decimal_places=4)
     effective_from: date | None = None
     effective_to: date | None = None
-    remark: str | None = None
+    #: 与库列 `varchar(255)` 对齐（审查 R07）：从前**没有长度约束**，
+    #: 超长会一路走到数据库撞 `value too long`，用户看到 500 而不是提示。
+    remark: str | None = Field(default=None, max_length=255)
 
 
 class PriceRuleUpdate(PatchModel):
     model_config = ConfigDict(extra="ignore")
 
-    customer_level: str | None = None
-    min_qty: Decimal | None = None
-    max_qty: Decimal | None = None
-    standard_price: Decimal | None = None
-    guide_price: Decimal | None = None
-    minimum_price: Decimal | None = None
-    target_margin: Decimal | None = None
+    #: 与库列 `varchar(8)` 对齐（审查 R07 同类）：从前没有长度约束，
+    #: 超长会一路走到数据库撞 `value too long`，用户看到 500 而不是提示。
+    customer_level: str | None = Field(default=None, max_length=8)
+    #: 数量区间按 `price_rules.min_qty/max_qty` 的列精度（`Numeric(16,3)`）约束
+    #: （2026-10-09 审查 R04）：从前这两个字段**没有任何约束**，填 `1.2349` 会被
+    #: 数据库**静默舍成 1.235** —— 用户以为上限是 1.2349，实际是 1.235；
+    #: 更麻烦的是他自己也复现不出"为什么另一条规则说区间重叠"。
+    #: 与报价明细（`QuoteItemInput`）同一把尺子，写法照抄，不另创一套。
+    min_qty: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=3)
+    max_qty: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=3)
+    standard_price: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=4
+    )
+    guide_price: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=4
+    )
+    minimum_price: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=4
+    )
+    target_margin: Decimal | None = Field(default=None, gt=0, le=1, max_digits=6, decimal_places=4)
     status: str | None = None
     effective_from: date | None = None
     effective_to: date | None = None
-    remark: str | None = None
+    #: 与库列 `varchar(255)` 对齐（审查 R07）：从前**没有长度约束**，
+    #: 超长会一路走到数据库撞 `value too long`，用户看到 500 而不是提示。
+    remark: str | None = Field(default=None, max_length=255)
 
 
 class CustomerPriceCreate(BaseModel):
     customer_id: int
     sku_id: int
-    min_qty: Decimal = Decimal(0)
-    max_qty: Decimal | None = None
-    agreed_price: Decimal
-    minimum_price: Decimal | None = None
+    #: 数量区间按 `price_rules.min_qty/max_qty` 的列精度（`Numeric(16,3)`）约束
+    #: （2026-10-09 审查 R04）：从前这两个字段**没有任何约束**，填 `1.2349` 会被
+    #: 数据库**静默舍成 1.235** —— 用户以为上限是 1.2349，实际是 1.235；
+    #: 更麻烦的是他自己也复现不出"为什么另一条规则说区间重叠"。
+    #: 与报价明细（`QuoteItemInput`）同一把尺子，写法照抄，不另创一套。
+    min_qty: Decimal = Field(default=Decimal(0), ge=0, max_digits=16, decimal_places=3)
+    max_qty: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=3)
+    agreed_price: Decimal = Field(gt=0, max_digits=16, decimal_places=4)
+    minimum_price: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=4
+    )
     effective_from: date | None = None
     effective_to: date | None = None
-    remark: str | None = None
+    #: 与库列 `varchar(255)` 对齐（审查 R07）：从前**没有长度约束**，
+    #: 超长会一路走到数据库撞 `value too long`，用户看到 500 而不是提示。
+    remark: str | None = Field(default=None, max_length=255)
 
+
+    @model_validator(mode="before")
+    @classmethod
+    def _require_agreed_price(cls, data):
+        """约定价是**必填的价钱**：显式传 null 要拒绝，不能静默当"不改"（审查 2026-10-09）。
+
+        从前更新端点用的是 `if changes.get("agreed_price") is not None:` ——
+        "显式传 null"因此被当成"这个字段不改"，接口还返回 200「已保存」，
+        而价格其实**一个字没动**。前端把空格转成 null 后提交，用户看到的就是
+        "保存成功但价格没变"。前端的校验会一起加，但后端不能只靠前端。
+
+        为什么不用 `Field(gt=0)` 顺带拦 null：那样报的是 Pydantic 的英文原生提示
+        （"Input should be a valid number"），不如这里直接说清"不能为空"。
+        `gt=0` 仍然保留，用来拦 0 与负数（约定价是"这个客户按多少钱买"，0 元不成立）。
+        """
+        if isinstance(data, dict) and "agreed_price" in data and data["agreed_price"] is None:
+            raise ValueError("约定价不能为空。要改就给它一个正数；不打算改这个字段就别传它")
+        return data
 
 class CustomerPriceUpdate(BaseModel):
     """改客户特殊价（03-API §15 PATCH /customer-price-rules/{id}）。
@@ -113,18 +170,45 @@ class CustomerPriceUpdate(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    min_qty: Decimal | None = None
-    max_qty: Decimal | None = None
-    agreed_price: Decimal | None = None
-    minimum_price: Decimal | None = None
+    #: 数量区间按 `price_rules.min_qty/max_qty` 的列精度（`Numeric(16,3)`）约束
+    #: （2026-10-09 审查 R04）：从前这两个字段**没有任何约束**，填 `1.2349` 会被
+    #: 数据库**静默舍成 1.235** —— 用户以为上限是 1.2349，实际是 1.235；
+    #: 更麻烦的是他自己也复现不出"为什么另一条规则说区间重叠"。
+    #: 与报价明细（`QuoteItemInput`）同一把尺子，写法照抄，不另创一套。
+    min_qty: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=3)
+    max_qty: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=3)
+    agreed_price: Decimal | None = Field(default=None, gt=0, max_digits=16, decimal_places=4)
+    minimum_price: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=4
+    )
     effective_from: date | None = None
     effective_to: date | None = None
-    remark: str | None = None
+    #: 与库列 `varchar(255)` 对齐（审查 R07）：从前**没有长度约束**，
+    #: 超长会一路走到数据库撞 `value too long`，用户看到 500 而不是提示。
+    remark: str | None = Field(default=None, max_length=255)
 
+
+    @model_validator(mode="before")
+    @classmethod
+    def _require_agreed_price(cls, data):
+        """约定价是**必填的价钱**：显式传 null 要拒绝，不能静默当"不改"（审查 2026-10-09）。
+
+        从前更新端点用的是 `if changes.get("agreed_price") is not None:` ——
+        "显式传 null"因此被当成"这个字段不改"，接口还返回 200「已保存」，
+        而价格其实**一个字没动**。前端把空格转成 null 后提交，用户看到的就是
+        "保存成功但价格没变"。前端的校验会一起加，但后端不能只靠前端。
+
+        为什么不用 `Field(gt=0)` 顺带拦 null：那样报的是 Pydantic 的英文原生提示
+        （"Input should be a valid number"），不如这里直接说清"不能为空"。
+        `gt=0` 仍然保留，用来拦 0 与负数（约定价是"这个客户按多少钱买"，0 元不成立）。
+        """
+        if isinstance(data, dict) and "agreed_price" in data and data["agreed_price"] is None:
+            raise ValueError("约定价不能为空。要改就给它一个正数；不打算改这个字段就别传它")
+        return data
 
 class PricePermissionUpdate(BaseModel):
-    minimum_margin: Decimal = Field(default=Decimal("0.15"), ge=0, le=1)
-    discount_limit: Decimal | None = Field(default=None, ge=0, le=1)
+    minimum_margin: Decimal = Field(default=Decimal("0.15"), ge=0, le=1, max_digits=6, decimal_places=4)
+    discount_limit: Decimal | None = Field(default=None, ge=0, le=1, max_digits=6, decimal_places=4)
     can_approve: bool = False
     remark: str | None = None
 
@@ -144,13 +228,15 @@ class LogisticsRateCreate(BaseModel):
     origin_region: str | None = None
     destination_region: str | None = None
     shipping_method: str = "陆运"
-    unit_price_per_kg: Decimal = Decimal(1)
+    unit_price_per_kg: Decimal = Field(default=Decimal(1), ge=0, max_digits=10, decimal_places=4)
     """按重量计费的单价（元/kg）。"""
-    unit_price_per_volume: Decimal | None = None
+    unit_price_per_volume: Decimal | None = Field(
+        default=None, ge=0, max_digits=10, decimal_places=4
+    )
     """按体积计费的单价（元/m³）；为空表示这家不按体积计费。"""
-    min_charge: Decimal = Decimal(0)
-    eta_days: int | None = None
-    eta_days_max: int | None = None
+    min_charge: Decimal = Field(default=Decimal(0), ge=0, max_digits=10, decimal_places=2)
+    eta_days: int | None = Field(default=None, ge=0)
+    eta_days_max: int | None = Field(default=None, ge=0)
     remark: str | None = None
 
 
@@ -173,9 +259,13 @@ class LogisticsRateUpdate(PatchModel):
     origin_region: str | None = None
     destination_region: str | None = None
     shipping_method: str | None = None
-    unit_price_per_kg: Decimal | None = Field(default=None, ge=0)
-    unit_price_per_volume: Decimal | None = Field(default=None, ge=0)
-    min_charge: Decimal | None = Field(default=None, ge=0)
+    unit_price_per_kg: Decimal | None = Field(
+        default=None, ge=0, max_digits=10, decimal_places=4
+    )
+    unit_price_per_volume: Decimal | None = Field(
+        default=None, ge=0, max_digits=10, decimal_places=4
+    )
+    min_charge: Decimal | None = Field(default=None, ge=0, max_digits=10, decimal_places=2)
     eta_days: int | None = Field(default=None, ge=0)
     eta_days_max: int | None = Field(default=None, ge=0)
     status: Literal["active", "inactive"] | None = None
@@ -186,14 +276,22 @@ class PricingRequest(BaseModel):
     sku_id: int
     # 数量必须为正：此前没有约束，quantity=0 会一路算出 0 元的"建议价"，
     # 界面上看起来像正常的核价结果，实际是无意义数据。
-    quantity: Decimal = Field(default=Decimal(1), gt=0)
+    quantity: Decimal = Field(default=Decimal(1), gt=0, max_digits=16, decimal_places=3)
     customer_id: int | None = None
-    logistics_cost: Decimal | None = Field(default=None, ge=0)
-    target_margin: Decimal | None = Field(default=None, gt=0, le=1)
+    logistics_cost: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=4
+    )
+    target_margin: Decimal | None = Field(
+        default=None, gt=0, le=1, max_digits=6, decimal_places=4
+    )
     """利润要求（比率口径）。与 target_profit_amount 二选一，同时给时以比率优先。"""
-    target_profit_amount: Decimal | None = None
+    target_profit_amount: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=2
+    )
     """利润要求（绝对金额口径，单件）：PRD §13「利润要求」允许按金额提要求。"""
-    quoted_price: Decimal | None = Field(default=None, gt=0)
+    quoted_price: Decimal | None = Field(
+        default=None, gt=0, max_digits=16, decimal_places=4
+    )
     """quoted_price 有值时，接口会顺带判断这个报价是否需要审批。"""
 
     # PRD §13 核价输入：客户等级 / 国家 / 包装 / 物流方式 / 付款方式
@@ -210,7 +308,9 @@ class PricingRequest(BaseModel):
 
     # 外贸口径（可选）：不填就是内贸，全人民币、无退税
     currency: str = "CNY"
-    exchange_rate: Decimal | None = None
+    exchange_rate: Decimal | None = Field(
+        default=None, gt=0, max_digits=16, decimal_places=6
+    )
     tax_refund_rate: Decimal | None = None
 
 
@@ -221,7 +321,15 @@ class PricePermissionCheck(PricingRequest):
     不问"这个价能不能报"，光核算价没意义。
     """
 
-    quoted_price: Decimal = Field(gt=0)
+    # ⚠️ 约束必须与普通核价的 `quoted_price` **逐项一致**（第七批 P2-10）：
+    # 原先是裸的 `Field(gt=0)`，少了 max_digits/decimal_places。
+    # 实测：`{"quoted_price": "1e1000"}`（**字符串**形态）能过校验 ——
+    # Pydantic 允许 Decimal 从字符串构造，`finite_number` 不拦 `Decimal('1E+1000')`，
+    # 于是它一路算到 JSON 序列化才炸：`ValueError: Out of range float values are
+    # not JSON compliant: inf` → **500**。加上位数限制后，入口直接 422。
+    # （浮点形态 `1e1000` 本来就变成 inf、会被 finite_number 拦掉，
+    #  漏的正是字符串这条。）
+    quoted_price: Decimal = Field(gt=0, max_digits=16, decimal_places=4)
 
 
 class PricingSimulation(BaseModel):
@@ -236,5 +344,30 @@ class PricingSimulation(BaseModel):
     """
 
     base: PricingRequest
-    candidates: list[Decimal] = Field(default_factory=list)
-    margins: list[Decimal] = Field(default_factory=list)
+    # `list[Decimal]` 上的字段级约束管不到**每个元素**（Pydantic v2 不支持
+    # 逐项 max_digits），所以这里用校验器逐项过一遍 —— 与 `quoted_price`
+    # 同一套限制（第七批 P2-10）。实测漏法：`{"candidates": ["1e1000"]}`
+    # → 算成 inf → JSON 序列化 500。
+    candidates: list[Decimal] = Field(default_factory=list, max_length=50)
+    margins: list[Decimal] = Field(default_factory=list, max_length=50)
+
+    @field_validator("candidates", "margins")
+    @classmethod
+    def _each_amount_must_fit_money(cls, values: list[Decimal]) -> list[Decimal]:
+        for value in values:
+            if value is None:
+                continue
+            if not value.is_finite():
+                raise ValueError("候选价/利润率必须是有限数值")
+            digits = len(value.as_tuple().digits)
+            exponent = value.as_tuple().exponent
+            # 与 Numeric(16,4) 对齐：整数位 + 小数位不超过 16，小数不超过 4 位。
+            # 负 exponent 才是小数位（Decimal('1E+30') 的 exponent 是 +30）。
+            integer_digits = max(digits + exponent, 0) if exponent < 0 else digits + exponent
+            fraction_digits = -exponent if exponent < 0 else 0
+            if integer_digits + fraction_digits > 16 or fraction_digits > 4:
+                raise ValueError(
+                    f"金额最多 16 位（含 4 位小数），收到 {value} —— "
+                    "请检查是不是多打了几个 0"
+                )
+        return values

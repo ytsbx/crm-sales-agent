@@ -1,22 +1,28 @@
 """报价中心接口（对齐 03-API §20 ~ §22）。"""
 
 import asyncio
+import logging
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Query, Request, Response
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.approval.rules_engine import strip_approval_summary
 from app.core.audit import write_audit
 from app.core.data_scope import scoped_owner_ids
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
+from app.core.draft_visibility import draft_scope
 from app.core.errors import AppError, ErrorCode
+from app.core.money import line_amount
 from app.core.response import ok, page_data, paginate
+from app.core.trade_mode import reject_foreign_currency
 from app.modules.customer import service as customer_service
 from app.modules.customer.model import Customer
 from app.modules.opportunity.model import Opportunity
+from app.modules.opportunity.model import OpportunityItem
 from app.modules.order.model import SalesOrder
 from app.modules.followup import service as followup_service
 from app.modules.notification import service as notification_service
@@ -47,6 +53,9 @@ from app.modules.quote.schema import (
     SubmitApprovalRequest,
 )
 from app.modules.user.model import User
+from app.core.timebase import to_business
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Quote"])
 
@@ -65,7 +74,7 @@ def _with_master_warnings(payload: dict, warnings: set[str]) -> dict:
 
 
 async def _ensure_inquiry_visible(
-    session: AsyncSession, user: CurrentUser, inquiry_id: int | None
+    session: AsyncSession, user: CurrentUser, inquiry_id: int | None, *, quote_id: int,
 ) -> None:
     """定制明细引用的需求必须在该用户数据范围内。
 
@@ -77,7 +86,39 @@ async def _ensure_inquiry_visible(
         return
     from app.modules.inquiry import service as inquiry_service
 
-    await inquiry_service.get_visible_or_404(session, user, inquiry_id)
+    inquiry = await inquiry_service.get_visible_or_404(session, user, inquiry_id)
+    await inquiry_service.lock_quote_source(session, inquiry, quote_id=quote_id)
+
+
+async def _ensure_opportunity_item_same_customer(
+    session: AsyncSession, opportunity_item_id: int | None, *, quote: Quote,
+) -> None:
+    """商机需求只能挂进同一客户的报价。
+
+    此前 SKU 明细入口只校验定制需求（inquiry_id），`opportunity_item_id`
+    直接原样落库；于是 B 的报价可以挂 A 客户商机下的需求，留下跨客户引用。
+    单条追加与整版替换共用这一处判据。
+    """
+    if opportunity_item_id is None:
+        return
+    customer_id = await session.scalar(
+        select(Opportunity.customer_id)
+        .join(OpportunityItem, OpportunityItem.opportunity_id == Opportunity.id)
+        .where(
+            OpportunityItem.id == opportunity_item_id,
+            Opportunity.deleted_at.is_(None),
+        )
+    )
+    if customer_id is None:
+        raise AppError(
+            ErrorCode.NOT_FOUND, f"商机需求 id={opportunity_item_id} 不存在", 404
+        )
+    if customer_id != quote.customer_id:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "该商机需求属于别的客户，不能挂进这张报价。请选择本客户的商机需求。",
+            422,
+        )
 
 
 CHARGE_LABEL = {
@@ -159,8 +200,7 @@ async def list_quotes(
     if owner_id:
         stmt = stmt.where(Quote.owner_id == owner_id)
     owner_ids = await scoped_owner_ids(session, user)
-    if owner_ids is not None:
-        stmt = stmt.where(Quote.owner_id.in_(owner_ids))
+    stmt = stmt.where(draft_scope(Quote, user.id, Quote.owner_id.in_(owner_ids) if owner_ids is not None else None))
 
     rows, total = await paginate(session, stmt.order_by(Quote.id.desc()), page, page_size)
     ctx = await _quote_context(session, rows)
@@ -325,11 +365,16 @@ async def list_versions(
     user: CurrentUser = Depends(require_permission("quote:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    await svc.get_visible_quote(session, user, quote_id)
+    quote = await svc.get_visible_quote(session, user, quote_id)
+    from app.core.draft_visibility import private_draft
+
     rows = (
         await session.execute(
             select(QuoteVersion)
-            .where(QuoteVersion.quote_id == quote_id)
+            .where(QuoteVersion.quote_id == quote_id, or_(
+                ~private_draft(QuoteVersion),
+                func.coalesce(QuoteVersion.created_by, quote.created_by or quote.owner_id) == user.id,
+            ))
             .order_by(QuoteVersion.version_no.desc())
         )
     ).scalars().all()
@@ -353,7 +398,7 @@ async def update_quote(
     金额、明细、费用属于**版本**，必须走版本接口 ——
     否则会出现"单据金额变了但版本快照没变"，历史报价再也对不上。
     """
-    quote = await svc.get_visible_quote(session, user, quote_id)
+    quote = await svc.get_visible_quote(session, user, quote_id, for_update=True)
     before = svc.serialize_quote(quote)
     data = payload.model_dump(exclude_unset=True)
     if data.get("owner_id") is not None:
@@ -369,7 +414,7 @@ async def update_quote(
         # 可编辑的草稿版同步；已提交审批/已发送的版本按既定锁定规则**拒绝** ——
         # 不允许借"改一下主单"把已经对外的历史口径改掉。
         current_version = (
-            await session.get(QuoteVersion, quote.current_version_id)
+            await svc.get_visible_version(session, user, quote.current_version_id, for_update=True)
             if quote.current_version_id
             else None
         )
@@ -405,7 +450,7 @@ async def delete_quote(
     已转订单的报价不能删：订单与报价是追溯关系，删了报价会让订单
     失去来源。其余情况软删，历史版本与审计都保留。
     """
-    quote = await svc.get_visible_quote(session, user, quote_id)
+    quote = await svc.get_visible_quote(session, user, quote_id, for_update=True)
     order_id = (
         await session.execute(
             select(SalesOrder.id).where(SalesOrder.quote_id == quote.id)
@@ -552,7 +597,7 @@ async def quote_approval_history(
                     "id": instance.id,
                     "status": instance.status,
                     "current_node": instance.current_node,
-                    "summary": instance.summary,
+                    "summary": strip_approval_summary(instance.summary, can_see_cost=_can_see_cost(user)),
                     "created_at": instance.created_at,
                     "finished_at": instance.finished_at,
                     "records": records,
@@ -560,6 +605,16 @@ async def quote_approval_history(
             }
         )
     return ok(history)
+
+
+def _can_see_cost(user: CurrentUser) -> bool:
+    """这份报价能不能看到**公司内部成本口径**的字段（含由它推出的利润/底价）。
+
+    判据与查价/核价/价格中心完全一致：`price:manage`。
+    从前报价详情、明细列表、PDF 导出都无条件返回成本，而查价那边已经隐藏 ——
+    同一个用户、同一条数据，两个入口两种口径（issue #5）。
+    """
+    return user.has("price:manage")
 
 
 @router.post("/quotes/{quote_id}/clone")
@@ -588,6 +643,9 @@ async def clone_quote(
         else None
     )
     source_currency = source_version.currency if source_version else "CNY"
+    source_items = await svc.version_items(session, source_version.id) if payload.copy_items and source_version else []
+    if any(item.inquiry_id is not None for item in source_items):
+        raise AppError(ErrorCode.DUPLICATE_CONVERT, "来源报价已包含定制询价，请在原报价中新建版本", 409)
 
     # D8：复制出的也是**新报价**，同样必须归属商机。先取"显式指定 > 源报价"的
     # 最终归属，源报价就没挂商机且未指定时按同一口径拒绝（历史数据不追溯，
@@ -601,6 +659,27 @@ async def clone_quote(
             ErrorCode.PARAM_ERROR,
             "复制出的报价必须关联商机——源报价没有商机，请在复制时指定 opportunity_id"
             "（或在查价页「选品下单」一键新建快捷商机）",
+            422,
+        )
+    # ---- 最终商机必须校验（2026-10-10 修 issue #6）----
+    #
+    # 从前这里只取了个 id，紧接着 `new_quote.opportunity_id = ...` **直接赋值** ——
+    # 既没验数据范围、也没验客户一致性，实测：
+    #   A 读不到的商机（403）→ 复制时填它的 id → **复制成功**，
+    #   新报价 customer_id = A 自己的客户，却挂到 B 客户的商机上 → 串账。
+    # 下面这段与"复制需求行"那段 `opportunity.customer_id != target_customer` 同一口径，
+    # 但**必须在建任何报价之前**跑完 —— 越范围与跨客户要在创建前拒绝。
+    from app.modules.opportunity import service as opportunity_service
+
+    target_opportunity = await opportunity_service.get_visible_opportunity(
+        session, user, final_opportunity_id
+    )
+    target_customer_id = payload.customer_id or source.customer_id
+    if target_opportunity.customer_id != target_customer_id:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"商机（{target_opportunity.title}）属于客户 id={target_opportunity.customer_id}，"
+            f"与本次报价的客户 id={target_customer_id} 不一致，请确认后再复制",
             422,
         )
     # §8.14：主数据未确认只提示、不阻断
@@ -628,7 +707,6 @@ async def clone_quote(
 
     copied_items = 0
     if payload.copy_items and source.current_version_id:
-        source_items = await svc.version_items(session, source.current_version_id)
         new_version = created["_version"]
         for item in source_items:
             session.add(
@@ -652,6 +730,8 @@ async def clone_quote(
                     master_version_no=item.master_version_no,
                     quantity=item.quantity,
                     cost_snapshot=item.cost_snapshot,
+                    cost_complete_snapshot=item.cost_complete_snapshot,
+                    cost_present_snapshot=item.cost_present_snapshot,
                     package_cost_snapshot=item.package_cost_snapshot,
                     logistics_cost_snapshot=item.logistics_cost_snapshot,
                     standard_price_snapshot=item.standard_price_snapshot,
@@ -670,6 +750,23 @@ async def clone_quote(
                 )
             )
             copied_items += 1
+        # 费用行也要整份抄过来（与 `service.create_version` 共用同一份实现）。
+        # 这条路径以前只抄明细不抄费用 —— 复制出来的新单货款对、**运费与折扣全丢**，
+        # 而缺运费的报价在正式发送时会被 `ensure_freight_confirmed` 拦下。
+        await session.flush()
+        await svc.copy_version_charges(
+            session, source_id=source.current_version_id, target_version=new_version
+        )
+        await session.flush()
+        # 复制过来的快照是**按源报价口径**算的，而复制出的是新报价（当前口径）。
+        # 不重算就会照抄旧利润（审查实测：单价 100、成本 80，复制后利润仍是 15，
+        # 正确应为 20）。与 `service.create_version` 用**同一个**函数，
+        # 保证"建立新版"与"复制报价"两个入口口径一致 —— 上一版我只接了前者，
+        # 漏了这里（审查 2026-10-09 第二次指出）。
+        for copied in await svc.version_items(session, new_version.id):
+            await svc.apply_current_basis_to_item(
+                session, copied, new_version, user=user
+            )
         await session.flush()
         await svc.recalc_version(session, new_version)
 
@@ -722,6 +819,106 @@ async def price_drift(
     return ok(await svc.price_drift(session, version=version))
 
 
+@router.get("/quote-versions/{version_id}/master-refresh-preview")
+async def master_refresh_preview(
+    version_id: int,
+    user: CurrentUser = Depends(require_permission("quote:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """刷新主数据**之前**先看会变什么（issue 建议第 5 条）。
+
+    只读、不写。返回每条明细里名称/规格/单位的"从什么变成什么"，
+    由用户看过之后再决定是否真的刷新。
+
+    为什么先预览：这三个字段是**印给客户**的，刷新会直接改掉它们。
+    让人先看清再确认，比刷完发现印错了便宜得多。
+
+    ⚠️ **已发送的版本不给刷**：报价发出去之后内容就是对客承诺，
+    改它等于改承诺 —— 这条路只能新建版本。这里用一个显式字段
+    `refreshable` 告诉前端，而不是靠前端自己猜。
+    """
+    from app.modules.product import master as master_svc
+
+    version = await svc.get_visible_version(session, user, version_id)
+    items = await svc.version_items(session, version.id)
+    preview = await master_svc.quote_master_refresh_preview(
+        session, version=version, items=items
+    )
+    sent = version.sent_at is not None
+    submitted = version.approval_status in ("pending", "approved")
+    preview["sent"] = sent
+    preview["refreshable"] = not (sent or submitted)
+    if sent:
+        preview["blocked_reason"] = (
+            "这一版已经发给客户了，内容是对客承诺，不能刷新 —— "
+            "请「新建版本」后再刷新"
+        )
+    elif submitted:
+        preview["blocked_reason"] = (
+            "这一版已提交审批，不能直接刷新 —— 请「新建版本」后再刷新"
+        )
+    return ok(preview)
+
+
+@router.post("/quote-versions/{version_id}/link-master")
+async def link_master(
+    version_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("quote:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """一键修复：把明细接到**最新已确认主数据**上，**不碰价格**。
+
+    为什么要有这条独立的路（2026-10-10 实测）：黄条说"这条明细没有可引用的
+    已确认主数据版本"，用户去产品中心确认完回来点「刷新主数据」，**黄条还在** ——
+    因为刷新复用的是 `refresh_prices`，而它在"手工定价"或"查不到价"时
+    直接跳过整条明细。于是**"接主数据"被"查不到价"挡住了**。
+
+    这两件事本来就不该绑在一起：主数据版本号回答的是"这一行对着哪一版
+    名称/规格/单位"，与"这一行卖多少钱"无关。所以这里只重建对客三字段快照
+    + 钉版本号，价格/成本/利润一个字不动。
+
+    缺确认时**明确报缺什么**，不静默跳过 —— 静默跳过正是"点了没反应"的来源。
+    """
+    version = await svc.get_visible_version(session, user, version_id, for_update=True)
+    sent = version.sent_at is not None
+    submitted = version.approval_status in ("pending", "approved")
+    if sent or submitted:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "这一版已经发给客户或已提交审批，内容不能改 —— 请「新建版本」后再接入主数据",
+            422,
+        )
+    result = await svc.link_master_only(session, version=version)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="quote_link_master",
+        business_type="quote",
+        business_id=version.quote_id,
+        after=result,
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(result, result["message"])
+
+
+@router.post("/quote-versions/{version_id}/cost-refresh")
+async def cost_refresh(
+    version_id: int, request: Request,
+    user: CurrentUser = Depends(require_permission("quote:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    version = await svc.get_visible_version(session, user, version_id, for_update=True)
+    await svc.ensure_version_editable(version)
+    result = await svc.refresh_cost_snapshots(session, version=version, user=user)
+    await write_audit(session, operator_id=user.id, action="cost_refresh",
+                      business_type="quote", business_id=version.quote_id,
+                      after={"version_id": version.id, **result}, ip=client_ip(request))
+    await session.commit()
+    return ok(result, "草稿成本已更新，报价单价未改变")
+
+
 @router.post("/quote-versions/{version_id}/price-refresh")
 async def price_refresh(
     version_id: int,
@@ -730,7 +927,7 @@ async def price_refresh(
     session: AsyncSession = Depends(get_db),
 ):
     """把系统带价的明细刷新到当前适用价（仅草稿可刷；手工价明细不覆盖）。"""
-    version = await svc.get_visible_version(session, user, version_id)
+    version = await svc.get_visible_version(session, user, version_id, for_update=True)
     await svc.ensure_version_editable(version)
     quote = await svc.get_visible_quote(session, user, version.quote_id)
 
@@ -755,22 +952,85 @@ async def compare_versions(
     session: AsyncSession = Depends(get_db),
 ):
     """报价多方案对比（What-if）：逐版本汇总 + 与上一版的差异明细。"""
-    await svc.get_visible_quote(session, user, quote_id)
-    return ok(await svc.version_comparison(session, quote_id))
+    quote = await svc.get_visible_quote(session, user, quote_id)
+    payload = await svc.version_comparison(session, quote_id, viewer_id=user.id,
+                                           fallback_creator=quote.created_by or quote.owner_id)
+    # 成本与毛利只给价格管理员（第七批 P1-4）：本接口只要求 quote:view，
+    # 不裁剪的话普通销售能直接读到完整成本、单位成本、利润与毛利率，
+    # 与核价接口的脱敏口径不一致。
+    if not user.has("price:manage"):
+        svc.strip_comparison_cost(payload)
+    return ok(payload)
 
 
 @router.post("/quotes/{quote_id}/versions")
 async def create_version(
     quote_id: int,
     request: Request,
+    confirm: bool = False,
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
     """新建版本：复制上一版全部明细与费用，旧版本原样保留、不可覆盖。
 
     复制逻辑在 `svc.create_version`，与 Agent 工具 `create_quote_version` 共用。
+
+    ⚠️ **必须先确认**（审查 2026-10-10）：这个按钮点一下不只是"多一份草稿"，
+    它还会**切换当前版本、把报价状态改回草稿、并自动结束旧版还在走的审批流程**，
+    而系统里**没有**"撤销新版本、恢复上述状态"的入口。所以不带 `confirm=True`
+    时这里直接拒，并把"点了会怎样"讲清楚 —— 前端拿它当确认弹窗的正文。
     """
     quote = await svc.get_visible_quote(session, user, quote_id)
+    if not confirm:
+        from app.core.confirmation import confirmation_message
+
+        # ⚠️ 下面这段查库**只是为了把提示写具体**（"基于 V2 创建 V3""会结束 V2 的待审批"）。
+        # 它查不动时**不该**把用户挡在门外：确认这件事情本身照样要做，
+        # 只是文案退回通用版。从前这里直接冒泡 → 500「服务器内部错误」，
+        # 用户点了按钮只看到一句"稍后重试"，而这个动作其实完全没执行。
+        #
+        # 顺带把完整栈记进后端日志：CI 只 `tail -n 80 /tmp/backend.log`，
+        # 冒泡的 traceback 会被后面别的套件输出挤掉，等于没有现场（为此白查了好几轮）。
+        try:
+            latest = await svc.latest_version(session, quote_id=quote.id)
+            pending = await svc.versions_with_pending_approval(session, quote_id=quote.id)
+        except Exception:  # noqa: BLE001
+            logger.exception("组装新建版本确认文案失败，退回通用文案 quote_id=%s", quote_id)
+            raise AppError(
+                ErrorCode.CONFIRM_REQUIRED,
+                confirmation_message(
+                    action="新建报价版本",
+                    detail=(
+                        "会复制最新版、切换为当前草稿、把报价状态改回草稿，"
+                        "并结束旧版还在走的审批；历史资料保留，但**没有撤销入口**"
+                    ),
+                ),
+                422,
+            )
+        if latest is None:
+            raise AppError(ErrorCode.NOT_FOUND, "报价单没有版本", 404)
+        # ⚠️ **不要把最新版排除掉**：`close_superseded_approvals` 会结束
+        # 除新版本之外**所有**版本的待审批 —— 包括正在跑审批的最新版自己
+        # （"V2 审批中，我又做了 V3"正是最常见的场景）。
+        # 排除最新版的话，最该被点名的那一版反而不会出现在提示里（我踩过）。
+        parts = [
+            f"将基于当前最新版 V{latest.version_no} 创建 V{latest.version_no + 1}，"
+            "并切换为当前草稿",
+            "报价状态会改回草稿",
+        ]
+        if pending:
+            parts.append(
+                "旧版 V"
+                + "、V".join(str(no) for _id, no in pending)
+                + " 的待审批流程将结束"
+            )
+        parts.append("历史资料保留，但**没有撤销入口**")
+        raise AppError(
+            ErrorCode.CONFIRM_REQUIRED,
+            confirmation_message(action="新建报价版本", detail="；".join(parts)),
+            422,
+        )
+
     version = await svc.create_version(session, quote=quote, user=user)
 
     await write_audit(
@@ -802,8 +1062,26 @@ async def get_version(
     )
     quote = await session.get(Quote, version.quote_id)
     ctx = await _quote_context(session, [quote]) if quote else None
+    cost_problems = svc.item_cost_problems(items)
     body = {
-        "version": svc.serialize_version(version, total_profit),
+        # ⚠️ 整单利润**也要按权限裁剪**（2026-10-14 审查修，实测泄露）。
+        #
+        # 同一份响应里逐条明细走 `serialize_item(can_see_cost=_can_see_cost(user))`，
+        # 无 `price:manage` 时 `_COST_ONLY_ITEM_FIELDS` 把 `profit_snapshot` /
+        # `minimum_price_snapshot` 全置 None；但这里把**整单** `Σ(单件利润×数量)`
+        # 无条件下发 —— 实测：张三（无 `price:manage`）看自己建的报价，
+        # 明细 `profit_snapshot=None`，而 `version.total_profit=48000`，
+        # 配上同样可见的 `subtotal_amount=60000` 就能直接反推成本 12000。
+        # 这正是 `_COST_ONLY_ITEM_FIELDS` 的注释要防的"只隐成本等于没隐"。
+        # 同模块另两个出口本来就有这道闸：`strip_comparison_cost`（版本对比）
+        # 与 `serialize_item`（明细），只有这里漏了。
+        "version": svc.serialize_version(
+            version, total_profit if _can_see_cost(user) and not cost_problems else None
+        ),
+            # 金额汇总由**后端**算好给前端（2026-10-09）：货款 / 运费 / 其他费用 /
+            # 优惠 / 应付合计。页面、对客文件、订单共用这一份公式，
+            # 不让前端再实现一套（两套公式迟早对不上，而这里对不上就是钱对不上）。
+            "summary": svc.amount_summary(version),
             "quote": (
                 svc.serialize_quote(
                     quote,
@@ -817,7 +1095,10 @@ async def get_version(
                 if quote
                 else None
             ),
-            "items": [svc.serialize_item(item) for item in items],
+            "items": [
+                svc.serialize_item(item, can_see_cost=_can_see_cost(user))
+                for item in items
+            ],
             "charges": [
                 {**svc.serialize_charge(charge), "type_label": CHARGE_LABEL.get(charge.charge_type)}
                 for charge in charges
@@ -828,7 +1109,7 @@ async def get_version(
                     "status": instance.status,
                     "current_node": instance.current_node,
                     "applicant_id": instance.applicant_id,
-                    "summary": instance.summary,
+                    "summary": strip_approval_summary(instance.summary, can_see_cost=_can_see_cost(user)),
                     "created_at": instance.created_at,
                     "finished_at": instance.finished_at,
                     "records": records,
@@ -843,6 +1124,10 @@ async def get_version(
     master_problems = await svc.master_confirmation_problems(
         session, version_id=version_id
     )
+    # 运费未确认同样要**持续可见**（2026-10-09）：草稿允许没填运费，
+    # 但页面上要一直提示"正式发送前得先确认运费"，而不是等发送被拒才知道。
+    body["freight_unconfirmed_reason"] = svc.quote_freight_unconfirmed_reason(charges)
+    body["cost_problems"] = cost_problems
     return ok(_with_master_warnings(body, set(master_problems)))
 
 
@@ -854,7 +1139,7 @@ async def update_version(
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    version = await svc.get_visible_version(session, user, version_id)
+    version = await svc.get_visible_version(session, user, version_id, for_update=True)
     await svc.ensure_version_editable(version)
     data = payload.model_dump(exclude_unset=True)
     valid_until = data.pop("valid_until", None)
@@ -896,11 +1181,25 @@ async def set_items(
     session: AsyncSession = Depends(get_db),
 ):
     """整版替换明细：报价明细按 SKU 逐条计算并落快照。"""
-    version = await svc.get_visible_version(session, user, version_id)
+    version = await svc.get_visible_version(session, user, version_id, for_update=True)
     await svc.ensure_version_editable(version)
     quote = await svc.get_visible_quote(session, user, version.quote_id)
 
+    # 先把归属校验完，再删旧明细：被拒的整版替换不能把原明细清掉。
+    for item in items:
+        await _ensure_opportunity_item_same_customer(session, item.opportunity_item_id, quote=quote)
+
     existing = await svc.version_items(session, version_id)
+    inquiry_ids = {item.inquiry_id for item in items if item.inquiry_id is not None}
+    if inquiry_ids:
+        from app.modules.inquiry.model import CustomInquiry
+
+        ordered_ids = (await session.execute(select(CustomInquiry.id).where(CustomInquiry.id.in_(inquiry_ids))
+                       .order_by(func.coalesce(CustomInquiry.root_id, CustomInquiry.id), CustomInquiry.id))).scalars().all()
+        if len(ordered_ids) != len(inquiry_ids):
+            raise AppError(ErrorCode.NOT_FOUND, "部分定制询价不存在", 404)
+        for inquiry_id in ordered_ids:
+            await _ensure_inquiry_visible(session, user, inquiry_id, quote_id=quote.id)
     for item in existing:
         await session.delete(item)
     await session.flush()
@@ -909,7 +1208,6 @@ async def set_items(
     # §8.14：这几条 SKU 的关键字段主数据还没人工确认 —— 只提示，不阻断报价
     unconfirmed_master: set[str] = set()
     for payload in items:
-        await _ensure_inquiry_visible(session, user, payload.inquiry_id)
         item = await svc.build_item_snapshot(
             session,
             version=version,
@@ -966,20 +1264,57 @@ async def update_item(
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    item = await session.get(QuoteItem, item_id)
-    if item is None:
+    probe = await session.get(QuoteItem, item_id)
+    if probe is None:
         raise AppError(ErrorCode.NOT_FOUND, "报价明细不存在", 404)
-    version = await svc.get_visible_version(session, user, item.quote_version_id)
+    version = await svc.get_visible_version(session, user, probe.quote_version_id, for_update=True)
     await svc.ensure_version_editable(version)
     quote = await svc.get_visible_quote(session, user, version.quote_id)
+    # 锁内**强制重读**这条明细（第二轮审查 P1，2026-10-12）：上面那次读发生在锁之前，
+    # 等待锁的这段时间里并发的另一个请求可能已经改过它；沿用旧对象会让下面的
+    # 校验、快照重建和重算全部基于过期值。
+    item = await svc.reload_locked_child(
+        session, QuoteItem, item_id, version_id=version.id, label="报价明细"
+    )
 
     data = payload.model_dump(exclude_unset=True)
     quantity = data.get("quantity", item.quantity)
     price = data.get("quoted_price", item.quoted_price)
     old_price = float(item.quoted_price)
+    manual_price_changed = "quoted_price" in data and price != item.quoted_price
     logistics = data.get("logistics_cost")
     if logistics is not None:
         item.logistics_cost_snapshot = logistics
+
+    # 只有**会影响价格/成本**的字段变了才重建快照（2026-10-09 缺陷③）。
+    #
+    # 从前这里无条件重建，于是"只改一句备注"也会把成本、底价、利润、建议价
+    # 全部按**当前主数据与当前口径**重算一遍 —— 审查实测：产品价格、数量、成本
+    # 一个字没动，利润却从 15 变成 20（因为旧快照是旧口径算的、重建按新口径算）。
+    # 报价明细的快照是**发出时的凭证**，不该被一次备注修改改写。
+    #
+    # 判据：`QuoteItemUpdate` 里只有 quantity / quoted_price / unit_cost /
+    # logistics_cost 四个字段影响价格与成本；remark 不影响。
+    # `exclude_unset` 保证"没传"与"传了同值"都不会误判成变化。
+    affects_pricing = any(
+        key in data for key in ("quantity", "quoted_price", "unit_cost", "logistics_cost")
+    )
+    if not affects_pricing:
+        if "remark" in data:
+            item.remark = data["remark"]
+        await session.flush()
+        await write_audit(
+            session,
+            operator_id=user.id,
+            action="update_item",
+            business_type="quote",
+            business_id=quote.id,
+            before={"item_id": item.id, "quoted_price": old_price, "remark_only": True},
+            after={"item_id": item.id, "quoted_price": float(item.quoted_price)},
+            ip=client_ip(request),
+        )
+        await session.commit()
+        return ok(svc.serialize_item(item, can_see_cost=_can_see_cost(user)), "已保存（只改了备注，价格与成本快照未重算）")
 
     # §8.14：主数据未确认只提示、不阻断（见 build_item_snapshot 的说明）
     unconfirmed_master: set[str] = set()
@@ -1010,6 +1345,8 @@ async def update_item(
         "quantity",
         "quoted_price",
         "cost_snapshot",
+        "cost_complete_snapshot",
+        "cost_present_snapshot",
         "logistics_cost_snapshot",
         "standard_price_snapshot",
         "recommended_price_snapshot",
@@ -1025,6 +1362,8 @@ async def update_item(
         "master_version_no",
     ):
         setattr(item, field, getattr(rebuilt, field))
+    if manual_price_changed and item.sku_id is not None:
+        item.price_source = None
     await session.flush()
     await svc.recalc_version(session, version)
     await write_audit(
@@ -1046,7 +1385,7 @@ async def update_item(
             + "（本次按本地值报价）"
         )
     return ok(
-        _with_master_warnings(svc.serialize_item(item), unconfirmed_master), message
+        _with_master_warnings(svc.serialize_item(item, can_see_cost=_can_see_cost(user)), unconfirmed_master), message
     )
 
 
@@ -1057,11 +1396,15 @@ async def delete_item(
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    item = await session.get(QuoteItem, item_id)
-    if item is None:
+    probe = await session.get(QuoteItem, item_id)
+    if probe is None:
         raise AppError(ErrorCode.NOT_FOUND, "报价明细不存在", 404)
-    version = await svc.get_visible_version(session, user, item.quote_version_id)
+    version = await svc.get_visible_version(session, user, probe.quote_version_id, for_update=True)
     await svc.ensure_version_editable(version)
+    # 同上：审计里的 `before` 必须是**锁内的真实值**，否则留痕记的是别人改之前的数字
+    item = await svc.reload_locked_child(
+        session, QuoteItem, item_id, version_id=version.id, label="报价明细"
+    )
     before = svc.serialize_item(item)
     await session.delete(item)
     await session.flush()
@@ -1088,8 +1431,12 @@ async def add_charge(
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    version = await svc.get_visible_version(session, user, version_id)
-    await svc.ensure_version_editable(version)
+    version = await svc.get_visible_version(session, user, version_id, for_update=True)
+    # ⚠️ 锁版之后**只放行运费**（主人 2026-10-12 拍板，方案 A+B）：
+    # 从前这里一律拒绝，于是"报批时还没问准运费"的单子被死锁
+    # （审批不校验运费 → 通过 → 版本锁死 → 发送时才发现缺运费 → 撤回也救不了）。
+    # 判据与理由见 `svc.ensure_charge_change_allowed` —— 先把费用对象造出来、
+    # 再拿它当"改之后"的样子去校验，这样分类判断只有一份。
     charge = QuoteCharge(
         quote_version_id=version_id,
         charge_type=payload.charge_type,
@@ -1101,6 +1448,23 @@ async def add_charge(
     # 自动取负——不强制的话，"折扣 500"会静默把总额加 500。
     if charge.is_discount and charge.amount > 0:
         charge.amount = -charge.amount
+    # 物流费用：通过接口填进来就是一次**显式确认**（含明确确认的零运费）。
+    # 不这么做的话，"amount=0" 就分不清是"没填"还是"确实是零运费"，
+    # 而正式发送必须要求后者才算已确认。
+    svc.mark_logistics_confirmed(charge)
+    # 校验要在 `mark_logistics_confirmed` **之后**：`is_logistics_charge` 看的是
+    # 最终的 is_discount 与分类码，顺序反了会把折扣行误判成运费。
+    await svc.ensure_charge_change_allowed(version, before=None, after=charge)
+    # 一个版本只能有一条运费：多条会被 `recalc_version` **静默累加**进总额
+    # （演示库里那张"订单 501 / 报价 581"就是这么来的，见
+    # `svc.ensure_single_logistics_charge` 的说明）。
+    #
+    # ⚠️ 必须在 `session.add` **之前**调：add 之后再查询会触发 autoflush，
+    # 刚建的这条会出现在结果里，闸门把自己挡住 —— 每次新增都误判"已经有一条"。
+    if svc.is_logistics_charge(charge):
+        await svc.ensure_single_logistics_charge(
+            session, version_id=version.id, keep_id=None
+        )
     session.add(charge)
     await session.flush()
     await svc.recalc_version(session, version)
@@ -1127,11 +1491,16 @@ async def delete_charge(
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    charge = await session.get(QuoteCharge, charge_id)
-    if charge is None:
+    probe = await session.get(QuoteCharge, charge_id)
+    if probe is None:
         raise AppError(ErrorCode.NOT_FOUND, "附加费用不存在", 404)
-    version = await svc.get_visible_version(session, user, charge.quote_version_id)
-    await svc.ensure_version_editable(version)
+    version = await svc.get_visible_version(session, user, probe.quote_version_id, for_update=True)
+    # 同 add_charge：不调 `ensure_version_editable`，改由下面那道闸判（见它的说明）
+    charge = await svc.reload_locked_child(
+        session, QuoteCharge, charge_id, version_id=version.id, label="附加费用"
+    )
+    # 锁版之后**删掉运费**是放行的（补错了要能撤），删别的费用照样拒绝。
+    await svc.ensure_charge_change_allowed(version, before=charge, after=None)
     before = svc.serialize_charge(charge)
     await session.delete(charge)
     await session.flush()
@@ -1178,7 +1547,7 @@ async def submit_approval(
             session,
             permission_code="quote:approve",
             title=f"待审批报价 {quote.quote_no}",
-            content=f"V{version.version_no} 报价 ¥{float(version.total_amount):,.2f}，{payload.reason or '超出业务员价格权限'}",
+            content=f"V{version.version_no} 报价 ¥{version.total_amount:,.2f}，{payload.reason or '超出业务员价格权限'}",
             business_type="quote",
             business_id=quote.id,
             exclude_user_id=user.id,
@@ -1200,7 +1569,7 @@ async def submit_approval(
         title=f"报价已提交审批 {quote.quote_no}",
         content=(
             f"{quote.quote_no} V{version.version_no} 提交审批，"
-            f"金额 ¥{float(version.total_amount or 0):,.2f}"
+            f"金额 ¥{version.total_amount or 0:,.2f}"
         ),
         business_type="quote",
         business_id=quote.id,
@@ -1211,7 +1580,7 @@ async def submit_approval(
         event_key=f"quote:submit:{version.id}:{instance.id if instance else 'auto'}",
     )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     if required and instance is not None and (instance.summary or {}).get("auto_passed"):
         rule_name = (instance.summary or {}).get("rule_trace", {}).get("rule_name")
         message = f"命中免审规则「{rule_name}」，报价已自动通过"
@@ -1291,7 +1660,7 @@ async def mark_sent(
     changed = await lifecycle.mark_version_sent(session, quote=quote, version=version,
                                                 operator_id=user.id, payload=payload, ip=client_ip(request))
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(svc.serialize_version(version), "已标记为已发送" if changed else "该次发送已记录")
 
 
@@ -1337,7 +1706,7 @@ async def accept_quote(
     await lifecycle.accept_version(session, quote=quote, version=version,
                                    operator_id=user.id, ip=client_ip(request))
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(svc.serialize_version(version), "客户已接受，可以转订单了")
 
 
@@ -1354,7 +1723,7 @@ async def reject_quote(
     await lifecycle.decline_version(session, quote=quote, version=version,
                                     operator_id=user.id, reason=payload.reason, ip=client_ip(request))
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(svc.serialize_version(version), "已记录客户拒绝")
 
 
@@ -1366,6 +1735,16 @@ async def download_pdf(
 ):
     """生成并下载报价单 PDF。数据全部取快照，不回查当前价格。"""
     version = await svc.get_visible_version(session, user, version_id)
+    reject_foreign_currency(version.currency, label="该报价单")
+    if version.approval_status != "approved":
+        raise AppError(
+            ErrorCode.APPROVAL_PENDING,
+            "报价未通过审批，不能生成正式报价 PDF",
+            422,
+        )
+    await svc.ensure_items_cost_complete(session, version_id=version_id)
+    await svc.ensure_items_master_confirmed(session, version_id=version_id)
+    await svc.ensure_freight_confirmed(session, version_id=version_id)
     quote = await svc.get_visible_quote(session, user, version.quote_id)
     ctx = await _quote_context(session, [quote])
     items = await svc.version_items(session, version_id)
@@ -1378,7 +1757,7 @@ async def download_pdf(
         "customer_name": version.customer_name_snapshot or "待核实",
         "opportunity_title": ctx["titles"].get(quote.opportunity_id) if quote.opportunity_id else None,
         "owner_name": ctx["owners"].get(quote.owner_id) if quote.owner_id else user.name,
-        "quote_date": version.created_at.strftime("%Y-%m-%d"),
+        "quote_date": to_business(version.created_at).strftime("%Y-%m-%d"),
         # §8.7：对客口径一律取**这一版冻结的快照**，不回查当前客户资料 / 主单。
         # 原来这里读的是 `ctx["customers"]`（当前客户名）和 `quote.valid_until`
         # （主单当前有效期），于是同一个 V1：BizDoc 印的是旧名、PDF 印的是新名。
@@ -1389,15 +1768,46 @@ async def download_pdf(
             else "待核实"
         ),
         "status_label": QUOTE_STATUS_LABEL.get(quote.status, quote.status),
-        "items": [svc.serialize_item(item) for item in items],
+        "items": [
+            {
+                **svc.serialize_item(item, can_see_cost=_can_see_cost(user)),
+                "quantity": item.quantity,
+                "quoted_price": item.quoted_price,
+                "amount": line_amount(item.quantity, item.quoted_price),
+            }
+            for item in items
+        ],
         "charges": [
-            {**svc.serialize_charge(charge), "type_label": CHARGE_LABEL.get(charge.charge_type)}
+            {**svc.serialize_charge(charge), "amount": charge.amount,
+             "type_label": CHARGE_LABEL.get(charge.charge_type)}
             for charge in charges
         ],
-        "subtotal_amount": float(version.subtotal_amount),
-        "charge_amount": float(version.charge_amount),
-        "discount_amount": float(version.discount_amount),
-        "total_amount": float(version.total_amount),
+        # 渲染器在进程内调用，保留Decimal，避免合法大额经过float后丢分。
+        "subtotal_amount": version.subtotal_amount,
+        "charge_amount": version.charge_amount,
+        "discount_amount": version.discount_amount,
+        "total_amount": version.total_amount,
+        # 金额拆分（2026-10-09 运费分离）：对客 PDF 要把运费**单独列一行具体金额**，
+        # 不能混在"附加费用"里让客户自己猜。同时给出统一汇总块，
+        # 保证 PDF、页面、订单、应收四处口径一致。
+        "summary": {
+            **svc.amount_summary(version),
+            "logistics_amount": version.logistics_amount,
+            "other_charge_amount": version.other_charge_amount,
+        },
+        #: 产品单价的对外口径说明：运费分离后必须在客户看得到的文件上说清楚，
+        #: 否则客户按"含运费"的旧口径理解，会以为运费已经包在单价里。
+        #:
+        #: ⚠️ 只在本版**确实是**"单价不含运费"口径时才写（2026-10-09 修）。
+        #: 从前这里无条件写死，等于给历史版本硬加一句它当时并不成立的说明 ——
+        #: 审查实测出同一份 Excel 同时出现"交付条件：含运费，送货上门"与
+        #: "以上产品单价均不含运费"，自相矛盾，等于改写了已发文件的口径。
+        #: 口径判据只有 `version_logistics_in_base_cost` 一份（统一后恒为 False，
+        #: 即新口径；这里仍写成分支，将来若加回"运费进价"的计价方式不会再错）。
+        "unit_price_note": (
+            None if svc.version_logistics_in_base_cost(version)
+            else "以上产品单价均不含运费"
+        ),
         "payment_terms": version.payment_terms,
         "delivery_terms": version.delivery_terms,
         "remark": version.remark,
@@ -1439,7 +1849,9 @@ async def list_version_items(
     """
     await svc.get_visible_version(session, user, version_id)
     items = await svc.version_items(session, version_id)
-    return ok([svc.serialize_item(item) for item in items])
+    return ok(
+        [svc.serialize_item(item, can_see_cost=_can_see_cost(user)) for item in items]
+    )
 
 
 @router.post("/quote-versions/{version_id}/items")
@@ -1455,10 +1867,11 @@ async def add_version_item(
     与 `/items/batch` 的区别：batch 是整版替换（界面保存整版用），
     这个是单条追加 —— 逐条录需求时用得上。
     """
-    version = await svc.get_visible_version(session, user, version_id)
+    version = await svc.get_visible_version(session, user, version_id, for_update=True)
     await svc.ensure_version_editable(version)
     quote = await svc.get_visible_quote(session, user, version.quote_id)
-    await _ensure_inquiry_visible(session, user, payload.inquiry_id)
+    await _ensure_inquiry_visible(session, user, payload.inquiry_id, quote_id=quote.id)
+    await _ensure_opportunity_item_same_customer(session, payload.opportunity_item_id, quote=quote)
     # §8.14：主数据未确认只提示、不阻断
     unconfirmed_master: set[str] = set()
     item = await svc.build_item_snapshot(
@@ -1503,7 +1916,7 @@ async def add_version_item(
             + "（本次按本地值报价）"
         )
     return ok(
-        _with_master_warnings(svc.serialize_item(item), unconfirmed_master), message
+        _with_master_warnings(svc.serialize_item(item, can_see_cost=_can_see_cost(user)), unconfirmed_master), message
     )
 
 
@@ -1536,19 +1949,49 @@ async def update_charge(
 
     金额变了必须重算版本汇总 —— 否则"合计金额"与附加费用对不上，
     报价单上两个数字自相矛盾。已发送的版本不允许改（与明细同一规则）。
+
+    ⚠️ 锁内必须**重读**这条费用（第二轮审查 P1，2026-10-12）：端点先按 id 读一次
+    才知道它属于哪个版本，那一读在锁之前。等锁期间并发请求可能已把这条 +100 的
+    其他费用改成 −100 的优惠；沿用旧对象重算会把合计算成"货款 + 旧值"
+    （实测：货款 1000、优惠 −100 → 合计 1100，正确 900）。
     """
-    charge = await session.get(QuoteCharge, charge_id)
-    if charge is None:
+    probe = await session.get(QuoteCharge, charge_id)
+    if probe is None:
         raise AppError(ErrorCode.NOT_FOUND, "附加费用不存在", 404)
-    version = await svc.get_visible_version(session, user, charge.quote_version_id)
-    await svc.ensure_version_editable(version)
+    version = await svc.get_visible_version(session, user, probe.quote_version_id, for_update=True)
+    # 同 add_charge：不调 `ensure_version_editable`（它一律拒绝），改由下面那道闸判
+    charge = await svc.reload_locked_child(
+        session, QuoteCharge, charge_id, version_id=version.id, label="附加费用"
+    )
 
     before = svc.serialize_charge(charge)
+    # 「改之前」是不是运费：**必须在赋值之前**取下来。
+    # 校验要看前后两边（把运费改成服务费同样要拒），而赋值之后就拿不到旧分类了。
+    was_logistics = svc.is_logistics_charge(charge)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(charge, field, value)
     # 与 add_charge 同一规则：折扣在库里恒为负数，改完再归一一次
     if charge.is_discount and charge.amount > 0:
         charge.amount = -charge.amount
+    # 保存即重新确认一次运费（含"从物流改成别的分类"→ 清空确认时刻）。
+    # 顺序不能挪到折扣归一之前：`is_logistics_charge` 要看最终的 is_discount。
+    svc.mark_logistics_confirmed(charge)
+    # 锁版之后只有"前后都是运费"的改动放行（含改金额、改说明）。
+    # ⚠️ `before` 用**改之前的快照**，不能传 `charge` 本身（2026-10-14 审查修）。
+    # 上面那个 `setattr` 循环已经把 `charge` 改成新样子了，再把它当 before 传进去，
+    # 第一道校验就恒真、成了**死判据** —— 表面上"改前改后都看了"，实际只看了一边
+    # （`was_logistics` 为真才传，而传的对象又恰好还是 logistics，永远为真）。
+    # 现在传上面取好的 before 快照，after 也给快照，两边口径一致。
+    await svc.ensure_charge_change_allowed(
+        version, before=before, after=svc.serialize_charge(charge)
+    )
+    # 只有"原本不是运费、现在改成运费"才可能把条数顶成 2 —— 在一条运费上改金额或
+    # 改说明不算（`keep_id` 把这条自己排除掉了）。判据与新增共用同一个 helper，
+    # 不在这里另写一遍"数一数有几条"。
+    if svc.is_logistics_charge(charge) and not was_logistics:
+        await svc.ensure_single_logistics_charge(
+            session, version_id=version.id, keep_id=charge.id
+        )
     await session.flush()
     await svc.recalc_version(session, version)
     await write_audit(
@@ -1579,7 +2022,7 @@ async def recalculate_version(
     已发送的版本也会重算（只算金额、不改报价内容），
     因为"算错了"本身就该能被纠正。
     """
-    version = await svc.get_visible_version(session, user, version_id)
+    version = await svc.get_visible_version(session, user, version_id, for_update=True)
     before = {
         "subtotal_amount": float(version.subtotal_amount),
         "charge_amount": float(version.charge_amount),
@@ -1740,6 +2183,7 @@ async def send_email(
         )
     if not payload.receiver:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "收件人必填", 422)
+    await svc.ensure_items_cost_complete(session, version_id=version.id)
 
     now = datetime.now(UTC)
     session.add(

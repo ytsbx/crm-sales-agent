@@ -1,3 +1,5 @@
+import { showDownloadResult } from '../../shared/download-feedback'
+import { formatBeijingTime } from '../../shared/beijing-time'
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Input, Modal, Popconfirm, Table, Tag, Toast } from '@douyinfe/semi-ui'
@@ -12,8 +14,23 @@ import {
   type FileRow,
 } from '../../shared/api/file'
 import { usePermissions } from '../../shared/hooks/permissions'
+import { useBlockedNotify } from '../../shared/components/BlockedHint'
 
 const SIZE_UNIT = ['B', 'KB', 'MB', 'GB']
+
+/**
+ * 写权限码 → 中文权限名。
+ *
+ * `writePermission` 传进来的是**权限码**（`file:manage` / `product:manage` /
+ * `sample:manage`）。码是给机器看的，界面上不能直接抛给用户 —— 主人定的口径是
+ * 说人话、缺哪个权限就写中文名（同 BlockedHint 的用法说明）。
+ * 表里没有的码**不猜**：改用「所属模块的管理权限」这种说法，绝不把英文码露到界面上。
+ */
+const WRITE_PERMISSION_LABEL: Record<string, string> = {
+  'file:manage': '文件管理',
+  'product:manage': '产品管理',
+  'sample:manage': '打样管理',
+}
 
 function formatSize(size: number): string {
   let value = size
@@ -29,6 +46,8 @@ interface Props {
   businessType: string
   businessId: number
   category?: string
+  uploadLabel?: string
+  accept?: string
   /**
    * 要不要显示「分类」这一列，**默认不显示**。
    *
@@ -42,6 +61,10 @@ interface Props {
    * 看出"制作依据"和"事后补料"的区别）。
    */
   showCategory?: boolean
+  onlyCategory?: string
+  includeUncategorizedImages?: boolean
+  maxFiles?: number
+  excludeCategory?: string
   enabled?: boolean
   /**
    * 上传/挂载要**目标模块自己的**写权限码，默认按文件中心（file:manage）。
@@ -49,31 +72,91 @@ interface Props {
    * "按钮能点、接口 403"。删除按钮不看它（删文件本身是文件中心的动作）。
    */
   writePermission?: string
+  /**
+   * 左侧那句说明。**默认那句是通用的**（合同/图纸/回款凭证）——
+   * 但不同场景要的东西不一样：打样那边要的是「产品图片（多方位图片）」，
+   * 于是由调用方传自己那句（2026-10-16 主人）。
+   */
+  hint?: string
+  /**
+   * 紧凑模式：不画顶部那句说明、表格用小号。
+   *
+   * 用在哪：它被塞进「发起审批」的表单里（询价提交弹窗），外面已经有一句
+   * 「先上传文件，再选择本次随申请提交的附件」，再重复一遍说明是废话；
+   * 表单里也经不起一张标准行高的表把弹窗顶长。
+   * 只是**排版变紧**，读取、上传、改名、删除的判据一个没变。
+   */
+  compact?: boolean
+  /**
+   * 要不要显示上传入口，默认显示。
+   *
+   * 用在哪：同一个弹窗里，「先传」和「回头管理已传文件」是两件事 ——
+   * 后者只需要看列表、删错传的，不该再摆一个上传按钮把人绕回去。
+   * 关掉时只是不显示按钮和文件选择框，列表与操作照旧。
+   */
+  showUpload?: boolean
 }
 
 export default function AttachmentPanel({
   businessType,
   businessId,
   category,
+  uploadLabel = '上传附件',
+  accept,
   showCategory = false,
+  onlyCategory,
+  includeUncategorizedImages = false,
+  maxFiles,
+  excludeCategory,
   enabled = true,
   writePermission = 'file:manage',
+  hint,
+  compact = false,
+  showUpload = true,
 }: Props) {
   const queryClient = useQueryClient()
   const { can } = usePermissions()
   // 上传是两步（先传文件、再挂到业务对象），两道权限都要过：
   // 文件中心那一道（file:manage）+ 目标模块那一道（writePermission）。
   const canWrite = can('file:manage') && can(writePermission)
+
+  // 没有写权限时，界面上从前是**整块上传区不渲染**：空表 + 没有上传按钮 + 界面上
+  // 一个字都不说，看着就像"坏了"。主人 2026-10-12：「点又点不了，又不给提示为什么
+  // 点不了，类似的情况都要修」—— 上传区不在，也必须说清它为什么不在、找谁能办。
+  // ⚠️ 只是补说明：`canWrite` 和 `writePermission` 的判据一个字没动，也没有绕过它。
+  const missingWriteReasons: string[] = []
+  if (!can('file:manage')) {
+    missingWriteReasons.push(
+      '你没有上传/修改附件的权限（需要「文件管理」权限），请联系有权限的同事或管理员。',
+    )
+  } else if (!can(writePermission)) {
+    // 两道权限分开说：缺文件中心那道和缺业务模块那道，要去办的事不一样
+    // （一个是找管理员开文件权限，一个是找这个模块的负责人）。
+    const label = WRITE_PERMISSION_LABEL[writePermission]
+    missingWriteReasons.push(
+      label
+        ? `这个对象的附件要「${label}」权限才能上传或修改，请联系有权限的同事或管理员。`
+        : '这个对象的附件要所属模块的管理权限才能上传或修改，请联系有权限的同事或管理员。',
+    )
+  }
+  // 那段灰字本身可点：点了弹一句同样的原因（看得见 + 点得动，见 shared/components/BlockedHint.tsx）
+  const notifyWriteBlocked = useBlockedNotify(missingWriteReasons)
   const inputRef = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
 
-  // 预览状态：objectUrl 用完必须 revoke，否则 blob 会一直留在内存里
-  const [preview, setPreview] = useState<{ name: string; mime: string; url: string } | null>(null)
+  // 预览状态：objectUrl 用完必须 revoke，否则 blob 会一直留在内存里。
+  // 文本类**不进 objectUrl**：直接在下面解成纯文本展示（见 `openPreview`）。
+  const [preview, setPreview] = useState<{
+    name: string
+    mime: string
+    url: string
+    text?: string
+  } | null>(null)
   const [previewing, setPreviewing] = useState(false)
 
   useEffect(
     () => () => {
-      if (preview) window.URL.revokeObjectURL(preview.url)
+      if (preview?.url) window.URL.revokeObjectURL(preview.url)
     },
     [preview],
   )
@@ -82,7 +165,19 @@ export default function AttachmentPanel({
     setPreviewing(true)
     try {
       const { blob, mime } = await fetchFilePreview(record.id)
-      setPreview({ name: record.file_name, mime, url: window.URL.createObjectURL(blob) })
+      // 文本类**自己解成纯文本**（第三批审查 P1，2026-10-12）。
+      //
+      // 从前一律丢给 iframe，等于把"浏览器按内容类型渲染/执行"这条通道留着：
+      // 只要哪一步类型判定出错，被渲染的就是可执行内容。纯文本组件不解析标签、
+      // 不执行脚本，从根上不算一条执行通道。
+      const isText = mime.startsWith('text/')
+      const text = isText ? await blob.text() : undefined
+      setPreview({
+        name: record.file_name,
+        mime,
+        url: isText ? '' : window.URL.createObjectURL(blob),
+        text,
+      })
     } catch (error) {
       Toast.error(error instanceof Error ? error.message : '预览失败')
     } finally {
@@ -123,7 +218,10 @@ export default function AttachmentPanel({
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  const visibleFiles = (query.data ?? []).filter((file) => (!onlyCategory || file.category === onlyCategory || (includeUncategorizedImages && !file.category && (/^image\//.test(file.mime_type ?? '') || /\.(png|jpe?g|gif|bmp|webp|tiff?)$/i.test(file.file_name)))) && (!excludeCategory || file.category !== excludeCategory))
+
   const handleUpload = async (file: File) => {
+    if (maxFiles && visibleFiles.length >= maxFiles) { Toast.error(`最多上传${maxFiles}张产品图片，请先删除多余图片`); return }
     setUploading(true)
     try {
       await uploadFile(file, { businessType, businessId, category })
@@ -139,16 +237,20 @@ export default function AttachmentPanel({
 
   return (
     <>
-      <div className="toolbar">
-        <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>
-          合同、图纸、回款凭证都可以放在这里，单个文件不超过 20 MB
-        </div>
+      <div className="toolbar" style={{ minWidth: 0, maxWidth: '100%' }}>
+        {/* 紧凑模式（塞在发起表单里）不画这句：外面已经写过一次要传什么 */}
+        {!compact && (
+          <div style={{ color: 'var(--crm-text-3)', fontSize: 13, flex: '1 1 240px', minWidth: 0 }}>
+            {hint ?? '合同、图纸、回款凭证都可以放在这里，单个文件不超过 20 MB'}
+          </div>
+        )}
         <div style={{ flex: 1 }} />
-        {canWrite && (
+        {canWrite && showUpload && (
           <>
             <input
               ref={inputRef}
               type="file"
+              accept={accept}
               style={{ display: 'none' }}
               onChange={(event) => {
                 const file = event.target.files?.[0]
@@ -156,16 +258,56 @@ export default function AttachmentPanel({
               }}
             />
             <Button
-              theme="solid"
+              theme="outline"
+              type="primary"
               loading={uploading}
               onClick={() => inputRef.current?.click()}
             >
-              上传附件
+              {uploadLabel}
             </Button>
           </>
         )}
+        {/* 没有写权限时，上传按钮的位置上放这段灰字：为什么传不了、缺哪个权限、找谁办。
+            行内的「改名 / 删除」用的是同一道权限（file:manage），所以这句话一并说清，
+            用户不会误以为"只是这一份文件不给改"（判据没动，那两个链接照旧按权限渲染）。 */}
+        {!canWrite && showUpload && (
+          <div
+            data-blocked-click="1"
+            className="blocked-hint-click"
+            onClick={notifyWriteBlocked}
+            style={{ display: 'block', maxWidth: 420, fontSize: 12, lineHeight: 1.7, color: 'var(--crm-text-3)' }}
+          >
+            {missingWriteReasons.map((text) => (
+              <div key={text}>{text}</div>
+            ))}
+          </div>
+        )}
       </div>
+      {/* 一个附件都没有的时候不要再画"表头 + 一行『还没有附件』"：
+          六列空表头配一行灰字，像一张没加载完的表（报价、产品、客户、订单
+          四处都共用这个组件，四张页面底部都挂着这么一条空壳）。
+          改成一块虚线空框，说的是"这里就是放附件的地方，点右上角传"。 */}
+      {visibleFiles.length === 0 && !query.isLoading ? (
+        <div
+          style={{
+            border: '1px dashed var(--crm-outline)',
+            borderRadius: 'var(--crm-radius)',
+            padding: compact ? '12px 12px' : '18px 16px',
+            textAlign: 'center',
+            color: 'var(--crm-text-3)',
+            fontSize: 13,
+            lineHeight: 1.6,
+          }}
+        >
+          {/* 空态那句话跟着真实按钮走：调用方传「上传照片」时，这里也写「上传照片」，
+              否则界面左边说照片、右边说附件，像两个功能。
+              没给上传入口（showUpload=false）时只说"还没有附件"，不教人去点不存在的按钮。 */}
+          {showUpload ? `还没有附件 —— 点右上角「${uploadLabel}」添加` : '还没有附件'}
+        </div>
+      ) : (
       <Table<FileRow>
+        style={{ width: '100%', maxWidth: '100%', minWidth: 0 }}
+        scroll={{ x: 1000 }}
         columns={[
           {
             title: '文件名',
@@ -174,7 +316,7 @@ export default function AttachmentPanel({
               <a
                 style={{ color: 'var(--crm-primary)' }}
                 onClick={() =>
-                  record.previewable ? void openPreview(record) : downloadFile(record.id, name)
+                  record.previewable ? void openPreview(record) : void showDownloadResult(downloadFile(record.id, name))
                 }
               >
                 {name}
@@ -205,7 +347,7 @@ export default function AttachmentPanel({
             title: '上传时间',
             dataIndex: 'created_at',
             width: 190,
-            render: (v: string) => new Date(v).toLocaleString('zh-CN'),
+            render: (v: string) => formatBeijingTime(v),
           },
           {
             title: '存储',
@@ -225,7 +367,7 @@ export default function AttachmentPanel({
                 )}
                 <a
                   style={{ color: 'var(--crm-primary)' }}
-                  onClick={() => downloadFile(record.id, record.file_name)}
+                  onClick={() => void showDownloadResult(downloadFile(record.id, record.file_name))}
                 >
                   下载
                 </a>
@@ -255,15 +397,18 @@ export default function AttachmentPanel({
             ),
           },
         ]}
-        dataSource={query.data ?? []}
+        dataSource={visibleFiles}
+        size={compact ? 'small' : 'default'}
         loading={query.isLoading}
         rowKey="id"
         pagination={false}
         empty="还没有附件"
       />
+      )}
 
       {/* 改名弹窗：只改展示名，磁盘上的文件不动 */}
       <Modal
+        width={520}
         title="改文件名"
         visible={renameTarget !== null}
         onCancel={() => setRenameTarget(null)}
@@ -288,13 +433,13 @@ export default function AttachmentPanel({
         />
       </Modal>
 
-      {/* 预览弹窗：图片用 img，PDF / 文本用 iframe（浏览器原生渲染） */}
+      {/* 预览弹窗：图片用 img；**文本用纯文本块**；PDF 用 iframe（浏览器原生阅读器） */}
       <Modal
         title={preview ? `预览：${preview.name}` : '预览'}
         visible={preview !== null}
         onCancel={() => setPreview(null)}
         footer={null}
-        width={880}
+        width={900}
         bodyStyle={{ padding: 12 }}
       >
         {preview && (
@@ -305,10 +450,37 @@ export default function AttachmentPanel({
                 alt={preview.name}
                 style={{ maxWidth: '100%', borderRadius: 4 }}
               />
+            ) : preview.text !== undefined ? (
+              // 纯文本：不解析标签、不执行脚本，也不加载外部资源
+              <pre
+                style={{
+                  margin: 0,
+                  textAlign: 'left',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  fontFamily: 'inherit',
+                  fontSize: 13,
+                  lineHeight: 1.7,
+                }}
+              >
+                {preview.text || '（这个文件是空的）'}
+              </pre>
             ) : (
               <iframe
                 src={preview.url}
                 title={preview.name}
+                // ⚠️ PDF **不能**加 sandbox：实测（本机 Chrome）加了之后浏览器
+                // 内置阅读器直接被挡住，两种写法都只剩一个"打不开"的图标
+                // （sandbox="" 与 sandbox="allow-same-origin" 都不渲染），
+                // 等于把 PDF 预览这个功能做没了。
+                //
+                // 之所以敢这么写：这一路的类型由**后端**卡死 —— 预览出口只放
+                // 图片 / PDF / 纯文本，HTML、SVG、XML 一律拒（第三批审查 P1 修的就是
+                // 那个绕过），图片与文本在前端也各自走 <img> 与纯文本块，
+                // 所以这个 iframe 实际只会拿到 application/pdf；后端还另加了
+                // `Content-Security-Policy: sandbox` 兜所有非 PDF 类型。
+                sandbox={preview.mime === 'application/pdf' ? undefined : ''}
+                referrerPolicy="no-referrer"
                 style={{ width: '100%', height: '68vh', border: '1px solid var(--crm-outline)' }}
               />
             )}

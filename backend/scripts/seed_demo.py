@@ -19,8 +19,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-BASE = os.environ.get('API_BASE', 'http://127.0.0.1:8000/api/v1')
-DEMO_CUSTOMER_NAME = '示例客户·青岛海川机械（演示）'
+# 默认灌 8008（crm_prod 演示库）。⚠️ 千万别对着 8000（crm_sales_agent，领导看的库）
+# 跑——2026-10-13 就因为默认值是 8000，演示客户进了领导库，只能手工整条删掉。
+# 真要灌别的库，用环境变量显式指定：API_BASE=http://127.0.0.1:8000/api/v1
+BASE = os.environ.get('API_BASE', 'http://127.0.0.1:8008/api/v1')
+# 客户名可用环境变量覆盖：批量跑多条演示链路时，每次换一个客户（脚本按名字幂等）
+DEMO_CUSTOMER_NAME = os.environ.get('SEED_DEMO_CUSTOMER', '示例客户·青岛海川机械（演示）')
 
 
 def call(method, path, token=None, body=None):
@@ -98,7 +102,9 @@ def main():
     status, res = call('GET', f'/orders?customer_id={customer_id}', token=admin)
     if res.get('code') != 0:
         die('查已有订单', res)
-    if res['data']['total'] > 0:
+    # SEED_FORCE=1 跳过闸门：批量造演示数据时，要在同一客户名下再叠一条
+    # 完整链路（否则只会得到订单、没有应收和回款 —— 那正是第一遍跑的结果）
+    if res['data']['total'] > 0 and os.environ.get('SEED_FORCE') != '1':
         print('该客户名下已有订单，演示数据齐全，跳过。')
         print(f'ORDER_ID={res["data"]["items"][0]["id"]}')
         return
@@ -141,6 +147,17 @@ def main():
         die('加报价明细', res)
     print(f'报价已创建 quote={quote_id} version={version_id}')
 
+    # 业务规则（2026-10 起）：报价里没填运费就不能提交审批。
+    # 这个脚本比那条规则老，缺了这一步会直接死在「提交审批」上。
+    status, res = call(
+        'POST',
+        f'/quote-versions/{version_id}/charges',
+        token=zhangsan,
+        body={'charge_type': 'logistics', 'description': '演示运费', 'amount': 30},
+    )
+    if res.get('code') != 0:
+        die('加运费', res)
+
     # ---- 5. 提交审批；需要审批就由李四（主管）通过 ----
     status, res = call('POST', f'/quote-versions/{version_id}/submit-approval', token=zhangsan, body={})
     if res.get('code') != 0:
@@ -180,11 +197,20 @@ def main():
     else:
         print('商机已标记成交')
 
-    status, res = call('POST', f'/quote-versions/{version_id}/convert-to-order', token=admin, body={})
-    if res.get('code') != 0:
+    status, res = call('POST', f'/quote-versions/{version_id}/convert-to-order?confirm=true', token=admin, body={})
+    if res.get('code') == 40903:
+        # 这个版本之前已经转过订单（脚本重跑时常见）：把已有订单找回来，
+        # 继续往下造应收和回款 —— 从前这里直接 die，于是"有订单、没回款"。
+        status, res = call('GET', f'/orders?customer_id={customer_id}&page_size=1', token=admin)
+        if res.get('code') != 0 or not res['data']['items']:
+            die('转订单后回查', res)
+        order_id = res['data']['items'][0]['id']
+        print(f'订单已存在 id={order_id}（跳过重复转单，继续造应收与回款）')
+    elif res.get('code') != 0:
         die('转订单', res)
-    order_id = res['data']['order_id']
-    print(f'订单已生成 id={order_id}')
+    else:
+        order_id = res['data']['order_id']
+        print(f'订单已生成 id={order_id}')
 
     # ---- 7. 应收计划：定金 + 尾款 ----
     plans = []

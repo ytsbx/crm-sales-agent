@@ -16,8 +16,28 @@ export interface Order {
   sales_owner_name?: string | null
   currency: string
   total_amount: number
+  total_amount_exact?: string | null
+  /**
+   * 订单金额组成（2026-10-09「产品价格与运费分离」）。
+   *
+   * ⚠️ 这几个值**已经含在** `total_amount` 里，只用于分项展示，
+   * 不要再相加到总额上。`null` = 历史订单没留存该口径，页面写"待核实"，
+   * **不要**回查报价拿今天的数来填。
+   */
+  goods_amount?: number | null
+  goods_amount_exact?: string | null
+  logistics_amount?: number | null
+  logistics_amount_exact?: string | null
+  other_charge_amount?: number | null
+  other_charge_amount_exact?: string | null
+  discount_amount?: number | null
+  discount_amount_exact?: string | null
+  /** 转单时冻结的产品核价口径；null=历史订单（含运费的老口径） */
+  pricing_basis?: string | null
   received_amount: number
+  received_amount_exact?: string | null
   unreceived_amount: number
+  unreceived_amount_exact?: string | null
   status: string
   status_label: string
   erp_order_id?: string | null
@@ -43,7 +63,9 @@ export interface OrderItem {
   specification?: string | null
   quantity: number
   unit_price: number
+  unit_price_exact?: string | null
   amount: number
+  amount_exact?: string | null
   remark?: string | null
 }
 
@@ -66,8 +88,20 @@ export interface Receivable {
   plan_name: string
   due_date: string
   amount: number
+  amount_exact?: string
+  received_amount_exact?: string
   received_amount: number
   remaining_amount: number
+  remaining_amount_exact?: string | null
+  /**
+   * 这一期**有没有任何回款行**（待确认 / 已确认 / 已驳回都算）。
+   *
+   * 与 `received_amount` 不是一回事：那个只统计**已确认**的分配。
+   * 后端删除这一期时判的是"有没有任何回款行"，所以前端判断「能不能删」
+   * 必须用这个字段，否则「登记了但没确认」或「被驳回」时会显示能删、
+   * 点下去必然 422（2026-10-14 审查修）。
+   */
+  has_payment_record?: boolean
   status: string
   status_label: string
   remark?: string | null
@@ -82,6 +116,9 @@ export interface Payment {
   receivable_plan_id?: number | null
   plan_name?: string | null
   received_date: string
+  received_amount_exact?: string
+  allocated_amount_exact?: string
+  unallocated_amount_exact?: string
   received_amount: number
   payment_method?: string | null
   voucher_note?: string | null
@@ -94,14 +131,48 @@ export interface Payment {
   created_at: string
   /** 币种（第九批 §9.9）：回款跟着订单币种，不能写死人民币 */
   currency?: string | null
+  /**
+   * 这笔钱**实际分到哪几期、各多少**（第十批，主人 2026-10-13 拍板）。
+   *
+   * ⚠️ 它与 `receivable_plan_id`（**登记时选的那一期**）不是一回事：
+   * 超收时多出来的部分会按到期日自动抵到后续期，两者就不一致了。
+   * 列表上"登记的期"与这里的分配合起来看，才知道这笔钱到底冲了哪几期。
+   */
+  allocated_amount?: number
+  unallocated_amount?: number
+  allocation_mode?: string
+  /** 整笔到账金额仍是 received_amount；此字段是当前查询期的分配金额。 */
+  plan_allocated_amount?: number
+  allocations?: PaymentAllocationRow[]
+}
+
+export interface PaymentAllocationRow {
+  plan_id: number
+  plan_name: string
+  due_date?: string | null
+  amount_exact?: string
+  amount: number
+  /** `auto` = 确认时按到期日自动分；`manual` = 人工调整过 */
+  source: string
 }
 
 export interface FinanceSummary {
   order_amount: number
+  order_amount_exact?: string | null
   planned_amount: number
+  planned_amount_exact?: string | null
   received_amount: number
+  received_amount_exact?: string | null
+  allocated_amount: number
+  allocated_amount_exact?: string | null
+  unallocated_amount: number
+  unallocated_amount_exact?: string | null
+  unsettled_plan_amount: number
+  unsettled_plan_amount_exact?: string | null
   pending_confirm_amount: number
+  pending_confirm_amount_exact?: string | null
   unreceived_amount: number
+  unreceived_amount_exact?: string | null
   plan_count: number
   overdue_count: number
 }
@@ -121,9 +192,22 @@ export function getOrder(id: number) {
   return api.get<Order>(`/orders/${id}`)
 }
 
-export function convertToOrder(versionId: number, payload: Record<string, unknown> = {}) {
+/**
+ * 转销售订单。
+ *
+ * ⚠️ 点一下会**生成正式订单 + 复制全部明细 + 建应收计划**，
+ * 订单是正式履约依据。后端要求 `confirm=true`（不带返回 42206 + 说明）。
+ *
+ * 应收计划由 `payload.receivable_plan` 决定（2026-10-13 改动三）：
+ * **不传 = 一条「全款」**（老行为）；传 `{ratios, due_dates, names}` 就按期数建。
+ */
+export function convertToOrder(
+  versionId: number,
+  payload: Record<string, unknown> = {},
+  confirm = false,
+) {
   return api.post<{ order_id: number; order_no: string }>(
-    `/quote-versions/${versionId}/convert-to-order`,
+    `/quote-versions/${versionId}/convert-to-order${confirm ? '?confirm=true' : ''}`,
     payload,
   )
 }
@@ -166,13 +250,23 @@ export function cancelOrder(orderId: number) {
   return api.post<Order>(`/orders/${orderId}/cancel`)
 }
 
-export function syncErp(orderId: number) {
+export function getErpReadiness() {
+  return api.get<{ configured: boolean }>('/integrations/erp/readiness')
+}
+
+/**
+ * 推送 ERP/MES。
+ *
+ * ⚠️ 这是**写进外部系统**的动作：配置齐全时会真的在对方系统建单，本系统撤回不了。
+ * 后端要求 `confirm=true`（不带返回 42206 + 订单号/客户/金额说明）。
+ */
+export function syncErp(orderId: number, confirm = false) {
   return api.post<{
     pushed: boolean
     already_synced?: boolean
     erp_order_id?: string | null
     message?: string
-  }>(`/orders/${orderId}/sync-erp`)
+  }>(`/orders/${orderId}/sync-erp${confirm ? '?confirm=true' : ''}`)
 }
 
 /** 拉取并回写履约状态（API §27 POST /orders/{id}/refresh-status）。
@@ -227,6 +321,16 @@ export function getReceivable(id: number) {
   return api.get<Receivable>(`/receivables/${id}`)
 }
 
+/**
+ * 删应收节点（API §29 DELETE /receivables/{id}）。
+ *
+ * 后端带锁、并拦"已有回款记录"的节点（会返回 400 并说清原因）；
+ * 删完会在同一个事务里同步「收款」跟单节点。
+ */
+export function deleteReceivable(id: number) {
+  return api.delete(`/receivables/${id}`)
+}
+
 /** 改应收节点 —— 部分更新，只传要改的字段（API §29 PATCH /receivables/{id}）。 */
 export function updateReceivable(id: number, payload: Record<string, unknown>) {
   return api.patch<Receivable>(`/receivables/${id}`, payload)
@@ -256,6 +360,23 @@ export function listReceivables(query: { status?: string; page?: number; page_si
 
 export function listPayments(query: { status?: string; page?: number; page_size?: number }) {
   return api.get<PageResult<Payment>>('/payments', query)
+}
+
+/**
+ * 人工调整一笔回款的分配（第十批主人定的口径）。
+ *
+ * **整份替换**：传进去的就是这笔回款的全部分配，没传的期即不分配 ——
+ * 这样后端审计里"原归属 → 新归属"是一条清晰对照，而不是一串增删改。
+ * 金额合计不得超过回款金额（后端会 422）。
+ */
+export function updatePaymentAllocations(
+  paymentId: number,
+  payload: { allocations: Array<{ plan_id: number; amount: string }>; reason: string },
+) {
+  return api.put<{ allocations: PaymentAllocationRow[]; reason: string }>(
+    `/payments/${paymentId}/allocations`,
+    payload,
+  )
 }
 
 export function createPayment(payload: Record<string, unknown>) {
@@ -302,6 +423,8 @@ export interface OrderMilestoneRow {
   skipped_at?: string | null
   // 方案 :103 要求节点记录责任人、来源证据、逾期原因
   owner_id?: number | null
+  /** 责任人姓名（后端随节点返回，避免前端再用"前 100 个用户"反查） */
+  owner_name?: string | null
   evidence?: string | null
   overdue_reason?: string | null
   remark?: string | null
@@ -349,7 +472,7 @@ export interface ShipmentBatchRow {
   late?: boolean
   overdue_reason?: string | null
   remark?: string | null
-  items: Array<{ order_item_id: number; sku: string | null; planned_qty: number; shipped_qty: number }>
+  items: Array<{ order_item_id: number; sku: string | null; planned_qty: number; planned_qty_exact?: string; shipped_qty: number; shipped_qty_exact?: string }>
 }
 
 export interface ShipmentOverview {
@@ -358,17 +481,26 @@ export interface ShipmentOverview {
     sku: string
     specification?: string | null
     ordered: number
+    ordered_exact?: string
     planned: number
+    planned_exact?: string
     shipped: number
+    shipped_exact?: string
     remaining: number
+    remaining_exact?: string
     unplanned: number
+    unplanned_exact?: string
   }>
   batches: ShipmentBatchRow[]
   summary: {
     ordered: number
+    ordered_exact?: string
     planned: number
+    planned_exact?: string
     shipped: number
+    shipped_exact?: string
     remaining: number
+    remaining_exact?: string
     /** 整单是否发完（逐明细按数量判，不是数批次） */
     all_shipped: boolean
     batch_count: number
@@ -395,7 +527,7 @@ export function listOrderShipments(orderId: number) {
 
 export function createOrderShipment(
   orderId: number,
-  payload: { planned_date?: string | null; remark?: string | null; items: Array<{ order_item_id: number; planned_qty: number }> },
+  payload: { request_key?: string; planned_date?: string | null; remark?: string | null; items: Array<{ order_item_id: number; planned_qty: number | string }> },
 ) {
   return api.post<{ batch_id: number; batch_no: number }>(`/orders/${orderId}/shipments`, payload)
 }
@@ -408,7 +540,7 @@ export function shipOrderShipment(
     logistics_company?: string | null
     tracking_no?: string | null
     remark?: string | null
-    items?: Array<{ order_item_id: number; shipped_qty: number }> | null
+    items?: Array<{ order_item_id: number; shipped_qty: number | string }> | null
   },
 ) {
   return api.post<{ order_status: string; summary: ShipmentOverview['summary'] }>(
@@ -502,7 +634,7 @@ export function cancelScheduleChange(orderId: number, changeId: number, reason?:
 }
 
 export interface OrderDraftLine {
-  id: number; source_item_id: number; name: string; quantity: number; unit_price: number | null
+  id: number; source_item_id: number; name: string; quantity: number | string; quantity_exact?: string; unit_price: number | string | null; unit_price_exact?: string | null
   specification?: string | null; remark?: string | null
   source_snapshot: { source_item_id: number; original_quantity: string | null; specification?: string | null; remark?: string | null; unit_price?: string | null }
 }

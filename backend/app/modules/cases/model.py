@@ -27,6 +27,7 @@ CASE_STATUS_LABEL = {
     "draft": "编写中",
     "pending_review": "待审核",
     "published": "已发布",
+    "withdrawn": "已撤下",
     "rejected": "已驳回",
     #: 已被新修订版取代（§5.1.5）：内容不再改动，仍可按已发布口径阅读
     "superseded": "已被修订版取代",

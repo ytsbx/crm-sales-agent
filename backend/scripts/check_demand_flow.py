@@ -3,6 +3,7 @@ import asyncio
 import os
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
@@ -21,7 +22,7 @@ from app.modules.notification.model import BusinessEvent, Notification
 from app.modules.opportunity.model import Opportunity, OpportunityStage, OpportunityStageHistory
 from app.modules.order.model import SalesOrder, SalesOrderItem, OrderStatusHistory, OrderMilestone
 from app.modules.payment.model import ReceivablePlan
-from app.modules.quote.model import Quote, QuoteVersion, QuoteItem, QuoteSendLog
+from app.modules.quote.model import Quote, QuoteVersion, QuoteItem, QuoteSendLog, QuoteCharge
 from app.modules.sample.model import SampleRequest, SampleItem
 from app.modules.task.model import Task
 from app.modules.user.model import User
@@ -71,6 +72,17 @@ async def main():
             version = QuoteVersion(quote_id=quote.id, version_no=1, approval_status='approved',
                                    created_at=datetime.now(UTC), total_amount=100)
             s.add(version); await s.flush(); vids.append(version.id)
+            # 本套件验状态推进；使用明确已完整核价的定制明细满足成本前置条件。
+            version.subtotal_amount = 100
+            s.add(QuoteItem(quote_version_id=version.id, sku_name_snapshot='需求流夹具',
+                            quantity=1, quoted_price=100, cost_snapshot=0,
+                            cost_present_snapshot=True, cost_complete_snapshot=True))
+            # 当前业务口径：正式发送前必须有已确认的物流费用；0 元也要显式确认。
+            s.add(QuoteCharge(
+                quote_version_id=version.id, charge_type='logistics',
+                description='测试夹具零运费', amount=0,
+                logistics_confirmed_at=datetime.now(UTC),
+            ))
             quote.current_version_id = version.id
             await s.commit()
             return opp.id, version.id
@@ -141,16 +153,35 @@ async def main():
         quote = request('POST', f"/custom-inquiries/{revised['id']}/create-quote", {'unit_cost': 10, 'quoted_price': 20})
         qids.append(quote['quote_id']); vids.append(quote['version_id'])
         assert quote['opportunity_id'] == oid and await state(oid) == before
-        # 生成、下载文件不会制造正式发送事实或推进阶段。
+        # 未审批或运费未确认时不能生成正式 PDF；条件齐全后下载也不制造发送事实。
         pdf_request = Request(f"{BASE}/quote-versions/{quote['version_id']}/generate-pdf",
                               headers={'Authorization': f'Bearer {admin}'}, method='POST')
-        with urlopen(pdf_request, timeout=20) as response:
-            assert response.status == 200 and response.read().startswith(b'%PDF')
-        assert await state(oid) == before
+        try:
+            urlopen(pdf_request, timeout=20)
+        except HTTPError as exc:
+            assert exc.code == 422, exc.code
+        else:
+            raise AssertionError('未审批版本不应生成正式 PDF')
         async with SessionLocal() as s:
             v = await s.get(QuoteVersion, quote['version_id']); v.approval_status = 'approved'
             q = await s.get(Quote, quote['quote_id']); q.status = 'approved'
             await s.commit()
+        try:
+            urlopen(pdf_request, timeout=20)
+        except HTTPError as exc:
+            assert exc.code == 422, exc.code
+        else:
+            raise AssertionError('运费未确认不应生成正式 PDF')
+        assert await state(oid) == before
+        async with SessionLocal() as s:
+            s.add(QuoteCharge(
+                quote_version_id=quote['version_id'], charge_type='logistics',
+                description='测试夹具零运费', amount=0,
+                logistics_confirmed_at=datetime.now(UTC),
+            ))
+            await s.commit()
+        with urlopen(pdf_request, timeout=20) as response:
+            assert response.status == 200 and response.read().startswith(b'%PDF')
         assert await state(oid) == before
         request('POST', f"/quote-versions/{quote['version_id']}/mark-sent", {})
         assert (await state(oid))[0] == stages['quoted'].id
@@ -164,7 +195,7 @@ async def main():
         request('POST', '/samples', {'opportunity_id': other_oid,
             'items': [{'inquiry_id': revised['id'], 'quantity': 1}]}, expected=422)
         request('POST', f"/quote-versions/{quote['version_id']}/accept", {})
-        order = request('POST', f"/quote-versions/{quote['version_id']}/convert-to-order", {})
+        order = request('POST', f"/quote-versions/{quote['version_id']}/convert-to-order?confirm=true", {})
         # 列表按商机筛选；同客户其他需求的单据不能混入。
         inquiry_list = request('GET', f'/custom-inquiries?opportunity_id={oid}')['items']
         assert {row['id'] for row in inquiry_list} == set(inquiry_ids)
@@ -225,6 +256,7 @@ async def main():
                     (SampleItem, SampleItem.sample_request_id.in_(samples)),
                     (SampleRequest, SampleRequest.customer_id.in_(cids)),
                     (QuoteItem, QuoteItem.quote_version_id.in_(vids)),
+                    (QuoteCharge, QuoteCharge.quote_version_id.in_(vids)),
                     (QuoteSendLog, QuoteSendLog.quote_version_id.in_(vids)),
                     (QuoteVersion, QuoteVersion.quote_id.in_(qids)), (Quote, Quote.id.in_(qids)),
                     (CustomInquiry, CustomInquiry.id.in_(inquiries)),

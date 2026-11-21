@@ -140,6 +140,7 @@ export interface RestoreProductResult {
 }
 
 interface RecycleQuery {
+  keyword?: string
   page?: number
   page_size?: number
 }

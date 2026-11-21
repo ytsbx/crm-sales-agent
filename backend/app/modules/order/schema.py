@@ -1,16 +1,67 @@
 from datetime import date
 from typing import Literal
 from decimal import Decimal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
+
+from app.core.patch_schema import CreateModel, PatchModel
+from app.modules.payment.schema import FiniteReceivableRatios
+from app.modules.sample.schema import SampleSource
+
+
+class ReceivablePlanIn(BaseModel):
+    """转单时一起定下的收款计划（2026-10-13 加）。
+
+    **不传 = 一条「全款」**（沿用转单自动建全款的老行为，向后兼容）。
+    传了就是按比例分期：`ratios` 合计必须为 1、每期 > 0、最多 24 期 ——
+    与 `POST /orders/{id}/receivables/generate` 使用同一比例口径。
+
+    `due_dates` / `names` 与 `ratios` **按下标对齐**；缺的位置分别回落到
+    订单交期、以及「第 N 期」。后端不需要知道"定金/尾款"这类业务命名。
+    """
+
+    ratios: FiniteReceivableRatios
+    due_dates: list[date] | None = None
+    #: 每期名称。**上限与库列 `receivable_plans.plan_name` 一致（64）**：
+    #: 少了它，65 字会一路走到 INSERT 才撞 `value too long for character varying(64)`
+    #: → 500（第九批问题 ⑦）。生成接口那边同样有 64 的限制，两处口径一致。
+    names: list[str] | None = None
+
+    @model_validator(mode="after")
+    def _check(self):
+        if not self.ratios:
+            raise ValueError("至少要有一期比例")
+        if abs(sum(self.ratios) - 1) > 0.0001:
+            raise ValueError(f"各期比例之和必须等于 1（当前 {sum(self.ratios)}）")
+        if any(r <= 0 for r in self.ratios):
+            raise ValueError("每期比例必须大于 0")
+        if len(self.ratios) > 24:
+            raise ValueError(f"分期期数过多（{len(self.ratios)} 期，最多 24 期）")
+        if self.due_dates is not None and len(self.due_dates) != len(self.ratios):
+            raise ValueError("每期都要有一个到期日（due_dates 与 ratios 个数要一致）")
+        if self.names is not None:
+            if len(self.names) != len(self.ratios):
+                raise ValueError("每期都要有一个名称（names 与 ratios 个数要一致）")
+            if any(not str(n).strip() for n in self.names):
+                raise ValueError("每期名称不能为空")
+            too_long = [str(n) for n in self.names if len(str(n)) > 64]
+            if too_long:
+                raise ValueError(
+                    f"每期名称最多 64 个字（与数据库列一致），收到 {len(too_long[0])} 字："
+                    f"{too_long[0][:20]}…"
+                )
+        return self
 
 
 class OrderFromQuote(BaseModel):
     delivery_date: date | None = None
     remark: str | None = None
+    #: 收款计划：不传 = 一条「全款」。详见 `ReceivablePlanIn`。
+    receivable_plan: ReceivablePlanIn | None = None
 
 
-class MilestoneUpdate(BaseModel):
+class MilestoneUpdate(CreateModel):
     model_config = ConfigDict(extra="ignore")
 
     skipped: bool | None = None
@@ -46,14 +97,31 @@ class ScheduleChangeCancel(BaseModel):
 
 
 class OrderItemInput(BaseModel):
+    """手工建单的明细行（03-API §27）。
+
+    ## 精度必须与库列一致（审查 B2-02）
+
+    `sales_order_items.quantity` 是 `Numeric(16,3)`、`unit_price` 是 `Numeric(16,4)`。
+    从前这两个字段**只有 `gt=0` / `ge=0`**，没有小数位约束，于是：
+      - 数量 `0.0001` → 接口 200，**落库被舍成 `0.000`**（等于零数量），货款却是 `0.02`；
+      - 数量 `1.23456` → 落库 `1.235`，货款按**未落库的原值**算成 `185.18`，
+        而"落库数量 × 单价" = `1.235 × 150` = `185.25` —— 同一张单两个数。
+    现在口径与报价明细（`QuoteItemInput`）统一：**数量三位小数、单价四位小数**，
+    超了直接报参数错误而不是静默舍入。
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
     sku_id: int
-    quantity: Decimal = Field(gt=0)
-    unit_price: Decimal = Field(ge=0)
-    specification: str | None = None
+    #: 与 `sales_order_items.quantity`（Numeric(16,3)）同一把尺子
+    quantity: Decimal = Field(gt=0, max_digits=16, decimal_places=3)
+    #: 与 `sales_order_items.unit_price`（Numeric(16,4)）同一把尺子
+    unit_price: Decimal = Field(ge=0, max_digits=16, decimal_places=4)
+    specification: str | None = Field(default=None, max_length=200)
     remark: str | None = None
 
 
-class OrderCreate(BaseModel):
+class OrderCreate(CreateModel):
     """手工建订单（03-API §27）。
 
     PRD §20 说明订单正常来自"成交"环节（报价版本转订单），
@@ -68,7 +136,7 @@ class OrderCreate(BaseModel):
     owner_id: int | None = None
     currency: str = "CNY"
     delivery_date: date | None = None
-    payment_terms: str | None = None
+    payment_terms: str | None = Field(default=None, max_length=128)
     remark: str | None = None
 
 
@@ -78,7 +146,7 @@ class OrderUpdate(BaseModel):
     delivery_date: date | None = None
     remark: str | None = None
     owner_id: int | None = None
-    payment_terms: str | None = None
+    payment_terms: str | None = Field(default=None, max_length=128)
 
 
 class OrderStatusChange(BaseModel):
@@ -90,13 +158,15 @@ class OrderStatusChange(BaseModel):
 
 class ShipmentBatchItemInput(BaseModel):
     order_item_id: int
-    planned_qty: Decimal = Field(gt=0)
+    # 与 order_shipment_batch_items.planned_qty Numeric(16,3) 对齐。
+    planned_qty: Decimal = Field(gt=0, max_digits=16, decimal_places=3)
 
 
 class ShipmentBatchCreate(BaseModel):
+    request_key: str | None = Field(default=None, max_length=128)
     planned_date: date | None = None
     overdue_reason: str | None = None
-    remark: str | None = None
+    remark: str | None = Field(default=None, max_length=255)
     items: list[ShipmentBatchItemInput] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -116,19 +186,20 @@ class ShipmentBatchCreate(BaseModel):
 
 class ShipmentShipItem(BaseModel):
     order_item_id: int
-    shipped_qty: Decimal = Field(ge=0)
+    # 与 order_shipment_batch_items.shipped_qty Numeric(16,3) 对齐。
+    shipped_qty: Decimal = Field(ge=0, max_digits=16, decimal_places=3)
 
 
 class ShipmentBatchShip(BaseModel):
     """登记实发。items 缺省 = 本批计划量全发；给出时逐明细覆盖。"""
 
     actual_ship_date: date | None = None
-    logistics_company: str | None = None
-    tracking_no: str | None = None
+    logistics_company: str | None = Field(default=None, max_length=64)
+    tracking_no: str | None = Field(default=None, max_length=64)
     #: 晚了就填原因（"因为分批/因为生产/因为客户改期"）——
     #: 系统能算出"晚几天"，算不出"为什么"，归因必须有人填
     overdue_reason: str | None = None
-    remark: str | None = None
+    remark: str | None = Field(default=None, max_length=255)
     items: list[ShipmentShipItem] | None = None
 
     @model_validator(mode="after")
@@ -146,17 +217,11 @@ class ShipmentBatchShip(BaseModel):
         return self
 
 
-from uuid import UUID
-from app.core.patch_schema import PatchModel
-
-from app.modules.sample.schema import SampleSource
-
-
 class OrderDraftLine(BaseModel):
     source_item_id: int = Field(gt=0)
     quantity: Decimal = Field(gt=0, max_digits=16, decimal_places=3)
     unit_price: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=4)
-    specification: str | None = None
+    specification: str | None = Field(default=None, max_length=200)
     remark: str | None = None
 
 
@@ -164,7 +229,7 @@ class OrderDraftCreate(SampleSource):
     request_key: UUID
     items: list[OrderDraftLine] = Field(min_length=1, max_length=200)
     delivery_date: date | None = None
-    payment_terms: str | None = None
+    payment_terms: str | None = Field(default=None, max_length=128)
     remark: str | None = None
 
     @model_validator(mode='after')
@@ -179,7 +244,7 @@ class OrderDraftUpdate(PatchModel):
     currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")
     items: list[OrderDraftLine] = Field(min_length=1, max_length=200)
     delivery_date: date | None = None
-    payment_terms: str | None = None
+    payment_terms: str | None = Field(default=None, max_length=128)
     remark: str | None = None
 
 

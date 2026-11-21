@@ -41,7 +41,7 @@ async def customer_timeline(
     # 但当时只补了报价/订单/联系人三条，客户/商机/线索三条漏了——
     # 拿别人的 id 就能读出跟进内容。这里补齐，判据与其余三条一致。
     customer = await session.get(Customer, customer_id)
-    if customer is None:
+    if customer is None or customer.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
     # 公海客户（无负责人）的时间线仍可看：客户档案本身就对有查看权限的人可见，
     # 时间线是同一批信息的延续（口径已确认）
@@ -58,7 +58,7 @@ async def opportunity_timeline(
     session: AsyncSession = Depends(get_db),
 ):
     opportunity = await session.get(Opportunity, opportunity_id)
-    if opportunity is None:
+    if opportunity is None or opportunity.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "商机不存在", 404)
     await ensure_in_scope(session, user, owner_id=opportunity.owner_id, label="商机")
     return ok(await build_timeline(session, "opportunity", opportunity_id, user=user))
@@ -71,7 +71,7 @@ async def lead_timeline(
     session: AsyncSession = Depends(get_db),
 ):
     lead = await session.get(Lead, lead_id)
-    if lead is None:
+    if lead is None or lead.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "线索不存在", 404)
     # 线索池里的无主线索同理：线索对所有有查看权限的人可见
     await ensure_in_scope(
@@ -116,13 +116,21 @@ async def contact_timeline(
     session: AsyncSession = Depends(get_db),
 ):
     """联系人时间线。联系人自己没有负责人，跟着所属客户走范围。"""
+    from app.modules.contact_util import can_view_full_contact
+
     contact = await session.get(Contact, contact_id)
     if contact is None or contact.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "联系人不存在", 404)
+    owner_id = None
     if contact.customer_id:
         customer = await session.get(Customer, contact.customer_id)
-        if customer is not None:
-            await ensure_in_scope(
-                session, user, owner_id=customer.owner_id, label="客户", allow_unowned=True
-            )
-    return ok(await build_timeline(session, "contact", contact_id, user=user))
+        if customer is None or customer.deleted_at is not None:
+            raise AppError(ErrorCode.NOT_FOUND, "联系人所属客户不存在", 404)
+        await ensure_in_scope(
+            session, user, owner_id=customer.owner_id, label="客户", allow_unowned=True
+        )
+        owner_id = customer.owner_id
+    show_full = await can_view_full_contact(
+        session, user, customer_id=contact.customer_id, owner_id=owner_id
+    )
+    return ok(await build_timeline(session, "contact", contact_id, user=user, mask_contacts=not show_full))

@@ -150,11 +150,14 @@ async def update_stage(
     row = await session.get(OpportunityStage, stage_id, populate_existing=True)
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, "阶段不存在", 404)
+    changes = payload.model_dump(exclude_unset=True)
+    if changes.get("is_win", row.is_win) and changes.get("status", row.status) != "active":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "成交阶段须保持启用", 422)
     before = svc.serialize_stage(row)
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    for field, value in changes.items():
         setattr(row, field, value)
     await session.flush()
-    await svc.ensure_stage_config_ok(session)
+    await svc.ensure_stage_config_ok(session, require_winner=before["is_win"])
     await write_audit(
         session,
         operator_id=user.id,
@@ -186,7 +189,8 @@ async def delete_stage(
     历史里的名字照旧显示。成交/失单阶段仍不许动（状态机依赖它们）；
     已经是停用的再点一次是幂等的。
     """
-    row = await session.get(OpportunityStage, stage_id)
+    await svc.lock_stages(session)
+    row = await session.get(OpportunityStage, stage_id, populate_existing=True)
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, "阶段不存在", 404)
     if row.is_win or row.is_loss:
@@ -334,9 +338,17 @@ async def funnel(
     user: CurrentUser = Depends(require_permission("opportunity:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    """销售漏斗：按阶段统计未成交商机的数量与金额。"""
+    """销售漏斗：按阶段统计未成交商机的数量与金额。
+
+    只返回未成交阶段（is_win=False）：这是"在谈"商机的存量分布，把「成交」档
+    也列出来永远是 0，看起来像"一单没成交"（2026-11-21 审查修）。
+    """
     stages = (
-        await session.execute(select(OpportunityStage).order_by(OpportunityStage.sequence.asc()))
+        await session.execute(
+            select(OpportunityStage)
+            .where(OpportunityStage.is_win.is_(False))
+            .order_by(OpportunityStage.sequence.asc())
+        )
     ).scalars().all()
     stmt = await svc.apply_data_scope(
         select(
@@ -367,6 +379,62 @@ async def funnel(
 
 # ---------------------------------------------------------------- 商机
 
+@router.get("/opportunities/board-stats")
+async def board_stats(
+    keyword: str | None = None,
+    stage_id: int | None = None,
+    search_customer_name: bool = False,
+    user: CurrentUser = Depends(require_permission("opportunity:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """看板列头：按当前筛选条件和数据权限统计每个阶段的完整数量与金额。
+
+    看板卡片改为每列独立分页后，列头不能再拿"已加载的这几张卡"求和 ——
+    那样加载前显示 20、加载后变成 40，数字会跟着翻页跳动。这里与列表接口
+    共用同一个筛选构造器（关键词、进行中、数据范围），一次算全。
+    """
+    stages = (
+        await session.execute(
+            select(OpportunityStage)
+            .where(OpportunityStage.is_loss.is_(False))
+            .order_by(OpportunityStage.sequence.asc())
+        )
+    ).scalars().all()
+    base = await svc.apply_data_scope(
+        svc.build_opportunity_stmt(
+            keyword=keyword,
+            stage_id=stage_id,
+            status="open",
+            search_customer_name=search_customer_name,
+        ),
+        user,
+        session,
+    )
+    sub = base.order_by(None).subquery()
+    rows = (
+        await session.execute(
+            select(
+                sub.c.stage_id,
+                func.count(sub.c.id),
+                func.coalesce(func.sum(sub.c.expected_amount), 0),
+            ).group_by(sub.c.stage_id)
+        )
+    ).all()
+    stats = {int(sid): (int(count), float(amount or 0)) for sid, count, amount in rows}
+    return ok(
+        [
+            {
+                "stage_id": stage.id,
+                "stage_name": stage.name,
+                "sequence": stage.sequence,
+                "count": stats.get(stage.id, (0, 0.0))[0],
+                "amount": stats.get(stage.id, (0, 0.0))[1],
+            }
+            for stage in stages
+        ]
+    )
+
+
 @router.get("/opportunities")
 async def list_opportunities(
     keyword: str | None = None,
@@ -374,6 +442,7 @@ async def list_opportunities(
     status: str | None = None,
     owner_id: int | None = None,
     customer_id: int | None = None,
+    search_customer_name: bool = False,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     user: CurrentUser = Depends(require_permission("opportunity:view")),
@@ -386,6 +455,7 @@ async def list_opportunities(
             status=status,
             owner_id=owner_id,
             customer_id=customer_id,
+            search_customer_name=search_customer_name,
         ),
         user,
         session,
@@ -786,6 +856,7 @@ async def win_opportunity(
         win_quote_version_id=payload.win_quote_version_id,
         delivery_date=None,
         remark=payload.remark,
+        receivable_plan=getattr(payload, "receivable_plan", None),
         action="win",
         request=request,
         user=user,
@@ -800,6 +871,8 @@ async def _confirm_win_core(
     delivery_date,
     remark: str | None,
     action: str,
+    #: 收款计划（2026-10-13）：不传 = 一条「全款」。详见 OrderFromQuote。
+    receivable_plan=None,
     request: Request,
     user: CurrentUser,
     session: AsyncSession,
@@ -915,6 +988,7 @@ async def _confirm_win_core(
             user_id=user.id,
             delivery_date=delivery_date,
             remark=remark,
+            receivable_plan=receivable_plan,
         )
     except AppError as exc:
         if exc.code != ErrorCode.DUPLICATE_CONVERT:
@@ -946,7 +1020,7 @@ async def _confirm_win_core(
     # 转单时 service 里写了自动跟进留痕 + 主管通知（followup 事件），这里统一投递
     from app.modules.notification import service as notification_service
 
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(
         {
             "opportunity_id": opportunity.id,
@@ -978,6 +1052,7 @@ async def confirm_win_and_create_order(
         opportunity_id=opportunity_id,
         win_quote_version_id=payload.win_quote_version_id,
         delivery_date=payload.delivery_date,
+        receivable_plan=getattr(payload, "receivable_plan", None),
         remark=payload.remark,
         action="confirm_win",
         request=request,
@@ -1000,6 +1075,85 @@ async def lose_opportunity(
     reason = await session.get(LossReason, payload.loss_reason_id)
     if reason is None:
         raise AppError(ErrorCode.NOT_FOUND, "失单原因不存在", 404)
+
+    # ---- 已成交且有订单时，必须先处理订单（2026-10-09 与主人确认）----
+    #
+    # 从前这里**完全不看订单**：商机成交后已生成订单（待生产），仍然可以直接标失单，
+    # 于是商机变成"失单"、订单却继续待生产、成交报价依据还留着 —— 三处状态互相矛盾，
+    # 事后没人说得清这单到底是成了还是没成。
+    #
+    # 口径：成交是**已发生的商业事实**，要撤回就得先把下游（订单）处理掉
+    # （取消订单），而不是让商机状态单方面翻脸。所以这里**拦住并指路**，
+    # 由人工决定订单怎么处理 —— 不自动替人取消订单，那会静默作废一张真单据。
+    #
+    # 只看**未取消**的订单：已取消的订单不构成阻碍（那正是"已经处理过了"）。
+    from app.modules.order.model import SalesOrder
+
+    live_orders = (
+        await session.execute(
+            select(SalesOrder.order_no)
+            .where(
+                SalesOrder.opportunity_id == opportunity_id,
+                SalesOrder.status != "cancelled",
+            )
+            .order_by(SalesOrder.id)
+        )
+    ).scalars().all()
+    if live_orders:
+        shown = "、".join(live_orders[:3])
+        more = f" 等 {len(live_orders)} 张" if len(live_orders) > 3 else ""
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"该商机已生成订单（{shown}{more}），不能直接标失单；"
+            "请先在订单中心处理（取消）这些订单，再回来标失单",
+            422,
+        )
+
+    # ---- 保留最后阶段 + 冻结停留时间 + 补一条失单历史（2026-10-09 与主人确认）----
+    #
+    # 从前这里**什么都不记**：阶段不变、历史不加、原阶段那条历史的 `left_at`
+    # 一直是空 —— 于是"这单死之前卡在哪一步、卡了多久"永远查不出来，
+    # 失单原因分析也就只能看一个原因，看不到路径。
+    #
+    # 现在的口径：
+    #   - **阶段不动**（保留最后阶段，供"卡在哪个阶段丢得最多"这类归因）；
+    #   - 把当前这条未关闭的历史行**关闭**并冻结 `duration_seconds`；
+    #   - 补一条 `from = to = 当前阶段` 的历史行，remark 记失单原因，作为**失单标记**。
+    #
+    # 为什么 `from = to`：它不是"阶段推进"，而是"在这个阶段终止"。这样
+    #   - 漏斗按 `distinct to_stage_id` 统计到达过的阶段 → 不受影响；
+    #   - 成交周期只统计 `status='win'` 的商机 → 这些行只出现在失单商机上 → 不受影响；
+    #   - 想知道"在哪一步死的"直接读这条标记行即可。
+    # 需要算纯停留时长的读法请加 `duration_seconds is not null`（标记行的该列为空）。
+    now = datetime.now(UTC)
+    current_hist = (
+        await session.execute(
+            select(OpportunityStageHistory)
+            .where(
+                OpportunityStageHistory.opportunity_id == opportunity_id,
+                OpportunityStageHistory.left_at.is_(None),
+            )
+            .order_by(OpportunityStageHistory.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if current_hist is not None:
+        current_hist.left_at = now
+        entered = current_hist.entered_at
+        if entered.tzinfo is None:
+            entered = entered.replace(tzinfo=UTC)
+        current_hist.duration_seconds = int((now - entered).total_seconds())
+    if opportunity.stage_id is not None:
+        session.add(
+            OpportunityStageHistory(
+                opportunity_id=opportunity_id,
+                from_stage_id=opportunity.stage_id,
+                to_stage_id=opportunity.stage_id,
+                operator_id=user.id,
+                remark=f"失单（{reason.name}）",
+                entered_at=now,
+            )
+        )
 
     opportunity.status = "loss"
     opportunity.loss_reason_id = reason.id
@@ -1113,8 +1267,9 @@ async def create_item(
     session: AsyncSession = Depends(get_db),
 ):
     await svc.get_visible_opportunity(session, user, opportunity_id)
-    # SKU 先验存在（第十二批 12.5）：不验就是撞外键的 500，用户看不出哪条错了
-    await svc.ensure_skus_exist(session, [payload.sku_id])
+    from app.modules.product.service import ensure_skus_for_new_business
+
+    await ensure_skus_for_new_business(session, [payload.sku_id])
     item = OpportunityItem(**payload.model_dump(), opportunity_id=opportunity_id)
     session.add(item)
     await session.flush()
@@ -1196,7 +1351,7 @@ async def replace_items_batch(
 
     先清空再写入，保证不出现半新半旧的明细。
     """
-    await svc.get_visible_opportunity(session, user, opportunity_id)
+    await svc.get_visible_opportunity(session, user, opportunity_id, for_update=True)
     created = await svc.replace_items(
         session,
         opportunity_id=opportunity_id,

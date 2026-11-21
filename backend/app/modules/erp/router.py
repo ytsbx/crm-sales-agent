@@ -51,7 +51,8 @@ from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.data_scope import ensure_in_scope, scoped_owner_ids
 from app.core.errors import AppError, ErrorCode
-from app.core.response import ok, page_data
+from app.core.response import ok, page_data, paginate
+from app.modules.customer.model import Customer
 from app.modules.erp import collection as collect_svc
 from app.modules.erp import reconcile as recon_svc
 from app.modules.erp import service as svc
@@ -67,9 +68,22 @@ from app.modules.erp.schema import (
     SourceVerifyRequest,
     StatusWebhookRequest,
 )
-from app.modules.integration.vocab import ALL_SHOPS, DIFF_DOMAIN_ORDER
+from app.modules.integration.vocab import (
+    ALL_SHOPS,
+    DIFF_DOMAIN_ORDER,
+    OBJECT_AFTERSALE,
+    OBJECT_AFTERSALE_ITEM,
+    OBJECT_ORDER,
+    OBJECT_ORDER_ITEM,
+    OBJECT_SHIPMENT,
+    OBJECT_SHIPMENT_ITEM,
+    MATCH_CONFLICT,
+    MATCH_PENDING,
+)
+from app.modules.integration.model import ExternalObjectMapping, FinancialAdjustment
 from app.modules.order import service as order_service
-from app.modules.order.model import SalesOrder
+from app.modules.order.model import SalesOrder, SalesOrderItem
+from app.modules.product.model import Sku
 
 router = APIRouter(tags=["ERP"])
 
@@ -92,9 +106,118 @@ def _translate(error: Exception) -> AppError:
     return AppError(ErrorCode.ERP_SYNC_FAILED, f"ERP/MES 同步失败：{error}", 502)
 
 
+@router.get("/integrations/erp/financial-adjustments")
+async def list_financial_adjustments(
+    order_id: int | None = None,
+    status: str | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    user: CurrentUser = Depends(require_permission("order:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """退款/应收调整台账；只读，原始回款记录不在此接口被改写。"""
+    stmt = select(FinancialAdjustment).outerjoin(
+        SalesOrder, SalesOrder.id == FinancialAdjustment.order_id
+    )
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is not None:
+        # 未匹配订单的调整没有可验证的负责人，只能由全量数据范围用户处理。
+        # 有限范围用户不得借此接口读取全公司的退款金额和原因。
+        stmt = stmt.where(SalesOrder.owner_id.in_(owner_ids))
+    if order_id is not None:
+        stmt = stmt.where(FinancialAdjustment.order_id == order_id)
+    if status:
+        stmt = stmt.where(FinancialAdjustment.status == status)
+    rows, total = await paginate(
+        session, stmt.order_by(FinancialAdjustment.id.desc()), page, page_size
+    )
+    return ok(
+        page_data(
+            [recon_svc.serialize_financial_adjustment(row) for row in rows],
+            total,
+            page,
+            page_size,
+        )
+    )
+
+
 def translate_erp_error(error: Exception) -> AppError:
     """公开的异常翻译，供 order 模块的 `/orders/{id}/sync-erp` 复用。"""
     return _translate(error)
+
+
+async def _ensure_mapping_target_scope(
+    session: AsyncSession,
+    user: CurrentUser,
+    mapping: ExternalObjectMapping,
+    internal_id: int,
+) -> None:
+    """校验人工映射的目标确实存在，并且属于当前用户可操作的数据范围。"""
+    object_type = mapping.object_type
+    if object_type == "customer":
+        target = await session.get(Customer, internal_id)
+        if target is None or target.deleted_at is not None:
+            raise AppError(ErrorCode.NOT_FOUND, f"客户编号 {internal_id} 不存在", 404)
+        await ensure_in_scope(
+            session, user, owner_id=target.owner_id, label="客户", allow_unowned=True
+        )
+        return
+
+    if object_type == "sku":
+        target = await session.get(Sku, internal_id)
+        if target is None or target.deleted_at is not None:
+            raise AppError(ErrorCode.NOT_FOUND, f"SKU 编号 {internal_id} 不存在", 404)
+        # SKU 没有负责人字段，有限数据范围无法可靠判断归属；宁可拒绝，
+        # 也不能让 order:manage 用户跨范围修改主数据映射。
+        if await scoped_owner_ids(session, user) is not None:
+            raise AppError(ErrorCode.DATA_SCOPE_DENIED, "SKU 映射只能由全量数据范围用户处理", 403)
+        return
+
+    if object_type in {OBJECT_ORDER, OBJECT_SHIPMENT, OBJECT_AFTERSALE}:
+        order = await session.get(SalesOrder, internal_id)
+    elif object_type in {
+        OBJECT_ORDER_ITEM,
+        OBJECT_SHIPMENT_ITEM,
+        OBJECT_AFTERSALE_ITEM,
+    }:
+        # 明细匹配成功时 internal_id 是订单明细 id；没有 SKU 编码时，
+        # resolve_mapping 会退回父订单 id，所以两种合法形态都要支持。
+        item = await session.get(SalesOrderItem, internal_id)
+        order = await session.get(SalesOrder, item.order_id) if item is not None else await session.get(SalesOrder, internal_id)
+    else:
+        raise AppError(ErrorCode.PARAM_ERROR, f"不支持人工映射对象类型：{object_type}", 422)
+
+    if order is None:
+        raise AppError(ErrorCode.NOT_FOUND, f"订单/订单明细编号 {internal_id} 不存在", 404)
+    if mapping.parent_key:
+        parent = (
+            await session.execute(
+                select(ExternalObjectMapping).where(
+                    ExternalObjectMapping.system_type == mapping.system_type,
+                    ExternalObjectMapping.shop_id == mapping.shop_id,
+                    ExternalObjectMapping.object_type == OBJECT_ORDER,
+                    ExternalObjectMapping.external_id == mapping.parent_key,
+                )
+            )
+        ).scalars().first()
+        if parent is None or parent.internal_id is None:
+            raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "请先匹配该外部对象的父订单", 409)
+        if int(parent.internal_id) != int(order.id):
+            raise AppError(ErrorCode.DATA_SCOPE_DENIED, "映射目标与外部对象父订单不一致", 403)
+    await ensure_in_scope(session, user, owner_id=order.owner_id, label="订单")
+
+
+async def _ensure_diff_scope(session: AsyncSession, user: CurrentUser, diff: Any) -> None:
+    """差异与原始证据共用订单数据范围；无法定位订单的差异只给全量用户。"""
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is None:
+        return
+    if diff.domain != DIFF_DOMAIN_ORDER or diff.internal_id is None:
+        raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该差异没有落在你的数据范围内", 403)
+    order = await session.get(SalesOrder, diff.internal_id)
+    if order is None:
+        raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该差异关联的订单不存在或不可见", 403)
+    await ensure_in_scope(session, user, owner_id=order.owner_id, label="订单")
 
 
 @router.get("/integrations/erp/readiness")
@@ -113,21 +236,30 @@ async def erp_readiness(
 @router.post("/integrations/erp/orders")
 async def push_by_order_no(
     payload: OrderPushRequest,
+    confirm: bool = False,
     user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """按 CRM 订单号推送。给外部系统或批量脚本调用，等价于 /orders/{id}/sync。"""
+    """按 CRM 订单号推送。给外部系统或批量脚本调用，等价于 /orders/{id}/sync。
+
+    第二轮审查 P2（2026-10-12）：这个入口以前不检查 `confirm`，与订单页那个
+    入口共用同一个写服务，等于留了一条绕过确认的后门。现在三个推单入口都过
+    `svc.ensure_push_confirmed`，契约（`confirm=true`）、文案与 42206 完全一致。
+    调用方（外部脚本/批量任务）带上 `?confirm=true` 即可，行为不变、只是多一步确认。
+    """
     if not payload.order_no:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "order_no 必填", 422)
     order = (
         await session.execute(
             select(SalesOrder).where(SalesOrder.order_no == payload.order_no.strip())
+            .with_for_update().execution_options(populate_existing=True)
         )
     ).scalars().first()
     if order is None:
         raise AppError(ErrorCode.NOT_FOUND, f"订单 {payload.order_no} 不存在", 404)
     # 按单号推送也要过数据范围，否则知道单号就能推别人的订单
     await ensure_in_scope(session, user, owner_id=order.owner_id, label="订单")
+    await svc.ensure_push_confirmed(session, order=order, confirm=confirm)
     try:
         result = await svc.push_order(session, order=order, operator_id=user.id)
     except (ErpNotConfigured, ErpError) as error:
@@ -149,11 +281,17 @@ async def push_by_order_no(
 @router.post("/integrations/erp/orders/{order_id}/sync")
 async def sync_order(
     order_id: int,
+    confirm: bool = False,
     user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """把订单推送到 ERP/MES（幂等：推过的直接返回，不重复建单）。"""
-    order = await order_service.get_visible_order(session, user, order_id)
+    """把订单推送到 ERP/MES（幂等：推过的直接返回，不重复建单）。
+
+    第二轮审查 P2（2026-10-12）：与 `/orders/{id}/sync-erp` 走同一个写服务，
+    所以也必须先确认；确认判据、文案与 42206 由 `ensure_push_confirmed` 统一。
+    """
+    order = await order_service.get_visible_order(session, user, order_id, for_update=True)
+    await svc.ensure_push_confirmed(session, order=order, confirm=confirm)
     try:
         result = await svc.push_order(session, order=order, operator_id=user.id)
     except (ErpNotConfigured, ErpError) as error:
@@ -186,7 +324,7 @@ async def reconcile_order(
     （聚水潭 / 企业 erp-bridge 的资料还没拿到），猜一个查询端点比不做更危险。
     登记之后订单变成"已同步"，遗留的 sending/unknown 记录一并了结。
     """
-    order = await order_service.get_visible_order(session, user, order_id)
+    order = await order_service.get_visible_order(session, user, order_id, for_update=True)
     try:
         result = await svc.reconcile_push(
             session, order=order, external_id=payload.external_id, operator_id=user.id
@@ -214,7 +352,7 @@ async def order_status(
     session: AsyncSession = Depends(get_db),
 ):
     """拉取履约状态并回写（写入 order_status_history，source=ERP）。"""
-    order = await order_service.get_visible_order(session, user, order_id)
+    order = await order_service.get_visible_order(session, user, order_id, for_update=True)
     try:
         result = await svc.refresh_status(session, order=order, operator_id=user.id)
     except (ErpNotConfigured, ErpError) as error:
@@ -429,13 +567,13 @@ async def match_external_mapping(
 ):
     """人工把一条待匹配的外部对象指到本地对象上（未知客户/SKU 的补齐出口）。"""
     mapping = await collect_svc.get_mapping(session, mapping_id)
-    if mapping.object_type == "order":
-        target = await session.get(SalesOrder, payload.internal_id)
-        if target is None:
-            raise AppError(
-                ErrorCode.NOT_FOUND, f"订单 #{payload.internal_id} 不存在", 404
-            )
-        await ensure_in_scope(session, user, owner_id=target.owner_id, label="订单")
+    if mapping.match_status not in {MATCH_PENDING, MATCH_CONFLICT}:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"当前映射状态为 {mapping.match_status}，不能重复人工改指",
+            409,
+        )
+    await _ensure_mapping_target_scope(session, user, mapping, payload.internal_id)
     result = await collect_svc.assign_mapping(
         session,
         mapping,
@@ -468,6 +606,12 @@ async def replay_external_mappings(
     session: AsyncSession = Depends(get_db),
 ):
     """重放待匹配行：本地对象补齐后重新匹配，**不需要重新拉取外部数据**。"""
+    if await scoped_owner_ids(session, user) is not None:
+        raise AppError(
+            ErrorCode.DATA_SCOPE_DENIED,
+            "映射重放会处理全局待匹配记录，只能由全量数据范围用户执行",
+            403,
+        )
     result = await collect_svc.replay_pending_mappings(
         session,
         system_type=payload.system_type,
@@ -582,6 +726,7 @@ async def list_reconcile_diffs(
     session: AsyncSession = Depends(get_db),
 ):
     """差异清单（对账差异 + SKU 主数据差异共用这一张队列表）。"""
+    owner_ids = await scoped_owner_ids(session, user)
     items, total = await recon_svc.list_diffs(
         session,
         domain=domain,
@@ -589,6 +734,7 @@ async def list_reconcile_diffs(
         diff_type=diff_type,
         shop_id=shop_id,
         period=period,
+        owner_ids=owner_ids,
         page=page,
         page_size=page_size,
     )
@@ -603,6 +749,7 @@ async def get_reconcile_diff(
 ):
     """差异详情 + **按证据指针取回的原始报文**（"点回原始证据"的落地）。"""
     diff = await recon_svc.get_diff(session, diff_id)
+    await _ensure_diff_scope(session, user, diff)
     return ok(await recon_svc.diff_evidence(session, diff))
 
 
@@ -616,20 +763,25 @@ async def confirm_reconcile_diff(
 ):
     """核定一条差异。
 
-    核定**只写差异行**：外部事实不会因为有人点了"以外部为准"就去改本地回款/应收/业绩
-    （退货退款的来源与时点口径用户还没拍板）。能定位到本地订单时还要过数据范围。
+    核定会更新差异行；售后人工核定另外生成待财务处理的退款/应收调整台账，
+    不覆盖原始回款，也不自动改本地应收/业绩。能定位到本地订单时还要过数据范围。
     """
     diff = await recon_svc.get_diff(session, diff_id)
-    if diff.domain == DIFF_DOMAIN_ORDER and diff.internal_id is not None:
-        order = await session.get(SalesOrder, diff.internal_id)
-        if order is not None:
-            await ensure_in_scope(session, user, owner_id=order.owner_id, label="订单")
+    await _ensure_diff_scope(session, user, diff)
+    before = {
+        "status": diff.status,
+        "resolution": diff.resolution,
+        "resolve_note": diff.resolve_note,
+        "diff_type": diff.diff_type,
+    }
     result = await recon_svc.confirm_diff(
         session,
         diff,
         resolution=payload.resolution,
         note=payload.note,
         operator_id=user.id,
+        financial_adjustment_type=payload.financial_adjustment_type,
+        financial_adjustment_amount=payload.financial_adjustment_amount,
     )
     await write_audit(
         session,
@@ -637,7 +789,7 @@ async def confirm_reconcile_diff(
         action="erp_diff_confirm",
         business_type="integration_diff",
         business_id=diff.id,
-        before={"status": "open", "diff_type": diff.diff_type},
+        before=before,
         after={
             "status": result["diff"]["status"],
             "resolution": payload.resolution,
@@ -677,7 +829,7 @@ def _verify_webhook_secret(request: Request) -> None:
             403,
         )
     provided = (request.headers.get("X-ERP-Secret") or "").strip()
-    if not provided or not secrets.compare_digest(provided, secret):
+    if not provided or not secrets.compare_digest(provided.encode("utf-8"), secret.encode("utf-8")):
         raise AppError(ErrorCode.FORBIDDEN, "回调密钥校验失败", 403)
 
 

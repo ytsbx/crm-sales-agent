@@ -59,7 +59,7 @@ from app.core.database import SessionLocal
 from app.modules.customer.model import Customer
 from app.modules.file import storage
 from app.modules.file.model import BusinessFile, FileRecord
-from app.modules.order.model import SalesOrder
+from app.modules.order.model import OrderMilestone, SalesOrder
 from app.modules.payment.model import PaymentRecord, ReceivablePlan
 from app.modules.product.model import Product
 from app.modules.user.model import User
@@ -351,7 +351,7 @@ async def main():
             "/payments",
             {
                 "receivable_plan_id": usd_plan["id"],
-                "received_date": "2026-11-21",
+                "received_date": "2026-10-01",
                 "received_amount": 30,
             },
         )
@@ -363,7 +363,7 @@ async def main():
             token=admin,
             body={
                 "receivable_plan_id": usd_plan["id"],
-                "received_date": "2026-11-22",
+                "received_date": "2026-10-01",
                 "received_amount": 10,
                 "currency": "CNY",
             },
@@ -377,7 +377,7 @@ async def main():
             "/payments",
             {
                 "receivable_plan_id": usd_plan["id"],
-                "received_date": "2026-11-23",
+                "received_date": "2026-10-01",
                 "received_amount": 5,
             },
         )["id"]
@@ -402,7 +402,7 @@ async def main():
             "/payments",
             {
                 "receivable_plan_id": usd_plan["id"],
-                "received_date": "2026-11-24",
+                "received_date": "2026-10-01",
                 "received_amount": 4,
             },
         )["id"]
@@ -447,7 +447,7 @@ async def main():
             "/payments",
             {
                 "receivable_plan_id": usd_plan["id"],
-                "received_date": "2026-11-25",
+                "received_date": "2026-10-01",
                 "received_amount": 3,
             },
         )["id"]
@@ -491,7 +491,7 @@ async def main():
             "/payments",
             {
                 "receivable_plan_id": usd_plan["id"],
-                "received_date": "2026-11-26",
+                "received_date": "2026-10-01",
                 "received_amount": 2,
             },
         )["id"]
@@ -514,7 +514,7 @@ async def main():
             "/payments",
             {
                 "receivable_plan_id": usd_plan["id"],
-                "received_date": "2026-11-27",
+                "received_date": "2026-10-01",
                 "received_amount": 1,
             },
         )["id"]
@@ -578,7 +578,7 @@ async def main():
             "/payments",
             {
                 "receivable_plan_id": usd_plan["id"],
-                "received_date": "2026-11-29",
+                "received_date": "2026-10-01",
                 "received_amount": 2,
             },
         )["id"]
@@ -633,7 +633,7 @@ async def main():
             "/payments",
             {
                 "receivable_plan_id": usd_plan["id"],
-                "received_date": "2026-11-28",
+                "received_date": "2026-10-01",
                 "received_amount": 6,
             },
         )["id"]
@@ -658,6 +658,11 @@ async def main():
                 delete(BusinessFile).where(BusinessFile.business_id == 999999)
             )
             await session.execute(delete(FileRecord).where(FileRecord.id.in_(file_ids)))
+            # 跟单里程碑是 sales_orders 的子表（2026-10-12 第三批审查 P2 之后，
+            # 回款/应收改动会同步生成里程碑行）：不先删它，删订单会撞外键。
+            await session.execute(
+                delete(OrderMilestone).where(OrderMilestone.order_id.in_(order_ids))
+            )
             await session.execute(delete(SalesOrder).where(SalesOrder.id.in_(order_ids)))
             await session.execute(delete(Customer).where(Customer.id.in_(customer_ids)))
             # 审计：按内容带本套件标记兜底收

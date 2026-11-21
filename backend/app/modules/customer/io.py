@@ -19,6 +19,7 @@ from fastapi import UploadFile
 from sqlalchemy import select
 
 from app.core.csvio import parse_csv_upload
+from app.core.timebase import BUSINESS_TZ, to_business
 from app.modules.customer.model import Customer
 from app.modules.user.model import User
 
@@ -79,8 +80,7 @@ def parse_date_checked(value: str | None) -> tuple[datetime | None, str | None]:
             parsed = datetime.strptime(normalized, fmt)
         except ValueError:
             continue
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
+        parsed = parsed.replace(tzinfo=BUSINESS_TZ).astimezone(UTC)
         if parsed > datetime.now(UTC):
             return None, f"最后联系日期不能是未来日期（收到 {text}）"
         return parsed, None
@@ -98,8 +98,8 @@ def customer_export_row(customer: Customer, owner_name: str | None) -> list:
         owner_name or "",
         customer.status,
         "公海" if customer.pool_status == "public" else "私海",
-        customer.last_followup_at.strftime("%Y-%m-%d") if customer.last_followup_at else "",
-        customer.created_at.strftime("%Y-%m-%d") if customer.created_at else "",
+        to_business(customer.last_followup_at).strftime("%Y-%m-%d") if customer.last_followup_at else "",
+        to_business(customer.created_at).strftime("%Y-%m-%d") if customer.created_at else "",
     ]
 
 

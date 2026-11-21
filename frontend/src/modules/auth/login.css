@@ -1,0 +1,162 @@
+.crm-login {
+  --login-blue: #2d64ce;
+  --login-ink: #172b46;
+  --login-muted: #6b7d97;
+  --login-line: #dce6f4;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  min-height: 100vh;
+  min-height: 100svh;
+  background: #fff;
+  color: var(--login-ink);
+}
+
+.crm-login :where(h1, h2, p) { margin: 0; }
+.crm-login button, .crm-login input { font: inherit; }
+
+.crm-login-story {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 700px;
+  padding: clamp(36px, 5vh, 56px) clamp(32px, 4.8vw, 80px) 32px;
+  /* 原来是一整块 #143568 深藏蓝，与全站"天空蓝 + 留白"的基调冲突。
+     改成极浅的天空蓝竖向渐变：左栏仍有层次和光感，但不再抢右侧表单。 */
+  background:
+    radial-gradient(120% 78% at 76% 14%, #ffffff 0%, #f0f6ff 40%, transparent 72%),
+    linear-gradient(172deg, #f8fbff 0%, #e6f0ff 52%, #d3e3fb 100%);
+  border-right: 1px solid #d9e5f7;
+  color: #16243a;
+  overflow: hidden;
+}
+
+.crm-login-brand, .crm-login-message, .crm-login-art, .crm-login-story-footer {
+  width: 100%;
+  max-width: 460px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.crm-login-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: .5px;
+  line-height: 1.5;
+}
+
+.crm-login-brand small {
+  display: block;
+  margin-top: 2px;
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 2.4px;
+  color: #6a83a4;
+}
+
+.crm-login-brand-mark {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+}
+
+.crm-login-message { margin-top: clamp(56px, 8vh, 100px); }
+.crm-login-eyebrow { display: flex; align-items: center; gap: 8px; color: var(--login-blue); font-size: 12px; letter-spacing: 1px; }
+.crm-login-eyebrow > span { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.crm-login-message h1 { margin-top: 22px; color: #1b2b45; font-size: clamp(34px, 2.9vw, 43px); line-height: 1.4; font-weight: 500; letter-spacing: 1px; }
+.crm-login-message p { margin-top: 22px; color: #5c7391; font-size: 13px; line-height: 1.9; }
+
+.crm-login-art { position: relative; max-width: 420px; height: 235px; flex-shrink: 0; margin-top: 29px; }
+.crm-login-orbit { position: absolute; width: 230px; height: 230px; left: calc(50% - 115px); top: 0; border: 1px solid #c3d8f4; border-radius: 50%; }
+.crm-login-orbit-outer { width: 308px; height: 308px; left: calc(50% - 154px); top: -39px; opacity: .55; }
+.crm-login-orb { position: absolute; width: 135px; height: 135px; left: calc(50% - 67.5px); top: 40px; border-radius: 50%; background: radial-gradient(circle at 30% 24%, #ffffff 4%, #d3e6ff 40%, #86b1e8 88%);
+  box-shadow: 0 22px 46px #2d64ce33, inset -12px -16px 34px #4d79b52e; }
+.crm-login-flow { position: absolute; display: flex; align-items: center; gap: 12px; min-width: 150px; padding: 15px; background: #fff; border: 1px solid #cfdff6; border-radius: 13px; color: #16304f; box-shadow: 0 14px 30px #2d64ce21; }
+.crm-login-flow small { display: block; margin-bottom: 4px; color: #7c93b1; font-size: 11px; line-height: 1.4; }
+.crm-login-flow strong { font-size: 15px; font-weight: 500; letter-spacing: 1px; }
+.crm-login-flow-icon { display: flex; align-items: center; justify-content: center; width: 33px; height: 33px; border-radius: 9px; background: #e8f1ff; color: #2d64ce; }
+.crm-login-flow-customer { top: 8px; left: 0; transform: rotate(-5deg); }
+.crm-login-flow-quote { top: 91px; right: 0; min-width: 199px; transform: rotate(4deg); background: #eaf3ff; border-color: #b9d3f6; color: #173f76; }
+.crm-login-flow-quote small { color: #5d7a9f; }
+.crm-login-flow-quote .crm-login-flow-icon { background: #d6e8fe; color: #2d64ce; }
+/* 三张卡的小图标各给一个色：客户蓝、报价绿、订单橙——只有 33px 见方，不抢整体蓝调 */
+.crm-login-flow-customer .crm-login-flow-icon { background: #e8f1ff; color: #2d64ce; }
+.crm-login-flow-quote .crm-login-flow-icon { background: #e7f7ef; color: #12925f; }
+.crm-login-flow-order .crm-login-flow-icon { background: #fff1e4; color: #dc7a22; }
+.crm-login-flow-order { top: 169px; left: 35px; transform: rotate(-3deg); }
+/* 这颗点原本想表示"在线"，实际飘在卡片边缘外侧，看着像渲染瑕疵，先藏掉。 */
+.crm-login-flow-dot { display: none; }
+.crm-login-story-footer { display: flex; justify-content: space-between; gap: 12px; margin-top: auto; padding-top: 32px; color: #5b7290; font-size: 11px; line-height: 1.5; }
+
+.crm-login-main { display: flex; flex-direction: column; align-items: center; min-width: 0; padding: clamp(36px, 5vh, 56px) clamp(28px, 4vw, 64px) 32px; }
+.crm-login-workspace { align-self: flex-end; color: var(--login-muted); font-size: 12px; letter-spacing: 1px; }
+.crm-login-content { width: min(100%, clamp(303px, 25vw, 360px)); margin: auto 0; padding: 48px 0; }
+.crm-login-welcome { margin-bottom: 16px; color: var(--login-blue); font-size: 13px; letter-spacing: 1px; }
+.crm-login-content h2 { font-size: clamp(28px, 2.3vw, 32px); line-height: 1.35; font-weight: 600; letter-spacing: -.8px; }
+.crm-login-session-notice {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--crm-primary-soft);
+  color: var(--login-ink);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.crm-login-description { margin-top: 13px; color: var(--login-muted); font-size: 13px; line-height: 1.8; }
+.crm-login-form { display: grid; margin-top: 37px; }
+.crm-login-form > label { margin-bottom: 10px; font-size: 13px; font-weight: 500; }
+.crm-login-input { display: flex; align-items: center; gap: 10px; height: 50px; padding: 0 14px; background: #f9fbff; border: 1px solid var(--login-line); border-radius: 9px; color: var(--login-muted); transition: border-color .2s, box-shadow .2s; }
+.crm-login-input + label { margin-top: 25px; }
+.crm-login-input:focus-within { border-color: var(--login-blue); box-shadow: 0 0 0 3px #2d64ce14; }
+.crm-login-input input { width: 100%; min-width: 0; height: 100%; padding: 0; border: 0; outline: none; background: transparent; color: var(--login-ink); font-size: 14px; }
+.crm-login-input input::placeholder { color: #8394ae; }
+.crm-login-input input:disabled { opacity: .65; cursor: wait; }
+.crm-login-password-toggle { display: flex; align-items: center; justify-content: center; width: 38px; height: 44px; flex-shrink: 0; margin-right: -7px; padding: 0; border: 0; background: transparent; color: var(--login-muted); cursor: pointer; border-radius: 5px; }
+.crm-login-password-toggle:hover { color: var(--login-blue); }
+.crm-login-submit { display: flex; align-items: center; justify-content: center; gap: 14px; width: 100%; height: 50px; margin-top: 26px; padding: 0 16px; border: 0; border-radius: 9px; background: var(--login-blue); color: #fff; font-size: 15px; font-weight: 500; letter-spacing: .5px; cursor: pointer; transition: background .2s; }
+.crm-login-submit:hover:not(:disabled) { background: #2358bd; }
+.crm-login-submit:disabled { opacity: .75; cursor: wait; }
+.crm-login button:focus-visible { outline: 2px solid var(--login-blue); outline-offset: 4px; }
+.crm-login-admin-note { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 27px; color: var(--login-muted); font-size: 12px; line-height: 1.6; }
+.crm-login-admin-note .semi-icon { font-size: 14px; }
+
+/* 钉钉扫码登录：与账号密码并列的第二种进门方式，用分隔线表明是"另一条路" */
+.crm-login-divider { display: flex; align-items: center; gap: 12px; margin-top: 30px; color: #93a5bd; font-size: 12px; }
+.crm-login-divider::before, .crm-login-divider::after { content: ""; flex: 1; height: 1px; background: var(--login-line); }
+.crm-login-dingtalk { display: flex; align-items: center; justify-content: center; gap: 12px; width: 100%; height: 50px; margin-top: 20px; padding: 0 16px; border: 1px solid var(--login-line); border-radius: 9px; background: #fff; color: var(--login-ink); font-size: 15px; font-weight: 500; letter-spacing: .3px; cursor: pointer; transition: border-color .2s, box-shadow .2s, background .2s; }
+.crm-login-dingtalk:hover:not(:disabled) { border-color: var(--login-blue); background: #f6f9ff; }
+.crm-login-dingtalk:disabled { opacity: .75; cursor: wait; }
+.crm-login-dingtalk-icon { width: 19px; height: 19px; flex-shrink: 0; fill: none; stroke: var(--login-blue); stroke-width: 1.6; stroke-linecap: round; }
+.crm-login-footer { color: var(--login-muted); font-size: 11px; letter-spacing: .4px; }
+.crm-login-spinner { animation: crm-login-spin .9s linear infinite; }
+@keyframes crm-login-spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 760px) and (min-width: 641px) {
+  .crm-login-story { padding-left: 32px; padding-right: 32px; }
+  .crm-login-message h1 { font-size: 34px; }
+  .crm-login-flow { padding: 12px; gap: 9px; min-width: 140px; }
+  .crm-login-flow-quote { min-width: 185px; }
+  .crm-login-flow-order { left: 16px; }
+}
+
+@media (max-width: 640px) {
+  .crm-login { grid-template-columns: 1fr; }
+  .crm-login-story { min-height: auto; padding: 28px 28px 32px; }
+  .crm-login-brand { font-size: 14px; }
+  .crm-login-message { margin-top: 29px; }
+  .crm-login-eyebrow { font-size: 11px; }
+  .crm-login-message h1 { margin-top: 14px; font-size: 30px; line-height: 1.35; }
+  .crm-login-message p { margin-top: 14px; font-size: 12px; }
+  .crm-login-art, .crm-login-story-footer, .crm-login-workspace { display: none; }
+  .crm-login-main { min-height: 500px; padding: 30px 28px 24px; }
+  .crm-login-content { width: 100%; max-width: 360px; padding: 10px 0 32px; }
+  .crm-login-content h2 { font-size: 27px; }
+  .crm-login-form { margin-top: 28px; }
+  .crm-login-input input { font-size: 16px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .crm-login *, .crm-login-spinner { transition: none; animation: none; }
+}

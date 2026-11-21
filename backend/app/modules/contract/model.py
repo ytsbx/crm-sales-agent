@@ -68,7 +68,7 @@ class ContractDocument(Base, IdMixin):
     quote_version_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("quote_versions.id"), nullable=True
     )
-    template_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("contract_templates.id"))
+    template_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("contract_templates.id"), nullable=True)
     # 生成时快照：正文与填入值分开存，可解释"哪个空是系统填的、哪个是人填的"
     content_snapshot: Mapped[str] = mapped_column(Text)
     filled_data: Mapped[dict | None] = mapped_column(JSONType, nullable=True)

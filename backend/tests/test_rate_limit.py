@@ -47,3 +47,11 @@ def test_window_slides():
     with rate_limit._lock:
         rate_limit._failures[key] = [t - 660 for t in rate_limit._failures[key]]
     assert rate_limit.remaining_lock_seconds(key, max_attempts=5, window_minutes=10) == 0
+
+
+def test_non_positive_limits_disable_registration_without_429():
+    key = "u6|1.2.3.4"
+    assert rate_limit.register_failure(key, max_attempts=0, window_minutes=10) == 0
+    assert rate_limit.register_failure(key, max_attempts=5, window_minutes=0) == 0
+    with rate_limit._lock:
+        assert key not in rate_limit._failures

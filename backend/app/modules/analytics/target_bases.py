@@ -26,9 +26,11 @@
 但同一页内的计划/实绩/差额必须同源（§4.1.3 的原缺陷就是混用）。
 """
 
+import hashlib
 from datetime import UTC, datetime
+from decimal import Decimal
 
-from sqlalchemy import distinct, func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -71,7 +73,7 @@ ATTRIBUTION_NOTE = (
 BASIS_NOTE = {
     "signed": "签单口径：订单创建月，非取消订单的订单金额",
     "shipped": (
-        "发货口径：按「实际发货批次」分摊——每批金额 = Σ(该批实发数量 × 订单行单价)，"
+        "发货口径：按「实际发货批次」分摊——每批金额 = Σ(该批各行实发金额，逐行四舍五入到分)，"
         "落在该批 `actual_ship_date` 所在月。不再按首批把整单金额归到一个月（§4.1.4）"
     ),
     "received": (
@@ -85,11 +87,11 @@ BASIS_NOTE = {
 }
 
 
-def _bucket(out: dict[str, float], month, amount) -> None:
+def _bucket(out: dict[str, Decimal], month, amount) -> None:
     if month is None:
         return
     key = f"{int(month):02d}"
-    out[key] = out.get(key, 0.0) + float(amount or 0)
+    out[key] = out.get(key, Decimal(0)) + Decimal(str(amount or 0))
 
 
 #: 口径版本：快照与结果都带它，方便回答"这一版是怎么算的"。
@@ -113,39 +115,46 @@ async def _build_basis(
     于是同一行里出现"归属一月、首次成交日期显示三月"的自相矛盾。
     """
     year_start, next_start = year_bounds(year)
-    veterans = (
-        await session.execute(
-            select(distinct(SalesOrder.customer_id)).where(
-                SalesOrder.status != "cancelled",
-                SalesOrder.customer_id.is_not(None),
-                SalesOrder.created_at < year_start,
-            )
-        )
-    ).scalars().all()
-    # 每客户最早的那张非取消订单。**连订单 id 一起取** —— 以后要能回答
-    # "这个客户的首单到底是哪一张"。`DISTINCT ON (customer_id)` 配
-    # `ORDER BY customer_id, created_at, id` ＝ 每组取最早的一条。
+    # 两个集合都从同一条首单查询派生，避免查询之间取消订单造成双重归类。
+    first_orders = select(
+        SalesOrder.customer_id,
+        SalesOrder.created_at,
+        SalesOrder.id,
+        func.row_number().over(
+            partition_by=SalesOrder.customer_id,
+            order_by=(SalesOrder.created_at, SalesOrder.id),
+        ).label("position"),
+    ).where(
+        SalesOrder.status != "cancelled",
+        SalesOrder.customer_id.is_not(None),
+        SalesOrder.created_at.is_not(None),
+    ).subquery()
     first_deal_rows = (
         await session.execute(
-            select(SalesOrder.customer_id, SalesOrder.created_at, SalesOrder.id)
-            .where(SalesOrder.status != "cancelled", SalesOrder.customer_id.is_not(None))
-            .order_by(SalesOrder.customer_id, SalesOrder.created_at, SalesOrder.id)
-            .distinct(SalesOrder.customer_id)
+            select(first_orders.c.customer_id, first_orders.c.created_at, first_orders.c.id)
+            .where(first_orders.c.position == 1)
         )
     ).all()
+    veterans: list[int] = []
     first_deal_month: dict[int, str] = {}
     first_deal_detail: dict[int, dict] = {}
     for customer_id, at, order_id in first_deal_rows:
-        if at is None or not (year_start <= at < next_start):
+        if at is None:
             continue
+        at = at.astimezone(UTC) if at.tzinfo else at.replace(tzinfo=UTC)
         cid = int(customer_id)
+        if at < year_start:
+            veterans.append(cid)
+            continue
+        if at >= next_start:
+            continue
         # 归月用业务时区（§9.10 复审）：`at.year/at.month` 读的是 **UTC** 年月，
         # 北京时间 2026-01-01 01:00 的首单（UTC 2025-12-31 17:00）会被写成 "2025-12"。
         # 归年过滤用的是 `year_bounds`（业务时区），于是出现"选进了 2026 年、
         # 归属月却是 2025-12" —— 该客户在 2026 年的下钻明细里会彻底查不到。
         first_deal_month[cid] = month_key(at)
         first_deal_detail[cid] = {"at": at.isoformat(), "order_id": int(order_id)}
-    return [int(x) for x in veterans], first_deal_month, first_deal_detail
+    return veterans, first_deal_month, first_deal_detail
 
 
 def _detail_of_snapshot(snapshot: BasisSnapshot) -> dict[int, dict]:
@@ -228,6 +237,36 @@ async def new_customer_rows(
     ]
 
 
+async def _store_basis(
+    session: AsyncSession, year: int, *, replace: bool = False,
+    operator_id: int | None = None,
+) -> BasisSnapshot:
+    """保存基准但不提交；人工重算的审计由调用方在同一事务中保存。"""
+    # 首次冻结还没有行可锁，按年份互斥，覆盖惰性冻结与人工重算两条路径。
+    bind = getattr(session, "get_bind", lambda: None)()
+    if bind is not None and bind.dialect.name == "postgresql":
+        key = int.from_bytes(hashlib.sha256(f"basis-year:{year}".encode()).digest()[:8], "big", signed=True)
+        await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
+    row = (await session.execute(
+        select(BasisSnapshot).where(BasisSnapshot.year == year)
+        .with_for_update().execution_options(populate_existing=True)
+    )).scalars().first()
+    if row is not None and not replace:
+        return row
+    veteran_ids, first_deal_month, first_deal_detail = await _build_basis(session, year)
+    if row is None:
+        row = BasisSnapshot(year=year)
+        session.add(row)
+    row.veteran_customer_ids = veteran_ids
+    row.first_deal_month = {str(k): v for k, v in first_deal_month.items()}
+    row.first_deal_detail = {str(k): v for k, v in first_deal_detail.items()}
+    row.metric_basis_version = BASIS_VERSION
+    row.computed_at = datetime.now(UTC)
+    row.computed_by = operator_id
+    await session.flush()
+    return row
+
+
 async def _freeze_basis(
     year: int, *, replace: bool = False, operator_id: int | None = None
 ) -> BasisSnapshot:
@@ -240,34 +279,8 @@ async def _freeze_basis(
     from app.core.database import SessionLocal
 
     async with SessionLocal() as own:
-        veteran_ids, first_deal_month, first_deal_detail = await _build_basis(own, year)
-        month_payload = {str(k): v for k, v in first_deal_month.items()}
-        # 日期与来源订单跟月份**在同一个事务里一起落**（R07）：分开写就有机会
-        # 一半成功一半失败，留下"有月份没日期"的残档。
-        detail_payload = {str(k): v for k, v in first_deal_detail.items()}
-        row = await own.get(BasisSnapshot, year)
-        if row is None:
-            row = BasisSnapshot(
-                year=year,
-                veteran_customer_ids=veteran_ids,
-                first_deal_month=month_payload,
-                first_deal_detail=detail_payload,
-                metric_basis_version=BASIS_VERSION,
-                computed_at=datetime.now(UTC),
-                computed_by=operator_id,
-            )
-            own.add(row)
-        elif not replace:
-            # 别人已经冻好了：直接用，别覆盖（冻结的意义就是不被后来的重算改写）
-            return row
-        else:
-            row.veteran_customer_ids = veteran_ids
-            row.first_deal_month = month_payload
-            row.first_deal_detail = detail_payload
-            row.metric_basis_version = BASIS_VERSION
-            row.computed_at = datetime.now(UTC)
-            row.computed_by = operator_id
         try:
+            row = await _store_basis(own, year, replace=replace, operator_id=operator_id)
             await own.commit()
         except IntegrityError:
             await own.rollback()
@@ -303,9 +316,12 @@ async def basis_for(
             "version": BASIS_VERSION,
             "note": "当年数据仍在产生，不冻结；跨年后首次读取时自动冻结",
         }
-    snapshot = None if refreeze else await session.get(BasisSnapshot, year)
-    if snapshot is None:
-        snapshot = await _freeze_basis(year, replace=refreeze, operator_id=operator_id)
+    if refreeze:
+        snapshot = await _store_basis(session, year, replace=True, operator_id=operator_id)
+    else:
+        snapshot = await session.get(BasisSnapshot, year)
+        if snapshot is None:
+            snapshot = await _freeze_basis(year, operator_id=operator_id)
     return (
         [int(x) for x in (snapshot.veteran_customer_ids or [])],
         {int(k): v for k, v in (snapshot.first_deal_month or {}).items()},
@@ -317,6 +333,11 @@ async def basis_for(
             "note": "历史年份口径已冻结：之后的订单变更不会改写这一年已出的数",
         },
     )
+
+
+def shipment_line_amount():
+    """已存三位数量×四位单价，按订单既有逐行四舍五入规则到分。"""
+    return func.round(OrderShipmentBatchItem.shipped_qty * SalesOrderItem.unit_price, 2)
 
 
 async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> dict:
@@ -332,7 +353,7 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
     )
 
     # ---- 签单：订单创建月 ----
-    signed: dict[str, float] = {}
+    signed: dict[str, Decimal] = {}
     rows = await session.execute(
         scope(
             select(
@@ -353,14 +374,14 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
     # ---- 发货：按**实际发货批次 × 行实发数量**分摊到各批次所在月（§4.1.4）----
     # 原来按"订单首批实际发货日"把**整单金额**归到一个月：10 月发 10 件、11 月发 90 件，
     # 整单都算进 10 月——分批发货直接错期。现在每批各算各的：
-    # 批次金额 = Σ(该批 `shipped_qty` × 订单行 `unit_price`)，落在该批发货日所在月。
-    shipped: dict[str, float] = {}
+    # 批次金额 = Σ(每条实发明细按订单规则先四舍五入到分)，落在该批发货日所在月。
+    shipped: dict[str, Decimal] = {}
     batch_value = (
         select(
             OrderShipmentBatch.order_id.label("order_id"),
             OrderShipmentBatch.actual_ship_date.label("ship_date"),
             func.coalesce(
-                func.sum(OrderShipmentBatchItem.shipped_qty * SalesOrderItem.unit_price), 0
+                func.sum(shipment_line_amount()), 0
             ).label("amount"),
         )
         .select_from(OrderShipmentBatch)
@@ -396,7 +417,7 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
         _bucket(shipped, month, amount)
 
     # ---- 回款：**财务确认时间**归月（返工单第 2 条，与 targets.py 同一口径）----
-    received: dict[str, float] = {}
+    received: dict[str, Decimal] = {}
     rows = await session.execute(
         scope(
             select(
@@ -424,7 +445,7 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
     # 期初 = 该年 1 月 1 日之前已有非取消订单的客户。这份池子来自**基准**
     # （过去年份已冻结，§4.1.5），不再每次从订单状态现算——否则事后取消一张往年
     # 订单，客户就从整年老客池里消失，去年的数今年再看就变了。
-    repeat_net: dict[str, float] = {}
+    repeat_net: dict[str, Decimal] = {}
     rows = await session.execute(
         scope(
             select(
@@ -442,7 +463,7 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
         _bucket(repeat_net, month, amount)
 
     # ---- 两种新客口径 ----
-    new_by_created: dict[str, float] = {}
+    new_by_created: dict[str, Decimal] = {}
     rows = await session.execute(
         scope(
             select(
@@ -462,7 +483,7 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
     # 首次成交用**基准里的那份**（§4.1.5）：过去年份已冻结，当年实时。
     # 不再从 orders 现算 `min(created_at)`——那样事后取消人家的首单，
     # 首次成交月会往后跳，历史指标被就地改写。
-    new_by_first_deal: dict[str, float] = {}
+    new_by_first_deal: dict[str, Decimal] = {}
     deals = {int(cid): month for cid, month in first_deal_month.items()}
     if deals:
         # 数据范围仍按客户**当前负责人**过滤（口径不变，只是基准不再现算）
@@ -487,10 +508,14 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
     return {
         "year": year,
         "months": months,
-        "signed": [{"month": m, "value": round(signed.get(m, 0.0), 2)} for m in months],
-        "shipped": [{"month": m, "value": round(shipped.get(m, 0.0), 2)} for m in months],
-        "received": [{"month": m, "value": round(received.get(m, 0.0), 2)} for m in months],
-        "repeat_net": [{"month": m, "value": round(repeat_net.get(m, 0.0), 2)} for m in months],
+        "signed": [{"month": m, "value": float(round(signed.get(m, Decimal(0)), 2)),
+                     "value_exact": str(round(signed.get(m, Decimal(0)), 2))} for m in months],
+        "shipped": [{"month": m, "value": float(round(shipped.get(m, Decimal(0)), 2)),
+                     "value_exact": str(round(shipped.get(m, Decimal(0)), 2))} for m in months],
+        "received": [{"month": m, "value": float(round(received.get(m, Decimal(0)), 2)),
+                     "value_exact": str(round(received.get(m, Decimal(0)), 2))} for m in months],
+        "repeat_net": [{"month": m, "value": float(round(repeat_net.get(m, Decimal(0)), 2)),
+                     "value_exact": str(round(repeat_net.get(m, Decimal(0)), 2))} for m in months],
         "new_by_created": [{"month": m, "value": int(new_by_created.get(m, 0))} for m in months],
         "new_by_first_deal": [
             {"month": m, "value": int(new_by_first_deal.get(m, 0))} for m in months
@@ -507,8 +532,12 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
 
 
 async def repeat_net_by_owner(
-    session: AsyncSession, user: CurrentUser, year: int
-) -> dict[int | None, dict[str, float]]:
+    session: AsyncSession,
+    user: CurrentUser,
+    year: int,
+    *,
+    company_wide: bool = False,
+) -> dict[int | None, dict[str, Decimal]]:
     """老客净额，按「签单归属人」拆开的版本（键：负责人 id → 月份 → 金额）。
 
     口径与 `annual_bases` 里那一份**完全相同**（期初固定客户集合、按签单归属、
@@ -537,14 +566,17 @@ async def repeat_net_by_owner(
         )
         .group_by(business_month(SalesOrder.created_at), sales_owner)
     )
-    if owner_ids is not None:
+    #: `company_wide=True` 时不按查看者范围收窄 —— 只给**全公司目标行**用。
+    #: 那一行的实绩必须是公司口径，否则非管理员看到的是"公司目标 vs 我自己"
+    #: （2026-10-14 实测：同一行，张三 0、管理员 580）。
+    if owner_ids is not None and not company_wide:
         stmt = stmt.where(sales_owner.in_(owner_ids or [0]))
 
-    out: dict[int | None, dict[str, float]] = {}
+    out: dict[int | None, dict[str, Decimal]] = {}
     for month, owner_id, amount in (await session.execute(stmt)).all():
         if month is None:
             continue
         bucket = out.setdefault(owner_id, {})
         key = f"{int(month):02d}"
-        bucket[key] = bucket.get(key, 0.0) + float(amount or 0)
+        bucket[key] = bucket.get(key, Decimal(0)) + Decimal(str(amount or 0))
     return out

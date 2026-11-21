@@ -1,5 +1,6 @@
 import { api } from './client'
 import type { PageResult } from '../types'
+import type { OaApprovalInstance } from './dingtalk'
 
 export interface ContractTemplate {
   id: number
@@ -46,6 +47,8 @@ export interface ContractAmendment {
 export interface ContractDocument {
   id: number
   doc_no: string
+  our_company?: string | null
+  counterparty_name?: string | null
   doc_type: string
   doc_type_label: string
   title: string
@@ -56,7 +59,10 @@ export interface ContractDocument {
   /** 合同钉死的报价版本。报价后来出 V2/V3 都不影响这一份。 */
   quote_version_id: number | null
   quote_version_no: number | null
-  template_id: number
+  template_id: number | null
+  original_file_id?: number | null
+  contract_origin?: 'company' | 'customer' | null
+  contract_origin_label?: string
   content_snapshot: string
   filled_data: Record<string, string> | null
   /** 生成时没填上的占位符：字段 -> 没填上的原因（后端已翻译成人话）。正文里保留着 {{...}} 原文。 */
@@ -76,22 +82,34 @@ export interface ContractDocument {
   parent_doc_no?: string | null
   /** 关系链往下一级：这份被哪几份补充过，只有详情接口返回 */
   amendments?: ContractAmendment[]
+  /**
+   * 最新一轮 OA 行的**活数据**（只有详情接口返回）。
+   *
+   * 与 `dingtalk_oa` 的区别：那个是写进 `filled_data` 的快照，**没有行 id、
+   * 也没有 `allowed_actions`** —— 而"结果待人工核对"时的认领/重发/作废按钮
+   * 必须按服务端给的动作清单渲染，所以详情单独带出这一行。
+   */
+  dingtalk_oa_row?: OaApprovalInstance | null
   signed_at: string | null
   void_reason: string | null
+  source_type?: 'crm_template' | 'customer_drafted'
+  dingtalk_oa?: {
+    provider?: 'dingtalk' | 'self_oa'
+    oa_instance_id?: number
+    instance_id?: string | null
+    status?: string
+    synced_at?: string | null
+    result?: Record<string, unknown> | null
+    /** 服务端给的"这个状态下还能做什么"，与询价侧同一份口径（类型见 dingtalk.ts 的 `OaAction`）。 */
+    allowed_actions?: string[] | null
+    /** 上一次发起失败/结果未知的原因；前端要显示它，不能只报成功。 */
+    error?: string | null
+  } | null
   created_at: string
 }
 
 export function listContractTemplates() {
   return api.get<ContractTemplate[]>('/contract-templates')
-}
-
-export function createContractTemplate(payload: {
-  doc_type: string
-  name: string
-  body: string
-  enabled?: boolean
-}) {
-  return api.post<ContractTemplate>('/contract-templates', payload)
 }
 
 export function listContractDocuments(
@@ -108,26 +126,45 @@ export function listContractDocuments(
   return api.get<PageResult<ContractDocument>>('/contract-documents', query)
 }
 
-export function generateContractDocument(payload: {
-  template_id: number
+/** 合同入口只接收用户上传的原文件，不提供系统模板生成。 */
+export function uploadContractDocument(payload: {
+  original_file_id: number
+  contract_origin: 'company' | 'customer'
   customer_id: number
   order_id?: number | null
   quote_id?: number | null
-  /** 钉死依据的报价版本；只传 order_id 时后端会按订单依据的那一版自动带出 */
   quote_version_id?: number | null
   title?: string | null
-  extra_fields: Record<string, string>
+  contract_number?: string | null
+  our_company?: string | null
+  counterparty_name?: string | null
+  contract_number_rule_type?: 'manual' | 'rule' | null
+  contract_number_rule_fix?: string | null
   expiry_date?: string | null
-  /** 协议生效日。续签时填：只记到期日处理不了「提前签、未来才生效」的情况 */
   effective_date?: string | null
-  /** 补充协议 / 续签：指向被补充的原文档，原件不动、旧版保留 */
-  parent_id?: number | null
-  /** 续签时是否替代旧协议：勾了才结束旧协议的在办提醒 */
-  supersede_parent?: boolean
-  /** 幂等键：同一张弹窗里的重复提交带同一个值，后端据此返回原来那份，而不是再建一份。 */
   request_key?: string
 }) {
-  return api.post<ContractDocument>('/contract-documents', payload)
+  return api.post<ContractDocument>('/contract-documents', { ...payload, source_type: 'customer_drafted' })
+}
+
+export function autoLinkContractDingTalkApproval(docId: number) {
+  return api.post<Record<string, unknown>>(`/contract-documents/${docId}/approval-auto-link`, {})
+}
+
+export function startContractDingTalkApproval(docId: number) {
+  return api.post<Record<string, unknown>>(`/contract-documents/${docId}/dingtalk-oa`, {})
+}
+
+/** 发起自研 OA 合同审批（2026-11-13 起新入口；审批在 OA 完成）。 */
+export function startContractOaApproval(
+  docId: number,
+  payload: { our_company: string; counterparty_name: string },
+) {
+  return api.post<OaApprovalInstance>(`/contract-documents/${docId}/oa-approval`, payload)
+}
+
+export function withdrawContractDingTalkApproval(docId: number) {
+  return api.post<Record<string, unknown>>(`/contract-documents/${docId}/dingtalk-oa-withdraw`, {})
 }
 
 export function getContractDocument(docId: number) {
@@ -152,4 +189,8 @@ export function signContractDocument(docId: number, payload: { file_id: number; 
 
 export function voidContractDocument(docId: number, reason: string) {
   return api.post<ContractDocument>(`/contract-documents/${docId}/void`, { reason })
+}
+
+export function deleteContractDocument(docId: number) {
+  return api.delete(`/contract-documents/${docId}`)
 }

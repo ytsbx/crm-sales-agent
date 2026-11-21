@@ -3,11 +3,10 @@
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 import logging
 
 logger = logging.getLogger("crm.errors")
-
-from starlette.exceptions import HTTPException as StarletteHTTPException
 
 
 class ErrorCode:
@@ -20,6 +19,9 @@ class ErrorCode:
     DATA_SCOPE_DENIED = 40302
     PRICE_PERMISSION_DENIED = 40303
     NOT_FOUND = 40401
+    #: 路径对但方法不对（405）。以前这种情况会被兜底成 `NOT_FOUND`，
+    #: 于是 HTTP 状态 405 与响应里的 `code` 自相矛盾（2026-10-14 审查修）。
+    METHOD_NOT_ALLOWED = 40501
     DUPLICATE = 40901
     VERSION_CONFLICT = 40902
     DUPLICATE_CONVERT = 40903
@@ -30,6 +32,13 @@ class ErrorCode:
     # D7：低于绝对底价。与 PRICE_TOO_LOW（可审批的低价）本质区别：
     # 这个是硬拒绝，任何审批角色都不能通过，不生成审批单
     PRICE_BELOW_HARD_FLOOR = 42205
+    #: 这个动作会**切换当前依据 / 覆盖金额 / 结束流程 / 登记商务事实 / 写外部系统**，
+    #: 必须先经过一次明确的确认（前端弹窗里点过"确认"）才允许执行。
+    #:
+    #: 为什么要有这个码（审查 2026-10-10 的清单）：这些按钮以前点一下就真的执行了，
+    #: 而其中「新建版本」会顺带**结束旧版待审批流程**、把报价改回草稿，且没有撤销入口。
+    #: 有了这个码，前端就能把"该给用户看什么"和"点了会怎样"分开写清楚。
+    CONFIRM_REQUIRED = 42206
     RATE_LIMITED = 42901
     SYSTEM_ERROR = 50001
     EXTERNAL_ERROR = 50201
@@ -79,12 +88,25 @@ _VALIDATION_HINTS: dict[str, str] = {
 _LOCATION_PREFIXES = {"body", "query", "path", "header", "cookie"}
 
 
-def _field_label(field: str) -> str:
+def _field_label(field: str, model: str = "") -> str:
     """给字段名配一个中文称呼。
 
     复用 `patch_schema.FIELD_LABELS` —— 项目里**唯一**一张字段中文名表，
-    按"以 `.字段名` 结尾"匹配（那张表的键是「类名.字段名」）。
-    没登记的退回字段名本身：英文 key 也比一句笼统的话强。
+    键是「类名.字段名」。
+
+    ## 先精确、再后缀（2026-10-09 修一个 P3 文案错）
+
+    从前只有"以 `.字段名` 结尾"这一层模糊匹配，于是**任何一个叫 `name` 的字段**
+    都会命中表里第一条 `name` 登记 —— 也就是 `ProductUpdate.name` =「产品名称」。
+
+    实测：标签名超过 64 字符时提示写成「**产品名称**内容太长」，而接口根本没有
+    产品名称这个入参，看提示的人只会更糊涂。
+
+    现在分两层：
+      1. **精确**：`loc` 的第一段就是 pydantic 的模型类名（如 `TagUpdate`），
+         直接拿 `TagUpdate.name` 去查 —— 这是唯一正确的答案；
+      2. **后缀兜底**：类名拿不到时（`loc` 里没有类名段的旧路径）再退回原来的
+         模糊匹配，保持既有行为不变。
     """
     if not field:
         return ""
@@ -92,6 +114,10 @@ def _field_label(field: str) -> str:
         from app.core.patch_schema import FIELD_LABELS
     except Exception:  # 拿不到就退化成英文，不影响校验本身
         return field
+    if model:
+        exact = FIELD_LABELS.get(f"{model}.{field}")
+        if exact:
+            return exact
     suffix = f".{field}"
     for key, label in FIELD_LABELS.items():
         if key.endswith(suffix):
@@ -124,7 +150,13 @@ def _humanize(error: dict) -> str | None:
          if part not in _LOCATION_PREFIXES and not part.isdigit()),
         "",
     )
-    label = _field_label(field)
+    # `loc` 的第一段是 pydantic 的模型类名（如 `TagUpdate`）—— 拿它做精确查表，
+    # 避免"任何叫 name 的字段都显示成产品名称"（见 `_field_label` 的说明）
+    model = next(
+        (part for part in location if part not in _LOCATION_PREFIXES and not part.isdigit()),
+        "",
+    )
+    label = _field_label(field, model if model != field else "")
     return f"「{label}」{reason}" if label else reason
 
 
@@ -197,12 +229,30 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(StarletteHTTPException)
     async def _http_error(_: Request, exc: StarletteHTTPException) -> JSONResponse:
-        code = ErrorCode.UNAUTHORIZED if exc.status_code == 401 else ErrorCode.NOT_FOUND
-        if exc.status_code == 403:
-            code = ErrorCode.FORBIDDEN
-        elif exc.status_code >= 500:
-            code = ErrorCode.SYSTEM_ERROR
+        # ⚠️ 必须**逐个状态码**映射（2026-10-14 审查修）。原来是
+        # `401 → UNAUTHORIZED，否则 → NOT_FOUND` 的两分支 + 403/5xx 两个特例 ——
+        # 于是 405（方法不允许）、429（限流）这些都会被贴上 `40401 资源不存在`：
+        # **HTTP 状态说 405、响应体里的 code 说"不存在"**，前端按 code 分支就会走错路
+        # （比如把"这个接口不支持 POST"当成"数据被删了"）。
+        # 实测（真实 app）：`PUT /api/v1/customers` → 405 + `code: 40401`。
+        code = {
+            401: ErrorCode.UNAUTHORIZED,
+            403: ErrorCode.FORBIDDEN,
+            404: ErrorCode.NOT_FOUND,
+            405: ErrorCode.METHOD_NOT_ALLOWED,
+            429: ErrorCode.RATE_LIMITED,
+        }.get(exc.status_code)
+        if code is None:
+            code = ErrorCode.SYSTEM_ERROR if exc.status_code >= 500 else ErrorCode.PARAM_ERROR
+        # 404/405 是路由级的，Starlette 给的 detail 是英文（"Not Found" /
+        # "Method Not Allowed"）—— 直接透出去会让用户看到英文。业务侧自己的
+        # AppError 不受影响（它走另一个 handler，message 一直是中文）。
+        message = str(exc.detail)
+        if exc.status_code == 404 and message.strip().lower() == "not found":
+            message = "接口或数据不存在"
+        elif exc.status_code == 405 and message.strip().lower() == "method not allowed":
+            message = "这个地址不支持该请求方法"
         return JSONResponse(
             status_code=exc.status_code,
-            content={"code": code, "message": str(exc.detail), "data": None},
+            content={"code": code, "message": message, "data": None},
         )

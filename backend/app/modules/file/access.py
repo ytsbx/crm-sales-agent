@@ -14,18 +14,19 @@
 挂载/解绑同理，要目标模块的**写入权**。判据集中在下面的 `BUSINESS_PERMISSIONS`。
 """
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
+from app.core.draft_visibility import draft_scope
 from app.core.errors import AppError
 from app.modules.customer.model import Customer
 from app.modules.file.model import BusinessFile
 from app.modules.lead.model import Lead
 from app.modules.opportunity.model import Opportunity
 from app.modules.order.model import SalesOrder
-from app.modules.product.model import Product
+from app.modules.product.model import Product, Sku
 from app.modules.quote.model import Quote
 
 # business_type -> (模型, 用于数据范围过滤的负责人字段名)
@@ -58,6 +59,15 @@ BUSINESS_PERMISSIONS: dict[str, tuple[str, str | None]] = {
     "opportunity": ("opportunity:view", "opportunity:manage"),
     "quote": ("quote:view", "quote:manage"),
     "order": ("order:view", "order:manage"),
+    #: SKU 属于**产品模块**，所以权限码跟产品一致（2026-10-10 加，主人拍板 B 口径）。
+    #:
+    #: 为什么必须加：在此之前文件中心**不认识 `sku``**，于是给 SKU 上传图片一律
+    #: 被兜底拒成 403「它不在你的数据范围内…」—— 措辞像权限问题，真实原因是
+    #: "这个类型根本没登记"。而真实可售、客户真正要看图的是**具体型号**：
+    #:   `products` 是概念/系列（名称、产品线、品牌、描述，**没有物理属性**），
+    #:   `skus` 才是实物（编码、规格、颜色、材质、长宽高、重量、装箱数、MOQ）。
+    #: 图片只能挂在概念上、挂不到实物上，等于"同一系列各颜色共用一批图"。
+    "sku": ("product:view", "product:manage"),
     "product": ("product:view", "product:manage"),
     "sample": ("sample:view", "sample:manage"),
     "inquiry": ("quote:view", "quote:manage"),
@@ -82,7 +92,10 @@ BUSINESS_PERMISSIONS: dict[str, tuple[str, str | None]] = {
 #:   —— 三个测试（`tests/test_file_access_authorization.py`、
 #:      `scripts/check_attachment_business_auth.py`、`scripts/check_data_scope.py`），
 #:      它们原来钉的是旧口径。
-NO_OWNER_MODELS: dict[str, type] = {"product": Product}
+#: `sku` 与 `product` 同一档：产品资料全公司可见，附件跟随资料本身。
+#: 放进这里就走"只查存在性 + 未软删"那条分支（`Sku` 有 `deleted_at`，
+#: 已删型号与不存在同等待遇），不用另写可见性逻辑。
+NO_OWNER_MODELS: dict[str, type] = {"product": Product, "sku": Sku}
 
 #: 不可破坏的原件类别 → 人话标签（第一批返修 §3.1 要求"三条路径统一判断"）。
 #: - `signed`：已签合同的签署扫描件，是"签的是哪一版"的唯一证据；
@@ -92,6 +105,7 @@ NO_OWNER_MODELS: dict[str, type] = {"product": Product}
 #: 各写一份判断迟早会分叉，分叉出来的那一份就是绕过通道。
 PROTECTED_CATEGORIES: dict[str, str] = {
     "signed": "已签署的原件",
+    "contract_original": "客户合同原稿",
     "generated": "系统生成的原件",
 }
 
@@ -127,6 +141,8 @@ def sample_write_lock_label_for(sample) -> str | None:
     """
     if sample is None:
         return None
+    if ((getattr(sample,"source_context",None) or {}).get("dingtalk_oa") or {}).get("submitted"):
+        return "打样申请已提交或关联钉钉，制作资料已经冻结"
     if sample.status in ("shipped", "signed"):
         from app.modules.sample.model import SAMPLE_STATUS_LABEL
 
@@ -237,17 +253,19 @@ async def visible_object(
             return False
     # 合同文档不存负责人快照：可见性实时跟客户**当前**负责人走（场景14——
     # 换负责人后新负责人按权限查看历史原件，原负责人按数据范围失去访问）
+    #
+    # ⚠️ 归属链**与合同详情同源**（第三批审查 P2，2026-10-12）：客户当前负责人 →
+    # 订单负责人 → 创建人。从前这里只看客户当前负责人，于是客户被回收进公海
+    # （负责人清空）时，详情页点得开、**签署原件却下不了** —— 同一份合同两个答案。
+    # 判据只有一份，落在 `contract/visibility.py`。
     if business_type == "contract":
         from app.modules.contract.model import ContractDocument
+        from app.modules.contract.visibility import contract_in_scope
 
         doc = await session.get(ContractDocument, business_id)
         if doc is None or doc.deleted_at is not None:
             return False
-        customer = await session.get(Customer, doc.customer_id)
-        if customer is None:
-            return False
-        owner_ids = await scoped_owner_ids(session, user)
-        return owner_ids is None or customer.owner_id in owner_ids
+        return await contract_in_scope(session, user, doc)
     # 询价 / 打样 / 订单草稿：复用它们自己的可见性入口。
     # 没有这一段的后果是**上传和挂载都直接被拒**——钉钉 OA 要求先有询价图纸，
     # 而标准附件入口挂不上 `inquiry`，那条流程从入口就断了。
@@ -285,9 +303,67 @@ async def visible_object(
         # 也不能再往上挂新的。此前这里不过滤，软删对象上的附件照样能下载。
         # （销售订单没有 deleted_at，所以要用 getattr 取，别写死。）
         stmt = stmt.where(deleted_at.is_(None))
+    if business_type == "quote":
+        scope = Quote.owner_id.in_(owner_ids) if owner_ids is not None else None
+        return (await session.execute(stmt.where(draft_scope(Quote, user.id, scope)))).first() is not None
     if owner_ids is not None:
-        stmt = stmt.where(getattr(model, owner_field).in_(owner_ids))
+        # ⚠️ **公海对象（`owner_id IS NULL`）必须放行**（2026-10-14 审查修，实测复现）。
+        #
+        # 原来只写 `.in_(owner_ids)`，而 SQL 里 `NULL IN (...)` **恒不成立** ——
+        # 于是客户被"超期未跟进"自动回收进公海（`owner_id` 清空）、或线索还没分配时：
+        #   `GET /customers/{id}` → 200（客户模块自己的口径是"公海对所有有
+        #   customer:view 的人可见 —— 这正是公海的意义"）
+        #   `GET /business/customer/{id}/files` → **403**
+        #   `GET /files/{id}/download` → **403**
+        # 同一对象两个答案。实测：客户 200、附件列表与下载都 403「该业务对象不在你的
+        # 数据范围内」。附件（营业执照、图纸、凭证）于是对**所有** self/department
+        # 范围的人永久不可读。
+        #
+        # 判据与各模块同源：`customer/service.py` 的 `if customer.owner_id is None: return`
+        # 与 `lead/service.py` 的 `or_(Lead.owner_id.in_(owner_ids), Lead.owner_id.is_(None))`。
+        # 同一文件上面那一段（合同）已经因为同一个坑修过一次 —— 客户/线索这两条
+        # 分支当时没跟上。只对**真正按负责人划分**的模型加 NULL 分支；
+        # 其它模型保持原样（它们的 `owner_id` 语义不同，不该被这条推广误放）。
+        owner_column = getattr(model, owner_field)
+        if owner_field == "owner_id" and model.__name__ in ("Customer", "Lead"):
+            stmt = stmt.where(
+                or_(owner_column.in_(owner_ids), owner_column.is_(None))
+            )
+        else:
+            stmt = stmt.where(owner_column.in_(owner_ids))
     return (await session.execute(stmt)).first() is not None
+
+
+async def visible_no_owner_ids(
+    session: AsyncSession,
+    user: CurrentUser,
+    *,
+    business_type: str,
+    business_ids: list[int],
+) -> set[int]:
+    """批量校验产品/SKU 的附件可见性。
+
+    产品和 SKU 都是全公司可见、没有负责人范围的对象；它们只需要检查模块权限、
+    是否存在以及是否已软删。批量附件接口用这个入口避免对每个 ID 单独调用
+    ``visible_object``，同时保留单条入口的权限和软删口径。
+
+    这里只支持 ``NO_OWNER_MODELS`` 中的对象，避免调用方误把需要复杂数据范围
+    或委托可见性规则的业务类型也套进来。
+    """
+    ids = list(dict.fromkeys(int(value) for value in business_ids))
+    if not ids:
+        return set()
+    perms = BUSINESS_PERMISSIONS.get(business_type)
+    model = NO_OWNER_MODELS.get(business_type)
+    if perms is None or model is None or not _permitted(user, perms[0]):
+        return set()
+
+    stmt = select(model.id).where(model.id.in_(ids))
+    deleted_at = getattr(model, "deleted_at", None)
+    if deleted_at is not None:
+        stmt = stmt.where(deleted_at.is_(None))
+    rows = (await session.execute(stmt)).all()
+    return {int(row[0]) for row in rows}
 
 
 async def can_access_file(
@@ -295,10 +371,12 @@ async def can_access_file(
 ) -> bool:
     """文件是否允许当前用户访问：挂在任一可见对象上即可。
 
-    没有任何挂载记录的文件（刚上传还没关联）只允许上传者本人访问，
+    系统归档原件按档案当前类型权限和负责人范围访问，显式共享挂载仍有效。
+    没有任何业务/档案关联的文件（刚上传还没关联）只允许上传者本人访问，
     否则"上传后尚未关联"的文件会变成人人可取的裸文件。
     """
     from app.modules.file.model import FileRecord
+    from app.modules.bizdoc.model import BizDoc, has_doc_permission
 
     links = (
         await session.execute(
@@ -306,13 +384,26 @@ async def can_access_file(
         )
     ).scalars().all()
 
-    if not links:
-        record = await session.get(FileRecord, file_id)
-        return record is not None and record.uploaded_by == user.id
-
     for link in links:
         if await visible_object(
             session, user, business_type=link.business_type, business_id=link.business_id
         ):
             return True
-    return False
+
+    docs = (await session.execute(select(BizDoc).where(BizDoc.file_id == file_id))).scalars().all()
+    if docs:
+        from app.modules.bizdoc.router import _ensure_doc_access
+
+        for doc in docs:
+            if not has_doc_permission(user, doc.doc_type):
+                continue
+            try:
+                await _ensure_doc_access(session, user, doc)
+                return True
+            except AppError:
+                continue
+
+    if links or docs:
+        return False
+    record = await session.get(FileRecord, file_id)
+    return record is not None and record.uploaded_by == user.id

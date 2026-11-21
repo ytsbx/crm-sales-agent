@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # 本地一键全量验证（与 CI 同一份清单）：静态检查 + 接口回归。
-# 套件清单来自 ops/check_suites.txt（唯一真源），CI 读的是同一个文件。
-# UI 冒烟默认跳过，加 --ui 一起跑（需要本机 Chrome/Edge + 前端 5173 在跑）。
+# 接口套件读 ops/check_suites.txt；静态检查/Node测试读 ops/shared_checks.json。
+# shared_checks.json 分别保留本地/CI顺序，由 shared_checks.py 校验两边覆盖一致。
+# UI 冒烟默认跳过，加 --ui 一起跑（需要本机 Chrome/Edge + 开发前端 5274 在跑）。
 #
 # ⚠️ 2026-10-08 起：下面这两样**必须显式给**，不给就拒绝跑：
-#     API_BASE      一次性隔离库后端的地址，**不能是 8000**（那是开发后端）
+#     API_BASE      一次性隔离库后端的地址，**不能是 8000（生产）或 8008（开发联调）**
 #     DATABASE_URL  一次性隔离库，库名以 crm_iso / crm_check / crm_test 开头，或 _test 结尾
 #   从前 API_BASE 默认就是 8000，而 backend/.env 里的 DATABASE_URL 指向开发库
 #   —— 于是"什么都不配直接跑"等于在正式库上跑测试，开发库里因此留下过测试角色、
@@ -12,7 +13,7 @@
 #   真要在开发环境上跑一次：加 ALLOW_DEV_TARGETS=1（明知故犯，会大声提醒）。
 #
 # 用法：
-#   API_BASE=http://127.0.0.1:8001/api/v1 \
+#   API_BASE=http://127.0.0.1:8009/api/v1 \
 #   DATABASE_URL=postgresql+asyncpg://crm:crm123456@127.0.0.1:5432/crm_iso_test \
 #     bash ops/run_checks.sh          # 静态 + 接口回归
 #   ... --ui                          # 再加 UI 冒烟
@@ -49,7 +50,7 @@ if [[ ! -f "$SUITES_FILE" ]]; then
 fi
 
 echo "== 0.1 后端可达性 =="
-if ! curl -sf --noproxy '*' -o /dev/null "$API_ORIGIN/docs"; then
+if ! .venv/bin/python scripts/wait_backend.py "$API_ORIGIN" --attempts 1; then
   echo "后端没在 $API_ORIGIN 运行。先把这个隔离后端起起来："
   echo "  cd backend && DATABASE_URL=<一次性库> PYTHONPATH=. .venv/bin/uvicorn \\"
   echo "      app.main:app --host 127.0.0.1 --port 8001"
@@ -57,22 +58,51 @@ if ! curl -sf --noproxy '*' -o /dev/null "$API_ORIGIN/docs"; then
 fi
 echo "backend ready"
 
+# 子进程不会修改当前shell的FAILED；把逐项失败名称接回原有总汇总。
+run_shared_group() {
+  local group="$1" interpreter="$2" failures_file failed_name
+  failures_file="$(mktemp)" || { FAILED+=("$group"); return; }
+  if ! "$interpreter" "$SCRIPT_DIR/shared_checks.py" "$group" --profile local \
+      --keep-going --failures-file "$failures_file"; then
+    if [[ ! -s "$failures_file" ]]; then
+      FAILED+=("$group")  # 清单错误或执行器失败也不能当作通过
+    fi
+  fi
+  while IFS= read -r failed_name; do
+    FAILED+=("$failed_name")
+  done < "$failures_file"
+  rm -f "$failures_file"
+}
+
+echo
+echo "== 0.2 检查工具安全测试（隔离文件系统）=="
+run_shared_group release-safety python3
+
 echo
 echo "== 1. 静态检查 =="
-.venv/bin/python -m pyflakes app && echo "OK  pyflakes" || FAILED+=("pyflakes")
-PYTHONPATH=. .venv/bin/python scripts/check_model_attrs.py  >/dev/null && echo "OK  模型列"   || FAILED+=("check_model_attrs")
-PYTHONPATH=. .venv/bin/python scripts/check_permissions.py >/dev/null && echo "OK  权限码"   || FAILED+=("check_permissions")
+PYTHONPATH=. run_shared_group backend-static .venv/bin/python
+
+echo
+echo "== 1.1 前端侧静态检查（共用项目，保留本地顺序）=="
+run_shared_group frontend-static python3
+run_shared_group frontend-tests python3
 
 echo
 echo "== 1.5 单元测试（pytest，纯函数，不连库不连网）=="
 PYTHONPATH=. .venv/bin/python -m pytest || FAILED+=("pytest")
 
 echo
+echo "== 1.6 登记项与后端静态判据 =="
+PYTHONPATH=. run_shared_group backend-guards .venv/bin/python
+
+echo
 echo "== 1.8 复位业务口径（trade_mode）=="
-# 有套件要造外币数据，得临时把口径放开成「国内与出口都做」（那是业务方的真实
-# 做法，见 backend/scripts/_fx_scope.py），跑完自己收回。万一某个套件被硬杀、
-# 没来得及收，**后面所有套件都会以为可以写外币** —— 外币断言会莫名其妙地绿。
-# 这里统一兜底一次；本来就已经复位时它什么都不改（不产生多余审计）。
+# ⚠️ 这段是**历史兜底**：从前有套件要造外币数据，会临时把口径放开成
+# 「国内与出口都做」（`backend/scripts/_fx_scope.py`），跑完自己收回。
+# 现在币种是**固定白名单**（第四批复审 + 主人 2026-10-12 口径：
+# 「有人用外币就给他报错」），改口径也**不再放行外币**，所以没有套件需要放开了。
+# 兜底动作保留：万一库里留着 `export` 的历史配置，复位它仍然是对的
+#（配置与"能不能写外币"已经解耦，但配置本身该是 domestic）。
 if PYTHONPATH=. .venv/bin/python scripts/reset_trade_mode.py; then
   echo "OK  业务口径=domestic"
 else

@@ -13,6 +13,7 @@ export interface WeComReadiness {
   }
   can_sync_contact: boolean
   can_sync_external: boolean
+  transfer_enabled: boolean
   counts: {
     wecom_users: number
     external_contacts: number
@@ -24,6 +25,7 @@ export interface WeComReadiness {
 
 export interface WeComFollower {
   wecom_userid: string
+  name?: string | null
   add_time?: string | null
   add_way?: string | null
   remark?: string | null
@@ -81,6 +83,10 @@ export interface WeComSyncJob {
   detail?: Record<string, unknown> | null
 }
 
+export function listWeComTransferPeople() {
+  return api.get<Array<{ id: number; name: string; username: string; status: string }>>('/integrations/wecom/transfer-people')
+}
+
 export function getWeComReadiness() {
   return api.get<WeComReadiness>('/integrations/wecom/readiness')
 }
@@ -115,7 +121,19 @@ export function bindUnboundContact(
   contactId: number,
   payload: { customer_id: number; is_primary?: boolean | null },
 ) {
-  return api.post<{ contact_id: number; customer_id: number; customer_name: string }>(
+  return api.post<{
+    contact_id: number
+    customer_id: number
+    customer_name: string
+    /**
+     * 改挂（本来挂在别的客户上）时会带上这两项 —— 见 `Contact` 的说明与
+     * `customer/router.py` 的 bind-customer：**跟进记录挂的是客户，不是联系人**，
+     * 所以改挂之后过去的跟进仍留在原客户那里。界面必须把这件事说出来，
+     * 否则改挂的人会以为历史一起搬走了、回头找不到就怀疑丢数据。
+     */
+    rebound_from_customer_id?: number
+    stayed_followup_count?: number
+  }>(
     `/integrations/wecom/unbound-contacts/${contactId}/bind-customer`,
     payload,
   )
@@ -138,9 +156,12 @@ export function ignoreUnboundContact(contactId: number, reason?: string) {
   )
 }
 
-export function transferWeComRelations(payload: {
+export interface WeComTransferPeopleSelection {
   handover_user_id: number
   takeover_user_id: number
+}
+
+export function transferWeComRelations(payload: WeComTransferPeopleSelection & {
   transfer_wecom: boolean
   /** 逐项接手人：键 `"{kind}:{business_id}"`，不指定的项跟 takeover_user_id */
   item_assignees?: Record<string, number>
@@ -170,6 +191,11 @@ export interface WeComTransferPreview {
   total: number
   /** 这次交接动不了的项（撞单争议冻结） */
   blocked: WeComTransferScopeItem[]
+    /**
+     * 清单**可能不完整**的提示（与 `blocked` 不同：那些是确定不交接，这些是"先处理某事"）。
+     * 目前只有一条：离职人没绑企业微信 → 企微侧的客户关系列不出来、也不会随本次交接转移。
+     */
+    warnings?: string[]
   sample_count: number
   note: string
 }
@@ -248,4 +274,23 @@ export function listWeComSyncJobs(query: {
   page_size?: number
 }) {
   return api.get<PageResult<WeComSyncJob>>('/integrations/wecom/sync-jobs', query)
+}
+
+
+export interface WeComCustomerImportPreview {
+  digest: string
+  pending_contacts: number
+  import_contacts: number
+  new_company_customers: number
+  new_personal_customers: number
+  existing_customer_contacts: number
+  new_unassigned_customers: number
+  held_contacts: number
+  held_reasons: Record<string, number>
+}
+export function previewWeComCustomerImport() {
+  return api.get<WeComCustomerImportPreview>('/integrations/wecom/customer-import/preview')
+}
+export function importWeComCustomers(digest: string) {
+  return api.post<WeComCustomerImportPreview & { job_id: number }>('/integrations/wecom/customer-import', { digest })
 }

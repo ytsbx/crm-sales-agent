@@ -15,13 +15,15 @@
 吊销写库即生效，另一个进程下一个请求就会读到。
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.errors import AppError, ErrorCode
+from app.core.security import create_access_token
 from app.modules.auth.model import SESSION_ACTIVE, SESSION_REVOKED, LoginSession
 
 #: 令牌里承载会话标识的 claim 名。
@@ -51,7 +53,8 @@ async def open_session(session: AsyncSession, user_id: int) -> LoginSession:
 
 
 async def load_active_session(
-    session: AsyncSession, sid: str | None, user_id: int
+    session: AsyncSession, sid: str | None, user_id: int, *,
+    token_id: str | None = None, for_refresh: bool = False,
 ) -> LoginSession:
     """取出**仍然有效**的会话；取不到就 401。
 
@@ -71,12 +74,33 @@ async def load_active_session(
     if not sid:
         raise AppError(ErrorCode.UNAUTHORIZED, "登录状态无效，请重新登录", 401)
 
-    row = (
-        await session.execute(select(LoginSession).where(LoginSession.sid == sid))
-    ).scalar_one_or_none()
+    query = select(LoginSession).where(LoginSession.sid == sid)
+    if for_refresh:
+        query = query.with_for_update().execution_options(populate_existing=True)
+    row = (await session.execute(query)).scalar_one_or_none()
     if row is None or row.user_id != user_id or row.status != SESSION_ACTIVE:
         raise AppError(ErrorCode.UNAUTHORIZED, "登录状态已失效，请重新登录", 401)
+    if row.token_id is not None and row.token_id != token_id:
+        raise AppError(ErrorCode.UNAUTHORIZED, "登录凭据已更换，请使用新的登录凭据", 401)
+    if _session_deadline(row) <= datetime.now(UTC):
+        raise AppError(ErrorCode.TOKEN_EXPIRED, "本次登录已达到最长有效期，请重新登录", 401)
     return row
+
+
+def _session_deadline(row: LoginSession) -> datetime:
+    created_at = row.created_at
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=UTC)
+    return created_at + timedelta(days=settings.login_session_max_days)
+
+
+def issue_session_token(row: LoginSession, name: str) -> str:
+    row.token_id = uuid4().hex
+    row.last_refresh_at = datetime.now(UTC)
+    return create_access_token(
+        row.user_id, {"name": name}, session_id=row.sid,
+        token_id=row.token_id, expires_at=_session_deadline(row),
+    )
 
 
 async def revoke_session(session: AsyncSession, sid: str | None, *, reason: str) -> bool:

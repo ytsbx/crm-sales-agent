@@ -32,7 +32,8 @@
 **部分索引**：只管"没删且是主"的行。删掉的联系人不占主位 ——
 不然删一个主联系人之后，新主就再也设不上了。
 """
-from alembic import op
+from alembic import context, op
+import sqlalchemy as sa
 
 revision = "c3f8a1d6e9b4"
 down_revision = "a7c1e5b9d3f2"
@@ -41,21 +42,24 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # ① 同一个客户下只留 id 最小的那条主联系人，其余取消标记
-    op.execute(
-        """
-        UPDATE contacts SET is_primary = FALSE
-        WHERE is_primary
-          AND deleted_at IS NULL
-          AND id NOT IN (
-              SELECT DISTINCT ON (customer_id) id
-              FROM contacts
-              WHERE is_primary AND deleted_at IS NULL
-              ORDER BY customer_id, id ASC
-          )
-        """
-    )
-    # ② 兜底的部分唯一索引
+    # 历史重复不能由迁移擅自选择“主联系人”；在线升级时暂停交人工处理。
+    if not context.is_offline_mode():
+        duplicates = op.get_bind().execute(sa.text(
+            "SELECT customer_id, COUNT(*) AS n, "
+            "string_agg(id::text, ',' ORDER BY id) AS row_ids "
+            "FROM contacts WHERE is_primary AND deleted_at IS NULL "
+            "GROUP BY customer_id HAVING COUNT(*) > 1"
+        )).fetchall()
+        if duplicates:
+            detail = "; ".join(
+                f"customer_id={row[0]} count={row[1]} ids={row[2]}"
+                for row in duplicates[:20]
+            )
+            raise RuntimeError(
+                "contacts 存在多个主联系人，无法建立唯一约束；"
+                f"请人工确认历史记录后重试迁移：{detail}"
+            )
+    # 兜底的部分唯一索引
     op.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_contacts_primary_per_customer "
         "ON contacts (customer_id) WHERE is_primary AND deleted_at IS NULL"

@@ -238,6 +238,10 @@ class ExternalPage:
       amount / currency   可选，单据金额与币种（金额对账用）。
       payload             可选，原样保留的报文，差异"点回原始证据"看的就是它。
 
+    月度对账只按明确的客户身份关联：随订单返回的 customer 记录可提供
+    order_key 指向订单。订单原始报文已经提供 customer_external_id 时，可用该
+    外部客户编号关联独立采集的 customer 记录。
+
     `next_page_token` / `has_more` 管分页：业务层每落完一页才推进断点，
     所以中断后重拉的那一页靠唯一键去重，既不漏也不重复。
     """
@@ -588,10 +592,28 @@ class JushuitanAdapter(ErpAdapter):
 
     async def fetch_order_status(self, external_id: str) -> dict[str, Any]:
         data = await self._call("/open/orders/query", {"o_id": external_id}, capability="read")
-        orders = ((data.get("data") or {}).get("orders")) or []
+        result = data.get("data")
+        if result is None:
+            result = {}
+        if not isinstance(result, dict):
+            raise ErpResultUnknown(
+                f"响应 data 不是对象结构（{type(result).__name__}），无法读取订单状态",
+                api="/open/orders/query",
+            )
+        orders = result.get("orders") or []
+        if not isinstance(orders, list):
+            raise ErpResultUnknown(
+                f"响应 data.orders 不是数组（{type(orders).__name__}），无法读取订单状态",
+                api="/open/orders/query",
+            )
         if not orders:
             return {"status": None, "shipped_at": None, "raw": data}
         first = orders[0]
+        if not isinstance(first, dict):
+            raise ErpResultUnknown(
+                "响应 data.orders 第一项不是对象，无法读取订单状态",
+                api="/open/orders/query",
+            )
         raw_status = str(first.get("status") or "")
         return {
             "status": self.STATUS_MAP.get(raw_status),
@@ -642,9 +664,18 @@ def get_adapter(provider: str | None = None) -> ErpAdapter:
 
 async def reset_adapters() -> None:
     """关闭已建连接（应用退出时调用）。"""
-    for adapter in _INSTANCES.values():
-        await adapter.aclose()
+    first_error: BaseException | None = None
+    # 关闭一个连接池失败不应跳过其它适配器；否则热重载时会把剩余连接
+    # 留在旧事件循环里。先完成全部清理，再把首个异常交给应用生命周期记录。
+    for adapter in list(_INSTANCES.values()):
+        try:
+            await adapter.aclose()
+        except Exception as error:  # noqa: BLE001 - 继续关闭其它适配器
+            if first_error is None:
+                first_error = error
     _INSTANCES.clear()
+    if first_error is not None:
+        raise first_error
 
 
 __all__ = [

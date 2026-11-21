@@ -43,10 +43,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Annotated, Any
+
+from pydantic import Field, TypeAdapter, ValidationError
 
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -54,6 +57,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import json_safe
 from app.core.errors import AppError, ErrorCode
+from app.core.trade_mode import CNY, reject_foreign_currency
 from app.modules.customer.model import Customer
 from app.modules.erp.adapter import (
     ErpNotConfigured,
@@ -91,6 +95,8 @@ from app.modules.integration.vocab import (
 )
 from app.modules.order.model import SalesOrder, SalesOrderItem
 from app.modules.product.model import Sku
+
+logger = logging.getLogger(__name__)
 
 #: 一页默认多少条、一次最多跑多少页。
 #: 上限存在的理由：采集是同步请求，页数不封顶时一个坏游标就能把请求挂到超时。
@@ -146,6 +152,26 @@ def _as_decimal(value: Any) -> Decimal | None:
         return Decimal(text)
     except (InvalidOperation, ValueError):
         return None
+
+
+_EXTERNAL_NUMBER = TypeAdapter(Annotated[Decimal, Field(max_digits=18, decimal_places=4)])
+
+
+def _external_decimal(value: Any, *, field: str, position: int) -> Decimal | None:
+    """校验外部 Numeric(18,4) 字段，避免坏数字拖垮整批采集。"""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        # 与维护接口使用同一套 Decimal 精度规则，末尾零不增加实际小数位。
+        parsed = _EXTERNAL_NUMBER.validate_python(_as_decimal(value))
+    except ValidationError:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"采集返回的第 {position} 条 {field} 不是可存储的有限数字："
+            "要求不超过 14 位整数且最多 4 位小数",
+            422,
+        ) from None
+    return parsed
 
 
 def _as_datetime(value: Any) -> datetime | None:
@@ -232,6 +258,8 @@ def normalize_item(item: dict, *, object_type: str, position: int) -> dict:
             422,
         )
 
+    currency = (_text(item.get("currency")) or CNY).upper()
+    reject_foreign_currency(currency, label=f"采集第 {position} 条")
     external_id = _text(item.get("external_id"))
     external_code = _text(item.get("external_code"))
     parent_key = _text(item.get("parent_key"))
@@ -287,9 +315,13 @@ def normalize_item(item: dict, *, object_type: str, position: int) -> dict:
         "line_key": line_key,
         "external_id": external_id,
         "external_code": external_code,
-        "quantity": _as_decimal(item.get("quantity")),
-        "amount": _as_decimal(item.get("amount")),
-        "currency": _text(item.get("currency")),
+        "quantity": _external_decimal(
+            item.get("quantity"), field="quantity", position=position
+        ),
+        "amount": _external_decimal(
+            item.get("amount"), field="amount", position=position
+        ),
+        "currency": currency,
         "occurred_at": _as_datetime(item.get("occurred_at")),
         "external_updated_at": _as_datetime(item.get("external_updated_at")),
         # payload 必须能进 JSON 列：对方给的可能是 datetime/Decimal（JSON 序列化
@@ -418,6 +450,7 @@ async def get_or_create_cursor(
             ExternalSyncWatermark.object_type == object_type,
         )
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     row = (await session.execute(stmt)).scalars().first()
     if row is not None:
@@ -446,12 +479,17 @@ async def _claim_cursor(
     *,
     now: datetime,
     lease_seconds: int = LEASE_SECONDS,
-) -> None:
+) -> str:
     """抢采集租约。别人还在跑就明确拒绝，而不是"一起跑、水位互相踩"。"""
+    expires = cursor.lease_expires_at
+    if expires is not None and expires.tzinfo is None:
+        expires = expires.replace(tzinfo=UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
     if (
         cursor.status == CURSOR_RUNNING
         and cursor.lease_expires_at is not None
-        and cursor.lease_expires_at > now
+        and expires > now
     ):
         raise AppError(
             ErrorCode.DUPLICATE,
@@ -466,7 +504,28 @@ async def _claim_cursor(
     cursor.status = CURSOR_RUNNING
     cursor.last_started_at = now
     cursor.lease_expires_at = now + timedelta(seconds=lease_seconds)
+    # 已有列在 running 时承载唯一占用令牌，结束后仍保存本轮批次号。
+    token = uuid.uuid4().hex
+    cursor.last_batch_id = token
     await session.commit()
+    return token
+
+
+async def _lock_owned_cursor(
+    session: AsyncSession, cursor_id: int, token: str, *, lease_seconds: int
+) -> ExternalSyncWatermark:
+    row = (await session.execute(
+        select(ExternalSyncWatermark).where(ExternalSyncWatermark.id == cursor_id)
+        .with_for_update().execution_options(populate_existing=True)
+    )).scalar_one_or_none()
+    if row is None or row.status != CURSOR_RUNNING or row.last_batch_id != token:
+        raise AppError(
+            ErrorCode.VERSION_CONFLICT,
+            "本次采集租约已被其他请求接管，旧请求已停止写入；请查看最新采集结果",
+            409,
+        )
+    row.lease_expires_at = _now() + timedelta(seconds=lease_seconds)
+    return row
 
 
 def serialize_cursor(row: ExternalSyncWatermark) -> dict:
@@ -522,8 +581,8 @@ async def _upsert_record(
     item: dict,
     batch_id: str,
     now: datetime,
-) -> tuple[ExternalRecord, str]:
-    """幂等落一条外部事实。返回 `(记录, "inserted" | "updated" | "duplicate")`。"""
+) -> tuple[ExternalRecord, str, str | None]:
+    """落外部事实，同时返回采集前的外部编号供旧明细映射识别。"""
     object_type = item["object_type"]
     digest = record_digest(item)
     row = await _get_record(
@@ -533,6 +592,7 @@ async def _upsert_record(
         object_type=object_type,
         dedupe_key=item["dedupe_key"],
     )
+    prior_external_id = row.external_id if row is not None else None
     if row is None:
         row = ExternalRecord(
             system_type=system_type,
@@ -555,7 +615,7 @@ async def _upsert_record(
         row.collected_count = (row.collected_count or 0) + 1
         row.last_batch_id = batch_id
         await session.flush()
-        return row, "duplicate"
+        return row, "duplicate", prior_external_id
     else:
         row.last_seen_at = now
         row.collected_count = (row.collected_count or 0) + 1
@@ -577,7 +637,7 @@ async def _upsert_record(
     row.payload = item["payload"]
     row.raw_digest = digest
     await session.flush()
-    return row, outcome
+    return row, outcome, prior_external_id
 
 
 # ---------------------------------------------------------------- 映射与待匹配
@@ -675,13 +735,15 @@ async def resolve_mapping(
     if mapping.object_type == "customer":
         if not code:
             return None, None, "对方没有给出客户标识，无法匹配", MATCH_PENDING
-        tax = (
+        by_tax = (
             await session.execute(
-                select(Customer).where(Customer.tax_no == code, Customer.deleted_at.is_(None))
+                select(Customer.id).where(Customer.tax_no == code, Customer.deleted_at.is_(None)).limit(2)
             )
-        ).scalars().first()
-        if tax is not None:
-            return tax.id, "tax_no", None, MATCH_MATCHED
+        ).scalars().all()
+        if len(by_tax) == 1:
+            return by_tax[0], "tax_no", None, MATCH_MATCHED
+        if len(by_tax) > 1:
+            return None, None, f"客户税号「{code}」命中多家客户，需人工指定", MATCH_CONFLICT
         by_name = (
             await session.execute(
                 select(Customer).where(Customer.name == code, Customer.deleted_at.is_(None))
@@ -779,6 +841,16 @@ async def resolve_mapping(
     return parent.internal_id, "parent_order", None, MATCH_MATCHED
 
 
+LINE_MAPPING_HASH_PREFIX = "line-sha256:"
+LINE_MAPPING_KEY_LIMIT = 128
+
+
+def line_mapping_key(dedupe_key: str) -> str:
+    if len(dedupe_key) <= LINE_MAPPING_KEY_LIMIT:
+        return dedupe_key
+    return LINE_MAPPING_HASH_PREFIX + hashlib.sha256(dedupe_key.encode()).hexdigest()
+
+
 async def _ensure_mapping(
     session: AsyncSession,
     *,
@@ -786,6 +858,7 @@ async def _ensure_mapping(
     shop_id: str,
     object_type: str,
     record: ExternalRecord,
+    prior_external_id: str | None,
     now: datetime,
 ) -> ExternalObjectMapping:
     """建/更新映射行，并跑一次自动匹配。
@@ -794,13 +867,31 @@ async def _ensure_mapping(
     别人手工确认过的关联（人工指定的 `matched_by` 就是证据）。
     """
     external_id = record.external_id or record.dedupe_key
-    mapping = await _find_mapping(
-        session,
-        system_type=system_type,
-        shop_id=shop_id,
-        object_type=object_type,
-        external_id=external_id,
-    )
+    mapping = None
+    if object_type not in PRIMARY_OBJECT_TYPES:
+        external_id = line_mapping_key(record.dedupe_key)
+        keys = {key for key in (external_id, record.dedupe_key, prior_external_id, record.external_id)
+                if key is not None}
+        previous = (await session.execute(select(ExternalObjectMapping).where(
+            ExternalObjectMapping.system_type == system_type,
+            ExternalObjectMapping.shop_id == shop_id,
+            ExternalObjectMapping.object_type == object_type,
+            ExternalObjectMapping.external_id.in_(keys),
+            or_(ExternalObjectMapping.external_id == external_id,
+                ExternalObjectMapping.parent_key == (record.order_key or record.parent_key)),
+        ).order_by(ExternalObjectMapping.id))).scalars().all()
+        if len(previous) > 1:
+            # 存量重号可能各有人工确认，原样保留以供核对。
+            logger.warning("ERP 明细存在多条旧映射，等待人工核对：%s", [row.id for row in previous])
+            return previous[0]
+        if previous and previous[0].external_id in (external_id, record.dedupe_key, prior_external_id):
+            mapping = previous[0]
+            mapping.external_id = external_id
+    else:
+        mapping = await _find_mapping(
+            session, system_type=system_type, shop_id=shop_id,
+            object_type=object_type, external_id=external_id,
+        )
     if mapping is None:
         mapping = ExternalObjectMapping(
             system_type=system_type,
@@ -917,7 +1008,8 @@ async def collect_once(
     cursor = await get_or_create_cursor(
         session, system_type=system_type, shop_id=shop, object_type=object_type
     )
-    await _claim_cursor(session, cursor, now=moment, lease_seconds=lease_seconds)
+    lease_token = await _claim_cursor(session, cursor, now=moment, lease_seconds=lease_seconds)
+    cursor_id = cursor.id
 
     source_kind = f"collect_{object_type}"
     summary: dict[str, Any] = {
@@ -948,6 +1040,15 @@ async def collect_once(
                 cursor=cursor_token,
                 page_size=page_size,
             )
+            next_token = None
+            if page.has_more:
+                next_token = _text(page.next_page_token)
+                if not next_token or next_token == cursor_token:
+                    raise AppError(ErrorCode.EXTERNAL_ERROR, "ERP 分页断点缺失或重复，采集可从原断点重试", 502)
+            # 外部调用期间租约可能已被接管。持锁校验后才写一页事实与断点。
+            cursor = await _lock_owned_cursor(
+                session, cursor_id, lease_token, lease_seconds=lease_seconds
+            )
             items = list(getattr(page, "items", None) or [])
             for position, raw in enumerate(items, start=1):
                 # 一页里可以顺带带回与它相关的事实（订单页带明细行、明细行带 SKU/客户身份）。
@@ -968,7 +1069,7 @@ async def collect_once(
                 item = normalize_item(
                     raw, object_type=item_object_type, position=position
                 )
-                record, outcome = await _upsert_record(
+                record, outcome, prior_external_id = await _upsert_record(
                     session,
                     system_type=system_type,
                     shop_id=shop,
@@ -987,21 +1088,20 @@ async def collect_once(
                     shop_id=shop,
                     object_type=item_object_type,
                     record=record,
+                    prior_external_id=prior_external_id,
                     now=moment,
                 )
                 if mapping.match_status != MATCH_MATCHED:
                     summary["pending_mappings"] += 1
-            # **先落库、再推进断点**：顺序反了就会漏页。
-            await session.commit()
-
+            # 页内事实与断点在同一事务提交，不能留下已写事实但水位未推进的窗口。
             summary["pages"] += 1
             water = _text(getattr(page, "watermark", None))
             if water:
                 cursor.watermark = water
             cursor.page_no = start_page_no + summary["pages"]
             cursor.records_collected = (cursor.records_collected or 0) + len(items)
-            if getattr(page, "has_more", False) and getattr(page, "next_page_token", None):
-                cursor.page_token = _text(page.next_page_token)
+            if next_token:
+                cursor.page_token = next_token
                 cursor_token = cursor.page_token
                 await session.commit()
                 continue
@@ -1009,6 +1109,9 @@ async def collect_once(
             await session.commit()
             break
 
+        cursor = await _lock_owned_cursor(
+            session, cursor_id, lease_token, lease_seconds=lease_seconds
+        )
         cursor.status = CURSOR_IDLE
         cursor.last_error = None
         cursor.last_finished_at = _now()
@@ -1036,30 +1139,33 @@ async def collect_once(
         return summary
     except ErpNotConfigured as error:
         await _fail_quietly(
-            session, cursor, status=CURSOR_NOT_CONFIGURED, error=error,
+            session, cursor_id, status=CURSOR_NOT_CONFIGURED, error=error,
             provider=getattr(adapter, "label", system_type), object_type=object_type,
             shop_id=shop, page_size=page_size, summary=summary,
+            lease_token=lease_token,
         )
         raise
     except ErpNotVerified as error:
         await _fail_quietly(
-            session, cursor, status=CURSOR_NOT_VERIFIED, error=error,
+            session, cursor_id, status=CURSOR_NOT_VERIFIED, error=error,
             provider=getattr(adapter, "label", system_type), object_type=object_type,
             shop_id=shop, page_size=page_size, summary=summary,
+            lease_token=lease_token,
         )
         raise
     except Exception as error:  # noqa: BLE001 —— 任何异常都要留下可续拉的断点
         await _fail_quietly(
-            session, cursor, status=CURSOR_FAILED, error=error,
+            session, cursor_id, status=CURSOR_FAILED, error=error,
             provider=getattr(adapter, "label", system_type), object_type=object_type,
             shop_id=shop, page_size=page_size, summary=summary,
+            lease_token=lease_token,
         )
         raise
 
 
 async def _fail_quietly(
     session: AsyncSession,
-    cursor: ExternalSyncWatermark,
+    cursor_id: int,
     *,
     status: str,
     error: Exception,
@@ -1068,6 +1174,7 @@ async def _fail_quietly(
     shop_id: str,
     page_size: int,
     summary: dict | None = None,
+    lease_token: str | None = None,
 ) -> None:
     """失败/未接通时把真实结论落库（**先落盘再抛**，路由回滚也抹不掉）。
 
@@ -1077,12 +1184,18 @@ async def _fail_quietly(
     而落盘失败只说明库有问题（那时调用栈已经指向库了）。
     """
     try:
-        cursor.status = status
-        cursor.last_error = _clip(f"{type(error).__name__}: {error}")
-        cursor.last_finished_at = _now()
-        cursor.lease_expires_at = None
-        if status == CURSOR_FAILED:
-            cursor.retry_count = (cursor.retry_count or 0) + 1
+        await session.rollback()
+        cursor = (await session.execute(
+            select(ExternalSyncWatermark).where(ExternalSyncWatermark.id == cursor_id)
+            .with_for_update().execution_options(populate_existing=True)
+        )).scalar_one_or_none()
+        if cursor is not None and cursor.status == CURSOR_RUNNING and cursor.last_batch_id == lease_token:
+            cursor.status = status
+            cursor.last_error = _clip(f"{type(error).__name__}: {error}")
+            cursor.last_finished_at = _now()
+            cursor.lease_expires_at = None
+            if status == CURSOR_FAILED:
+                cursor.retry_count = (cursor.retry_count or 0) + 1
         await _write_collect_log(
             session,
             provider=provider,
@@ -1254,7 +1367,7 @@ async def list_records(
 async def get_record(session: AsyncSession, record_id: int) -> ExternalRecord:
     row = await session.get(ExternalRecord, record_id)
     if row is None:
-        raise AppError(ErrorCode.NOT_FOUND, f"原始事实 #{record_id} 不存在", 404)
+        raise AppError(ErrorCode.NOT_FOUND, f"原始事实编号 {record_id} 不存在", 404)
     return row
 
 
@@ -1277,9 +1390,19 @@ async def record_is_visible(
 
 
 async def get_mapping(session: AsyncSession, mapping_id: int) -> ExternalObjectMapping:
-    row = await session.get(ExternalObjectMapping, mapping_id)
+    # 人工匹配会先检查 match_status，再写入 internal_id。必须在这里锁住并
+    # 刷新数据库中的最新行，否则两个管理员可同时读到 pending，分别指向
+    # 不同本地对象，后提交者会静默覆盖前者，绕过路由层的 409 防重复语义。
+    row = (
+        await session.execute(
+            select(ExternalObjectMapping)
+            .where(ExternalObjectMapping.id == mapping_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalars().first()
     if row is None:
-        raise AppError(ErrorCode.NOT_FOUND, f"外部对象映射 #{mapping_id} 不存在", 404)
+        raise AppError(ErrorCode.NOT_FOUND, f"外部对象映射编号 {mapping_id} 不存在", 404)
     return row
 
 
@@ -1296,9 +1419,13 @@ async def list_mappings(
 ) -> tuple[list[dict], int]:
     stmt: Select = select(ExternalObjectMapping)
     if owner_ids is not None:
-        # 待匹配的行没有本地归属，只有全量范围的人能看/能处理（同异常队列口径）。
+        # 只有订单映射能沿负责人判断范围。客户/SKU/履约明细的 internal_id
+        # 属于不同表，不能拿它和 SalesOrder.id 直接比较，否则会因数字碰巧相同而串数据。
         scoped_orders = select(SalesOrder.id).where(SalesOrder.owner_id.in_(owner_ids or [0]))
-        stmt = stmt.where(ExternalObjectMapping.internal_id.in_(scoped_orders))
+        stmt = stmt.where(
+            ExternalObjectMapping.object_type == OBJECT_ORDER,
+            ExternalObjectMapping.internal_id.in_(scoped_orders),
+        )
     if match_status:
         stmt = stmt.where(ExternalObjectMapping.match_status == match_status)
     if system_type:
@@ -1381,7 +1508,7 @@ async def assign_mapping(
     mapping.internal_id = int(internal_id)
     mapping.match_status = MATCH_MATCHED
     mapping.match_basis = "manual"
-    mapping.match_note = note or f"人工指定本地对象 #{internal_id}"
+    mapping.match_note = note or f"人工指定本地对象编号 {internal_id}"
     mapping.matched_at = moment
     mapping.matched_by = operator_id
     await session.flush()

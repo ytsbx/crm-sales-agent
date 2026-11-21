@@ -12,7 +12,7 @@
    留着它当时的对比；这比"只记最后一次"更能回答"客户问我们什么时候答应的"。
 """
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
 from app.modules.order import milestones as milestones_svc
+from app.modules.order.dates import shift_date
 from app.modules.order.model import (
     OrderMilestone,
     OrderScheduleChange,
@@ -109,7 +110,7 @@ def suggested_ship_date(
     if delivery_date is None or not delivery_kind:
         return None
     if delivery_kind == "arrival":
-        return delivery_date - timedelta(days=transit_days or 0)
+        return shift_date(delivery_date, -(transit_days or 0))
     return delivery_date
 
 
@@ -147,9 +148,9 @@ async def preview(session: AsyncSession, order: SalesOrder, new_delivery_date: d
             continue
         offset = offsets.get(row.node)
         if offset is not None and (delta is None or old_offsets.get(row.node) != offset or row.planned_date is None):
-            new_planned = new_ship - timedelta(days=offset)
+            new_planned = shift_date(new_ship, -offset)
         elif row.planned_date is not None and delta is not None:
-            new_planned = row.planned_date + timedelta(days=delta)
+            new_planned = shift_date(row.planned_date, delta)
         else:
             continue  # 未排期的动态批次不猜日期
         if new_planned != row.planned_date:
@@ -160,12 +161,12 @@ async def preview(session: AsyncSession, order: SalesOrder, new_delivery_date: d
     for key, label, _ in milestones_svc.MILESTONE_NODES:
         if key not in have:
             affected_nodes.append({"node": key, "label": label, "before": None,
-                                   "after": (new_ship - timedelta(days=offsets[key])).isoformat()})
+                                   "after": (shift_date(new_ship, -offsets[key])).isoformat()})
     affected_batches = []
     for batch in await _batches(session, order.id):
         if batch.planned_date is None or delta is None:
             continue
-        new_planned = batch.planned_date + timedelta(days=delta)
+        new_planned = shift_date(batch.planned_date, delta)
         if new_planned != batch.planned_date:
             affected_batches.append({"batch_id": batch.id, "batch_no": batch.batch_no,
                                     "before": batch.planned_date.isoformat(), "after": new_planned.isoformat()})
@@ -187,6 +188,8 @@ async def create_change(
     plan_offsets: dict | None = None,
 ) -> OrderScheduleChange:
     order = await lock_order(session, order)
+    if order.status == "cancelled":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "订单已取消，不能再创建或确认交期变更", 422)
     affected = await preview(session, order, new_delivery_date, delivery_kind=delivery_kind,
                              transit_days=transit_days, plan_offsets=plan_offsets)
     if not affected["nodes"] and not affected["batches"] and affected["planning"]["before"] == affected["planning"]["after"]:
@@ -235,10 +238,36 @@ async def confirm_change(
     user: CurrentUser,
     remark: str | None,
 ) -> OrderScheduleChange:
-    """责任人确认后才真正改动：订单交期、节点计划日、批次计划日。"""
+    """责任人确认后才真正改动：订单交期、节点计划日、批次计划日。
+
+    ## 授权判据必须在**锁内**重判（第十批审查 ⑤，2026-10-13）
+
+    原来路由是"无锁读订单 → 判可见性/责任人 → 调这里"。看起来没问题，
+    但**判据与生效之间可以插进一次"转移负责人"**：真并发实测（6 轮 5 中）
+    旧负责人的确认请求先过检查、先拿到订单锁，主管的转移随后提交 ——
+    旧负责人照样把交期改掉了，事后看是"一个已经不管这张单的人改了交期"。
+
+    现在：先在锁内**重判数据范围**（`ensure_in_scope`，与
+    `order.service.get_visible_order` 同一把尺子），再往下改。
+    可见性变了就当场 403，绝不落到写操作上。
+    """
     # 行锁：两个人同时点"确认"时，第二个必须等第一个提交完再读状态，
     # 否则两边都读到 pending、都往下走，计划日被写两遍。
     order = await lock_order(session, order)
+    if order.status == "cancelled":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "订单已取消，不能再创建或确认交期变更", 422)
+    # ⚠️ 锁内重判**两道**判据，都挪到写操作**之前**：
+    #
+    #   ① 数据范围（`ensure_in_scope`）—— 我第一版只补了这一道；
+    #   ② **变更单的责任人资格** —— 第二道不能少：主管理论上数据范围是 `all`，
+    #      光看范围他永远过得去，于是"转交之后旧责任人仍然确认成功"
+    #      （真库实测：顺序场景下就复现了，不必并发）。
+    #      路由里那道同样的检查是在**无锁**对象上做的，转交一提交就过期了。
+    #
+    # 两道判据都读锁内的 `order` / `change`，所以拿到锁之后看到的是最新事实。
+    from app.core.data_scope import ensure_in_scope
+
+    await ensure_in_scope(session, user, owner_id=order.owner_id, label="订单")
     locked = (
         await session.execute(
             select(OrderScheduleChange)
@@ -250,6 +279,20 @@ async def confirm_change(
     if locked is None:
         raise AppError(ErrorCode.NOT_FOUND, "交期变更单不存在", 404)
     change = locked
+    # ② 资格重判：确认人必须是**变更单上记的责任人**（或持有 order:assign 的主管）。
+    #    与路由里那条同一口径，区别是这里读的是**锁内刷新后**的变更单 ——
+    #    转交一提交，路由那次无锁检查就作废了，只有这里判得住。
+    if (
+        change.owner_id
+        and user.id != change.owner_id
+        and not user.has("order:assign")
+    ):
+        raise AppError(
+            ErrorCode.FORBIDDEN,
+            "该交期变更单应由责任人确认（当前记录的责任人不是您，可能刚被转交）；"
+            "若已交接，请让有「转移订单负责人」权限的主管确认",
+            403,
+        )
     if change.status != "pending":
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,

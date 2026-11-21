@@ -1,0 +1,16 @@
+import { useMutation, useQueryClient, type QueryKey } from '@tanstack/react-query'
+import { Button, Toast } from '@douyinfe/semi-ui'
+import { oaSyncErrorMessage, syncOaInstance } from '../api/dingtalk'
+
+export default function SyncOaButton({ oaId, invalidateKeys }: { oaId: number; invalidateKeys: QueryKey[] }) {
+  const cache = useQueryClient()
+  const sync = useMutation({
+    mutationFn: () => syncOaInstance(oaId),
+    onSuccess: async () => {
+      await Promise.all(invalidateKeys.map(key => cache.invalidateQueries({ queryKey: key })))
+      Toast.success('已查询同序 OA 最新记录')
+    },
+    onError: (error: Error) => Toast.error(oaSyncErrorMessage(error)),
+  })
+  return <Button size="small" loading={sync.isPending} onClick={() => sync.mutate()}>立即同步</Button>
+}

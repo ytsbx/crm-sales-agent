@@ -2,6 +2,7 @@
 import asyncio
 import os
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from urllib.parse import urlparse
 from uuid import uuid4
 from sqlalchemy import String, delete, select, func
@@ -48,11 +49,15 @@ async def main():
             s.add(inquiry); await s.flush(); iid=inquiry.id
             quote=Quote(quote_no=marker,customer_id=customer.id,opportunity_id=opp.id,owner_id=uid,status='draft',valid_until=(datetime.now(UTC)+timedelta(days=7)).date())
             s.add(quote); await s.flush(); qids.append(quote.id); qid=quote.id
-            version=QuoteVersion(quote_id=qid,version_no=1,approval_status='not_submitted',created_at=datetime.now(UTC),total_amount=300)
+            version=QuoteVersion(quote_id=qid,version_no=1,approval_status='not_submitted',created_at=datetime.now(UTC),subtotal_amount=300,total_amount=300)
             s.add(version); await s.flush(); vid=version.id; quote.current_version_id=vid
+            # 运费分离（2026-10-09）：正式发送前必须已确认运费。本套件验的是订单草稿，
+            # 不是运费 —— 补一条**已确认**的运费让流程能走到它要验的那一步。
+            s.add(QuoteCharge(quote_version_id=vid,charge_type='logistics',description='夹具运费',
+                              amount=Decimal('20'),logistics_confirmed_at=datetime.now(UTC)))
             line_ids=[]
             for qty in (10,20):
-                line=QuoteItem(quote_version_id=vid,inquiry_id=iid,inquiry_no_snapshot=marker,sku_name_snapshot=marker,spec_snapshot='规格',quantity=qty,quoted_price=10,cost_snapshot=5)
+                line=QuoteItem(cost_present_snapshot=True,cost_complete_snapshot=True,quote_version_id=vid,inquiry_id=iid,inquiry_no_snapshot=marker,sku_name_snapshot=marker,spec_snapshot='规格',quantity=qty,quoted_price=10,cost_snapshot=5)
                 s.add(line); await s.flush(); line_ids.append(line.id)
             await s.commit()
         source=req('GET',f'/order-drafts/source?quote_version_id={vid}')
@@ -93,7 +98,9 @@ async def main():
             v=await s.get(QuoteVersion,vid); v.approval_status='approved'
             q=await s.get(Quote,qid); q.status='approved'; await s.commit()
         req('POST',f'/quote-versions/{vid}/mark-sent',{})
-        req('POST',f'/quote-versions/{vid}/convert-to-order',{},expected=422)
+        # ⚠️ 带 confirm 进来：这里要验的是**业务原因**（草稿未确认就转单），
+        # 不是"需要确认"那道拦（42206）。不带的话断言会因为错误的原因通过。
+        req('POST',f'/quote-versions/{vid}/convert-to-order?confirm=true',{},expected=422)
         req('POST',f'/quote-versions/{vid}/accept',{})
         req('POST',f'/order-drafts/{did}/confirm',{'revision':2,'quote_version_id':vid},expected=422)
         update['revision']=2; update['items'][0]['quantity']=10
@@ -119,7 +126,9 @@ async def main():
         req('POST',f"/order-drafts/{another['id']}/confirm",{'revision':1,'quote_version_id':vid},expected=404)
         async with SessionLocal() as s:
             customer=await s.get(Customer,cids[0]); customer.deleted_at=None; await s.commit()
-        v2=req('POST',f'/quotes/{qid}/versions')
+        # confirm 是**查询参数**（不是 body）：套件的 req() 只发 JSON body，
+        # 放 body 里到不了后端，会被 42206 拦住而看着像"没生效"。
+        v2=req('POST',f'/quotes/{qid}/versions?confirm=true')
         historical=req('GET',f'/order-drafts/source?quote_version_id={vid}')
         assert historical['source']['is_historical']
         old=req('POST','/order-drafts',{**body,'request_key':str(uuid4())})

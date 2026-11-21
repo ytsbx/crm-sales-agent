@@ -6,17 +6,19 @@
 - 写动作统一走 audit，保证"AI 建议了什么、谁确认、改了什么"可追溯。
 """
 
+import math
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Awaitable, Callable
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
 from app.core.data_scope import ensure_in_scope, scoped_owner_ids
 from app.core.deps import CurrentUser
+from app.core.draft_visibility import draft_scope, private_draft
 from app.core.errors import AppError, ErrorCode
 from app.modules.customer.model import Contact, Customer
 from app.modules.followup.model import FollowUp
@@ -140,7 +142,7 @@ def ensure_tool_permission(spec: ToolSpec, user: CurrentUser) -> None:
         )
 
 
-def openai_tools() -> list[dict]:
+def openai_tools(user: CurrentUser | None = None) -> list[dict]:
     return [
         {
             "type": "function",
@@ -151,7 +153,30 @@ def openai_tools() -> list[dict]:
             },
         }
         for spec in TOOLS.values()
+        if user is None or not missing_permissions(spec, user)
     ]
+
+
+def validate_tool_arguments(spec: ToolSpec, raw: object) -> dict:
+    """校验当前工具声明的扁平参数；模型输出不能直接作为 Python kwargs 执行。"""
+    if not isinstance(raw, dict):
+        raise AppError(ErrorCode.PARAM_ERROR, '工具参数必须是对象', 422)
+    properties = spec.parameters.get('properties', {})
+    required = set(spec.parameters.get('required', []))
+    if required - raw.keys() or raw.keys() - properties.keys():
+        raise AppError(ErrorCode.PARAM_ERROR, '工具参数缺少必填字段或包含未知字段，请按工具定义重新调用', 422)
+    for key, value in raw.items():
+        rule = properties[key]
+        kind = rule.get('type')
+        valid = (
+            (kind == 'string' and isinstance(value, str))
+            or (kind == 'integer' and type(value) is int)
+            or (kind == 'number' and (type(value) is int or (type(value) is float and math.isfinite(value))))
+            or (kind == 'boolean' and type(value) is bool)
+        )
+        if not valid or ('enum' in rule and value not in rule['enum']):
+            raise AppError(ErrorCode.PARAM_ERROR, '工具参数类型或选项不正确，请按工具定义重新调用', 422)
+    return raw
 
 
 def _money(value) -> float | None:
@@ -400,7 +425,7 @@ async def get_customer_overview(ctx: ToolContext, customer_id: int) -> dict:
     if ctx.user.has("quote:view"):
         # 同商机：按报价自己的负责人收范围（与客户页的"报价"标签一致）
         quote_stmt = await _scope(
-            select(Quote).where(Quote.customer_id == customer_id, Quote.deleted_at.is_(None)),
+            select(Quote).where(Quote.customer_id == customer_id, Quote.deleted_at.is_(None), draft_scope(Quote, ctx.user.id)),
             ctx,
             Quote.owner_id,
         )
@@ -559,17 +584,24 @@ async def get_opportunity_detail(ctx: ToolContext, opportunity_id: int) -> dict:
             .where(OpportunityItem.opportunity_id == opportunity_id)
         )
     ).all()
-    quotes = (
-        await ctx.session.execute(
-            select(Quote).where(Quote.opportunity_id == opportunity_id, Quote.deleted_at.is_(None))
+    can_quote = 'admin' in ctx.user.roles or ctx.user.has('quote:view')
+    can_followup = 'admin' in ctx.user.roles or ctx.user.has('followup:view')
+    quotes = []
+    if can_quote:
+        quote_stmt = await _scope(
+            select(Quote).where(Quote.opportunity_id == opportunity_id, Quote.deleted_at.is_(None), draft_scope(Quote, ctx.user.id)),
+            ctx, Quote.owner_id,
         )
-    ).scalars().all()
+        quotes = (await ctx.session.execute(quote_stmt)).scalars().all()
     version_info = []
     for quote in quotes:
         versions = (
             await ctx.session.execute(
                 select(QuoteVersion)
-                .where(QuoteVersion.quote_id == quote.id)
+                .where(QuoteVersion.quote_id == quote.id, or_(
+                    ~private_draft(QuoteVersion), QuoteVersion.created_by == ctx.user.id,
+                    and_(QuoteVersion.created_by.is_(None), (quote.created_by or quote.owner_id) == ctx.user.id),
+                ))
                 .order_by(QuoteVersion.version_no.desc())
             )
         ).scalars().all()
@@ -589,14 +621,22 @@ async def get_opportunity_detail(ctx: ToolContext, opportunity_id: int) -> dict:
                 ],
             }
         )
-    followups = (
-        await ctx.session.execute(
+    followups = []
+    if can_followup:
+        # 跟进记录的负责人不是来源单据的权限边界。系统过程记录可能带报价金额，
+        # 必须按统一规则检查报价/订单等来源权限；人工跟进仍按商机范围协作可见。
+        from app.modules.followup.visibility import followup_visibility_filter
+
+        followup_stmt = (
             select(FollowUp)
-            .where(FollowUp.opportunity_id == opportunity_id)
+            .where(
+                FollowUp.opportunity_id == opportunity_id,
+                await followup_visibility_filter(ctx.session, ctx.user),
+            )
             .order_by(FollowUp.id.desc())
             .limit(5)
         )
-    ).scalars().all()
+        followups = (await ctx.session.execute(followup_stmt)).scalars().all()
     return {
         "opportunity": {
             "id": opportunity.id,
@@ -621,6 +661,7 @@ async def get_opportunity_detail(ctx: ToolContext, opportunity_id: int) -> dict:
             }
             for item, code, spec in items
         ],
+        "unavailable_blocks": [label for allowed, label in ((can_quote, '报价（需要 quote:view）'), (can_followup, '跟进记录（需要 followup:view）')) if not allowed],
         "quotes": version_info,
         "recent_followups": [
             {
@@ -725,17 +766,55 @@ async def calculate_price(
     customer_id: int | None = None,
     quoted_price: float | None = None,
 ) -> dict:
+    # ⚠️ **先过一遍普通接口那一份入参校验**（issue #14）。
+    #
+    # 从前这里把模型给的参数**直接**传给 `pricing_service.calculate_price`，
+    # 于是同一个数字在两条路径上结果不同 —— 实测：
+    #   数量 0  → 工具**放行**（算出 0 元的"建议价"，看着像正常结果）
+    #   数量 -1 → 工具**放行**
+    #   数量 1.5 / 拟报价 100.0 → `Decimal × float` 抛 **TypeError**（冒成 500）
+    # 而普通接口 `/pricing/calculate` 对同样输入一律 40001「数量必须大于 0」。
+    #
+    # JSON Schema 与 Python 类型注解**都不能代替运行时校验**：
+    # schema 里写的是 `"type": "number"`，模型完全可能给 0、负数或小数。
+    # 复用 `PricingRequest` 才是"两条路径同一套边界"的唯一可靠做法 ——
+    # 以后接口那边加了新约束，工具自动跟上，不会再各写一遍。
+    from pydantic import ValidationError
+
+    from app.modules.pricing.schema import PricingRequest
+
+    try:
+        payload = PricingRequest(
+            sku_id=sku_id,
+            quantity=quantity,
+            customer_id=customer_id,
+            quoted_price=quoted_price,
+        )
+    except ValidationError as exc:
+        # Pydantic 的英文报错不能原样回给用户（Agent 会把这句话转述出去）
+        bad = (exc.errors() or [{}])[0]
+        field = str(bad.get("loc", ("",))[-1]) if bad.get("loc") else ""
+        label = {"quantity": "数量", "quoted_price": "拟报价", "sku_id": "SKU"}.get(
+            field, field or "入参"
+        )
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"核价入参不合法：{label} 需要"
+            + ("大于 0 的数字" if field in ("quantity", "quoted_price") else "合法的值"),
+            422,
+        ) from exc
+
     # 带客户核价时，客户必须在该用户数据范围内（A11：与普通界面同一纪律）
-    if customer_id is not None:
+    if payload.customer_id is not None:
         await _ensure_in_scope(
-            ctx, Customer.owner_id, Customer.id, customer_id, "客户", allow_unowned=True
+            ctx, Customer.owner_id, Customer.id, payload.customer_id, "客户", allow_unowned=True
         )
     result = await pricing_service.calculate_price(
         ctx.session,
-        sku_id=sku_id,
-        quantity=quantity,
-        customer_id=customer_id,
-        quoted_price=quoted_price,
+        sku_id=payload.sku_id,
+        quantity=payload.quantity,
+        customer_id=payload.customer_id,
+        quoted_price=payload.quoted_price,
         role_codes=ctx.user.roles,
     )
     data = {
@@ -753,10 +832,21 @@ async def calculate_price(
         "below_hard_floor": result["approval_triggers"].get("below_hard_floor", False),
         "warnings": result["warnings"],
     }
-    # A11：Agent 与普通界面同一套脱敏——成本/保护价/利润只给价格管理员
-    if not ctx.user.has("price:manage"):
-        for key in ("base_cost", "minimum_price", "profit", "profit_rate"):
-            data[key] = None
+    # A11：Agent 与普通界面**同一套**脱敏 —— 直接复用 pricing 模块的实现，
+    # **不要在这里再维护一份清单**（2026-10-14 审查）。
+    #
+    # 原来这里手写了一份 `("base_cost", "minimum_price", "profit", "profit_rate")`，
+    # 而 `pricing/router.py::_sanitize_pricing_result` 的清单更长：还包含
+    # `standard_price` 与 `authorized_min_margin`（后者能与建议价反推成本区间），
+    # 以及 `hard_floor_price` / `profit_with_refund` 等。两份清单必然漂移 ——
+    # 那个函数的注释本身就警告过"写第二份迟早会漏字段"。
+    from app.modules.pricing.router import _sanitize_pricing_result
+
+    before = {k: data.get(k) for k in ("base_cost", "minimum_price", "profit", "profit_rate")}
+    data = _sanitize_pricing_result(data, ctx.user)
+    if not ctx.user.has("price:manage") and any(
+        before.get(k) is not None for k in before
+    ):
         data["warnings"] = [*data["warnings"], "成本、保护价与利润仅价格管理员可见"]
     return data
 
@@ -865,6 +955,11 @@ async def _receivables_by_currency(
         key = _currency_of(code)
         received_amount[key] = received_amount.get(key, Decimal(0)) + Decimal(total or 0)
 
+    from app.modules.payment import service as payment_service
+    effective = payment_service.effective_allocations()
+    allocated_rows = (await ctx.session.execute(select(effective.c.currency, func.sum(effective.c.amount))
+        .where(effective.c.order_id.in_(order_ids)).group_by(effective.c.currency))).all()
+    allocated_by_currency = {_currency_of(code): Decimal(amount) for code, amount in allocated_rows}
     for code in sorted(set(plan_amount) | set(received_amount)):
         planned = plan_amount.get(code, Decimal(0))
         got = received_amount.get(code, Decimal(0))
@@ -873,6 +968,8 @@ async def _receivables_by_currency(
             "plan_count": plan_count.get(code, 0),
             "plan_amount": float(round(planned, 2)),
             "received_amount": float(round(got, 2)),
+            "allocated_amount": float(round(allocated_by_currency.get(code, Decimal(0)), 2)),
+            "unallocated_amount": float(round(max(got - allocated_by_currency.get(code, Decimal(0)), Decimal(0)), 2)),
             "unreceived_amount": float(round(planned - got, 2)),
         }
     return groups, list(plans)
@@ -944,23 +1041,15 @@ async def get_receivables_summary(ctx: ToolContext, order_id: int | None = None)
     groups, plans = await _receivables_by_currency(ctx, order_ids)
 
     # 逐节点未收金额：已确认回款要按**节点的**币种抵消，不能跨币种相减
-    received_by_plan: dict[int, Decimal] = {}
-    if plans:
-        rows = (
-            await ctx.session.execute(
-                select(
-                    PaymentRecord.receivable_plan_id,
-                    func.coalesce(func.sum(PaymentRecord.received_amount), 0),
-                )
-                .where(
-                    PaymentRecord.status == "confirmed",
-                    PaymentRecord.receivable_plan_id.in_([p.id for p in plans]),
-                )
-                .group_by(PaymentRecord.receivable_plan_id)
-            )
-        ).all()
-        received_by_plan = {int(pid): Decimal(total or 0) for pid, total in rows}
+    received_by_plan = await payment_service.confirmed_amounts(ctx.session, [p.id for p in plans])
+    # 逾期列表走**全项目唯一判据**（payment 侧 is_plan_overdue）：
+    # 旧实现按 `plan.status == "overdue"` 筛，而状态列可能因"时间自己走过、
+    # 没人写库"而不准（收过部分款+过期的那类尤其容易漏）。
+    # 2026-10-13 主人拍板：到期未收齐即逾期。
+    from app.modules.payment.service import is_plan_overdue
+    from app.core.timebase import today_business
 
+    _today = today_business()
     overdue = [
         {
             "order_id": plan.order_id,
@@ -972,7 +1061,12 @@ async def get_receivables_summary(ctx: ToolContext, order_id: int | None = None)
             ),
         }
         for plan in plans
-        if plan.status == "overdue"
+        if is_plan_overdue(
+            status=plan.status,
+            balance=Decimal(plan.amount or 0) - received_by_plan.get(plan.id, Decimal(0)),
+            due_date=plan.due_date,
+            today=_today,
+        )
     ]
 
     # 单币种时补一组顶层标量，方便模型直接引用与既有调用方复用；
@@ -992,6 +1086,8 @@ async def get_receivables_summary(ctx: ToolContext, order_id: int | None = None)
                 "plan_count": only["plan_count"],
                 "plan_amount": only["plan_amount"],
                 "received_amount": only["received_amount"],
+                "allocated_amount": only["allocated_amount"],
+                "unallocated_amount": only["unallocated_amount"],
                 "unreceived_amount": only["unreceived_amount"],
             }
         )
@@ -1075,6 +1171,26 @@ async def create_task(ctx: ToolContext, **kwargs) -> dict:
             parsed_due = datetime.fromisoformat(str(due_at).replace("Z", "+00:00"))
         except ValueError as exc:
             raise AppError(ErrorCode.PARAM_ERROR, f"时间格式不对：{due_at}") from exc
+    # 业务关联必须走**与普通建任务同一份**校验（C5-03，2026-10-10 修）。
+    #
+    # 此前这里直接 `Task(...)`，完全绕过 `normalize_task_refs`。实测同一个用户
+    # （张三，数据范围 self）用这个工具能建出：
+    #   - 关联**不存在**的客户/商机 id（返回 200，库里留下悬空引用）
+    #   - 关联**别人业务员**的客户（越权）
+    #   - 客户与商机**不是同一家**
+    # 而同一批输入走 `POST /tasks` 分别被拒为 404 / 403 / 403。
+    # AI 不该比人少一道关：它写的是同一张表、同一批字段。
+    #
+    # `normalize_task_refs` 只读写 `<kind>_id` 这几个键，所以把净化后的引用合并回
+    # payload 即可（其余字段保持工具自己的语义：title / due_at / priority / task_type）。
+    from app.modules.task.refs import normalize_task_refs
+
+    ref_keys = ("customer_id", "lead_id", "opportunity_id", "quote_id", "order_id", "sample_id")
+    refs = {k: payload[k] for k in ref_keys if payload.get(k) is not None}
+    if refs:
+        normalized, _ = await normalize_task_refs(ctx.session, ctx.user, refs, strict=True)
+        payload = {**payload, **{k: normalized.get(k) for k in ref_keys}}
+
     task = Task(
         title=payload["title"],
         task_type="agent",
@@ -1097,7 +1213,19 @@ async def create_task(ctx: ToolContext, **kwargs) -> dict:
         after={"title": task.title, "due_at": due_at},
         source="AGENT",
     )
-    await ctx.session.commit()
+    # 只 flush 不 commit（C5-04，2026-10-10 修）。
+    #
+    # 原来这里 `await ctx.session.commit()` —— 它会把 Gateway 在
+    # `execute_action` 里持有的**动作行锁提前释放**，而此刻动作状态还没改成
+    # `executed`。受控并发交错下两个请求都读到「待确认」，各自执行一次写动作
+    # （同一张确认卡建出两条任务）。工具成功后如果执行记录那一步再失败，
+    # 还多一个「业务已提交、动作未完成」的窗口。
+    #
+    # 现在业务数据、动作状态、审计、执行记录**由 Gateway 一次提交**：
+    # 要么全成、要么全不成。这也与项目既有约定一致 ——
+    # `write_audit` 的文档就写着「不 commit，由调用方的事务统一提交」，
+    # 这 5 个工具自己 commit 才是异类。
+    await ctx.session.flush()
     return {"task_id": task.id, "message": "任务已创建"}
 
 
@@ -1137,7 +1265,19 @@ async def update_opportunity_next_action(
         after={"next_action": next_action},
         source="AGENT",
     )
-    await ctx.session.commit()
+    # 只 flush 不 commit（C5-04，2026-10-10 修）。
+    #
+    # 原来这里 `await ctx.session.commit()` —— 它会把 Gateway 在
+    # `execute_action` 里持有的**动作行锁提前释放**，而此刻动作状态还没改成
+    # `executed`。受控并发交错下两个请求都读到「待确认」，各自执行一次写动作
+    # （同一张确认卡建出两条任务）。工具成功后如果执行记录那一步再失败，
+    # 还多一个「业务已提交、动作未完成」的窗口。
+    #
+    # 现在业务数据、动作状态、审计、执行记录**由 Gateway 一次提交**：
+    # 要么全成、要么全不成。这也与项目既有约定一致 ——
+    # `write_audit` 的文档就写着「不 commit，由调用方的事务统一提交」，
+    # 这 5 个工具自己 commit 才是异类。
+    await ctx.session.flush()
     return {"opportunity_id": opportunity.id, "next_action": next_action}
 
 
@@ -1185,7 +1325,19 @@ async def request_quote_approval(
         after={"approval_required": required, "source": "AGENT"},
         source="AGENT",
     )
-    await ctx.session.commit()
+    # 只 flush 不 commit（C5-04，2026-10-10 修）。
+    #
+    # 原来这里 `await ctx.session.commit()` —— 它会把 Gateway 在
+    # `execute_action` 里持有的**动作行锁提前释放**，而此刻动作状态还没改成
+    # `executed`。受控并发交错下两个请求都读到「待确认」，各自执行一次写动作
+    # （同一张确认卡建出两条任务）。工具成功后如果执行记录那一步再失败，
+    # 还多一个「业务已提交、动作未完成」的窗口。
+    #
+    # 现在业务数据、动作状态、审计、执行记录**由 Gateway 一次提交**：
+    # 要么全成、要么全不成。这也与项目既有约定一致 ——
+    # `write_audit` 的文档就写着「不 commit，由调用方的事务统一提交」，
+    # 这 5 个工具自己 commit 才是异类。
+    await ctx.session.flush()
     return {
         "approval_required": required,
         "approval_id": instance.id if instance else None,
@@ -1272,18 +1424,18 @@ async def get_contact(ctx: ToolContext, contact_id: int) -> dict:
         "客户",
         allow_unowned=True,
     )
-    return {
-        "id": contact.id,
-        "name": contact.name,
-        "customer_id": contact.customer_id,
-        "title": contact.title,
-        "department": contact.department,
-        "mobile": contact.mobile,
-        "phone": contact.phone,
-        "email": contact.email,
-        "wechat": contact.wechat,
-        "is_primary": contact.is_primary,
-    }
+    # ⚠️ **必须走统一脱敏口径**，不能手写字典把 `mobile/phone/email/wechat` 原样吐出去。
+    #
+    # `customer_service.serialize_contacts_masked` 的 docstring 点名了五个入口必须共用
+    # 同一份规则：「联系人列表、详情、搜索、**AI 工具**、导出」—— 这个工具正是那个
+    # "AI 工具"入口，之前漏了它，于是：
+    #   · 只有 `customer:view` 的人先从列表拿到联系人 id（列表返回的是脱敏值，但带 id），
+    #     再让 Agent 调 get_contact → 拿到完整手机号/微信；
+    #   · 更严重的是工具结果会作为 `role=tool` 消息**原样发给外部大模型**；
+    #   · `customer:contact_full` 这道显式授权因此形同虚设。
+    from app.modules.customer.service import serialize_contact_masked
+
+    return await serialize_contact_masked(ctx.session, ctx.user, contact)
 
 
 @tool(
@@ -1544,7 +1696,19 @@ async def create_quote_draft(
         after={**payload, "source": "AGENT"},
         source="AGENT",
     )
-    await ctx.session.commit()
+    # 只 flush 不 commit（C5-04，2026-10-10 修）。
+    #
+    # 原来这里 `await ctx.session.commit()` —— 它会把 Gateway 在
+    # `execute_action` 里持有的**动作行锁提前释放**，而此刻动作状态还没改成
+    # `executed`。受控并发交错下两个请求都读到「待确认」，各自执行一次写动作
+    # （同一张确认卡建出两条任务）。工具成功后如果执行记录那一步再失败，
+    # 还多一个「业务已提交、动作未完成」的窗口。
+    #
+    # 现在业务数据、动作状态、审计、执行记录**由 Gateway 一次提交**：
+    # 要么全成、要么全不成。这也与项目既有约定一致 ——
+    # `write_audit` 的文档就写着「不 commit，由调用方的事务统一提交」，
+    # 这 5 个工具自己 commit 才是异类。
+    await ctx.session.flush()
     payload["message"] = "报价草稿已生成（未发送、未提交审批）"
     return payload
 
@@ -1571,7 +1735,19 @@ async def create_quote_version(ctx: ToolContext, quote_id: int) -> dict:
         after={"version_id": version.id, "version_no": version.version_no, "source": "AGENT"},
         source="AGENT",
     )
-    await ctx.session.commit()
+    # 只 flush 不 commit（C5-04，2026-10-10 修）。
+    #
+    # 原来这里 `await ctx.session.commit()` —— 它会把 Gateway 在
+    # `execute_action` 里持有的**动作行锁提前释放**，而此刻动作状态还没改成
+    # `executed`。受控并发交错下两个请求都读到「待确认」，各自执行一次写动作
+    # （同一张确认卡建出两条任务）。工具成功后如果执行记录那一步再失败，
+    # 还多一个「业务已提交、动作未完成」的窗口。
+    #
+    # 现在业务数据、动作状态、审计、执行记录**由 Gateway 一次提交**：
+    # 要么全成、要么全不成。这也与项目既有约定一致 ——
+    # `write_audit` 的文档就写着「不 commit，由调用方的事务统一提交」，
+    # 这 5 个工具自己 commit 才是异类。
+    await ctx.session.flush()
     return {
         "quote_id": quote_id,
         "version_id": version.id,

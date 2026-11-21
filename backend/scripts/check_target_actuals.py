@@ -197,7 +197,7 @@ async def main():
             check("这一期出现在报表上（有实绩就会补零行）", live is not None)
             check("结账前标的是「实时算」", live is not None and live["actual_frozen"], False)
             live_sales = live["sales_actual"] if live else None
-            check("实时算出来的签单额 = 1234.56", live_sales, 1234.56)
+            check("实时算出来的签单额 = 1234.56", live_sales, Decimal("1234.56"))
 
             print("=== 2. 结账（写入存档）===")
             status, res = call("POST", f"/sales-targets/actuals/freeze?period={PERIOD}",
@@ -227,7 +227,7 @@ async def main():
 
             frozen = await read_row()
             check("结账后报表标的是「存档值」", frozen is not None and frozen["actual_frozen"])
-            check("数字与结账前一致", frozen["sales_actual"] if frozen else None, 1234.56)
+            check("数字与结账前一致", frozen["sales_actual"] if frozen else None, Decimal("1234.56"))
 
             print("=== 3. 铁证：改存档，报表就该跟着变 ===")
             # 这一条是整套测试的关键 —— 如果报表偷偷重算了，改存档它不会有反应。
@@ -244,7 +244,7 @@ async def main():
             await s.commit()
             bumped = await read_row()
             check("改了存档 → 报表跟着变（证明读的确实是存档，没有偷偷重算）",
-                  bumped["sales_actual"] if bumped else None, 2234.56)
+                  bumped["sales_actual"] if bumped else None, Decimal("2234.56"))
             check("没设目标的行也算存档值（补零行没有绕过快照）",
                   bumped["target_id"] if bumped else "missing", None)
 
@@ -264,7 +264,7 @@ async def main():
             check("填了原因能重算", status, 200)
             recalc = await read_row()
             check("重算后回到实时算出来的 1234.56（不是改过的存档 2234.56）",
-                  recalc["sales_actual"] if recalc else None, 1234.56)
+                  recalc["sales_actual"] if recalc else None, Decimal("1234.56"))
 
             print("=== 5. 不该结的情形 ===")
             status, _ = call("POST", f"/sales-targets/actuals/freeze?period={PERIOD}",

@@ -13,7 +13,7 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.data_scope import scoped_owner_ids
@@ -92,13 +92,21 @@ def _volume_from_dimensions(sku: Sku) -> Decimal | None:
     长宽高是**单件**尺寸，可以直接用（与下面的箱规体积不是一回事）。
     """
     if sku.length and sku.width and sku.height:
+        # ⚠️ **不要在这里舍入**（第五批审查 P2，2026-10-12）：单件体积是**中间量**，
+        # 舍入点必须在"乘完数量"之后。提前舍到 6 位会把小体积直接抹成 0：
+        # 箱体积 0.0004 m³ ÷ 1000 件 = 0.0000004 → 舍成 0.000000 →
+        # 整批 100000 件算成 0 m³ → 5000 元/m³ 的费率下运费 **0 元**（应为 200 元）。
         cubic_mm = sku.length * sku.width * sku.height
-        return (cubic_mm / Decimal("1000000000")).quantize(Decimal("0.000001"))
+        return cubic_mm / Decimal("1000000000")
     return None
 
 
 def sku_unit_volume(sku: Sku) -> tuple[Decimal | None, str | None, str | None]:
     """单件体积（立方米）、来源说明、以及**算不出来时的原因**。
+
+    ⚠️ 返回值是**未舍入的中间量**（第五批审查 P2，2026-10-12）：调用方必须
+    先乘数量、再按存储精度舍入，不能先舍单件 —— 小体积（如 4e-7 m³）会被抹成 0，
+    整批运费跟着算成 0。
 
     两个来源，优先级如下：
     1. 箱规体积 ÷ 箱装数。SKU 上的 `carton_volume` 是**整箱**体积
@@ -113,9 +121,9 @@ def sku_unit_volume(sku: Sku) -> tuple[Decimal | None, str | None, str | None]:
     """
     if sku.carton_volume is not None and sku.carton_volume > 0:
         if sku.carton_qty and sku.carton_qty > 0:
-            per_unit = (sku.carton_volume / Decimal(sku.carton_qty)).quantize(
-                Decimal("0.000001")
-            )
+            # 同上：**不提前舍入**。箱体积 ÷ 箱装数常常是很小的数
+            # （0.0004 ÷ 1000 = 4e-7），先舍到 6 位就变 0，整批运费一起变 0。
+            per_unit = sku.carton_volume / Decimal(sku.carton_qty)
             return (
                 per_unit,
                 f"箱规体积 {sku.carton_volume} m³ ÷ {sku.carton_qty} 件/箱",
@@ -164,6 +172,8 @@ async def compute_weight_and_volume(
         )
         unit_volume = ZERO
 
+    # ⚠️ 这里才是**舍入点**：先把"单件 × 数量"算完，再按存储精度（4 位）舍。
+    # 反过来（先舍单件、再乘数量）会把小体积抹成 0 —— 见 `sku_unit_volume` 的说明。
     actual_weight = (unit_weight * quantity).quantize(Decimal("0.0001"))
     volume = (unit_volume * quantity).quantize(Decimal("0.0001"))
 
@@ -201,6 +211,42 @@ async def compute_weight_and_volume(
 
 def rate_query() -> Select:
     return select(LogisticsRate).where(LogisticsRate.status == "active")
+
+
+#: 费率在某个**具体程度**上的得分：起运地、目的地各算一分（填了才算）。
+#: 分数越高 = 这条费率越"专属"；`None` 表示"不限"，不得分。
+def rate_specificity(rate: LogisticsRate) -> int:
+    return (1 if rate.origin_region else 0) + (1 if rate.destination_region else 0)
+
+
+def _prefer_specific(
+    rows: list[LogisticsRate], *, origin: str | None, destination: str | None
+) -> list[LogisticsRate]:
+    """**同一承运商 + 同一运输方式内，专属费率压过通用费率**（第五批审查 P2，2026-10-12）。
+
+    从前这里把"专属"和"不限"的费率混成一个并集丢给调用方，调用方按**最低价**挑，
+    于是通用的低价费率会把专属费率顶掉 —— 而且 `match_level` 仍然是 1（"精确匹配"），
+    从结果里完全看不出来。复审实测：同一家承运商、同为陆运，
+    通用 1 元/kg、宁波→天津专属 10 元/kg，10kg 货物选中通用那条约 10 元，
+    而真正该用的专属费率是 100 元 —— 运费被算成十分之一。
+
+    做法：按（承运商，运输方式）分组，每组**只保留该组里具体程度最高的那几条**，
+    再让调用方在剩下的里面比价。跨承运商比价保持不变 ——
+    便宜的通用费率仍然可以赢过另一家的专属费率，那才是正常的比价。
+
+    ⚠️ 这里**不能**简单"按具体程度全局排序取最高的"：那样一家只有通用费率的承运商
+    会被整个排掉，比价就没得比了。压制的范围限定在**同一家、同一运输方式**之内。
+    """
+    if not rows:
+        return rows
+    best: dict[tuple[str, str], int] = {}
+    for rate in rows:
+        key = (rate.provider, rate.shipping_method)
+        score = rate_specificity(rate)
+        if key not in best or score > best[key]:
+            best[key] = score
+    kept = [r for r in rows if rate_specificity(r) == best[(r.provider, r.shipping_method)]]
+    return kept or rows
 
 
 async def match_rates(
@@ -266,12 +312,13 @@ async def match_rates(
     # 第 1 级：能用的条件全用上
     rows = await _fetch(use_origin=True, use_destination=True, use_method=True)
     if rows:
-        return rows, warnings, 1
+        return _prefer_specific(rows, origin=origin, destination=destination), warnings, 1
 
     # 第 2 级：丢掉"起运地"（业务往往只维护目的地与运输方式）
     if origin:
         rows = await _fetch(use_origin=False, use_destination=True, use_method=True)
         if rows:
+            rows = _prefer_specific(rows, origin=None, destination=destination)
             warnings.append(f"没有起运地「{origin}」的专属费率，已按目的地 + 运输方式匹配")
             return rows, warnings, 2
 
@@ -282,6 +329,7 @@ async def match_rates(
     if shipping_method and destination:
         rows = await _fetch(use_origin=False, use_destination=False, use_method=True)
         if rows:
+            rows = _prefer_specific(rows, origin=None, destination=destination)
             warnings.append(
                 f"没有发往「{destination}」的费率，已放宽为只看运输方式「{shipping_method}」"
             )
@@ -291,6 +339,7 @@ async def match_rates(
     if destination:
         rows = await _fetch(use_origin=False, use_destination=True, use_method=False)
         if rows:
+            rows = _prefer_specific(rows, origin=None, destination=destination)
             if shipping_method:
                 warnings.append(
                     f"没有运输方式「{shipping_method}」的费率，已放宽为只看目的地「{destination}」"
@@ -446,7 +495,7 @@ async def _assert_saved_source_visible(
     *,
     customer_id: int | None,
     opportunity_id: int | None,
-) -> None:
+) -> int | None:
     """落库前校验"这条试算记在谁名下"。
 
     试算本来就可以不带客户（纯比价），所以两个都不给就直接过。但**给了就要过得去**：
@@ -467,7 +516,7 @@ async def _assert_saved_source_visible(
     列表和详情早就这么判了，只有保存这一处漏着，两边口径本来就不该不一样。
     """
     if customer_id is None and opportunity_id is None:
-        return
+        return None
 
     from app.modules.customer import service as customer_service
 
@@ -485,6 +534,13 @@ async def _assert_saved_source_visible(
         await customer_service.get_visible_customer(
             session, user, opportunity.customer_id
         )
+        # 商机本身已经带出客户。必须把它归一化到试算记录上，否则只传
+        # opportunity_id 的记录会以 customer_id=NULL 落库，列表/详情会把它
+        # 当成“无客户临时试算”而对所有人可见。
+        if customer_id is None:
+            customer_id = opportunity.customer_id
+
+    return customer_id
 
 
 async def save_quote(
@@ -497,7 +553,7 @@ async def save_quote(
     opportunity_id: int | None = None,
 ) -> LogisticsQuote:
     """把选中的方案落成一条物流试算记录（02-ER §10）。"""
-    await _assert_saved_source_visible(
+    customer_id = await _assert_saved_source_visible(
         session, user, customer_id=customer_id, opportunity_id=opportunity_id
     )
     measures = prepared["measures"]
@@ -550,16 +606,26 @@ async def list_quotes(
         stmt = stmt.where(LogisticsQuote.customer_id == customer_id)
     if opportunity_id:
         stmt = stmt.where(LogisticsQuote.opportunity_id == opportunity_id)
-    # 数据范围：试算记录带 customer_id，按客户可见性收紧；没有客户的行（临时试算）人人可见
-    owner_ids = await scoped_owner_ids(session, user)
-    if owner_ids is not None:
-        from app.modules.customer.model import Customer
+    # 数据范围：试算记录带 customer_id，按客户可见性收紧；历史上只带
+    # opportunity_id 的行也必须按商机所属客户收紧，不能因为 customer_id=NULL
+    # 被当作临时试算放给所有人。管理员同样排除已软删的客户/商机，避免列表与
+    # 详情接口一边还能翻到、一边却返回“不存在”的口径分裂。
+    from app.modules.customer.model import Customer
+    from app.modules.opportunity.model import Opportunity
 
-        visible_customers = select(Customer.id).where(Customer.owner_id.in_(owner_ids))
-        stmt = stmt.where(
-            LogisticsQuote.customer_id.is_(None)
-            | LogisticsQuote.customer_id.in_(visible_customers)
-        )
+    owner_ids = await scoped_owner_ids(session, user)
+    customer_scope = [Customer.deleted_at.is_(None)]
+    if owner_ids is not None:
+        customer_scope.append(or_(Customer.owner_id.in_(owner_ids), Customer.owner_id.is_(None)))
+    visible_customers = select(Customer.id).where(*customer_scope)
+    visible_opportunities = select(Opportunity.id).where(
+        Opportunity.customer_id.in_(visible_customers),
+        Opportunity.deleted_at.is_(None),
+    )
+    stmt = stmt.where(
+        (LogisticsQuote.customer_id.is_(None) | LogisticsQuote.customer_id.in_(visible_customers))
+        & (LogisticsQuote.opportunity_id.is_(None) | LogisticsQuote.opportunity_id.in_(visible_opportunities))
+    )
     stmt = stmt.order_by(LogisticsQuote.id.desc())
     return await paginate(session, stmt, page, page_size)
 

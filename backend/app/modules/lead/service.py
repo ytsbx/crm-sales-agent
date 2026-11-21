@@ -133,7 +133,9 @@ async def get_visible_lead(session: AsyncSession, user, lead_id: int) -> Lead:
     return lead
 
 
-async def lock_lead(session: AsyncSession, user, lead_id: int) -> Lead:
+async def lock_lead(
+    session: AsyncSession, user, lead_id: int, *, include_deleted: bool = False
+) -> Lead:
     """取线索**行锁** + 校验可见性（转化等"先判状态、再写一堆东西"的场景第一步）。
 
     为什么必须先锁：转化是「先看这条线索转过没有 → 没有就建客户/联系人/商机 →
@@ -145,13 +147,11 @@ async def lock_lead(session: AsyncSession, user, lead_id: int) -> Lead:
     会话里先读过这条线索，少了它拿回来的就是内存里的旧值（`status` 还是转化前的），
     行锁等于白加。写法与 `claim_lead` 完全一致 —— 锁线索只有这一处出口。
     """
+    stmt = select(Lead).where(Lead.id == lead_id)
+    if not include_deleted:
+        stmt = stmt.where(Lead.deleted_at.is_(None))
     row = (
-        await session.execute(
-            select(Lead)
-            .where(Lead.id == lead_id, Lead.deleted_at.is_(None))
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
+        await session.execute(stmt.with_for_update().execution_options(populate_existing=True))
     ).scalars().first()
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, "线索不存在", 404)
@@ -162,18 +162,16 @@ async def lock_lead(session: AsyncSession, user, lead_id: int) -> Lead:
 async def resolve_owner(
     session: AsyncSession, username: str | None, default_user_id: int
 ) -> int:
-    """线索导入用：负责人按登录名匹配，匹配不上就用当前操作人。
-
-    与客户导入同一口径（customer/io.py 的 resolve_owner），
-    故意不共用实现是因为客户那份签名里没有 session 之外的依赖，
-    合并反而要为一个参数抽公共层；两处都只有 5 行。
-    """
+    """空登录名默认当前人；显式登录名必须存在且在岗，不能静默改归属。"""
     if not username or not username.strip():
         return default_user_id
-    row = (
-        await session.execute(select(User).where(User.username == username.strip()))
-    ).scalar_one_or_none()
-    return row.id if row else default_user_id
+    username = username.strip()
+    row = (await session.execute(select(User).where(User.username == username))).scalar_one_or_none()
+    if row is None:
+        raise AppError(ErrorCode.PARAM_ERROR, f"负责人登录名「{username}」不存在", 422)
+    if row.status != "active":
+        raise AppError(ErrorCode.PARAM_ERROR, f"负责人登录名「{username}」已停用，不能接收线索", 422)
+    return row.id
 
 
 async def owner_names(session: AsyncSession, owner_ids: list[int]) -> dict[int, str]:
@@ -237,13 +235,10 @@ async def assign_lead(
         lead.status = "assigned"
 
 
-def mark_discarded(session: AsyncSession, lead: Lead, *, reason: str, operator_id: int) -> None:
+def mark_discarded(lead: Lead, *, reason: str) -> None:
     lead.status = "invalid"
     lead.invalid_reason = reason
     lead.deleted_at = datetime.now(UTC)
-    record_assignment(
-        session, lead=lead, to_user_id=None, operator_id=operator_id, reason=f"废弃：{reason}"
-    )
 
 
 #: 可领取的线索状态。**只认 `pending`（待分配）**：

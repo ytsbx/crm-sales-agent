@@ -27,8 +27,8 @@ function resolveBrowser() {
   return hit
 }
 
-const APP_BASE = process.env.APP_BASE ?? 'http://localhost:5173'
-const API_BASE = process.env.API_BASE ?? 'http://127.0.0.1:8000'
+const APP_BASE = process.env.APP_BASE ?? 'http://localhost:5274'
+const API_BASE = process.env.API_BASE ?? 'http://127.0.0.1:8008'
 const [path, outName, ...clicks] = process.argv.slice(2)
 if (!path || !outName) {
   console.error('用法：node ops/shot.mjs /quotes/22 out.png [点击文字...]')

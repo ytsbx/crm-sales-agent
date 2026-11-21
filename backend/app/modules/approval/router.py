@@ -3,17 +3,19 @@
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import select
+from sqlalchemy import or_, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
 from app.core.data_scope import scoped_owner_ids
+from app.core.draft_visibility import draft_scope, private_draft
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, get_current_user, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
 from app.modules.approval.model import ApprovalDefinition, ApprovalInstance, ApprovalRecord
-from app.modules.approval.access import approval_denial
+from app.modules.approval.access import approval_denial, FINANCE_APPROVE_PERMISSION
+from app.modules.approval.rules_engine import strip_approval_summary
 from app.modules.approval.schema import (
     ApprovalDefinitionCreate,
     ApprovalDefinitionUpdate,
@@ -70,7 +72,7 @@ async def _context(session: AsyncSession, instances: list[ApprovalInstance]) -> 
     return {"versions": versions, "quotes": quotes, "customers": customers, "users": users}
 
 
-def _serialize(instance: ApprovalInstance, ctx: dict, *, can_approve: bool = False) -> dict:
+def _serialize(instance: ApprovalInstance, ctx: dict, *, can_approve: bool = False, can_see_cost: bool = False) -> dict:
     version = ctx["versions"].get(instance.business_id)
     quote = ctx["quotes"].get(version.quote_id) if version else None
     return {
@@ -84,7 +86,7 @@ def _serialize(instance: ApprovalInstance, ctx: dict, *, can_approve: bool = Fal
         "current_node": instance.current_node,
         "applicant_id": instance.applicant_id,
         "applicant_name": ctx["users"].get(instance.applicant_id) if instance.applicant_id else None,
-        "summary": instance.summary,
+        "summary": strip_approval_summary(instance.summary, can_see_cost=can_see_cost),
         "created_at": instance.created_at,
         "finished_at": instance.finished_at,
         "quote_id": quote.id if quote else None,
@@ -119,8 +121,12 @@ async def list_approvals(
         Quote.deleted_at.is_(None)
     )
     owner_ids = await scoped_owner_ids(session, user)
-    if owner_ids is not None:
-        visible_versions = visible_versions.where(Quote.owner_id.in_(owner_ids))
+    visible_versions = visible_versions.where(
+        draft_scope(Quote, user.id, Quote.owner_id.in_(owner_ids) if owner_ids is not None else None),
+        or_(~private_draft(QuoteVersion), func.coalesce(
+            QuoteVersion.created_by, Quote.created_by, Quote.owner_id,
+        ) == user.id),
+    )
     stmt = stmt.where(
         ApprovalInstance.business_type == "quote_version",
         ApprovalInstance.business_id.in_(visible_versions),
@@ -149,7 +155,7 @@ async def list_approvals(
         rows, total = await paginate(session, stmt, page, page_size)
     ctx = await _context(session, rows)
     return ok(page_data([
-        _serialize(row, ctx, can_approve=row.status == "pending" and approval_denial(
+        _serialize(row, ctx, can_see_cost=user.has("price:manage"), can_approve=row.status == "pending" and approval_denial(
             user, row, price_can_approve=price_can_approve
         ) is None)
         for row in rows
@@ -178,7 +184,7 @@ async def get_approval(
     ).all()
     return ok(
         {
-            **_serialize(instance, ctx, can_approve=instance.status == "pending" and approval_denial(
+            **_serialize(instance, ctx, can_see_cost=user.has("price:manage"), can_approve=instance.status == "pending" and approval_denial(
                 user, instance, price_can_approve=price_can_approve
             ) is None),
             "records": [
@@ -257,29 +263,60 @@ async def _assert_transfer_target(
         )
 
 
-async def _user_ids_by_roles(session: AsyncSession, role_codes: list[str]) -> list[int]:
-    """按角色编码找在职用户（会签节点的通知对象）。
+async def _co_sign_recipient_ids(session: AsyncSession, instance: ApprovalInstance) -> list[int]:
+    """通知只发给有独立会签权限、在岗且能处理本单的人。"""
+    from app.modules.user.model import ROLE_ACTIVE, Role, Permission, user_roles, role_permissions
+    candidates = (await session.execute(
+        select(User).join(user_roles, user_roles.c.user_id == User.id)
+        .join(Role, Role.id == user_roles.c.role_id)
+        .join(role_permissions, role_permissions.c.role_id == Role.id)
+        .join(Permission, Permission.id == role_permissions.c.permission_id)
+        .where(Role.status == ROLE_ACTIVE, User.status == "active", Permission.code == FINANCE_APPROVE_PERMISSION)
+        .distinct()
+    )).scalars().all()
+    result = []
+    for target in candidates:
+        try:
+            await _assert_transfer_target(session, target, instance)
+        except AppError as exc:
+            if exc.http_status in (403, 404, 422):
+                continue
+            raise
+        result.append(target.id)
+    return result
 
-    只算**启用中**的角色：角色停用后它的人不再是"该角色的在职用户"，
-    否则会签节点会找出一批已经不该参与的人（第十批 10.10）。
-    """
-    from app.modules.user.model import ROLE_ACTIVE, Role, user_roles
 
-    if not role_codes:
-        return []
-    rows = (
-        await session.execute(
-            select(User.id)
-            .join(user_roles, user_roles.c.user_id == User.id)
-            .join(Role, Role.id == user_roles.c.role_id)
-            .where(
-                Role.code.in_(role_codes),
-                Role.status == ROLE_ACTIVE,
-                User.status == "active",
-            )
-        )
-    ).scalars().all()
-    return list(rows)
+@router.get("/approvals/{approval_id}/transfer-candidates")
+async def transfer_candidates(
+    approval_id: int,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    # 不开放用户管理列表：仅当前有权处理本单的人可获取合格接收人的编号和姓名。
+    instance = await _load_pending(session, approval_id, user)
+    await _assert_can_approve(session, user, instance)
+    from app.modules.user.model import ROLE_ACTIVE, Role, Permission, user_roles, role_permissions
+    permission = FINANCE_APPROVE_PERMISSION if instance.current_node == "co_sign" else "quote:approve"
+    candidates = (await session.execute(
+        select(User).join(user_roles, user_roles.c.user_id == User.id).join(Role, Role.id == user_roles.c.role_id)
+        .outerjoin(role_permissions, role_permissions.c.role_id == Role.id)
+        .outerjoin(Permission, Permission.id == role_permissions.c.permission_id)
+        .where(User.status == "active", Role.status == ROLE_ACTIVE,
+               or_(Permission.code == permission, Role.code == "admin"))
+        .distinct().order_by(User.id)
+    )).scalars().all()
+    result = []
+    for target in candidates:
+        if target.id == user.id:
+            continue
+        try:
+            await _assert_transfer_target(session, target, instance)
+        except AppError as exc:
+            if exc.http_status in (403, 404, 422):
+                continue
+            raise
+        result.append({"id": target.id, "name": target.name})
+    return ok(result)
 
 
 @router.post("/approvals/{approval_id}/approve")
@@ -310,12 +347,13 @@ async def approve(
                 )
             )
             instance.current_node = "co_sign"
+            # 指派只属于当前节点，业务审批的转交不能限制下一阶段会签。
+            summary.pop("current_assignee_id", None)
+            summary.pop("current_assignee_name", None)
             summary["co_sign"] = {**co_sign, "status": "pending"}
             instance.summary = summary
             await session.flush()
-            co_sign_user_ids = await _user_ids_by_roles(
-                session, list(co_sign.get("role_codes") or [])
-            )
+            co_sign_user_ids = await _co_sign_recipient_ids(session, instance)
             for uid in co_sign_user_ids:
                 if uid == instance.applicant_id:
                     continue
@@ -341,7 +379,7 @@ async def approve(
                 ip=client_ip(request),
             )
             await session.commit()
-            await notification_service.dispatch_pending(session)
+            await notification_service.dispatch_after_commit(session)
             return ok({"current_node": "co_sign"}, f"本级已通过，进入「{co_sign.get('label', '会签')}」")
 
     node_code = "co_sign" if instance.current_node == "co_sign" else "manager"
@@ -384,7 +422,7 @@ async def approve(
         ip=client_ip(request),
     )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(None, "已通过，业务员可以发送该报价")
 
 
@@ -439,7 +477,7 @@ async def reject(
         ip=client_ip(request),
     )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(None, "已拒绝，业务员需要调整价格后重新提交")
 
 
@@ -484,7 +522,7 @@ async def transfer(
     approval_id: int,
     payload: ApprovalTransfer,
     request: Request,
-    user: CurrentUser = Depends(require_permission("quote:approve")),
+    user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
     """把待审批单转交给别人处理。
@@ -543,7 +581,7 @@ async def transfer(
         title="有审批单转交给你处理",
         content=f"{summary.get('quote_no') or ''} {summary.get('reason') or ''}".strip(),
         business_type="quote",
-        business_id=instance.business_id,
+        business_id=(await session.get(QuoteVersion, instance.business_id)).quote_id,
     )
     await write_audit(
         session,
@@ -555,7 +593,7 @@ async def transfer(
         ip=client_ip(request),
     )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     ctx = await _context(session, [instance])
     return ok(_serialize(instance, ctx), f"已转交给「{target.name}」")
 
@@ -579,6 +617,7 @@ async def withdraw(
     if instance.applicant_id != user.id and "admin" not in user.roles:
         raise AppError(ErrorCode.FORBIDDEN, "只能撤回自己提交的审批", 403)
 
+    withdrawn_from_node = instance.current_node
     instance.status = "withdrawn"
     instance.finished_at = datetime.now(UTC)
     instance.current_node = None
@@ -594,7 +633,7 @@ async def withdraw(
     session.add(
         ApprovalRecord(
             approval_instance_id=instance.id,
-            node_code=instance.current_node,
+            node_code=withdrawn_from_node,
             approver_id=user.id,
             action="withdraw",
             comment=payload.comment or "申请人撤回",

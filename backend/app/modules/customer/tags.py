@@ -13,6 +13,7 @@
 from datetime import UTC, datetime
 
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
@@ -45,37 +46,108 @@ async def get_tag_or_404(session: AsyncSession, tag_id: int) -> Tag:
     return tag
 
 
+async def lock_tag_or_404(session: AsyncSession, tag_id: int) -> Tag:
+    """锁标签行，串行化改名/删除，避免删除等待期间继续写旧对象。"""
+    tag = (
+        await session.execute(
+            select(Tag)
+            .where(Tag.id == tag_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if tag is None:
+        raise AppError(ErrorCode.NOT_FOUND, "标签不存在", 404)
+    return tag
+
+
 async def find_tag_by_name(session: AsyncSession, name: str) -> Tag | None:
     return (
         await session.execute(select(Tag).where(Tag.name == name.strip()))
     ).scalar_one_or_none()
 
 
+#: 与库列一一对应（超了会撞约束报 500）：`name varchar(64)`、`type varchar(32)`
+TAG_NAME_MAX = 64
+TAG_TYPE_MAX = 32
+
+
+def normalize_tag_name(raw: str) -> str:
+    """标签名的**唯一**校验入口（审查 B2-05）：去空格 → 非空 → 长度。
+
+    从前新增与编辑各写一套，而且编辑那套只判"值非空"：
+      · 名称改成三个空格 → 200，落库成**空字符串**（`strip()` 之后没再判空）；
+      · 名称改成 65 个字符 → **500**（撞上 `tags.name` 的 `String(64)`）。
+    两处口径不一致、且非法输入报的是服务器错误，调用方看不出是自己填错了。
+    现在共用一个函数，非法输入一律 400 并说清原因。
+    """
+    name = (raw or "").strip()
+    if not name:
+        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "标签名不能为空（空格也不算）")
+    if len(name) > TAG_NAME_MAX:
+        raise AppError(
+            ErrorCode.PARAM_ERROR, f"标签名最多 {TAG_NAME_MAX} 个字符，当前 {len(name)} 个"
+        )
+    return name
+
+
+def normalize_tag_type(raw: str | None) -> str:
+    """标签分组的**唯一**校验入口：去空格 → 非空（留空给默认）→ 长度。
+
+    与 `normalize_tag_name` 同一个道理，也是同一类缺陷的另一半：
+    `tags.type` 是 `varchar(32)`，超长会撞数据库约束 → **500**。
+    实测「标签分组 40 个字符」就是这样炸的（我修 name 的文案时顺手发现的）。
+    现在超长给 400 并说清上限。
+    """
+    value = (raw or "").strip()
+    if not value:
+        return "custom"
+    if len(value) > TAG_TYPE_MAX:
+        raise AppError(
+            ErrorCode.PARAM_ERROR, f"标签分组最多 {TAG_TYPE_MAX} 个字符，当前 {len(value)} 个"
+        )
+    return value
+
+
 async def create_tag(
     session: AsyncSession, *, name: str, type_: str = "custom", sort_no: int = 0
 ) -> Tag:
-    name = name.strip()
-    if not name:
-        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "标签名不能为空")
+    name = normalize_tag_name(name)
+    type_ = normalize_tag_type(type_)
     if await find_tag_by_name(session, name) is not None:
         raise AppError(ErrorCode.DUPLICATE, f"标签「{name}」已存在", 409)
-    tag = Tag(name=name, type=type_ or "custom", status="active", sort_no=sort_no)
+    tag = Tag(name=name, type=type_, status="active", sort_no=sort_no)
     session.add(tag)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise AppError(ErrorCode.DUPLICATE, f"标签「{name}」已存在", 409) from exc
     return tag
 
 
 async def update_tag(session: AsyncSession, tag: Tag, data: dict) -> Tag:
-    if "name" in data and data["name"]:
-        new_name = data["name"].strip()
+    if "name" in data:
+        # ⚠️ 不能写成 `and data["name"]`：三个空格是 **truthy**，会通过这个判断，
+        # `strip()` 之后变成空字符串照样落库（审查 B2-05 实测）。
+        # 交共用校验处理"空/超长"，非法输入报 400 而不是 500。
+        new_name = normalize_tag_name(data["name"] or "")
         existing = await find_tag_by_name(session, new_name)
         if existing is not None and existing.id != tag.id:
             raise AppError(ErrorCode.DUPLICATE, f"标签「{new_name}」已存在", 409)
         tag.name = new_name
-    for field in ("type", "status", "sort_no"):
+    if "type" in data and data["type"] is not None:
+        # 长度同样交共用校验：`varchar(32)` 超了会 500（见 normalize_tag_type）
+        tag.type = normalize_tag_type(data["type"])
+    for field in ("status", "sort_no"):
         if field in data and data[field] is not None:
             setattr(tag, field, data[field])
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        duplicate_name = tag.name
+        await session.rollback()
+        raise AppError(ErrorCode.DUPLICATE, f"标签「{duplicate_name}」已存在", 409) from exc
     return tag
 
 
@@ -119,6 +191,15 @@ async def attach_tags(session: AsyncSession, customer_id: int, tag_ids: list[int
     """给客户打标签（已存在的跳过）。返回实际新增数量。"""
     if not tag_ids:
         return 0
+    unique_tag_ids = list(dict.fromkeys(tag_ids))
+    # 删除标签也会先锁标签行再清理关联；这里按 id 升序锁住本批标签，避免
+    # 删除与新增关联交错导致外键/主键 500，也避免多标签请求按不同顺序互等。
+    await session.execute(
+        select(Tag.id)
+        .where(Tag.id.in_(unique_tag_ids))
+        .order_by(Tag.id.asc())
+        .with_for_update()
+    )
     existing = set(
         (
             await session.execute(
@@ -130,16 +211,14 @@ async def attach_tags(session: AsyncSession, customer_id: int, tag_ids: list[int
     )
     # 校验标签都存在，避免打进不存在的 id
     found = set(
-        (
-            await session.execute(select(Tag.id).where(Tag.id.in_(tag_ids)))
-        ).scalars().all()
+        (await session.execute(select(Tag.id).where(Tag.id.in_(unique_tag_ids)))).scalars().all()
     )
-    missing = set(tag_ids) - found
+    missing = set(unique_tag_ids) - found
     if missing:
         raise AppError(ErrorCode.NOT_FOUND, f"标签不存在：{sorted(missing)}", 404)
 
     added = 0
-    for tag_id in dict.fromkeys(tag_ids):
+    for tag_id in unique_tag_ids:
         if tag_id not in existing:
             await session.execute(
                 customer_tags.insert().values(customer_id=customer_id, tag_id=tag_id)
@@ -179,6 +258,14 @@ MERGE_TARGETS: list[tuple[str, str, str]] = [
     ("app.modules.sample.model", "SampleRequest", "打样单"),
     ("app.modules.order.model", "OrderDraft", "订单草稿"),
     ("app.modules.contract.model", "ContractDocument", "合同"),
+    # ⚠️ 补登记（2026-10-14 审查）。本清单上面的判据是**本文件自己写的**：
+    # 「凡是带 `customer_id` 的业务表都要在这里登记。漏登记一项，合并就是
+    # "看起来成功了、其实留了一半"」——而 `BizDoc` 有 `customer_id`、
+    # 有 `ix_biz_docs_customer` 索引、`bizdoc/service.list_docs(customer_id=...)`
+    # 就按它过滤，却没登记。漏了它，把 A 合并进 B 之后，A 名下的打样需求单 /
+    # 下单文件 / 对客报价单一律仍挂在 A 上，而 A 已软删、`owner_id` 被清空
+    # —— `GET /biz-docs?customer_id=B` 查不到这批对外文件，B 的档案里永远补不齐。
+    ("app.modules.bizdoc.model", "BizDoc", "生成文件"),
     ("app.modules.cases.model", "SalesCase", "销售案例"),
     ("app.modules.pricing.model", "LogisticsQuote", "物流报价"),
     # 专属价格要跟着走，但**有冲突时不能随便走**：两边同一个 SKU 定了不同的价，
@@ -463,6 +550,23 @@ async def merge_preview(
             "合并不可逆：来源客户会被软删，上列关联全部改挂到目标客户。"
             "历史报价、合同签署文件、打样图纸与确认记录的内容不会改写，"
             "只是档案归属换到目标客户。"
+            + (
+                # ⚠️ 归属口径要说清（2026-10-14 审查）：合并**只改 `customer_id`**，
+                # 单据的负责人一个都不动。而 `customer/documents.py` 里定的是
+                # "客户的负责人从 A 换成 B 时，把原本挂在 A 名下的**这个客户的**单据
+                # 一起改成 B"——两个客户负责人不同时，合并后 B 打开客户，
+                # 「报价 / 订单」标签页可能仍然是空的（那些标签页按**单据自己的负责人**
+                # 过滤），用户会以为合并把数据弄丢了。
+                # 这里不擅自改单据归属（那等于替别人做交接决定），但**必须提前说清**。
+                (
+                    f"注意：来源客户的负责人（id={source.owner_id}）与目标客户"
+                    f"（id={target.owner_id}）**不是同一个人** —— 合并不会改单据负责人，"
+                    "所以原来记在来源负责人名下的报价 / 订单，合并后仍需他本人（或主管"
+                    "）才能看到；要让新负责人接手，请另外走一次「转移负责人」。"
+                    if source.owner_id != target.owner_id
+                    else ""
+                )
+            )
         ),
     }
 
@@ -627,7 +731,9 @@ async def merge_customers(
     #  得人工再设一个。）
     merged_contact_ids = list(
         (
-            await session.execute(select(Contact.id).where(Contact.customer_id == source.id))
+            await session.execute(select(Contact.id).where(
+                Contact.customer_id == source.id, Contact.deleted_at.is_(None),
+            ))
         ).scalars().all()
     )
     for module_path, class_name, label in MERGE_TARGETS:
@@ -660,18 +766,27 @@ async def merge_customers(
     #    目标原来就有主的话**什么都别做**：那位才是主人，并过来的保持非主。
     #    （从前这里写的是"有主就降级并过来的"，那句判断本身没错，错在它跑在
     #    改挂之后 —— 降级是补的，索引早在改挂那一步就拦下来了。）
+    # ⚠️ 判据必须带 `deleted_at IS NULL`（2026-10-14 审查修）：
+    # 全项目的"主位"口径就是 `is_primary AND deleted_at IS NULL`
+    # —— 部分唯一索引 `uq_contacts_primary_per_customer` 的 WHERE 条件如此，
+    # `contact_util.take_primary_slot` / `has_primary` 也都这么写；
+    # 而删除联系人只置 `deleted_at`、**不清 `is_primary`**。
+    # 不带这句时：目标客户原来那个主联系人被软删过（很常见）→ 计数仍是 1
+    # → 不再从并过来的联系人里顶一个，合并后目标客户**一个"活的"主联系人
+    # 都没有**，与本段注释"合并完目标名下不该突然变得一个主联系人都没有"相反。
     has_own_primary = (
         await session.execute(
             select(func.count(Contact.id)).where(
                 Contact.customer_id == target.id,
                 Contact.is_primary.is_(True),
+                Contact.deleted_at.is_(None),
             )
         )
     ).scalar_one()
     if not has_own_primary and merged_contact_ids:
         await session.execute(
             Contact.__table__.update()
-            .where(Contact.id == min(merged_contact_ids))
+            .where(Contact.id == min(merged_contact_ids), Contact.deleted_at.is_(None))
             .values(is_primary=True)
         )
 

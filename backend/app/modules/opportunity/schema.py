@@ -2,7 +2,8 @@ from datetime import date
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
-from app.core.patch_schema import PatchModel
+from app.core.patch_schema import CreateModel, PatchModel
+from app.modules.order.schema import ReceivablePlanIn
 
 
 
@@ -12,7 +13,10 @@ class OpportunityCreate(BaseModel):
     primary_contact_id: int | None = None
     source: str | None = None
     stage_id: int | None = None
-    expected_amount: float | None = None
+    # 与数据库 Numeric(16,2) 对齐；Decimal 的有限数校验会拒绝 NaN/Infinity。
+    expected_amount: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=2
+    )
     expected_close_date: date | None = None
     owner_id: int | None = None
     competitor: str | None = None
@@ -26,7 +30,9 @@ class OpportunityUpdate(PatchModel):
     title: str | None = None
     primary_contact_id: int | None = None
     source: str | None = None
-    expected_amount: float | None = None
+    expected_amount: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=2
+    )
     expected_close_date: date | None = None
     competitor: str | None = None
     risk_level: str | None = None
@@ -56,6 +62,9 @@ class OpportunityConfirmWin(BaseModel):
     win_quote_version_id: int | None = None
     delivery_date: date | None = None
     remark: str | None = None
+    #: 收款计划（2026-10-13 改动三）：不传 = 一条「全款」。
+    #: 类型与报价转单**共用同一个模型**，免得两处判据漂移。
+    receivable_plan: ReceivablePlanIn | None = None
 
 
 class OpportunityItemCreate(BaseModel):
@@ -156,7 +165,7 @@ class RecommendProductsRequest(BaseModel):
     keyword: str | None = None
 
 
-class StageCreate(BaseModel):
+class StageCreate(CreateModel):
     """新增阶段（03-API §13）。"""
 
     model_config = ConfigDict(extra="ignore")

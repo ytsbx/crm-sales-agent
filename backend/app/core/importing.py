@@ -468,7 +468,7 @@ def read_preview_token(
         compressed = base64.urlsafe_b64decode(encoded.encode())
     except Exception as exc:  # noqa: BLE001 —— 任何结构问题都是"这份快照不可用"
         raise AppError(ErrorCode.PARAM_ERROR, "预览快照无法识别，请重新预览", 422) from exc
-    if not hmac.compare_digest(_sign(compressed), signature):
+    if not hmac.compare_digest(_sign(compressed).encode("ascii"), signature.encode("utf-8")):
         raise AppError(ErrorCode.PARAM_ERROR, "预览快照已失效，请重新预览", 422)
     try:
         data = json.loads(zlib.decompress(compressed).decode("utf-8"))

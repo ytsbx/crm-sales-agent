@@ -26,7 +26,7 @@ from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data
-from app.modules.contact_util import find_duplicate_customers
+from app.modules.contact_util import find_duplicate_customers, lock_customer_row
 from app.modules.customer import service as svc
 from app.modules.customer import tags as tag_svc
 from app.modules.customer.model import Customer
@@ -85,7 +85,7 @@ async def update_tag(
     user: CurrentUser = Depends(require_permission("customer:update")),
     session: AsyncSession = Depends(get_db),
 ):
-    tag = await tag_svc.get_tag_or_404(session, tag_id)
+    tag = await tag_svc.lock_tag_or_404(session, tag_id)
     before = tag_svc.serialize_tag(tag)
     tag = await tag_svc.update_tag(session, tag, payload.model_dump(exclude_unset=True))
     await write_audit(
@@ -109,7 +109,7 @@ async def delete_tag(
     user: CurrentUser = Depends(require_permission("customer:update")),
     session: AsyncSession = Depends(get_db),
 ):
-    tag = await tag_svc.get_tag_or_404(session, tag_id)
+    tag = await tag_svc.lock_tag_or_404(session, tag_id)
     before = tag_svc.serialize_tag(tag)
     await tag_svc.delete_tag(session, tag)
     await write_audit(
@@ -148,9 +148,11 @@ async def deduplicate(
     exclude_id = None
 
     if customer_id:
-        existing = await session.get(Customer, customer_id)
-        if existing is None or existing.deleted_at is not None:
-            raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
+        # 编辑场景也必须和详情、合并、批量操作使用同一条数据范围判据。
+        # 直接 session.get 只能判断存在；而且 Customer 没有 mobile 列，旧实现
+        # 继续读取 existing.mobile 会让所有带 customer_id 的查重请求直接 500。
+        # 统一走可见性读取，同时保留请求中的联系人手机号，修复这两个确定问题。
+        existing = await svc.get_visible_customer(session, user, customer_id)
         exclude_id = existing.id
         fields = {
             "company_name": existing.name,
@@ -273,6 +275,10 @@ async def attach_customer_tags(
     session: AsyncSession = Depends(get_db),
 ):
     customer = await svc.get_visible_customer(session, user, customer_id)
+    # 关联表主键是 (customer_id, tag_id)。先查再插若并发执行，两边都看不到
+    # 对方尚未提交的关联，后一个 INSERT 会撞主键并返回 500；客户行是这组
+    # 标签变更的共同锁，和联系人主位使用同一把锁。
+    await lock_customer_row(session, customer.id)
     added = await tag_svc.attach_tags(session, customer.id, payload.tag_ids)
     await write_audit(
         session,
@@ -296,6 +302,7 @@ async def detach_customer_tag(
     session: AsyncSession = Depends(get_db),
 ):
     customer = await svc.get_visible_customer(session, user, customer_id)
+    await lock_customer_row(session, customer.id)
     await tag_svc.detach_tag(session, customer.id, tag_id)
     await write_audit(
         session,
@@ -334,6 +341,7 @@ async def batch_tag(
         # 给别人客户打标签，`replace` 模式还会先摘掉该客户**全部**现有标签。
         # 与单个路径同口径（单客户走 get_visible_customer）。
         await svc.assert_customer_visible(session, user, customer)
+        await lock_customer_row(session, customer.id)
         if payload.mode == "remove":
             for tag_id in payload.tag_ids:
                 await tag_svc.detach_tag(session, customer.id, tag_id)
@@ -374,22 +382,26 @@ async def batch_transfer(
     if not payload.customer_ids:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "请先选择客户")
 
-    affected = 0
+    affected = already_assigned = unavailable = documents_moved = documents_skipped = 0
     for customer_id in dict.fromkeys(payload.customer_ids):
         customer = await session.get(Customer, customer_id)
         if customer is None or customer.deleted_at is not None:
+            unavailable += 1
             continue
         # 与单个转移 POST /customers/{id}/transfer 同口径（那边用 get_visible_customer）：
         # 批量入口此前只判存在，成了跨范围改归属、把别人客户放进公海的旁路。
         await svc.assert_customer_visible(session, user, customer)
         if customer.owner_id == payload.owner_id:
+            already_assigned += 1
             continue
-        await svc.transfer_customer(
+        documents = await svc.transfer_customer(
             session, user, customer, payload.owner_id, payload.reason,
             # 原始 reason 参与保护校验，默认文案只进归属历史
             default_reason="批量转移",
         )
         affected += 1
+        documents_moved += documents["moved_total"]
+        documents_skipped += documents["skipped_total"]
 
     # 批量放公海与批量转给人，审计动作分开记（同单个转移的口径）
     to_pool = payload.owner_id is None
@@ -404,7 +416,13 @@ async def batch_transfer(
     )
     await session.commit()
     return ok(
-        {"affected": affected},
+        {
+            "affected": affected,
+            "already_assigned": already_assigned,
+            "unavailable": unavailable,
+            "documents_moved": documents_moved,
+            "documents_skipped": documents_skipped,
+        },
         f"已放入公海 {affected} 个客户" if to_pool else f"已转移 {affected} 个客户",
     )
 
@@ -427,6 +445,7 @@ __all__ = ["router", "Query"]
 @router.get("/customer-duplicate-cases")
 async def list_duplicate_cases(
     status: str | None = Query("pending"),
+    customer_id: int | None = Query(None, ge=1),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     user: CurrentUser = Depends(require_permission("customer:view")),
@@ -441,7 +460,7 @@ async def list_duplicate_cases(
     from app.modules.customer import duplicates as dup_service
 
     items, total = await dup_service.list_cases(
-        session, user=user, status=status, page=page, page_size=page_size
+        session, user=user, status=status, customer_id=customer_id, page=page, page_size=page_size
     )
     return ok(page_data(items, total, page, page_size))
 
@@ -493,12 +512,6 @@ async def resolve_duplicate_case(
         raise AppError(ErrorCode.NOT_FOUND, "撞单记录不存在", 404)
     await svc.get_visible_customer(session, user, case.customer_id)
     await svc.get_visible_customer(session, user, case.candidate_id)
-    # 裁定**前**的归属：服务层在锁定后还会再取一份权威的存进案件里，
-    # 这里这份用于审计，让审计也能回答"把谁从谁手里改到了谁名下"。
-    before_owners = {}
-    for cid in (case.customer_id, case.candidate_id):
-        row = await session.get(Customer, cid)
-        before_owners[str(cid)] = row.owner_id if row is not None else None
     await dup_service.resolve_case(
         session,
         case=case,
@@ -519,7 +532,7 @@ async def resolve_duplicate_case(
         action="resolve_customer_duplicate",
         business_type="customer_duplicate_case",
         business_id=case.id,
-        before={"owners": before_owners},
+        before={"owners": result.get("before_owners")},
         after=result,
         ip=client_ip(request),
     )

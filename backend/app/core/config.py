@@ -4,7 +4,9 @@
 """
 
 from functools import lru_cache
+from secrets import token_urlsafe
 
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,20 +19,27 @@ class Settings(BaseSettings):
 
     app_name: str = "CRM-Sales-Agent"
     api_prefix: str = "/api/v1"
-    debug: bool = True
+    # 生产默认关闭调试；本地需要文档时显式设置 DEBUG=1。
+    debug: bool = False
 
     # 数据库。默认 PostgreSQL；改 MySQL 只需换这一行连接串。
     database_url: str = "postgresql+asyncpg://zhaorongkai@127.0.0.1:5432/crm_sales_agent"
-    jwt_secret: str = "dev-secret-please-change"
+    # 未提供环境变量时也使用不可预测的进程级密钥，避免公开默认值可伪造令牌。
+    # 正式部署仍应显式设置 JWT_SECRET，以便重启后保持已有会话有效。
+    jwt_secret: str = token_urlsafe(32)
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 720
     #: `/auth/refresh` 允许"已过期多久之内"仍然续期。过期太久就要求重新登录，
     #: 否则一个泄漏的旧 token 等于永久有效。
     refresh_grace_minutes: int = 720
+    login_session_max_days: int = Field(default=7, ge=1)
 
     #: 登录防爆破：滑动窗口内同一（用户名+IP）连续失败达到上限即锁定。
     login_max_attempts: int = 5
     login_lockout_window_minutes: int = 10
+    #: 只有来自这些反向代理网段的请求才允许使用 X-Forwarded-For。
+    #: 留空时一律使用 TCP 对端地址，避免客户端伪造来源头绕过登录限流。
+    trusted_proxy_ips: str = ""
 
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
@@ -58,6 +67,9 @@ class Settings(BaseSettings):
     # ---- 定时任务调度（公海回收 / 自动任务规则的每日自动执行）----
     # scheduler_enabled=False 可整体关掉（例如多实例部署时只让一台跑）
     scheduler_enabled: bool = False
+    # 可只开启审批回收，不同时启动公海回收、任务扫描等其它周期任务。
+    scheduler_oa_sync_enabled: bool = False
+    dingtalk_oa_stream_enabled: bool = False
     scheduler_recycle_hour: int = 2   # 公海回收：每天几点跑（24 小时制）
     scheduler_task_rules_hour: int = 2  # 自动任务规则：每天几点跑
     # 通知失败重投：每多少分钟扫一次"到期该重试"的失败通知（文档 §六）。
@@ -76,6 +88,19 @@ class Settings(BaseSettings):
     #: **不影响**统计结果返回——等模型不该把页面卡死。
     agent_commentary_timeout: int = 30
 
+    @field_validator("jwt_secret")
+    @classmethod
+    def validate_jwt_secret(cls, value: str) -> str:
+        normalized = value.strip()
+        if len(normalized) < 32 or any(
+            marker in normalized.lower()
+            for marker in ("please-change", "dev-only", "local-dev", "replace-me")
+        ):
+            raise ValueError(
+                "JWT_SECRET 必须是至少 32 个字符的随机密钥，不能使用示例值"
+            )
+        return normalized
+
     # ---- 企业微信（PRD §8 / ER §6 / API §10）------------------------------
     # ---- 钉钉 OA 审批（文档 §11.3 :152 / 场景11）--------------------------
     # 应用已在钉钉开放平台建好（CRM询价审批对接 / AgentId 5035992137）。
@@ -85,17 +110,50 @@ class Settings(BaseSettings):
     dingtalk_app_secret: str = ""
     dingtalk_agent_id: str = ""
     dingtalk_base_url: str = "https://api.dingtalk.com"
+    # 自研 OA 服务端对接（CRM → OA）。密钥只放环境变量，不进数据库。
+    oa_base_url: str = "http://127.0.0.1:8781"
+    oa_integration_secret: str = ""
+    # Existing approvals keep their original server after a local OA cutover.
+    oa_legacy_base_url: str = ""
+    oa_legacy_integration_secret: str = ""
+    oa_legacy_instance_ids: str = ""
+    # Separate local database copies must not reuse approvals from another data set.
+    oa_external_ref_namespace: str = Field(default="", pattern=r"^[A-Za-z0-9_-]{0,48}$")
+    #: 合同审批模板（OA 里发布后的模板 UUID 或 code；两者填一个）
+    oa_contract_template_id: str = ""
+    oa_contract_template_code: str = ""
+    #: 合同审批固定审批人的钉钉 userid（可选；默认使用 OA 直属主管流程）。
+    #: 为空则沿用 OA 模板自己的首节点配置。
+    oa_contract_approver_dingtalk_id: str = ""
+    oa_sample_template_id: str = ""
+    oa_sample_template_code: str = ""
+    oa_sample_approver_dingtalk_ids: str = ""
+    oa_sample_approver_mode: str = "all"
+    oa_inquiry_submission_enabled: bool = True
+    oa_inquiry_template_id: str = ""
+    oa_inquiry_template_code: str = ""
+    oa_inquiry_approver_dingtalk_id: str = ""
+    oa_inquiry_approver_mode: str = "sequential"
     # OA 审批状态轮询：每多少分钟拉一次（文档 §11.3 :152 的"回收状态与结果"）。
-    # 先走轮询而不是事件订阅——不需要公网回调地址、不需要额外的后台授权，
-    # 而且不会丢消息（这轮没查到下轮还会查）。询价审批本身要几小时到几天，
-    # 几分钟延迟无影响。
+    # Stream 事件优先触发对应单据查询；周期轮询用于断线和漏事件时补收。
     scheduler_oa_sync_minutes: int = 3
-    #: 钉钉外部调用总闸。**默认 True = 关**：阻止全部钉钉请求，
-    #: 包括 token、人员/部门/模板查询、图片上传、审批发起/重发及状态同步。
+    #: 钉钉外部调用总闸（**只管"系统主动发起"的那一类**）。**默认 True = 关**：
+    #: 阻止 token、人员/部门/模板查询、图片上传、审批发起/重发及状态同步。
     #: 关闭时"发起审批"只在 CRM 记一行 skipped 并写明原因——
     #: **不是失败、更不是成功**，联调和演示都能看出"这一步没真的发出去"。
     #: 要真发必须显式设 DINGTALK_PUSH_OFF=0，并且只对测试用的本人账号发。
+    #:
+    #: ⚠️ **扫码登录不归它管**（2026-10-14 拆开）：登录是**用户自己主动**要把自己
+    #: 放进来，与"系统主动去打扰钉钉 / 打扰同事"（审批通知、通讯录同步）性质不同 ——
+    #: 总闸是为后者设的（开发期别误触达真实用户），登录不该被它连坐。
+    #: 登录看自己那一把 `dingtalk_login_off`。两把闸**互相独立**。
     dingtalk_push_off: bool = True
+    #: 登录闸：管"与登录有关的那一组"——**扫码登录** ＋ **把人和钉钉号对上的
+    #: 成员同步**（后者是前者的前置步骤，同日主人拍板并入）。**默认 True = 关**：
+    #: 关闭时登录接口当场说明"暂不可用"，不会把用户送到钉钉页面、扫完码才报错。
+    #: 要真登必须显式设 DINGTALK_LOGIN_OFF=0。与总闸互不影响：
+    #: 可以「只开登录、不开放审批」（PUSH_OFF=1 + LOGIN_OFF=0）。
+    dingtalk_login_off: bool = True
 
     # 全部留空即为"未配置"状态：同步接口会明确返回"还没配置凭据"，
     # 而不是静默假装成功。拿到 corp id / secret 后填这里即可，代码不用改。
@@ -134,8 +192,27 @@ class Settings(BaseSettings):
     erp_webhook_secret: str = ""
 
     @property
+    def dingtalk_login_ready(self) -> bool:
+        """「钉钉扫码登录」能不能用：凭据齐 **且** 登录自己那把闸开着。
+
+        **只看登录闸（`dingtalk_login_off`），不看审批总闸**（2026-10-14 拆开）：
+        两件事性质不同 —— 登录是用户自己要把自己放进来，总闸管的是
+        "系统主动去打扰钉钉 / 同事"。拆开之后可以「只开登录、不开放审批」。
+        """
+        return bool(
+            self.dingtalk_app_key
+            and self.dingtalk_app_secret
+            and not self.dingtalk_login_off
+        )
+
+    @property
     def cors_origin_list(self) -> list[str]:
         return [x.strip() for x in self.cors_origins.split(",") if x.strip()]
+
+    @property
+    def trusted_proxy_ip_list(self) -> list[str]:
+        """返回配置的代理 IP/CIDR，空白和非法项交给调用方忽略。"""
+        return [x.strip() for x in self.trusted_proxy_ips.split(",") if x.strip()]
 
     @property
     def wecom_contact_ready(self) -> bool:

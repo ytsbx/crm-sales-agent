@@ -1,39 +1,59 @@
-import { useRef, useState } from 'react'
+import { showDownloadResult } from '../../shared/download-feedback'
+import { formatBeijingDate, formatBeijingTime } from '../../shared/beijing-time'
+import { useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { ApprovalHistory, ContractBasis } from './CustomerApproval'
+import { approvalProgress, formatApprovalEventTime } from '../knowledge/approval-progress'
+import { api } from '../../shared/api/client'
+import { templateFieldLabel } from './template-fields'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Button,
-  Checkbox,
   DatePicker,
+  Dropdown,
   Input,
   Modal,
   Select,
   Table,
-  Tabs,
-  Tag,
   Toast,
   TextArea,
 } from '@douyinfe/semi-ui'
 import { usePermissions } from '../../shared/hooks/permissions'
+import PageHeader from '../../shared/components/PageHeader'
+import HelpTip from '../../shared/components/HelpTip'
 import SectionCard from '../../shared/components/SectionCard'
+import StatusDot from '../../shared/components/StatusDot'
+import type { TagTone } from '../../shared/types'
+import BlockedHint, { useBlockedNotify } from '../../shared/components/BlockedHint'
+import GuardedButton from '../../shared/components/GuardedButton'
+import { blockedReasons } from '../../shared/components/blocked-hint-reasons'
 import { listCustomers } from '../../shared/api/customer'
 import { listOrders } from '../../shared/api/order'
 import { listQuoteVersions, listQuotes } from '../../shared/api/quote'
 import { downloadFile, listBusinessFiles, uploadFile } from '../../shared/api/file'
 import { downloadContractDoc } from '../../shared/download-contract'
 import {
-  createContractTemplate,
-  generateContractDocument,
+  uploadContractDocument,
   getContractDocument,
   listContractDocuments,
-  listContractTemplates,
   signContractDocument,
+  startContractOaApproval,
+  withdrawContractDingTalkApproval,
   voidContractDocument,
+  deleteContractDocument,
   type ContractDocument,
   type ContractAmendment,
   type ContractSignedFile,
-  type ContractTemplate,
 } from '../../shared/api/contract'
-import { optionMatcher, withCode } from '../../shared/components/optionMatch'
+import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
+import {
+  AdoptOaInstanceModal,
+  ResolveOaActions,
+} from '../../shared/components/ResolveOaActions'
+import { newRequestKey } from '../../shared/api/requestKey'
+import AutoOaSync from '../../shared/components/AutoOaSync'
+import SyncOaButton from '../../shared/components/SyncOaButton'
+import { oaSyncErrorMessage, type OaApprovalInstance } from '../../shared/api/dingtalk'
 
 const STATUS_TONE: Record<string, 'green' | 'grey' | 'red'> = {
   signed: 'green',
@@ -41,45 +61,58 @@ const STATUS_TONE: Record<string, 'green' | 'grey' | 'red'> = {
   void: 'red',
 }
 
+function contractStage(doc: ContractDocument) {
+  const oaStatus = doc.dingtalk_oa_row?.status ?? doc.dingtalk_oa?.status
+  const needsApproval = Boolean(doc.original_file_id || doc.dingtalk_oa || doc.dingtalk_oa_row)
+  const historical = (doc.dingtalk_oa_row?.provider ?? doc.dingtalk_oa?.provider) === 'dingtalk'
+  if (doc.status === 'signed') return { action: 'read', hint: '回签已归档，可在「签署原件」查看双方签好的合同。' }
+  if (doc.status !== 'draft') return { action: 'read', hint: '可在详情核对合同和已归档的文件。' }
+  if (oaStatus === 'pending' || oaStatus === 'submitting') {
+    return { action: 'review', hint: '等待同序 OA 审批。通过后，再把双方签好的合同登记回签。' }
+  }
+  if (oaStatus === 'needs_review') {
+    return { action: 'review', hint: '请按合同编号到同序 OA 核对上次是否发起成功，确认结果后再处理。' }
+  }
+  if (oaStatus === 'rejected') {
+    return { action: historical ? 'review' : 'start', hint: historical
+      ? '历史审批已驳回，可查看处理意见。'
+      : '先查看同序 OA 的驳回意见，按意见处理合同后再发起审批。' }
+  }
+  if (needsApproval && oaStatus !== 'approved') {
+    return { action: historical ? 'review' : 'start', hint: historical
+      ? '请查看这份合同的历史审批进度。'
+      : '核对合同原件和双方主体后，发起同序 OA 审批。' }
+  }
+  if (doc.original_file_id && doc.doc_type !== 'monthly' && !doc.order_id && !doc.quote_id) {
+    return { action: 'basis', hint: '先补上正式订单或已发出的报价，再登记回签。' }
+  }
+  return { action: 'sign', hint: '收到双方签好的合同后，点「登记回签」上传并归档签署件。' }
+}
+
 const DETAIL_LABEL = { fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 2 }
 const DETAIL_VALUE = { fontSize: 13 }
 
-/** 模板正文里要求补充的「空白项」：解析 `{{extra.名称}}`，按出现顺序去重。
- *
- * 为什么要从模板里读、而不是让人手写：
- * 模板作者在正文里写 `付款方式：{{extra.付款方式}}`，生成合同的人只需要知道
- * **「付款方式」这一格填什么**。此前界面上给的是一个空文本框 + 一行提示
- * "每行一条「名称=内容」，对应 {{extra.名称}}" —— 等于把模板语法甩给业务员：
- * 既不知道该填哪几项（要回去翻模板正文），也不知道格式对不对
- * （漏个等号、用错中文逗号都只会静默不生效）。
- * 字段名以模板为准，用户只填值，这一类错误就不存在了。
- */
-function parseExtraFields(body: string): string[] {
-  const names: string[] = []
-  const seen = new Set<string>()
-  for (const match of body.matchAll(/\{\{\s*extra\.([^}]+?)\s*\}\}/g)) {
-    const name = match[1].trim()
-    if (name && !seen.has(name)) {
-      seen.add(name)
-      names.push(name)
-    }
-  }
-  return names
-}
-
 export default function DocumentsPage() {
+  /* 1024 宽内容区约 700px，合同台账九列合计 1123px，整张表被裁在卡片外、
+     底部常驻横向滚动条。窄屏切紧凑档：类型并进合同编号第二行，
+     客户并进标题第二行，到期日 / 签署时间不在列表里占位，操作列收 3 个链接。 */
+  const [compact, setCompact] = useState(() => window.innerWidth < 1200)
+  useEffect(() => {
+    const onResize = () => setCompact(window.innerWidth < 1200)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
   const queryClient = useQueryClient()
   const { can, isReviewer } = usePermissions()
   const canManage = can('order:manage')
-  const canSet = can('settings:manage')
-  const [activeKey, setActiveKey] = useState('documents')
 
-  const templatesQuery = useQuery({ queryKey: ['contract-templates'], queryFn: listContractTemplates })
   // 台账真分页：后端原来写死 limit 500，第 501 份合同在页面上永远不出现、也没有提示
   const [docPage, setDocPage] = useState(1)
+  const [docPageSize, setDocPageSize] = useState(20)
   const documentsQuery = useQuery({
-    queryKey: ['contract-documents', docPage],
-    queryFn: () => listContractDocuments({ page: docPage, page_size: 20 }),
+    queryKey: ['contract-documents', docPage, docPageSize],
+    queryFn: () => listContractDocuments({ page: docPage, page_size: docPageSize }),
   })
   // 客户下拉改成服务端搜索：原来只拉前 200 个客户，第 201 个以后根本选不到
   const [customerKeyword, setCustomerKeyword] = useState('')
@@ -89,34 +122,23 @@ export default function DocumentsPage() {
   })
 
   const refresh = () => {
-    void queryClient.invalidateQueries({ queryKey: ['contract-templates'] })
     void queryClient.invalidateQueries({ queryKey: ['contract-documents'] })
   }
 
-  // 新建模板版本
-  const [templateVisible, setTemplateVisible] = useState(false)
-  const [templateForm, setTemplateForm] = useState({
-    doc_type: 'contract',
-    name: '',
-    body: '客户：{{customer.name}}\n签约日：{{today}}\n付款方式：{{extra.付款方式}}',
-  })
-  const createTemplateMutation = useMutation({
-    mutationFn: () => createContractTemplate(templateForm),
-    onSuccess: () => {
-      Toast.success('模板版本已保存')
-      setTemplateVisible(false)
-      refresh()
-    },
-    onError: (error: Error) => Toast.error(error.message),
-  })
-
-  // 生成合同草稿
-  const [generateVisible, setGenerateVisible] = useState(false)
+  // 上传合同原文件，并明确条款版本的提供方
+  const [uploadVisible, setUploadVisible] = useState(false)
   // 幂等键：打开弹窗时生成一个，同一张弹窗里的重复提交带的是同一个值。
   // 后端据此把第二次请求认成"刚才那份"，不再多建一份带独立编号的草稿。
-  const [generateRequestKey, setGenerateRequestKey] = useState('')
-  const [generateForm, setGenerateForm] = useState({
-    template_id: undefined as number | undefined,
+  const [uploadRequestKey, setUploadRequestKey] = useState('')
+  const [originalFile, setOriginalFile] = useState<File | null>(null)
+  const [originalFileId, setOriginalFileId] = useState<number | null>(null)
+  const [contractTitle, setContractTitle] = useState('')
+  const [contractNumber, setContractNumber] = useState('')
+  const [numberRuleType, setNumberRuleType] = useState<'manual' | 'rule'>('manual')
+  const [ourCompany, setOurCompany] = useState('')
+  const [counterparty, setCounterparty] = useState('')
+  const [contractOrigin, setContractOrigin] = useState<'company' | 'customer' | undefined>()
+  const [uploadForm, setUploadForm] = useState({
     customer_id: undefined as number | undefined,
     // 正式依据（业务口径：条款可以先备，但登记签署前必须挂上订单或已发出的报价）
     order_id: undefined as number | undefined,
@@ -125,101 +147,147 @@ export default function DocumentsPage() {
     quote_version_id: undefined as number | undefined,
     expiry_date: '',
     effective_date: '',
-    // 模板空白项的值：键就是模板里 {{extra.名称}} 的名称。
-    // 之所以不再是一个手写的「名称=内容」文本框，见 parseExtraFields 的注释。
-    extraValues: {} as Record<string, string>,
   })
-  // 当前选中的模板，以及**它要求补充哪几项**（字段名直接从模板正文解析）。
-  // 界面上只让用户填值，不再让他自己写 `名称=内容`（见 parseExtraFields）。
-  const selectedTemplate = (templatesQuery.data ?? []).find(
-    (t) => t.id === generateForm.template_id,
-  )
-  const extraFieldNames = selectedTemplate ? parseExtraFields(selectedTemplate.body) : []
-  const unfilledExtras = extraFieldNames.filter(
-    (name) => !(generateForm.extraValues[name] ?? '').trim(),
-  )
-
-  // 补充协议 / 续签：从原文档发起，带上 parent_id。原件的正文、签署件都不动，
-  // 新文档在台账上能顺着 parent_id 找回出处（"这份补充协议是补哪份合同"）。
-  const [generateParent, setGenerateParent] = useState<ContractDocument | null>(null)
-  // 续签时是否替代旧协议：**默认不勾**。提前续签、旧协议还在适用期很常见，
-  // 一登记就掐掉旧提醒会让还在生效的协议没人管。
-  const [supersedeParent, setSupersedeParent] = useState(false)
   // 订单 / 报价 / 报价版本三级联动，全部跟着所选客户走——
   // 不这么做的话，跨客户把别家的单子挂上来，只能等提交时被后端拒掉。
+  // 同一客户下单据可能超过一页：循环取全，不能只取前 50 条。
   const genOrdersQuery = useQuery({
-    queryKey: ['contract-gen-orders', generateForm.customer_id],
-    queryFn: () => listOrders({ customer_id: generateForm.customer_id, page: 1, page_size: 50 }),
-    enabled: Boolean(generateForm.customer_id) && generateVisible,
+    queryKey: ['contract-gen-orders', uploadForm.customer_id],
+    queryFn: async () => {
+      const filter = { customer_id: uploadForm.customer_id, page_size: 100 }
+      const first = await listOrders({ ...filter, page: 1 })
+      const all = [...first.items]
+      for (let page = 2; all.length < first.total; page += 1) {
+        const next = await listOrders({ ...filter, page })
+        if (!next.items.length) break
+        all.push(...next.items)
+      }
+      return { ...first, items: all }
+    },
+    enabled: Boolean(uploadForm.customer_id) && uploadVisible,
   })
   const genQuotesQuery = useQuery({
-    queryKey: ['contract-gen-quotes', generateForm.customer_id],
-    queryFn: () => listQuotes({ customer_id: generateForm.customer_id, page: 1, page_size: 50 }),
-    enabled: Boolean(generateForm.customer_id) && generateVisible,
+    queryKey: ['contract-gen-quotes', uploadForm.customer_id],
+    queryFn: async () => {
+      const filter = { customer_id: uploadForm.customer_id, page_size: 100 }
+      const first = await listQuotes({ ...filter, page: 1 })
+      const all = [...first.items]
+      for (let page = 2; all.length < first.total; page += 1) {
+        const next = await listQuotes({ ...filter, page })
+        if (!next.items.length) break
+        all.push(...next.items)
+      }
+      return { ...first, items: all }
+    },
+    enabled: Boolean(uploadForm.customer_id) && uploadVisible,
   })
   const genVersionsQuery = useQuery({
-    queryKey: ['contract-gen-quote-versions', generateForm.quote_id],
-    queryFn: () => listQuoteVersions(generateForm.quote_id!),
-    enabled: Boolean(generateForm.quote_id) && generateVisible,
+    queryKey: ['contract-gen-quote-versions', uploadForm.quote_id],
+    queryFn: () => listQuoteVersions(uploadForm.quote_id!),
+    enabled: Boolean(uploadForm.quote_id) && uploadVisible,
   })
   const genOrders = genOrdersQuery.data?.items ?? []
   const genQuotes = genQuotesQuery.data?.items ?? []
   const genVersions = genVersionsQuery.data ?? []
-  const selectedOrder = genOrders.find((o) => o.id === generateForm.order_id)
-  const generateMutation = useMutation({
-    mutationFn: () => {
-      // 只提交**当前模板真正要求**的那几项：中途换过模板时，旧模板的字段值还留在
-      // state 里，但新模板里没有它 —— 一并提交出去只会变成没人看的杂项。
-      // 空值不提交（后端对"没填"与"填了空"的处理一样，都会登记成缺项）。
-      const extra_fields: Record<string, string> = {}
-      for (const name of extraFieldNames) {
-        const value = (generateForm.extraValues[name] ?? '').trim()
-        if (value) extra_fields[name] = value
+  const selectedOrder = genOrders.find((o) => o.id === uploadForm.order_id)
+  const uploadMutation = useMutation({
+    mutationFn: async () => {
+      if (!uploadForm.customer_id) throw new Error('请选择合同所属客户')
+      if (!contractOrigin) throw new Error('请选择合同来源：我方合同或客户合同')
+      if (!contractTitle.trim()) throw new Error('请填写合同名称')
+      if (!ourCompany.trim()) throw new Error('请填写我方主体')
+      if (!counterparty.trim()) throw new Error('请填写对方主体')
+      let sourceId = originalFileId
+      if (!originalFile) throw new Error('请上传合同 Word 或 PDF 原文件')
+      if (!sourceId) {
+        const row = await uploadFile(originalFile)
+        sourceId = row.id
+        setOriginalFileId(row.id)
       }
-      return generateContractDocument({
-        template_id: generateForm.template_id!,
-        customer_id: generateForm.customer_id!,
-        order_id: generateForm.order_id ?? null,
-        quote_id: generateForm.quote_id ?? null,
-        quote_version_id: generateForm.quote_version_id ?? null,
-        extra_fields,
-        expiry_date: generateForm.expiry_date || null,
-        effective_date: generateForm.effective_date || null,
-        parent_id: generateParent?.id ?? null,
-        supersede_parent: supersedeParent,
-        request_key: generateRequestKey || undefined,
+      return uploadContractDocument({
+        original_file_id: sourceId,
+        contract_origin: contractOrigin,
+        title: contractTitle.trim(),
+        our_company: ourCompany.trim(),
+        counterparty_name: counterparty.trim(),
+        contract_number: numberRuleType === 'manual' ? (contractNumber.trim() || undefined) : undefined,
+        contract_number_rule_type: numberRuleType,
+        contract_number_rule_fix: numberRuleType === 'rule' ? '系统默认规则' : undefined,
+        customer_id: uploadForm.customer_id!,
+        order_id: uploadForm.order_id ?? null,
+        quote_id: uploadForm.quote_id ?? null,
+        quote_version_id: uploadForm.quote_version_id ?? null,
+        expiry_date: uploadForm.expiry_date || null,
+        effective_date: uploadForm.effective_date || null,
+        request_key: uploadRequestKey || undefined,
       })
     },
     onSuccess: (doc) => {
-      // 有缺项就不能只报「成功」：正文里留着 {{...}} 占位符，不说一声用户会以为模板坏了。
-      const missing = Object.keys(doc.missing_fields ?? {})
-      if (missing.length > 0) {
-        Toast.warning(
-          `草稿已生成，但有 ${missing.length} 处没填上：${missing.slice(0, 3).join('、')}` +
-            (missing.length > 3 ? ` 等 ${missing.length} 处` : ''),
-        )
-      } else {
-        Toast.success(`草稿已生成：${doc.doc_no}`)
-      }
-      setGenerateVisible(false)
-      setGenerateParent(null)
+      Toast.success(`合同 ${doc.doc_no} 已上传，可在详情核对后发起审批。`)
+      setUploadVisible(false)
+      setDetailTarget(doc)
       refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
   })
 
-  const openGenerateModal = (parent: ContractDocument | null) => {
-    setGenerateParent(parent)
-    // 每次打开都把上一次的续签选项清掉：勾选状态跟着弹窗走，不该跨次留存
-    setSupersedeParent(false)
-    // 空白项的值也一起清掉：上一次填的"付款方式"是上一份合同的约定，
-    // 留到这一次很容易被顺手带进新合同
-    setGenerateForm((prev) => ({ ...prev, effective_date: '', extraValues: {} }))
-    // 每次打开换一个新键：这一次生成对应这一张弹窗，重试才认得出是同一件事
-    setGenerateRequestKey(
-      typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}`,
-    )
-    setGenerateVisible(true)
+  const withdrawDingtalkMutation = useMutation({
+    mutationFn: (docId: number) => withdrawContractDingTalkApproval(docId),
+    onSuccess: () => {
+      Toast.success('已撤回 OA 合同审批')
+      refresh()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  const [oaStartTarget, setOaStartTarget] = useState<ContractDocument | null>(null)
+  const startOaMutation = useMutation({
+    mutationFn: (vars: { id: number; our_company: string; counterparty_name: string }) =>
+      startContractOaApproval(vars.id, {
+        our_company: vars.our_company,
+        counterparty_name: vars.counterparty_name,
+      }),
+    onSuccess: (row, { id }) => {
+      if (row.status === 'approved') Toast.success('审批已通过，收到双方签署件后可登记回签。')
+      else if (row.status === 'pending' && row.instance_id) Toast.success('已进入同序 OA 审批，可在合同详情查看进度。')
+      else Toast.warning('请在合同详情核对审批进度，确认结果前请勿重复提交。')
+      if (oaStartTarget?.id === id) setDetailTarget(oaStartTarget)
+      setOaStartTarget(null)
+      void queryClient.invalidateQueries({ queryKey: ['contract-detail', id] })
+      refresh()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  const openOaStart = (record: ContractDocument) => {
+    setOaStartTarget(record)
+  }
+
+  const submitOaStart = () => {
+    if (!oaStartTarget) return
+    // 主体在上传合同时已填并落库，这里不再让用户确认/修改
+    const our = (oaStartTarget.our_company ?? '').trim()
+    const other = (oaStartTarget.counterparty_name ?? '').trim()
+    if (!our || !other) {
+      Toast.warning('这份合同上传时没有填写主体，请重新上传或联系管理员补齐')
+      return
+    }
+    startOaMutation.mutate({ id: oaStartTarget.id, our_company: our, counterparty_name: other })
+  }
+
+  const openUploadModal = () => {
+    setOriginalFile(null)
+    setOriginalFileId(null)
+    setContractTitle('')
+    setContractNumber('')
+    setNumberRuleType('manual')
+    setOurCompany('')
+    setCounterparty('')
+    setContractOrigin(undefined)
+    setUploadForm({ customer_id: undefined, order_id: undefined, quote_id: undefined,
+      quote_version_id: undefined, expiry_date: '', effective_date: '' })
+    setUploadRequestKey(newRequestKey())
+    setUploadVisible(true)
   }
 
   // 登记签署：直接在本弹窗里上传签署扫描件（或从已上传的文件里挑一份），
@@ -228,6 +296,8 @@ export default function DocumentsPage() {
   const [signFileId, setSignFileId] = useState<number | null>(null)
   const [signUploading, setSignUploading] = useState(false)
   const signFileInput = useRef<HTMLInputElement>(null)
+  /** 合同原文件的隐藏输入框：可见触发器是按钮，不再露出浏览器原生控件 */
+  const originalFileInput = useRef<HTMLInputElement>(null)
   // 弹窗里当前是哪份合同。上传是异步的，回来时得靠它判断"还是不是同一份合同"——
   // 直接读 state 只会拿到发起上传那一刻的旧值，中途切了合同也照样回填。
   const signTargetIdRef = useRef<number | null>(null)
@@ -284,7 +354,7 @@ export default function DocumentsPage() {
   const signMutation = useMutation({
     mutationFn: () => signContractDocument(signTarget!.id, { file_id: signFileId! }),
     onSuccess: () => {
-      Toast.success('已登记签署')
+      Toast.success('回签已归档，可在合同详情的「签署原件」查看。')
       closeSignModal()
       refresh()
     },
@@ -296,12 +366,35 @@ export default function DocumentsPage() {
   // 单独拿它当"看签署原件"的入口也是这个道理：只给一个「下载」，
   // 用户会以为拿到的是签回来的那一份，实际是我们自己生成的稿子，事后对账就会扯皮。
   const [detailTarget, setDetailTarget] = useState<ContractDocument | null>(null)
+  const basisRef = useRef<HTMLDivElement>(null)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const requestedContract = searchParams.get('contract')
+  useEffect(() => {
+    if (!requestedContract || !/^\d+$/.test(requestedContract)) return
+    let active = true
+    getContractDocument(Number(requestedContract)).then((doc) => {
+      if (active) setDetailTarget(doc)
+    }).catch((error: Error) => { if (active) Toast.error(error.message) })
+    return () => { active = false }
+  }, [requestedContract])
+  // 认领弹窗（"结果待人工核对"时的三个出口之一）
+  const [adoptTarget, setAdoptTarget] = useState<OaApprovalInstance | null>(null)
+  const [adoptKey, setAdoptKey] = useState<string | null>(null)
   const detailQuery = useQuery({
     queryKey: ['contract-detail', detailTarget?.id],
     queryFn: () => getContractDocument(detailTarget!.id),
     enabled: Boolean(detailTarget),
+    refetchInterval: 5000,
+    refetchOnWindowFocus: true,
   })
   const detail = detailQuery.data
+  const detailStage = detail ? contractStage(detail) : null
+  const approvalSnapshot = detail?.dingtalk_oa
+  const approvalProvider = detail?.dingtalk_oa_row?.provider ?? approvalSnapshot?.provider
+  const oaHistory = approvalProvider === 'self_oa'
+    ? approvalProgress(detail?.dingtalk_oa_row?.result ?? approvalSnapshot?.result)
+    : []
+  const oaLabel = approvalProvider === 'dingtalk' ? '历史' : '同序 OA'
   const signedFiles: ContractSignedFile[] = detail?.signed_files ?? []
   const amendments: ContractAmendment[] = detail?.amendments ?? []
 
@@ -321,247 +414,442 @@ export default function DocumentsPage() {
     },
     onError: (error: Error) => Toast.error(error.message),
   })
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) => deleteContractDocument(id),
+    onSuccess: () => { Toast.success('合同已移入回收站'); refresh(); void queryClient.invalidateQueries({ queryKey: ['recycle', 'contracts'] }) },
+    onError: (error: Error) => Toast.error(error.message),
+  })
 
-  const templates = templatesQuery.data ?? []
   // 已选签署件的文件名：确认前要让用户看清"签的是哪份文件"，光给内部编号看不懂
-  const selectedSignFile = (signFilesQuery.data ?? []).find((row) => row.id === signFileId)
+  const signFiles = (signFilesQuery.data ?? []).filter((file) =>
+    file.id !== signTarget?.original_file_id && file.id !== signTarget?.generated_file_id)
+  const selectedSignFile = signFiles.find((row) => row.id === signFileId)
   const documents = documentsQuery.data?.items ?? []
+  /* 「到期日」这一列在真实数据里几乎是空的（草稿合同一律没有到期日）。
+     空着的 80px 一直占着首屏，把「标题」挤到只剩 12 个字、整列省略号。
+     有值才出这一列，没值就把宽度还给标题 —— 而不是固定留一列横杠。 */
+  const hasExpiry = documents.some((row) => Boolean(row.expiry_date))
+
+  const canUploadSignFile = can('file:manage')
+  const noFileManageReason =
+    '你没有「文件管理」权限，无法上传签署件；请让有该权限的同事上传，或请管理员为你开通后重试。'
+  const signBlocked = [
+    // 已经选到签署件时不再说权限：这时确认键是**能点**的（从已上传的文件里选一份照样能登记），
+    // 说了就变成「明明能签却告诉我还不能」的假话。只有选不出文件时这条才是真原因。
+    { ok: canUploadSignFile || Boolean(signFileId), reason: noFileManageReason },
+    // 上传中确认键也是灰的：这时说「请先选择或上传签署件」是句假话（文件正在传），要分开说
+    { ok: !signUploading, reason: '签署件正在上传，等上传完成后再确认签署。' },
+    { ok: Boolean(signFileId) || signUploading, reason: '请先选择或上传要登记的签署件。' },
+  ]
+  const signBlockedReasons = blockedReasons(signBlocked)
+  // ① 看得见（弹窗底部常驻）+ ② 点得动。确认键在弹窗 footer（portal）里，外面包一层收不到点击，
+  // 所以照 SampleFromSourceModal 的做法把**那段说明**做成点击落点；上传键就在正文里，
+  // 能直接包一层 —— 灰着的时候点它自己也会弹一句同样的话。
+  const notifySignBlocked = useBlockedNotify(signBlockedReasons, '登记签署')
+  const voidNeedsReviewerReason =
+    '已签合同的作废需要复核人（主管）操作；请联系主管处理，或请管理员为你开通复核权限后重试。'
+  const notifyVoidBlocked = useBlockedNotify([voidNeedsReviewerReason], '作废')
 
   return (
-    <div style={{ padding: 20, maxWidth: 1200, margin: '0 auto' }}>
-      <Tabs type="line" activeKey={activeKey} onChange={setActiveKey} tabList={[
-        { tab: '文档台账', itemKey: 'documents' },
-        { tab: '合同模板', itemKey: 'templates' },
-      ]} />
-
-      {activeKey === 'documents' && (
-        <SectionCard>
-          <div className="toolbar" style={{ marginBottom: 10 }}>
-            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-              生成即快照：客户资料之后修改不影响已生成的合同；「下载生成稿」和「看签署原件」
-              是两个入口，下载不等于已签
-            </span>
-            <div style={{ flex: 1 }} />
-            {canManage && (
-              <Button theme="solid" onClick={() => openGenerateModal(null)}>
-                从模板生成
-              </Button>
-            )}
-          </div>
-          <Table<ContractDocument>
+    <div className="page-container">
+        {/* 原来直接从卡片开始，没有标题区；其他模块都有「XX 中心 + 一句说明」，
+            切过来会觉得少了一块（2026-11-16 巡检）。 */}
+        <PageHeader
+          title="文档管理"
+          subtitle="我方合同、客户合同均上传原文件；审批在同序 OA 办理，CRM 同步进度并跟催回签归档"
+          /* 2026-11-20：原来「上传合同」单独占卡片内左上角一行，右边一整排空白，
+             和其它列表页"新建类按钮在页头右上"（案例库「新建案例」）也不一致。
+             挪到页头 extra，卡片从表格直接开始。 */
+          extra={canManage && (
+            <Button type="primary" theme="outline" onClick={() => openUploadModal()}>
+              上传合同
+            </Button>
+          )}
+        />
+        <SectionCard
+          className={(documents?.length ?? 0) <= 8 ? 'auto-height' : undefined}
+        >
+          <Table<ContractDocument> className="table-center documents-table"
             columns={[
-              { title: '编号', dataIndex: 'doc_no', width: 150 },
-              { title: '类型', dataIndex: 'doc_type_label', width: 100 },
-              { title: '标题', dataIndex: 'title' },
-              { title: '客户', dataIndex: 'customer_name', width: 160 },
+              // 140 放不下 12 位的合同编号（实测被截成「CT202610140…」）。
+              // 156 是刚好够 + 又不把表格撑出横向滚动条的宽度。
+              // 类型并到编号下面第二行（2026-11-19，原宽屏档有独立「类型」列 85px）：
+              // 九列加起来 1118、容器约 1130，标题只分到 120（约 7 个字），
+              // 15 字的「【全场景演示】销售合同-甲」整列都是省略号。
+              // 把类型降级成 11px 小灰字挂在编号下，空出的 85px 全给标题（120→205）。
+              // 不丢信息、不多行高（客户列本来就是两行），宽屏窄屏从此同一套读法。
+              {
+                title: '合同编号',
+                dataIndex: 'doc_no',
+                /* 148 刚够 14 位的 CT202611180001（13px 约 133），原来 156 多给了 8px。 */
+                width: compact ? 128 : 148,
+                render: (v: string, record: ContractDocument) => (
+                  <div>
+                    <div>{v}</div>
+                    <div style={{ marginTop: 2, fontSize: 11, color: 'var(--crm-text-3)' }}>
+                      {record.doc_type_label ?? '-'}
+                    </div>
+                  </div>
+                ),
+              },
+              // 标题不给上限时它会吃掉所有剩余宽度（实测 270px），
+              // 把后面的列全顶到屏幕外；205 是"销售合同-甲"这类标题的实测
+              // 上限（约 12–13 字）再留些余量。
+              {
+                title: '标题',
+                dataIndex: 'title',
+                /* 205 只够 12–13 个字；「【验收】非正式合同 202611180001」被截成
+                   「【验收】非正式合同 20261…」。没有到期日列时把省下的 80px 给它。 */
+                /* 190 时「销售合同（化妆品外箱+内衬）」这种还是被截（2026-11-20 实拍），
+                   而右边其实还剩七十来像素 —— 九列合计 1057 撑不满 1130。
+                   把余量给标题：hasExpiry 档 190→240（无到期日档本来就 288）。 */
+                width: compact ? 160 : hasExpiry ? 220 : 288,
+                // 标题超过列宽会被省略成「【全场景演示】销售…」，悬停要看得到全文
+                // （2026-11-17 视觉审视 V-03）。同时给 title 属性，键盘/读屏也能读到。
+                render: (v: string, record: ContractDocument) => (
+                  <div style={{ minWidth: 0 }}>
+                    <span
+                      title={v}
+                      className="cell-strong"
+                      style={{
+                        display: 'block',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {v}
+                    </span>
+                    {compact && (
+                      <div
+                        title={record.customer_name ?? '-'}
+                        style={{
+                          marginTop: 2,
+                          fontSize: 11,
+                          color: 'var(--crm-text-3)',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {record.customer_name ?? '-'}
+                      </div>
+                    )}
+                  </div>
+                ),
+              },
+              ...(compact
+                ? []
+                : [// 客户名是台账的识别维度：原来 95px 只够放五个字，
+                // 满屏「青岛包装…」「【全场景…」，一列全是省略号等于没有客户列。
+                // 从标题（160→120）和到期日（90→80）各让一点，整表总宽不变。
+                {
+                  title: '客户',
+                  dataIndex: 'customer_name',
+                  width: 116,
+                  // 140px 只放得下七八个字，「【全场景演示】华东复购采购客户」这
+                  // 类名字照样截。改成最多两行：一行装不下的往下走，行的总高
+                  // 只多一行，比整列显示成「【全场景演示】…」有用得多。
+                  render: (v: string | null) => (
+                    <span
+                      title={v ?? ''}
+                      style={{ display: 'block', whiteSpace: 'normal', lineHeight: 1.45 }}
+                    >
+                      {v || '-'}
+                    </span>
+                  ),
+                }]),
               {
                 title: '状态',
                 dataIndex: 'status_label',
-                width: 100,
+                /* 88 会把「待签草稿」压成「待签草稿…」：四个字 ≈56 + 圆点 8 + 间距 6 + 内边距 24。 */
+                width: compact ? 96 : 96,
                 render: (v: string, record: ContractDocument) => (
-                  <Tag color={STATUS_TONE[record.status] ?? 'grey'}>{v}</Tag>
+                  <StatusDot label={v} tone={(STATUS_TONE[record.status] ?? 'grey') as TagTone} />
                 ),
               },
-              { title: '到期日', dataIndex: 'expiry_date', width: 110, render: (v: string | null) => v ?? '-' },
-              { title: '签署时间', dataIndex: 'signed_at', width: 130, render: (v: string | null) => (v ? v.slice(0, 10) : '-') },
               {
                 // 「依据」= 这份合同是照哪一版报价 / 哪张订单签的。
                 // 报价能出 V2/V3，不写清版本，台账上光看单号证明不了金额依据。
-                title: '依据',
-                width: 170,
+                title: compact ? '依据' : (
+                  <span className="crm-help-label">
+                    依据 / 来源
+                    <HelpTip forLabel="依据 / 来源" text="这份合同是照哪一版报价或哪张订单签的。报价会有 V2、V3，写清版本才能对上金额。" />
+                  </span>
+                ),
+                /* 130：13 位的 SO202611180001（13px 约 101）+ 内边距 24 = 125，刚好放下；
+                   再宽就是白占，不够就是「Q202610120001 …」。 */
+                /* 134 时实测「SO202611180001」还是被压成「SO2026111800…」（2026-11-20 截图），
+                   14 位单号比注释里估的 13 位长一位。让 15px 给「标题」，单号就不省略了。 */
+                /* 160：14 位单号 + 「 V1」后缀（Q202610120001 V1）在 149 时仍被压成
+                   「Q202610120001 …」（2026-11-20 实拍）。 */
+                width: compact ? 170 : 160,
                 render: (_: unknown, record: ContractDocument) => {
                   const header = record.header_snapshot
-                  if (record.quote_version_no) {
-                    return `${header?.quote_no ?? '报价'} V${record.quote_version_no}`
-                  }
-                  if (header?.order_no) return `订单 ${header.order_no}`
-                  if (header?.quote_no) return `报价 ${header.quote_no}`
-                  return <span style={{ color: 'var(--crm-text-3)' }}>未绑定</span>
+                  const basis = record.quote_version_no
+                    ? `${header?.quote_no ?? '报价'} V${record.quote_version_no}`
+                    : header?.order_no
+                      ? `订单 ${header.order_no}`
+                      : header?.quote_no
+                        ? `报价 ${header.quote_no}`
+                        : ''
+                  // 「依据」和「合同来源」合成一列：前者是照哪版报价签的，
+                  // 后者是我方合同 / 客户合同，都属"这份合同从哪来"。
+                  // 两列各占 170 / 105，加起来把整表顶出卡片；合成一列后
+                  // 来源退成第二行小灰字，一屏就塞得下了，也省得横向拖。
+                  return (
+                    <div style={{ display: 'grid', gap: 2 }}>
+                      {basis ? (
+                        <span
+                          title={basis}
+                          /* 窄屏 170px 放不下「订单 + 15 位单号」：去掉前缀，
+                             单号本身 SO / Q 开头就能认出是订单还是报价 */
+                          data-compact={compact ? '1' : undefined}
+                          style={{
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {/* 宽屏也去掉「订单 / 报价」前缀：SO / Q 开头本来就认得出，
+                              5 个字的前缀换 5 个字的单号，150px 才放得下完整单号。 */}
+                          {basis.replace(/^(订单|报价) /, '')}
+                        </span>
+                      ) : (
+                        <span style={{ color: 'var(--crm-text-3)' }}>未绑定</span>
+                      )}
+                      <span style={{ fontSize: 11, color: 'var(--crm-text-3)' }}>
+                        {record.contract_origin_label || '来源未标注'}
+                      </span>
+                    </div>
+                  )
                 },
               },
+              // 「合同来源」从第 4 位挪到「依据」后面：它是"我方合同 / 客户合同"，
+              // 实际数据里满屏都是「历史未标注」，占着黄金位置却没信息；
+              // 让位给「依据」——那份合同到底照哪一版报价签的，才是要一眼看到的。
+              // 到期日 / 签署时间是两个**经常为空**的列（草稿合同一律是横杠），
+              // 却排在首屏位置上，把真正有内容的「依据」挤到了滚动区。
+              // 有值的往前、空着的往后 —— 用户不用横滑就能看见这段合同照哪版报价签的。
+              /* 整列都是 "-" 的列不上（见上面 hasExpiry）：一排横杠不是信息，
+                 还占着首屏最值钱的一段宽度。有一条带到期日就正常显示。 */
+              ...(compact || !hasExpiry
+                ? []
+                /* 92 时实测被压成「2027-0…」；和签署时间同一个日期格式，
+                   108 才是"不省略"的线。 */
+                : [{ title: '到期日', dataIndex: 'expiry_date', width: 108, render: (v: string | null) => v ?? '-' }]),
+              // ⚠️ 原来是 `.slice(0, 10)`（UTC 取日）；签署时间是 UTC 瞬时，
+              // 北京时间凌晨签的会显示成前一天。
+              ...(compact
+                ? []
+                /* 100 时实测被 Semi 压成「2026-11…」：2026-11-18 是 10 个字符 ≈ 96px，
+                   108 才是"不省略"的线。 */
+                : [{ title: '签署时间', dataIndex: 'signed_at', width: 108, render: (v: string | null) => (v ? formatBeijingDate(v) : '-') }]),
               {
                 // 「下载」不跟管理操作挤在一起：下载接口要的是 order:view，
                 // 原来整列挂在 canManage 下，只读用户连下载入口都看不见。
                 title: '操作',
-                width: 260,
-                render: (_: unknown, record: ContractDocument) => (
-                  <span style={{ display: 'inline-flex', gap: 12, flexWrap: 'wrap' }}>
-                    {/* 走共用封装：原件丢失 / 没权限 / 网络失败都要把话说出来，
-                        不能 `void` 掉一个会失败的 Promise（那样点了没反应） */}
-                    <a onClick={() => void downloadContractDoc(record)}>下载生成稿</a>
-                    {/* 详情：抬头快照、依据、关系链、签署原件都收在这里。
-                        签署原件**光看状态看不出来**，必须点进来才知道拿到的到底是哪一份。 */}
-                    <a onClick={() => setDetailTarget(record)}>详情</a>
-                    {canManage && record.status === 'draft' && (
-                      <a onClick={() => openSignModal(record)}>登记签署</a>
-                    )}
-                    {/* 补充协议 / 续签：从原文档发起，新文档带 parent_id 指回来。
-                        原件不动，旧版永远查得到。 */}
-                    {canManage && record.status !== 'void' && (
-                      <a onClick={() => openGenerateModal(record)}>补充/续签</a>
-                    )}
-                    {/* 已签合同的作废要主管：不是主管就不给入口，省得点完吃一个 403 */}
-                    {canManage &&
-                      record.status !== 'void' &&
-                      (record.status !== 'signed' || isReviewer) && (
-                        <a
-                          style={{ color: 'var(--crm-danger, #d45)' }}
-                          onClick={() => {
-                            setVoidTarget(record)
-                            setVoidReason('')
-                          }}
+                // 九个列宽加起来 1146，比内容区（1130）多 16，挤出横向滚动条。
+                // 从「到期日」和「操作」各让一点：到期日 90 够放 2026-11-16。
+                // 165 不变：加宽会把整张表撑出横向滚动条（2026-11-17 实拍到 200 就滚了）。
+                // 所以这里靠"每个词只占该占的字数"来省地方：下载、签署都是两个字的动作词。
+                /* 三个动作词（详情 / 下载 / 更多）实测 140，150 留一点余量。 */
+                /* 170：草稿态的「详情 / 登记回签 / 更多」三个词，150 时最后那个被压成
+                   「更多…」（2026-11-20 实拍）。总宽仍守在 1130 以内，标题让出 20。 */
+                width: compact ? 144 : 162,
+                // 这一列原来是 260 宽、还排在最后：整张表 1400、容器只有 1130，
+                // 结果「下载 / 详情 / 登记签署」全被推到屏幕外，必须横向拖才能点 ——
+                // 高频操作用户最不该找不着。固定在右侧，横滑时它始终在。
+                // 170 是按"下载合同原稿 + 详情"两个链接实测的，少了会变省略号。
+                fixed: 'right',
+                // 操作列收敛（2026-11-17 视觉审视 D-01）：原来最多 7 个文字链接挤在
+                // 165px 里，竖成 4 行、整行被撑高，看着像一列乱码。现在分三层：
+                //   ① 详情 / 下载原稿       —— 谁都要用的两个
+                //   ② 当前阶段该做的那一个   —— 草稿态是「登记签署」，OA 审批中是「查看 OA 审批」
+                //   ③ 「更多」下拉          —— 撤回 OA / 发起 OA / 作废 / 删除这些长尾
+                // 判据一个没动：能不能点、点了会失败还是成功，仍走原来的权限与状态判断；
+                // 只是把"入口摆在哪"改了。作废被复核人挡住时，条目仍给，点一下弹原因。
+                render: (_: unknown, record: ContractDocument) => {
+                  const oaPending = (record.dingtalk_oa_row?.status ?? record.dingtalk_oa?.status) === 'pending'
+                  const { action, hint } = contractStage(record)
+                  const stageAction = canManage && record.status === 'draft' ? {
+                    label: action === 'sign' ? '登记回签' : action === 'start' && !record.dingtalk_oa
+                      ? '发起审批' : action === 'basis' ? '补依据' : '看审批',
+                    onClick: () => {
+                      if (action === 'sign') openSignModal(record)
+                      else if (action === 'start' && !record.dingtalk_oa) openOaStart(record)
+                      else setDetailTarget(record)
+                    },
+                  } : null
+                  // 主操作只能有一个（2026-11-17 复验 D-01 收尾）：
+                  // 草稿态是「签署 / 看 OA」，其余状态（已签、作废）就是「下载」——
+                  // 那一行的下一步动作本来就是把这单原件发出去。
+                  const primaryAction = stageAction ?? {
+                    label: '下载',
+                    onClick: () => void downloadContractDoc(record),
+                  }
+                  // 「下载」不做主操作时退到「更多」里，仍是同一个入口、同一个权限判断，
+                  // 只是不再跟主操作抢同一行的视觉重量。
+                  const downloadInMore = Boolean(stageAction)
+
+                  const more: { key: string; label: string; onClick?: () => void; danger?: boolean }[] = []
+
+                  if (downloadInMore) {
+                    more.push({ key: 'download', label: '下载原件', onClick: () => void downloadContractDoc(record) })
+                  }
+
+                  if (canManage && record.status === 'draft') {
+                    if (oaPending) {
+                      more.push({
+                        key: 'withdraw-oa',
+                        label: '撤回 OA 审批',
+                        onClick: () =>
+                          Modal.confirm({
+                            title: '撤回 OA 合同审批？',
+                            content: '撤回只对仍在审批中的 OA 流程生效，已完成的审批不能撤回。',
+                            onOk: () => withdrawDingtalkMutation.mutate(record.id),
+                          }),
+                      })
+                    } else if ((record.dingtalk_oa_row?.provider ?? record.dingtalk_oa?.provider) === 'dingtalk') {
+                      // 只读的历史同序 OA 审批：给一行说明，不占主位
+                      more.push({ key: 'oa-readonly', label: '历史同序 OA 审批（只读，不能重提）' })
+                    }
+                  }
+
+                  if (canManage && record.status !== 'void') {
+                    if (record.status !== 'signed' || isReviewer) {
+                      more.push({
+                        key: 'void',
+                        danger: true,
+                        label: '作废',
+                        onClick: () => {
+                          setVoidTarget(record)
+                          setVoidReason('')
+                        },
+                      })
+                    } else {
+                      // 不是复核人：条目照样给，点一下把原因说出来（不静默消失）
+                      more.push({ key: 'void-blocked', label: '作废（需复核人操作）', onClick: notifyVoidBlocked })
+                    }
+                  }
+
+                  if (canManage && (record.status === 'draft' || record.status === 'void')) {
+                    more.push({
+                      key: 'delete',
+                      danger: true,
+                      label: '删除',
+                      onClick: () =>
+                        Modal.confirm({
+                          title: `删除合同 ${record.doc_no}？`,
+                          content: '合同将移入回收站，可在"回收站 → 合同"中恢复。',
+                          okButtonProps: { type: 'danger' },
+                          onOk: () => deleteMutation.mutate(record.id),
+                        }),
+                    })
+                  }
+
+                  return (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap', fontSize: 13, paddingRight: 2 }}>
+                      <a onClick={() => setDetailTarget(record)}>详情</a>
+                      {/* 收敛后只剩三样：详情（看）、一个主操作（做）、更多（长尾）。
+                          原来「下载」和阶段动作并排都是蓝的，看不出这行该干什么。 */}
+                      <a
+                        title={stageAction ? hint : '下载合同原件'}
+                        style={{ color: 'var(--crm-primary)', fontWeight: 600 }}
+                        onClick={primaryAction.onClick}
+                      >
+                        {primaryAction.label}
+                      </a>
+                      {more.length > 0 && (
+                        <Dropdown
+                          trigger="click"
+                          position="bottomRight"
+                          clickToHide
+                          render={
+                            <Dropdown.Menu>
+                              {more.map((item) => (
+                                <Dropdown.Item
+                                  key={item.key}
+                                  onClick={item.onClick ?? (() => Toast.info(item.label))}
+                                >
+                                  <span style={{ color: item.danger ? 'var(--crm-danger, #d45)' : undefined }}>
+                                    {item.label}
+                                  </span>
+                                </Dropdown.Item>
+                              ))}
+                            </Dropdown.Menu>
+                          }
                         >
-                          作废
-                        </a>
+                          <a style={{ color: 'var(--crm-text-2)' }}>更多</a>
+                        </Dropdown>
                       )}
-                  </span>
-                ),
+                    </span>
+                  )
+                },
               },
             ]}
+            // 原来这里是 scroll={{ x: 'max(100%, 1400px)' }} —— 把表格最小宽硬锁在 1400，
+            // 于是无论怎么调列宽都还是 1400、永远留着横向滚动条（容器只有 1130）。
+            // Semi 对这类字符串写法会直接当 min-width 用。现在列宽和约 1110 < 1130，
+            // 去掉它，表格就跟着容器走，一屏看完不用横滑。
+            // 但少了 scroll 参数后 Semi 会按列宽合计撑开（实测 1146 > 容器 1130），
+            // 所以补一条 x: '100%' 明确要求「宽度跟容器」，列多时按比例压。
+            scroll={{ x: '100%' }}
             dataSource={documents}
             loading={documentsQuery.isLoading}
             rowKey="id"
-            pagination={{
+            pagination={(documentsQuery.data?.total ?? 0) <= docPageSize ? false : {
               currentPage: docPage,
-              pageSize: 20,
+              pageSize: docPageSize,
               total: documentsQuery.data?.total ?? 0,
               onPageChange: setDocPage,
+              showSizeChanger: true,
+              pageSizeOpts: [10, 20, 50, 100],
+              onPageSizeChange: (size: number) => { setDocPageSize(size); setDocPage(1) },
             }}
-            empty="还没有合同文档——点「从模板生成」"
+            empty={
+              canManage
+                ? '还没有合同，点击「上传合同」添加原文件'
+                : '还没有合同文档。上传合同需要「订单管理」权限，请联系管理员或合同负责人。'
+            }
           />
-        </SectionCard>
-      )}
-
-      {activeKey === 'templates' && (
-        <SectionCard>
-          <div className="toolbar" style={{ marginBottom: 10 }}>
-            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-              占位符：{'{{customer.name}}'}、{'{{order.order_no}}'}、{'{{today}}'}、{'{{extra.自定义项}}'}；改模板=新增版本，旧版本不删
-            </span>
-            <div style={{ flex: 1 }} />
-            {canSet && (
-              <Button theme="solid" onClick={() => setTemplateVisible(true)}>
-                新建模板版本
-              </Button>
-            )}
-          </div>
-          <Table<ContractTemplate>
-            columns={[
-              { title: '类型', dataIndex: 'doc_type_label', width: 110 },
-              { title: '名称', dataIndex: 'name', width: 220 },
-              { title: '版本', dataIndex: 'version', width: 80 },
-              {
-                title: '当前版',
-                dataIndex: 'is_current',
-                width: 90,
-                render: (v: boolean) => (v ? <Tag color="green">当前</Tag> : <Tag color="grey">历史</Tag>),
-              },
-              {
-                title: '正文摘要',
-                render: (_: unknown, record: ContractTemplate) =>
-                  record.body.length > 60 ? `${record.body.slice(0, 60)}…` : record.body,
-              },
-            ]}
-            dataSource={templates}
-            loading={templatesQuery.isLoading}
-            rowKey="id"
-            pagination={false}
-            empty="还没有模板"
-          />
-        </SectionCard>
-      )}
-
-      <Modal
-        title="新建模板版本"
-        visible={templateVisible}
-        onCancel={() => setTemplateVisible(false)}
-        onOk={() => createTemplateMutation.mutate()}
-        confirmLoading={createTemplateMutation.isPending}
-        okText="保存"
-        cancelText="取消"
-        width={560}
-      >
-        <div style={{ display: 'grid', gap: 12 }}>
-          <div>
-            <div style={{ marginBottom: 4 }}>类型</div>
-            <Select
-              style={{ width: '100%' }}
-              value={templateForm.doc_type}
-              onChange={(v) => setTemplateForm({ ...templateForm, doc_type: v as string })}
-              optionList={[
-                { value: 'contract', label: '销售合同' },
-                { value: 'monthly', label: '月结协议' },
-              ]}
-            />
-          </div>
-          <div>
-            <div style={{ marginBottom: 4 }}>模板名称（同名自动累加版本）</div>
-            <Input value={templateForm.name} onChange={(v) => setTemplateForm({ ...templateForm, name: v })} />
-          </div>
-          <div>
-            <div style={{ marginBottom: 4 }}>正文（用 {'{{}}'} 占位符）</div>
-            <TextArea
-              rows={8}
-              value={templateForm.body}
-              onChange={(v) => setTemplateForm({ ...templateForm, body: v })}
-            />
-            {/* 写模板的人能立刻看到"这份模板会让业务员填哪几项"——
-                占位符名写错了（少个括号、extra 拼成 extta）在这里就能发现，
-                否则要等生成合同时正文里留着一串 {{}} 才看得出来。 */}
-            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 4 }}>
-              业务员生成时要补充：
-              {parseExtraFields(templateForm.body).join('、') ||
-                '（这个模板没有空项，业务员直接生成即可）'}
-            </div>
-          </div>
-        </div>
-      </Modal>
-
-      <Modal
-        title={generateParent ? `补充/续签：基于 ${generateParent.doc_no}` : '从模板生成合同'}
-        visible={generateVisible}
-        onCancel={() => {
-          setGenerateVisible(false)
-          setGenerateParent(null)
-        }}
-        onOk={() => generateMutation.mutate()}
-        confirmLoading={generateMutation.isPending}
-        okText="生成草稿"
-        cancelText="取消"
-        width={560}
-      >
-        <div style={{ display: 'grid', gap: 12 }}>
-          {generateParent && (
-            <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-              这份新文档会挂在 <b>{generateParent.doc_no}</b> 下面（原合同不动，历史版本保留）。
+          {((documentsQuery.data?.total ?? 0) <= docPageSize) && (
+            <div style={{ marginTop: 10, textAlign: 'right', fontSize: 12, color: 'var(--crm-text-3)' }}>
+              共 {documentsQuery.data?.total ?? 0} 条
             </div>
           )}
-          <div>
-            <div style={{ marginBottom: 4 }}>模板（当前版）</div>
-            <Select
-              style={{ width: '100%' }}
-              placeholder="选择模板"
-              value={generateForm.template_id}
-              onChange={(v) => setGenerateForm({ ...generateForm, template_id: v as number })}
-              optionList={templates
-                .filter((t) => t.is_current && t.enabled)
-                .map((t) => ({ value: t.id, label: `${t.doc_type_label} · ${t.name} v${t.version}` }))}
-            />
-          </div>
+        </SectionCard>
+
+      <Modal
+        title="上传合同"
+        visible={uploadVisible}
+        onCancel={() => {
+          if (uploadMutation.isPending) { Toast.warning('合同正在保存，请稍候'); return }
+          setUploadVisible(false)
+            }}
+        onOk={() => uploadMutation.mutate()}
+        confirmLoading={uploadMutation.isPending}
+        maskClosable={!uploadMutation.isPending}
+        okText="上传合同"
+        cancelText="取消"
+        okButtonProps={{ disabled: !contractTitle.trim() || !ourCompany.trim() || !counterparty.trim() }}
+        width={720}
+      >
+        <div style={{ display: 'grid', gap: 12 }}>
           <div>
             <div style={{ marginBottom: 4 }}>客户</div>
             <Select
               style={{ width: '100%' }}
-              placeholder="搜索客户名称（服务端搜索，不止前 200 个）"
+              placeholder="搜索客户名称"
               filter={optionMatcher}
               // remote：不在本地过滤，把关键字交给服务端查 —— 客户上千条时本地那点数据不够用
               remote
               loading={customersQuery.isFetching}
               onSearch={setCustomerKeyword}
-              value={generateForm.customer_id}
+              value={uploadForm.customer_id}
               onChange={(v) =>
-                setGenerateForm({
-                  ...generateForm,
+                setUploadForm({
+                  ...uploadForm,
                   customer_id: v as number,
                   // 换客户必须把依据一起清掉：上一家的订单/报价挂到这一家头上，
                   // 提交时会被后端拒掉，但让用户先选好再被拒更莫名其妙。
@@ -570,194 +858,231 @@ export default function DocumentsPage() {
                   quote_version_id: undefined,
                 })
               }
-              optionList={(customersQuery.data?.items ?? []).map((c) => ({
-                value: c.id,
-                label: withCode(c.name, c.id),
-              }))}
+              optionList={optionsWithCodeOnDuplicate(
+                customersQuery.data?.items ?? [],
+                (c) => c.name,
+                (c) => c.id,
+              )}
             />
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>关联订单（可选）</div>
+            <div style={{ marginBottom: 4 }}>合同来源（必选）</div>
             <Select
               style={{ width: '100%' }}
-              placeholder={generateForm.customer_id ? '这张客户下的正式订单' : '先选客户'}
-              filter={optionMatcher}
-              disabled={!generateForm.customer_id}
-              loading={genOrdersQuery.isFetching}
-              value={generateForm.order_id}
-              onChange={(v) => setGenerateForm({ ...generateForm, order_id: v as number })}
-              optionList={genOrders.map((o) => ({
-                value: o.id,
-                label: `${o.order_no} · ¥${o.total_amount}`,
-              }))}
-            />
-            {selectedOrder?.quote_version_id && (
-              <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 4 }}>
-                这张订单是照某个报价版本转过来的，生成时会自动采用那一版（不用再选）
-              </div>
-            )}
-          </div>
-          <div>
-            <div style={{ marginBottom: 4 }}>关联报价（可选）</div>
-            <Select
-              style={{ width: '100%' }}
-              placeholder={generateForm.customer_id ? '这张客户下的报价单' : '先选客户'}
-              filter={optionMatcher}
-              disabled={!generateForm.customer_id}
-              loading={genQuotesQuery.isFetching}
-              value={generateForm.quote_id}
-              onChange={(v) =>
-                setGenerateForm({
-                  ...generateForm,
-                  quote_id: v as number,
-                  // 换报价就清掉版本：那是上一张报价的版本号，挂到新报价上必然对不上
-                  quote_version_id: undefined,
-                })
-              }
-              optionList={genQuotes.map((q) => ({
-                value: q.id,
-                label: `${q.quote_no}（${q.status_label}）`,
-              }))}
-            />
-          </div>
-          <div>
-            <div style={{ marginBottom: 4 }}>报价版本（决定合同上的金额与条款）</div>
-            <Select
-              style={{ width: '100%' }}
-              placeholder={generateForm.quote_id ? '选具体版本' : '先选报价单'}
-              disabled={!generateForm.quote_id}
-              loading={genVersionsQuery.isFetching}
-              value={generateForm.quote_version_id}
-              onChange={(v) => setGenerateForm({ ...generateForm, quote_version_id: v as number })}
-              optionList={genVersions.map((v) => ({
-                value: v.id,
-                label: `V${v.version_no} · ¥${v.total_amount}`,
-              }))}
+              placeholder="选择我方合同或客户合同"
+              value={contractOrigin}
+              onChange={(v) => setContractOrigin(v as 'company' | 'customer')}
+              optionList={[{ value: 'company', label: '我方合同' }, { value: 'customer', label: '客户合同' }]}
             />
             <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 4 }}>
-              合同会钉死这一版：报价之后出 V2、V3 都不会改动已生成的合同。
-              不选也能先备条款，但登记签署前必须补上正式依据。
+              我方合同：使用我方提供的条款版本；客户合同：使用客户提供的条款版本。
             </div>
           </div>
-          {/* 模板空白项：字段名**从模板正文里读出来**，用户只填值。
-              此前是一个空文本框 + 提示"每行一条「名称=内容」，对应 {{extra.名称}}"
-              —— 业务员既不知道该填哪几项，也不知道格式对不对。 */}
-          {extraFieldNames.length > 0 ? (
-            <div>
-              <div style={{ marginBottom: 4 }}>
-                需要补充的信息（这个模板有 {extraFieldNames.length} 处待填）
-              </div>
-              <div style={{ display: 'grid', gap: 8 }}>
-                {extraFieldNames.map((name) => (
-                  <div
-                    key={name}
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: 'minmax(0, 110px) minmax(0, 1fr)',
-                      gap: 8,
-                      alignItems: 'center',
-                    }}
-                  >
-                    <div style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>{name}</div>
-                    <Input
-                      value={generateForm.extraValues[name] ?? ''}
-                      placeholder={`填写「${name}」`}
-                      onChange={(v) =>
-                        setGenerateForm({
-                          ...generateForm,
-                          extraValues: { ...generateForm.extraValues, [name]: v },
-                        })
-                      }
-                    />
-                  </div>
-                ))}
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 6 }}>
-                {unfilledExtras.length > 0
-                  ? `还有 ${unfilledExtras.length} 项没填（${unfilledExtras.join('、')}）。` +
-                    '不填也能先生成草稿，正文里会留着空白标记，确认后再补。'
-                  : '这几项会填进合同正文对应的位置。'}
-              </div>
-            </div>
-          ) : selectedTemplate ? (
-            <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-              这个模板没有需要临时补充的空项，直接生成即可。
-            </div>
-          ) : null}
           <div>
-            <div style={{ marginBottom: 4 }}>到期日（月结协议建议填写，到期前自动提醒负责人）</div>
-            <DatePicker
-              type="date"
-              format="yyyy-MM-dd"
-              showClear
-              style={{ width: '100%' }}
-              placeholder="选择到期日（可留空）"
-              value={generateForm.expiry_date ? new Date(generateForm.expiry_date) : undefined}
-              onChange={(_, dateStr) =>
-                setGenerateForm({ ...generateForm, expiry_date: (dateStr as string) || '' })
-              }
+            <div style={{ marginBottom: 4 }}>合同名称<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
+            <Input value={contractTitle} onChange={setContractTitle} placeholder="填写合同名称，需与同序 OA 一致" />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div>
+              <div style={{ marginBottom: 4 }}>我方主体<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
+              <Input value={ourCompany} onChange={setOurCompany} placeholder="请填写我方签约主体全称" />
+            </div>
+            <div>
+              <div style={{ marginBottom: 4 }}>对方主体<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
+              <Input value={counterparty} onChange={setCounterparty} placeholder="请填写对方签约主体全称" />
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div>
+              <div style={{ marginBottom: 4 }}>合同编号生成方式<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
+              <Select
+                value={numberRuleType}
+                onChange={(v) => setNumberRuleType(v as 'manual' | 'rule')}
+                optionList={[
+                  { value: 'manual', label: '手动填写' },
+                  { value: 'rule', label: '选择已有合同编号规则' },
+                ]}
+              />
+            </div>
+            <div>
+              {numberRuleType === 'manual' ? (
+                <div>
+                  <div style={{ marginBottom: 4 }}>合同编号</div>
+                  <Input
+                    value={contractNumber}
+                    onChange={setContractNumber}
+                    placeholder="选填；留空则使用 CRM 自动生成的编号"
+                  />
+                </div>
+              ) : (
+                <div>
+                  <div style={{ marginBottom: 4 }}>合同编号规则<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
+                  <Input value="系统默认规则" readOnly placeholder="系统默认规则" />
+                  <div style={{ fontSize: 12, color: '#8a94a6', marginTop: 4 }}>
+                    系统将根据所选规则自动生成合同编号
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>
+              <span className="crm-help-label">
+                合同原文件（Word / PDF）
+                <HelpTip forLabel="合同原文件" text="我方准备、还没盖章签署的合同文本。客户签回来的那一份叫「签署原件」，两者分开保存。" />
+              </span>
+            </div>
+            {/* 原来直接摆一个浏览器原生「选择文件 / 未选择任何文件」，
+                和同页 Semi 控件不是一个物种（2026-11-17 视觉审视 V2-12）。
+                改成和「上传签署件」同一套：自定义按钮 + 隐藏输入框，
+                系统文件选择窗口仍然是浏览器原生的（这层该原生就原生）。 */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <Button onClick={() => originalFileInput.current?.click()}>选择文件</Button>
+              <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                {originalFile ? originalFile.name : '尚未选择文件（支持 .pdf / .doc / .docx）'}
+              </span>
+              {originalFile && (
+                <a
+                  onClick={() => {
+                    setOriginalFile(null)
+                    setOriginalFileId(null)
+                    if (originalFileInput.current) originalFileInput.current.value = ''
+                  }}
+                >
+                  清除
+                </a>
+              )}
+            </div>
+            <input
+              ref={originalFileInput}
+              type="file"
+              accept=".pdf,.doc,.docx"
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                const file = e.target.files?.[0] || null
+                setOriginalFile(file); setOriginalFileId(null)
+                if (file && !contractTitle) setContractTitle(file.name.replace(/\.[^.]+$/, ''))
+              }}
             />
           </div>
-          {generateParent && (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <div>
-              <div style={{ marginBottom: 4 }}>协议生效日（续签建议填写）</div>
+              <div style={{ marginBottom: 4 }}>关联订单（可选）</div>
+              <Select
+                style={{ width: '100%' }}
+                placeholder={uploadForm.customer_id ? '这张客户下的正式订单' : '先选客户'}
+                filter={optionMatcher}
+                disabled={!uploadForm.customer_id}
+                loading={genOrdersQuery.isFetching}
+                value={uploadForm.order_id}
+                onChange={(v) => setUploadForm({ ...uploadForm, order_id: v as number })}
+                optionList={genOrders.map((o) => ({
+                  value: o.id,
+                  label: `${o.order_no} · ¥${o.total_amount}`,
+                }))}
+              />
+              {selectedOrder?.quote_version_id && (
+                <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 4 }}>
+                  这张订单是照某个报价版本转过来的，关联时会自动采用那一版（不用再选）
+                </div>
+              )}
+            </div>
+            <div>
+              <div style={{ marginBottom: 4 }}>关联报价（可选）</div>
+              <Select
+                style={{ width: '100%' }}
+                placeholder={uploadForm.customer_id ? '这张客户下的报价单' : '先选客户'}
+                filter={optionMatcher}
+                disabled={!uploadForm.customer_id}
+                loading={genQuotesQuery.isFetching}
+                value={uploadForm.quote_id}
+                onChange={(v) =>
+                  setUploadForm({
+                    ...uploadForm,
+                    quote_id: v as number,
+                    // 换报价就清掉版本：那是上一张报价的版本号，挂到新报价上必然对不上
+                    quote_version_id: undefined,
+                  })
+                }
+                optionList={genQuotes.map((q) => ({
+                  value: q.id,
+                  label: `${q.quote_no}（${q.status_label}）`,
+                }))}
+              />
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div>
+              <div style={{ marginBottom: 4 }}>报价版本（决定合同上的金额与条款）</div>
+              <Select
+                style={{ width: '100%' }}
+                placeholder={uploadForm.quote_id ? '选具体版本' : '先选报价单'}
+                disabled={!uploadForm.quote_id}
+                loading={genVersionsQuery.isFetching}
+                value={uploadForm.quote_version_id}
+                onChange={(v) => setUploadForm({ ...uploadForm, quote_version_id: v as number })}
+                optionList={genVersions.map((v) => ({
+                  value: v.id,
+                  label: `V${v.version_no} · ¥${v.total_amount}`,
+                }))}
+              />
+              <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 4 }}>
+                合同会钉死这一版：报价之后出 V2、V3 都不会改动已保存的合同。
+                不选也能先备条款，但登记签署前必须补上正式依据。
+              </div>
+            </div>
+            <div>
+              <div style={{ marginBottom: 4 }}>合同到期日（可选）</div>
               <DatePicker
                 type="date"
                 format="yyyy-MM-dd"
                 showClear
                 style={{ width: '100%' }}
-                placeholder="选择生效日（可留空）"
-                value={generateForm.effective_date ? new Date(generateForm.effective_date) : undefined}
+                placeholder="选择到期日（可留空）"
+                value={uploadForm.expiry_date ? new Date(uploadForm.expiry_date) : undefined}
                 onChange={(_, dateStr) =>
-                  setGenerateForm({ ...generateForm, effective_date: (dateStr as string) || '' })
+                  setUploadForm({ ...uploadForm, expiry_date: (dateStr as string) || '' })
                 }
               />
-              <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 4 }}>
-                只记到期日处理不了"提前签、未来才生效"——那种情况下旧协议还得继续适用一段。
-              </div>
             </div>
-          )}
-          {generateParent && generateParent.doc_type === 'monthly' && (
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-              <Checkbox
-                checked={supersedeParent}
-                onChange={(e) => setSupersedeParent(Boolean(e.target.checked))}
-              />
-              <div>
-                <div>替代原协议 {generateParent.doc_no}</div>
-                <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                  勾上才会结束原协议的在办提醒。原协议本身**不改状态、不动作废**（那是另一回事）。
-                  提前续签、新协议还没生效时别勾——否则还在适用的旧协议就没人管了。
-                </div>
-              </div>
-            </div>
-          )}
+          </div>
         </div>
       </Modal>
 
       <Modal
-        title={`登记签署：${signTarget?.doc_no ?? ''}`}
+        width={520}
+        title={
+          <span className="crm-help-label">
+            登记回签：{signTarget?.doc_no ?? ''}
+            <HelpTip forLabel="登记回签" text="把客户盖章后寄回的合同扫描件上传归档。回签完成，这份合同才算正式生效。" />
+          </span>
+        }
+        style={{ maxWidth: 'calc(100vw - 32px)' }}
         visible={Boolean(signTarget)}
         onCancel={closeSignModal}
         onOk={() => signMutation.mutate()}
         confirmLoading={signMutation.isPending}
         // 上传没结束时不许确认：这会儿 signFileId 可能是上一份的，也可能还是空的
         okButtonProps={{ disabled: !signFileId || signUploading }}
-        okText="确认签署"
+        okText="确认归档"
         cancelText="取消"
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-            上传签署扫描件（或从已上传的文件里选一份）。签署件与草稿在台账上分开可见。
+            上传或选择双方签好的合同。确认归档后，在合同详情的「签署原件」可以找到这份文件。
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <Button
+            {/* 灰按钮要能解释自己：用共用件 `GuardedButton`（2026-10-15 换），
+              它内部就是"禁用态 pointerEvents:none + 外层接点击"，页面不用再手写。 */}
+            <GuardedButton
               loading={signUploading}
-              disabled={!can('file:manage')}
+              disabled={!canUploadSignFile}
+              blockedReasons={canUploadSignFile ? [] : [noFileManageReason]}
+              action="上传"
               onClick={() => signFileInput.current?.click()}
             >
               上传签署件
-            </Button>
+            </GuardedButton>
             <input
               ref={signFileInput}
               type="file"
@@ -770,25 +1095,61 @@ export default function DocumentsPage() {
             />
             <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
               {signFileId
-                ? `已选：${selectedSignFile?.file_name ?? `文件 #${signFileId}`}`
+                ? `已选：${selectedSignFile?.file_name ?? '已选文件'}`
                 : '尚未选择文件'}
             </span>
           </div>
-          {(signFilesQuery.data ?? []).length > 0 && (
+          {signFiles.length > 0 && (
             <Select
               placeholder="或从已上传的文件里选"
               value={signFileId ?? undefined}
               onChange={(value) => setSignFileId(value as number)}
-              optionList={(signFilesQuery.data ?? []).map((row) => ({
+              optionList={signFiles.map((row) => ({
                 value: row.id,
                 label: row.file_name,
               }))}
             />
           )}
+          {/* 弹窗底部（页脚正上方）：确认键灰着的时候，原因必须在同一屏里看得见 ——
+              上面那个「从已上传的文件里选」下拉在没有文件时根本不渲染，用户可能一眼看不到任何出路。
+              这段文字本身也是「点得动」的落点：灰按钮不吃点击，用户自然会点在它旁边这行字上
+              （确认键在弹窗 footer 里，包一层收不到点击，做法同 SampleFromSourceModal）。 */}
+          {signBlockedReasons.length > 0 && (
+            <div
+              data-blocked-click="1"
+              className="blocked-hint-click"
+              style={{ display: 'block' }}
+              onClick={notifySignBlocked}
+            >
+              <BlockedHint reasons={signBlockedReasons} action="登记签署" />
+            </div>
+          )}
         </div>
       </Modal>
 
       <Modal
+        width={520}
+        title={`发起同序 OA 合同审批：${oaStartTarget?.doc_no ?? ''}`}
+        style={{ maxWidth: 'calc(100vw - 32px)' }}
+        visible={Boolean(oaStartTarget)}
+        onCancel={() => setOaStartTarget(null)}
+        onOk={submitOaStart}
+        confirmLoading={startOaMutation.isPending}
+        okText="提交 OA 审批"
+        okButtonProps={{ disabled: !oaStartTarget?.our_company?.trim() || !oaStartTarget?.counterparty_name?.trim() }}
+        cancelText="取消"
+      >
+        <div style={{ display: 'grid', gap: 10 }}>
+          <p className="workflow-guide">提交后由同序 OA 审批。可回合同详情看进度，通过后再登记回签。</p>
+          <div>我方主体：{oaStartTarget?.our_company || '未填写'}</div>
+          <div>对方主体：{oaStartTarget?.counterparty_name || '未填写'}</div>
+          {(!oaStartTarget?.our_company?.trim() || !oaStartTarget?.counterparty_name?.trim()) &&
+            <p className="workflow-guide">这份合同缺少签约主体。请联系管理员补齐信息后再提交。</p>}
+        </div>
+      </Modal>
+
+      <Modal
+        width={520}
         title={`作废：${voidTarget?.doc_no ?? ''}`}
         visible={Boolean(voidTarget)}
         onCancel={closeVoidModal}
@@ -800,7 +1161,7 @@ export default function DocumentsPage() {
       >
         <div style={{ display: 'grid', gap: 8 }}>
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-            作废后不可恢复，已生成的原件仍保留。原因会写进台账和审计，请写清楚真实原因
+            作废后不可恢复，已上传或存档的原件仍保留。原因会写进台账和审计，请写清楚真实原因
             —— 原来这里固定写死「页面作废」，等于什么也没说。
           </div>
           <TextArea
@@ -816,19 +1177,46 @@ export default function DocumentsPage() {
       <Modal
         title={`文档详情：${detailTarget?.doc_no ?? ''}`}
         visible={Boolean(detailTarget)}
-        onCancel={() => setDetailTarget(null)}
+        onCancel={() => {
+          setDetailTarget(null)
+          if (requestedContract) {
+            setSearchParams((previous) => {
+              const next = new URLSearchParams(previous)
+              next.delete('contract')
+              return next
+            }, { replace: true })
+          }
+        }}
         footer={null}
         width={620}
+        style={{ maxWidth: 'calc(100vw - 32px)' }}
       >
         {detailQuery.isLoading && <div>读取中…</div>}
+        {detailQuery.isError && <Button onClick={() => void detailQuery.refetch()}>重新读取合同详情</Button>}
         {detail && (
           <div style={{ display: 'grid', gap: 14 }}>
+            {detailStage && <div className="workflow-next">
+              <strong>下一步</strong>
+              <p className="workflow-guide">{detailStage.hint}</p>
+              {canManage && detailStage.action === 'start' &&
+                <Button onClick={() => openOaStart(detail)}>发起同序 OA 审批</Button>}
+              {canManage && detailStage.action === 'sign' &&
+                <Button onClick={() => openSignModal(detail)}>登记回签</Button>}
+              {canManage && detailStage.action === 'basis' && <Button onClick={() => {
+                basisRef.current?.scrollIntoView({ block: 'start' })
+                basisRef.current?.focus({ preventScroll: true })
+              }}>去补业务依据</Button>}
+            </div>}
             <div>
-              <div style={DETAIL_LABEL}>抬头（生成时固定，客户/公司后来改名也不影响下载）</div>
+              <div style={DETAIL_LABEL}>抬头（建档时固定，客户/公司后来改名也不影响下载）</div>
               <div style={DETAIL_VALUE}>
                 {detail.header_snapshot?.company_name || '（未设置公司抬头）'} · 客户：
                 {detail.header_snapshot?.customer_name ?? detail.customer_name ?? '-'}
               </div>
+            </div>
+            <div>
+              <div style={DETAIL_LABEL}>合同来源</div>
+              <div style={DETAIL_VALUE}>{detail.contract_origin_label || '历史未标注'}</div>
             </div>
             <div>
               <div style={DETAIL_LABEL}>依据</div>
@@ -857,35 +1245,101 @@ export default function DocumentsPage() {
               </div>
             </div>
             <div>
-              <div style={DETAIL_LABEL}>签署原件（客户签回来、上传登记的那一份）</div>
+              <div style={DETAIL_LABEL}>
+                <span className="crm-help-label">
+                  签署原件（客户签回来、上传登记的那一份）
+                  <HelpTip forLabel="签署原件" text="客户盖章后寄回、登记回签时上传的那一份。它是合同生效的凭据，不能拿未签原稿代替。" />
+                </span>
+              </div>
               {signedFiles.length === 0 ? (
                 <div style={{ color: 'var(--crm-danger, #d45)', fontSize: 12 }}>
                   {detail.status === 'signed'
-                    ? '没有找到签署原件：登记时挂上的文件可能已被删除或解绑。不能拿生成稿当签署件用，请向经手人确认原件去向。'
+                    ? '没有找到签署原件：登记时挂上的文件可能已被删除或解绑。不能拿未签原稿当签署件用，请向经手人确认原件去向。'
                     : '还没有登记签署。'}
                 </div>
               ) : (
                 signedFiles.map((row) => (
                   <div key={row.file_id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     {can('file:view') ? (
-                      <a onClick={() => void downloadFile(row.file_id, row.file_name)}>{row.file_name}</a>
+                      <a onClick={() => void showDownloadResult(downloadFile(row.file_id, row.file_name))}>{row.file_name}</a>
                     ) : (
                       <span>{row.file_name}</span>
                     )}
                     <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
                       {Math.max(1, Math.round(row.size / 1024))} KB
-                      {row.attached_at ? ` · 登记于 ${row.attached_at.slice(0, 10)}` : ''}
+                      {row.attached_at ? ` · 登记于 ${formatBeijingDate(row.attached_at)}` : ''}
                     </span>
                   </div>
                 ))
               )}
             </div>
+            {canManage && detail.status === 'draft' && detail.original_file_id && detail.doc_type !== 'monthly'
+              && !detail.order_id && !detail.quote_id &&
+              <div ref={basisRef} tabIndex={-1}><ContractBasis doc={detail} /></div>}
+            {(approvalSnapshot || detail.dingtalk_oa_row) && (
+              <div>
+                <div style={DETAIL_LABEL}>{oaLabel} 合同审批</div>
+                {/* 5 秒那次只能读 CRM 里存着的快照 —— OA 那边批了，CRM 不动它也永远是 pending。
+                    这里挂 AutoOaSync：打开详情先对一次 OA，仍在审批中时每 10 秒对一次，
+                    拿到"已通过"就立刻回写并刷新本页，用户不必自己去点"立即同步"。
+                    只在 self_oa + pending 时启用，权限沿用页面的 canManage。 */}
+                <AutoOaSync
+                  enabled={canManage}
+                  row={detail.dingtalk_oa_row}
+                  invalidateKeys={[['contract-detail', detail.id], ['contract-documents']]}
+                />
+                {canManage && detail.dingtalk_oa_row?.instance_id && <SyncOaButton oaId={detail.dingtalk_oa_row.id} invalidateKeys={[[ 'contract-detail',detail.id ],['contract-documents']]}/>}
+                <div style={DETAIL_VALUE}>
+                  {detail.dingtalk_oa_row?.status_label || '审批进度'}
+                  {approvalSnapshot?.synced_at
+                    ? ` · 最近同步 ${formatBeijingTime(approvalSnapshot.synced_at)}`
+                    : ''}
+                </div>
+                {approvalSnapshot?.instance_id && !detail.dingtalk_oa_row?.instance_id && canManage && <Button size="small" onClick={async () => {
+                  try {
+                    await api.post(`/contract-documents/${detail.id}/approval-sync`, {})
+                    void queryClient.invalidateQueries({ queryKey: ['contract-detail', detail.id] })
+                    refresh()
+                    Toast.success('审批进度已同步')
+                  } catch (e) { Toast.error(oaSyncErrorMessage(e)) }
+                }}>刷新{oaLabel}进度</Button>}
+                {approvalProvider !== 'self_oa' && approvalSnapshot?.result && <ApprovalHistory result={approvalSnapshot.result} />}
+                {approvalProvider === 'self_oa' && (oaHistory.length > 0 ? (
+                  <ul className="contract-oa-history" aria-label="同序 OA 审批记录">
+                    {oaHistory.map((entry, index) => (
+                      <li key={index}>
+                        <div className="contract-oa-history-heading">
+                          <strong>{entry.person} · {entry.node}</strong>
+                          <span>{entry.status}{entry.time ? ` · ${formatApprovalEventTime(entry.time)}` : ''}</span>
+                        </div>
+                        {entry.remark && <p>{entry.remark}</p>}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (detail.dingtalk_oa_row?.status ?? approvalSnapshot?.status) === 'rejected' && (
+                  <p className="workflow-guide">CRM 还没有收到处理意见，可到同序 OA 查看。</p>
+                ))}
+                {approvalProvider !== 'self_oa' && detail.dingtalk_oa_row && (
+                  <div style={{ marginTop: 8, display: 'flex', gap: 12 }}>
+                    <ResolveOaActions
+                      row={detail.dingtalk_oa_row}
+                      invalidateKeys={[['contract-detail', detailTarget?.id]]}
+                      onAdopt={(target) => {
+                        setAdoptTarget(target)
+                        setAdoptKey(newRequestKey())
+                      }}
+                      onDone={() => void detailQuery.refetch()}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
             {Object.keys(detail.missing_fields ?? {}).length > 0 && (
               <div>
-                <div style={DETAIL_LABEL}>生成时没填上的地方（正文里留着占位符）</div>
-                <div style={{ fontSize: 12, color: 'var(--crm-warning, #d68000)' }}>
+                <div style={DETAIL_LABEL}>历史合同尚未填入的信息</div>
+                <div style={{ fontSize: 12, color: 'var(--crm-warning)' }}>
                   {Object.entries(detail.missing_fields)
-                    .map(([token, reason]) => `${token}（${reason}）`)
+                    .map(([token, reason]) => `${templateFieldLabel(token)}（${reason}）`)
                     .join('；')}
                 </div>
               </div>
@@ -893,6 +1347,15 @@ export default function DocumentsPage() {
           </div>
         )}
       </Modal>
+      <AdoptOaInstanceModal
+        target={adoptTarget}
+        requestKey={adoptKey}
+        invalidateKeys={[['contract-detail', detailTarget?.id], ['contract-documents', docPage]]}
+        onClose={() => {
+          setAdoptTarget(null)
+          setAdoptKey(null)
+        }}
+      />
     </div>
   )
 }

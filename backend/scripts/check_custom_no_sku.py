@@ -21,15 +21,16 @@
 
 import asyncio
 import json
+from datetime import UTC, datetime
+from decimal import Decimal
 import sys
 import time
 import urllib.error
 import urllib.request
 
-# 外币夹具：造美元报价前要先把业务口径放开（业务方也是这么做的），跑完收回。
-# 见 scripts/_fx_scope.py 的说明 —— 收不回去会连累后面所有套件。
-from _fx_scope import open_export, restore_domestic
-from _test_support import require_api_base, require_isolated_db
+# 外币夹具：**直接造历史数据**（不再放开口径 —— 币种是固定白名单，改配置也不放行）。
+# 判据都是"历史外币数据的读取路径要有定义行为"，见各节里的说明。
+from _test_support import confirm_freight_before_submit, require_api_base, require_isolated_db
 
 require_isolated_db()
 
@@ -146,6 +147,34 @@ async def _purge(s, ids):
         await s.execute(text('delete from opportunities where id = :o'), oi)
 
 
+async def admin_min_margin() -> Decimal:
+    """取 admin 的**实际**最低利润率 —— 与 `pricing.resolve_min_margin` 同口径。
+
+    为什么不能写死 0.15：那是"角色没配价格权限"时的兜底值。管理员角色**通常配了**
+    （种子里是 0，意思是"不受限"），此时底价就等于成本。写死 15% 会让这套断言
+    在正常配置下失败 —— 而失败的原因不是代码错，是断言假设了一个不成立的配置。
+    """
+    from sqlalchemy import text
+
+    from app.core.database import SessionLocal
+
+    async with SessionLocal() as s:
+        v = (await s.execute(text(
+            "select coalesce(min(p.minimum_margin), "
+            "(select (value->>'ratio')::numeric from system_settings "
+            " where key='default_min_margin'), 0.15) "
+            "from price_permissions p join roles r on r.id = p.role_id "
+            "where r.code = 'admin' and p.status = 'active'"))).scalar_one()
+    return Decimal(str(v))
+
+
+def floor_of(cost: Decimal, margin: Decimal) -> float:
+    """底价 = 成本 ÷ (1 − 最低利润率)，与核价引擎同一公式。"""
+    if margin >= 1:
+        return float(cost)
+    return float((Decimal(cost) / (Decimal(1) - margin)).quantize(Decimal('0.01')))
+
+
 async def cleanup(ids):
     from app.core.database import SessionLocal
 
@@ -194,6 +223,75 @@ async def cleanup_leftovers():
         ))
         await s.execute(text("delete from approval_rules where name like 'CHK定制免审%'"))
         await s.commit()
+
+
+async def seed_foreign_custom_item(customer_id, opportunity_id, inquiry_id,
+                                    *, unit_cost, quoted_price, currency):
+    """造一条**历史**外币定制行，返回 (报价 id, 版本 id, 明细)。
+
+    走产品函数 `build_item_snapshot`（`sku_id=None` → 定制路径），不是自己塞值 ——
+    那样这一节就白测了。
+    """
+    import uuid as _uuid
+
+    from app.core.database import SessionLocal
+    from app.modules.pricing import service as pricing_service
+    from app.modules.quote import service as quote_service
+    from app.modules.quote.model import Quote, QuoteVersion
+
+    async with SessionLocal() as session:
+        quote = Quote(
+            quote_no=f'CHKFXC{_uuid.uuid4().hex[:6]}',
+            customer_id=customer_id,
+            opportunity_id=opportunity_id,
+            owner_id=1,
+            status='draft',
+        )
+        session.add(quote)
+        await session.flush()
+        version = QuoteVersion(
+            quote_id=quote.id,
+            version_no=1,
+            currency=currency,
+            subtotal_amount=Decimal('0'),
+            total_amount=Decimal('0'),
+            approval_status='not_submitted',
+            created_at=datetime.now(UTC),
+        )
+        session.add(version)
+        await session.flush()
+        # ⚠️ 汇率快照必须落上：`calculate_price` 读的是
+        # `version.exchange_rate_snapshot`（不是接口入参）。我第一版漏了这句，
+        # 于是 `exchange_rate=None` → 走人民币口径 → 利润算成 −290（旧实现的行为），
+        # 看起来像"实现坏了"，其实是夹具少了一个字段。
+        # 真实入口 `create_quote` 就是调这个函数填快照的。
+        await quote_service.apply_exchange_rate_snapshot(
+            session, version, currency=currency, explicit_rate=Decimal('7')
+        )
+        item = await quote_service.build_item_snapshot(
+            session,
+            version=version,
+            sku_id=None,  # 定制行：无 SKU
+            quantity=Decimal('10'),
+            customer_id=customer_id,
+            quoted_price=quoted_price,
+            logistics_cost=None,
+            opportunity_item_id=None,
+            spec_snapshot=None,
+            remark=None,
+            role_codes=['salesperson'],
+            inquiry_id=inquiry_id,
+            unit_cost=unit_cost,
+        )
+        # 顺带把这个角色**产品函数自己用到的**最低利润率取回来，供断言用。
+        # ⚠️ 不能拿 `admin_min_margin()` 去比：那读的是 **admin 角色**的配置，
+        # 而这里 `role_codes=['salesperson']` —— 两个角色利润率不同，
+        # 我第一版混用了，断言表面上"发现实现坏了"，其实是我口径搞错了。
+        margin, _configured = await pricing_service.resolve_min_margin(
+            session, ['salesperson']
+        )
+        await session.commit()
+        return int(quote.id), int(version.id), item, margin
 
 
 async def main():
@@ -287,8 +385,13 @@ async def main():
     check_true('报价快照落全（成本 8 / 毛利 3.5）',
                item.get('cost_snapshot') == 8.0 and item.get('profit_snapshot') == 3.5,
                f"cost={item.get('cost_snapshot')} profit={item.get('profit_snapshot')}")
-    check('最低保护价按最低毛利率推（成本 8×(1+0.15)=9.2）',
-          item.get('minimum_price_snapshot'), 9.2)
+    # 公式与核价引擎一致：**成本 ÷ (1 − 最低利润率)**，不是 成本 × (1 + 率)。
+    # 后者表达不出"最低利润率"这个下限（8×1.15=9.2 的利润率只有 13.04%，
+    # 而 8÷0.85=9.41 正好 15%）。2026-10-09 与主人确认统一时一并纠正。
+    _mm = await admin_min_margin()
+    _floor8 = floor_of(Decimal('8'), _mm)
+    check(f'最低保护价 = 成本 8 ÷ (1−{_mm}) = {_floor8}',
+          item.get('minimum_price_snapshot'), _floor8)
     check_true('高于保护价不触发审批', item.get('approval_required') is False,
                f"报价 11.5 > 9.2：{item.get('approval_required')}")
 
@@ -308,7 +411,7 @@ async def main():
         check('价格已改', row.get('quoted_price'), 12.0)
         check('需求编号没丢', row.get('inquiry_no'), inquiry['inquiry_no'])
         check('成本快照沿用', row.get('cost_snapshot'), 8.0)
-        check('最低保护价跟着重算', row.get('minimum_price_snapshot'), 9.2)
+        check('最低保护价跟着重算（同一公式）', row.get('minimum_price_snapshot'), _floor8)
 
     # ---- 3c. 外币定制行：成本人民币、报价按币种（静默放行过的那个 bug）----
     # 回归：审批把报价乘汇率折人民币，却把成本当人民币直接用。定制项原先按
@@ -316,37 +419,40 @@ async def main():
     # 报价一比永远不触发低价审批与绝对底价，页面毛利还虚高——**不报错的错最危险**。
     print()
     print('=== 3c. 外币定制行：成本按人民币、报价按币种 ===')
-    # 外币数据要先把业务口径放开 —— 那正是业务方的做法（管理员改口径才报外币价）。
-    # 套件照做；`finally` 一定要收回，否则后面所有套件都会以为可以写外币。
-    open_export(token)
-    try:
-        status, payload = call('POST', '/quotes', token=token, body={
-            'customer_id': customer_id, 'opportunity_id': opportunity_id,
-            'currency': 'USD', 'exchange_rate': 7,
-        })
-        check('建美元报价', status, 200)
-        fx_quote, fx_version = payload['data']['quote_id'], payload['data']['version_id']
-        ids['quotes'].append(fx_quote)
-        status, payload = call('POST', f'/quote-versions/{fx_version}/items', token=token, body={
-            'inquiry_id': inquiry_id, 'quantity': 10, 'unit_cost': 300, 'quoted_price': 10,
-        })
-        check('美元单定制行落库', status, 200)
-        fx_item = payload['data']
-        check('最低保护价按人民币存 300×(1+0.15)=345',
-              fx_item.get('minimum_price_snapshot'), 345.0)
-        # 下面两条是**能区分新旧实现**的断言，别改成"利润为负"这种两边都成立的弱断言：
-        #   旧实现 profit = 10 − 300 = −290（拿美元价直接减人民币成本）；
-        #   新实现 profit = 10 − 300/7 = −32.857（先把成本折成报价币种）。
-        # 只断言"为负"的话，改回去也照样绿——这正是这个 bug 一直没被发现的原因。
-        profit = float(fx_item.get('profit_snapshot') or 0)
-        check_true('利润按汇率折算（10 − 300/7 ≈ −32.86，而不是 −290）',
-                   abs(profit - (-32.8571)) < 0.01, f"profit={profit}")
-        price_cny = 10 * 7
-        check_true('10 美元=70 人民币 < 345 → 触发低价审批',
-                   fx_item.get('approval_required') is True and price_cny < 345,
-                   f"approval_required={fx_item.get('approval_required')}")
-    finally:
-        restore_domestic(token)
+    # ⚠️ **接口已经建不出外币报价了**（币种固定白名单，第四批复审 + 主人 2026-10-12
+    # 口径）。从前这里靠 `open_export()` 临时放开口径 —— 那条路**故意**堵死。
+    # 所以改成：① 先断言接口确实拒绝；② 再**直接造历史外币数据**并调用产品函数
+    # 算快照 —— 这条判据守的是"不报错的错最危险"那个真 bug，不能因为入口堵了就丢掉。
+    status, payload = call('POST', '/quotes', token=token, body={
+        'customer_id': customer_id, 'opportunity_id': opportunity_id,
+        'currency': 'USD', 'exchange_rate': 7,
+    })
+    check('走接口建美元报价已被白名单拒绝（40002）', payload.get('code'), 40002)
+
+    fx_quote, fx_version, fx_item, fx_margin = await seed_foreign_custom_item(
+        customer_id, opportunity_id, inquiry_id, unit_cost=Decimal('300'),
+        quoted_price=Decimal('10'), currency='USD',
+    )
+    ids['quotes'].append(fx_quote)
+    check_true('历史美元单定制行落库（走产品函数 build_item_snapshot）',
+               fx_item is not None, f'quote={fx_quote} version={fx_version}')
+    # 用**产品函数同一口径**的利润率算期望值（见夹具里的说明）
+    fx_floor300 = floor_of(Decimal('300'), fx_margin)
+    # ⚠️ 比较要统一类型：`Decimal('352.94') == 352.94` 是 **False**
+    # （float 会先转成二进制近似值），我第一版就这么假红了一次。
+    check(f'最低保护价按人民币存 300 ÷ (1−{fx_margin}) = {fx_floor300}',
+          round(float(fx_item.minimum_price_snapshot or 0), 2), fx_floor300)
+    # 下面两条是**能区分新旧实现**的断言，别改成"利润为负"这种两边都成立的弱断言：
+    #   旧实现 profit = 10 − 300 = −290（拿美元价直接减人民币成本）；
+    #   新实现 profit = 10 − 300/7 = −32.857（先把成本折成报价币种）。
+    # 只断言"为负"的话，改回去也照样绿——这正是这个 bug 一直没被发现的原因。
+    profit = float(fx_item.profit_snapshot or 0)
+    check_true('利润按汇率折算（10 − 300/7 ≈ −32.86，而不是 −290）',
+               abs(profit - (-32.8571)) < 0.01, f"profit={profit}")
+    price_cny = 10 * 7
+    check_true('10 美元=70 人民币 < 345 → 触发低价审批',
+               fx_item.approval_required is True and price_cny < 345,
+               f"approval_required={fx_item.approval_required}")
 
     print()
     print('=== 4. 需求状态随报价推进 ===')
@@ -435,6 +541,18 @@ async def main():
     # 插入直接违反约束——询价/报价/打样三环都通了，唯独转订单必炸。
     print()
     print('=== 9. 定制报价转订单（主路径最后一环）===')
+    # 运费分离（2026-10-09）：**运费必须在提交审批前填好**。
+    # 版本一旦提交审批就不可编辑（`ensure_version_editable`），所以顺序是
+    # "明细 + 运费 → 提交审批 → 正式发送"，这也正是真实业务顺序。
+    # 本套件验的是"定制件没有 SKU 也能走完主路径"，不是运费本身 ——
+    # 补一条**已确认**的运费（明确金额，不是空输入）让流程能走完。
+    freight_status, freight = call('POST', f'/quote-versions/{version_id}/charges',
+                                   token=token, body={
+                                       'charge_type': 'logistics',
+                                       'description': '夹具运费', 'amount': 20})
+    check('提交审批前补一条已确认运费', freight_status, 200)
+    if freight_status != 200:
+        print('     运费接口返回：', str(freight)[:200])
     status, payload = call('POST', '/approval-rules', token=token, body={
         'name': f'CHK定制免审-{STAMP}', 'kind': 'auto_pass', 'priority': 1,
         'conditions': [{'field': 'total_amount', 'op': 'lte', 'value': 999999999}],
@@ -442,11 +560,15 @@ async def main():
     })
     rule_id = payload['data']['id'] if payload.get('code') == 0 else None
     if rule_id:
-        call('POST', f'/approval-rules/{rule_id}/publish', token=token, body={})
+        call('POST', f'/approval-rules/{rule_id}/publish?confirm=true', token=token)
         call('PATCH', f'/approval-rules/{rule_id}/enabled', token=token,
              body={'enabled': True})
+    confirm_freight_before_submit(call, token, version_id)
     call('POST', f'/quote-versions/{version_id}/submit-approval', token=token, body={})
-    call('POST', f'/quote-versions/{version_id}/mark-sent', token=token, body={})
+    status, sent = call('POST', f'/quote-versions/{version_id}/mark-sent', token=token, body={})
+    check('运费确认后能正式发送', sent.get('code'), 0)
+    if sent.get('code') != 0:
+        print('     发送接口返回：', str(sent)[:200])
     status, payload = call('POST', f'/opportunities/{opportunity_id}/confirm-win',
                            token=token, body={})
     check('定制报价能转订单（以前必炸）', payload.get('code'), 0)

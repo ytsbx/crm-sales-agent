@@ -37,6 +37,7 @@ export interface LoginResult {
 }
 
 export interface CurrentUser {
+  initial_password_pending?: boolean
   id: number
   name: string
   username: string
@@ -61,6 +62,7 @@ export interface Product {
 }
 
 export interface Sku {
+  cost_status?: { state: string; label: string }
   id: number
   product_id: number
   product_name?: string | null
@@ -102,6 +104,13 @@ export interface Customer {
   /** 领导六阶段（自动推导：了解/报价/打样/首单/返单/稳定复购） */
   stage?: string | null
   stage_label?: string | null
+  /** 合作历史与最近 12 个月采购项目分开统计，取消订单不计入。 */
+  historical_order_count?: number
+  recent_order_count?: number
+  /** 当前仍开放的商机数量，不混入客户合作阶段。 */
+  current_opportunity_count?: number
+  /** active / watch / stale / unknown，由跟进和业务进展的最新时间共同判断。 */
+  activity_status?: string
   /** 客户标签（PRD §6.1 列表要展示标签） */
   tags?: { id: number; name: string; type: string; status: string }[]
   remark?: string | null
@@ -127,4 +136,12 @@ export interface Contact {
   is_primary: boolean
   remark?: string | null
   created_at: string
+  /**
+   * 后端对**联系方式**做了脱敏（第八批 8.2）：`mobile / phone / email / wechat`
+   * 里带星号，说明当前账号没有"看完整号码"的权限。
+   *
+   * 界面必须据此**锁住那几个输入框**：不然"打开编辑框 → 只改职位 → 保存"
+   * 会把星号写回库里，真实号码就永久丢了（后端也会拒，但那属于兜底，不该走到）。
+   */
+  contact_masked?: boolean
 }

@@ -27,7 +27,7 @@ from app.modules.user.model import (
 
 
 # ------------------------------------------------------------------ 登录态查询
-# 注意：下面三个函数被 core/deps.py 用来构造 CurrentUser，是登录链路的一部分，
+# 这些查询供登录和权限判断使用，
 # 改动前务必确认 auth / 所有 require_permission 仍然可用。
 
 # 角色状态里「生效」的那一个：`ROLE_ACTIVE`（定义在 `user/model.py`，此处 import）。
@@ -70,6 +70,22 @@ async def get_user_permission_codes(session: AsyncSession, user_id: int) -> set[
     return {code for code in (await session.execute(stmt)).scalars().all()}
 
 
+async def get_user_roles_and_permissions(
+    session: AsyncSession, user_id: int
+) -> tuple[list[Role], set[str]]:
+    stmt = (
+        select(Role, Permission.code)
+        .join(user_roles, user_roles.c.role_id == Role.id)
+        .outerjoin(role_permissions, role_permissions.c.role_id == Role.id)
+        .outerjoin(Permission, Permission.id == role_permissions.c.permission_id)
+        .where(user_roles.c.user_id == user_id, Role.status == ROLE_ACTIVE)
+    )
+    rows = (await session.execute(stmt)).all()
+    roles = {role.id: role for role, _ in rows}
+    permissions = {code for _, code in rows if code is not None}
+    return list(roles.values()), permissions
+
+
 def resolve_data_scope(roles: list[Role]) -> str:
     """多个角色时取范围最大者。**只算启用中的角色。**
 
@@ -98,6 +114,10 @@ def serialize_user(user: User, *, department_name: str | None = None, roles: lis
         "department_id": user.department_id,
         "department": department_name,
         "wecom_userid": user.wecom_userid,
+        # 钉钉身份：**列表页要靠它显示「已绑定 / 未绑定」**。
+        # 不下发的话前端那一列永远是空的（而后端其实绑好了），
+        # 这种"数据在库里、界面看不见"最难排查。
+        "dingtalk_userid": user.dingtalk_userid,
         "status": user.status,
         "roles": roles or [],
         "created_at": user.created_at.isoformat() if user.created_at else None,
@@ -201,7 +221,9 @@ async def create_user(session: AsyncSession, data: dict) -> User:
     username = (data.get("username") or "").strip()
     if not username:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "登录名不能为空")
-    if await find_user_by_username(session, username) is not None:
+    from app.modules.user.usernames import lock_usernames
+    await lock_usernames(session)
+    if (await session.execute(select(User.id).where(func.lower(User.username) == username.lower()))).first() is not None:
         raise AppError(ErrorCode.DUPLICATE, f"登录名「{username}」已被占用", 409)
     await _validate_department(session, data.get("department_id"))
     roles = await _validate_roles(session, data.get("role_ids") or [])
@@ -256,6 +278,7 @@ async def update_user(session: AsyncSession, user: User, data: dict) -> User:
         # 改密码跑在前 → 登录拿到锁时读到的已经是新哈希，旧密码直接不认。
         await lock_user_row(session, user.id)
         user.password_hash = hash_password(data["password"])
+        user.initial_password_pending = False
         # 改（或重置）密码 = 该账号的**全部旧凭据一次性作废**（第十批 10.12）。
         #
         # 与写哈希放在同一个事务里，由路由那一次 commit 一起落库：
@@ -283,10 +306,15 @@ async def set_user_status(
     return user
 
 
-async def set_user_roles(session: AsyncSession, user: User, role_ids: list[int]) -> list[Role]:
+async def set_user_roles(
+    session: AsyncSession, user: User, role_ids: list[int]
+) -> tuple[list[str], list[Role]]:
+    # 与停用账号保持相同的锁顺序。账号锁也让两次角色替换串行执行。
+    await _lock_admin_guard(session)
+    await lock_user_row(session, user.id)
     roles = await _validate_roles(session, role_ids)
     # 摘掉 admin 角色前要确认系统里还有别的管理员
-    current = {r.code for r in await roles_of_user(session, user.id)}
+    current = [r.code for r in await roles_of_user(session, user.id)]
     new_codes = {r.code for r in roles}
     if "admin" in current and "admin" not in new_codes:
         await _assert_not_last_admin(session, user, reason="移除管理员角色")
@@ -295,7 +323,7 @@ async def set_user_roles(session: AsyncSession, user: User, role_ids: list[int])
     for role in roles:
         await session.execute(user_roles.insert().values(user_id=user.id, role_id=role.id))
     await session.flush()
-    return roles
+    return current, roles
 
 
 async def roles_of_user(session: AsyncSession, user_id: int) -> list[Role]:
@@ -337,6 +365,9 @@ _ADMIN_GUARD_LOCK_KEY = 7301001
 
 async def _lock_admin_guard(session: AsyncSession) -> None:
     """取得「有效管理员人数」保护锁，并持有到本事务结束。"""
+    if _session_dialect(session) != "postgresql":
+        # SQLite（pytest）没有 advisory lock；测试库是单写者，跳过即可。
+        return
     await session.execute(select(func.pg_advisory_xact_lock(_ADMIN_GUARD_LOCK_KEY)))
 
 
@@ -517,10 +548,71 @@ async def create_department(session: AsyncSession, data: dict) -> Department:
     return dept
 
 
+#: 「部门树结构」保护的**全局事务锁**键（审查 C3-06）。
+#:
+#: 为什么要一把与具体部门无关的锁：互挂父子是**两个不同的部门**
+#: （A 挂到 B 下、同时 B 挂到 A 下），各自锁自己那一行谁也挡不住谁 ——
+#: 两边各自读到"对方还是我的下级"，于是防环检查**双双通过**，
+#: 一起写入就成环了。行锁在这里结构上就不够用（和「最后一位管理员」同一类问题）。
+#:
+#: 成环的后果实测过：递归 CTE 转不出来 → 受影响部门的人查客户直接挂死
+#: （3 秒语句超时）、成环的部门从部门树里消失。
+#:
+#: 用 `pg_advisory_xact_lock`：随事务提交/回滚自动释放，漏解锁也不会永久锁死。
+#: 这个数字没有业务含义，只要全项目一致且固定即可（同 `_ADMIN_GUARD_LOCK_KEY`）。
+_DEPARTMENT_TREE_LOCK_KEY = 7301002
+
+
+def _session_dialect(session: AsyncSession) -> str:
+    """当前会话连的是什么库（照 `pricing/service.py` 的同名辅助）。
+
+    只为"PostgreSQL 独有的能力在 SQLite 上跳过"服务 —— pytest 跑 SQLite，
+    不跳过会让整批单测报 `no such function: pg_advisory_xact_lock`。
+    """
+    try:
+        return session.get_bind().dialect.name
+    except Exception:
+        return ""
+
+
+async def _lock_department_tree(session: AsyncSession) -> None:
+    """取得「部门树结构」保护锁，并持有到本事务结束。
+
+    ⚠️ 拿锁之后**必须重读**要改的部门与目标父部门 —— 拿到的对象可能是
+    等锁之前读的旧值，拿旧值做防环检查等于没锁（审查 C3-06 就是这么成的环）。
+    """
+    if _session_dialect(session) != "postgresql":
+        # 只有 PostgreSQL 有这把锁；SQLite（pytest）下跳过，
+        # 与 `pricing.lock_sku_price_rules` 同一处理（否则单测全红）
+        return
+    await session.execute(select(func.pg_advisory_xact_lock(_DEPARTMENT_TREE_LOCK_KEY)))
+
+
 async def update_department(session: AsyncSession, dept: Department, data: dict) -> Department:
+    # ---- 先拿「部门树」锁，再重读、再防环（审查 C3-06）----
+    #
+    # 顺序不能反：`_assert_no_cycle` 是"读一遍树、判断有没有环"，它和后面的写入
+    # 之间没有任何保护。两个并发请求各自读完（都认为没问题）再各自写入 → 成环。
+    # 锁内重读之后，后到的那个请求看到的是**对方已经提交的**树形，
+    # 于是第二次能正确拒掉（顺序执行本来就是对的）。
+    await _lock_department_tree(session)
+
+    refreshed = (
+        await session.execute(
+            select(Department).where(Department.id == dept.id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if refreshed is None:
+        raise AppError(ErrorCode.NOT_FOUND, "部门不存在", 404)
+    dept = refreshed
+
     new_parent = data.get("parent_id", dept.parent_id)
     if "parent_id" in data and data["parent_id"] is not None:
-        await get_department_or_404(session, data["parent_id"])
+        parent = await get_department_or_404(session, data["parent_id"])
+        # 父部门也要用锁后的最新值（它可能刚被别人挪走）
+        if parent is not None:
+            await session.refresh(parent)
     await _assert_no_cycle(session, dept.id, new_parent)
 
     if data.get("name"):

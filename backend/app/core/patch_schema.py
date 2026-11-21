@@ -76,6 +76,9 @@ PATCH_TABLES: dict[str, str] = {
     "ProductUpdate": "products",
     "PublicPoolRuleUpdate": "public_pool_rules",
     "QuoteChargeUpdate": "quote_charges",
+    "QuoteItemInput": "quote_items",
+    "QuoteItemUpdate": "quote_items",
+    "PaymentUpdate": "payment_records",
     "ReceivableUpdate": "receivable_plans",
     "RoleUpdate": "roles",
     "SkuUpdate": "skus",
@@ -88,12 +91,22 @@ PATCH_TABLES: dict[str, str] = {
 #: `类名.字段名` → 报错时用的中文名。**没写的用字段名兜底**，
 #: 所以漏写只影响提示好不好看，不影响校验有没有生效。
 FIELD_LABELS: dict[str, str] = {
+    "DocumentCreate.contract_origin": "合同来源",
+    "DocumentCreate.template_id": "合同模板",
+    "DocumentCreate.original_file_id": "合同原文件",
+    "DocumentCreate.title": "合同名称",
     # 产品 / SKU
     "ProductUpdate.name": "产品名称",
     "ProductUpdate.status": "产品状态",
     "SkuUpdate.sku_code": "SKU 编码",
     "SkuUpdate.name": "SKU 名称",
     "SkuUpdate.status": "SKU 状态",
+    # 客户标签（审查 P3：标签名超长时提示写成了「产品名称」—— 因为表里没有
+    # Tag 条目，模糊匹配命中了别的模型的 `name` 登记。补上本模型的登记。）
+    "TagCreate.name": "标签名称",
+    "TagUpdate.name": "标签名称",
+    "TagUpdate.type": "标签分组",
+    "TagUpdate.status": "标签状态",
     # 客户 / 联系人
     "CustomerUpdate.name": "客户名称",
     "CustomerUpdate.domain": "行业",
@@ -155,15 +168,34 @@ FIELD_LABELS: dict[str, str] = {
     "PublicPoolRuleUpdate.level": "客户等级",
     # 报价 / 跟进 / 价格 / 订单草稿 / 应收 / 运费
     "QuoteChargeUpdate.charge_type": "费用类型",
+    "QuoteChargeInput.amount": "金额",
+    "QuoteChargeInput.charge_type": "费用类型",
+    "QuoteItemInput.quantity": "数量",
+    "QuoteItemInput.quoted_price": "报价单价",
+    "QuoteItemInput.unit_cost": "核价成本",
+    "QuoteItemInput.logistics_cost": "单件运费",
+    "QuoteItemUpdate.quantity": "数量",
+    "QuoteItemUpdate.quoted_price": "报价单价",
+    "QuoteItemUpdate.unit_cost": "核价成本",
+    "QuoteItemUpdate.logistics_cost": "单件运费",
     "FollowUpUpdate.content": "跟进内容",
     "FollowUpUpdate.followup_type": "跟进方式",
     "PriceRuleUpdate.status": "价格规则状态",
+    "PriceRuleCreate.remark": "备注",
+    "PriceRuleUpdate.remark": "备注",
+    "CustomerPriceCreate.remark": "备注",
+    "CustomerPriceUpdate.remark": "备注",
     "PriceRuleUpdate.min_qty": "最小数量",
     "PriceRuleUpdate.max_qty": "最大数量",
     "PriceRuleUpdate.effective_from": "生效日期",
     "PriceRuleUpdate.effective_to": "截止日期",
     "OrderDraftUpdate.currency": "币种",
     "ReceivableUpdate.plan_name": "应收节点名称",
+    "PaymentUpdate.received_amount": "回款金额",
+    "PaymentUpdate.received_date": "收款日期",
+    "PaymentUpdate.payment_method": "收款方式",
+    "PaymentUpdate.voucher_note": "凭证说明",
+    "PaymentUpdate.currency": "币种",
     "CostUpdate.effective_from": "生效日期",
     "CostUpdate.effective_to": "截止日期",
     "LogisticsRateUpdate.provider": "承运方式",
@@ -171,6 +203,349 @@ FIELD_LABELS: dict[str, str] = {
     "LogisticsRateUpdate.unit_price_per_kg": "公斤单价",
     "LogisticsRateUpdate.min_charge": "最低收费",
     "LogisticsRateUpdate.status": "费率状态",
+
+    # ==================================================================
+    # 审计日志展示用（2026-10-12 第四轮，主人：「审计日志也说一堆不是人话」）
+    #
+    # 为什么加在这里：`错误提示` 与 `审计展示` 都要"字段名 → 中文名"，而这张表是
+    # 项目里**唯一**一张字段中文名表（它的注释写着"再建一张迟早会分叉"）。
+    # 加在这一处的代价是零：这张表只影响**文案**，漏登记最多让提示显示成英文列名，
+    # 不影响任何校验或写入（见本文件开头第 2 条说明）。
+    #
+    # 键用 `字段名`（不带模型前缀）：审计快照里只有一个裸字段名 + 对象类型，
+    # 拿不到"是哪个 Update 模型"。同名不同义的 4 个字段（name/source/status/title）
+    # **故意不在这里登记** —— 由前端按"这个字段属于哪类对象"去定名，
+    # 免得把"客户名称"显示成"产品名称"（审查报告记过同类事故）。
+    # ==================================================================
+    # 订单
+    "order_no": "订单号",
+    "goods_amount": "货款金额",
+    "logistics_amount": "运费金额",
+    "other_charge_amount": "其他费用",
+    "discount_amount": "折扣金额",
+    "total_amount": "订单总额",
+    "pricing_basis": "计价口径",
+    "erp_order_id": "ERP/MES 单号",
+    "delivery_date": "计划交期",
+    "delivery_kind": "交期口径",
+    "transit_days": "运输天数",
+    "plan_offsets": "跟单节点提前天数",
+    "payment_terms": "付款条件",
+    "sales_owner_id": "签单归属",
+    "cancelled_at": "取消时间",
+    # 报价单 / 版本 / 明细 / 附加费用
+    "quote_no": "报价单号",
+    "current_version_id": "当前版本",
+    "valid_until": "有效期",
+    "subtotal_amount": "货款小计",
+    "charge_amount": "附加费用合计",
+    "exchange_rate_snapshot": "汇率快照",
+    "exchange_rate_source": "汇率来源",
+    "exchange_rate_time": "取汇率时间",
+    "trade_terms": "贸易条款",
+    "delivery_terms": "交货条款",
+    "customer_name_snapshot": "客户抬头快照",
+    "contact_name_snapshot": "联系人快照",
+    "valid_until_snapshot": "有效期快照",
+    "approval_status": "审批状态",
+    "approval_required": "需审批",
+    "approval_reason": "需审批原因",
+    "submitted_at": "提交审批时间",
+    "approved_at": "审批通过时间",
+    "sent_at": "发送时间",
+    "accepted_at": "客户接受时间",
+    "declined_at": "客户拒绝时间",
+    "inquiry_no_snapshot": "需求编号快照",
+    "sku_code_snapshot": "产品编码快照",
+    "sku_name_snapshot": "产品名称快照",
+    "spec_snapshot": "规格快照",
+    "unit_snapshot": "单位快照",
+    "master_version_no": "引用的主数据版本",
+    "cost_snapshot": "成本快照",
+    "cost_complete_snapshot": "成本完整性快照",
+    "cost_present_snapshot": "成本记录存在快照",
+    "package_cost_snapshot": "包装成本快照",
+    "logistics_cost_snapshot": "运费快照",
+    "standard_price_snapshot": "标准价快照",
+    "recommended_price_snapshot": "建议价快照",
+    "minimum_price_snapshot": "最低保护价快照",
+    "customer_level_snapshot": "客户等级快照",
+    "profit_snapshot": "毛利快照",
+    "profit_rate_snapshot": "毛利率快照",
+    "tax_refund_snapshot": "退税快照",
+    "profit_with_refund_snapshot": "含退税毛利快照",
+    "price_source": "价格来源",
+    "quoted_price": "报价单价",
+    "is_discount": "是否折扣",
+    "sort_no": "排序号",
+    "logistics_confirmed_at": "运费确认时间",
+    # 客户 / 联系人 / 标签
+    "short_name": "客户简称",
+    "customer_type": "客户类型",
+    "country": "国家",
+    "region": "地区",
+    "address": "地址",
+    "tax_no": "税号",
+    "pool_status": "公海状态",
+    "last_followup_at": "最近跟进时间",
+    "last_contact_unknown": "最近联系人不明",
+    "last_progress_at": "最近推进时间",
+    "next_followup_at": "下次跟进时间",
+    "department": "部门",
+    "mobile": "手机",
+    "phone": "座机",
+    "email": "邮箱",
+    "wechat": "微信号",
+    "external_userid": "企微外部联系人",
+    "is_primary": "是否主联系人",
+    "tag": "标签",
+    # 线索
+    "company_name": "公司名称",
+    "contact_name": "联系人",
+    "source_detail": "来源说明",
+    "converted_customer_id": "转成的客户",
+    "converted_contact_id": "转成的联系人",
+    "converted_opportunity_id": "转成的商机",
+    "invalid_reason": "判无效原因",
+    # 商机 / 阶段
+    "primary_contact_id": "主要联系人",
+    "stage_id": "所处阶段",
+    "expected_amount": "预计金额",
+    "expected_close_date": "预计成交日",
+    "competitor": "竞争对手",
+    "next_action": "下一步动作",
+    "win_quote_version_id": "赢单报价版本",
+    "loss_reason_id": "失单原因",
+    "loss_remark": "失单说明",
+    "reopen_at": "重新打开时间",
+    "sequence": "排序",
+    "is_win": "是否赢单",
+    "is_loss": "是否失单",
+    # 跟进 / 任务
+    "customer_feedback": "客户反馈",
+    "planned_at": "计划时间",
+    "exemption_reason": "免填原因",
+    "next_task_id": "生成的任务",
+    "task_type": "任务类型",
+    "due_at": "到期时间",
+    "source_rule_id": "来源规则",
+    "source_business_type": "来源对象类型",
+    "source_business_id": "来源对象",
+    "source_key": "来源标识",
+    "completed_at": "完成时间",
+    "completion_note": "完成说明",
+    # 询价（定制需求）
+    "inquiry_no": "需求编号",
+    "description": "需求描述",
+    "revision_note": "本版说明",
+    "superseded_at": "被取代时间",
+    "converted_sku_id": "转成的 SKU",
+    "origin": "来源",
+    "source_insight_id": "来源洞察",
+    "oa_quote_user_id": "钉钉报价人",
+    "oa_quote_user_name": "钉钉报价人",
+    "extra": "补充信息",
+    # 打样
+    "review_round": "审批轮次",
+    "review_request_key": "审批请求键",
+    "reject_reason": "驳回原因",
+    "purpose": "打样用途",
+    "target_completion_date": "要求完成日",
+    "acceptance_criteria": "验收标准",
+    "sample_fee": "打样费",
+    "production_owner_id": "生产负责人",
+    "made_at": "完成打样时间",
+    "made_events": "打样过程记录",
+    "basis_files": "制作依据",
+    "confirm_status": "客户确认状态",
+    "customer_confirmed_at": "客户确认时间",
+    "confirm_remark": "确认说明",
+    "requested_at": "申请时间",
+    "shipped_at": "寄出时间",
+    "signed_at": "签收时间",
+    "feedback": "客户反馈",
+    "original_quantity": "原采购数量",
+    "item_name": "品名",
+    "craft": "工艺",
+    "material": "材质",
+    "drawing_version": "图纸版本",
+    # 订单草稿 / 跟单节点
+    "node": "节点",
+    "planned_date": "计划日期",
+    "actual_date": "实际日期",
+    "evidence": "凭据",
+    "overdue_reason": "逾期原因",
+    "skip_reason": "跳过原因",
+    "skipped_by": "跳过操作人",
+    "skipped_at": "跳过时间",
+    "overdue_notified_at": "逾期通知时间",
+    # 回款 / 应收
+    "receivable_plan_id": "应收节点",
+    "voucher_file_id": "回款凭证",
+    "confirmed_by": "确认人",
+    "confirmed_at": "确认时间",
+    "plan_name": "应收节点名称",
+    "due_date": "到期日",
+    # 合同 / 单据
+    "doc_no": "单据编号",
+    "doc_type": "单据类型",
+    "renderer_version": "渲染器版本",
+    "template_key": "模板",
+    "template_id": "模板",
+    "template_version": "模板版本",
+    "void_reason": "作废原因",
+    "effective_date": "生效日",
+    "expiry_date": "到期日",
+    "supersede_parent": "替代旧协议",
+    "parent_id": "父单据",
+    "source_type": "来源类型",
+    "source_id": "来源对象",
+    "source_no": "来源编号",
+    "source_version": "来源版本",
+    "input_snapshot": "生成时输入",
+    "content_sha256": "内容校验值",
+    "file_id": "文件",
+    "file_sha256": "文件校验值",
+    "file_size": "文件大小",
+    "sample_request_id": "打样单",
+    "order_draft_id": "订单草稿",
+    # 产品 / SKU / 成本
+    "product_id": "所属产品",
+    "product_line": "产品线",
+    "category": "分类",
+    "brand": "品牌",
+    "knowledge": "产品知识",
+    "specification": "规格",
+    "color": "颜色",
+    "length": "长",
+    "width": "宽",
+    "height": "高",
+    "weight": "重量",
+    "carton_qty": "装箱数量",
+    "carton_volume": "装箱体积",
+    "moq": "起订量",
+    "package_type": "包装方式",
+    "unit": "单位",
+    "purchase_cost": "采购成本",
+    "production_cost": "生产成本",
+    "package_cost": "包装成本",
+    "processing_cost": "加工成本",
+    "total_cost": "总成本",
+    "standard_price": "标准价",
+    "guide_price": "指导价",
+    "minimum_price": "最低保护价",
+    "target_margin": "目标利润率",
+    "min_qty": "最小数量",
+    "max_qty": "最大数量",
+    "customer_level": "客户等级",
+    "agreed_price": "约定价",
+    "effective_from": "生效日期",
+    "effective_to": "截止日期",
+    "calculation": "计算口径",
+    "item_count": "明细条数",
+    "count": "条数",
+    "file_name": "文件名",
+    "mime_type": "文件类型",
+    "storage_provider": "存储方式",
+    "size": "大小",
+    "uploaded_by": "上传人",
+    # 用户 / 角色 / 部门
+    "username": "登录名",
+    "initial_password_pending": "初始密码待修改",
+    "wecom_userid": "企微账号",
+    "department_id": "所属部门",
+    "data_scope": "数据范围",
+    "role_ids": "角色",
+    "permission_codes": "权限",
+    "description_cn": "说明",
+    "remark_cn": "备注",
+    "label": "名称",
+    "value": "值",
+    "key": "键",
+    "enabled": "是否启用",
+    "level": "等级",
+    "tag_ids": "标签",
+    "owner_name": "负责人",
+    "reviewer_id": "复核人",
+    "review_note": "复核说明",
+    "review_history": "复核历史",
+    "status_label": "状态",
+    "current_version_amount": "当前版本金额",
+    "current_version_no": "当前版本号",
+    "amount": "金额",
+    "quantity": "数量",
+    "currency": "币种",
+    "title_cn": "标题",
+    "name_cn": "名称",
+    "reason": "原因",
+    "note": "说明",
+    "result": "结果",
+    "progress": "进展",
+    "stage_reached": "到达阶段",
+    "industry": "行业",
+    "problem_tags": "问题标签",
+    "background": "背景",
+    "goal": "目标",
+    "key_actions": "关键动作",
+    "objection_handling": "异议处理",
+    "process": "过程",
+    "lessons": "可复用做法",
+    "author_id": "作者",
+    "customer_label": "对外代称",
+    "revision_of_id": "修订自",
+    "reviewed_at": "审核时间",
+    "estimated_amount": "预计金额",
+    "expected_close": "预计成交日",
+    "won_at": "赢单时间",
+    "lost_at": "失单时间",
+    # 通用字段（在所有对象上含义一致，可以在全站范围内统一叫法）
+    "owner_id": "负责人",
+    "customer_id": "客户",
+    "contact_id": "联系人",
+    "lead_id": "线索",
+    "opportunity_id": "商机",
+    "quote_id": "报价单",
+    "quote_version_id": "报价版本",
+    "order_id": "订单",
+    "sample_id": "打样单",
+    "inquiry_id": "定制需求",
+    "opportunity_item_id": "商机需求",
+    "converted_inquiry_id": "转成的需求",
+    "version": "版本",
+    "version_no": "版本号",
+    "remark": "备注",
+    "request_key": "请求编号",
+    "role": "角色",
+    "priority": "优先级",
+    "direction": "方向",
+    "target_price": "目标价",
+    "type": "类型",
+    "code": "编码",
+    "root_id": "原始需求",
+    "wecom_department_id": "企微部门",
+    "source_snapshot": "来源快照",
+    "followup_type": "跟进方式",
+    "content": "内容",
+    "risk_level": "风险等级",
+    "domain": "行业",
+    "source_context": "来源快照",
+    "generated_file_id": "生成的 PDF",
+    "content_snapshot": "正文快照",
+    "filled_data": "填入的内容",
+    "target_customer": "目标客户",
+    "selling_points": "卖点",
+    "price_assumption": "价格假设",
+    "conclusion": "结论",
+    "images": "图片",
+    "received_date": "收款日期",
+    "received_amount": "回款金额",
+    "allocation_mode": "回款分配方式",
+    "allocations": "回款分配明细",
+    "allocated_amount": "已分配金额",
+    "unallocated_amount": "已到账待分配金额",
+    "amount_exact": "精确分配金额",
+    "payment_method": "收款方式",
+    "voucher_note": "凭证说明",
 }
 
 #: **没有独立表**的类，只能人工兜底"哪些字段不许清空"（取不到列定义，也就不查长度）。
@@ -286,6 +661,101 @@ class PatchModel(BaseModel):
             #    允许留空的字段也照样有上限。
             if max_len is not None and isinstance(value, str) and len(value) > max_len:
                 raise ValueError(f"{label}最长 {max_len} 个字符（当前 {len(value)} 个）")
+        return self
+
+
+#: Create 类名 → 表名时后缀要去掉的部分。
+_CREATE_SUFFIXES = ("Create", "Input", "Add", "Request", "In", "New")
+_CREATE_TABLE_OVERRIDES = {
+    "MilestoneUpdate": "order_milestones",
+    "NumberingRuleCreate": "numbering_rules",
+    "PublicPoolRuleInput": "public_pool_rules",
+    "SampleUpdate": "sample_requests",
+    "TaskRuleInput": "task_rules",
+}
+
+
+def _create_table_for(cls: type[BaseModel]) -> str | None:
+    """给**创建类**猜它对应的表名（`PatchModel` 有 `PATCH_TABLES` 人工登记，
+    创建类没有 —— 用类名推导，推不出来就跳过校验）。
+
+    推导规则：去掉 `Create`/`Input`/`Add`/`Request`/`In`/`New` 后缀后，
+    与表名做**唯一匹配**（`customers` / `tasks` / `skus` …）。
+    只在恰好命中一张表时才返回 —— 有歧义就宁可不校验，绝不猜错表
+    （猜错会把别的表的列宽当成本类的上限，属于"误伤"）。
+    """
+    # ⚠️ **沿 MRO 逐级试**（2026-10-14 修，我第一版只试了自己的类名）：
+    # `SkuStandaloneCreate` 去后缀得到 `skustandalone`，推不出 `skus`，
+    # 于是长校验**整个不生效** —— 实测 `POST /skus` 传 17 字的 `unit`
+    # 一路写到 INSERT 才撞 `varying(16)` 报 500。
+    # 而它继承的 `SkuCreate` 能推出 `skus`，所以按继承链往上找就对了。
+    for klass in cls.__mro__:
+        if klass is object or not issubclass(klass, BaseModel):
+            continue
+        if klass.__name__ in _CREATE_TABLE_OVERRIDES:
+            return _CREATE_TABLE_OVERRIDES[klass.__name__]
+        base = klass.__name__
+        for suffix in _CREATE_SUFFIXES:
+            if base.endswith(suffix) and len(base) > len(suffix):
+                base = base[: -len(suffix)]
+                break
+        lowered = base.lower()
+        candidates = {
+            name
+            for name in Base.metadata.tables
+            if name == lowered
+            or name.lower() == lowered
+            or name.lower().rstrip("s") == lowered.rstrip("s")
+        }
+        if len(candidates) == 1:
+            return candidates.pop()
+        # 多个候选 = 有歧义 → 继续往上试父类；都没有就返回 None（宁可不校验也不猜错表）
+    return None
+
+
+class CreateModel(BaseModel):
+    """**创建**入参的公共基类：只做"长度上限"这一件事。
+
+    ## 为什么需要它（2026-10-14 审查）
+
+    `PatchModel` 的长度判据是**现场从库列定义读**的（`String(n)` 的 n），
+    所以更新入口天然不会漏。但**创建类一直是裸 `BaseModel`** ——
+    同一张表、同一个字段，PATCH 会给人话 400，POST 却一路走到 INSERT
+    撞 `value too long for type character varying(n)`，被兜底成
+    **500「服务器内部错误」**，用户完全不知道是自己填长了。
+
+    这不是个别漏项：全仓扫下来有 **40 处**（customer / lead / product /
+    user / settings / task / followup / opportunity / order 都有），
+    逐个手写 `max_length` 是打地鼠，且明天新增的创建类照样会漏。
+    所以做成基类：**继承它就有长度保护**，判据与 `PatchModel` 同源（都读列定义）。
+
+    ## 与 `PatchModel` 的差别（刻意只做一半）
+    - **不做"不许 null / 必须有内容"**：创建类的必填性由 schema 自己声明
+      （`Field(min_length=...)` 或非 Optional），行为不变，避免动到既有 422 文案；
+    - **只拦长度**，且只在能唯一确定表时生效（见 `_create_table_for`）。
+    """
+
+    @model_validator(mode="after")
+    def _guard_length(self):
+        table_name = _create_table_for(type(self))
+        if table_name is None:
+            return self
+        table = Base.metadata.tables.get(table_name)
+        if table is None:
+            return self
+        for field in type(self).model_fields:
+            column = table.columns.get(field)
+            if column is None:
+                continue
+            max_len = getattr(column.type, "length", None)
+            if not isinstance(max_len, int):
+                continue
+            value = getattr(self, field, None)
+            if isinstance(value, str) and len(value) > max_len:
+                label = FIELD_LABELS.get(f"{type(self).__name__}.{field}", field)
+                raise ValueError(
+                    f"{label}最长 {max_len} 个字符（当前 {len(value)} 个）"
+                )
         return self
 
 

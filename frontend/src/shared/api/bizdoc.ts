@@ -53,17 +53,6 @@ export interface BizDocRow {
   created_at?: string | null
 }
 
-export interface BizDocTemplateRow {
-  id: number
-  doc_type: string
-  doc_type_label: string
-  name: string
-  version: number
-  body: string
-  enabled: boolean
-  remark?: string | null
-  created_at?: string | null
-}
 
 export function listBizDocs(query: {
   doc_type?: string

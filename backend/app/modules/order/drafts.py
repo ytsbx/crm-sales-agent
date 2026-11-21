@@ -7,7 +7,9 @@ import json
 from sqlalchemy import select, text
 from app.core.audit import write_audit
 from app.core.data_scope import ensure_in_scope
+from app.core.draft_visibility import ensure_draft_access
 from app.core.errors import AppError, ErrorCode
+from app.core.money import line_amount
 from app.core.trade_mode import ensure_currency_allowed
 from app.modules.inquiry.model import CustomInquiry
 from app.modules.order.model import OrderDraft, OrderDraftItem
@@ -38,7 +40,8 @@ async def get_visible(session, user, draft_id, *, lock=False):
         .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none() if lock else await session.get(OrderDraft, draft_id)
     if not row:
         raise AppError(ErrorCode.NOT_FOUND, '订单草稿不存在', 404)
-    await ensure_in_scope(session, user, owner_id=row.owner_id, label='订单草稿')
+    if not await ensure_draft_access(session, OrderDraft, row.id, user.id):
+        await ensure_in_scope(session, user, owner_id=row.owner_id, label='订单草稿')
     return row
 
 
@@ -54,7 +57,9 @@ async def detail(session, draft):
         'remark': draft.remark, 'revision': draft.revision, 'created_at': draft.created_at,
         'items': [{'id': i.id, 'source_item_id': i.source_snapshot['source_item_id'], 'name': i.name,
             'source_snapshot': i.source_snapshot, 'quantity': float(i.quantity),
+            'quantity_exact': format(i.quantity, 'f'),
             'unit_price': float(i.unit_price) if i.unit_price is not None else None,
+            'unit_price_exact': format(i.unit_price, 'f') if i.unit_price is not None else None,
             'specification': i.specification, 'remark': i.remark} for i in await items(session, draft.id)]}
 
 
@@ -68,7 +73,14 @@ def require_editable(draft, revision):
 async def create(session, user, payload):
     digest = hashlib.sha256(json.dumps(payload.model_dump(mode='json', exclude={'request_key'}), sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     key = str(payload.request_key)
-    await session.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': int.from_bytes(hashlib.sha256(('order-draft:'+key).encode()).digest()[:8], 'big', signed=True)})
+    # SQLite（内存测试/本地开发）没有 PostgreSQL advisory lock；幂等键仍由
+    # 唯一约束兜底，生产 PostgreSQL 才启用事务锁来串行化同 key 请求。
+    try:
+        dialect = session.get_bind().dialect.name
+    except Exception:  # noqa: BLE001
+        dialect = ""
+    if dialect == "postgresql":
+        await session.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': int.from_bytes(hashlib.sha256(('order-draft:'+key).encode()).digest()[:8], 'big', signed=True)})
     existing = (await session.execute(select(OrderDraft).where(OrderDraft.request_key == key))).scalar_one_or_none()
     if existing:
         await ensure_in_scope(session, user, owner_id=existing.owner_id, label='订单草稿')
@@ -84,7 +96,8 @@ async def create(session, user, payload):
     draft = OrderDraft(customer_id=data['customer_id'], opportunity_id=data['opportunity_id'], owner_id=data['owner_id'],
         source_context=data['source'], currency=data['currency'], payment_terms=payload.payment_terms if payload.payment_terms is not None else data['payment_terms'],
         delivery_date=payload.delivery_date, remark=payload.remark, request_key=key, request_hash=digest, created_by=user.id)
-    session.add(draft); await session.flush()
+    session.add(draft)
+    await session.flush()
     for selected in payload.items:
         original = available[selected.source_item_id]
         price = selected.unit_price if 'unit_price' in selected.model_fields_set else (Decimal(original['unit_price']) if original['unit_price'] is not None else None)
@@ -191,14 +204,14 @@ async def generate_document(session, user, draft_id, request_key=None):
         rows = await items(session, draft_id)
         current = [{'source_item_id': i.source_snapshot['source_item_id'], 'name': i.name,
                     'spec': i.specification, 'quantity': i.quantity, 'unit_price': i.unit_price,
-                    'amount': i.quantity*i.unit_price if i.unit_price is not None else None, 'remark': i.remark} for i in rows]
+                    'amount': line_amount(i.quantity, i.unit_price) if i.unit_price is not None else None, 'remark': i.remark} for i in rows]
         original = [{'source_item_id': i.source_snapshot['source_item_id'], 'name': i.source_snapshot['name'],
                      'spec': i.source_snapshot.get('specification'), 'quantity': i.source_snapshot.get('original_quantity'),
                      'remark': i.source_snapshot.get('remark'), 'unit_price': i.source_snapshot.get('unit_price')} for i in rows]
         built = {'order_draft_id': draft.id, 'customer_id': draft.customer_id,
             'customer': await session.get(Customer, draft.customer_id), 'owner_id': draft.owner_id,
             'source': draft.source_context, 'items': current, 'diffs': docs._diff_lines(current, original, 'source_item_id'),
-            'title_suffix': f'#{draft.id}', 'sections': [
+            'title_suffix': f'编号 {draft.id}', 'sections': [
                 {'label': '单据性质', 'value': '订单草稿，仅供核对准备，不代表正式下单或生产指令'},
                 {'label': '草稿修订', 'value': str(draft.revision)},
                 {'label': '币种', 'value': draft.currency},

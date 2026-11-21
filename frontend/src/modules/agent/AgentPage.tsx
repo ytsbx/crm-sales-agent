@@ -1,23 +1,27 @@
 import { useEffect, useRef, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, Card, Popconfirm, Tag, Toast } from '@douyinfe/semi-ui'
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Button, Card, Modal, Popconfirm, Tag, Toast, Tooltip } from '@douyinfe/semi-ui'
 
 import {
   confirmAgentAction,
   createAgentSession,
   deleteAgentSession,
   getAgentSession,
+  getAgentOlderMessages,
   listAgentSessions,
   listAgentTools,
   rejectAgentAction,
   streamAgentMessage,
   type AgentActionRow,
+  type AgentMessageRow,
+  type AgentSessionRow,
   type AgentToolCall,
   type AgentTurnResult,
 } from '../../shared/api/agent'
 import type { TagTone } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
+import { getCustomer } from '../../shared/api/customer'
 
 const RISK_TONE: Record<string, TagTone> = { L1: 'green', L2: 'orange', L3: 'red' }
 
@@ -29,10 +33,13 @@ const EXAMPLES = [
 ]
 
 export default function AgentPage() {
+  const location = useLocation()
   const [searchParams] = useSearchParams()
   const queryClient = useQueryClient()
-  const [sessionId, setSessionId] = useState<number | null>(null)
+  const [selectedSession, setSelectedSession] = useState<Pick<AgentSessionRow, 'id' | 'context_type' | 'context_id'> | null>(null)
+  const sessionId = selectedSession?.id ?? null
   const [input, setInput] = useState('')
+  const [toolsOpen, setToolsOpen] = useState(false)
   const [lastTools, setLastTools] = useState<AgentToolCall[]>([])
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -42,40 +49,110 @@ export default function AgentPage() {
   const [streamText, setStreamText] = useState('')
   const [streamTools, setStreamTools] = useState<AgentToolCall[]>([])
   const busyRef = useRef(false)
+  const streamAbortRef = useRef<AbortController | null>(null)
 
-  const contextType = searchParams.get('context')
-  const contextId = searchParams.get('id') ? Number(searchParams.get('id')) : undefined
+  useEffect(() => () => streamAbortRef.current?.abort(), [])
+  const routeContextType = searchParams.get('context')
+  const routeContextId = Number(searchParams.get('id')) || undefined
+  const [entry, setEntry] = useState({ key: location.key, type: routeContextType, id: routeContextId })
+  const changingEntry = entry.key !== location.key
 
-  const sessionsQuery = useQuery({ queryKey: ['agent-sessions'], queryFn: listAgentSessions })
+  /* 从客户详情「跳到 AI」带过来的上下文（/agent?context=customer&id=270）。
+     以前 URL 上有参数、页面上却什么标识都没有：用户看到的还是「宏远包装」的示例，
+     根本不知道自己问的是哪个客户（2026-11-17 视觉审视 V2-05）。
+     这里把来源客户读出来，顶部亮明「当前客户」，示例也换成围绕这家客户的。 */
+  const navigate = useNavigate()
+
+  // 会话列表按 id 游标加载更早的：默认最近 30 条，点「加载更早的会话」继续取。
+  const sessionsQuery = useInfiniteQuery({
+    queryKey: ['agent-sessions'],
+    initialPageParam: undefined as number | undefined,
+    queryFn: ({ pageParam }) =>
+      listAgentSessions(pageParam ? { before_id: pageParam, limit: 30 } : { limit: 30 }),
+    getNextPageParam: (last) => (last.length === 30 ? last[last.length - 1]?.id : undefined),
+  })
+  const sessions = sessionsQuery.data?.pages.flatMap((page) => page) ?? []
+
   const toolsQuery = useQuery({ queryKey: ['agent-tools'], queryFn: listAgentTools })
   const detailQuery = useQuery({
     queryKey: ['agent-session', sessionId],
     queryFn: () => getAgentSession(sessionId!),
     enabled: Boolean(sessionId),
   })
-
+  // 单会话默认只给最新 200 条；更早的按消息 id 游标往「上」补。
+  // 加载时保持当前阅读位置，不要把视口拉回顶部/底部。
+  const [olderMessages, setOlderMessages] = useState<AgentMessageRow[]>([])
+  const [olderHasMore, setOlderHasMore] = useState(false)
+  const [olderLoading, setOlderLoading] = useState(false)
+  const [olderError, setOlderError] = useState<string | null>(null)
+  const chatScrollRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    if (sessionId || sessionsQuery.data === undefined) return
-    if (sessionsQuery.data.length > 0 && !contextId) {
-      setSessionId(sessionsQuery.data[0].id)
+    setOlderMessages([])
+    setOlderHasMore(false)
+    setOlderError(null)
+  }, [sessionId])
+  useEffect(() => {
+    if (olderMessages.length === 0 && detailQuery.data?.session.id === sessionId) {
+      setOlderHasMore(Boolean(detailQuery.data.messages_has_more))
     }
-  }, [sessionsQuery.data, sessionId, contextId])
+  }, [detailQuery.data, olderMessages.length, sessionId])
+  const loadOlderMessages = async () => {
+    if (!sessionId || olderLoading) return
+    const oldest = olderMessages[0] ?? detailQuery.data?.messages?.[0]
+    if (!oldest) return
+    const scroller = chatScrollRef.current
+    const distanceFromBottom = scroller ? scroller.scrollHeight - scroller.scrollTop : 0
+    setOlderLoading(true)
+    setOlderError(null)
+    try {
+      const page = await getAgentOlderMessages(sessionId, { before_id: oldest.id, limit: 100 })
+      setOlderMessages((current) => {
+        const known = new Set(current.map((message) => message.id))
+        return [...page.items.filter((message) => !known.has(message.id)), ...current]
+      })
+      setOlderHasMore(page.has_more)
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (scroller) scroller.scrollTop = scroller.scrollHeight - distanceFromBottom
+      }))
+    } catch (error) {
+      setOlderError(error instanceof Error ? error.message : '加载失败')
+    } finally {
+      setOlderLoading(false)
+    }
+  }
+  const activeSession = detailQuery.data?.session ?? selectedSession
+  const contextType = activeSession ? activeSession.context_type : entry.type
+  const contextId = activeSession ? activeSession.context_id : entry.id
+  const customerContextQuery = useQuery({
+    queryKey: ['customer', contextId],
+    queryFn: () => getCustomer(contextId!),
+    enabled: contextType === 'customer' && Boolean(contextId),
+  })
+  const contextCustomerName = customerContextQuery.data?.name as string | undefined
+  useEffect(() => {
+    // 正在回复时继续展示原会话。忙完后再打开新入口，期间禁止向旧会话发送。
+    if (!changingEntry || busyRef.current || streaming) return
+    setEntry({ key: location.key, type: routeContextType, id: routeContextId })
+    setSelectedSession(null)
+    setInput('')
+    setLastTools([])
+  }, [changingEntry, location.key, routeContextType, routeContextId, streaming])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [detailQuery.data?.messages.length, streamText])
 
-  const createMutation = useMutation({
-    mutationFn: (payload: { title?: string; context_type?: string; context_id?: number }) =>
-      createAgentSession(payload),
-    onSuccess: (data) => {
-      setSessionId(data.id)
-      void queryClient.invalidateQueries({ queryKey: ['agent-sessions'] })
-    },
-    onError: (error: Error) => Toast.error(error.message),
-  })
-
   const runStream = async (id: number, content: string) => {
+    const controller = new AbortController()
+    streamAbortRef.current = controller
+    const aborted = new Promise<void>((resolve) => controller.signal.addEventListener('abort', () => resolve(), { once: true }))
+    const idleReason = '一段时间没有收到回复，已停止。可以重新发送问题。'
+    let idleTimer: ReturnType<typeof setTimeout> | undefined
+    const resetIdleTimer = () => {
+      clearTimeout(idleTimer)
+      idleTimer = setTimeout(() => controller.abort(idleReason), 120_000)
+    }
+    resetIdleTimer()
     busyRef.current = true
     setStreaming(true)
     setStreamText('')
@@ -84,6 +161,7 @@ export default function AgentPage() {
     let result: AgentTurnResult | null = null
     try {
       result = await streamAgentMessage(id, content, (kind, data) => {
+        resetIdleTimer()
         if (kind === 'delta') {
           textAcc += String(data.text ?? '')
           setStreamText(textAcc)
@@ -96,7 +174,7 @@ export default function AgentPage() {
         } else if (kind === 'error') {
           Toast.error(String(data.message ?? '对话失败'))
         }
-      })
+      }, controller.signal)
       if (result) {
         setLastTools(result.tool_calls)
         // 中间轮次的话不在最终回复里：气泡以权威回复收口，
@@ -106,11 +184,18 @@ export default function AgentPage() {
         Toast.error('连接中断，未拿到完整回复')
       }
     } catch (error) {
-      Toast.error((error as Error).message)
+      if (controller.signal.reason === idleReason) Toast.warning(idleReason)
+      else if (!controller.signal.aborted) Toast.error((error as Error).message)
     } finally {
+      clearTimeout(idleTimer)
       // 拉到服务端消息后再撤掉流式气泡，避免"气泡还在、正式消息也来了"的重影
-      await queryClient.invalidateQueries({ queryKey: ['agent-session', id] })
-      await queryClient.invalidateQueries({ queryKey: ['agent-sessions'] })
+      const refreshHistory = Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['agent-session', id] }),
+        queryClient.invalidateQueries({ queryKey: ['agent-sessions'] }),
+      ])
+      // 网络卡住时也需要能继续输入，停止不等历史查询返回。
+      if (!controller.signal.aborted) await Promise.race([refreshHistory, aborted])
+      streamAbortRef.current = null
       busyRef.current = false
       setStreaming(false)
       setStreamText('')
@@ -120,19 +205,26 @@ export default function AgentPage() {
 
   const handleSend = (text: string) => {
     const content = text.trim()
-    if (!content || busyRef.current) return
+    if (!content || busyRef.current || changingEntry) return
     setInput('')
     if (!sessionId) {
+      busyRef.current = true
+      setStreaming(true)
       createAgentSession({
         title: content.slice(0, 20),
         context_type: contextType ?? undefined,
-        context_id: contextId,
+        context_id: contextId ?? undefined,
       })
         .then(async (created) => {
-          setSessionId(created.id)
+          setSelectedSession({ id: created.id, context_type: contextType, context_id: contextId })
           await runStream(created.id, content)
         })
-        .catch((error: Error) => Toast.error(error.message))
+        .catch((error: Error) => {
+          busyRef.current = false
+          setStreaming(false)
+          setInput(content)
+          Toast.error(error.message)
+        })
       return
     }
     void runStream(sessionId, content)
@@ -160,14 +252,28 @@ export default function AgentPage() {
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (id: number) => deleteAgentSession(id),
-    onSuccess: () => {
-      setSessionId(null)
+    mutationFn: (id: number) => {
+      if (id === sessionId && busyRef.current) throw new Error('等这轮回复结束后再删除会话')
+      return deleteAgentSession(id)
+    },
+    onSuccess: (_data, deletedId) => {
+      if (sessionId === deletedId) {
+        setSelectedSession(null)
+        setInput('')
+        setLastTools([])
+      }
+      queryClient.removeQueries({ queryKey: ['agent-session', deletedId] })
       void queryClient.invalidateQueries({ queryKey: ['agent-sessions'] })
     },
+    onError: (error: Error) => Toast.error(error.message),
   })
 
-  const messages = detailQuery.data?.messages ?? []
+  const messages = (() => {
+    const detailMessages = detailQuery.data?.messages ?? []
+    const byId = new Map<number, AgentMessageRow>()
+    for (const message of [...olderMessages, ...detailMessages]) byId.set(message.id, message)
+    return [...byId.values()].sort((a, b) => a.id - b.id)
+  })()
   const actions = detailQuery.data?.actions ?? []
   // L3（转审批）动作落库状态是 approval_required，和 L2 的 awaiting_confirmation
   // 一样都等用户表态——之前只过滤了后者，L3 的确认按钮永远出不来，链路前端断
@@ -204,8 +310,8 @@ export default function AgentPage() {
       )}
       {pending ? (
         <div style={{ display: 'flex', gap: 10 }}>
-          <Button
-            theme="solid"
+          <Button type="primary"
+            theme="outline"
             size="small"
             loading={confirmMutation.isPending}
             onClick={() => confirmMutation.mutate(action.id)}
@@ -235,34 +341,44 @@ export default function AgentPage() {
   )
 
   return (
-    // 会话列表固定 240px；用 minmax(0, …) 圈住，宽度不够时它自己缩，不会顶出横向滚动
-    <div className="page-container" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 240px) minmax(0, 1fr)', gap: 16 }}>
-      <SectionCard style={{ height: 'fit-content' }}>
+    <div className="page-container agent-page">
+      {/* 左栏原来写死 height: fit-content —— 会话只有一两条时，卡片就一小块飘在上头，
+          下面空出大半屏。现在让它跟右栏等高、拉满整页。 */}
+      <SectionCard style={{ display: 'flex', flexDirection: 'column' }}>
+        {/* 原来是一块通栏的深蓝实心按钮，压在这一页最顶上，比右边的对话框还抢眼。
+            换成浅色描边按钮：位置不变、还能点，但不再当色块用。 */}
+        {/* 通栏按钮在这栏里像一根长条，跟下面的会话列表分不出主次 ——
+            收成靠左的小按钮，位置不变、一眼能点。 */}
         <Button
-          block
-          theme="solid"
-          style={{ marginBottom: 12 }}
-          disabled={streaming}
-          onClick={() =>
-            createMutation.mutate({
-              title: '新会话',
-              context_type: contextType ?? undefined,
-              context_id: contextId,
-            })
-          }
+          size="small"
+          theme="outline"
+          type="primary"
+          style={{ marginBottom: 12, flexShrink: 0, alignSelf: 'flex-start' }}
+          disabled={streaming || changingEntry}
+          onClick={() => {
+            if (busyRef.current) return
+            setSelectedSession(null)
+            setInput('')
+            setLastTools([])
+          }}
         >
-          新建会话
+          新对话
         </Button>
-        {(sessionsQuery.data ?? []).map((item) => (
+        {/* 会话列表自己滚，把卡片中间那块空间占住；列表短的时候也不至于空一片。 */}
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', marginBottom: 4 }}>
+        {(sessions ?? []).map((item) => (
           <div
             key={item.id}
             onClick={() => {
-              if (busyRef.current) {
+              if (busyRef.current || changingEntry) {
                 Toast.warning('正在回复中，等这轮结束再切换会话')
                 return
               }
-              setSessionId(item.id)
+              if (item.id !== sessionId) setInput('')
+              setSelectedSession(item)
+              setLastTools([])
             }}
+            className="agent-session-item"
             style={{
               padding: '8px 10px',
               borderRadius: 6,
@@ -277,42 +393,150 @@ export default function AgentPage() {
             <span style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {item.title}
             </span>
-            <Popconfirm title="删除这个会话？" onConfirm={() => deleteMutation.mutate(item.id)}>
+            <Popconfirm
+              title="删除这个会话？"
+              content="聊天和待确认操作会删除，已执行的记录会保留。"
+              onConfirm={() => deleteMutation.mutate(item.id)}
+            >
               <span style={{ color: 'var(--crm-text-3)', fontSize: 12 }} onClick={(e) => e.stopPropagation()}>
                 ✕
               </span>
             </Popconfirm>
           </div>
         ))}
-        <div style={{ marginTop: 16, color: 'var(--crm-text-3)', fontSize: 12 }}>
-          Agent 能做什么（{(toolsQuery.data ?? []).length} 个工具）
+        {sessionsQuery.isError && (
+          <Button size="small" theme="borderless" onClick={() => void sessionsQuery.refetch()}>
+            会话加载失败，点击重试
+          </Button>
+        )}
+        {sessionsQuery.hasNextPage && (
+          <Button
+            size="small"
+            theme="borderless"
+            loading={sessionsQuery.isFetchingNextPage}
+            onClick={() => {
+              if (!sessionsQuery.isFetching) void sessionsQuery.fetchNextPage()
+            }}
+          >
+            加载更早的会话
+          </Button>
+        )}
         </div>
-        <div style={{ marginTop: 8, display: 'grid', gap: 4 }}>
-          {(toolsQuery.data ?? []).map((tool) => (
-            <div key={tool.name} style={{ fontSize: 12, display: 'flex', gap: 6, alignItems: 'center' }}>
-              <Tag color={RISK_TONE[tool.risk_level] ?? 'grey'} size="small">
-                {tool.risk_level}
-              </Tag>
-              <span style={{ color: 'var(--crm-text)' }}>{tool.label}</span>
-            </div>
-          ))}
-        </div>
-        <div style={{ marginTop: 8, color: 'var(--crm-text-3)', fontSize: 11, lineHeight: 1.6 }}>
-          鼠标停上去可以看到具体能力；函数名（如 search_customers）是系统内部标识，
-          界面上不用管它。
-        </div>
+        {/* 原来是一个 <details> 折叠：主人明确说过「不要这种折叠，巨丑」，
+            而且 20 项能力一展开就把左栏撑得老高、把会话列表挤没。
+            现在收成一行文字键，点开在弹窗里看全部。 */}
+        <Button
+          size="small"
+          theme="borderless"
+          style={{ marginTop: 'auto', flexShrink: 0, alignSelf: 'flex-start' }}
+          onClick={() => setToolsOpen(true)}
+        >
+          能做什么 · {(toolsQuery.data ?? []).length} 项能力 →
+        </Button>
+        <Modal
+          title="AI 助手能做什么"
+          visible={toolsOpen}
+          onCancel={() => setToolsOpen(false)}
+          footer={null}
+          width={760}
+        >
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+              gap: 10,
+              maxHeight: '58vh',
+              overflowY: 'auto',
+              paddingRight: 4,
+            }}
+          >
+            {(toolsQuery.data ?? []).map((tool) => (
+              <Tooltip key={tool.name} content={tool.description} position="top">
+                <div
+                  style={{
+                    fontSize: 12.5,
+                    display: 'flex',
+                    gap: 8,
+                    alignItems: 'center',
+                    cursor: 'default',
+                    padding: '6px 8px',
+                    borderRadius: 8,
+                    background: 'var(--crm-surface-low)',
+                  }}
+                >
+                  <Tag color={RISK_TONE[tool.risk_level] ?? 'grey'} size="small">
+                    {tool.risk_level}
+                  </Tag>
+                  <span style={{ color: 'var(--crm-text)' }}>{tool.label}</span>
+                </div>
+              </Tooltip>
+            ))}
+          </div>
+          <p style={{ margin: '12px 0 0', fontSize: 12, color: 'var(--crm-text-3)' }}>
+            鼠标停在每一项上，可以看到它具体能做什么。L1 只读取、L2 会写数据、L3 要你确认后才动手。
+          </p>
+        </Modal>
       </SectionCard>
 
-      <SectionCard style={{ minHeight: 520, display: 'flex', flexDirection: 'column' }}>
-        <div style={{ flex: 1, overflow: 'auto', maxHeight: 560 }}>
-          {messages.length === 0 && (
-            <div style={{ color: 'var(--crm-text-3)', fontSize: 13, marginBottom: 16 }}>
-              问点具体的，比如：
-              <div style={{ marginTop: 8, display: 'grid', gap: 6 }}>
-                {EXAMPLES.map((text) => (
-                  <a key={text} style={{ color: 'var(--crm-primary)' }} onClick={() => handleSend(text)}>
+      <SectionCard style={{ minHeight: 600, display: 'flex', flexDirection: 'column' }}>
+        {/* 来源客户标识：有上下文时常驻在对话区顶部，随时看得见「现在问的是谁」 */}
+        {contextType === 'customer' && contextId && (
+          <div className="agent-context-bar">
+            <Tag size="small" color="blue">当前客户</Tag>
+            <span className="agent-context-name">
+              {/* 客户查不到时不露内部编号（主人明确不喜欢看 ID），只说明「来源客户已不可用」 */}
+              {contextCustomerName ??
+                (customerContextQuery.isLoading ? '读取中…' : '客户信息已失效')}
+            </span>
+            <Button
+              size="small"
+              theme="borderless"
+              onClick={() => navigate('/agent')}
+            >
+              清除上下文
+            </Button>
+          </div>
+        )}
+        <div ref={chatScrollRef} className="agent-chat-scroll" style={{ flex: 1, overflow: 'auto' }}>
+          {sessionId && detailQuery.isPending && (
+            <div className="agent-empty">正在加载会话…</div>
+          )}
+          {sessionId && (olderHasMore || olderError) && (
+            <div style={{ textAlign: 'center', marginBottom: 12 }}>
+              <Button
+                size="small"
+                theme="borderless"
+                loading={olderLoading}
+                onClick={() => void loadOlderMessages()}
+              >
+                {olderError ? '加载失败，点击重试' : '加载更早的消息'}
+              </Button>
+            </div>
+          )}
+          {messages.length === 0 && (!sessionId || !detailQuery.isPending) && (
+            <div className="agent-empty">
+              {/* 这页通体白卡 + 灰块，进来第一眼分不出「这是个助手」还是「一张空表」。
+                  加一枚小小的品牌标识，给这页一个能认的身份。 */}
+              <div className="agent-empty-mark" aria-hidden>AI</div>
+              <h2>{sessionId ? '这段对话还没有消息' : '开始新对话'}</h2>
+              <p>直接描述你想查询或处理的业务，也可以试试下面的问题。</p>
+              <div className="agent-examples">
+                {(() => {
+                  /* 有客户上下文时，绝不摆「宏远包装」这类跟来源无关的示例：
+                     知道名字就用名字，名字没拿到就用「这个客户」，语义照样指着它。 */
+                  if (contextType === 'customer' && contextId) {
+                    const who = contextCustomerName ?? '这个客户'
+                    return [
+                      `${who} 现在跟进到什么阶段？`,
+                      `帮我梳理 ${who} 的应收和回款风险`,
+                      `给 ${who} 拟一份报价建议`,
+                    ]
+                  }
+                  return EXAMPLES
+                })().map((text) => (
+                  <button key={text} type="button" disabled={streaming || changingEntry} onClick={() => handleSend(text)}>
                     {text}
-                  </a>
+                  </button>
                 ))}
               </div>
             </div>
@@ -407,33 +631,57 @@ export default function AgentPage() {
           <div ref={bottomRef} />
         </div>
 
-        <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
-          <input
+        <div className="agent-composer">
+          {/* 输入框和发送键包一层：按钮原来按整个 composer 定位，而 composer 底下
+              还压着一行「会直接读系统里的…」小字，结果按钮落到小字那一行上，
+              和输入框错开了一截（2026-11-21 巡检）。包一层之后按钮就贴着框右下角。 */}
+          <div className="agent-input-wrap">
+          <textarea
+            rows={3}
             value={input}
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey) {
+              if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
                 event.preventDefault()
                 handleSend(input)
               }
             }}
-            placeholder="问点什么…（回车发送）"
+            placeholder="输入问题或任务…（Enter 发送，Shift + Enter 换行）"
             style={{
               flex: 1,
               padding: '10px 12px',
               border: '1px solid var(--crm-surface-high)',
-              borderRadius: 6,
-              fontSize: 13,
+              borderRadius: 10,
+              fontSize: 14,
               outline: 'none',
+              // 聊天框不给拖拽柄：拖出来的高度不会被记住，还会把按钮顶到框外
+              resize: 'none',
             }}
           />
-          <Button
-            theme="solid"
+          {/* 发送是这一页唯一的主操作，实心蓝；原来用描边蓝（theme="outline"），
+              未填内容时几乎看不见按钮在哪（2026-11-21 巡检） */}
+          {streaming && streamAbortRef.current ? (
+            <Button
+              className="agent-send"
+              theme="outline"
+              onClick={() => {
+                streamAbortRef.current?.abort()
+                Toast.info('已停止生成，已收到的内容可能稍后出现在历史里')
+              }}
+            >停止生成</Button>
+          ) : <Button type="primary"
+            className="agent-send"
             loading={streaming}
+            disabled={!input.trim() || changingEntry}
             onClick={() => handleSend(input)}
           >
             {streaming ? '回复中…' : '发送'}
-          </Button>
+          </Button>}
+          </div>
+          {/* 说清楚它到底在干什么：这页最容易被误解成「能随便聊的客服机器人」。 */}
+          <p className="agent-composer-hint">
+            会直接读系统里的客户、商机、报价、应收数据；涉及改动的动作会先停下来等你确认。
+          </p>
         </div>
       </SectionCard>
     </div>

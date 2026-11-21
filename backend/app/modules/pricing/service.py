@@ -9,10 +9,11 @@
 - 无价格权限 → 默认最低利润率 15%（与 07 计划的占位值一致）。
 """
 
+import hashlib
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
@@ -30,6 +31,12 @@ from app.modules.settings import service as settings_service
 from app.modules.user.model import Role
 
 ZERO = Decimal("0")
+
+
+def discount_percentage(price: Decimal | None, standard_price: Decimal | None) -> Decimal:
+    if price is None or standard_price is None or standard_price <= 0 or price >= standard_price:
+        return ZERO
+    return (Decimal(1) - price / standard_price) * 100
 
 
 def _f(value: Decimal | None) -> float | None:
@@ -62,12 +69,24 @@ def serialize_cost(cost: ProductCost, sku_code: str | None = None) -> dict:
 
 
 def serialize_price_rule(
-    rule: PriceRule, sku_code: str | None = None, *, can_see_cost: bool = True
+    rule: PriceRule,
+    sku_code: str | None = None,
+    *,
+    can_see_cost: bool = True,
+    sku_name: str | None = None,
 ) -> dict:
+    """价格规则。
+
+    `sku_name` 是**只读关键字参数**（默认 None）：只有"知道名字"的调用点才传，
+    其余（新建/编辑/审计前后的快照）保持原样 —— 那里本来就只有编码，
+    不值得为它们多查一次库。
+    """
     return {
         "id": rule.id,
         "sku_id": rule.sku_id,
         "sku_code": sku_code,
+        # 价目表上满屏 `LL-100L-WH` 这种编码认不出是哪个产品（2026-10-10 修）
+        "sku_name": sku_name,
         "customer_level": rule.customer_level,
         "min_qty": _f(rule.min_qty),
         "max_qty": _f(rule.max_qty),
@@ -86,7 +105,8 @@ def serialize_price_rule(
 
 def serialize_customer_price(rule: CustomerPriceRule, sku_code: str | None = None,
                              customer_name: str | None = None, *,
-                             can_see_cost: bool = True) -> dict:
+                             can_see_cost: bool = True,
+                             sku_name: str | None = None) -> dict:
     """客户专属价。
 
     §7.3 复审（第三轮）：此前只有核价/查价两个接口按 `price:manage` 隐藏保护价，
@@ -102,6 +122,7 @@ def serialize_customer_price(rule: CustomerPriceRule, sku_code: str | None = Non
         "customer_name": customer_name,
         "sku_id": rule.sku_id,
         "sku_code": sku_code,
+        "sku_name": sku_name,
         "min_qty": _f(rule.min_qty),
         "max_qty": _f(rule.max_qty),
         "agreed_price": _f(rule.agreed_price),
@@ -166,9 +187,70 @@ async def get_effective_cost(
             or_(ProductCost.effective_to.is_(None), ProductCost.effective_to >= today),
         )
         .order_by(ProductCost.effective_from.desc(), ProductCost.id.desc())
-        .limit(1)
     )
-    return (await session.execute(stmt)).scalar_one_or_none()
+    rows = list((await session.execute(stmt)).scalars().all())
+    if not rows:
+        return None
+    # 歧义必须显式报错，**不能静默挑一条**（第七批 P1-2）。
+    #
+    # 同日可以存在多条（`effective_from` 上没有唯一约束）。从前这里是
+    # `order_by(...).limit(1)` + `scalar_one_or_none()`：同日两条不会报错，
+    # 靠 id 排序悄悄取最新那条 —— 而**导入**那条路用的是没有排序的 `.first()`，
+    # 于是"导入报告更新成功、核价却仍按另一条算"：导入改了 id 小的那条，
+    # 核价读 id 大的那条，用户看到成本没变，还以为是自己填错了。
+    #
+    # 为什么不悄悄统一成"都取 id 最大"：两套规则一旦有一处再漂移，问题会以
+    # "金额对不上"的形式复发，而且没人能一眼看出是成本版本选错。
+    # 报错把选择权交回给人，并给出具体行号。
+    # ⚠️ **只有"生效日相同"才是歧义**（我第一版判错了）：
+    # 成本可以有多条不同生效日的记录同时处于"生效中"（都没有截止日），
+    # 那是**合法**的历史版本链，排序已给出唯一答案（生效日最新、同日再比 id）。
+    # 我第一版在"多条命中"时就报错，把这种正常数据也拦了 ——
+    # 实测：种子里 sku=1 有 2026-01-01 与 2026-10-07 两条，全套件因此连环变红
+    # （`check_approval_rules`、`check_business_time_edges` 等 9 个）。
+    # 真正无法裁决的只有"同一天两条"。
+    top_day = rows[0].effective_from
+    same_day = [row for row in rows if row.effective_from == top_day]
+    if len(same_day) > 1:
+        ids = "、".join(str(row.id) for row in same_day)
+        raise AppError(
+            ErrorCode.DUPLICATE,
+            f"该 SKU 在 {top_day.isoformat()} 有 {len(same_day)} 条成本版本"
+            f"（成本编号 {ids}），无法确定用哪一条核价。"
+            "请先在价格中心把多余的那条停用或删除，再重新核价",
+            409,
+        )
+    return rows[0]
+
+
+async def sku_cost_statuses(session: AsyncSession, sku_ids: list[int]) -> dict[int, dict]:
+    """产品页的批量完整性摘要；不向产品查看者暴露任何成本金额。"""
+    if not sku_ids:
+        return {}
+    today = today_business()
+    rows = (await session.execute(select(ProductCost).where(
+        ProductCost.sku_id.in_(sku_ids), ProductCost.stopped_at.is_(None),
+        ProductCost.effective_from <= today,
+        or_(ProductCost.effective_to.is_(None), ProductCost.effective_to >= today),
+    ).order_by(ProductCost.effective_from.desc(), ProductCost.id.desc()))).scalars().all()
+    groups: dict[int, list[ProductCost]] = {}
+    for row in rows:
+        groups.setdefault(row.sku_id, []).append(row)
+    result = {}
+    for sku_id in sku_ids:
+        matches = groups.get(sku_id, [])
+        if not matches:
+            state, label = "missing", "成本未维护"
+        elif sum(r.effective_from == matches[0].effective_from for r in matches) > 1:
+            state, label = "conflict", "成本版本有冲突"
+        elif (matches[0].currency or "CNY").upper() != "CNY":
+            state, label = "invalid", "成本币种必须为人民币"
+        elif not matches[0].is_complete:
+            state, label = "incomplete", "成本未填完整"
+        else:
+            state, label = "complete", "成本已完整维护"
+        result[sku_id] = {"state": state, "label": label}
+    return result
 
 
 async def find_price_rule(
@@ -255,6 +337,27 @@ def check_effective_period(
         )
 
 
+def _check_numeric_storage(errs, label: str, value: Decimal | None, *, precision: int, scale: int) -> None:
+    """维护接口与 CSV 导入都要拒绝数据库无法原样保存的数值。"""
+    if value is None:
+        return
+    if not value.is_finite():
+        errs.add(f"{label}必须是有限数字")
+        return
+    digits = list(value.as_tuple().digits)
+    exponent = value.as_tuple().exponent
+    # 末尾零不增加实际精度，1.23000 与 1.23 应获得同样的结果。
+    while digits and digits[-1] == 0:
+        digits.pop()
+        exponent += 1
+    if not digits:
+        return
+    if max(-exponent, 0) > scale:
+        errs.add(f"{label}最多保留 {scale} 位小数")
+    if max(len(digits) + exponent, 0) > precision - scale:
+        errs.add(f"{label}整数部分最多 {precision - scale} 位")
+
+
 def check_price_rule_values(
     errs,
     *,
@@ -292,16 +395,25 @@ def check_price_rule_values(
         ("最低保护价", minimum_price),
         ("约定价", agreed_price),
     ):
+        _check_numeric_storage(
+            errs, label, value, precision=16, scale=3 if label in ("数量下限", "数量上限") else 4
+        )
+        if value is not None and not value.is_finite():
+            continue
         if value is not None and value < 0:
             errs.add(f"{label}不能为负数（收到 {value}）")
-    if min_qty is not None and max_qty is not None and min_qty > max_qty:
+    if (
+        min_qty is not None and min_qty.is_finite()
+        and max_qty is not None and max_qty.is_finite() and min_qty > max_qty
+    ):
         errs.add(f"数量下限（{min_qty}）不能大于数量上限（{max_qty}）")
     # 刻意**不**校验"最低价不得高于约定价"（2026-10-07 决定）：保护价高于约定价在业务上
     # 是合法的 —— 它表示"这个客户的价一开始就低于保护线、每单都要走审批"，
     # 而 `check_approval_rules` 正是用这个配置来构造"破保护价进审批"的场景。
     # 审查要求补的是**数值与区间**（负数 / 倒置区间 / 倒置有效期 / 利润率口径），
     # 不是把业务上能成立的组合也一并堵掉。
-    if target_margin is not None and not (Decimal(0) < target_margin <= Decimal(1)):
+    _check_numeric_storage(errs, "目标利润率", target_margin, precision=6, scale=4)
+    if target_margin is not None and target_margin.is_finite() and not (Decimal(0) < target_margin <= Decimal(1)):
         errs.add(
             "目标利润率是比率口径：30% 请填 0.30"
             f"（取值应大于 0 且不超过 1，收到 {target_margin}）"
@@ -391,6 +503,71 @@ def _ranges_overlap(a_min, a_max, b_min, b_max) -> bool:
     return True
 
 
+def _session_dialect(session: AsyncSession) -> str:
+    """当前会话连的是什么库（用于跳过 PostgreSQL 专有语法）。
+
+    与 `bizdoc/service.py` 里的同名函数同一写法：单元测试用 SQLite，
+    而 advisory 锁是 PostgreSQL 专有函数。
+    """
+    try:
+        return session.get_bind().dialect.name
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+async def lock_sku_price_rules(session: AsyncSession, sku_id: int) -> None:
+    """把**同一个 SKU** 上的价格规则写入串行化（审查 R05，2026-10-09 修）。
+
+    ## 为什么必须加
+
+    价格规则的写路径是"**先查有没有区间冲突、再写**"。两个并发请求各自在
+    自己的事务里查——都查到"没有冲突"（对方的行还没提交），于是各写一条，
+    库里留下**两条区间重叠**的规则。实测复现：同时提交 `0~19` 与 `11~30`，
+    两条都返回 200 并落库。
+
+    重叠的后果不是报错，而是**取价静默二选一**：客户询价命中数量 15 时两条都
+    匹配，取哪条取决于数据库返回顺序，同一个客户同一数量今天报 100、明天报 110。
+    客户特殊价同理，而且更难看——同一个客户被报两个价。
+
+    ## 为什么用 advisory 事务锁，而不是行锁
+
+    行锁（`with_for_update`）要有一个"双方必争的行"。订单/应收那边锁的是
+    `sales_orders` / `receivable_plans` 的**主行**，天然存在；而价格规则是
+    **在某个 SKU 下新增/修改若干行**，没有这样一行可以锁 —— 新增时还没有行，
+    两条不同的规则行彼此也锁不到。所以用按 SKU 取的事务级 advisory 锁：
+    同一 SKU 的调用排队，事务结束（提交或回滚）自动释放，不需要手工解锁。
+
+    与项目里 `order/drafts.py`、`contract/service.py`、`bizdoc/service.py`
+    的写法保持一致（`sha256` 取前 8 字节 → 有符号 int64，避免负数溢出）。
+
+    ## 锁的是"这个 SKU"，不是"这张表"
+
+    不同 SKU 之间**互不阻塞**，各改各的；只有同一个 SKU 的并发写才排队，
+    后到的那个多等先到者提交（几十毫秒级）。因此价格规则与客户特殊价**共用
+    同一把 SKU 锁**：两者都会占用该 SKU 的数量区间，共用一把锁能保证判断
+    依据是最新的，也不会引入第二套锁序（本项目在锁序上踩过坑，见
+    `payment/service.lock_order` 的说明）。
+
+    ## 调用时机
+
+    **必须在读冲突之前**调用。放到写之前才拿锁等于没加：那两个请求都已经
+    读完"没有冲突"了，再串行也改变不了各自已经做出的判断。
+    """
+    # ⚠️ 方言守卫：`pg_advisory_xact_lock` 是 PostgreSQL 专有函数，
+    # SQLite（单元测试用的库）没有它，会直接报 "no such function"。
+    # 项目里 `bizdoc/service.py` 的同类锁也是这么守的。
+    # 非 PostgreSQL 时**静默跳过**：单元测试跑的是单线程，没有并发要防；
+    # 生产一定是 PostgreSQL，锁照常生效。
+    if _session_dialect(session) != "postgresql":
+        return
+
+    digest = hashlib.sha256(f"pricing-sku:{sku_id}".encode()).digest()[:8]
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(:key)"),
+        {"key": int.from_bytes(digest, "big", signed=True)},
+    )
+
+
 async def find_price_rule_conflict(
     session: AsyncSession,
     *,
@@ -465,6 +642,28 @@ SOURCE_LABELS = {
 }
 
 
+def customer_specific_allowed(customer) -> bool:
+    """这个客户参不参与**专属价（协议价）**匹配。
+
+    ## 判据只此一处（2026-10-14 审查修）
+
+    专属价是**协议价**："数据范围放行只代表这个客户你能看，不代表他的协议价你能看"。
+    项目已确认的口径是 **公海客户（`owner_id IS NULL`）不参与专属价匹配**。
+
+    这条判据原来在调用方**各写一份**（`pricing/router.py` 的查价接口、
+    `quote/service.py` 的机会项带价），而另外两个出口漏了 ——
+    `price_drift`（草稿"价格已更新"检测）与 `refresh_prices`（一键刷新）
+    用的是默认值 `True`，于是**公海客户的报价会被写进专属价**，
+    与同模块的口径自相矛盾。**实测**：客户置为公海、专属价 88.00，
+    默认路径查到 `来源=customer_specific 单价=88.0`，而显式关闭时是
+    `来源=level 单价=26.68`。
+
+    现在改成"默认由本函数按客户推导"，调用方不传就自动是对的；
+    要覆盖（例如管理员刻意要看协议价）可以显式传 `include_customer_specific=`。
+    """
+    return getattr(customer, "owner_id", None) is not None
+
+
 async def lookup_applicable_price(
     session: AsyncSession,
     *,
@@ -472,7 +671,8 @@ async def lookup_applicable_price(
     sku_id: int,
     quantity: Decimal,
     on_date: date | None = None,
-    include_customer_specific: bool = True,
+    include_customer_specific: bool | None = None,
+    snapshot_out: dict[str, Decimal | None] | None = None,
 ) -> dict:
     """统一查价（方案 §4：只回答「卖多少、依据是什么」）。
 
@@ -480,12 +680,24 @@ async def lookup_applicable_price(
     - 等级价存在但没维护指导价 → 回退通用价并**明确标注**（D4 已确认）；
     - 都没有 → `status=pending`（待定价），不做成本推算兜底（D4/D5）；
     - 成本/最低保护价由路由层按 `price:manage` 权限决定是否附加，这里不输出；
-    - `include_customer_specific=False` 用于公海客户（无负责人）：专属价是
-      协议价，只该让负责人看，数据范围放行不等于专属价放行。
+    - `include_customer_specific` **不传就按客户自动判**（公海客户不参与专属价，
+      见 `customer_specific_allowed`）；显式传 `True/False` 可覆盖。
     """
+    if snapshot_out is not None:
+        snapshot_out["unit_price"] = None
+    if include_customer_specific is None:
+        include_customer_specific = customer_specific_allowed(customer)
+    # 停用/删除的 SKU 不给有效价（issue #7 实测：停用后查价仍返回
+    # `status=ok` + 有效适用价，销售照拿它去报价）。
+    # 查价是**新业务**入口，所以这里直接拒；历史单据不经过这里。
+    from app.modules.product.service import require_available_sku
+
+    await require_available_sku(session, sku_id)
     level = (customer.level or "").strip() or None
 
     async def rule_payload(rule: PriceRule, source: str, note: str | None = None) -> dict:
+        if snapshot_out is not None:
+            snapshot_out["unit_price"] = rule.guide_price
         return {
             "status": "ok",
             "source": source,
@@ -508,6 +720,8 @@ async def lookup_applicable_price(
         else None
     )
     if customer_price is not None:
+        if snapshot_out is not None:
+            snapshot_out["unit_price"] = customer_price.agreed_price
         return {
             "status": "ok",
             "source": "customer_specific",
@@ -692,6 +906,8 @@ async def calculate_price(
     package_type: str | None = None,
     shipping_method: str | None = None,
     payment_terms: str | None = None,
+    logistics_in_base_cost: bool = False,
+    snapshot_out: dict[str, Decimal | None] | None = None,
 ) -> dict:
     """核价。
 
@@ -704,10 +920,27 @@ async def calculate_price(
     - `protection_price`：最低保护价，来自价格规则/客户特殊价，是「公司规定不能低于」；
     - `minimum_price`：当前用户授权底价，是「以你的权限不能低于」。
     审批判定两个都要看（PRD §16「低于业务员授权价」「低于保护价」是两条触发条件）。
+
+    **运费与产品价格分离（2026-10-09 业务口径，别改回去）**：
+    产品单价**不含运费**，运费单独列出、按实际金额**代收代付**（公司不赚不赔）。
+    所以 `base_cost`（产品建议价/授权底价/利润/利润率的基础）**只含商品成本**，
+    运费**不进**这个基数。
+
+    为什么这样定：公司把货款和运费一起向客户收，再把运费付给承运商，运费上
+    不存在差额、加价或补贴；产品核价与利润率本来就不该被运费抬高或压低。
+
+    推论（都是刻意的，不是漏算）：
+    - 改运费金额**不会**改变产品建议价、产品利润、产品底价；
+    - 核价**不需要**先配运费费率，缺费率也不阻碍产品核价；
+    - `logistics_in_base_cost=True` 只为**历史版本**保留：老版本的 `base_cost`
+      里是含运费的，回看/重算老版本时必须按老口径，否则等于改写已发出去的报价。
+      调用方从这里传入口径，见 `quote/service.build_item_snapshot`。
     """
-    sku = await session.get(Sku, sku_id)
-    if sku is None or sku.deleted_at is not None:
-        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
+    # 停用/删除的 SKU 不接新业务（issue #7：从前只判 `deleted_at`，
+    # 停用之后查价照样返回 status=ok 与有效适用价，"停售"对销售完全失效）。
+    from app.modules.product.service import require_available_sku
+
+    sku = await require_available_sku(session, sku_id)
 
     warnings: list[str] = []
     customer = await session.get(Customer, customer_id) if customer_id else None
@@ -716,12 +949,21 @@ async def calculate_price(
 
     cost = await get_effective_cost(session, sku_id)
     has_cost = cost is not None
+    # 成本"可不可信"（第七批 P1-1）：不只是"有没有成本行"，还要看四项填全没有。
+    #
+    # `goods_cost` 把 NULL 当 0 合计 —— 只填采购 10、其余三项为空时，它是一个
+    # 看上去完全正常的正数。拿它**反推价格**（保护价/授权底价/绝对底价/
+    # 成本+利润的试算价）会得出偏低的底线，低于保护价的报价因此被自动放行。
+    #
+    # 所以：金额照常显示（价格中心要看得到"现在维护的是多少"、缺哪几项），
+    # 但**凡是"由成本反推出来的价格"一律不给**，并如实说明原因。
+    cost_trustworthy = has_cost and bool(cost.is_complete)
     if cost is None:
         # A06/D5：没有成本就谈不上利润——宁可"利润不可计算"，
         # 也不能拿 0 成本算出 100% 的假毛利
         warnings.append(
             "该 SKU 无生效成本：利润不可计算，利润类审批判定停用；"
-            "按已维护售价报价不受影响"
+            "可按已维护售价保存草稿，但补齐成本前不能正式提交、发送、对客导出或转订单"
         )
     purchase = (cost.purchase_cost if cost else None) or ZERO
     production = (cost.production_cost if cost else None) or ZERO
@@ -732,9 +974,14 @@ async def calculate_price(
     # 算出来的毛利率看起来正常，实际是"少算了成本"的高估。第七批 7.4。
     missing_cost_items = cost.missing_components if cost else []
     if missing_cost_items:
+        # 一条话说完"缺什么 + 后果 + 怎么办"（原来只说了"合计按 0 计入、
+        # 毛利率偏高"，没说清**哪些价格因此不给了** —— 用户看到成本 10、
+        # 底价却是空，只会以为系统坏了）。
         warnings.append(
             "该 SKU 的生效成本不完整（缺：" + "、".join(missing_cost_items)
-            + "），合计按 0 计入，毛利率会偏高，请补齐成本后再据此定价"
+            + "）：合计按 0 计入，毛利率会偏高；且凡是由成本反推的价格一律不给"
+            "（保护价、授权底价、绝对底价，以及按成本加目标利润的试算价），"
+            "毛利类审批判定同步停用。补齐这四项后自动恢复"
         )
 
     if package_type and package_type != (sku.package_type or None):
@@ -762,7 +1009,7 @@ async def calculate_price(
         if general_rule is not None and general_rule.guide_price is not None:
             rule = general_rule
     if rule is None:
-        warnings.append("该 SKU 没有匹配的价格规则，已按默认利润率反推标准价")
+        warnings.append("该 SKU 没有匹配的价格规则")
     customer_rule = (
         await find_customer_price(
             session, customer_id=customer_id, sku_id=sku_id, quantity=quantity
@@ -771,20 +1018,36 @@ async def calculate_price(
         else None
     )
 
-    margin = (
-        target_margin
-        or (rule.target_margin if rule and rule.target_margin is not None else None)
-        or Decimal(
+    # ⚠️ 逐级判 `is not None`，**不能用 `or` 串**（2026-10-14 审查修）：
+    # `0 or X` 得到的是 X —— 于是"把目标利润率显式设成 0"会被静默换成规则值或
+    # 系统默认值，用户看到的价格与预期不符却没有任何提示。
+    # `margin >= 1` 只挡上界；**下界（0、负数）从来没有守卫**，而系统设置
+    # `default_target_margin` 是自由文本写进来的（`settings/service.py::
+    # validate_setting_value` 只校验两个"天数"键），负数真能落到这里。
+    # 本函数的契约是 `(0, 1)`，就照契约把下界也挡住 —— 与接口入参的
+    # `Field(gt=0, le=1)`（`pricing/schema.py:86/116/284`）同一把尺子。
+    margin = target_margin
+    if margin is None and rule is not None:
+        margin = rule.target_margin
+    if margin is None:
+        margin = Decimal(
             str(
                 await settings_service.get_number(
                     session, "default_target_margin", "ratio", 0.30
                 )
             )
         )
-    )
     if margin >= 1:
         raise AppError(ErrorCode.PARAM_ERROR, "目标利润率必须小于 100%")
+    if margin <= 0:
+        raise AppError(ErrorCode.PARAM_ERROR, "目标利润率必须大于 0")
 
+    # 物流试算在新口径下**不影响产品核价**（运费不进 base_cost、不进利润），
+    # 但它仍然是**参考估算**，要在核价结果里如实给出（`cost.logistics_cost`）——
+    # 业务员可能拿它去填报价的运费，所以"这次用的不是精确匹配的费率"这句提示
+    # 必须保留（`check_logistics_rate_admin` 守的就是它：估算算少了没人看得出来）。
+    # 口径（2026-10-09）：物流试算保留为**可选参考**，正式报价的运费由业务员按
+    # 承运商确认的金额填写；无费率、无固定承运商时照样能核价与报价。
     if logistics_cost is None:
         logistics_cost, logistics_warning = await estimate_logistics(
             session,
@@ -797,32 +1060,49 @@ async def calculate_price(
             warnings.append(logistics_warning)
     logistics = logistics_cost or ZERO
 
-    base_cost = goods_cost + logistics
-    standard_price = (
-        (rule.standard_price if rule else None) or (base_cost / (Decimal(1) - margin))
-    )
-    recommended = (
-        (customer_rule.agreed_price if customer_rule else None)
-        or (rule.guide_price if rule and rule.guide_price else None)
-        or (base_cost / (Decimal(1) - margin) if has_cost else None)
-    )
-    if recommended is None:
-        warnings.append("无成本也无已维护售价，无法给出建议价——请先维护成本或价格规则")
+    # 产品核价基础 = **商品成本**（采购+生产+包装+加工）。
+    # 运费按代收代付处理，不进产品定价基数 —— 见本函数 docstring 的
+    # 「运费与产品价格分离」。老版本回看时才用 logistics_in_base_cost=True。
+    base_cost = goods_cost + logistics if logistics_in_base_cost else goods_cost
+    # ⚠️ `standard_price` 允许为 **0**（`pricing/schema.py:77` 的约束是 `ge=0`）——
+    # 用 `or` 回退会把"我就是要标准价 0"当成"没填"，静默改成按成本反推的值。
+    # 实测（2026-10-14）：规则里写 `standard_price=0` 时返回 `28.57`
+    # （成本 ÷ (1−利润率)），与规则里写的数不一致。判"有没有填"只能看 `is None`。
+    standard_price = rule.standard_price if rule else None
+    if standard_price is None and cost_trustworthy:
+        standard_price = base_cost / (Decimal(1) - margin)
+    # 同样逐级判 `is not None`：`agreed_price` 是 `gt=0`（不能为 0），
+    # 但 `guide_price` / `standard_price` 是 `ge=0` —— 把"协议价/指导价 0 元"
+    # 当没填，会让客户专属价或规则里明确写的 0 被成本反推价顶掉。
+    recommended = customer_rule.agreed_price if customer_rule else None
+    if recommended is None and rule is not None:
+        recommended = rule.guide_price
+    amount_target = target_profit_amount if target_margin is None else None
+    if recommended is None and cost_trustworthy and amount_target is None:
+        recommended = base_cost / (Decimal(1) - margin)
 
-    # 利润要求（绝对金额口径）：反推一个等效的目标利润率，便于统一走后面的算法
-    if target_profit_amount is not None and target_margin is None:
-        if recommended > 0 and target_profit_amount < recommended:
-            margin = (recommended - target_profit_amount) / recommended
+    # 已维护的协议价或指导价优先。只有缺少适用售价时，才以达标价作为建议价。
+    target_profit_price: Decimal | None = None
+    profit_target_met: bool | None = None
+    if amount_target is not None:
+        if not cost_trustworthy:
+            warnings.append("按单件利润试算需要完整的生效成本，请先维护成本")
         else:
-            warnings.append(
-                f"要求的单件利润 ¥{target_profit_amount} 高于建议价，已忽略该约束"
-            )
+            target_profit_price = base_cost + amount_target
+            if recommended is None:
+                recommended = target_profit_price
+                warnings.append("该 SKU 无已维护售价，建议价按单件成本加目标利润试算")
+            profit_target_met = recommended >= target_profit_price
+            if not profit_target_met:
+                warnings.append("当前适用价达不到目标单件利润，请查看达标试算价")
+    if recommended is None:
+        warnings.append("暂无可用建议价，请维护完整成本或价格规则")
 
     min_margin, can_approve = await resolve_min_margin(session, role_codes or [])
     # 授权底价由利润率反推——没有成本就没有授权底价（利润类判定同步停用）
     floor_from_margin = (
         base_cost / (Decimal(1) - min_margin)
-        if has_cost and min_margin < 1
+        if cost_trustworthy and min_margin < 1
         else None
     )
 
@@ -850,7 +1130,7 @@ async def calculate_price(
     # 与保护价的区别：保护价低过 → 触发审批（可被批准）；绝对底价低过 → 硬拒绝。
     hard_floor_mode = await settings_service.get_text(session, "hard_floor", "mode", "off")
     hard_floor_price = None
-    if has_cost and hard_floor_mode in ("cost", "cost_markup"):
+    if cost_trustworthy and hard_floor_mode in ("cost", "cost_markup"):
         markup = Decimal(
             str(await settings_service.get_number(session, "hard_floor", "markup_ratio", 0.0))
         )
@@ -882,7 +1162,8 @@ async def calculate_price(
     #: 而下面外贸分支会把 floor_price 折成计价币种——所以先留一份原值出去。
     floor_price_cny = floor_price
     if is_foreign and fx:
-        convert = lambda value: (value / fx).quantize(Decimal("0.0001"))  # noqa: E731
+        def convert(value: Decimal | None) -> Decimal | None:
+            return None if value is None else (value / fx).quantize(Decimal("0.0001"))
         standard_price = convert(standard_price)
         recommended = convert(recommended)
         floor_price = convert(floor_price)
@@ -896,8 +1177,8 @@ async def calculate_price(
         recommended_range = [convert(recommended_range[0]), convert(recommended_range[1])]
         cost_for_profit = convert(base_cost)
 
-    def metrics(price: Decimal) -> tuple[Decimal | None, Decimal | None]:
-        if not has_cost:
+    def metrics(price: Decimal | None) -> tuple[Decimal | None, Decimal | None]:
+        if price is None or not has_cost:
             # A06：无成本不给"利润"，让界面显示不可计算
             return None, None
         profit = price - cost_for_profit
@@ -910,6 +1191,23 @@ async def calculate_price(
 
     # ---- 出口退税（可选）：内贸退税额恒为 0 ----
     refund_rate = tax_refund_rate
+    # ⚠️ **国内请求不许有退税**（第七批 P2-6）。
+    #
+    # 出口退税是"出口才有"的收益，而本系统只做境内人民币业务。原来这里只在
+    # `refund_rate is None` 时才去读设置里的默认退税率，**显式传进来的非零退税率
+    # 一律照用** —— 审查实测：CNY、成本 10、报价 100，传退税率 30%，
+    # 系统凭空造出 3 元退税，把利润从 90 抬到 93，还给出了 `profit_with_refund`。
+    #
+    # 主人口径：没有外币、不做汇率、更不存在"国内业务的出口退税"。
+    # 与其靠"默认值是 0"，不如在国内路径上直接拒绝非零值 ——
+    # 默认值可以被配置改掉，而这个判断不会。
+    if not is_foreign and refund_rate:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "国内业务（人民币）不存在出口退税，不能传入退税率；"
+            "请去掉退税率后重新核价",
+            422,
+        )
     if refund_rate is None and is_foreign:
         refund_rate = Decimal(
             str(await settings_service.get_number(session, "export_tax_refund_rate", "ratio", 0.0))
@@ -940,6 +1238,7 @@ async def calculate_price(
     )
     below_authorized = bool(
         has_cost
+        and check_price is not None
         and floor_from_margin is not None
         and check_price < floor_from_margin - Decimal("0.0001")
     )
@@ -953,14 +1252,7 @@ async def calculate_price(
     # 折扣上限（price_permissions.discount_limit，此前只存不用）：
     # 折扣 = 1 - 报价/标准价；角色配了上限且折扣超出 → 需审批。
     # 没配上限（None）不参与判定——与最低利润率的"配了才生效"同口径。
-    discount_pct = (
-        (1 - check_price / standard_price) * 100
-        if standard_price
-        and standard_price > 0
-        and check_price is not None
-        and check_price < standard_price
-        else ZERO
-    )
+    discount_pct = discount_percentage(check_price, standard_price)
     role_discount_limit = await resolve_discount_limit(session, role_codes or [])
     # 库里存的是 0-1 比例（0.3 = 最多让 30%），与百分数口径换算后比较
     discount_exceeded = (
@@ -968,8 +1260,17 @@ async def calculate_price(
         and discount_pct > Decimal(str(role_discount_limit)) * 100
     )
 
+    # 有成本行但四项缺项必须人工审批，合计为零也不能视为无成本。
+    # 无成本记录继续按 A06/D5 处理；四项显式为零属于完整成本。
+    cost_incomplete = has_cost and not cost.is_complete
+    cost_floor_unreliable = cost_incomplete
     approval_required = bool(
-        below_protection or below_authorized or below_profit or below_margin or discount_exceeded
+        below_protection
+        or below_authorized
+        or below_profit
+        or below_margin
+        or discount_exceeded
+        or cost_floor_unreliable
     )
 
     # 绝对底价触发器：不算进 approval_required（它根本不是"需审批"，是"不可批"），
@@ -1008,6 +1309,20 @@ async def calculate_price(
             )
         warnings.append("该报价需要审批：" + "，".join(reason))
 
+    # 内部报价落库直接接收原始定点值，避免经过下面的 HTTP 浮点序列化。
+    # 不把这些值放进公开响应，继续由调用方原有权限裁剪响应。
+    if snapshot_out is not None:
+        snapshot_out.update({
+            "goods_cost": goods_cost,
+            "package_cost": package,
+            "logistics_cost": logistics,
+            "standard_price": standard_price,
+            "recommended_price": recommended,
+            "minimum_price_cny": floor_price_cny,
+            "cost_in_quote_currency": cost_for_profit,
+            "tax_refund": tax_refund,
+        })
+
     return {
         "sku": {
             "id": sku.id,
@@ -1030,6 +1345,10 @@ async def calculate_price(
             "payment_terms": payment_terms,
             "target_margin": _f(target_margin),
             "target_profit_amount": _f(target_profit_amount),
+            #: 达到目标利润所需的**试算价**（成本 + 目标利润）。None = 没要求或算不出
+            "target_profit_price": _f(target_profit_price),
+            #: 当前适用价是否达到了这次的利润目标。None = 不可判定（无成本/无适用价）
+            "profit_target_met": profit_target_met,
         },
         "cost": {
             "purchase_cost": _f(purchase),
@@ -1039,6 +1358,16 @@ async def calculate_price(
             "goods_cost": _f(goods_cost),
             "logistics_cost": _f(logistics),
             "base_cost": _f(base_cost),
+            #: 本次核价是否把运费算进了 base_cost。新口径恒为 False；
+            #: 只有回看历史版本才会是 True。给前端如实标注用，别拿它当开关。
+            "logistics_in_base_cost": logistics_in_base_cost,
+            #: 产品成本四项**是否填全**（第七批 P1-1）。四项里有 NULL 就是 False。
+            #: 为什么要单独给这个键：`goods_cost` 把 NULL 当 0 合计，"只填了一项"
+            #: 看上去是个正常的正数，谁也算不出它不完整 —— 报价快照要把这个判断
+            #: 一起存下来，审批侧才不至于拿虚高毛利去免审。
+            #: 无成本记录时给 False（本来就谈不上完整，且下游已有"无成本"分支）。
+            "cost_complete": bool(cost.is_complete) if cost else False,
+            "cost_missing_items": list(cost.missing_components) if cost else [],
             "source": "价格中心成本表（生效中）" if cost else "无成本记录",
         },
         "price_rule": serialize_price_rule(rule, sku.sku_code) if rule else None,

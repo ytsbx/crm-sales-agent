@@ -379,7 +379,9 @@ async def main() -> None:
             "POST", "/orders", admin,
             body={
                 "customer_id": customer_id,
-                "delivery_date": "2026-10-20",
+                # 交期前移到 10-15（建议发货日 = 10-08），让"实发 10-11/10-10"
+                # 仍然是晚发：第三批审查 P2 起，实际发货日不允许填未来。
+                "delivery_date": "2026-10-15",
                 "items": [{"sku_id": sku, "quantity": 10, "unit_price": 10}],
             },
         )
@@ -406,7 +408,7 @@ async def main() -> None:
         batch1 = res["data"]["batch_id"]
         call(
             "POST", f"/orders/{order_id}/shipments/{batch1}/ship", admin,
-            body={"actual_ship_date": "2026-10-17",
+            body={"actual_ship_date": "2026-10-11",
                   "items": [{"order_item_id": item_id, "shipped_qty": 6}]},
         )
         _, res = call("GET", f"/orders/{order_id}/shipments", admin)
@@ -419,7 +421,7 @@ async def main() -> None:
             summary["last_batch_vs_delivery_days"],
             None,
         )
-        check("建议发货日照常给出", summary["suggested_ship_date"], "2026-10-13")
+        check("建议发货日照常给出", summary["suggested_ship_date"], "2026-10-08")
         check_true(
             "批次自己的偏差仍保留（批次结果 ≠ 整单结论）",
             res["data"]["batches"][0].get("deviation_days") is not None,
@@ -435,18 +437,18 @@ async def main() -> None:
         batch2 = res["data"]["batch_id"]
         call(
             "POST", f"/orders/{order_id}/shipments/{batch2}/ship", admin,
-            body={"actual_ship_date": "2026-10-16",
+            body={"actual_ship_date": "2026-10-10",
                   "items": [{"order_item_id": item_id, "shipped_qty": 4}]},
         )
         _, res = call("GET", f"/orders/{order_id}/shipments", admin)
         summary = res["data"]["summary"]
         check("整单已发完", summary["all_shipped"], True)
-        # 第 1 批 10-17、第 2 批（编号更大）10-16 —— 要按**实际最晚发货日**取 10-17，
-        # 而不是"编号最大的那批"。减建议发货日 10-13 → +4
+        # 第 1 批 10-11、第 2 批（编号更大）10-10 —— 要按**实际最晚发货日**取 10-11，
+        # 而不是"编号最大的那批"。减建议发货日 10-08 → +3
         check(
-            "发完之后才给最终偏差（按实际最晚发货日 10-17）：+4",
+            "发完之后才给最终偏差（按实际最晚发货日 10-11）：+3",
             summary["last_batch_vs_delivery_days"],
-            4,
+            3,
         )
 
         # ==================================================================

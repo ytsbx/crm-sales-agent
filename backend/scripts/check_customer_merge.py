@@ -309,10 +309,18 @@ async def main() -> int:
             "Contact", "Opportunity", "Quote", "SalesOrder", "FollowUp", "Task",
             "CustomInquiry", "SampleRequest", "OrderDraft", "ContractDocument",
             "SalesCase", "LogisticsQuote", "CustomerPriceRule",
+            # ⚠️ 2026-10-14 补：`BizDoc`（生成文件）有 `customer_id`、有
+            # `ix_biz_docs_customer` 索引、`list_docs(customer_id=...)` 就按它过滤，
+            # 而 `MERGE_TARGETS` 的判据是"凡是带 customer_id 的业务表都要登记"。
+            # 漏了它，合并后来源客户名下的打样需求单/下单文件/对客报价单仍挂在
+            # 已软删的那个客户上，目标客户的档案里永远补不齐。
+            "BizDoc",
             "wecom_mapping", "attachments",
         ):
             check_true(f"清单里登记了 {key}", key in keys, str(sorted(keys))[:80])
-        check("清单总数 = 15 类关联", len(data.get("targets") or []), 15)
+        # 15 → 16（2026-10-14）：多出来的这一类是 `BizDoc`（生成文件）。
+        # 这是**修复**而不是回归 —— 原来它漏登记，合并会"看起来成功、其实留了一半"。
+        check("清单总数 = 16 类关联", len(data.get("targets") or []), 16)
         check_true(
             "清单给出了关联条数",
             all(row["count"] >= 0 for row in (data.get("targets") or [])),
@@ -368,7 +376,8 @@ async def main() -> int:
             ("专属价格", 1), ("企微客户映射", 1), ("客户附件", 1),
         ):
             check(f"日志记了「{label}」迁移 {expect} 条", moved.get(label), expect)
-        check_true("合计 15 类", len(moved) >= 15, str(sorted(moved))[:80])
+        # 同样 15 → 16：`moved` 里现在也会有「生成文件」这一类
+        check_true("合计 16 类", len(moved) >= 16, str(sorted(moved))[:80])
         check("冲突口径也进了返回", (res.get("data") or {}).get("conflicts"),
               {"customer_price": "keep_target"})
 

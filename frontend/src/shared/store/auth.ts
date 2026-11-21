@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
 import type { CurrentUser } from '../types'
+import { queryClient } from '../query-client'
 
 /**
  * 「登录代」计数器（第十批 10.12）。
@@ -40,11 +41,14 @@ export const useAuthStore = create<AuthState>()(
       // 的响应同样会被丢掉，而不是把新会话的 token 覆盖成旧的。
       setAuth: (token, user) => {
         authEpoch += 1
+        // clear 同时销毁旧查询，迟到的旧响应也不能重新填入新会话缓存。
+        queryClient.clear()
         set({ token, user })
       },
       setUser: (user) => set({ user }),
       clear: () => {
         authEpoch += 1
+        queryClient.clear()
         set({ token: null, user: null })
       },
     }),

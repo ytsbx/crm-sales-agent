@@ -4,7 +4,9 @@ from datetime import UTC, datetime
 
 from sqlalchemy import Select, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
+from app.modules.customer.levels import level_filter
 from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
@@ -61,6 +63,11 @@ async def refresh_next_followup_at(
     if not customer_id:
         return
     from app.modules.task.model import Task
+    from app.modules.contact_util import lock_customer_row
+
+    # 必须在锁内汇总，不能先算日期再等待 UPDATE 锁，否则会写回旧汇总。
+    # 修改既有任务的调用方必须先客户、后任务取锁（task/locking.py）。
+    await lock_customer_row(session, customer_id)
 
     due = (
         await session.execute(
@@ -123,7 +130,7 @@ def build_list_stmt(
             )
         )
     if level:
-        stmt = stmt.where(Customer.level == level)
+        stmt = stmt.where(level_filter(Customer.level, level))
     if status:
         stmt = stmt.where(Customer.status == status)
     if source:
@@ -258,9 +265,11 @@ async def customer_overview(
     quote_rows: list = []
     quote_total: int | None = None
     if can("quote:view"):
+        from app.core.draft_visibility import draft_scope
+
         quote_base = scoped(
             select(Quote).where(
-                Quote.customer_id == customer_id, Quote.deleted_at.is_(None)
+                Quote.customer_id == customer_id, Quote.deleted_at.is_(None), draft_scope(Quote, user.id)
             ),
             Quote,
         )
@@ -293,7 +302,8 @@ async def customer_overview(
         order_amounts = [
             # currency 为空 = 历史数据没记币种，**如实标出来**（curreny 给 null），
             # 不默认当成人民币 —— 那等于给一条没根据的数字。
-            {"currency": currency, "amount": float(total or 0)}
+            {"currency": currency, "amount": float(total or 0),
+             "amount_exact": str(total if total is not None else 0)}
             for currency, total in amount_rows
         ]
         order_rows = (
@@ -399,6 +409,7 @@ async def customer_overview(
                 # 币种跟着金额一起给（第九批 §9.9）：前端不能假设是人民币
                 "currency": row.currency,
                 "total_amount": _f(row.total_amount),
+                "total_amount_exact": str(row.total_amount) if row.total_amount is not None else None,
                 "erp_order_id": row.erp_order_id,
                 "delivery_date": row.delivery_date,
             }
@@ -448,6 +459,10 @@ def serialize_customer(
     contact_count: int = 0,
     tags: list[dict] | None = None,
     stage: str | None = None,
+    historical_order_count: int = 0,
+    recent_order_count: int = 0,
+    current_opportunity_count: int = 0,
+    activity_status: str = "unknown",
 ) -> dict:
     return {
         "id": customer.id,
@@ -468,6 +483,10 @@ def serialize_customer(
         # 领导六阶段（自动推导，stage.py）：了解/报价/打样/首单/返单/稳定复购
         "stage": stage,
         "stage_label": stage_module.STAGE_LABELS.get(stage) if stage else None,
+        "historical_order_count": historical_order_count,
+        "recent_order_count": recent_order_count,
+        "current_opportunity_count": current_opportunity_count,
+        "activity_status": activity_status,
         "contact_count": contact_count,
         # PRD §6.1：客户列表要能展示标签
         "tags": tags or [],
@@ -574,10 +593,16 @@ async def get_customer_or_404(session: AsyncSession, customer_id: int) -> Custom
 
 
 async def get_visible_customer(
-    session: AsyncSession, user: CurrentUser, customer_id: int
+    session: AsyncSession, user: CurrentUser, customer_id: int, *, for_update: bool = False
 ) -> Customer:
     """取客户并校验数据范围。读接口统一用这个，别再单独用 get_customer_or_404。"""
-    customer = await get_customer_or_404(session, customer_id)
+    if for_update:
+        customer = (await session.execute(select(Customer).where(Customer.id == customer_id)
+                    .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
+        if customer is None or customer.deleted_at is not None:
+            raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
+    else:
+        customer = await get_customer_or_404(session, customer_id)
     await assert_customer_visible(session, user, customer)
     return customer
 
@@ -603,6 +628,23 @@ async def create_customer(
     payload = dict(payload)
     if payload.get("owner_id") is None:
         payload["owner_id"] = user.id
+    else:
+        # 指定了负责人就要**存在且在岗**（与打样/任务的负责人校验同一口径）。
+        #
+        # 原来这里对传入的 owner_id 一个校验都没有：
+        #   · 不存在的 id → 撞外键 → **500**（用户只看到"服务器内部错误"）；
+        #   · 已停用的人 → 200 落库，客户挂在一个登不上系统的人名下。
+        # 之前前端没有"指定负责人"的入口，所以这条很少被走到；现在加了入口
+        # （主人 2026-10-13：「不能指定吗，没有指定再是自己」），必须先堵上。
+        target = await session.get(User, payload["owner_id"])
+        if target is None:
+            raise AppError(
+                ErrorCode.NOT_FOUND, f"负责人 id={payload['owner_id']} 不存在", 404
+            )
+        if target.status != "active":
+            raise AppError(
+                ErrorCode.PARAM_ERROR, f"负责人「{target.name}」已停用，不能指派", 422
+            )
     customer = Customer(**payload, created_by=user.id)
     session.add(customer)
     await session.flush()
@@ -919,7 +961,48 @@ async def claim_customer(
     return row, True
 
 
+def _ensure_own_customer_operation(
+    user: CurrentUser, customer: Customer, *, action: str
+) -> None:
+    """删除/恢复共用同一档归属规则（2026-11-13 用户确认）。
+
+    两档钥匙：
+
+    - `customer:delete`：沿用原口径，可操作**数据范围内**的客户（主管/管理员）；
+    - `customer:delete_own`：只能操作**负责人是自己**的客户（业务员）。
+
+    为什么不把 `customer:delete` 直接下放给业务员：客户可见范围包含公海
+    （`assert_customer_visible` 对 `owner_id is None` 直接放行），共用一把钥匙
+    会让业务员删掉/恢复整片公海客户。公海没有"自己负责"可言，这一档必须拒。
+    """
+    if "admin" in user.roles or user.has("customer:delete"):
+        return
+    if not user.has("customer:delete_own"):
+        raise AppError(ErrorCode.FORBIDDEN, "无操作权限：需要 customer:delete", 403)
+    if customer.owner_id is None or int(customer.owner_id) != user.id:
+        raise AppError(ErrorCode.FORBIDDEN, f"只能{action}自己负责的客户", 403)
+
+
+def ensure_can_delete_customer(user: CurrentUser, customer: Customer) -> None:
+    """删除的授权边界：主管/管理员按数据范围，业务员只能删自己的客户。"""
+    _ensure_own_customer_operation(user, customer, action="删除")
+
+
+def ensure_can_restore_customer(user: CurrentUser, customer: Customer) -> None:
+    """恢复的授权边界：与删除同一档 —— 业务员只能恢复**负责人是自己**的客户。
+
+    口径按"归属"判，不按"谁删的"判：客户被主管删掉后，原负责人仍是本人，
+    业务员可以把它捡回来。公海客户（无负责人）不在这档里。
+    """
+    _ensure_own_customer_operation(user, customer, action="恢复")
+
+
 async def delete_customer(session: AsyncSession, customer: Customer) -> None:
+    """软删客户：只置 `deleted_at`，名下联系人/商机/报价/订单/跟进一条都不动。
+
+    这是刻意的（03-API §42.1）：恢复时把这些标记一去掉，关联资料自动回来；
+    不物理删除、不改挂，避免"删客户"顺手抹掉业务单据或把单据变成孤儿。
+    """
     customer.deleted_at = datetime.now(UTC)
 
 
@@ -1087,8 +1170,11 @@ async def get_visible_contact(
     if contact.customer_id is None:
         return contact
     customer = await session.get(Customer, contact.customer_id)
-    if customer is not None:
-        await assert_customer_visible(session, user, customer)
+    # 客户软删后其联系人仍保留，供恢复客户时一并恢复业务关系；但正常联系人
+    # 详情/写入口不能借 contact_id 绕过客户回收站继续查看或修改这些资料。
+    if customer is None or customer.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "联系人所属客户不存在", 404)
+    await assert_customer_visible(session, user, customer)
     return contact
 
 
@@ -1107,11 +1193,24 @@ async def set_primary_contact(session: AsyncSession, contact: Contact) -> None:
         return
     # 局部 import：`contact_util` 用的是 model 层，不会绕回来，
     # 但这里没必要为了一个函数把模块级依赖连上
-    from app.modules.contact_util import take_primary_slot
+    from app.modules.contact_util import lock_customer_row, take_primary_slot
+
+    # 等待父锁期间可能已改挂；先核对真实归属，不能拿旧客户主位去操作新客户。
+    expected_customer_id = contact.customer_id
+    await lock_customer_row(session, expected_customer_id)
+    current = (await session.execute(select(Contact.customer_id).where(
+        Contact.id == contact.id, Contact.deleted_at.is_(None)
+    ))).first()
+    if current is None:
+        raise AppError(ErrorCode.NOT_FOUND, "联系人不存在", 404)
+    if current[0] != expected_customer_id:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "联系人已改挂，请刷新后再操作", 409)
 
     # exclude=自己：腾位只腾**别人**，别把这条也刷成 False（见 take_primary_slot 的说明）
     await take_primary_slot(session, contact.customer_id, exclude=contact.id)
     contact.is_primary = True
+    # 等客户锁期间，别的事务可能已取消本人的主标记；不能因内存仍为True漏掉回写。
+    flag_modified(contact, "is_primary")
 
 
 async def move_contact_to_customer(

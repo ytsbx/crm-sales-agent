@@ -23,7 +23,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -39,6 +39,7 @@ from app.modules.customer.model import Contact, Customer
 from app.modules.product.model import Product, Sku
 from app.modules.quote.model import Quote, QuoteCharge, QuoteItem, QuoteVersion
 from app.modules.user.model import User
+from tests.conftest import SyncSessionAsAsync
 
 _BIGINT_REGISTERED = False
 _JSONB_REGISTERED = False
@@ -98,7 +99,7 @@ def _tables(*, with_files: bool = True):
     return [model.__table__ for model in models]
 
 
-class _AsyncSession:
+class _AsyncSession(SyncSessionAsAsync):
     """把同步 SQLite 会话包成异步会话（被测代码只 await 这几个方法）。
 
     `bind` 要暴露出来：`_lock_sequence` 靠方言名判断"有没有咨询锁"，
@@ -106,35 +107,8 @@ class _AsyncSession:
     """
 
     def __init__(self, session):
-        self._session = session
+        super().__init__(session)
         self.bind = session.get_bind()
-
-    async def execute(self, stmt, *args, **kwargs):
-        return self._session.execute(stmt, *args, **kwargs)
-
-    async def get(self, entity, ident, *args, **kwargs):
-        return self._session.get(entity, ident, *args, **kwargs)
-
-    async def scalar(self, stmt, *args, **kwargs):
-        return self._session.scalar(stmt, *args, **kwargs)
-
-    async def scalars(self, stmt, *args, **kwargs):
-        return self._session.scalars(stmt, *args, **kwargs)
-
-    async def flush(self):
-        self._session.flush()
-
-    async def commit(self):
-        self._session.commit()
-
-    async def rollback(self):
-        self._session.rollback()
-
-    async def refresh(self, obj):
-        self._session.refresh(obj)
-
-    def add(self, obj):
-        self._session.add(obj)
 
     async def delete(self, obj):
         self._session.delete(obj)
@@ -245,6 +219,10 @@ def _fixture(session):
         charge_amount=Decimal("80"),
         discount_amount=Decimal("-20"),
         total_amount=Decimal("480"),
+        # 2026-10-12（第二轮审查 P1）：Excel 对客文件与正式 PDF 同口径 ——
+        # **未通过审批的版本只能落草稿**。本文件的用例测的是正式件的幂等与存档，
+        # 夹具落成"已审批"；闸门本身由 check_round2_risk_repairs 覆盖。
+        approval_status="approved",
         created_at=datetime.now(UTC),
     )
     session.add(version)
@@ -252,6 +230,7 @@ def _fixture(session):
     quote.current_version_id = version.id
     session.add(
         QuoteItem(
+            cost_present_snapshot=True, cost_complete_snapshot=True,
             quote_version_id=version.id,
             sku_id=sku.id,
             sku_code_snapshot=sku.sku_code,
@@ -273,6 +252,8 @@ def _fixture(session):
             amount=Decimal("80"),
             is_discount=False,
             sort_no=1,
+            # 2026-10-12（第二轮审查 P1）：正式件要求运费已确认具体金额
+            logistics_confirmed_at=datetime.now(UTC),
         )
     )
     session.add(
@@ -318,6 +299,15 @@ def run_case(case, *, with_files: bool = True, **extra):
 
     _sqlite_compat()
     engine = create_engine("sqlite+pysqlite:///:memory:")
+
+    @event.listens_for(engine, "connect")
+    def _disable_implicit_transactions(connection, _record):
+        connection.isolation_level = None
+
+    @event.listens_for(engine, "begin")
+    def _begin_outer_transaction(connection):
+        connection.exec_driver_sql("BEGIN")
+
     from app.core.base import Base
 
     Base.metadata.create_all(engine, tables=_tables(with_files=with_files))
@@ -381,14 +371,64 @@ def test_generation_archives_real_bytes_and_download_reads_them(isolated_file_ro
     run_case(_case)
 
 
-def test_state_copy_is_always_rerendered_and_marked(isolated_file_root):
-    """§8.10：作废件的"已作废"看**状态副本**，那份不是原件，必须标明。"""
+@pytest.mark.parametrize("doc_hash,file_hash,blocked", [
+    ("actual", "wrong", True),
+    ("wrong", "actual", True),
+    ("wrong", "wrong", True),
+    ("actual", None, False),
+    (None, "actual", False),
+    ("actual", "actual", False),
+])
+def test_archive_checks_each_registered_checksum(
+    isolated_file_root, doc_hash, file_hash, blocked,
+):
+    """任一已登记字节校验值不匹配均拒绝，不丢失单登记值历史兼容。"""
+    from app.modules.file.model import FileRecord
 
     async def _case(session, current_user, version, **_):
         doc = await bizdoc.generate_quote_doc(
             session, quote_version_id=version.id, user=current_user
         )
         await session.commit()
+        record = await session.get(FileRecord, doc.file_id)
+        original = _stored_files(isolated_file_root)[0].read_bytes()
+        actual = hashlib.sha256(original).hexdigest()
+        values = {"actual": actual, "wrong": "0" * 64, None: None}
+        doc.file_sha256 = values[doc_hash]
+        record.checksum = values[file_hash]
+        await session.commit()
+        plan = await bizdoc.plan_download(session, doc)
+        if blocked:
+            assert plan.content is None
+            assert plan.blocked_reason is not None
+        else:
+            assert plan.content == original
+            assert plan.source == bizdoc.SOURCE_ARCHIVED
+            assert plan.blocked_reason is None
+        # 下载检查不修登记值、不替换原件。
+        assert doc.file_sha256 == values[doc_hash]
+        assert record.checksum == values[file_hash]
+        assert _stored_files(isolated_file_root)[0].read_bytes() == original
+
+    run_case(_case)
+
+
+def test_state_copy_is_always_rerendered_and_marked(isolated_file_root):
+    """§8.10：作废件的"已作废"看**状态副本**，那份不是原件，必须标明。"""
+
+    async def _case(session, current_user, version, **_):
+        from app.modules.settings.model import SystemSetting
+
+        name = SystemSetting(key="company_name", value={"text": "出单时公司"})
+        session.add(name)
+        await session.flush()
+        doc = await bizdoc.generate_quote_doc(
+            session, quote_version_id=version.id, user=current_user
+        )
+        await session.commit()
+        assert doc.input_snapshot["company_name"] == "出单时公司"
+        name.value = {"text": "改名后公司"}
+        await session.flush()
         await bizdoc.void_doc(session, doc, reason="回归作废")
         await session.commit()
 
@@ -400,11 +440,13 @@ def test_state_copy_is_always_rerendered_and_marked(isolated_file_root):
         data = await bizdoc.doc_pdf_data(session, doc, copy_notice=plan.notice)
         assert data["copy_notice"] == bizdoc.STATE_COPY_NOTICE
         assert data["status_label"] == "已作废"
+        assert data["company_name"] == "出单时公司"
         # 纸面上真的印出来了吗？Excel 可以回读单元格；PDF 走"加了标记字节就不同"
         rendered = bizdoc.render_document(doc.doc_type, data)
         from openpyxl import load_workbook
 
         sheet = load_workbook(BytesIO(rendered)).active
+        assert sheet["A1"].value == "出单时公司"
         texts = [
             str(sheet.cell(row=row, column=column).value)
             for row in range(1, sheet.max_row + 1)
@@ -609,6 +651,12 @@ def test_same_source_versions_are_sequential_and_isolated(isolated_file_root):
             created_at=datetime.now(UTC),
         )
         raw.add(other_version)
+        raw.flush()
+        source_item = raw.query(QuoteItem).filter_by(quote_version_id=version.id).one()
+        raw.add(QuoteItem(quote_version_id=other_version.id, sku_id=source_item.sku_id,
+                          sku_code_snapshot=source_item.sku_code_snapshot, quantity=Decimal("1"),
+                          quoted_price=Decimal("10"), cost_present_snapshot=True,
+                          cost_complete_snapshot=True))
         raw.flush()
         other_doc = await bizdoc.generate_quote_doc(
             session, quote_version_id=other_version.id, user=current_user

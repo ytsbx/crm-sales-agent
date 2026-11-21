@@ -22,13 +22,18 @@ from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, NamedTuple
 
-from sqlalchemy import Select, select, text
+from sqlalchemy import Select, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import asyncio
+from app.core.textfit import fit_column
 from app.core.data_scope import ensure_in_scope, scoped_owner_ids
+from app.core.timebase import to_business
 from app.core.deps import CurrentUser
+from app.core.draft_visibility import draft_scope, ensure_draft_access
 from app.core.errors import AppError, ErrorCode
+from app.core.money import line_amount
 from app.modules.bizdoc import tokens as token_rules
 from app.modules.bizdoc.model import (
     ARCHIVE_ARCHIVED,
@@ -944,7 +949,7 @@ async def build_quote_doc(session: AsyncSession, quote_version_id: int) -> dict:
                     "display": UNIT_PENDING,
                 }
             )
-        amount = (row.quoted_price or 0) * (row.quantity or 0)
+        amount = line_amount(row.quantity or Decimal(0), row.quoted_price or Decimal(0))
         items.append(
             {
                 "name": name,
@@ -1038,19 +1043,106 @@ async def build_quote_doc(session: AsyncSession, quote_version_id: int) -> dict:
         "subtotal_amount": version_row.subtotal_amount,
         "charge_amount": version_row.charge_amount,
         "discount_amount": version_row.discount_amount,
-        "charges": [
-            {
-                "label": c.description
-                or CHARGE_TYPE_LABEL.get(c.charge_type, c.charge_type),
-                "amount": c.amount,
-                "is_discount": bool(c.is_discount),
-            }
-            for c in charge_rows
-        ],
+        # 金额拆分（2026-10-09「产品价格与运费分离」）：运费要从"附加费用"里单列，
+        # 客户才能一眼看出"产品货款多少、运费多少"。这三个值**都已含在**
+        # `total_amount` 里 —— 下面 charges 只是把同一笔钱分行展示，
+        # 逐行相加正好等于合计，**不是**在合计之外又加一遍。
+        "logistics_amount": version_row.logistics_amount,
+        "other_charge_amount": version_row.other_charge_amount,
+        "pricing_basis": version_row.pricing_basis,
+        #: 产品单价的对外口径说明。运费分离之后，"单价是否含运费"必须在客户
+        #: 看得到的表上说清楚，否则客户按旧口径理解会以为运费已经包在价里。
+        #:
+        #: ⚠️ 按本版口径决定写不写（2026-10-09 修）：口径**不是**"单价不含运费"时
+        #: 必须留空，绝不硬加这句 —— 否则历史文件被加上一句当时不成立的说明。
+        #: 与 `quote/router.py` 的 PDF 路径共用同一个判据函数，两处不会各说一套。
+        "unit_price_note": (
+            None if version_row.pricing_basis == "legacy"
+            else "以上产品单价均不含运费"
+        ),
+        "charges": _quote_doc_charge_lines(charge_rows),
         # 合计取版本行的 total_amount（版本生成时就定死了）
         "total_amount": version_row.total_amount,
         "sections": sections,
     }
+
+
+def _quote_doc_charge_lines(charge_rows: list) -> list[dict]:
+    """对客文件上的费用行：**运费单独一行、其余归入"其他费用"**。
+
+    只按**费用分类码**认运费（`is_logistics_charge`），不按说明文字里含"运费"
+    去猜 —— 说明是自由文本，写成什么都可能。
+
+    多条物流费用**按条累加**成一行（口径：允许多条时累加，不再另加整单运费），
+    其余非折扣费用合成一行"其他费用"，折扣各自单列（库里是负数）。
+    逐行相加仍等于 `charge_amount + discount_amount`，与合计自洽 ——
+    这里只是把同一笔钱**拆开显示**，不是在合计之外又加一遍。
+
+    值为 0 的行**不印**（运费为 0 的报价上多一行"运费 0.00"只是噪声；
+    真正要客户看清的是"运费具体多少钱"这件事，有运费时它一定在）。
+    """
+    from app.modules.quote.service import is_logistics_charge
+
+    discount_lines: list[dict] = []
+    logistics_total = Decimal(0)
+    logistics_desc: str | None = None
+    other_total = Decimal(0)
+    for charge in charge_rows:
+        if charge.is_discount:
+            discount_lines.append(
+                {
+                    "label": charge.description
+                    or CHARGE_TYPE_LABEL.get(charge.charge_type, charge.charge_type),
+                    "amount": charge.amount,
+                    "is_discount": True,
+                }
+            )
+        elif is_logistics_charge(charge):
+            logistics_total += charge.amount or Decimal(0)
+            logistics_desc = logistics_desc or charge.description
+        else:
+            other_total += charge.amount or Decimal(0)
+
+    # 运费用业务员写的说明（如"宁波到苏州运费"）优先，它比一个笼统的"运费"更能对上账；
+    # 没写说明才退回类型标签。这样既有明确的一行金额，又能看出这一趟运的是哪里。
+    head: list[dict] = []
+    if logistics_total:
+        head.append(
+            {
+                "label": logistics_desc or CHARGE_TYPE_LABEL.get("logistics", "运费"),
+                "amount": logistics_total,
+                "is_discount": False,
+            }
+        )
+    if other_total:
+        head.append(
+            {"label": "其他费用", "amount": other_total, "is_discount": False}
+        )
+    return head + discount_lines
+
+
+async def ensure_quote_doc_cost_complete(session: AsyncSession, doc) -> None:
+    if doc.doc_type != "quote_sheet":
+        return
+    from app.modules.quote.model import QuoteVersion
+    from app.modules.quote.service import ensure_items_cost_complete
+    version_id = (await session.execute(select(QuoteVersion.id).where(
+        QuoteVersion.quote_id == doc.quote_id,
+        QuoteVersion.version_no == doc.source_version,
+    ))).scalar_one_or_none()
+    if version_id is None:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED,
+                       "历史报价成本完整性无法确认，不能对客导出；请新建报价版本核对成本", 422)
+    await ensure_items_cost_complete(session, version_id=version_id, check_inquiry_approval=getattr(doc, "status", None) != "draft")
+
+
+async def ensure_quote_file_cost_complete(session: AsyncSession, file_id: int) -> None:
+    """存档原件也可能从通用文件下载接口取出，必须沿用相同成本规则。"""
+    docs = (await session.execute(select(BizDoc).where(
+        BizDoc.file_id == file_id, BizDoc.doc_type == "quote_sheet",
+    ))).scalars().all()
+    for doc in docs:
+        await ensure_quote_doc_cost_complete(session, doc)
 
 
 async def generate_quote_doc(
@@ -1074,6 +1166,16 @@ async def generate_quote_doc(
     - 落成**草稿**（`allow_draft=True` → `status=draft`、标题带【草稿】、
       列表里有标识、不进正式台账），并把"缺什么"写进文件快照，页面上能解释。
 
+    第二轮审查 P1（2026-10-12）补上另外**两道**与正式 PDF 同源的闸门：
+
+    - 审批：未提交 / 待审批 / 已拒绝的版本不能出有效对客文件；
+    - 运费：`logistics_confirmed_at` 缺一不可，没确认过运费就发出去的文件上
+      会印着"运费 0.00"，而实际一毛钱都没确认（2026-10-09 口径）。
+
+    三道闸门都走"**不拒绝、落草稿 + 写清原因**"：Excel 这条路的定位是
+    "内部准备用"，草稿形态天然不可当有效件使用；真正不该存在的是
+    "没过闸却长的和正式件一样"的 active 文件。
+
     历史归档的读取不受影响：这里只管**新生成**的文件。
     """
     from app.modules.quote import service as quote_service
@@ -1086,15 +1188,36 @@ async def generate_quote_doc(
     await ensure_in_scope(
         session, user, owner_id=built.get("owner_id"), label="报价单"
     )
+    await quote_service.ensure_items_cost_complete(session, version_id=quote_version_id, check_inquiry_approval=False)
     template = await current_template(session, "quote_sheet", template_id)
 
+    reasons: list[str] = []
+    from app.modules.oa.business_gates import require_inquiry_items_approved
+    try:
+        await require_inquiry_items_approved(session, await quote_service.version_items(session, quote_version_id))
+    except AppError as exc:
+        reasons.append(str(exc))
+    if version_row.approval_status != "approved":
+        reasons.append(
+            "报价未通过审批（当前状态："
+            + {
+                "pending": "待审批",
+                "rejected": "已拒绝",
+                "draft": "尚未提交审批",
+            }.get(version_row.approval_status or "", version_row.approval_status or "未知")
+            + "）"
+        )
     master_problems = await quote_service.master_confirmation_problems(
         session, version_id=quote_version_id
     )
-    draft_reason = None
     if master_problems:
-        # **只标草稿原因，不动 `allow_draft`** —— 后者会把模板闸门一起关掉
-        draft_reason = "主数据未确认：" + "；".join(master_problems)
+        reasons.append("主数据未确认：" + "；".join(master_problems))
+    charges = await quote_service.version_charges(session, quote_version_id)
+    freight_reason = quote_service.quote_freight_unconfirmed_reason(charges)
+    if freight_reason:
+        reasons.append(freight_reason)
+    # **只标草稿原因，不动 `allow_draft`** —— 后者会把模板闸门一起关掉
+    draft_reason = "；".join(reasons) if reasons else None
     return await _persist(
         session,
         built=built,
@@ -1135,10 +1258,24 @@ def _snapshot_for_storage(built: dict, body: str, template: BizDocTemplate) -> d
             "customer_id": built.get("customer_id"),
             # 抬头优先取**按版本冻结**的那一份：历史文件（没有 frozen 块）才回退到
             # 生成时抄下的 customer_name，两者都不会去回查当前客户资料
-            "customer_name": (frozen.get("header") or {}).get("customer_name")
-            or (customer.name if customer else None),
+            # ⚠️ 回退判据是"**没有 frozen 块**"，不是"frozen 里那个值为空"（2026-10-14 审查）：
+            # 原来写的是 `or (customer.name ...)`，于是"有 frozen 块、但
+            # `customer_name_snapshot` 本就是 None"（版本建于该列上线之前）也会回查**当前**
+            # 客户资料 —— 纸面抬头印改名后的新名字，而同一页条款区（由 `_frozen_header`
+            # 记进 gaps）印「未留存」。同一份对外文件自相矛盾，正是 §8.7 要消灭的现象。
+            # 紧邻的 `contact_name`（下一行）没有实时回退，是正确的写法。
+            "customer_name": (
+                (frozen.get("header") or {}).get("customer_name")
+                if frozen
+                else (customer.name if customer else None)
+            ),
             "contact_id": built.get("contact_id"),
-            "contact_name": (frozen.get("header") or {}).get("contact_name"),
+            # 报价单走 frozen（按版本冻结的抬头）；打样单 / 下单文件没有 frozen，
+            # 用生成时抄下的 `built["contact_name"]`（见 `_persist` 里写回的那处）
+            "contact_name": (
+                (frozen.get("header") or {}).get("contact_name")
+                or built.get("contact_name")
+            ),
             "items": built.get("items") or [],
             "diffs": built.get("diffs") or [],
             "sections": built.get("sections") or [],
@@ -1151,6 +1288,14 @@ def _snapshot_for_storage(built: dict, body: str, template: BizDocTemplate) -> d
             "subtotal_amount": built.get("subtotal_amount"),
             "charge_amount": built.get("charge_amount"),
             "discount_amount": built.get("discount_amount"),
+            # 运费单独一列（2026-10-09 运费分离）：Excel 上要能看出"运费多少、
+            # 其他费用多少"，而不是混在"附加费用"一个数里。两个值都已含在
+            # `total_amount` 里，只是拆分展示。
+            "logistics_amount": built.get("logistics_amount"),
+            "other_charge_amount": built.get("other_charge_amount"),
+            # 「以上产品单价均不含运费」这句要落进快照：文件一旦生成就冻结，
+            # 事后重出（下载存档原件）也还是当时那句话。
+            "unit_price_note": built.get("unit_price_note"),
             "charges": built.get("charges") or [],
             "body": body,
             "template": {"id": template.id, "name": template.name, "version": template.version},
@@ -1210,7 +1355,7 @@ async def _persist(
     为什么闸门放在 `_persist` 而不是各入口：三个入口（打样/订单/报价）
     加订单草稿路径都走这里，漏一个就等于漏一条合法的"印出模板语法"的路。
     """
-    from app.modules.settings import numbering
+    from app.modules.settings import numbering, service as settings_service
 
     rule_code = {
         "sample_request": "sample_doc",
@@ -1254,6 +1399,23 @@ async def _persist(
         from app.modules.order.model import SalesOrder
 
         sources["order"] = await session.get(SalesOrder, built["order_id"])
+    # 联系人来源：打样指令单要印"客户联系人 / 电话"（19-打样指令单字段清单）。
+    # 电话在 `contacts` 表上而不是 `customers` 上 —— 之前白名单里挂的是
+    # `customer.phone`，那个字段在 Customer 上不存在，于是"存得下、生不成"。
+    if built.get("contact_id"):
+        from app.modules.customer.model import Contact
+
+        contact_row = await session.get(Contact, built["contact_id"])
+        sources["contact"] = contact_row
+        # ⚠️ 把名字写回 `built`，好让快照**冻结**它（2026-10-14 审查修）。
+        # 原来只有 `contact_id` 进了快照、`contact_name` 只从 `frozen` 里取，
+        # 而 `frozen` 只有**报价单**（`build_quote_doc`）才产出 —— 于是打样需求单 /
+        # 下单文件纸面上的「联系人」永远是 "-"（`pdf.py` 印 `_text(...) or "-"`），
+        # 看起来像"这个客户没有联系人"，而 tokens 那边专门为打样指令单加了
+        # `contact` 来源、字段清单也要求印客户联系人/电话：结构化抬头这一路没接上。
+        # 生成时冻结、**不实时回查**（与 customer_name 同一口径）。
+        if contact_row is not None:
+            built["contact_name"] = contact_row.name
     body, unresolved = token_rules.resolve_tokens(template.body, sources, extra)
     leftover = token_rules.find_unresolved_syntax(body)
     if leftover:
@@ -1279,6 +1441,7 @@ async def _persist(
     # 本该 422 的请求变成 200）。两者必须是**独立**的信号。
     as_draft = bool(unresolved) or bool(draft_reason)
     snapshot = _snapshot_for_storage(built, body, template)
+    snapshot["company_name"] = await settings_service.get_text(session, "company_name", "text", "")
     if draft_reason:
         # 为什么是草稿，跟着文件一起存下来（页面上要能解释，事后也查得到）
         snapshot["draft_reason"] = draft_reason
@@ -1288,14 +1451,19 @@ async def _persist(
         snapshot["token_issues"] = unresolved
         snapshot["draft"] = True
     title_label = "订单草稿需求单" if built.get("order_draft_id") else DOC_TYPE_LABEL[doc_type]
+    # ⚠️ 标题必须收进 `String(200)`（2026-10-14 审查修）：`title_suffix` 就是
+    # 客户名（本身允许 200 字），再加 `类型-` 前缀与 `【草稿】` 必然越界 ——
+    # 长名客户生成文件会撞 `value too long for type character varying(200)` → **500**。
+    # 前缀保留（它是有语义的标记），只截客户名那一段，截断留 `…` 看得出来。
+    _title_prefix = ("【草稿】" if as_draft else "") + f"{title_label}-"
     doc = BizDoc(
         doc_no=doc_no,
         doc_type=doc_type,
-        title=(
-            f"【草稿】{title_label}-{built.get('title_suffix') or ''}".rstrip("-")
-            if as_draft
-            else f"{title_label}-{built.get('title_suffix') or ''}".rstrip("-")
-        ),
+        title=fit_column(
+            built.get("title_suffix") or "",
+            200,
+            prefix=_title_prefix,
+        ).rstrip("-"),
         version=version,
         parent_id=parent_id,
         # 草稿不是正式对外文件：状态栏/列表一眼能看出来，且不允许当有效件下载使用
@@ -1388,7 +1556,91 @@ async def _archive_original(
     # 给路由层留的补偿线索：本请求最终 commit 失败时按它删掉这个对象。
     # 故意不做成数据库列——它只是"本次事务还没提交"的临时记号。
     doc._archived_object_key = object_key  # type: ignore[attr-defined]
+    remember_pending_object(session, object_key)
     await session.flush()
+
+
+#: 会话 id → 本次落盘、还没提交的对象键（与 contract 的同一套思路）。
+#: 用 `id(session)` 当键是因为一次请求一个会话，且这里只做"尽力清理"，
+#: 不承担跨请求的持久化职责。
+_PENDING_OBJECTS: dict[int, set[str]] = {}
+
+
+def remember_pending_object(session: AsyncSession, object_key: str) -> None:
+    """登记"这个对象已落盘、随事务提交才作数"。"""
+    _PENDING_OBJECTS.setdefault(id(session), set()).add(object_key)
+
+
+def take_pending_objects(session: AsyncSession) -> list[str]:
+    """取走该会话待决的对象键（取走即清空，避免重复删除）。"""
+    return sorted(_PENDING_OBJECTS.pop(id(session), set()))
+
+
+async def cleanup_pending_objects(session: AsyncSession) -> int:
+    """**安全清理**：本次落盘、但没能提交的对象，逐个核查后再删。
+
+    判据照搬 `contract/service.py::cleanup_pending_objects`（那边的注释记着
+    一次真实教训）：`session.commit()` 抛异常 **不等于**事务没提交 ——
+    提交成功但回执丢了（网络断、连接被掐）时库里**单据和文件记录都在**，
+    异常照抛。所以**不能直接删**：
+
+      - 先 `rollback()` 把会话从失败事务里摘出来（之后才能查库）；
+      - 按 `object_key` 查 `file_records`：**查得到 = 已提交，保留**；
+      - **查不到 = 确实没提交，删掉**。
+
+    孤儿只是占空间，**删掉原件是把用户的东西弄丢了**，所以宁可留。
+    """
+    from app.modules.file import storage
+    from app.modules.file.model import FileRecord
+
+    keys = take_pending_objects(session)
+    if not keys:
+        return 0
+    try:
+        await session.rollback()
+    except Exception:  # noqa: BLE001 —— 回滚失败也要继续尝试核查
+        logger.warning("bizdoc 落盘清理：rollback 失败，跳过核查直接保留对象")
+        return 0
+    removed = 0
+    for key in keys:
+        try:
+            exists = (
+                await session.execute(
+                    select(FileRecord.id).where(FileRecord.object_key == key).limit(1)
+                )
+            ).first()
+        except Exception:  # noqa: BLE001 —— 查不出来就当"已提交"，保留
+            logger.warning("bizdoc 落盘清理：核查 %s 失败，保留该对象", key)
+            continue
+        if exists is not None:
+            continue  # 已提交，是正式件
+        try:
+            storage.delete_object(key)
+            removed += 1
+        except Exception:  # noqa: BLE001 —— 删除失败不该盖过原来的异常
+            logger.warning("bizdoc 落盘清理：删除 %s 失败（保留对象）", key)
+    return removed
+
+
+async def _cancel_safe(coro, *, label: str, _retries: int = 2):
+    """跑一段清理逻辑，**即使被取消也要跑完**（与 contract 同源的做法）。
+
+    `asyncio.CancelledError` 继承 `BaseException`、**不是** `Exception` ——
+    `except Exception:` 捕不到取消，取消一来清理就半途而废。
+    `asyncio.shield` 让清理不被当前取消打断，但外层仍会收到取消
+    （"先清干净、再继续抛取消"，取消语义不变）。
+    """
+    for attempt in range(_retries + 1):
+        try:
+            return await asyncio.shield(coro)
+        except asyncio.CancelledError:
+            if attempt >= _retries:
+                logger.warning("%s：清理被连续取消，放弃（对象成为孤儿）", label)
+                return None
+        except Exception:  # noqa: BLE001 —— 清理失败不许盖过原来的错误/取消
+            logger.exception("%s：清理失败（保留对象，避免误删）", label)
+            return None
+    return None
 
 
 async def commit_doc_generation(session: AsyncSession, doc: BizDoc) -> None:
@@ -1406,7 +1658,11 @@ async def commit_doc_generation(session: AsyncSession, doc: BizDoc) -> None:
         key = getattr(doc, "_archived_object_key", None)
         if key:
             storage.delete_object(key)
+        # 已经精确删过这一次的对象，把登记一并清掉（免得后面再"核查"一遍）
+        take_pending_objects(session)
         raise
+    # 提交成功 → 注销登记：这些对象已经是正式件，不许再进清理流程
+    take_pending_objects(session)
 
 
 def _issue_summary(issues: list[dict]) -> str:
@@ -1445,6 +1701,19 @@ def preview_template_body(body: str, extra_fields: dict[str, str] | None = None)
             "phone": "000-00000000",
             "address": "示例地址",
         },
+        # ⚠️ `contact` 必须给示例值（2026-10-14 审查修）：它是 tokens.py 白名单里的
+        # 合法来源（打样指令单要印"客户联系人/电话"），`_persist` 也会按
+        # `built["contact_id"]` 提供它。但预览的示例数据里没有这个键 ——
+        # 于是 `{{contact.name}}` / `{{contact.phone}}` 被报成「来源不可用」，
+        # 模板作者按提示去"修"一个**本来正确**的变量，或以为打样单印不出联系人。
+        # 生成期与预览期必须是同一套口径。字段与 tokens.py 的白名单逐一对齐。
+        "contact": {
+            "name": "示例联系人",
+            "phone": "000-00000000",
+            "mobile": "13000000000",
+            "email": "contact@example.com",
+            "title": "采购经理",
+        },
         "order": {
             "order_no": "示例订单号",
             "currency": "CNY",
@@ -1476,7 +1745,8 @@ async def generate_sample_request_doc(
     sample = await session.get(SampleRequest, sample_request_id)
     if sample is None:
         raise AppError(ErrorCode.NOT_FOUND, "打样申请不存在", 404)
-    await ensure_in_scope(session, user, owner_id=sample.owner_id, label="打样申请")
+    if not await ensure_draft_access(session, SampleRequest, sample.id, user.id):
+        await ensure_in_scope(session, user, owner_id=sample.owner_id, label="打样申请")
     built = await build_sample_request_doc(session, sample_request_id)
     template = await current_template(session, "sample_request", template_id)
     return await _persist(
@@ -1575,6 +1845,13 @@ def serialize_doc(doc: BizDoc) -> dict:
         "diff_count": len(snapshot.get("diffs") or []),
         # 草稿与"哪些变量没解析"要能被列表/详情直接读到：用户得知道该改什么
         "is_draft": doc.status == "draft",
+        #: 草稿的**真实原因**（2026-10-14 审查补）。快照里本来就存了它
+        #: （`_persist` 里 `snapshot["draft_reason"] = draft_reason`），但两个渲染器
+        #: 都拿不到，于是**不管什么原因**都印"模板变量未解析" —— 而 `draft_reason`
+        #: 有两条来源：① 模板变量未解析；② 调用方标的原因（报价未过审批 /
+        #: 主数据未确认 / 运费未确认）。情形②时 `token_issues` 是空的，
+        #: 印出来的原因与事实不符，事后也没法从文件上看出到底为什么是草稿。
+        "draft_reason": snapshot.get("draft_reason"),
         "token_issues": snapshot.get("token_issues") or [],
         # 按版本冻结时没留存下来的栏位（币种/单位/条款/抬头），列表上给出个数，
         # 打开文件能看到逐条"未留存/待核实"
@@ -1616,9 +1893,18 @@ async def list_docs(
         .order_by(BizDoc.id.desc())
         .limit(max(1, min(limit, 300)))
     )
+    from app.modules.order.model import OrderDraft
+    from app.modules.quote.model import Quote
+    from app.modules.sample.model import SampleRequest
+
     owner_ids = await scoped_owner_ids(session, user)
-    if owner_ids is not None:
-        stmt = stmt.where(BizDoc.owner_id.in_(owner_ids))
+    scope = BizDoc.owner_id.in_(owner_ids) if owner_ids is not None else None
+    stmt = stmt.where(draft_scope(BizDoc, user.id, scope))
+    for column, model in ((BizDoc.quote_id, Quote), (BizDoc.order_draft_id, OrderDraft),
+                          (BizDoc.sample_request_id, SampleRequest)):
+        stmt = stmt.where(or_(column.is_(None), select(model.id).where(
+            model.id == column, draft_scope(model, user.id),
+        ).exists()))
     if doc_type:
         # 显式筛了一个自己无权看的类型：返回空，而不是偷偷给别的类型
         if doc_type not in permitted:
@@ -1660,12 +1946,19 @@ async def doc_pdf_data(
     }
     frozen = snapshot.get("frozen") or {}
     header = frozen.get("header") or {}
+    company_name = snapshot.get("company_name")
+    if "company_name" not in snapshot:
+        company_name = await settings_service.get_text(session, "company_name", "text", "")
     return {
-        "company_name": await settings_service.get_text(session, "company_name", "text", ""),
+        "company_name": company_name,
         "title": doc.title,
         "doc_no": doc.doc_no,
         "version": doc.version,
-        "created_date": doc.created_at.strftime("%Y-%m-%d") if doc.created_at else None,
+        # 业务日（北京时间），不是 UTC 日历日：`created_at` 存的是 UTC 瞬时，
+        # 直接 strftime 会让北京时间 00:00–08:00 生成的文件印**前一天**的日期，
+        # 而同一份文件里的 `{{today}}` 走 `today_business()`（业务时区）——
+        # 同一张纸上两个日期。合同模块（contract/service.py）已改，这里漏了。
+        "created_date": to_business(doc.created_at).strftime("%Y-%m-%d") if doc.created_at else None,
         "status_label": DOC_STATUS_LABEL.get(doc.status, doc.status),
         "customer_name": snapshot.get("customer_name"),
         # 联系人同样只认快照里冻结的那一份（历史文件没有就是 None）
@@ -1679,6 +1972,13 @@ async def doc_pdf_data(
         "frozen": frozen,
         # 草稿标记：草稿文件必须在纸面上就写明"不是正式对外文件"
         "is_draft": doc.status == "draft",
+        #: 草稿的**真实原因**（2026-10-14 审查补）。快照里本来就存了它
+        #: （`_persist` 里 `snapshot["draft_reason"] = draft_reason`），但两个渲染器
+        #: 都拿不到，于是**不管什么原因**都印"模板变量未解析" —— 而 `draft_reason`
+        #: 有两条来源：① 模板变量未解析；② 调用方标的原因（报价未过审批 /
+        #: 主数据未确认 / 运费未确认）。情形②时 `token_issues` 是空的，
+        #: 印出来的原因与事实不符，事后也没法从文件上看出到底为什么是草稿。
+        "draft_reason": snapshot.get("draft_reason"),
         "token_issues": snapshot.get("token_issues") or [],
         "body": snapshot.get("body") or "",
         "subtotal_amount": snapshot.get("subtotal_amount"),
@@ -1739,8 +2039,8 @@ async def load_archived_file(
         # 不能因为路径非法就退回去重新渲染。
         return None, ARCHIVE_MISSING, f"存档文件读不到：{exc.__class__.__name__}"
     actual = hashlib.sha256(content).hexdigest()
-    expected = doc.file_sha256 or record.checksum
-    if expected and actual != expected:
+    expected_checksums = (doc.file_sha256, record.checksum)
+    if any(expected and actual != expected for expected in expected_checksums):
         return None, ARCHIVE_MISSING, "存档文件的字节校验值与登记值不一致（可能被替换或损坏）"
     return content, ARCHIVE_ARCHIVED, None
 

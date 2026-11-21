@@ -224,6 +224,24 @@ def submit(session, **overrides):
     return svc.create_inquiry_instance(session, **kwargs)
 
 
+def test_submission_and_reviewed_resend_keep_originator_department(db, monkeypatch):
+    from unittest.mock import AsyncMock
+    from types import SimpleNamespace
+    create = AsyncMock(return_value='FAKE-DEPT')
+    monkeypatch.setattr(svc, 'get_client', lambda: SimpleNamespace(create_process_instance=create))
+    session = open_session(db)
+    row = asyncio.run(submit(session, dept_id=20))
+    assert row.form_snapshot['deptId'] == 20
+    assert create.await_args.kwargs['dept_id'] == 20
+    # 已经人工核定未建单的重发必须保留当初部门，不重新猜部门。
+    row.status = 'needs_review'
+    row.instance_id = None
+    session._session.commit()
+    asyncio.run(svc.resend_instance(session, row))
+    assert create.await_args.kwargs['dept_id'] == 20
+    session._session.close()
+
+
 # --------------------------------------------------------------------------
 # 7.7 状态 → 允许动作：待审批 / 已通过不许"重提另建实例"
 # --------------------------------------------------------------------------
@@ -667,3 +685,20 @@ async def test_two_concurrent_resolves_create_only_one_instance(db, fake):
     assert len(conflicts) == 1, "另一个请求必须拿到明确冲突"
     assert conflicts[0].code == ErrorCode.VERSION_CONFLICT
     assert reload_row(db, oa_id).status == "pending"
+
+@pytest.mark.anyio
+async def test_polling_rotates_failed_old_record_without_claiming_success(db, session, fake):
+    old=datetime.now(UTC)-timedelta(days=1)
+    first=make_row(db,idempotency_key='poll-1',instance_id='poll-1',status='pending',updated_at=old,synced_at=old)
+    second=make_row(db,idempotency_key='poll-2',instance_id='poll-2',status='pending',updated_at=old+timedelta(seconds=1),error='旧错误')
+    # 第一张查询失败；下一批必须转到第二张，且失败不伪造成功同步时间。
+    result=await svc.sync_pending_instances(session,limit=1)
+    assert result['checked']==1
+    row=await session.get(OaInstance,first)
+    assert row.synced_at.replace(tzinfo=UTC)==old
+    assert row.error
+    fake.payloads['poll-2']={'status':'RUNNING','tasks':[{'status':'RUNNING','userId':'ding-user-2'}]}
+    await svc.sync_pending_instances(session,limit=1)
+    other=await session.get(OaInstance,second)
+    assert other.synced_at and other.error is None
+    assert other.result['payload']['tasks'][0]['status']=='RUNNING'

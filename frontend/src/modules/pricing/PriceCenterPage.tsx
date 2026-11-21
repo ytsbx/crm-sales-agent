@@ -1,8 +1,35 @@
+import { skuLabel } from '../../shared/sku-label'
+import { formatBeijingTime } from '../../shared/beijing-time'
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AutoComplete, Button, DatePicker, Input, Modal, Popconfirm, Select, Switch, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
+import {
+  AutoComplete,
+  Button,
+  DatePicker,
+  Input,
+  Modal,
+  Popconfirm,
+  Select,
+  SideSheet,
+  Switch,
+  Table,
+  Tabs,
+  Tag,
+  Toast,
+} from '@douyinfe/semi-ui'
+import { PricingTool } from './PricingPage'
 
+import {
+  NUMBER_FIELD_LABEL,
+  invalidNumberMessage,
+  parseOptionalNumber,
+  parseQuantity,
+  requiredNumberOrThrow,
+} from '../../shared/number-input'
+import { calendarDayOrToday } from '../../shared/calendar-day'
+import PriceTerm from './PriceTerm'
+import { formatMoney, formatUnitPrice, toTwoDecimals } from '../../shared/components/money'
 import { listCustomers } from '../../shared/api/customer'
 import { createItem, createOpportunity, listOpportunities } from '../../shared/api/opportunity'
 import {
@@ -14,6 +41,7 @@ import {
   deleteCustomerPriceRule,
   deleteLogisticsRate,
   disablePriceRule,
+  restorePriceRule,
   listCosts,
   listCustomerPriceRules,
   listLogisticsRates,
@@ -23,21 +51,26 @@ import {
   listPricingHistory,
   lookupPrice,
   savePricePermission,
+  updateCustomerPriceRule,
   updateLogisticsRate,
+  updatePriceRule,
   type CostRecord,
   type CustomerPriceRow,
   type LogisticsRateRow,
-  type PriceLookupResult,
   type PricePermissionRow,
   type PriceRuleRow,
   type PricingHistoryRow,
 } from '../../shared/api/pricing'
 import PageHeader from '../../shared/components/PageHeader'
+import HelpTip from '../../shared/components/HelpTip'
 import CsvImportButtons from '../../shared/components/CsvImportButtons'
 import { usePermissions } from '../../shared/hooks/permissions'
 import SectionCard from '../../shared/components/SectionCard'
+import StatusDot from '../../shared/components/StatusDot'
 import FormLabel from '../../shared/components/FormLabel'
-import { optionMatcher, withCode } from '../../shared/components/optionMatch'
+import GuardedButton from '../../shared/components/GuardedButton'
+import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
+import { listDictionaries } from '../../shared/api/settings'
 
 const TABS = [
   { tab: '客户查价', itemKey: 'lookup' },
@@ -87,6 +120,14 @@ const HISTORY_FIELD_LABEL: Record<string, string> = {
   quoted_price: '单价',
   amount: '金额',
   total_amount: '总额',
+  // 报价单详情的这几条后端用的是 `total` / `subtotal` 这类简称，
+  // 之前没登记，于是「变更内容」直接印出英文 `total: 14,286 → 14,316`
+  total: '报价总额',
+  subtotal: '小计',
+  grand_total: '应付合计',
+  freight_amount: '运费',
+  other_fee: '其他费用',
+  discount_amount: '优惠',
   sku_id: '产品',
   sku_code: '产品编码',
   sku_name: '产品名称',
@@ -112,6 +153,14 @@ const HISTORY_FIELD_LABEL: Record<string, string> = {
   calculation: '计算口径',
   item_count: '明细条数',
   count: '条数',
+  // 这两个是"接主数据 / 重新核价"两个动作的内部计数：老记录里没有 message 时
+  // 会走到逐字段比对，那时至少得是个中文词，不能把 skipped/refreshed 直接印出来
+  skipped: '跳过条数',
+  refreshed: '更新条数',
+  linked: '已接上条数',
+  already_linked: '本来就已接上',
+  missing_count: '还缺确认的条数',
+  missing: '还缺确认的明细',
 }
 
 /** 金额类字段：显示时带上 ¥，否则「20」看不出是钱还是件。 */
@@ -129,6 +178,12 @@ const MONEY_FIELDS = new Set([
   'guide_price',
   'minimum_price',
   'agreed_price',
+  'total',
+  'subtotal',
+  'grand_total',
+  'freight_amount',
+  'other_fee',
+  'discount_amount',
 ])
 
 /**
@@ -154,16 +209,86 @@ const SKIP_FIELDS = new Set([
   'quote_version_id',
   'version_id',
   'converted_inquiry_id',
+  // 审计日志里的事件键（quote:send:38:initial 这种）：纯粹的机器标识，
+  // 印在「变更内容」里对用户没有任何信息量（2026-11-16）
+  'event_key',
 ])
 
-/** 英文枚举值 → 中文。快照里存的是 `approved` 这种值，直接上屏是机器话。 */
+/**
+ * 动作名 → 中文。**唯一来源**，「动作」那一列与「变更内容」的兜底都用它。
+ *
+ * 为什么必须集中一处（主人 2026-10-12 反馈）：以前「动作」列只映射了
+ * `create / update / delete` 三个，其余的**原样把后端动作名印出来** ——
+ * 界面上就出现了 `price_refresh`「quote_link_master」「set_items」这种代码词，
+ * 非技术同事根本不知道发生了什么。而 `historySummary` 里其实已经认得这些动作、
+ * 也翻成了中文，两处各写一份必然走散（这一列就是走散的那一份）。
+ */
+const ACTION_LABEL: Record<string, string> = {
+  create: '新增',
+  update: '修改',
+  delete: '删除',
+  add_item: '新增明细',
+  delete_item: '删除明细',
+  update_item: '修改明细',
+  set_items: '整批替换明细',
+  price_refresh: '按最新价重算',
+  refresh_prices: '按最新价重算',
+  quote_link_master: '接入主数据',
+  clone: '复制版本',
+  copy_version: '复制版本',
+  create_version: '新建版本',
+  update_version: '修改版本',
+  update_charge: '修改附加费用',
+  submit_approval: '提交审批',
+  withdraw_approval: '撤回审批',
+  supersede_approval: '审批被替代',
+  auto_pass: '自动通过',
+  mark_sent: '标记已发送',
+  send_email: '发送邮件',
+  send: '发送',
+  accept: '客户接受',
+  decline: '客户拒绝',
+  reject: '客户拒绝',
+  import: '批量导入',
+  recalculate: '重新核价',
+  cost_refresh: '更新草稿成本',
+  expire: '过期',
+  // 价格规则停用（`pricing/router.py` 写的 business_type=price_rule）。
+  // 这条是**用静态检查扫出来的第二个同类漏网**（2026-10-12）：
+  // 页面没有这个分支，「动作」列就会原样印出 `disable`。
+  disable: '停用',
+  enable: '启用',
+  withdraw: '撤回',
+}
+
+/** 动作名的中文（认不出就退回原值，至少不空白）。 */
+function actionLabel(action: string | null | undefined): string {
+  if (!action) return '-'
+  return ACTION_LABEL[action] ?? action
+}
+
+/**
+ * 英文枚举值 → 中文。快照里存的是 `approved` 这种值，直接上屏是机器话。
+ *
+ * ⚠️ **这张表只服务核价历史**，而历史快照里的 `status` 是**报价单状态**
+ * （`QUOTE_STATUS_LABEL`：draft / pending_approval / approved / approval_rejected /
+ * sent / accepted / declined / expired），**不是版本审批状态**
+ * （not_submitted / pending / approved / rejected —— 那是另一套枚举）。
+ *
+ * 2026-10-13 逐值核对时发现两处混了：
+ *   · `pending: '审批中'` —— 报价状态里根本没有 `pending` 这个值，
+ *     这条映射只会把**别的**含义的 pending 误译成"审批中"；
+ *   · `rejected: '未通过'` —— 与 WhatIf 面板的「审批未通过」不一致，
+ *     也没说清"什么没通过"。
+ * 两条都删了。`approved` 两套枚举同名同义（都是"已通过"），保留。
+ * 另补上漏掉的 `expired`（报价过期后历史行会原样印出 `expired`）。
+ * 这几条由 `ops/check_enum_labels.py` 守着。
+ */
 const VALUE_LABEL: Record<string, string> = {
   approved: '已通过',
-  rejected: '未通过',
-  pending: '审批中',
-  not_submitted: '未提交',
   approval_rejected: '审批未通过',
   pending_approval: '待审批',
+  expired: '已失效',
   draft: '草稿',
   sent: '已发送',
   accepted: '已接受',
@@ -200,11 +325,18 @@ function fmtField(key: string, value: unknown): string {
   if (typeof value === 'boolean') return value ? '是' : '否'
   if (typeof value === 'string' && VALUE_LABEL[value]) return VALUE_LABEL[value]
   if (typeof value === 'number') {
-    if (MONEY_FIELDS.has(key)) return `¥${value.toLocaleString('zh-CN')}`
+    // 价格中心里全是单价/报价，两位小数且带千分位（¥14,316.00），
+    // 不能用 `¥${toTwoDecimals(v)}` —— 那个不带千分位。
+    if (MONEY_FIELDS.has(key)) return formatMoney(toTwoDecimals(value), 'CNY')
     // 比率类存的是小数（0.15 = 15%），直接显示 0.15 会让人以为是 0.15%
     if (key === 'target_margin') return `${(value * 100).toFixed(1)}%`
     return value.toLocaleString('zh-CN')
   }
+  // 审计快照里有些字段是**对象/数组**（例如"还缺确认的明细"）。
+  // 直接 String() 会印出 `[object Object]` —— 那不是"看不懂"，那是**明显是机器坏了**，
+  // 主人 2026-10-12 截的图里就有这一条。这种值一律不往屏幕上放：
+  // 列为空的话上层会跳过它，至少有中文名的字段还能说清楚发生了什么。
+  if (typeof value === 'object') return ''
   return String(value)
 }
 
@@ -237,6 +369,49 @@ function historySummary(row: PricingHistoryRow): string {
   const before = (row.before ?? {}) as Record<string, unknown>
   const after = (row.after ?? {}) as Record<string, unknown>
 
+  /**
+   * 后端**已经把结果写成一句话**时，直接用它，不要再拿字段名去比对。
+   *
+   * 为什么（主人 2026-10-12 反馈）：「价格中心」那页上全是
+   * `skipped: 空 → 1; refreshed: 空 → 0`、`linked: 空 → 0; message: 空 → 已把 0 条…`
+   * 甚至 `missing: 空 → [object Object]` —— 非技术同事根本不知道在看什么。
+   * 根因有两个，一个在这边、一个在后端：
+   *   ① 动作名对不上：后端写的是 `price_refresh`，这页判的是 `refresh_prices`，
+   *      于是掉进"逐字段比对"的兜底分支，把 `skipped`/`refreshed` 这种内部计数
+   *      当成"变更字段"印出来；
+   *   ② `quote_link_master` 这页**根本没有分支**，同理掉进兜底，
+   *      把 `missing`（一个对象数组）拼成 `[object Object]` 上屏。
+   * 这两个动作的 `after` 里都带着后端写好的 `message`（本来就是给人看的中文句子），
+   * 所以最省事也最准的做法是：**认得这两个动作，就把那句话端出来**。
+   * （同时保留下面的专用分支做兜底：老记录里可能没有 message 字段。）
+   */
+  // 修数 / 整批操作只带一句人写的 `note`，没有逐字段可比：
+  // 直接端出那句话，别拼成「note: xxx; sku_id: 空 → null」这种键值堆。
+  const plainText =
+    (typeof after.note === 'string' ? after.note.trim() : '')
+    || (typeof after.message === 'string' ? after.message.trim() : '')
+  if (plainText) {
+    const others = Object.keys(after).filter((key) => key !== 'note' && key !== 'message')
+    const othersEmpty = others.every(
+      (key) => after[key] === null || after[key] === undefined || after[key] === '',
+    )
+    if (othersEmpty) return plainText
+  }
+
+  const backendMessage = typeof after.message === 'string' ? after.message.trim() : ''
+  if (row.action === 'price_refresh') {
+    const refreshed = after.refreshed ?? 0
+    const skipped = after.skipped ?? 0
+    return backendMessage
+      || `按最新价重算：更新了 ${refreshed} 条明细、跳过 ${skipped} 条（手工定价的不覆盖）`
+  }
+  if (row.action === 'quote_link_master') {
+    const linked = after.linked ?? 0
+    const missing = after.missing_count ?? 0
+    return backendMessage
+      || `接入主数据：已接上 ${linked} 条${missing ? `、还有 ${missing} 条缺确认` : ''}`
+  }
+
   // 这些动作只记了一两个字段，按动作单独说清楚，比逐字段比对准确得多
   if (row.action === 'import') {
     // 批量导入：快照里只有统计数字（没有单个 SKU 对象），所以「对象」那列
@@ -262,6 +437,13 @@ function historySummary(row: PricingHistoryRow): string {
   if (row.action === 'submit_approval') return '提交审批'
   if (row.action === 'withdraw_approval') return '撤回审批'
   if (row.action === 'mark_sent') return '标记为已发送'
+  if (row.action === 'send') {
+    // 这个动作的快照里只有 channel / event_key / version_id 这些内部字段，
+    // 兜底分支拼出来是「channel 邮件；event_key quote:send:38:initial」——
+    // 非技术同事看不懂，也看不出"到底干了什么"。直接说人话（2026-11-16）。
+    const channel = after.channel
+    return channel === '邮件' || channel === 'email' ? '通过邮件把报价单发送给了客户' : '把报价单发送给了客户'
+  }
   if (row.action === 'clone') {
     const n = after.copied_items ?? after.copied
     return n === null || n === undefined ? '复制了一份明细' : `复制了 ${n} 条明细`
@@ -271,7 +453,8 @@ function historySummary(row: PricingHistoryRow): string {
     return n === null || n === undefined ? '明细整批替换' : `明细整批替换为 ${n} 条`
   }
   if (row.action === 'refresh_prices') {
-    return `按最新价重算：刷新 ${after.refreshed ?? 0} 条、跳过 ${after.skipped ?? 0} 条`
+    // 历史记录里这个动作还有过 `refresh_prices` 这个名字，措辞与上面保持一致
+    return `按最新价重算：更新了 ${after.refreshed ?? 0} 条明细、跳过 ${after.skipped ?? 0} 条（手工定价的不覆盖）`
   }
   if (row.action === 'update_item') {
     const oldPrice = before.quoted_price
@@ -292,15 +475,32 @@ function historySummary(row: PricingHistoryRow): string {
   // 修改：只列真正变了的字段
   const changed: string[] = []
   const keys = [...new Set([...Object.keys(after), ...Object.keys(before)])]
+  const isBlank = (value: unknown) =>
+    value === null || value === undefined || value === '' ||
+    (typeof value === 'object' && Object.keys(value as object).length === 0)
+  const label = (key: string) => HISTORY_FIELD_LABEL[key] ?? key
   for (const key of keys) {
     // 技术字段（内部编号、时间戳）一律不展示：用户看不懂，还会挤掉有用信息
     if (SKIP_FIELDS.has(key)) continue
     const oldValue = before[key]
     const newValue = after[key]
     if (String(oldValue ?? '') === String(newValue ?? '')) continue
-    changed.push(
-      `${HISTORY_FIELD_LABEL[key] ?? key}：${fmtField(key, oldValue)} → ${fmtField(key, newValue)}`,
-    )
+    const oldText = fmtField(key, oldValue)
+    const newText = fmtField(key, newValue)
+    // 值本身是对象/数组的字段直接跳过：`fmtField` 对这类返回空串，
+    // 拼出来就是「还缺确认的明细：空 → 」（半截话，不如不说）。这些动作
+    // 上面已经有专用分支用中文把结果说清了。
+    if (oldText === '' || newText === '') continue
+    // 只有一边有值：`空 → 1` 这种"从无到有"不是**变更**，是这次动作**算出来的结果**，
+    // 说成「跳过条数 1」就够了。以前一律写成「空 → 1」，非技术同事会以为
+    // "原来跳过条数是空的、现在变成 1 了"，压根不知道这是本次的统计。
+    if (isBlank(oldValue)) {
+      changed.push(`${label(key)} ${newText}`)
+    } else if (isBlank(newValue)) {
+      changed.push(`${label(key)} 清空（原 ${oldText}）`)
+    } else {
+      changed.push(`${label(key)}：${oldText} → ${newText}`)
+    }
     if (changed.length >= 4) {
       changed.push('…')
       break
@@ -313,55 +513,106 @@ function historySummary(row: PricingHistoryRow): string {
   return fallback ? `重算：${fallback}` : '无字段变化'
 }
 
-const money = (value?: number | null) => (value === null || value === undefined ? '-' : `¥${value}`)
+/**
+ * 价格中心的金额展示：空值给 `-`，有值统一两位小数。
+ * 原来直接 `¥${value}`，于是同一页能看到 `¥90`、`¥0.9`、`¥3.5`
+ * —— 单价这种要跟客户对账的数字不该省小数位（2026-11-17 视觉审视 V-05 / 5.2）。
+ */
+const money = (value?: number | null) =>
+  value === null || value === undefined ? '-' : formatMoney(toTwoDecimals(value), 'CNY')
+
+/**
+ * 价格规则 / 客户特殊价弹窗的**空表单**（模块级常量）。
+ *
+ * 放在组件外是为了两处共用同一份"空"：`useState` 的初值与"关闭后复位"
+ * 各写一份的话，加字段时必然漏一处 —— 漏的那处会在下次打开时残留上一次的值。
+ */
+const emptyRuleForm = {
+  sku_id: null as number | null,
+  customer_level: '',
+  min_qty: '0',
+  max_qty: '',
+  standard_price: '',
+  guide_price: '',
+  minimum_price: '',
+  target_margin: '',
+  effective_from: '',
+  effective_to: '',
+  remark: '',
+}
+const emptyCustomerPriceForm = {
+  customer_id: null as number | null,
+  sku_id: null as number | null,
+  min_qty: '0',
+  max_qty: '',
+  agreed_price: '',
+  minimum_price: '',
+  effective_from: '',
+  effective_to: '',
+  remark: '',
+}
 
 export default function PriceCenterPage() {
+  const [searchParams] = useSearchParams()
   const queryClient = useQueryClient()
-  const navigate = useNavigate()
   const { can } = usePermissions()
+  const customerLevelsQuery = useQuery({
+    queryKey: ['dictionaries', 'customer_level'],
+    queryFn: () => listDictionaries('customer_level'),
+  })
   const canManage = can('price:manage')
 
   // 默认落在「客户查价」：这是价格中心最高频的入口，
   // 之前默认停在「成本」，用户进来得先自己找页签。
-  const [activeKey, setActiveKey] = useState('lookup')
-  const [costSkuId, setCostSkuId] = useState<number | undefined>()
+  const initialTab = searchParams.get('tab')
+  const [activeKey, setActiveKey] = useState(initialTab === 'costs' || initialTab === 'logistics' ? initialTab : 'lookup')
+  // 核价试算：这台工具的所有依据（成本、标准价、客户特殊价、让价权限）都在本页，
+  // 没有理由再开一整个页面 —— 抽屉里就地算（主人 2026-11-21「不用为核价单独做一个大模块呀」）。
+  const [pricingVisible, setPricingVisible] = useState(false)
+  const [costSkuId, setCostSkuId] = useState<number | undefined>(() => {
+    const id = Number(searchParams.get('sku_id'))
+    return Number.isSafeInteger(id) && id > 0 ? id : undefined
+  })
   const [costVisible, setCostVisible] = useState(false)
   const [costForm, setCostForm] = useState({
     purchase_cost: '',
     package_cost: '',
     production_cost: '',
     processing_cost: '',
-    effective_from: new Date().toISOString().slice(0, 10),
+    effective_from: calendarDayOrToday(new Date()),
   })
   const [ruleVisible, setRuleVisible] = useState(false)
-  const [ruleForm, setRuleForm] = useState({
-    sku_id: null as number | null,
-    customer_level: '',
-    min_qty: '0',
-    standard_price: '',
-    guide_price: '',
-    minimum_price: '',
-    target_margin: '',
-    effective_from: '',
-    effective_to: '',
-  })
+  // 价格规则搜索与分页（2026-10-10 主人："没有搜索功能，一旦很多就太乱了"）。
+  // 从前写死 `{page:1, page_size:100}` —— 既搜不了，**第 101 条以后也根本看不到**。
+  const [ruleKeyword, setRuleKeyword] = useState('')
+  const [rulePage, setRulePage] = useState(1)
+  const [rulePageSize, setRulePageSize] = useState(20)
+  // 客户特殊价同一型问题：也写死 100 条、也没有搜索（同一次修掉）
+  const [cpKeyword, setCpKeyword] = useState('')
+  const [cpPage, setCpPage] = useState(1)
+  const [cpPageSize, setCpPageSize] = useState(20)
+  // 价格规则：新增与修改**共用同一个弹窗**（`ruleEditing` 为空 = 新增），
+  // 与下面运费费率同一范式，避免两套弹窗各自漂移。
+  const [ruleEditing, setRuleEditing] = useState<PriceRuleRow | null>(null)
+  const [ruleForm, setRuleForm] = useState(emptyRuleForm)
   const [customerPriceVisible, setCustomerPriceVisible] = useState(false)
-  const [customerPriceForm, setCustomerPriceForm] = useState({
-    customer_id: null as number | null,
-    sku_id: null as number | null,
-    min_qty: '0',
-    agreed_price: '',
-    minimum_price: '',
-    effective_from: '',
-    effective_to: '',
-  })
+  // 客户特殊价：同样新增与修改共用一个弹窗（`customerPriceEditing` 为空 = 新增）
+  const [customerPriceEditing, setCustomerPriceEditing] = useState<CustomerPriceRow | null>(null)
+  const [customerPriceForm, setCustomerPriceForm] = useState(emptyCustomerPriceForm)
 
   // 客户查价（产品报价中心 · 第一批）：选客户+SKU+数量 → 适用价与来源
   const [lookupCustomerId, setLookupCustomerId] = useState<number | undefined>()
+  const [lookupCustomerKeyword, setLookupCustomerKeyword] = useState('')
   const [lookupSkuId, setLookupSkuId] = useState<number | undefined>()
   const [lookupQty, setLookupQty] = useState('1')
-  const [lookupResult, setLookupResult] = useState<PriceLookupResult | null>(null)
-  const [lookupLoading, setLookupLoading] = useState(false)
+  const lookupQuantity = parseQuantity(lookupQty)
+  const lookupReady = Boolean(lookupCustomerId && lookupSkuId && lookupQuantity !== null && lookupQuantity > 0)
+  const lookupMutation = useMutation({ mutationFn: lookupPrice })
+  const lastLookup = lookupMutation.variables
+  const isCurrentLookup = lastLookup?.customer_id === lookupCustomerId && lastLookup?.sku_id === lookupSkuId
+    && lastLookup?.quantity === lookupQuantity
+  const lookupResult = isCurrentLookup ? lookupMutation.data : undefined
+  const canManageOpportunity = can('opportunity:manage')
   // 选品打通（§7 行 2）：查价结果一键加入商机需求
   const [lookupOppId, setLookupOppId] = useState<number | undefined>()
   const [addingToOpp, setAddingToOpp] = useState(false)
@@ -388,15 +639,35 @@ export default function PriceCenterPage() {
   const [rateForm, setRateForm] = useState(emptyRateForm)
   const [historySkuId, setHistorySkuId] = useState<number | undefined>()
   const [historyPage, setHistoryPage] = useState(1)
+  const [historyPageSize, setHistoryPageSize] = useState(20)
 
   const skusQuery = useQuery({ queryKey: ['skus-for-pricing'], queryFn: listSkusForPricing })
   const lookupOppQuery = useQuery({
-    queryKey: ['opportunities-for-lookup'],
-    queryFn: () => listOpportunities({ status: 'open', page: 1, page_size: 100 }),
+    queryKey: ['opportunities-for-lookup', lookupCustomerId],
+    // 同一客户下的进行中商机可能超过一页：循环取全，不能只拿前 100 条。
+    queryFn: async () => {
+      const filter = { customer_id: lookupCustomerId, status: 'open', page_size: 100 }
+      const first = await listOpportunities({ ...filter, page: 1 })
+      const all = [...first.items]
+      for (let page = 2; all.length < first.total; page += 1) {
+        const next = await listOpportunities({ ...filter, page })
+        if (!next.items.length) break
+        all.push(...next.items)
+      }
+      return { ...first, items: all }
+    },
+    enabled: canManageOpportunity && lookupResult?.status === 'ok',
   })
   const customersQuery = useQuery({
-    queryKey: ['customers-for-select'],
-    queryFn: () => listCustomers({ page: 1, page_size: 100 }),
+    // 客户选择器必须服务端搜索；只取前 100 条会让合法客户在第 101 条后
+    // 永远无法从价格中心发起查价（Issue #19）。
+    queryKey: ['customers-for-select', lookupCustomerKeyword],
+    queryFn: () =>
+      listCustomers({
+        keyword: lookupCustomerKeyword.trim() || undefined,
+        page: 1,
+        page_size: 100,
+      }),
   })
   const costsQuery = useQuery({
     queryKey: ['costs', costSkuId],
@@ -404,13 +675,27 @@ export default function PriceCenterPage() {
     enabled: Boolean(costSkuId),
   })
   const rulesQuery = useQuery({
-    queryKey: ['price-rules'],
-    queryFn: () => listPriceRules({ page: 1, page_size: 100 }),
+    // 关键词/页码进 queryKey：改了才重新请求，翻页不会把上一页的数据当这一页用
+    queryKey: ['price-rules', ruleKeyword, rulePage, rulePageSize],
+    queryFn: () =>
+      listPriceRules({
+        keyword: ruleKeyword.trim() || undefined,
+        page: rulePage,
+        page_size: rulePageSize,
+      }),
     enabled: activeKey === 'rules',
+    // 翻页时保留上一页内容，避免表格闪成空白（后端分页是真实的，数据量可能很大）
+    placeholderData: (prev) => prev,
   })
   const customerPricesQuery = useQuery({
-    queryKey: ['customer-price-rules'],
-    queryFn: () => listCustomerPriceRules({ page: 1, page_size: 100 }),
+    queryKey: ['customer-price-rules', cpKeyword, cpPage, cpPageSize],
+    queryFn: () =>
+      listCustomerPriceRules({
+        keyword: cpKeyword.trim() || undefined,
+        page: cpPage,
+        page_size: cpPageSize,
+      }),
+    placeholderData: (prev) => prev,
     enabled: activeKey === 'customer-prices',
   })
   const permissionsQuery = useQuery({
@@ -423,14 +708,26 @@ export default function PriceCenterPage() {
     queryFn: listLogisticsRates,
     enabled: activeKey === 'logistics',
   })
+  /* 「客户查价」tab 在还没查价时，下方是一整片空白（结果区只在有 lookupResult 时
+     才渲染）。与其留白，不如把「最近发生过几次核价变更」拉出来 —— 用户第一次
+     进这个模块看到的就是真实的记录，而不是一句解释 + 半屏白（2026-11-16）。
+     单独开一个 query，不跟「核价历史」tab 分页状态互相干扰。 */
+  const recentHistoryQuery = useQuery({
+    queryKey: ['pricing-history', 'recent'],
+    queryFn: () => listPricingHistory({ page: 1, page_size: 5 }),
+    enabled: activeKey === 'lookup' && !lookupResult,
+  })
+
   const historyQuery = useQuery({
-    queryKey: ['pricing-history', historyPage, historySkuId],
+    queryKey: ['pricing-history', historyPage, historyPageSize, historySkuId],
     queryFn: () =>
-      listPricingHistory({ page: historyPage, page_size: 20, sku_id: historySkuId }),
+      listPricingHistory({ page: historyPage, page_size: historyPageSize, sku_id: historySkuId }),
     enabled: activeKey === 'history',
   })
 
   const refreshAll = () => {
+    void queryClient.invalidateQueries({ queryKey: ['product-skus'] })
+    void queryClient.invalidateQueries({ queryKey: ['skus'] })
     void queryClient.invalidateQueries({ queryKey: ['costs'] })
     void queryClient.invalidateQueries({ queryKey: ['price-rules'] })
     void queryClient.invalidateQueries({ queryKey: ['customer-price-rules'] })
@@ -439,14 +736,24 @@ export default function PriceCenterPage() {
   }
 
   const costMutation = useMutation({
-    mutationFn: () =>
-      createCost(costSkuId!, {
-        purchase_cost: Number(costForm.purchase_cost || 0),
-        package_cost: Number(costForm.package_cost || 0),
-        production_cost: Number(costForm.production_cost || 0),
-        processing_cost: Number(costForm.processing_cost || 0),
+    mutationFn: () => {
+      // 不能写 Number(x || 0)（2026-10-14 审查修）：字母是 truthy，
+      // `|| 0` 不起作用 → NaN → JSON.stringify 变成 null →
+      // 后端当"没提供这个字段"，用户填的成本被静默丢掉，界面还回"已保存"。
+      // 核价随后按更低的成本算：毛利虚高、本该触发的低价审批不触发。
+      const costs = {
+        purchase_cost: parseOptionalNumber(costForm.purchase_cost),
+        package_cost: parseOptionalNumber(costForm.package_cost),
+        production_cost: parseOptionalNumber(costForm.production_cost),
+        processing_cost: parseOptionalNumber(costForm.processing_cost),
+      }
+      const bad = invalidNumberMessage(costs, '只能填数字（最多 2 位小数）')
+      if (bad) throw new Error(bad)
+      return createCost(costSkuId!, {
+        ...costs,
         effective_from: costForm.effective_from,
-      }),
+      })
+    },
     onSuccess: () => {
       Toast.success('成本已保存')
       setCostVisible(false)
@@ -467,54 +774,119 @@ export default function PriceCenterPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  /**
+   * 价格规则：新增与修改共用（`ruleEditing` 非空即修改）。
+   *
+   * **改的时候只提交允许改的字段**（区间 / 有效期 / 客户等级 / 备注）：
+   * 价钱类字段一律不提交 —— 后端会明确拒绝并点名是哪个字段（400），
+   * 而口径上"改价钱"就该走「停用旧的 + 新增一条」，这样生效时序在单据上看得见。
+   * 弹窗里那几个价钱字段在修改态是**只读展示**，让人看得见当前价、也知道去哪改。
+   */
   const ruleMutation = useMutation({
-    mutationFn: () =>
-      createPriceRule({
-        sku_id: ruleForm.sku_id,
-        customer_level: ruleForm.customer_level || null,
-        min_qty: Number(ruleForm.min_qty || 0),
-        standard_price: ruleForm.standard_price ? Number(ruleForm.standard_price) : null,
-        guide_price: ruleForm.guide_price ? Number(ruleForm.guide_price) : null,
-        minimum_price: ruleForm.minimum_price ? Number(ruleForm.minimum_price) : null,
-        target_margin: ruleForm.target_margin ? Number(ruleForm.target_margin) : null,
+    mutationFn: () => {
+      // 解析 + 校验放一处（R02）：数字字段填了字母必须**当场拒绝**，
+      // 不能让它变成 null 提交出去（那等于把上限改成"不限"）。
+      const nums = {
+        min_qty: parseQuantity(ruleForm.min_qty),
+        max_qty: parseQuantity(ruleForm.max_qty),
+        standard_price: parseOptionalNumber(ruleForm.standard_price),
+        guide_price: parseOptionalNumber(ruleForm.guide_price),
+        minimum_price: parseOptionalNumber(ruleForm.minimum_price),
+        target_margin: parseOptionalNumber(ruleForm.target_margin),
+      }
+      const bad = Object.entries(nums).find(([, v]) => Number.isNaN(v))
+      if (bad) {
+        throw new Error(`${NUMBER_FIELD_LABEL[bad[0]] ?? bad[0]}只能填数字（最多 3 位小数）`)
+      }
+      const common = {
+        min_qty: nums.min_qty ?? 0,
+        max_qty: nums.max_qty,
         effective_from: ruleForm.effective_from || null,
         effective_to: ruleForm.effective_to || null,
-      }),
+        remark: ruleForm.remark || null,
+      }
+      if (ruleEditing) {
+        return updatePriceRule(ruleEditing.id, {
+          customer_level: ruleForm.customer_level || null,
+          ...common,
+        })
+      }
+      return createPriceRule({
+        sku_id: ruleForm.sku_id,
+        customer_level: ruleForm.customer_level || null,
+        ...common,
+        standard_price: nums.standard_price,
+        guide_price: nums.guide_price,
+        minimum_price: nums.minimum_price,
+        target_margin: nums.target_margin,
+      })
+    },
     onSuccess: () => {
-      Toast.success('价格规则已创建')
-      setRuleVisible(false)
+      Toast.success(ruleEditing ? '价格规则已保存' : '价格规则已创建')
+      closeRuleModal()
       refreshAll()
     },
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  /**
+   * 客户特殊价：新增与修改共用（`customerPriceEditing` 非空即修改）。
+   *
+   * 修改走 `PATCH /customer-price-rules/{id}` 原地改 —— 这正是它被设计出来的场景
+   * （客户谈定的价涨了两块），此前界面只给「删除」，改价要删了重录。
+   * `customer_id` / `sku_id` 不提交：后端明确不支持改归属（等于换一条规则）。
+   */
   const customerPriceMutation = useMutation({
-    mutationFn: () =>
-      createCustomerPriceRule({
-        customer_id: customerPriceForm.customer_id,
-        sku_id: customerPriceForm.sku_id,
-        min_qty: Number(customerPriceForm.min_qty || 0),
-        agreed_price: Number(customerPriceForm.agreed_price),
-        minimum_price: customerPriceForm.minimum_price
-          ? Number(customerPriceForm.minimum_price)
-          : null,
+    mutationFn: () => {
+      // 同一把尺子（R02）：约定价必填且必须是数字，其余数字字段填字母要当场拒绝
+      const nums = {
+        min_qty: parseQuantity(customerPriceForm.min_qty),
+        max_qty: parseQuantity(customerPriceForm.max_qty),
+        agreed_price: parseOptionalNumber(customerPriceForm.agreed_price),
+        minimum_price: parseOptionalNumber(customerPriceForm.minimum_price),
+      }
+      const bad = Object.entries(nums).find(([, v]) => Number.isNaN(v))
+      if (bad) {
+        throw new Error(`${NUMBER_FIELD_LABEL[bad[0]] ?? bad[0]}只能填数字`)
+      }
+      const common = {
+        min_qty: nums.min_qty ?? 0,
+        max_qty: nums.max_qty,
+        agreed_price: nums.agreed_price,
+        minimum_price: nums.minimum_price,
         effective_from: customerPriceForm.effective_from || null,
         effective_to: customerPriceForm.effective_to || null,
-      }),
+        remark: customerPriceForm.remark || null,
+      }
+      if (customerPriceEditing) {
+        return updateCustomerPriceRule(customerPriceEditing.id, common)
+      }
+      return createCustomerPriceRule({
+        customer_id: customerPriceForm.customer_id,
+        sku_id: customerPriceForm.sku_id,
+        ...common,
+      })
+    },
     onSuccess: () => {
-      Toast.success('客户特殊价已创建')
-      setCustomerPriceVisible(false)
+      Toast.success(customerPriceEditing ? '客户特殊价已保存' : '客户特殊价已创建')
+      closeCustomerPriceModal()
       refreshAll()
     },
     onError: (error: Error) => Toast.error(error.message),
   })
 
   const permissionMutation = useMutation({
-    mutationFn: () =>
-      savePricePermission(permissionTarget!.role_id, {
-        minimum_margin: Number(permissionForm.minimum_margin || 0),
+    mutationFn: () => {
+      // 同上：填字母会静默变成 0% 门槛 → 审批条件被悄悄放宽
+      const margin = parseOptionalNumber(permissionForm.minimum_margin)
+      if (typeof margin === 'number' && Number.isNaN(margin)) {
+        throw new Error('最低利润率只能填数字')
+      }
+      return savePricePermission(permissionTarget!.role_id, {
+        minimum_margin: margin ?? 0,
         can_approve: permissionForm.can_approve,
-      }),
+      })
+    },
     onSuccess: () => {
       Toast.success('价格权限已保存')
       setPermissionTarget(null)
@@ -527,6 +899,61 @@ export default function PriceCenterPage() {
     setRateVisible(false)
     setRateEditing(null)
     setRateForm(emptyRateForm)
+  }
+
+  /** 价格规则弹窗：传行 = 改（预填可改字段），不传 = 新增。 */
+  const closeRuleModal = () => {
+    setRuleVisible(false)
+    setRuleEditing(null)
+    setRuleForm(emptyRuleForm)
+  }
+  const openRuleModal = (row?: PriceRuleRow) => {
+    setRuleEditing(row ?? null)
+    setRuleForm(
+      row
+        ? {
+            sku_id: row.sku_id,
+            customer_level: row.customer_level ?? '',
+            min_qty: String(row.min_qty ?? '0'),
+            max_qty: row.max_qty == null ? '' : String(row.max_qty),
+            // 价钱类字段在修改态是只读展示，这里照实填上当前值
+            standard_price: row.standard_price == null ? '' : String(row.standard_price),
+            guide_price: row.guide_price == null ? '' : String(row.guide_price),
+            minimum_price: row.minimum_price == null ? '' : String(row.minimum_price),
+            target_margin: row.target_margin == null ? '' : String(row.target_margin),
+            effective_from: row.effective_from ?? '',
+            effective_to: row.effective_to ?? '',
+            remark: row.remark ?? '',
+          }
+        : emptyRuleForm,
+    )
+    setRuleVisible(true)
+  }
+
+  /** 客户特殊价弹窗：传行 = 改（预填），不传 = 新增。 */
+  const closeCustomerPriceModal = () => {
+    setCustomerPriceVisible(false)
+    setCustomerPriceEditing(null)
+    setCustomerPriceForm(emptyCustomerPriceForm)
+  }
+  const openCustomerPriceModal = (row?: CustomerPriceRow) => {
+    setCustomerPriceEditing(row ?? null)
+    setCustomerPriceForm(
+      row
+        ? {
+            customer_id: row.customer_id,
+            sku_id: row.sku_id,
+            min_qty: String(row.min_qty ?? '0'),
+            max_qty: row.max_qty == null ? '' : String(row.max_qty),
+            agreed_price: String(row.agreed_price ?? ''),
+            minimum_price: row.minimum_price == null ? '' : String(row.minimum_price),
+            effective_from: row.effective_from ?? '',
+            effective_to: row.effective_to ?? '',
+            remark: row.remark ?? '',
+          }
+        : emptyCustomerPriceForm,
+    )
+    setCustomerPriceVisible(true)
   }
 
   /** 打开费率弹窗：传行 = 改（预填），不传 = 新增。 */
@@ -562,16 +989,22 @@ export default function PriceCenterPage() {
         origin_region: rateForm.origin_region.trim() || null,
         destination_region: rateForm.destination_region.trim() || null,
         shipping_method: rateForm.shipping_method.trim() || '陆运',
-        unit_price_per_kg: Number(rateForm.unit_price_per_kg || 0),
-        unit_price_per_volume: rateForm.unit_price_per_volume.trim()
-          ? Number(rateForm.unit_price_per_volume)
-          : null,
-        min_charge: Number(rateForm.min_charge || 0),
-        eta_days: rateForm.eta_days.trim() ? Number(rateForm.eta_days) : null,
-        eta_days_max: rateForm.eta_days_max.trim() ? Number(rateForm.eta_days_max) : null,
+        // 公斤单价是必填：原来 Number('' || 0) = 0，清空后保存会静默建一条 0 元/kg
+        // 的费率，所有走这条线路的运费都算成 0（2026-10-14 审查修）。
+        unit_price_per_kg: requiredNumberOrThrow(rateForm.unit_price_per_kg, '公斤单价'),
+        unit_price_per_volume: parseOptionalNumber(rateForm.unit_price_per_volume),
+        min_charge: requiredNumberOrThrow(rateForm.min_charge, '最低收费'),
+        eta_days: parseOptionalNumber(rateForm.eta_days),
+        eta_days_max: parseOptionalNumber(rateForm.eta_days_max),
         status: rateForm.status,
         remark: rateForm.remark.trim() || null,
       }
+      const error = invalidNumberMessage({
+        unit_price_per_volume: payload.unit_price_per_volume,
+        eta_days: payload.eta_days,
+        eta_days_max: payload.eta_days_max,
+      })
+      if (error) throw new Error(error)
       return rateEditing
         ? updateLogisticsRate(rateEditing.id, payload)
         : createLogisticsRate(payload)
@@ -612,12 +1045,13 @@ export default function PriceCenterPage() {
 
   const skuOptions = (skusQuery.data ?? []).map((sku) => ({
     value: sku.id,
-    label: `${sku.product_name ?? ''} ${sku.sku_code} ${sku.specification ?? ''}`,
+    label: skuLabel(sku),
   }))
 
-  // 查价的两个必填项。按钮在没选齐时是禁用态，但**禁用≠可以不解释**：
-  // 见下面 Button 外那层 span 的注释（主人 2026-10-06 反馈「灰着没有任何解释」）。
-  const lookupReady = Boolean(lookupCustomerId && lookupSkuId)
+  const lookupIssue = !lookupCustomerId || !lookupSkuId
+    ? '选好客户和产品后才能查价。'
+    : !lookupReady ? '数量须大于 0，最多三位小数。' : ''
+  const lookupOpp = lookupOppQuery.data?.items.find((item) => item.id === lookupOppId)
 
   return (
     <div className="page-container">
@@ -625,29 +1059,72 @@ export default function PriceCenterPage() {
         title="价格中心"
         subtitle="核价引擎的全部依据都在这一页：成本、标准价与最低保护价、客户特殊价、各角色的让价权限、运费费率"
         extra={
-          <Button theme="solid" onClick={() => navigate('/pricing')}>
-            打开核价
+          <Button type="primary" theme="outline" onClick={() => setPricingVisible(true)}>
+            核价试算
           </Button>
         }
       />
 
-      <SectionCard>
+      {/* 核价试算抽屉：宽 860，内容区自己滚。嵌进去的是同一个 PricingTool，
+          和 /pricing 页是同一段代码，不存在两份实现各自跑偏的可能。 */}
+      <SideSheet
+        title="核价试算"
+        visible={pricingVisible}
+        onCancel={() => setPricingVisible(false)}
+        width={780}
+        bodyStyle={{ padding: '16px 20px' }}
+      >
+        {/* 抽屉里只有一个标题和一排输入框，第一眼确实看不出这东西干嘛用
+            （主人 2026-11-21「这个核价是干嘛的我都不知道」）。开头先说清用途和边界：
+            算数用的，不改任何单据；算出来的三个数各是什么意思。 */}
+        <div
+          style={{
+            marginBottom: 4,
+            padding: '10px 12px',
+            borderRadius: 8,
+            background: 'var(--crm-surface-low)',
+            color: 'var(--crm-text-2)',
+            fontSize: 13,
+            lineHeight: 1.75,
+          }}
+        >
+          报价前在这里先算一遍：拿这个 SKU 的商品成本加上运费，按价格规则加成之后，
+          得到<strong>建议报价</strong>、<strong>你能报到的最低允许价</strong>，
+          再判断这个价你自己能不能报、还是得交上去审批。
+          <span style={{ color: 'var(--crm-text-3)' }}>
+            {' '}它只算数、不写任何单据 —— 真要对外报，还是去报价单里填。
+          </span>
+        </div>
+        {pricingVisible && <PricingTool embedded />}
+      </SideSheet>
+
+      {/* auto-height：这一页只有一张卡，全局规则会把它拉到满屏高。
+          而「成本」tab 没选 SKU 时只有一行「请先选择 SKU」，
+          下面就是 600px 纯白 —— 内容少就别给大卡，改成按内容收住。 */}
+      <SectionCard className="auto-height">
         <Tabs type="line" activeKey={activeKey} onChange={setActiveKey} tabList={TABS} />
 
         <div style={{ marginTop: 16 }}>
           {activeKey === 'lookup' && (
-            <div style={{ display: 'grid', gap: 16 }}>
-              <div className="toolbar">
+            <div className="price-lookup-content">
+              <div className="toolbar price-lookup-form">
                 <Select
                   placeholder="选择客户"
                   value={lookupCustomerId}
-                  onChange={(value) => setLookupCustomerId(value as number)}
-                  optionList={(customersQuery.data?.items ?? []).map((item) => ({
-                    value: item.id,
-                    label: withCode(`${item.name}${item.level ? `（${item.level} 级）` : ''}`, item.id),
-                  }))}
+                  onChange={(value) => {
+                    setLookupCustomerId(value as number)
+                    setLookupOppId(undefined)
+                  }}
+                  remote
+                  loading={customersQuery.isFetching}
+                  onSearch={setLookupCustomerKeyword}
+                  optionList={optionsWithCodeOnDuplicate(
+                    customersQuery.data?.items ?? [],
+                    (item) => `${item.name}${item.level ? `（${item.level} 级）` : ''}`,
+                    (item) => item.id,
+                  )}
                   filter={optionMatcher}
-                  style={{ width: 280 }}
+                  style={{ width: 280, maxWidth: '100%' }}
                 />
                 <Select
                   placeholder="选择 SKU"
@@ -655,106 +1132,233 @@ export default function PriceCenterPage() {
                   onChange={(value) => setLookupSkuId(value as number)}
                   optionList={skuOptions}
                   filter={optionMatcher}
-                  style={{ width: 360 }}
+                  style={{ width: 360, maxWidth: '100%' }}
                 />
                 <Input
                   value={lookupQty}
                   onChange={setLookupQty}
-                  style={{ width: 120 }}
+                  // flex: none：工具栏是 flex 布局，两个大下拉一挤，数量框会被压成一小条
+                  style={{ width: 120, flex: 'none' }}
                   placeholder="数量"
+                  aria-label="查价数量"
+                  inputMode="decimal"
+                  aria-invalid={lookupQuantity === null || !(lookupQuantity > 0)}
                 />
-                {/* 禁用按钮必须能解释自己（主人 2026-10-06：「查价按钮灰着没有任何解释
-                    ——你填了数量还以为是自己错」）。两个要点：
-                    ① 禁用时按钮旁给一行灰字，说清缺什么；
-                    ② 禁用时点一下要**有反应**，而不是石沉大海。
-                    难点：这个组件库的禁用按钮用的是原生 `disabled` 属性，浏览器对
-                    原生禁用控件**根本不派发点击事件**，所以外面这层 span 收不到。
-                    破法是在禁用态下给按钮加 `pointerEvents: 'none'` —— 按钮对点击
-                    透明，点击的落点就变成外层 span，span 上的 onClick 才接得住。
-                    可用态则不加这个样式，按钮自己处理点击（冒泡上来的那次由
-                    `lookupReady` 判断挡掉，不会重复触发）。 */}
-                <span
-                  style={{ cursor: lookupReady ? undefined : 'not-allowed' }}
+                <GuardedButton type="primary"
+                  theme="outline"
+                  loading={lookupMutation.isPending}
+                  disabled={!lookupReady}
+                  hintBelow
+                  blockedReasons={[lookupIssue]}
                   onClick={() => {
-                    if (!lookupReady) {
-                      Toast.warning(
-                        !lookupCustomerId && !lookupSkuId
-                          ? '请先选择客户和产品，再点查价'
-                          : !lookupCustomerId
-                            ? '请先选择客户，再点查价'
-                            : '请先选择产品，再点查价',
-                      )
+                    if (lookupCustomerId && lookupSkuId && lookupQuantity !== null && lookupQuantity > 0) {
+                      lookupMutation.mutate({ customer_id: lookupCustomerId, sku_id: lookupSkuId, quantity: lookupQuantity })
                     }
                   }}
                 >
-                  <Button
-                    theme="solid"
-                    loading={!lookupResult && lookupLoading}
-                    disabled={!lookupReady}
-                    style={lookupReady ? undefined : { pointerEvents: 'none' }}
-                    onClick={async () => {
-                      setLookupLoading(true)
-                      try {
-                        const result = await lookupPrice({
-                          customer_id: lookupCustomerId!,
-                          sku_id: lookupSkuId!,
-                          quantity: Number(lookupQty || 1),
-                        })
-                        setLookupResult(result)
-                      } catch (error) {
-                        Toast.error(error instanceof Error ? error.message : '查价失败')
-                      } finally {
-                        setLookupLoading(false)
-                      }
+                  查价
+                </GuardedButton>
+              </div>
+              {lastLookup && !isCurrentLookup && (
+                <p className="workflow-guide" role="status">查价条件已修改，请重新查价。</p>
+              )}
+              {isCurrentLookup && lookupMutation.isError && (
+                <p className="workflow-guide" role="alert">查价失败。{lookupMutation.error.message} 可再次点「查价」。</p>
+              )}
+              {/* 查价前下方整片是空的（结果区只在有 lookupResult 时渲染）。
+                  放一个朴素的说明块：告诉用户这个工具算什么、算完会看到什么，
+                  而不是留 60% 白屏。不加图标、不做装饰 —— 只讲人话。 */}
+              {!lookupResult && (
+                <div
+                  style={{
+                    background: 'rgba(31,95,214,0.035)',
+                    border: '1px solid var(--crm-border)',
+                    borderRadius: 8,
+                    padding: '18px 20px',
+                    display: 'grid',
+                    gap: 14,
+                  }}
+                >
+                  <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--crm-text-2)' }}>
+                    查一次价，会看到这些
+                  </div>
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 190px), 1fr))',
+                      gap: 18,
                     }}
                   >
-                    查价
-                  </Button>
-                </span>
-                {!lookupReady && (
-                  <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                    选好客户和产品后才能查价
-                  </span>
-                )}
-              </div>
-              {lookupResult?.status === 'ok' && (
+                    {[
+                      ['适用单价', '客户专属价、等级价、通用指导价里，系统自动取用的一档'],
+                      ['价格来源', '标明这价由哪条规则决定，方便向客户解释'],
+                      ['有效期', '价格生效区间，避免用了过期的价'],
+                    ].map(([title, desc]) => (
+                      <div key={title}>
+                        <div
+                          style={{
+                            fontSize: 13,
+                            fontWeight: 600,
+                            color: 'var(--crm-primary)',
+                            marginBottom: 4,
+                          }}
+                        >
+                          {title}
+                        </div>
+                        <div style={{ fontSize: 12, color: 'var(--crm-text-3)', lineHeight: 1.7 }}>
+                          {desc}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* 查价前下方这块空白用真数据填：最近 5 次核价变更。
+                  改了什么、谁改的、什么时候 —— 比一块静态说明更能说明
+                  「这个工具在管什么」（2026-11-16）。 */}
+              {!lookupResult && (recentHistoryQuery.data?.items?.length ?? 0) > 0 && (
+                <div
+                  style={{
+                    marginTop: 16,
+                    border: '1px solid var(--crm-border)',
+                    borderRadius: 8,
+                    padding: '14px 20px',
+                    display: 'grid',
+                    gap: 10,
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'baseline',
+                      justifyContent: 'space-between',
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: 'var(--crm-text-2)',
+                    }}
+                  >
+                    {/* 2026-11-21：这块拉的是价格与报价的操作流水 ——
+                        里面既有改价、也有提交审批、发送邮件、客户接受。
+                        叫「核价记录」名不副实，改成「价格操作」。 */}
+                    <span>最近价格操作</span>
+                    <span style={{ fontSize: 12, fontWeight: 400, color: 'var(--crm-text-3)' }}>
+                      {/* 只渲染最近 5 条，标题却写着「共 121 条」—— 会让人以为下面能翻页看到全部。
+                          如实说明这里只放最近几条。 */}
+                      共 {recentHistoryQuery.data?.total ?? 0} 条 · 这里只放最近 {(recentHistoryQuery.data?.items ?? []).length} 条
+                    </span>
+                  </div>
+                  {(recentHistoryQuery.data?.items ?? []).map((row) => (
+                    <div
+                      key={row.id}
+                      style={{ display: 'flex', gap: 14, fontSize: 13, alignItems: 'baseline' }}
+                    >
+                      <span style={{ width: 148, flexShrink: 0, color: 'var(--crm-text-3)' }}>
+                        {formatBeijingTime(row.created_at)}
+                      </span>
+                      <span style={{ width: 72, flexShrink: 0, color: 'var(--crm-text-3)' }}>
+                        {row.operator_name ?? '-'}
+                      </span>
+                      <span style={{ color: 'var(--crm-text-2)' }}>{historySummary(row)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {lookupResult && (
+                <div className="price-lookup-result">
+                  {lookupResult.status === 'ok' ? (
+                    <>
+                      <div>
+                        <span style={{ fontSize: 28, fontWeight: 700 }}>
+                          {formatUnitPrice(lookupResult.unit_price, lookupResult.currency)}
+                        </span>
+                        <span style={{ marginLeft: 6, color: 'var(--crm-text-3)' }}>
+                          ／{lookupResult.sku.unit ?? '件'} · 数量 {lookupResult.quantity}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', gap: '6px 12px', flexWrap: 'wrap', alignItems: 'center' }}>
+                        <div style={{ flexShrink: 0 }}><Tag color="blue">{lookupResult.source_label}</Tag></div>
+                        <span style={{ color: 'var(--crm-text-3)' }}>
+                          {lookupResult.customer.name}
+                          {lookupResult.customer.level ? `（${lookupResult.customer.level} 级）` : ''} ·{' '}
+                          {lookupResult.sku.sku_code} · 有效期{' '}
+                          {lookupResult.effective_from ?? '即日'} ~ {lookupResult.effective_to ?? '长期'}
+                        </span>
+                      </div>
+                      {lookupResult.source === 'general' && lookupResult.fallback_note && lookupResult.customer.level && (
+                        <div style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
+                          当前数量没有适用的 {lookupResult.customer.level} 级专用价，本次按通用指导价报价。
+                        </div>
+                      )}
+                      {lookupResult.can_see_cost && (
+                        <div style={{ color: 'var(--crm-text-3)' }}>
+                          货成本：
+                          {lookupResult.cost ?? '-'}
+                          {lookupResult.cost_note ? `（${lookupResult.cost_note}）` : ''}
+                          {lookupResult.minimum_price != null
+                            ? ` · 保护价 ${lookupResult.minimum_price}`
+                            : ''}
+                        </div>
+                      )}
+                      <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
+                        可用这个单价准备报价。改价时，系统会检查你的报价权限。
+                      </div>
+                    </>
+                  ) : (
+                    <div
+                      style={{
+                        background: 'var(--crm-warning-soft)',
+                        padding: '12px 16px',
+                        borderRadius: 6,
+                      }}
+                    >
+                      当前客户和数量暂无可用售价。请联系价格管理员维护适用的指导价或客户专属价。
+                    </div>
+                  )}
+                </div>
+              )}
+              {lookupResult?.status === 'ok' && canManageOpportunity && (
                 <div className="toolbar">
-                  <span style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>选品下单：</span>
+                  <span style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>加入商机需求</span>
                   <Select
                     placeholder="选择要加入的商机（可选）"
                     value={lookupOppId}
                     onChange={(value) => setLookupOppId(value as number)}
-                    optionList={(lookupOppQuery.data?.items ?? []).map((item) => ({
-                      value: item.id,
-                      label: withCode(`${item.title ?? '商机'}（${item.customer_name ?? ''}）`, item.id),
-                    }))}
+                    optionList={optionsWithCodeOnDuplicate(
+                      lookupOppQuery.data?.items ?? [],
+                      (item) => `${item.title ?? '商机'}（${item.customer_name ?? ''}）`,
+                      (item) => item.id,
+                    )}
                     filter={optionMatcher}
-                    style={{ width: 320 }}
+                    style={{ width: 320, maxWidth: '100%' }}
                   />
                   {/* 同一个页面里同款毛病，一起修：禁用按钮外面包一层，
                       禁用态下让按钮对点击透明，点击落到外层 span 上给提示。 */}
                   <span
-                    style={{ cursor: lookupOppId ? undefined : 'not-allowed' }}
+                    style={{ cursor: lookupOpp ? undefined : 'not-allowed' }}
                     onClick={() => {
-                      if (!lookupOppId) {
+                      if (!lookupOpp) {
                         Toast.warning('请先选择一个商机，或点右边的「新建快捷商机」')
                       }
                     }}
                   >
                     <Button
-                      disabled={!lookupOppId}
+                      disabled={!lookupOpp}
                       loading={addingToOpp}
-                      style={lookupOppId ? undefined : { pointerEvents: 'none' }}
+                      style={lookupOpp ? undefined : { pointerEvents: 'none' }}
                       onClick={async () => {
+                        if (!lookupOpp) return
                         setAddingToOpp(true)
                         try {
-                          await createItem(lookupOppId!, {
+                          await createItem(lookupOpp.id, {
                             sku_id: lookupResult.sku.id,
-                            quantity: Number(lookupQty || 1),
+                            quantity: lookupResult.quantity,
                             target_price: lookupResult.unit_price,
                           })
+                          void queryClient.invalidateQueries({ queryKey: ['opportunity-items', lookupOpp.id] })
                           Toast.success(
-                            `已把 ${lookupResult.sku.sku_code}（¥${lookupResult.unit_price}）加入商机需求`,
+                            // toast 里同样是单价：走 formatUnitPrice，别拿金额口径去装单价
+                            `已把 ${lookupResult.sku.sku_code}（${formatUnitPrice(lookupResult.unit_price, 'CNY')}）加入商机需求`,
                           )
                         } catch (error) {
                           Toast.error(error instanceof Error ? error.message : '加入失败')
@@ -777,24 +1381,22 @@ export default function PriceCenterPage() {
                       // D8：报价必须挂商机。没有现成商机时当场一键生成极简商机
                       //（客户名+日期+询价、首个阶段=初始阶段、SKU/数量写入需求明细），
                       // 让"合规"比"绕开"更省事，而不是让销售回去填一套表
-                      const customer = (customersQuery.data?.items ?? []).find(
-                        (item) => item.id === lookupCustomerId,
-                      )
                       const d = new Date()
                       const dateLabel = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
                       setCreatingQuickOpp(true)
                       try {
                         const opp = await createOpportunity({
-                          customer_id: lookupCustomerId,
-                          title: `${customer?.name ?? '客户'}-${dateLabel}-询价`,
+                          customer_id: lookupResult.customer.id,
+                          title: `${lookupResult.customer.name}-${dateLabel}-询价`,
                         })
                         await createItem(opp.id, {
                           sku_id: lookupResult.sku.id,
-                          quantity: Number(lookupQty || 1),
+                          quantity: lookupResult.quantity,
                           target_price: lookupResult.unit_price,
                         })
                         setLookupOppId(opp.id)
-                        refreshAll()
+                        void queryClient.invalidateQueries({ queryKey: ['opportunities-for-lookup', lookupResult.customer.id] })
+                        void queryClient.invalidateQueries({ queryKey: ['opportunities'] })
                         Toast.success(
                           `快捷商机已创建并加入 ${lookupResult.sku.sku_code}，可直接去报价`,
                         )
@@ -810,67 +1412,7 @@ export default function PriceCenterPage() {
                   <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
                     以系统适用价写入需求明细，销售在商机页可再调整目标价
                   </span>
-                </div>
-              )}
-              {lookupResult && (
-                <div style={{ display: 'grid', gap: 10, maxWidth: 640 }}>
-                  {lookupResult.status === 'ok' ? (
-                    <>
-                      <div>
-                        <span style={{ fontSize: 28, fontWeight: 700 }}>
-                          {lookupResult.unit_price}
-                        </span>
-                        <span style={{ marginLeft: 6, color: 'var(--crm-text-3)' }}>
-                          {lookupResult.currency} / 件（数量 {lookupResult.quantity}）
-                        </span>
-                      </div>
-                      <div style={{ display: 'flex', gap: 16 }}>
-                        <Tag color="blue">{lookupResult.source_label}</Tag>
-                        <span style={{ color: 'var(--crm-text-3)' }}>
-                          {lookupResult.customer.name}
-                          {lookupResult.customer.level ? `（${lookupResult.customer.level} 级）` : ''} ·{' '}
-                          {lookupResult.sku.sku_code} · 有效期{' '}
-                          {lookupResult.effective_from ?? '即日'} ~ {lookupResult.effective_to ?? '长期'}
-                        </span>
-                      </div>
-                      {lookupResult.fallback_note && (
-                        <div
-                          style={{
-                            background: 'var(--crm-warning-soft, #fff7e6)',
-                            padding: '8px 12px',
-                            borderRadius: 6,
-                          }}
-                        >
-                          {lookupResult.fallback_note}
-                        </div>
-                      )}
-                      {lookupResult.can_see_cost && (
-                        <div style={{ color: 'var(--crm-text-3)' }}>
-                          货成本：
-                          {lookupResult.cost ?? '—'}
-                          {lookupResult.cost_note ? `（${lookupResult.cost_note}）` : ''}
-                          {lookupResult.minimum_price != null
-                            ? ` · 保护价 ${lookupResult.minimum_price}`
-                            : ''}
-                        </div>
-                      )}
-                      <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
-                        以上为系统适用价；对外拟报价默认带入，销售调整时将按权限检查。
-                      </div>
-                    </>
-                  ) : (
-                    <div
-                      style={{
-                        background: 'var(--crm-warning-soft, #fff7e6)',
-                        padding: '12px 16px',
-                        borderRadius: 6,
-                      }}
-                    >
-                      待定价：该条件下没有维护有效售价
-                      {lookupResult.fallback_note ? `（${lookupResult.fallback_note}）` : ''}
-                      ，请联系价格管理员维护；系统不会用成本推算价冒充有效售价。
-                    </div>
-                  )}
+                  {lookupOpp && <Link className="price-lookup-opportunity-link" to={`/opportunities/${lookupOpp.id}`}>打开商机</Link>}
                 </div>
               )}
             </div>
@@ -894,8 +1436,8 @@ export default function PriceCenterPage() {
                       importUrl="/api/v1/costs/import"
                       invalidateQueryKeys={['costs']}
                     />
-                    <Button
-                      theme="solid"
+                    <Button type="primary"
+                      theme="outline"
                       disabled={!costSkuId}
                       onClick={() => setCostVisible(true)}
                     >
@@ -925,9 +1467,10 @@ export default function PriceCenterPage() {
                     dataIndex: 'stopped_at',
                     width: 140,
                     render: (stopped: string | null, record: { effective_to?: string | null }) => {
-                      if (stopped) return <Tag color="grey">已停用</Tag>
-                      if (record.effective_to) return <Tag>到 {record.effective_to} 止</Tag>
-                      return <Tag color="green">生效中</Tag>
+                      if (stopped) return <StatusDot label="已停用" tone="grey" />
+                      // 「到某天止」不是状态、是一个日期，用正文色写清楚比挂个没颜色的标签好看
+                      if (record.effective_to) return <StatusDot label={`到 ${record.effective_to} 止`} tone="grey" />
+                      return <StatusDot label="生效中" tone="green" />
                     },
                   },
                   { title: '备注', dataIndex: 'remark', render: (v: string | null) => v ?? '-' },
@@ -944,9 +1487,9 @@ export default function PriceCenterPage() {
                       const alreadyStopped = Boolean(record.stopped_at)
                       const naturallyExpired = Boolean(record.effective_to)
                       if (alreadyStopped || naturallyExpired) {
-                        return <span style={{ color: 'var(--semi-color-text-2)' }}>—</span>
+                        return <span style={{ color: 'var(--semi-color-text-2)' }}>-</span>
                       }
-                      if (!canManage) return <span style={{ color: 'var(--semi-color-text-2)' }}>—</span>
+                      if (!canManage) return <span style={{ color: 'var(--semi-color-text-2)' }}>-</span>
                       return (
                         <Popconfirm
                           title="停用这条成本？"
@@ -971,6 +1514,17 @@ export default function PriceCenterPage() {
           {activeKey === 'rules' && (
             <>
               <div className="toolbar">
+                {/* 搜索：编码 / SKU 名称 / 规格 / 产品名 / 产品线 / 品牌都能搜到 */}
+                <Input
+                  placeholder="搜索 SKU 编码 / 名称 / 规格 / 产品名 / 产品线 / 品牌"
+                  value={ruleKeyword}
+                  onChange={(v) => {
+                    setRuleKeyword(v)
+                    setRulePage(1) // 换关键词必须回到第 1 页，否则会停在一个空页上
+                  }}
+                  style={{ width: 360 }}
+                  showClear
+                />
                 <div style={{ flex: 1 }} />
                 {canManage && (
                   <>
@@ -980,7 +1534,7 @@ export default function PriceCenterPage() {
                       importUrl="/api/v1/price-rules/import"
                       invalidateQueryKeys={['price-rules']}
                     />
-                    <Button theme="solid" onClick={() => setRuleVisible(true)}>
+                    <Button type="primary" theme="outline" onClick={() => openRuleModal()}>
                       新增价格规则
                     </Button>
                   </>
@@ -988,7 +1542,23 @@ export default function PriceCenterPage() {
               </div>
               <Table<PriceRuleRow>
                 columns={[
-                  { title: 'SKU', dataIndex: 'sku_code', width: 140 },
+                  {
+                    title: 'SKU',
+                    dataIndex: 'sku_code',
+                    width: 200,
+                    // 编码在上、名称在下（与报价/订单明细同一口径）。
+                    // 后端 `serialize_price_rule` 现在会带 `sku_name` 回来。
+                    render: (v: string | null, record: PriceRuleRow) => (
+                      <div>
+                        <div>{record.sku_name || v || '未命名产品'}</div>
+                        {v && record.sku_name && (
+                          <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                            {v}
+                          </div>
+                        )}
+                      </div>
+                    ),
+                  },
                   {
                     title: '客户等级',
                     dataIndex: 'customer_level',
@@ -1001,18 +1571,19 @@ export default function PriceCenterPage() {
                     render: (_: unknown, record: PriceRuleRow) =>
                       `${record.min_qty} ~ ${record.max_qty ?? '不限'}`,
                   },
-                  { title: '标准价', dataIndex: 'standard_price', width: 100, render: money },
-                  { title: '指导价', dataIndex: 'guide_price', width: 100, render: money },
+                  // 标准价/指导价/最低保护价都是**单价**：口径同订单明细，保真不截断
+                  { title: <PriceTerm term="标准价" />, dataIndex: 'standard_price', width: 100, render: (v: number) => formatUnitPrice(v, 'CNY') },
+                  { title: <PriceTerm term="指导价" />, dataIndex: 'guide_price', width: 100, render: (v: number) => formatUnitPrice(v, 'CNY') },
                   {
-                    title: '最低保护价',
+                    title: <PriceTerm term="最低保护价" />,
                     dataIndex: 'minimum_price',
                     width: 120,
                     render: (value: number | null) => (
-                      <span style={{ fontWeight: 600, color: 'var(--crm-error)' }}>{money(value)}</span>
+                      <span style={{ fontWeight: 600, color: 'var(--crm-error)' }}>{formatUnitPrice(value, 'CNY')}</span>
                     ),
                   },
                   {
-                    title: '目标利润率',
+                    title: <PriceTerm term="目标利润率" />,
                     dataIndex: 'target_margin',
                     width: 110,
                     render: (v: number | null) => (v === null ? '-' : `${(v * 100).toFixed(0)}%`),
@@ -1023,21 +1594,47 @@ export default function PriceCenterPage() {
                     width: 90,
                     render: (v: string) =>
                       v === 'active' ? (
-                        <Tag color="green">生效</Tag>
+                        <StatusDot label="生效" tone="green" />
                       ) : v === 'historical' ? (
-                        <Tag color="grey">历史</Tag>
+                        <StatusDot label="历史" tone="grey" />
                       ) : (
-                        <Tag>停用</Tag>
+                        <StatusDot label="停用" tone="grey" />
                       ),
                   },
                   {
                     title: '操作',
-                    width: 80,
+                    width: 120,
                     render: (_: unknown, record: PriceRuleRow) =>
-                      canManage && record.status === 'active' ? (
-                        <Popconfirm title="停用这条价格规则？" onConfirm={() => disablePriceRule(record.id).then(refreshAll)}>
-                          <a style={{ color: 'var(--crm-error)' }}>停用</a>
-                        </Popconfirm>
+                      canManage ? (
+                        <span style={{ display: 'inline-flex', gap: 10 }}>
+                          {/* 「编辑」只改"这条规则在什么条件下适用"（数量区间/有效期/
+                              客户等级/备注）；**价钱不在其中** —— 改价钱走
+                              「停用 + 新增」，这样生效时序在单据上看得见。
+                              后端也会拒绝改价并点名字段，不是只靠界面挡。 */}
+                          <a onClick={() => openRuleModal(record)}>编辑</a>
+                          {record.status === 'active' ? (
+                            <Popconfirm
+                              title="停用这条价格规则？"
+                              onConfirm={() => disablePriceRule(record.id).then(refreshAll)}
+                            >
+                              <a style={{ color: 'var(--crm-error)' }}>停用</a>
+                            </Popconfirm>
+                          ) : (
+                            // 恢复启用（审查建议）：停用是软操作（只把 status 改成
+                            // disabled，行还在），所以可以恢复。带二次确认 ——
+                            // 恢复会让这条规则**重新参与取价**，且若与现有启用规则
+                            // 撞区间会被后端拒绝（40901），提示里说清这一点。
+                            <Popconfirm
+                              title="恢复启用这条价格规则？"
+                              content="恢复后它会重新参与取价；若与现有启用规则的数量区间重叠，后端会拒绝并保持停用。"
+                              onConfirm={() =>
+                                restorePriceRule(record.id).then(refreshAll)
+                              }
+                            >
+                              <a>恢复启用</a>
+                            </Popconfirm>
+                          )}
+                        </span>
                       ) : (
                         '-'
                       ),
@@ -1046,9 +1643,26 @@ export default function PriceCenterPage() {
                 dataSource={rulesQuery.data?.items ?? []}
                 loading={rulesQuery.isLoading}
                 rowKey="id"
-                pagination={false}
-                empty="还没有价格规则"
-                scroll={{ x: 1100 }}
+                // 服务端分页：从前 `pagination={false}` + 写死 100 条，
+                // 规则超过 100 条就再也翻不到（不是"看着乱"而已，是看不到）
+                pagination={{
+                  currentPage: rulePage,
+                  pageSize: rulePageSize,
+                  total: rulesQuery.data?.total ?? 0,
+                  showSizeChanger: true,
+                  pageSizeOpts: [10, 20, 50, 100],
+                  onPageChange: setRulePage,
+                  onPageSizeChange: (size: number) => {
+                    setRulePageSize(size)
+                    setRulePage(1)
+                  },
+                }}
+                empty={
+                  ruleKeyword.trim()
+                    ? `没有匹配「${ruleKeyword.trim()}」的价格规则`
+                    : '还没有价格规则'
+                }
+                scroll={{ x: 'max(100%, 1100px)' }}
               />
             </>
           )}
@@ -1056,6 +1670,17 @@ export default function PriceCenterPage() {
           {activeKey === 'customer-prices' && (
             <>
               <div className="toolbar">
+                {/* 搜索：编码 / SKU 名称 / 规格 / 产品名 / 产品线 / 品牌 / 客户名 都能搜到 */}
+                <Input
+                  placeholder="搜索 SKU 编码 / 名称 / 规格 / 产品名 / 客户名"
+                  value={cpKeyword}
+                  onChange={(v) => {
+                    setCpKeyword(v)
+                    setCpPage(1)
+                  }}
+                  style={{ width: 360 }}
+                  showClear
+                />
                 <div style={{ flex: 1 }} />
                 {canManage && (
                   <>
@@ -1065,7 +1690,7 @@ export default function PriceCenterPage() {
                       importUrl="/api/v1/customer-price-rules/import"
                       invalidateQueryKeys={['customer-price-rules']}
                     />
-                    <Button theme="solid" onClick={() => setCustomerPriceVisible(true)}>
+                    <Button type="primary" theme="outline" onClick={() => openCustomerPriceModal()}>
                       新增客户特殊价
                     </Button>
                   </>
@@ -1074,31 +1699,67 @@ export default function PriceCenterPage() {
               <Table<CustomerPriceRow>
                 columns={[
                   { title: '客户', dataIndex: 'customer_name', width: 240, render: (v: string | null) => v ?? '-' },
-                  { title: 'SKU', dataIndex: 'sku_code', width: 140 },
+                  {
+                    title: 'SKU',
+                    dataIndex: 'sku_code',
+                    width: 200,
+                    render: (v: string | null, record: CustomerPriceRow) => (
+                      <div>
+                        <div>{record.sku_name || v || '未命名产品'}</div>
+                        {v && record.sku_name && (
+                          <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                            {v}
+                          </div>
+                        )}
+                      </div>
+                    ),
+                  },
                   {
                     title: '起订量',
                     dataIndex: 'min_qty',
                     width: 110,
                   },
                   {
-                    title: '约定价',
+                    title: (
+                      <span className="crm-help-label">
+                        约定价
+                        <HelpTip forLabel="约定价" text="给这家客户谈定的专属单价。客户查价时优先用它，高于等级价和通用指导价。" />
+                      </span>
+                    ),
                     dataIndex: 'agreed_price',
                     width: 110,
-                    render: (value: number) => <span style={{ fontWeight: 600 }}>{money(value)}</span>,
+                    render: (value: number) => <span style={{ fontWeight: 600 }}>{formatUnitPrice(value, 'CNY')}</span>,
                   },
-                  { title: '最低价', dataIndex: 'minimum_price', width: 110, render: money },
+                  {
+                    title: (
+                      <span className="crm-help-label">
+                        最低价
+                        <HelpTip forLabel="最低价" text="这家客户专属的底价。拟报价低于它时，不能直接按专属价报，需要走审批。" />
+                      </span>
+                    ),
+                    dataIndex: 'minimum_price',
+                    width: 110,
+                    render: (v: number) => formatUnitPrice(v, 'CNY'),
+                  },
                   { title: '备注', dataIndex: 'remark', render: (v: string | null) => v ?? '-' },
                   {
                     title: '操作',
-                    width: 80,
+                    width: 120,
                     render: (_: unknown, record: CustomerPriceRow) =>
                       canManage ? (
-                        <Popconfirm
-                          title="删除这条客户特殊价？"
-                          onConfirm={() => deleteCustomerPriceRule(record.id).then(refreshAll)}
-                        >
-                          <a style={{ color: 'var(--crm-error)' }}>删除</a>
-                        </Popconfirm>
+                        <span style={{ display: 'inline-flex', gap: 10 }}>
+                          {/* 客户特殊价**允许原地改约定价** —— 这正是它被设计出来的
+                              场景（客户谈定的价涨了两块）。后端 PATCH 一直就有，
+                              只是此前没有任何页面调过它，想改只能删了重录。
+                              归属（客户/SKU）不给改：那等于换一条规则。 */}
+                          <a onClick={() => openCustomerPriceModal(record)}>编辑</a>
+                          <Popconfirm
+                            title="删除这条客户特殊价？"
+                            onConfirm={() => deleteCustomerPriceRule(record.id).then(refreshAll)}
+                          >
+                            <a style={{ color: 'var(--crm-error)' }}>删除</a>
+                          </Popconfirm>
+                        </span>
                       ) : (
                         '-'
                       ),
@@ -1107,8 +1768,23 @@ export default function PriceCenterPage() {
                 dataSource={customerPricesQuery.data?.items ?? []}
                 loading={customerPricesQuery.isLoading}
                 rowKey="id"
-                pagination={false}
-                empty="还没有客户特殊价"
+                pagination={{
+                  currentPage: cpPage,
+                  pageSize: cpPageSize,
+                  total: customerPricesQuery.data?.total ?? 0,
+                  showSizeChanger: true,
+                  pageSizeOpts: [10, 20, 50, 100],
+                  onPageChange: setCpPage,
+                  onPageSizeChange: (size: number) => {
+                    setCpPageSize(size)
+                    setCpPage(1)
+                  },
+                }}
+                empty={
+                  cpKeyword.trim()
+                    ? `没有匹配「${cpKeyword.trim()}」的客户特殊价`
+                    : '还没有客户特殊价'
+                }
               />
             </>
           )}
@@ -1119,13 +1795,23 @@ export default function PriceCenterPage() {
                 { title: '角色', dataIndex: 'role_name', width: 160 },
                 { title: '角色码', dataIndex: 'role_code', width: 160, render: (v: string | null) => v ?? '-' },
                 {
-                  title: '最低利润率',
+                  title: (
+                    <span className="crm-help-label">
+                      最低利润率
+                      <HelpTip forLabel="最低利润率" text="这个角色能批准的最低利润率。低于它的报价，需要更高层级审批。" />
+                    </span>
+                  ),
                   dataIndex: 'minimum_margin',
                   width: 140,
                   render: (value: number) => `${(value * 100).toFixed(0)}%`,
                 },
                 {
-                  title: '最大折扣',
+                  title: (
+                    <span className="crm-help-label">
+                      最大折扣
+                      <HelpTip forLabel="最大折扣" text="相对标准价允许的最大让价比例。超过这个比例，报价会转审批。" />
+                    </span>
+                  ),
                   dataIndex: 'discount_limit',
                   width: 120,
                   render: (v: number | null) => (v === null ? '-' : `${(v * 100).toFixed(0)}%`),
@@ -1174,7 +1860,7 @@ export default function PriceCenterPage() {
                 </div>
                 <div style={{ flex: 1 }} />
                 {canManage && (
-                  <Button theme="solid" onClick={() => openRateModal()}>
+                  <Button type="primary" theme="outline" onClick={() => openRateModal()}>
                     新增运费费率
                   </Button>
                 )}
@@ -1201,20 +1887,21 @@ export default function PriceCenterPage() {
                     title: '公斤单价',
                     dataIndex: 'unit_price_per_kg',
                     width: 100,
-                    render: (value: number) => `¥${value}`,
+                    // 费率同样是单价：保真（0.9 → ¥0.90，4.125 → ¥4.1250 不再被截成 4.13）
+                    render: (value: number) => formatUnitPrice(value, 'CNY'),
                   },
                   {
                     title: '体积单价',
                     dataIndex: 'unit_price_per_volume',
                     width: 100,
                     render: (value: number | null) =>
-                      value == null ? <span style={HINT}>—</span> : `¥${value}/m³`,
+                      value == null ? <span style={HINT}>-</span> : `${formatUnitPrice(value, 'CNY')}/m³`,
                   },
                   {
                     title: '最低收费',
                     dataIndex: 'min_charge',
                     width: 100,
-                    render: (value: number) => `¥${value}`,
+                    render: (value: number) => `¥${toTwoDecimals(value)}`,
                   },
                   {
                     title: '时效（天）',
@@ -1291,10 +1978,10 @@ export default function PriceCenterPage() {
               <Table<PricingHistoryRow>
                 columns={[
                   {
-                    title: '时间',
+                    title: '变更时间',
                     dataIndex: 'created_at',
                     width: 170,
-                    render: (v: string) => new Date(v).toLocaleString('zh-CN'),
+                    render: (v: string) => formatBeijingTime(v),
                   },
                   {
                     title: '类型',
@@ -1325,21 +2012,29 @@ export default function PriceCenterPage() {
                         <span style={{ color: 'var(--crm-text-3)' }}>
                           {(HISTORY_TYPE_LABEL[record.business_type ?? ''] ??
                             record.business_type) ?? '-'}
-                          {record.business_id != null ? ` #${record.business_id}` : ''}
+                          {record.business_id != null ? ` 编号 ${record.business_id}` : ''}
                         </span>
                       ),
                   },
                   {
                     title: '动作',
                     dataIndex: 'action',
-                    width: 90,
-                    render: (v: string) =>
-                      ({ create: '新增', update: '修改', delete: '删除' })[v] ?? v,
+                    width: 120,
+                    // 用与「变更内容」同一份映射（以前这里只认三个动作，
+                    // 其余的原样印代码词 —— 主人截图上那串 `price_refresh` 就是它）
+                    render: (v: string) => actionLabel(v),
                   },
                   {
                     title: '变更内容',
                     dataIndex: 'after',
-                    render: (_: unknown, record: PricingHistoryRow) => historySummary(record),
+                    // 原来这列继承表格的省略号，长一点的变更只剩「新增：报价单号…」，
+                    // 关键的「状态 / 报价总额」全被吃掉（2026-11-17 视觉审视）。
+                    // 允许折行，最多两行由行高自然撑开。
+                    render: (_: unknown, record: PricingHistoryRow) => (
+                      <span style={{ display: 'inline-block', whiteSpace: 'normal', textAlign: 'left', maxWidth: 360 }}>
+                        {historySummary(record)}
+                      </span>
+                    ),
                   },
                   {
                     title: '操作人',
@@ -1353,9 +2048,12 @@ export default function PriceCenterPage() {
                 rowKey="id"
                 pagination={{
                   currentPage: historyPage,
-                  pageSize: 20,
+                  pageSize: historyPageSize,
                   total: historyQuery.data?.total ?? 0,
                   onPageChange: setHistoryPage,
+                  showSizeChanger: true,
+                  pageSizeOpts: [10, 20, 50, 100],
+                  onPageSizeChange: (size: number) => { setHistoryPageSize(size); setHistoryPage(1) },
                 }}
                 empty="还没有变更记录"
               />
@@ -1365,6 +2063,7 @@ export default function PriceCenterPage() {
       </SectionCard>
 
       <Modal
+        width={520}
         title="新增成本"
         visible={costVisible}
         onCancel={() => setCostVisible(false)}
@@ -1386,7 +2085,7 @@ export default function PriceCenterPage() {
               <Input
                 value={costForm[field]}
                 onChange={(value) => setCostForm({ ...costForm, [field]: value })}
-                placeholder="留空按 0 处理"
+                placeholder="留空表示未提供；确实没有此项请填 0"
               />
             </div>
           ))}
@@ -1408,20 +2107,39 @@ export default function PriceCenterPage() {
       </Modal>
 
       <Modal
-        title="新增价格规则"
+        title={ruleEditing ? `编辑价格规则编号 ${ruleEditing.id}` : '新增价格规则'}
         visible={ruleVisible}
-        width={620}
-        onCancel={() => setRuleVisible(false)}
+        width={680}
+        onCancel={closeRuleModal}
         onOk={() => {
-          if (!ruleForm.sku_id) {
+          if (!ruleEditing && !ruleForm.sku_id) {
             Toast.warning('请选择 SKU')
             return
           }
           ruleMutation.mutate()
         }}
         confirmLoading={ruleMutation.isPending}
-        okText="创建"
+        okText={ruleEditing ? '保存' : '创建'}
       >
+        {ruleEditing && (
+          <div
+            style={{
+              marginBottom: 12,
+              padding: '8px 10px',
+              fontSize: 12,
+              lineHeight: 1.7,
+              color: 'var(--crm-text-3)',
+              background: 'var(--crm-surface-high, #f6f7f9)',
+              borderRadius: 6,
+            }}
+          >
+            这里只改<strong>「这条规则在什么条件下适用」</strong>：数量区间、有效期、客户等级、备注。
+            <br />
+            <strong>价钱不能原地改</strong>（标准价 / 指导价 / 最低保护价 / 目标利润率）——
+            改价钱请「停用这条规则 + 新增一条」，这样"哪条从哪天起生效"在单据上看得见。
+            {ruleEditing.status === 'active' && '本条正在生效，保存后立即影响后续取价（草稿报价会提示价格已更新）。'}
+          </div>
+        )}
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
             <FormLabel required>SKU</FormLabel>
@@ -1431,6 +2149,7 @@ export default function PriceCenterPage() {
               optionList={skuOptions}
               filter={optionMatcher}
               style={{ width: '100%' }}
+              disabled={Boolean(ruleEditing)}
             />
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
@@ -1439,7 +2158,7 @@ export default function PriceCenterPage() {
               <Select
                 value={ruleForm.customer_level || undefined}
                 onChange={(value) => setRuleForm({ ...ruleForm, customer_level: (value as string) ?? '' })}
-                optionList={['A', 'B', 'C', 'D'].map((value) => ({ value, label: `${value} 级` }))}
+                optionList={(customerLevelsQuery.data ?? []).map((item) => ({ value: item.code, label: item.label }))}
                 showClear
                 style={{ width: '100%' }}
               />
@@ -1451,36 +2170,48 @@ export default function PriceCenterPage() {
                 onChange={(value) => setRuleForm({ ...ruleForm, min_qty: value })}
               />
             </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ marginBottom: 4 }}>数量上限（留空 = 不限）</div>
+              <Input
+                value={ruleForm.max_qty}
+                onChange={(value) => setRuleForm({ ...ruleForm, max_qty: value })}
+                placeholder="例如 999"
+              />
+            </div>
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>标准价</div>
+              <div style={{ marginBottom: 4 }}><PriceTerm term="标准价" /></div>
               <Input
                 value={ruleForm.standard_price}
                 onChange={(value) => setRuleForm({ ...ruleForm, standard_price: value })}
+                disabled={Boolean(ruleEditing)}
               />
             </div>
             <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>指导价</div>
+              <div style={{ marginBottom: 4 }}><PriceTerm term="指导价" /></div>
               <Input
                 value={ruleForm.guide_price}
                 onChange={(value) => setRuleForm({ ...ruleForm, guide_price: value })}
+                disabled={Boolean(ruleEditing)}
               />
             </div>
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>最低保护价</div>
+              <div style={{ marginBottom: 4 }}><PriceTerm term="最低保护价" /></div>
               <Input
                 value={ruleForm.minimum_price}
                 onChange={(value) => setRuleForm({ ...ruleForm, minimum_price: value })}
+                disabled={Boolean(ruleEditing)}
               />
             </div>
             <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>目标利润率（如 0.30）</div>
+              <div style={{ marginBottom: 4 }}><PriceTerm term="目标利润率" /></div>
               <Input
                 value={ruleForm.target_margin}
                 onChange={(value) => setRuleForm({ ...ruleForm, target_margin: value })}
+                disabled={Boolean(ruleEditing)}
               />
             </div>
           </div>
@@ -1514,32 +2245,78 @@ export default function PriceCenterPage() {
               />
             </div>
           </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>备注</div>
+            <Input
+              value={ruleForm.remark}
+              onChange={(value) => setRuleForm({ ...ruleForm, remark: value })}
+              placeholder="例如：2026 年度协议价"
+            />
+          </div>
         </div>
       </Modal>
 
       <Modal
-        title="新增客户特殊价"
+        width={520}
+        title={customerPriceEditing ? '编辑客户特殊价' : '新增客户特殊价'}
         visible={customerPriceVisible}
-        onCancel={() => setCustomerPriceVisible(false)}
+        onCancel={closeCustomerPriceModal}
         onOk={() => {
-          if (!customerPriceForm.customer_id || !customerPriceForm.sku_id || !customerPriceForm.agreed_price) {
-            Toast.warning('客户、SKU、约定价都要填')
+          // `!value` 挡不住**纯空白**：`" "` 在 JS 里是 truthy，会一路走到提交，
+          // 被 `parseOptionalNumber` 转成 `null`，于是后端把"显式传 null"当成
+          // "这个字段不改"、返回 200「已保存」，而价格一个字没动 ——
+          // 用户看到的是"保存成功但价格没变"（审查 2026-10-09 实测）。
+          // 所以这里先 trim 再判空，并且要求**正数**（约定价是"这个客户按多少钱买"，
+          // 0 元不成立，后端也已按 gt=0 收紧）。
+          const agreedRaw = String(customerPriceForm.agreed_price ?? '').trim()
+          const agreedNum = Number(agreedRaw)
+          const agreedOk = agreedRaw !== '' && Number.isFinite(agreedNum) && agreedNum > 0
+          if (customerPriceEditing) {
+            // 改的时候只要求约定价还在（客户/SKU 不给改，不必再校验）
+            if (!agreedOk) {
+              Toast.warning('约定价必填，且必须是大于 0 的正数（最多 4 位小数）')
+              return
+            }
+          } else if (!customerPriceForm.customer_id || !customerPriceForm.sku_id || !agreedOk) {
+            Toast.warning('客户、SKU、约定价都要填（约定价必须是正数）')
             return
           }
           customerPriceMutation.mutate()
         }}
         confirmLoading={customerPriceMutation.isPending}
-        okText="创建"
+        okText={customerPriceEditing ? '保存' : '创建'}
       >
+        {customerPriceEditing && (
+          <div
+            style={{
+              marginBottom: 12,
+              padding: '8px 10px',
+              fontSize: 12,
+              lineHeight: 1.7,
+              color: 'var(--crm-text-3)',
+              background: 'var(--crm-surface-high, #f6f7f9)',
+              borderRadius: 6,
+            }}
+          >
+            就地修改这条专属价（约定价、最低价、起订量、有效期、备注）。
+            <br />
+            <strong>客户与 SKU 不给改</strong>：改归属等于换一条规则，请删掉重录。
+          </div>
+        )}
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
             <FormLabel required>客户</FormLabel>
             <Select
               value={customerPriceForm.customer_id ?? undefined}
               onChange={(value) => setCustomerPriceForm({ ...customerPriceForm, customer_id: value as number })}
-              optionList={(customersQuery.data?.items ?? []).map((item) => ({ value: item.id, label: withCode(item.name, item.id) }))}
+              optionList={optionsWithCodeOnDuplicate(
+                customersQuery.data?.items ?? [],
+                (item) => item.name,
+                (item) => item.id,
+              )}
               filter={optionMatcher}
               style={{ width: '100%' }}
+              disabled={Boolean(customerPriceEditing)}
             />
           </div>
           <div>
@@ -1550,14 +2327,26 @@ export default function PriceCenterPage() {
               optionList={skuOptions}
               filter={optionMatcher}
               style={{ width: '100%' }}
+              disabled={Boolean(customerPriceEditing)}
             />
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>起订量</div>
+              <FormLabel>起订量</FormLabel>
               <Input
                 value={customerPriceForm.min_qty}
                 onChange={(value) => setCustomerPriceForm({ ...customerPriceForm, min_qty: value })}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              {/* 四个格子并排、每个只有一百来像素宽：「留空 = 不限」这类说明一旦写进
+                  标签就会折行，折行后这一格的输入框被顶下去，整行参差不齐。
+                  所以标签只留字段名，说明挪进占位提示（placeholder）。 */}
+              <FormLabel>数量上限</FormLabel>
+              <Input
+                value={customerPriceForm.max_qty}
+                onChange={(value) => setCustomerPriceForm({ ...customerPriceForm, max_qty: value })}
+                placeholder="留空 = 不限（如 999）"
               />
             </div>
             <div style={{ flex: 1 }}>
@@ -1568,7 +2357,7 @@ export default function PriceCenterPage() {
               />
             </div>
             <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>最低价</div>
+              <FormLabel>最低价</FormLabel>
               <Input
                 value={customerPriceForm.minimum_price}
                 onChange={(value) => setCustomerPriceForm({ ...customerPriceForm, minimum_price: value })}
@@ -1577,13 +2366,13 @@ export default function PriceCenterPage() {
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>生效起始日（留空 = 立即生效）</div>
+              <FormLabel>生效起始日</FormLabel>
               <DatePicker
                 type="date"
                 format="yyyy-MM-dd"
                 showClear
                 style={{ width: '100%' }}
-                placeholder="选择起始日"
+                placeholder="留空 = 立即生效"
                 value={
                   customerPriceForm.effective_from ? new Date(customerPriceForm.effective_from) : undefined
                 }
@@ -1596,13 +2385,13 @@ export default function PriceCenterPage() {
               />
             </div>
             <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>生效截止日（留空 = 长期有效）</div>
+              <FormLabel>生效截止日</FormLabel>
               <DatePicker
                 type="date"
                 format="yyyy-MM-dd"
                 showClear
                 style={{ width: '100%' }}
-                placeholder="选择截止日"
+                placeholder="留空 = 长期有效"
                 value={
                   customerPriceForm.effective_to ? new Date(customerPriceForm.effective_to) : undefined
                 }
@@ -1615,10 +2404,19 @@ export default function PriceCenterPage() {
               />
             </div>
           </div>
+          <div>
+            <FormLabel>备注</FormLabel>
+            <Input
+              value={customerPriceForm.remark}
+              onChange={(value) => setCustomerPriceForm({ ...customerPriceForm, remark: value })}
+              placeholder="例如：2026 年度协议价"
+            />
+          </div>
         </div>
       </Modal>
 
       <Modal
+        width={520}
         title={`调整价格权限：${permissionTarget?.role_name ?? ''}`}
         visible={Boolean(permissionTarget)}
         onCancel={() => setPermissionTarget(null)}
@@ -1645,6 +2443,7 @@ export default function PriceCenterPage() {
       </Modal>
 
       <Modal
+        width={520}
         title={rateEditing ? `修改运费费率：${rateEditing.provider}` : '新增运费费率'}
         visible={rateVisible}
         onCancel={closeRateModal}

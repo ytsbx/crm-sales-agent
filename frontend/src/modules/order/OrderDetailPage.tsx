@@ -1,8 +1,20 @@
-import { useRef, useState, type CSSProperties } from 'react'
+import { formatBeijingTime } from '../../shared/beijing-time'
+import { useTabLabel } from '../../shared/hooks/useTabLabel'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, DatePicker, Input, InputNumber, Modal, Popconfirm, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
+import {
+  ConfirmRequiredModal,
+  isConfirmRequired,
+  confirmMessageOf,
+} from '../../shared/components/ConfirmRequiredModal'
+import type { ReactNode } from 'react'
+import { Banner, Button, DatePicker, Dropdown, Input, InputNumber, Modal, Popconfirm, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
+import AllocationAdjustModal from './AllocationAdjustModal'
 import FormLabel from '../../shared/components/FormLabel'
+import { emptyText } from '../../shared/hooks/emptyText'
+import GuardedButton from '../../shared/components/GuardedButton'
+import { blockedReasons } from '../../shared/components/blocked-hint-reasons'
 import type { TagTone } from '../../shared/types'
 
 import {
@@ -10,9 +22,11 @@ import {
   cancelOrderShipment,
   changeOrderStatus,
   confirmPayment,
+  deleteReceivable,
   createOrderShipment,
   createPayment,
   generateReceivables,
+  updateReceivable,
   getOrder,
   listOrderItems,
   listOrderMilestones,
@@ -30,6 +44,7 @@ import {
   repurchase,
   shipOrderShipment,
   syncErp,
+  getErpReadiness,
   updateOrderMilestone,
   type OrderItem,
   type OrderMilestoneRow,
@@ -39,23 +54,47 @@ import {
   type ShipmentBatchRow,
   type ShipmentOverview,
 } from '../../shared/api/order'
-import { listUsers } from '../../shared/api/system'
+import UserSearchSelect from '../../shared/components/UserSearchSelect'
 import { usePermissions } from '../../shared/hooks/permissions'
 import DetailHeader from '../../shared/components/DetailHeader'
-import KpiStrip from '../../shared/components/KpiStrip'
+import KpiStrip, { type KpiItem } from '../../shared/components/KpiStrip'
 import SectionCard from '../../shared/components/SectionCard'
+import { IconFile, IconAIEditLevel1 } from '@douyinfe/semi-icons'
 import ContractDocsPanel from '../../shared/components/ContractDocsPanel'
 import AgentInsight from '../../shared/components/AgentInsight'
 import BizDocPanel from '../../shared/components/BizDocPanel'
 import { agentRiskAnalysis, type AnalysisEnvelope } from '../../shared/api/agent'
 import { otherOption } from '../../shared/components/otherOption'
-import { formatMoney } from '../../shared/components/money'
+import { formatMoney, formatUnitPrice, toTwoDecimals } from '../../shared/components/money'
 
 /** 收款方式。值是中文本身（后端 `payment_method` 是自由文本），
  *  选中「其他」后写的内容可以直接存回该字段。 */
 const PAYMENT_METHODS = ['银行转账', '承兑汇票', '现金', '支票', '其他']
 import PaymentVoucherControl from '../common/PaymentVoucherControl'
 import { newRequestKey } from '../../shared/api/requestKey'
+import { calendarDay, calendarDayOrToday } from '../../shared/calendar-day'
+import { requiredQuantityText } from '../../shared/number-input'
+import ReceivablePlanPicker, { defaultPlanRows, planBlockedReasons } from '../../shared/components/ReceivablePlanPicker'
+import EmptyState from '../../shared/components/EmptyState'
+import PageLoading from '../../shared/components/PageLoading'
+
+/** 数量按十进制原文显示，沿用原来不显示尾零的格式。 */
+function shipmentQuantity(value: number | string): string {
+  return String(value).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1')
+}
+
+function shipmentQuantityUnits(value: string): bigint {
+  const [whole, fraction = ''] = value.replace(/^\+/, '').split('.')
+  return BigInt(whole || '0') * 1000n + BigInt(fraction.padEnd(3, '0').slice(0, 3))
+}
+
+function shipmentDifference(planned: string, actual: string): string {
+  const delta = shipmentQuantityUnits(planned) - shipmentQuantityUnits(actual)
+  if (delta === 0n) return '与计划一致'
+  const units = delta > 0n ? delta : -delta
+  const amount = shipmentQuantity(`${units / 1000n}.${String(units % 1000n).padStart(3, '0')}`)
+  return delta > 0n ? `少发 ${amount}，可重新排批` : `比计划多发 ${amount}`
+}
 
 /**
  * 整单交期结论（§9.8 复审）。
@@ -82,9 +121,9 @@ function ShipmentVerdict({ summary }: { summary?: ShipmentOverview['summary'] })
   if (!summary.all_shipped) {
     return (
       <div style={box}>
-        <Tag color="orange">未完成</Tag>
+        <Tag color="orange" style={{ flex: 'none' }}>未完成</Tag>
         <span>
-          整单还没发完，还剩 <strong>{summary.remaining}</strong> 件未发
+          整单还没发完，还剩 <strong>{shipmentQuantity(summary.remaining_exact ?? summary.remaining)}</strong> 件未发
           {summary.remaining > 0 && summary.pending_batch_count === 0
             ? '（当前也没有待发批次，请先「排发货批次」）'
             : ''}
@@ -97,7 +136,7 @@ function ShipmentVerdict({ summary }: { summary?: ShipmentOverview['summary'] })
   const days = summary.last_batch_vs_delivery_days
   return (
     <div style={box}>
-      <Tag color="green">已发完</Tag>
+      <Tag color="green" style={{ flex: 'none' }}>已发完</Tag>
       <span>
         {days === null ? (
           '这单没有可比的交期或发货日，算不出偏差。'
@@ -165,14 +204,30 @@ export default function OrderDetailPage() {
   const canPayment = can('payment:manage')
 
   const [activeKey, setActiveKey] = useState('items')
+  const orderTabsRef = useRef<HTMLDivElement>(null)
+  // 订单详情的几个 tab 都是宽表（回款记录 10 列、跟单节点 8 列）：1024 卡内只有 699，
+  // 不做窄屏分档就会顶出横向滚动条、最后一两列整列被切（2026-11-19 实拍）。
+  const [viewportWidth, setViewportWidth] = useState(() => (typeof window === 'undefined' ? 1440 : window.innerWidth))
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const onResize = () => setViewportWidth(window.innerWidth)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+  const narrowScreen = viewportWidth < 1200
   const [statusVisible, setStatusVisible] = useState(false)
   const [targetStatus, setTargetStatus] = useState<string | null>(null)
+  const [orderMoreVisible, setOrderMoreVisible] = useState(false)
   //: 取消订单是**不可逆的终态动作**，单独一个确认弹窗把影响讲清楚
   //: （见下面「取消订单」那个 Modal）。
   const [cancelVisible, setCancelVisible] = useState(false)
   const [generateVisible, setGenerateVisible] = useState(false)
-  const [generateDates, setGenerateDates] = useState<{ first?: Date; second?: Date }>({})
+  const [generateRows, setGenerateRows] = useState(defaultPlanRows)
+  const [dueEdit, setDueEdit] = useState<{ plan: Receivable; date: Date | null } | null>(null)
+  const newDueDay = calendarDay(dueEdit?.date)
   const [paymentTarget, setPaymentTarget] = useState<Receivable | null>(null)
+  //: 「调整回款分配」弹窗要调的那笔回款（第十批）。null = 关着。
+  const [allocationPayment, setAllocationPayment] = useState<Payment | null>(null)
   const [paymentForm, setPaymentForm] = useState({ amount: '', date: new Date(), method: '银行转账' })
 
   // 收款方式的「其他」：选中后多一个输入框写具体方式（不填就保持「其他」）。
@@ -224,6 +279,8 @@ export default function OrderDetailPage() {
     queryFn: () => getOrder(orderId),
     enabled: Number.isFinite(orderId),
   })
+  // 页签标题用订单号，避免多个「订单详情」分不清
+  useTabLabel(orderQuery.data?.order_no)
   const itemsQuery = useQuery({
     queryKey: ['order-items', orderId],
     queryFn: () => listOrderItems(orderId),
@@ -248,7 +305,8 @@ export default function OrderDetailPage() {
   const paymentsQuery = useQuery({
     queryKey: ['order-payments', orderId],
     queryFn: () => listOrderPayments(orderId),
-    enabled: Number.isFinite(orderId) && activeKey === 'payments',
+    // 底部「订单全景」要报收款笔数，所以不再只等页签激活
+    enabled: Number.isFinite(orderId),
   })
   const summaryQuery = useQuery({
     queryKey: ['order-finance', orderId],
@@ -259,7 +317,8 @@ export default function OrderDetailPage() {
   const shipmentsQuery = useQuery({
     queryKey: ['order-shipments', orderId],
     queryFn: () => listOrderShipments(orderId),
-    enabled: Number.isFinite(orderId) && activeKey === 'shipments',
+    // 同上：全景要报发货批次数
+    enabled: Number.isFinite(orderId),
   })
 
   const milestonesRefresh = () => {
@@ -272,13 +331,8 @@ export default function OrderDetailPage() {
     queryFn: () => listScheduleChanges(orderId),
     enabled: Number.isFinite(orderId) && activeKey === 'milestones',
   })
-  // 节点责任人从用户里选（方案 :103）：手填人名对不上人，逾期了也不知道催谁
-  const milestoneUsersQuery = useQuery({
-    queryKey: ['assignable-users'],
-    queryFn: () => listUsers({ page: 1, page_size: 100 }),
-    // 表格里也要把责任人显示成人名（不只是弹窗里），所以跟着页签加载
-    enabled: Number.isFinite(orderId) && activeKey === 'milestones',
-  })
+  // 节点责任人按需搜索（姓名 / 登录账号），不再只取前 100 个用户：
+  // 人员多时，第 101 位以后的人既不进下拉、也反查不到姓名。
   const schedulePreviewMutation = useMutation({
     mutationFn: () => previewScheduleChange(orderId, scheduleForm),
     onSuccess: (data) => setSchedulePreview(data),
@@ -367,12 +421,16 @@ export default function OrderDetailPage() {
     onSuccess: (result) => {
       // 文案要说清**是什么对象**变了，不能只写"已更新为「已发货」"——
       // 提示是全局浮层，用户切到别的页面它还会挂几秒，没有主语就完全对不上号。
-      Toast.success(`${result.order_no} 的履约状态已更新为「${result.status_label}」`)
+      Toast.success(`${result.order_no} 的履约状态已更新为「${result.status === 'completed' ? '交付已完成' : result.status_label}」`)
       setStatusVisible(false)
       refresh()
     },
-    onError: (error: Error) => Toast.error(error.message),
   })
+  const openStatusEditor = (status: string | null = null) => {
+    statusMutation.reset()
+    setTargetStatus(status)
+    setStatusVisible(true)
+  }
 
   /**
    * **取消订单**（不可逆的终态动作）。
@@ -386,30 +444,55 @@ export default function OrderDetailPage() {
   const cancelMutation = useMutation({
     mutationFn: () => cancelOrder(orderId),
     onSuccess: (result) => {
-      Toast.success(
-        `${result.order_no} 已取消；未回清的应收计划已一并作废，不再发催收提醒`,
-      )
+      Toast.success(`${result.order_no} 已取消`)
       setCancelVisible(false)
       refresh()
+      shipmentsRefresh()
+      void queryClient.invalidateQueries({ queryKey: ['order-schedule-changes', orderId] })
     },
-    onError: (error: Error) => Toast.error(error.message),
+    onError: () => {
+      void queryClient.invalidateQueries({ queryKey: ['order-payments', orderId] })
+    },
   })
 
   const generateMutation = useMutation({
-    mutationFn: () =>
-      generateReceivables(orderId, {
-        ratios: [0.3, 0.7],
-        first_due_date: (generateDates.first ?? new Date()).toISOString().slice(0, 10),
-        second_due_date: (generateDates.second ?? new Date()).toISOString().slice(0, 10),
-        first_name: '定金',
-        second_name: '尾款',
-      }),
-    onSuccess: () => {
-      Toast.success('已生成 30% 定金 + 70% 尾款')
+    mutationFn: async () => {
+      const dueOf = (row: { due: Date | null }) => calendarDayOrToday(row.due)
+      // **整份计划一次提交**（第九批问题 ⑥）。
+      //
+      // 从前是"先 POST 生成（后端只有前两期的名称/日期槽位）→ 再逐条 PATCH
+      // 补第 3 期起"。中途任何一条被拒，就会留下**占位名 + 第一期日期**的
+      // 半成品，而重试又撞"该订单已有应收计划，请先删除再重新生成" ——
+      // 用户卡在中间没有出路。
+      //
+      // 现在 `POST /receivables/generate` 支持按期的 `names` / `due_dates`
+      // （长度与 ratios 对齐），由后端在**同一个事务**里校验并落库：
+      // 要么整份成功，要么整份回滚，不会留下半成品。
+      const created = await generateReceivables(orderId, {
+        ratios: generateRows.map((row) => (row.percent ?? 0) / 100),
+        first_due_date: dueOf(generateRows[0]),
+        names: generateRows.map((row, index) => row.name.trim() || `第 ${index + 1} 期`),
+        due_dates: generateRows.map((row) => dueOf(row)),
+        request_key: newRequestKey(),
+      })
+      return { count: created.length }
+    },
+    onSuccess: ({ count }) => {
+      Toast.success(`已生成 ${count} 期应收计划。客户实际打款后，在对应期登记回款。`)
       setGenerateVisible(false)
       refresh()
     },
-    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  const dueMutation = useMutation({
+    mutationFn: ({ planId, day }: { planId: number; day: string }) =>
+      updateReceivable(planId, { due_date: day }),
+    onSuccess: () => {
+      setDueEdit(null)
+      Toast.success('应收到期日已更新')
+      refresh()
+      milestonesRefresh()
+    },
   })
 
   const paymentMutation = useMutation({
@@ -419,15 +502,24 @@ export default function OrderDetailPage() {
       if (!paymentKeyRef.current) paymentKeyRef.current = newRequestKey()
       return createPayment({
         receivable_plan_id: paymentTarget!.id,
-        received_date: paymentForm.date.toISOString().slice(0, 10),
-        received_amount: Number(paymentForm.amount),
+        // ⚠️ 必须用共享件，不能 `toISOString().slice(0,10)`（2026-10-14 审查修）。
+        // 那个写法转的是 **UTC**，而日历上点的是**当地那一天**：北京（UTC+8）
+        // 选 10 月 1 日、这个 Date 又是当地时间零点（Semi 的 DatePicker 内部
+        // `startOfDay` 就是这么归一的）→ 截出来是 **09-30，整整早一天**。
+        // `shared/calendar-day.ts` 的注释就是为这件事写的，且**本文件第 68 行
+        // 早就 import 了 `calendarDay`** —— 只有这一处漏用（同文件其它日期都走了它）。
+        // 后果不小：收款日期、回款归月/对账、账期与逾期判定全错一天，
+        // 而界面只显示"回款已登记"，看不出来。
+        received_date: calendarDay(paymentForm.date),
+        received_amount: paymentForm.amount.trim(),
         payment_method: paymentForm.method,
         request_key: paymentKeyRef.current,
       })
     },
-    onSuccess: () => {
-      Toast.success('回款已登记，等待财务确认')
+    onSuccess: (payment) => {
+      Toast.success(payment.status === 'pending' ? '回款已登记，待财务确认。可在「回款记录」跟进。' : '可在「回款记录」查看这笔款项的最新状态。')
       setPaymentTarget(null)
+      setActiveKey('payments')
       setPaymentForm({ amount: '', date: new Date(), method: '银行转账' })
       // 成功才换键：下一次登记是新的一笔，不能复用上一笔的键
       // （否则会被后端判成"同键不同内容"直接拒绝）。
@@ -440,7 +532,18 @@ export default function OrderDetailPage() {
   const confirmMutation = useMutation({
     mutationFn: (id: number) => confirmPayment(id, '财务核对通过'),
     onSuccess: () => {
-      Toast.success('回款已确认')
+      Toast.success('回款已确认，已收金额和各期分配已更新。')
+      refresh()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  // 删应收节点（2026-10-13）：解开"自动生成的全款删不掉 → 生成按钮不出现 → 分期进不去"。
+  // 后端带锁、并拦"已有回款记录"的节点；前端把这类节点的入口先藏起来（点了必然失败的东西不该给）。
+  const deleteReceivableMutation = useMutation({
+    mutationFn: (id: number) => deleteReceivable(id),
+    onSuccess: () => {
+      Toast.success('应收节点已删除；跟单节点会按剩余应收自动同步')
       refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -448,51 +551,98 @@ export default function OrderDetailPage() {
 
   // ---- 发货批次（§3.5/场景13）----
   const [createShipmentVisible, setCreateShipmentVisible] = useState(false)
+  const shipmentKeyRef = useRef('')
+  const [shipmentPlanDate, setShipmentPlanDate] = useState<string | null>(null)
   const [plannedQtys, setPlannedQtys] = useState<Record<number, string>>({})
+  const plannedShipmentRows = (shipmentsQuery.data?.items ?? []).flatMap((item) => {
+    const raw = plannedQtys[item.order_item_id]?.trim()
+    if (!raw) return []
+    try {
+      return [{ order_item_id: item.order_item_id, planned_qty: requiredQuantityText(raw), error: '' }]
+    } catch (error) {
+      return [{ order_item_id: item.order_item_id, planned_qty: raw, error: (error as Error).message }]
+    }
+  })
+  const invalidPlannedRow = plannedShipmentRows.find((row) => row.error)
   const [shipTarget, setShipTarget] = useState<ShipmentBatchRow | null>(null)
-  const [shipForm, setShipForm] = useState<{ date: Date | undefined; company: string; tracking: string }>({
-    date: new Date(),
+  const [shipForm, setShipForm] = useState<{ date: string | null; company: string; tracking: string; quantities: Record<number, string> }>({
+    date: null,
     company: '',
     tracking: '',
+    quantities: {},
   })
+  const actualShipmentRows = (shipTarget?.items ?? []).map((item) => {
+    const planned = shipmentQuantity(item.planned_qty_exact ?? item.planned_qty)
+    const raw = shipForm.quantities[item.order_item_id] ?? ''
+    try {
+      const quantity = requiredQuantityText(raw, '实发数量', true)
+      return { item, planned, raw, quantity, difference: shipmentDifference(planned, quantity), error: '' }
+    } catch (error) {
+      return { item, planned, raw, quantity: '', difference: '', error: (error as Error).message }
+    }
+  })
+  const openShipment = (batch: ShipmentBatchRow) => {
+    const quantities = Object.fromEntries(batch.items.map((item) => [
+      item.order_item_id,
+      shipmentQuantity(item.planned_qty_exact ?? item.planned_qty),
+    ]))
+    setShipForm({ date: calendarDay(new Date()), company: '', tracking: '', quantities })
+    setShipTarget(batch)
+  }
+  const closeShipment = () => {
+    setShipTarget(null)
+    setShipForm({ date: null, company: '', tracking: '', quantities: {} })
+  }
 
   const shipmentsRefresh = () => {
-    void queryClient.invalidateQueries({ queryKey: ['timeline', 'customer'] })
+    milestonesRefresh()
     void queryClient.invalidateQueries({ queryKey: ['order-shipments', orderId] })
     void queryClient.invalidateQueries({ queryKey: ['order', orderId] })
     void queryClient.invalidateQueries({ queryKey: ['order-status', orderId] })
   }
   const createShipmentMutation = useMutation({
-    mutationFn: () =>
-      createOrderShipment(orderId, {
-        items: Object.entries(plannedQtys)
-          .filter(([, qty]) => Number(qty) > 0)
-          .map(([orderItemId, qty]) => ({ order_item_id: Number(orderItemId), planned_qty: Number(qty) })),
-      }),
+    mutationFn: () => {
+      if (invalidPlannedRow) throw new Error('请先改正标红的发货数量')
+      if (!plannedShipmentRows.length) throw new Error('请至少填写一项本批发货数量')
+      return createOrderShipment(orderId, {
+        request_key: shipmentKeyRef.current || (shipmentKeyRef.current = newRequestKey()),
+        planned_date: shipmentPlanDate,
+        items: plannedShipmentRows.map(({ order_item_id, planned_qty }) => ({ order_item_id, planned_qty })),
+      })
+    },
     onSuccess: () => {
       Toast.success('发货批次已排')
       setCreateShipmentVisible(false)
       setPlannedQtys({})
+      setShipmentPlanDate(null)
+      shipmentKeyRef.current = ''
       shipmentsRefresh()
     },
     onError: (error: Error) => Toast.error(error.message),
   })
   const shipShipmentMutation = useMutation({
-    mutationFn: (batchId: number) =>
-      shipOrderShipment(orderId, batchId, {
-        actual_ship_date: shipForm.date ? shipForm.date.toISOString().slice(0, 10) : null,
+    mutationFn: (batchId: number) => {
+      if (actualShipmentRows.some((row) => row.error)) throw new Error('请先改正标红的实发数量')
+      if (!actualShipmentRows.some((row) => shipmentQuantityUnits(row.quantity) > 0n)) {
+        throw new Error('本批至少要有一项实际发出')
+      }
+      return shipOrderShipment(orderId, batchId, {
+        actual_ship_date: shipForm.date,
         logistics_company: shipForm.company || null,
         tracking_no: shipForm.tracking || null,
-        // 缺省按计划量全发；后端校验累计不超订购量
-        items: null,
-      }),
+        items: actualShipmentRows.map(({ item, quantity }) => ({
+          order_item_id: item.order_item_id,
+          shipped_qty: quantity,
+        })),
+      })
+    },
     onSuccess: (result) => {
       Toast.success(
         result.summary.all_shipped
-          ? '已全部发完，整单可以标记完成了'
-          : `已登记发货，剩余未发 ${result.summary.remaining}`,
+          ? '已全部发完，可以确认完成交付'
+          : `已登记发货，剩余未发 ${shipmentQuantity(result.summary.remaining_exact ?? result.summary.remaining)}`,
       )
-      setShipTarget(null)
+      closeShipment()
       shipmentsRefresh()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -500,14 +650,19 @@ export default function OrderDetailPage() {
   const cancelShipmentMutation = useMutation({
     mutationFn: (batchId: number) => cancelOrderShipment(orderId, batchId),
     onSuccess: () => {
-      Toast.success('批次已取消')
+      Toast.success('批次已取消，计划数量可以重新安排')
       shipmentsRefresh()
     },
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  // 推送 ERP/MES 是**写外部系统**的动作（配置齐全时真的在对方系统建单，
+  // 本系统撤回不了）。后端不带 confirm 返回 42206 + 订单号/客户/金额说明，
+  // 这里弹出来，用户确认后带 confirm 重发。
+  const [erpGate, setErpGate] = useState('')
+
   const syncMutation = useMutation({
-    mutationFn: () => syncErp(orderId),
+    mutationFn: (confirm: boolean) => syncErp(orderId, confirm),
     onSuccess: (data) => {
       // already_synced 是幂等命中：订单早就推过了，不是失败
       if (data.already_synced) {
@@ -517,12 +672,14 @@ export default function OrderDetailPage() {
       }
       void queryClient.invalidateQueries({ queryKey: ['order', orderId] })
     },
-    onError: (error: Error) => Toast.error(error.message),
+    onError: (error: Error) => {
+      if (isConfirmRequired(error)) setErpGate(confirmMessageOf(error))
+      else Toast.error(error.message)
+    },
   })
 
   const statusSyncMutation = useMutation({
-    mutationFn: () => refreshStatus(orderId),
-    onSuccess: (data) => {
+    mutationFn: () => refreshStatus(orderId),    onSuccess: (data) => {
       if (data.changed) {
         Toast.success(`履约状态已更新为「${data.status_label}」`)
       } else {
@@ -548,35 +705,171 @@ export default function OrderDetailPage() {
   })
 
   const order = orderQuery.data
-  if (orderQuery.isLoading) return <div className="page-container">加载中…</div>
-  if (!order) return <div className="page-container">订单不存在或无权查看</div>
+  const erpReadiness = useQuery({
+    queryKey: ['erp-readiness'],
+    queryFn: getErpReadiness,
+    enabled: canManage && Boolean(order),
+    staleTime: 30_000,
+  })
+  const erpUnavailable = erpReadiness.data?.configured === false
+  const erpUnavailableHint = '当前还未接入 ERP/MES。请联系管理员确认接入状态。'
+
+  // 同步失败前先说明缺接入还是缺单号，按钮使用同一个判据。
+  const statusSyncReasons = erpUnavailable
+    ? [erpUnavailableHint]
+    : order?.erp_order_id
+    ? []
+    : ['要先有 ERP/MES 单号：点「推送 ERP/MES」等对方回单号']
+
+  /**
+   * 「交期与跟单计划」里「预览受影响面」的受阻原因。
+   *
+   * 与「从来源建立订单草稿」完全同型：7 个数字框（运输天数 + 6 个节点提前天数）
+   * 只要有一个被清空就变成 NaN → 按钮直接灰掉，而**不说是哪一个**；客户要求日期
+   * 取自订单的计划交期，那是个可空列 —— 历史订单没排过期，弹窗一打开按钮就是灰的，
+   * 而按钮在 720px 弹窗的页脚、出问题的字段在正文里，视线根本扫不到。
+   * 所以这里逐项点名，写完贴在页脚正上方。
+   */
+  const planOffsetLabels: Record<string, string> = { contract: '签订合同', deposit: '付定金', pre_sample_sent: '产前样发出', pre_sample_confirmed: '产前样确认', first_shipment: '首批发货', payment: '收款' }
+  const scheduleBlocked = [
+    { ok: Boolean(scheduleForm.new_delivery_date), reason: '请先填「客户要求日期」（本单原来没有计划交期，所以这里是空的）。' },
+    { ok: scheduleForm.delivery_kind !== 'arrival' || Number.isFinite(scheduleForm.transit_days), reason: '请填「预计运输天数」（客户要求的是到货日，必须知道路上几天）。' },
+    { ok: Object.values(scheduleForm.plan_offsets).every((v) => Number.isFinite(v)), reason: '下面这些「提前天数」不能空着：' + Object.entries(scheduleForm.plan_offsets).filter(([, v]) => !Number.isFinite(v)).map(([key]) => planOffsetLabels[key] ?? key).join('、') + '（可以填 0，但不能空）。' },
+  ]
+  const scheduleBlockedReasons = blockedReasons(scheduleBlocked)
+  // ⚠️ 「提交待确认计划」的禁用**不是"填错了"**，而是"还没走完上一步"：
+  // 提交前必须先生成预览（`disabled={!schedulePreview}`），否则用户只看到一个
+  // 灰按钮、不知道卡在哪（主人 2026-10-13 就是卡在这里："不知道怎么进行下去"）。
+  // 所以这条与 `scheduleBlocked` 分开写 —— 两者的"下一步该做什么"完全不同：
+  // 一个是"把表填完整"，一个是"先点旁边的预览"。
+  const submitBlockedReasons = schedulePreview
+    ? []
+    : ['顺序要求：先点上一步的「预览受影响面」，看到影响面之后才能提交。']
+
+  if (orderQuery.isLoading) return <PageLoading />
+  if (!order) {
+    /* 原来是一行裸字挂在整页白底（2026-11-20 巡检）：链接错了或没权限时像页面崩了。
+       统一成空态 + 返回列表。 */
+    return (
+      <div className="page-container">
+        <EmptyState
+          title="订单不存在或无权查看"
+          hint="可能链接里的编号有误，或这条记录属于你数据范围之外的人；回订单列表重新选择即可。"
+        />
+        <div style={{ display: 'flex', justifyContent: 'center', paddingBottom: 24 }}>
+          <Button type="primary" theme="solid" onClick={() => navigate('/orders')}>返回订单列表</Button>
+        </div>
+      </div>
+    )
+  }
 
   const summary = summaryQuery.data
+  const receivables = receivablesQuery.data
+  const payments = paymentsQuery.data
+  const pendingPayments = payments?.filter((payment) => payment.status === 'pending').length ?? 0
+  const confirmedPayments = payments?.filter((payment) => payment.status === 'confirmed').length ?? 0
+  const cancellationBlocked = confirmedPayments > 0
+    ? `有 ${confirmedPayments} 笔已确认回款。请先联系财务处理回款。`
+    : ''
+  const cancelPlanCount = receivables?.filter((plan) => !['paid', 'cancelled'].includes(plan.status)).length
+  const orderCancelled = order.status === 'cancelled'
+  const unreceivedAmount = order.unreceived_amount_exact ?? order.unreceived_amount
+  const hasUnreceived = Number(unreceivedAmount) > 0
+  const waitingForPayment = `待收款 ${formatMoney(unreceivedAmount, order.currency)}`
+  const canRegisterPayment = canManage || canPayment
+  const receivableTotal = order.total_amount_exact ?? order.total_amount
+  const generateBlocked = planBlockedReasons('installments', generateRows, receivableTotal)
+  const canGenerateReceivables = canPayment && !orderCancelled && receivablesQuery.isSuccess && !receivables?.length
+  const hasOpenReceivables = receivables?.some((plan) => !['paid', 'cancelled'].includes(plan.status))
+  const showPaymentRetry = !orderCancelled && canRegisterPayment && pendingPayments === 0 &&
+    payments?.some((payment) => payment.status === 'rejected' && receivables?.some((plan) =>
+      plan.id === payment.receivable_plan_id && !['paid', 'cancelled'].includes(plan.status)))
+  const shipment = shipmentsQuery.data
+  const remainingToShip = shipment?.summary.remaining_exact ?? shipment?.summary.remaining
+  const completingDelivery = targetStatus === 'completed'
+  const completionBlocked = completingDelivery && remainingToShip != null && Number(remainingToShip) > 0
+    ? `还有 ${shipmentQuantity(remainingToShip)} 件未发。请先登记发货，再确认完成交付。`
+    : ''
+  const statusBlocked = targetStatus ? completionBlocked : '先选择要更新的履约状态。'
+  const shipmentPlanBlocked = orderCancelled
+    ? '订单已取消，不能再排发货批次。'
+    : shipment?.summary.all_shipped
+      ? '这张订单已全部发完。'
+      : shipment?.items.length && shipment.items.every((item) => Number(item.unplanned_exact ?? item.unplanned) <= 0)
+        ? '剩余数量已安排到待发批次。实际发出后，请在对应批次点「登记发货」。'
+        : ''
+  const financeNext = !orderCancelled && !receivablesQuery.isError && !paymentsQuery.isError && receivables && payments
+    ? pendingPayments > 0
+      ? { tab: 'payments', label: '打开回款记录', hint: `有 ${pendingPayments} 笔回款待财务确认。确认后才计入已回款。` }
+      : !receivables.length
+        ? { tab: 'receivables', label: '查看应收计划', hint: canPayment
+            ? '还没有应收计划。先按约定的收款时间和比例生成各期应收。'
+            : '还没有应收计划。请财务先按约定的收款时间建立应收计划。' }
+        : hasOpenReceivables
+          ? { tab: 'receivables', label: '查看应收计划', hint: canRegisterPayment
+              ? '客户实际打款后，到「应收计划」的对应期登记回款。'
+              : '可在「应收计划」查看各期金额、到期日和已收金额。' }
+          : null
+    : null
 
   // §9.9 复审：详情页原来只取"币种前缀"再自己拼，币种为空（历史订单）时就成了
   // 一个**裸金额** —— 而列表页早就用 `formatMoney`（空币种会写「币种待核实」）。
   // 同一个数在两个页面口径不同，这里统一成 formatMoney。
   const itemColumns = [
-    { title: 'SKU / 需求', dataIndex: 'sku_code', width: 180, render: (code: string | null, row: OrderItem) => <div>{code || row.inquiry_no_snapshot || '—'}<div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{row.sku_snapshot || ''}</div></div> },
-    { title: '规格', dataIndex: 'specification', width: 200, render: (v: string | null) => v ?? '-' },
-    { title: '数量', dataIndex: 'quantity', width: 100, render: (v: number) => v.toLocaleString('zh-CN') },
-    { title: '单价', dataIndex: 'unit_price', width: 110, render: (v: number) => formatMoney(v, order.currency) },
+    /* 1024 下六列合计 787 > 卡内 699，订单明细一进来就顶出横向滚动条、
+       「金额」被切掉半截（2026-11-19 实拍）。首列改成吃剩余宽度，
+       其余五列按"够用"收窄：规格 170 / 数量 64 / 单价 104 / 金额 124 / 备注 120，
+       1440 下首列自然变宽，两档都不再需要横向滚动。 */
+    { title: '产品名称 / 需求', dataIndex: 'sku_code', width: '100%', render: (code: string | null, row: OrderItem) => <div>{row.sku_snapshot || code || row.inquiry_no_snapshot || '未命名产品'}<div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{row.sku_snapshot ? code || row.inquiry_no_snapshot : ''}</div></div> },
+    { title: '规格', dataIndex: 'specification', width: 170, render: (v: string | null) => v ?? '-' },
+    { title: '数量', dataIndex: 'quantity', width: 64, render: (v: number) => v.toLocaleString('zh-CN') },
+    // 单价走 formatUnitPrice：保真（最多 4 位）、最少两位、尾零去掉。
+     // 曾经在这里截成两位，结果 33.3333 变成 33.33，"单价×数量" 和金额对不上，
+     // CI 的 confirmation_browser_smoke 直接红了（2026-11-17）。
+    {
+      title: '单价',
+      dataIndex: 'unit_price',
+      width: 104,
+      className: 'cell-right',
+      render: (v: number, row: OrderItem) => formatUnitPrice(row.unit_price_exact ?? v, order.currency),
+    },
     {
       title: '金额',
       dataIndex: 'amount',
-      width: 140,
-      render: (v: number) => formatMoney(v, order.currency),
+      width: 124,
+      className: 'cell-right',
+      render: (v: number, row: OrderItem) => formatMoney(row.amount_exact ?? v, order.currency),
     },
-    { title: '备注', dataIndex: 'remark', render: (v: string | null) => v ?? '-' },
+    /* 120 时表宽 700、卡内 699 —— 差这 1px 就够弹出横向滚动条，收到 116。 */
+    { title: '备注', dataIndex: 'remark', width: 116, render: (v: string | null) => v ?? '-' },
   ]
 
+  // 应收计划属于「要跟财务对账」的单据数据 → 金额一律两位小数（主人 2026-11-17 口径）。
+  // formatMoney 只做千分位，不补位，所以先过 toTwoDecimals。
   const receivableColumns = [
     { title: '节点', dataIndex: 'plan_name', width: 110 },
-    { title: '应收日期', dataIndex: 'due_date', width: 130 },
+    {
+      title: '应收日期',
+      dataIndex: 'due_date',
+      width: 130,
+      render: (day: string | null, plan: Receivable) => (
+        <div>
+          {day ?? '未填写'}
+          {canPayment && !orderCancelled && plan.status !== 'cancelled' && (
+            <div>
+              <Button size="small" theme="borderless" onClick={() => {
+                dueMutation.reset()
+                setDueEdit({ plan, date: day ? new Date(`${day}T00:00:00`) : null })
+              }}>修改到期日</Button>
+            </div>
+          )}
+        </div>
+      ),
+    },
     // 行自带币种就优先用它（历史数据里可能与订单币种不一致），没有才退回订单币种
-    { title: '应收金额', dataIndex: 'amount', width: 130, render: (v: number, r: Receivable) => formatMoney(v, r.currency ?? order.currency) },
-    { title: '已收', dataIndex: 'received_amount', width: 130, render: (v: number, r: Receivable) => formatMoney(v, r.currency ?? order.currency) },
-    { title: '未收', dataIndex: 'remaining_amount', width: 130, render: (v: number, r: Receivable) => formatMoney(v, r.currency ?? order.currency) },
+    { title: '应收金额', dataIndex: 'amount', width: 130, className: 'cell-right', render: (v: number, r: Receivable) => formatMoney(toTwoDecimals(r.amount_exact ?? v), r.currency ?? order.currency) },
+    { title: '已收', dataIndex: 'received_amount', width: 130, className: 'cell-right col-hide-narrow', render: (v: number, r: Receivable) => formatMoney(toTwoDecimals(r.received_amount_exact ?? v), r.currency ?? order.currency) },
+    { title: '未收', dataIndex: 'remaining_amount', width: 130, className: 'cell-right col-hide-narrow', render: (v: number, r: Receivable) => formatMoney(toTwoDecimals(r.remaining_amount_exact ?? v), r.currency ?? order.currency) },
     {
       title: '状态',
       dataIndex: 'status_label',
@@ -587,41 +880,195 @@ export default function OrderDetailPage() {
     },
     {
       title: '操作',
-      width: 110,
-      render: (_: unknown, record: Receivable) =>
-        record.status !== 'paid' && (canManage || canPayment) ? (
-          <a
-            style={{ color: 'var(--crm-primary)' }}
-            onClick={() => {
-              setPaymentTarget(record)
-              setPaymentForm({
-                amount: String(record.remaining_amount),
-                date: new Date(),
-                method: '银行转账',
-              })
-              // 打开表单就定下这一笔的请求键；中途提交失败重试仍用它。
-              paymentKeyRef.current = newRequestKey()
-            }}
-          >
-            登记回款
-          </a>
-        ) : (
-          '-'
-        ),
+      width: 150,
+      render: (_: unknown, record: Receivable) => {
+        // ⚠️ 「登记回款」还要看**生命周期**（2026-10-14 审查修）：
+        // 订单取消时后端只把**非 paid** 的节点置 `cancelled`
+        // （`order/router.py` 的 cancel_order），而这些行仍以「已取消（随订单）」
+        // 渲染，`status !== 'paid'` 成立 —— 于是入口照旧露出，点开填完必得 422
+        // 「该应收节点已随订单取消，不能再登记回款」（`assert_plan_accepts_payment`）。
+        // 同文件对"取消是终态、失败入口不给"已经处理过（隐藏「更新履约状态/取消订单」），
+        // 这一列漏了。
+        const planCancelled = record.status === 'cancelled' || order.status === 'cancelled'
+        const canRegister = record.status !== 'paid' && !planCancelled && canRegisterPayment
+        // ⚠️ 「删除」的判据必须是**后端的真实闸门**（2026-10-14 审查修）：
+        // 删除时后端判的是"该期下有没有**任何**回款行"（待确认/已驳回都算，
+        // 不带 status 过滤），而原来前端用的是 `received_amount > 0`
+        // —— 那只统计**已确认**的分配。于是"登记了一笔但财务还没确认"或
+        // "财务驳回了那笔"时，界面显示能删、点下去必然 422。
+        // 现在后端把真实判据作为 `has_payment_record` 返回，两边同一把尺子。
+        const hasPayment = Boolean(record.has_payment_record)
+        const canDelete = canPayment && !hasPayment
+        // 点不了就得说清为什么（主人反复提过的口径）：一个都不给时不留空白，
+        // 而是给出原因，别让用户对着空操作列猜。
+        if (!canRegister && !canDelete) {
+          if (planCancelled) {
+            return (
+              <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                订单已取消，这一期不再收款或删除
+              </span>
+            )
+          }
+          // 已收齐的行本来就有回款记录，原来先命中下面的 hasPayment 分支，
+          // 于是「已回款」的行上写着「请先处理回款」—— 自相矛盾（2026-11-20 截图）。
+          // 先判 paid：收齐了就只说收齐，让用户去「回款记录」页签看明细。
+          if (record.status === 'paid') {
+            return (
+              <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                本期已收齐{hasPayment ? '，明细见「回款记录」' : ''}
+              </span>
+            )
+          }
+          if (hasPayment) {
+            return (
+              <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                该期已有回款记录（含待确认/已驳回），请先处理回款
+              </span>
+            )
+          }
+          return '请由订单负责人或财务登记'
+        }
+        return (
+          <div style={{ display: 'grid', gap: 4 }}>
+            <div style={{ display: 'flex', gap: 10 }}>
+              {canRegister && (
+                <Button size="small" theme="borderless"
+                  onClick={() => {
+                    setPaymentTarget(record)
+                    setPaymentForm({
+                      amount: record.remaining_amount_exact ?? String(record.remaining_amount),
+                      date: new Date(),
+                      method: '银行转账',
+                    })
+                    // 打开表单就定下这一笔的请求键；中途提交失败重试仍用它。
+                    paymentKeyRef.current = newRequestKey()
+                  }}
+                >
+                  登记回款
+                </Button>
+              )}
+              {canDelete && (
+                <Popconfirm
+                  title={`删除「${record.plan_name ?? '这一期'}」这个应收节点？`}
+                  content="删除后这期应收消失、订单应收合计随之变小，「收款」跟单节点会按剩余应收自动同步。已经收过款的节点不能删。"
+                  onConfirm={() => deleteReceivableMutation.mutate(record.id)}
+                >
+                  <a style={{ color: 'var(--crm-error, #ba1a1a)' }}>删除</a>
+                </Popconfirm>
+              )}
+            </div>
+            {hasPayment && !canDelete && (
+              <span style={{ fontSize: 11, color: 'var(--crm-text-3)', lineHeight: 1.5 }}>
+                该期已有回款，不能删除；
+                <a
+                  style={{ marginLeft: 2 }}
+                  onClick={() => {
+                    setActiveKey('payments')
+                    orderTabsRef.current?.scrollIntoView({ block: 'start' })
+                    orderTabsRef.current?.focus({ preventScroll: true })
+                  }}
+                >
+                  去「回款记录」调整分配
+                </a>
+              </span>
+            )}
+          </div>
+        )
+      },
     },
+  ]
+
+  // 指标卡数据（放在 return 之前，好让上面的 <KpiStrip> 按张数选列数）。
+  // 「有异常才有意义」的三张只在有值时出现：0 的时候摆出来就是几张 ¥0.00 的空卡。
+  const orderKpis: KpiItem[] = [
+    { label: '订单金额', value: formatMoney(toTwoDecimals(order.total_amount_exact ?? order.total_amount), order.currency) },
+    {
+      label: '实际到账（财务已确认）',
+      value: formatMoney(toTwoDecimals(order.received_amount_exact ?? order.received_amount), order.currency),
+      /* 2026-11-20：这枚 tone 原来是写死的 success —— 一分钱没收到时
+         那张卡也是一个绿色的「¥0.00」，绿色在这里等于说"收到钱了"。
+         改成收到钱才绿。 */
+      tone: Number(order.received_amount_exact ?? order.received_amount ?? 0) > 0 ? 'success' : 'default',
+    },
+    {
+      label: '尚未到账',
+      value: formatMoney(toTwoDecimals(order.unreceived_amount_exact ?? order.unreceived_amount), order.currency),
+      /* 2026-11-20：尚未到账不是异常 —— 刚下的单本来就一分钱没收。
+         原来只要 >0 就染橙，等于每张新订单都亮一个橙灯，警告用滥了。
+         真正的逾期由「回款中心」的逾期红字承担。 */
+      tone: 'default',
+    },
+    {
+      label: '已分配到应收期',
+      help: '到账的钱已经分配到具体应收期的金额。剩下的会留在「已到账待分配」里。',
+      value: formatMoney(toTwoDecimals(summary?.allocated_amount_exact ?? summary?.allocated_amount ?? 0), order.currency),
+    },
+    // 这两张也是「有异常才有意义」：钱都分配完、没有待确认的，
+    // 它们就是两个 ¥0.00 的空卡，把 4+2 的第二行撑出来。
+    ...((summary?.unallocated_amount ?? 0) > 0
+      ? [
+          {
+            label: '已到账待分配',
+            help: '客户已经付款、但还没分到具体应收期的钱。分配后才会冲减对应账期。',
+            value: formatMoney(
+              summary?.unallocated_amount_exact ?? summary?.unallocated_amount ?? 0,
+              order.currency,
+            ),
+            tone: 'warning' as const,
+          },
+        ]
+      : []),
+    ...((summary?.pending_confirm_amount ?? 0) > 0
+      ? [
+          {
+            label: '待确认回款',
+            value: formatMoney(
+              summary?.pending_confirm_amount_exact ?? summary?.pending_confirm_amount ?? 0,
+              order.currency,
+            ),
+          },
+        ]
+      : []),
+    // 逾期是「异常指标」：没有逾期时这张卡永远是 0，白占一个位置，
+    // 还让 7 张卡排成 4+3 的第二行只剩三张。只有真逾期了才显示。
+    ...(summary?.overdue_count
+      ? [
+          {
+            label: '逾期应收节点',
+            // 这一张是「几个节点」不是金额。只写一个「1」跟旁边四张 ¥ 金额
+            // 并排，会被读成 ¥1（2026-11-16 订单详情巡检）。
+            value: `${summary.overdue_count} 个`,
+            tone: 'error' as const,
+          },
+        ]
+      : []),
   ]
 
   return (
     <div className="page-container">
+      <ConfirmRequiredModal
+        visible={Boolean(erpGate)}
+        message={erpGate}
+        onCancel={() => setErpGate('')}
+        onConfirm={() => {
+          setErpGate('')
+          syncMutation.mutate(true)
+        }}
+        confirmText="确认推送"
+      />
       {/* 与客户/商机/报价详情页同排布：标题 + 标签一行，关键信息行在标题下方左对齐 */}
       <DetailHeader
         title={order.order_no}
         tags={
           <>
-            <Tag color={STATUS_TONE[order.status] ?? 'grey'}>{order.status_label}</Tag>
+            <Tag color={STATUS_TONE[order.status] ?? 'grey'}>{order.status === 'completed' ? '交付已完成' : order.status_label}</Tag>
+            {order.status === 'completed' && (
+              <Tag color={hasUnreceived ? 'orange' : 'green'}>{hasUnreceived ? waitingForPayment : '已收清'}</Tag>
+            )}
             {order.erp_order_id ? <Tag color="blue">ERP/MES：{order.erp_order_id}</Tag> : <Tag>未推送 ERP/MES</Tag>}
           </>
         }
+        metaFull
         meta={
           <>
             <span>
@@ -638,10 +1085,13 @@ export default function OrderDetailPage() {
                 业绩归属：{order.sales_owner_name}（签单时的负责人，交接不改）
               </span>
             )}
-            <span>客户要求{order.delivery_kind === 'arrival' ? '到货日' : order.delivery_kind === 'shipping' ? '发货日' : '交期（类型待确认）'}：{order.delivery_date ?? '-'}</span>
+            {/* 原来 delivery_kind 没填时会渲染成「交期（类型待确认）」——
+                "类型"指的是"发货日还是到货日"，是内部字段状态，摆在客户名旁边
+                没人看得懂。分不清是哪种就一律叫「交期」，只在有明确类型时才细分。 */}
+            <span>客户要求{order.delivery_kind === 'arrival' ? '到货日' : order.delivery_kind === 'shipping' ? '发货日' : '交期'}：{order.delivery_date ?? '-'}</span>
             {order.shipment_date && <span>计划发货日：{order.shipment_date}{order.delivery_kind === 'arrival' ? `（运输 ${order.transit_days} 天）` : ''}</span>}
             <span>付款条件：{order.payment_terms ?? '-'}</span>
-            {order.quote_id && (
+            {order.quote_id ? (
               <span>
                 来源报价：
                 <Link
@@ -651,73 +1101,228 @@ export default function OrderDetailPage() {
                   查看
                 </Link>
               </span>
+            ) : (
+              // 手工建单没有报价来源。以前整项静默不渲染，看着像"数据丢了"。
+              <span style={{ color: 'var(--crm-text-3)' }}>来源报价：手工建单（无报价单）</span>
             )}
           </>
         }
         extra={
           canManage && (
             <>
-              {/* 已取消是**终态**，状态不能再改、也不能再取消：
-                  入口留着只会让人点了必然失败（后端会拒），所以两个都不给。
-                  改状态一直要给，是因为履约状态本来就是逐段推进的。 */}
-              {order.status !== 'cancelled' && (
-                <>
-                  <Button onClick={() => setStatusVisible(true)}>更新履约状态</Button>
-                  {/* 取消订单**单独一个入口**，不混在"更新履约状态"的下拉里：
-                      它牵动回款与应收（作废应收计划、驳回待确认回款、取消计划批次），
-                      混进一个通用下拉，用户既不知道选下去会发生什么，
-                      也会绕过取消规则（已收到确认回款的订单本不该能取消）。 */}
-                  <Button type="danger" onClick={() => setCancelVisible(true)}>
-                    取消订单
-                  </Button>
-                </>
-              )}
-              <Button onClick={() => syncMutation.mutate()} loading={syncMutation.isPending}>
-                推送 ERP/MES
-              </Button>
-              <Button
-                onClick={() => statusSyncMutation.mutate()}
-                loading={statusSyncMutation.isPending}
-                disabled={!order.erp_order_id}
-              >
-                同步履约状态
-              </Button>
-              <Button onClick={() => repurchaseMutation.mutate()} loading={repurchaseMutation.isPending}>
-                复购开新商机
-              </Button>
+              {/* 主按钮随履约阶段走（2026-11-17 视觉审视 D-02）：原来 5 个按钮一样大、
+                  一样显眼，其中「取消订单」是不可逆的，却和「推送 ERP/MES」并排站。
+                  现在按状态只突出一个，其余进「更多操作」；每个按钮原来的权限判据一个字没动。 */}
+              {(() => {
+                const stage = order.status
+                // 该做的那一件事
+                const primary =
+                  stage === 'cancelled'
+                    ? null
+                    : !order.erp_order_id && !erpUnavailable
+                      ? 'push_erp'
+                      : stage === 'pending' || stage === 'in_production'
+                        ? 'update_status'
+                        : stage === 'shipped'
+                          ? 'update_status'
+                          : 'repurchase'
+
+                // 「更多」里的长尾动作（顺序即展示顺序）
+                const more: { key: string; label: string; node: ReactNode }[] = []
+
+                if (!primary || primary !== 'push_erp') {
+                  more.push({
+                    key: 'push_erp',
+                    label: '推送 ERP/MES',
+                    node: (
+                      <Button onClick={() => syncMutation.mutate(false)} loading={syncMutation.isPending}>
+                        推送 ERP/MES
+                      </Button>
+                    ),
+                  })
+                }
+                if (primary !== 'update_status' && stage !== 'cancelled') {
+                  more.push({
+                    key: 'update_status',
+                    label: '人工更新履约状态',
+                    node: <Button onClick={() => openStatusEditor()}>人工更新</Button>,
+                  })
+                }
+                more.push({
+                  key: 'sync_erp',
+                  label: '从 ERP 同步',
+                  node: (
+                    <GuardedButton
+                      onClick={() => statusSyncMutation.mutate()}
+                      loading={statusSyncMutation.isPending}
+                      disabled={statusSyncReasons.length > 0}
+                      blockedReasons={statusSyncReasons}
+                      action="从 ERP 同步"
+                    >
+                      从 ERP 同步
+                    </GuardedButton>
+                  ),
+                })
+                if (primary !== 'repurchase') {
+                  more.push({
+                    key: 'repurchase',
+                    label: '复购开新商机',
+                    node: (
+                      <Popconfirm
+                        title="确认创建复购商机？"
+                        content="将按本订单生成一条新的商机记录，避免误点造成重复商机。"
+                        disabled={repurchaseMutation.isPending}
+                        onConfirm={() => repurchaseMutation.mutate()}
+                      >
+                        <Button loading={repurchaseMutation.isPending}>复购开新商机</Button>
+                      </Popconfirm>
+                    ),
+                  })
+                }
+                if (stage !== 'cancelled') {
+                  more.push({
+                    key: 'cancel',
+                    label: '取消订单',
+                    node: (
+                      <Button type="danger" onClick={() => {
+                        setOrderMoreVisible(false)
+                        cancelMutation.reset()
+                        setCancelVisible(true)
+                      }}>
+                        取消订单
+                      </Button>
+                    ),
+                  })
+                }
+
+                return (
+                  <>
+                    {primary === 'push_erp' && (
+                      <Button type="primary" theme="solid" onClick={() => syncMutation.mutate(false)}
+                        loading={syncMutation.isPending}>
+                        推送 ERP/MES
+                      </Button>
+                    )}
+                    {primary === 'update_status' && (
+                      <Button type="primary" theme="solid" onClick={() => openStatusEditor()}>
+                        人工更新履约状态
+                      </Button>
+                    )}
+                    {primary === 'repurchase' && (
+                      <Popconfirm
+                        title="确认创建复购商机？"
+                        content="将按本订单生成一条新的商机记录，避免误点造成重复商机。"
+                        disabled={repurchaseMutation.isPending}
+                        onConfirm={() => repurchaseMutation.mutate()}
+                      >
+                        <Button type="primary" theme="solid" loading={repurchaseMutation.isPending}>
+                          复购开新商机
+                        </Button>
+                      </Popconfirm>
+                    )}
+                    {more.length > 0 && (
+                      <Dropdown
+                        trigger="click"
+                        position="bottomRight"
+                        visible={orderMoreVisible}
+                        onVisibleChange={setOrderMoreVisible}
+                        clickToHide
+                        render={
+                          <Dropdown.Menu>
+                            {more.map((item) => (
+                              <Dropdown.Item key={item.key}>
+                                <div onClick={(e) => e.stopPropagation()}>{item.node}</div>
+                              </Dropdown.Item>
+                            ))}
+                          </Dropdown.Menu>
+                        }
+                      >
+                        <Button type="tertiary" style={{ marginLeft: 8 }}>
+                          更多操作 ▾
+                        </Button>
+                      </Dropdown>
+                    )}
+                  </>
+                )
+              })()}
             </>
           )
         }
       >
+        {/* 订单上已经有 ERP/MES 单号（历史导入或人工录入）时，再说"当前还未接入"
+            自相矛盾：头部徽标写着 ERP-00000013，下面却说没接入。
+            有单号就只提示"可手动更新履约进度"，没单号才说缺接入。 */}
+        {canManage && order.status !== 'cancelled' && erpUnavailable && !order.erp_order_id && (
+          <div className="detail-hint">{erpUnavailableHint} 履约进度可在本页手动更新。</div>
+        )}
+        {canManage && order.status !== 'cancelled' && erpUnavailable && order.erp_order_id && (
+          <div className="detail-hint">ERP/MES 目前是手动同步：单号 {order.erp_order_id} 由人工登记，履约进度可在本页手动更新。</div>
+        )}
+        {!erpUnavailable && !order.erp_order_id && canManage && order.status !== 'cancelled' && (
+          <div className="detail-hint">
+            本单还没有 ERP/MES 单号：先点「推送 ERP/MES」，等对方回单号后才能同步状态。
+          </div>
+        )}
         <KpiStrip
+          // 指标个数是浮动的：订单金额 / 实际到账 / 尚未到账 / 已分配到应收期 这 4 张常在，
+          // 再加上逾期、已到账待分配、待确认回款，最多 7 张。
+          // kpi-grid 的最小卡宽是 240px，1130 可用宽度下只排得下 4 列 ——
+          // 5 张时第 5 张被甩到第二行、右边空出四分之三（2026-11-17 巡检）。
+          // 5 张走 kpi-cols-5、6 张走 kpi-cols-6，都是一行排满；7 张仍按 4+3，
+          // 再挤数字就认不出来了。这两个类自带窄屏断点（≤1370 三列、≤1000 两列）。
+          className={`kpi-grid${orderKpis.length === 5 ? ' kpi-cols-5' : orderKpis.length === 6 ? ' kpi-cols-6' : ''}`}
           style={{ marginTop: 16, marginBottom: 0 }}
-          items={[
-            { label: '订单金额', value: formatMoney(order.total_amount, order.currency) },
-            {
-              label: '已回款（财务已确认）',
-              value: formatMoney(order.received_amount, order.currency),
-              tone: 'success',
-            },
-            {
-              label: '待回款',
-              value: formatMoney(order.unreceived_amount, order.currency),
-              tone: order.unreceived_amount > 0 ? 'warning' : 'default',
-            },
-            {
-              label: '待确认回款',
-              value: formatMoney(summary?.pending_confirm_amount ?? 0, order.currency),
-            },
-            {
-              label: '逾期应收节点',
-              value: summary?.overdue_count ?? 0,
-              tone: (summary?.overdue_count ?? 0) > 0 ? 'error' : 'default',
-            },
-          ]}
+          items={orderKpis}
         />
+        {financeNext && activeKey !== financeNext.tab && (
+          <div className="workflow-next" style={{ marginTop: 12 }}>
+            <strong>收款下一步</strong>
+            <p className="workflow-guide">{financeNext.hint}</p>
+            {/* 原来是默认 primary 的浅蓝实底药丸 —— 主人不喜欢蓝色整块填充，
+                这里推进到主按钮语言：白底 + 主色描边 + 主色字。 */}
+            <Button size="small" type="primary" theme="outline" onClick={() => {
+              setActiveKey(financeNext.tab)
+              orderTabsRef.current?.scrollIntoView({ block: 'start' })
+              orderTabsRef.current?.focus({ preventScroll: true })
+            }}>{financeNext.label}</Button>
+          </div>
+        )}
+        {/* 订单金额组成（2026-10-09「产品价格与运费分离」）：订单页要能解释
+            "这个总额是怎么来的"，不能只给一个数。运费是代收代付的钱 ——
+            客户全额承担、公司原额付给承运商，所以它既不是收入也不是成本。
+            ⚠️ 这几行都已含在订单金额里，只是拆分展示，不再相加。 */}
+        {order.goods_amount != null ? (
+          <div
+            style={{
+              marginTop: 12,
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: 16,
+              fontSize: 13,
+              color: 'var(--crm-text-3)',
+            }}
+          >
+            <span>金额组成：</span>
+            <span>产品货款 {formatMoney(order.goods_amount_exact ?? order.goods_amount, order.currency)}</span>
+            <span>+ 运费（代收代付） {formatMoney(order.logistics_amount_exact ?? order.logistics_amount ?? 0, order.currency)}</span>
+            <span>+ 其他费用 {formatMoney(order.other_charge_amount_exact ?? order.other_charge_amount ?? 0, order.currency)}</span>
+            <span>+ 优惠 {formatMoney(order.discount_amount_exact ?? order.discount_amount ?? 0, order.currency)}</span>
+            <span style={{ color: 'var(--crm-text)' }}>
+              = {formatMoney(order.total_amount_exact ?? order.total_amount, order.currency)}
+            </span>
+          </div>
+        ) : (
+          // 历史订单没有留存组成：如实说"待核实"，不回查报价拿今天的数冒充当时那一单
+          <div style={{ marginTop: 12, fontSize: 13, color: 'var(--crm-text-3)' }}>
+            金额组成：待核实（该订单转单时未留存货款/运费/其他费用的拆分）
+          </div>
+        )}
       </DetailHeader>
 
       <SectionCard>
-        <Tabs type="line" activeKey={activeKey} onChange={setActiveKey} tabList={TABS} />
+        <div ref={orderTabsRef} tabIndex={-1}>
+          <Tabs type="line" activeKey={activeKey} onChange={setActiveKey} tabList={TABS} />
+        </div>
 
         <div style={{ marginTop: 16 }}>
           {activeKey === 'items' && (
@@ -731,7 +1336,16 @@ export default function OrderDetailPage() {
           )}
 
           {activeKey === 'bizdocs' && (
-            <BizDocPanel docType="order_sheet" orderId={orderId} canManage={canManage} />
+            /* 一份都没生成过时不画那张 9 列空表头（列表头 + 一行"还没有生成过"
+               就占 90px、信息量为零），只留一行说明 */
+            <BizDocPanel
+              docType="order_sheet"
+              orderId={orderId}
+              canManage={canManage}
+              compact
+              emptyInline
+              compactEmptyText="还没有生成过对外单据 —— 点右上「生成一份」，按当前订单内容出一份 PDF。"
+            />
           )}
 
           {activeKey === 'status' && (
@@ -743,10 +1357,10 @@ export default function OrderDetailPage() {
                 { title: '操作人', dataIndex: 'operator_name', width: 110, render: (v: string | null) => v ?? '系统' },
                 { title: '备注', dataIndex: 'remark', render: (v: string | null) => v ?? '-' },
                 {
-                  title: '时间',
+                  title: '变更时间',
                   dataIndex: 'created_at',
                   width: 190,
-                  render: (v: string) => new Date(v).toLocaleString('zh-CN'),
+                  render: (v: string) => formatBeijingTime(v),
                 },
               ]}
               dataSource={statusQuery.data ?? []}
@@ -759,12 +1373,22 @@ export default function OrderDetailPage() {
           {activeKey === 'receivables' && (
             <>
               <div className="toolbar">
-                <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>
-                  一个应收节点可以分多次收款，已收金额只统计财务确认过的回款
-                </div>
+                <p className="workflow-guide">
+                  {orderCancelled ? '订单已取消，不能新增应收或登记回款。'
+                    : !receivablesQuery.isSuccess ? '应收计划记录每期应收多少钱、什么时候收。'
+                      : !receivables?.length ? (canPayment ? '先按客户约定生成各期应收。' : '请财务先建立应收计划。')
+                        : '客户打款后，在对应期点「登记回款」。同一期可以分多次收，财务确认后才计入已收金额。'}
+                </p>
                 <div style={{ flex: 1 }} />
-                {canPayment && !(receivablesQuery.data ?? []).length && (
-                  <Button theme="solid" onClick={() => setGenerateVisible(true)}>
+                {canGenerateReceivables && (
+                  <Button type="primary"
+                    theme="outline"
+                    onClick={() => {
+                      setGenerateRows(defaultPlanRows())
+                      generateMutation.reset()
+                      setGenerateVisible(true)
+                    }}
+                  >
                     生成应收计划
                   </Button>
                 )}
@@ -775,21 +1399,43 @@ export default function OrderDetailPage() {
                 loading={receivablesQuery.isLoading}
                 rowKey="id"
                 pagination={false}
-                empty="还没有应收计划"
+                empty={emptyText(receivablesQuery, '还没有应收计划')}
               />
             </>
           )}
 
           {activeKey === 'payments' && (
+            <>
+            {paymentsQuery.isSuccess && (showPaymentRetry ? (
+              <div className="workflow-next" style={{ marginBottom: 12 }}>
+                <strong>已驳回的回款</strong>
+                <p className="workflow-guide">驳回的记录不计入已收金额。如需重新登记，请先核对到账金额和凭证。</p>
+                <Button size="small" type="primary" theme="outline" onClick={() => setActiveKey('receivables')}>
+                  去应收计划
+                </Button>
+              </div>
+            ) : <p className="workflow-guide">
+              {orderCancelled ? '订单已取消，这里保留原回款记录。' : pendingPayments > 0
+                ? canPayment ? '请核对银行到账和凭证，再确认待处理的回款。' : '待确认的回款由财务核对，确认后计入已收金额。需要补凭证时，请交给财务处理。'
+                : '已确认的款项计入已收金额。要查看客户还欠哪一期，可切到「应收计划」。'}
+            </p>)}
             <Table<Payment>
+              className="order-tab-table"
               columns={[
-                { title: '应收节点', dataIndex: 'plan_name', width: 120, render: (v: string | null) => v ?? '-' },
-                { title: '收款日期', dataIndex: 'received_date', width: 130 },
-                { title: '金额', dataIndex: 'received_amount', width: 130, render: (v: number, r: Payment) => formatMoney(v, r.currency ?? order.currency) },
-                { title: '方式', dataIndex: 'payment_method', width: 120, render: (v: string | null) => v ?? '-' },
+                /* 这一排列宽加起来原来 1150，卡片只有 1130 —— 最后一列「操作」
+                   （调整分配）被右边缘直接切掉一半（2026-11-20 截图）。
+                   同时「应收节点」110 放不下「尾款（70%）」，一律截成「尾款（70%…」。
+                   重新分：节点给到 150，凭证 190→160，其余各收 10~20。 */
+                { title: '应收节点', dataIndex: 'plan_name', width: narrowScreen ? 130 : 150 },
+                { title: '收款日期', dataIndex: 'received_date', width: narrowScreen ? 112 : 114 },
+                { title: '整笔到账', dataIndex: 'received_amount', width: narrowScreen ? 112 : 114, render: (v: number, r: Payment) => formatMoney(r.received_amount_exact ?? v, r.currency ?? order.currency) },
+                /* 108：¥94,500.00 是这里最长的一档金额，100 宽会被截成「¥94,500.…」 */
+                { title: '已分配', dataIndex: 'allocated_amount', width: 108, className: 'cell-right col-hide-narrow', render: (v: number, r: Payment) => r.status === 'confirmed' ? formatMoney(r.allocated_amount_exact ?? v, r.currency ?? order.currency) : '-' },
+                { title: '待分配', dataIndex: 'unallocated_amount', width: 108, className: 'cell-right col-hide-narrow', render: (v: number, r: Payment) => r.status === 'confirmed' ? formatMoney(r.unallocated_amount_exact ?? v, r.currency ?? order.currency) : '-' },
+                { title: '方式', dataIndex: 'payment_method', width: 90, className: 'col-hide-narrow', render: (v: string | null) => v ?? '-' },
                 {
                   title: '回款凭证',
-                  width: 220,
+                  width: narrowScreen ? 130 : 160,
                   render: (_: unknown, record: Payment) => (
                     <PaymentVoucherControl
                       payment={record}
@@ -803,40 +1449,62 @@ export default function OrderDetailPage() {
                 {
                   title: '状态',
                   dataIndex: 'status_label',
-                  width: 130,
+                  width: narrowScreen ? 110 : 120,
                   render: (value: string) => (
                     <Tag color={value === '已确认' ? 'green' : value === '已驳回' ? 'red' : 'orange'}>{value}</Tag>
                   ),
                 },
-                {
-                  title: '确认人',
-                  dataIndex: 'confirmed_by_name',
-                  width: 110,
-                  render: (v: string | null) => v ?? '-',
-                },
+                /* 全部回款都没有确认人时这一列整列挂「-」，白占 90 宽 ——
+                   按「整列全空就不渲染」的口径收掉；有数据时原样出现。 */
+                ...((paymentsQuery.data ?? []).some((p) => p.confirmed_by_name)
+                  ? [
+                      {
+                        title: '确认人',
+                        dataIndex: 'confirmed_by_name',
+                        width: 90,
+                        className: 'col-hide-narrow',
+                        onHeaderCell: () => ({ className: 'col-hide-narrow' }),
+                        render: (v: string | null) => v ?? '-',
+                      },
+                    ]
+                  : []),
                 {
                   title: '操作',
-                  width: 90,
-                  render: (_: unknown, record: Payment) =>
-                    record.status === 'pending' && canPayment ? (
-                      <Popconfirm
-                        title="确认收到这笔回款？"
-                        content="确认后会记入回款并影响业绩口径，请核对金额后再点。"
-                        onConfirm={() => confirmMutation.mutate(record.id)}
-                      >
-                        <a style={{ color: 'var(--crm-success)' }}>确认</a>
-                      </Popconfirm>
-                    ) : (
-                      '-'
-                    ),
+                  width: 80,
+                  render: (_: unknown, record: Payment) => (
+                    <div style={{ display: 'flex', gap: 10 }}>
+                      {record.status === 'pending' && canPayment && !orderCancelled && (
+                        <Popconfirm
+                          title="确认收到这笔回款？"
+                          content={`请核对到账日期和金额 ${formatMoney(record.received_amount_exact ?? record.received_amount, record.currency ?? order.currency)}。确认后会计入实收，并按规则分配到应收期。`}
+                          onConfirm={() => confirmMutation.mutate(record.id)}
+                        >
+                          <Button size="small" theme="borderless">确认回款</Button>
+                        </Popconfirm>
+                      )}
+                      {record.status === 'confirmed' && canPayment && (
+                        // 只有已确认的回款才谈得上"这笔钱分到哪几期"。
+                        // 列表上把**实际分配**也带出来（超收时与登记的期不同），
+                        // 所以入口旁边直接写出"分了 N 期"，不用点开才知道。
+                        <a onClick={() => setAllocationPayment(record)}>
+                          调整分配
+                          {(record.allocations?.length ?? 0) > 1
+                            ? `（${record.allocations!.length} 期）`
+                            : ''}
+                        </a>
+                      )}
+                      {record.status !== 'pending' && record.status !== 'confirmed' && '-'}
+                    </div>
+                  ),
                 },
               ]}
               dataSource={paymentsQuery.data ?? []}
               loading={paymentsQuery.isLoading}
               rowKey="id"
               pagination={false}
-              empty="还没有回款记录"
+              empty={emptyText(paymentsQuery, '还没有回款记录', orderCancelled ? undefined : '客户打款后，可在「应收计划」找到对应期登记。')}
             />
+            </>
           )}
 
           {activeKey === 'milestones' && (
@@ -847,9 +1515,9 @@ export default function OrderDetailPage() {
                 </span>
                 <div style={{ flex: 1 }} />
                 {can('order:manage') && (
-                  <Button
+                  <Button type="primary"
                     size="small"
-                    theme="solid"
+                    theme="outline"
                     style={{ marginLeft: 8 }}
                     onClick={() => {
                       setScheduleForm({
@@ -903,9 +1571,9 @@ export default function OrderDetailPage() {
                               content="确认后这张变更单会生效，相关批次的计划日期会被改写。"
                               onConfirm={() => confirmScheduleMutation.mutate(row.id)}
                             >
-                              <Button
+                              <Button type="primary"
                                 size="small"
-                                theme="solid"
+                                theme="outline"
                                 loading={confirmScheduleMutation.isPending}
                               >
                                 确认并重排
@@ -941,7 +1609,7 @@ export default function OrderDetailPage() {
                       {row.confirmed_at && (
                         <div style={{ marginTop: 2, color: 'var(--crm-text-3)' }}>
                           由 {row.confirmed_by_name ?? row.confirmed_by} 于{' '}
-                          {row.confirmed_at.slice(0, 16).replace('T', ' ')} 确认
+                          {formatBeijingTime(row.confirmed_at)} 确认
                           {row.confirm_remark ? `（${row.confirm_remark}）` : ''}
                         </div>
                       )}
@@ -950,6 +1618,10 @@ export default function OrderDetailPage() {
                 </div>
               )}
               <Table<OrderMilestoneRow>
+                /* 八列在 1024 装不下（卡内 699，实测顶出横向滚动条、「操作」整列被切）。
+                   fixed 布局 + 窄屏隐藏「责任人」「逾期原因」两列（.col-hide-narrow），
+                   「备注 / 跳过原因」吃剩余宽度。 */
+                className="order-tab-table"
                 columns={[
                   { title: '节点', dataIndex: 'label', width: 140 },
                   {
@@ -972,26 +1644,34 @@ export default function OrderDetailPage() {
                       <Tag color={MILESTONE_TONE[v] ?? 'grey'}>{record.status_label}</Tag>
                     ),
                   },
-                  { title: '备注 / 跳过原因', dataIndex: 'remark', render: (v: string | null, row: OrderMilestoneRow) => row.status === 'skipped' ? row.skip_reason : v ?? '-' },
-                  {
-                    // 方案 :103：责任人 / 来源证据 / 逾期原因要能被看到，否则填了也没人用
-                    title: '责任人',
-                    dataIndex: 'owner_id',
-                    width: 100,
-                    render: (v: number | null, record: OrderMilestoneRow) =>
-                      v
-                        ? (milestoneUsersQuery.data?.items ?? []).find((u) => u.id === v)?.name ??
-                          `#${v}`
-                        : record.owner_id
-                          ? `#${record.owner_id}`
-                          : '-',
-                  },
-                  {
-                    title: '逾期原因',
-                    dataIndex: 'overdue_reason',
-                    width: 180,
-                    render: (v: string | null) => v ?? '-',
-                  },
+                  // 这三列一直是打横杠的：备注/责任人/逾期原因在多数订单里根本没填，
+                  // 全空还占掉 280px，把「节点 / 计划 / 实际 / 状态」挤得很紧（2026-11-20 截图）。
+                  // 整列都没值就不画这一列，有值时自动回来。
+                  ...((milestonesQuery.data ?? []).some((row) => (row.status === 'skipped' ? row.skip_reason : row.remark))
+                    ? [{ title: '备注 / 跳过原因', dataIndex: 'remark', render: (v: string | null, row: OrderMilestoneRow) => (row.status === 'skipped' ? row.skip_reason : v ?? '-') }]
+                    : []),
+                  ...((milestonesQuery.data ?? []).some((row) => row.owner_id)
+                    ? [{
+                        // 方案 :103：责任人 / 来源证据 / 逾期原因要能被看到，否则填了也没人用
+                        title: '责任人',
+                        dataIndex: 'owner_id',
+                        width: 100,
+                        className: 'col-hide-narrow',
+                        onHeaderCell: () => ({ className: 'col-hide-narrow' }),
+                        render: (v: number | null, row: OrderMilestoneRow) =>
+                          v ? (row.owner_name ?? '-') : '-',
+                      }]
+                    : []),
+                  ...((milestonesQuery.data ?? []).some((row) => row.overdue_reason)
+                    ? [{
+                        title: '逾期原因',
+                        dataIndex: 'overdue_reason',
+                        width: 180,
+                        className: 'col-hide-narrow',
+                        onHeaderCell: () => ({ className: 'col-hide-narrow' }),
+                        render: (v: string | null) => v ?? '-',
+                      }]
+                    : []),
                   ...(canManage
                     ? [
                         {
@@ -1015,22 +1695,34 @@ export default function OrderDetailPage() {
 
           {activeKey === 'shipments' && (
             <>
-              <div className="toolbar" style={{ marginBottom: 10 }}>
-                <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                  订购 {shipmentsQuery.data?.summary.ordered ?? 0} ｜ 已发 {shipmentsQuery.data?.summary.shipped ?? 0} ｜
-                  {' '}未发 <strong>{shipmentsQuery.data?.summary.remaining ?? 0}</strong>
-                  ——首批/分批发货只推进到「已发货」，全部发完才能整单完成
+              <div className="toolbar order-shipment-toolbar">
+                <span className="order-shipment-quantities">
+                  订购 {shipmentQuantity(shipmentsQuery.data?.summary.ordered_exact ?? shipmentsQuery.data?.summary.ordered ?? 0)} ｜ 已发 {shipmentQuantity(shipmentsQuery.data?.summary.shipped_exact ?? shipmentsQuery.data?.summary.shipped ?? 0)} ｜
+                  {' '}未发 <strong>{shipmentQuantity(shipmentsQuery.data?.summary.remaining_exact ?? shipmentsQuery.data?.summary.remaining ?? 0)}</strong>
                 </span>
-                <div style={{ flex: 1 }} />
-                {can('order:manage') && (
-                  <Button size="small" theme="solid" onClick={() => setCreateShipmentVisible(true)}>
+                {canManage && (
+                  <Button type="primary" size="small" theme="outline" disabled={Boolean(shipmentPlanBlocked)} onClick={() => {
+                    shipmentKeyRef.current = newRequestKey()
+                    setPlannedQtys({})
+                    setShipmentPlanDate(null)
+                    setCreateShipmentVisible(true)
+                  }}>
                     排发货批次
                   </Button>
                 )}
               </div>
+              {canManage && shipmentPlanBlocked && <p className="workflow-guide">{shipmentPlanBlocked}</p>}
               {/* 整单交期结论（§9.8 复审）：发完才给最终数字；没发完如实说"未完成 · 还剩几件" */}
-              <ShipmentVerdict summary={shipmentsQuery.data?.summary} />
+              {(!orderCancelled || shipment?.summary.all_shipped) && <ShipmentVerdict summary={shipment?.summary} />}
+              {canManage && shipment?.summary.all_shipped && !orderCancelled && order.status !== 'completed' && (
+                <div className="workflow-next" style={{ marginBottom: 12 }}>
+                  <strong>发货已登记完毕</strong>
+                  <p className="workflow-guide">确认交付完成后，财务可继续按约定收款。</p>
+                  <Button size="small" theme="outline" onClick={() => openStatusEditor('completed')}>完成交付</Button>
+                </div>
+              )}
               <Table<ShipmentBatchRow>
+                className="order-tab-table"
                 columns={[
                   { title: '批次', dataIndex: 'batch_no', width: 80, render: (v: number) => `第 ${v} 批` },
                   {
@@ -1046,12 +1738,16 @@ export default function OrderDetailPage() {
                   {
                     title: '物流',
                     width: 170,
+                    className: 'col-hide-narrow',
+                    onHeaderCell: () => ({ className: 'col-hide-narrow' }),
                     render: (_: unknown, record: ShipmentBatchRow) =>
                       record.tracking_no ? `${record.logistics_company ?? ''} ${record.tracking_no}` : '-',
                   },
                   {
                     title: '本批偏差',
                     width: 110,
+                    className: 'col-hide-narrow',
+                    onHeaderCell: () => ({ className: 'col-hide-narrow' }),
                     render: (_: unknown, record: ShipmentBatchRow) => {
                       const d = record.deviation_days
                       if (d === null || d === undefined) return '-'
@@ -1066,8 +1762,36 @@ export default function OrderDetailPage() {
                   },
                   {
                     title: '本批明细',
-                    render: (_: unknown, record: ShipmentBatchRow) =>
-                      record.items.map((item) => `${item.sku ?? item.order_item_id} ×${item.shipped_qty || item.planned_qty}`).join('；') || '-',
+                    // 按**批次状态**选数量（C4-05 补修，2026-10-10）：
+                    //
+                    // 原来写的是 `item.shipped_qty ?? item.planned_qty`。
+                    // 但 `shipped_qty` 后端**总是返回数字**（未发货时是 0），
+                    // 而 `??` 只对 null/undefined 兜底 —— **0 不触发回退**：
+                    //   待发批次  planned=10, shipped=0  → 显示「×0」❌（应为计划量 10）
+                    //   已发批次  planned=10, shipped=0  → 显示「×0」✅（这一行确实没发）
+                    // **同一个 0 在两种状态下意思完全相反**，所以判据只能是状态：
+                    //   已发货 → 实发量（保留那个 0，它是事实）；其余（待发/在途）→ 计划量。
+                    // 顺带把前缀写清是"计划"还是"实发"，免得两个数字看起来一样却含义不同。
+                    render: (_: unknown, record: ShipmentBatchRow) => {
+                      const shipped = record.status === 'shipped'
+                      // 同一个 SKU 在一批里往往拆成两行（分两次生产/入库），
+                      // 原样拼出来就是「周转箱03-1 实发 1200；周转箱03-1 实发 1800」，
+                      // 而列宽只有 232，后半截被截成省略号（2026-11-20 截图）。
+                      // 同 SKU 先合并再加总，一行说完。
+                      const bySku = new Map<string, number>()
+                      record.items.forEach((item) => {
+                        const qty = shipped
+                          ? item.shipped_qty_exact ?? item.shipped_qty
+                          : item.planned_qty_exact ?? item.planned_qty
+                        const key = item.sku ?? String(item.order_item_id)
+                        bySku.set(key, (bySku.get(key) ?? 0) + Number(qty ?? 0))
+                      })
+                      const tag = shipped ? '实发' : '计划'
+                      const text = [...bySku]
+                        .map(([sku, qty]) => `${sku} ${tag} ${shipmentQuantity(qty)}`)
+                        .join('；')
+                      return text ? <span title={text}>{text}</span> : '-'
+                    },
                   },
                   ...(can('order:manage')
                     ? [
@@ -1077,12 +1801,14 @@ export default function OrderDetailPage() {
                           render: (_: unknown, record: ShipmentBatchRow) =>
                             record.status === 'planned' ? (
                               <span style={{ display: 'inline-flex', gap: 12 }}>
-                                <a onClick={() => setShipTarget(record)}>登记发货</a>
+                                <a onClick={() => openShipment(record)}>登记发货</a>
                                 <Popconfirm
-                                  title="取消该批次？"
+                                  title={`取消第 ${record.batch_no} 批发货安排？`}
+                                  content="这一批会从发货列表移出，计划数量可以重新安排发货。"
+                                  disabled={cancelShipmentMutation.isPending}
                                   onConfirm={() => cancelShipmentMutation.mutate(record.id)}
                                 >
-                                  <a style={{ color: 'var(--crm-danger, #d45)' }}>取消</a>
+                                  <a style={{ color: 'var(--crm-error)' }}>取消批次</a>
                                 </Popconfirm>
                               </span>
                             ) : (
@@ -1096,7 +1822,8 @@ export default function OrderDetailPage() {
                 loading={shipmentsQuery.isLoading}
                 rowKey="id"
                 pagination={false}
-                empty="还没有发货批次——点「排发货批次」从剩余未发量里排"
+                empty={emptyText(shipmentsQuery, '还没有发货批次',
+                  canManage && !shipmentPlanBlocked ? '可用「排发货批次」安排这一单。' : undefined)}
               />
             </>
           )}
@@ -1104,6 +1831,8 @@ export default function OrderDetailPage() {
       </SectionCard>
 
       <Modal
+        width={520}
+        style={{ maxWidth: 'calc(100vw - 32px)' }}
         title="排发货批次"
         visible={createShipmentVisible}
         onCancel={() => setCreateShipmentVisible(false)}
@@ -1114,28 +1843,51 @@ export default function OrderDetailPage() {
       >
         <div style={{ display: 'grid', gap: 10 }}>
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-            每行填本批计划发货数量（可留空），不能超过该行的未计划量
+            填本批准备发出的数量，其他产品可留空。实际发出后，再回到批次登记发货。
           </div>
-          {(shipmentsQuery.data?.items ?? []).map((item) => (
-            <div key={item.order_item_id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ flex: 1 }}>
-                {item.sku}（订购 {item.ordered}，未计划 {item.unplanned}）
-              </span>
-              <Input
-                style={{ width: 120 }}
-                placeholder="本批数量"
-                value={plannedQtys[item.order_item_id] ?? ''}
-                onChange={(value) => setPlannedQtys({ ...plannedQtys, [item.order_item_id]: value })}
-              />
-            </div>
-          ))}
+          <div>
+            <div style={{ marginBottom: 4 }}>计划发货日期（选填）</div>
+            <DatePicker
+              aria-label="计划发货日期"
+              type="date"
+              format="yyyy-MM-dd"
+              value={shipmentPlanDate ?? undefined}
+              onChange={(_, day) => setShipmentPlanDate((day as string) || null)}
+              style={{ width: '100%' }}
+              placeholder="日期未定可留空"
+            />
+          </div>
+          {(shipmentsQuery.data?.items ?? []).map((item) => {
+            const error = plannedShipmentRows.find((row) => row.order_item_id === item.order_item_id)?.error
+            return (
+              <div key={item.order_item_id} className="order-shipment-item">
+                <label htmlFor={`planned-quantity-${item.order_item_id}`}>
+                  <strong>{item.sku}</strong>
+                  <span>订购 {shipmentQuantity(item.ordered_exact ?? item.ordered)} · 还可安排 {shipmentQuantity(item.unplanned_exact ?? item.unplanned)}</span>
+                </label>
+                <Input
+                  id={`planned-quantity-${item.order_item_id}`}
+                  inputMode="decimal"
+                  placeholder="本批数量"
+                  value={plannedQtys[item.order_item_id] ?? ''}
+                  validateStatus={error ? 'error' : 'default'}
+                  aria-invalid={Boolean(error)}
+                  aria-describedby={error ? `planned-error-${item.order_item_id}` : undefined}
+                  onChange={(value) => setPlannedQtys({ ...plannedQtys, [item.order_item_id]: value })}
+                />
+                {error && <span id={`planned-error-${item.order_item_id}`} style={{ color: 'var(--crm-error)', gridColumn: '1 / -1' }}>{error}</span>}
+              </div>
+            )
+          })}
         </div>
       </Modal>
 
       <Modal
+        width={520}
+        style={{ maxWidth: 'calc(100vw - 32px)' }}
         title={`第 ${shipTarget?.batch_no ?? ''} 批登记发货`}
         visible={Boolean(shipTarget)}
-        onCancel={() => setShipTarget(null)}
+        onCancel={() => { if (!shipShipmentMutation.isPending) closeShipment() }}
         onOk={() => {
           if (shipTarget) shipShipmentMutation.mutate(shipTarget.id)
         }}
@@ -1145,28 +1897,56 @@ export default function OrderDetailPage() {
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-            默认按计划量全发；批次发货后整单推进到「已发货」，全部发完才能标记完成
+            实发数量预填计划量，请按这次实际发出的数量修改。某项没发可填 0，剩余数量可以再排下一批。
           </div>
+          {actualShipmentRows.map(({ item, planned, raw, difference, error }) => (
+            <div key={item.order_item_id} className="order-shipment-item">
+              <label htmlFor={`shipped-quantity-${item.order_item_id}`}>
+                <strong>{item.sku ?? '订单商品'}</strong>
+                <span>计划 {planned}{difference ? ` · ${difference}` : ''}</span>
+              </label>
+              <Input
+                id={`shipped-quantity-${item.order_item_id}`}
+                inputMode="decimal"
+                placeholder="实发数量"
+                value={raw}
+                aria-invalid={Boolean(error)}
+                aria-describedby={error ? `shipped-error-${item.order_item_id}` : undefined}
+                validateStatus={error ? 'error' : 'default'}
+                onChange={(quantity) => setShipForm((form) => ({
+                  ...form, quantities: { ...form.quantities, [item.order_item_id]: quantity },
+                }))}
+              />
+              {error && <span id={`shipped-error-${item.order_item_id}`} style={{ color: 'var(--crm-error)', gridColumn: '1 / -1' }}>{error}</span>}
+            </div>
+          ))}
           <div>
             <div style={{ marginBottom: 4 }}>实际发货日期</div>
             <DatePicker
+              aria-label="实际发货日期"
               type="date"
-              disabled={milestoneForm.skipped}
+              // 这里原来写的是 `disabled={milestoneForm.skipped}` —— **拿错了变量**：
+              // milestoneForm 是「登记里程碑」那个弹窗的状态，用户在那边勾过一次
+              // 「不适用，跳过此节点」之后就一直是 true（关掉里程碑弹窗时不清），
+              // 于是这个「实际发货日期」在本单后续所有批次里都点不动，而用户完全
+              // 不可能联想到是另一个弹窗之前的操作（主人 2026-10-12：「点又点不了，
+              // 又不给提示为什么点不了」）。实际发货日期本来就允许留空（空值落库为
+              // null），所以直接放开，是正确的行为而不是放宽口径。
               format="yyyy-MM-dd"
               style={{ width: '100%' }}
-              value={shipForm.date}
+              value={shipForm.date ?? undefined}
               onChange={(_, dateStr) =>
-                setShipForm({ ...shipForm, date: dateStr ? new Date(dateStr as string) : undefined })
+                setShipForm({ ...shipForm, date: (dateStr as string) || null })
               }
             />
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>承运商</div>
-            <Input value={shipForm.company} onChange={(v) => setShipForm({ ...shipForm, company: v })} />
+            <label htmlFor="shipment-company" style={{ display: 'block', marginBottom: 4 }}>承运商</label>
+            <Input id="shipment-company" value={shipForm.company} onChange={(v) => setShipForm({ ...shipForm, company: v })} />
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>运单号</div>
-            <Input value={shipForm.tracking} onChange={(v) => setShipForm({ ...shipForm, tracking: v })} />
+            <label htmlFor="shipment-tracking" style={{ display: 'block', marginBottom: 4 }}>运单号</label>
+            <Input id="shipment-tracking" value={shipForm.tracking} onChange={(v) => setShipForm({ ...shipForm, tracking: v })} />
           </div>
         </div>
       </Modal>
@@ -1175,25 +1955,33 @@ export default function OrderDetailPage() {
         title="交期与跟单计划"
         visible={scheduleVisible}
         onCancel={() => setScheduleVisible(false)}
-        width={720}
+        width={680}
         footer={
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-            <Button onClick={() => setScheduleVisible(false)}>取消</Button>
-            <Button
-              loading={schedulePreviewMutation.isPending}
-              disabled={!scheduleForm.new_delivery_date || !Number.isFinite(scheduleForm.transit_days) || Object.values(scheduleForm.plan_offsets).some((v) => !Number.isFinite(v))}
-              onClick={() => schedulePreviewMutation.mutate()}
-            >
-              预览受影响面
-            </Button>
-            <Button
-              theme="solid"
-              loading={createScheduleMutation.isPending}
-              disabled={!schedulePreview}
-              onClick={() => createScheduleMutation.mutate()}
-            >
-              提交待确认计划
-            </Button>
+          <div>
+            {/* 页脚正上方写清「预览受影响面」为什么点不动（7 个数字框 + 客户要求
+                日期，逐项点名）——不写的话用户只看到一个灰按钮，不知道差在哪。 */}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+              <Button onClick={() => setScheduleVisible(false)}>取消</Button>
+              <GuardedButton
+                  loading={schedulePreviewMutation.isPending}
+                  disabled={scheduleBlockedReasons.length > 0}
+                  blockedReasons={scheduleBlockedReasons}
+                  action="预览受影响面"
+                  onClick={() => schedulePreviewMutation.mutate()}
+                >
+                  预览受影响面
+                </GuardedButton>
+              <GuardedButton
+                  theme="solid"
+                  loading={createScheduleMutation.isPending}
+                  disabled={submitBlockedReasons.length > 0}
+                  blockedReasons={submitBlockedReasons}
+                  action="提交待确认计划"
+                  onClick={() => createScheduleMutation.mutate()}
+                >
+                  提交待确认计划
+                </GuardedButton>
+            </div>
           </div>
         }
       >
@@ -1294,6 +2082,7 @@ export default function OrderDetailPage() {
       </Modal>
 
       <Modal
+        width={520}
         title={`登记里程碑：${milestoneEdit?.label ?? ''}`}
         visible={Boolean(milestoneEdit)}
         onCancel={() => setMilestoneEdit(null)}
@@ -1346,17 +2135,16 @@ export default function OrderDetailPage() {
           </div>
           <div>
             <div style={{ marginBottom: 4 }}>责任人</div>
-            <Select
-              style={{ width: '100%' }}
+            <UserSearchSelect
+              queryScope="order-milestone-owner"
+              enabled={Boolean(milestoneEdit)}
+              placeholder="按姓名或登录账号搜索（逾期时催他）"
               value={milestoneForm.owner_id ?? undefined}
-              placeholder="选一个具体的人（逾期时催他）"
+              fallbackLabel={milestoneEdit?.owner_name ?? undefined}
               onChange={(value) =>
-                setMilestoneForm({ ...milestoneForm, owner_id: (value as number) ?? null })
+                setMilestoneForm({ ...milestoneForm, owner_id: value ?? null })
               }
-              optionList={(milestoneUsersQuery.data?.items ?? []).map((u) => ({
-                value: u.id,
-                label: u.name,
-              }))}
+              style={{ width: '100%' }}
             />
           </div>
           <div>
@@ -1378,44 +2166,111 @@ export default function OrderDetailPage() {
         </div>
       </Modal>
 
-      {/* 这单签了什么，在订单页就能看到：合同向来是照着报价/订单出的，
-          以前只有合同台账那一头能查，从订单倒着找不回去 */}
-      <ContractDocsPanel
-        orderId={orderId}
-        style={{ marginTop: 16 }}
-        empty="这单还没有关联的合同文档"
-      />
+      {/* 合同文档 + AI 回款风险：原来是两张"一句话卡"——
+          每张都占一整块白卡，里面只有一行字加一个按钮，
+          底下还是大片空白（2026-11-17 订单详情巡检）。
+          两件事都是"这单的外部凭据 / 这单的风险怎么看"，合成一张卡：
+          段间用 1px 分隔线，每段一个 13px 小标题配一枚 22px 圆角小图标，
+          和报价详情「对外与归档」同一套节奏。内容一个字没减。 */}
+      {/* 订单全景：这页到下面那张卡结束，底部还空三百来像素；
+          而"这单几行明细、排了几期应收、收了几笔、发了几批"散在五个页签里。
+          四个数字摆一条，点一下跳过去 —— 和客户/商机详情同一套做法。 */}
+      <SectionCard title="订单全景" style={{ marginTop: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
+          {([
+            /* 色带：明细蓝 / 应收橙 / 回款绿 / 发货紫 —— 和业务口径对齐（钱进来了是绿） */
+            { key: 'items', label: '订单明细', value: itemsQuery.data?.length, tone: 'tone-primary' },
+            { key: 'receivables', label: '应收计划', value: receivablesQuery.data?.length, tone: 'tone-caution' },
+            { key: 'payments', label: '回款记录', value: paymentsQuery.data?.length, tone: 'tone-success' },
+            { key: 'shipments', label: '发货批次', value: shipmentsQuery.data?.batches?.length, tone: 'tone-secondary' },
+          ] as const).map((tile) => (
+            <button
+              key={tile.label}
+              type="button"
+              /* 0 条不染色：四条色线（蓝橙绿紫）全亮着，等于四个业务模块都"有事发生"，
+                 实际是空单。数量为 0 时退回中性灰线，有数才用语义色。 */
+              className={`cust-pano-tile ${tile.value ? tile.tone : 'tone-neutral'}`}
+              onClick={() => setActiveKey(tile.key)}
+              title={`跳到「${TABS.find((t) => t.itemKey === tile.key)?.tab ?? tile.key}」页签`}
+            >
+              <span className="cust-pano-label">{tile.label}</span>
+              <span className="cust-pano-value">
+                {tile.value === undefined || tile.value === null ? '-' : tile.value}
+                {tile.value !== undefined && tile.value !== null && (
+                  <span className="cust-pano-unit">条</span>
+                )}
+              </span>
+            </button>
+          ))}
+        </div>
+      </SectionCard>
 
-      {can('agent:use') && (
-        <SectionCard
-          title="AI 分析"
-          style={{ marginTop: 16 }}
-          extra={
-            <Button size="small" loading={aiMutation.isPending} onClick={() => aiMutation.mutate()}>
-              回款风险
-            </Button>
-          }
-        >
-          <AgentInsight
-            envelope={aiEnvelope}
-            empty="点右上角按钮运行：统计逾期应收节点、金额与集中度，没配模型也能给出风险等级"
-          />
+      {(can('order:view') || can('agent:use')) && (
+        <SectionCard style={{ marginTop: 16 }}>
+          {can('order:view') && (
+            <>
+              {/* 这单签了什么，在订单页就能看到：合同向来是照着报价/订单出的，
+                  以前只有合同台账那一头能查，从订单倒着找不回去 */}
+              <div className="card-sub-head">
+                <span className="card-sub-icon" style={{ background: '#e6f6f2', color: '#0d9488' }}>
+                  <IconFile size="small" />
+                </span>
+                合同文档
+              </div>
+              <ContractDocsPanel orderId={orderId} boxed={false} empty="这单还没有关联的合同文档" />
+            </>
+          )}
+
+          {can('agent:use') && (
+            <>
+              {can('order:view') && <div className="card-sub-divider" />}
+              <div className="card-sub-head">
+                <span className="card-sub-icon" style={{ background: '#f1ecfe', color: '#7a4fd3' }}>
+                  <IconAIEditLevel1 size="small" />
+                </span>
+                AI 回款风险
+                <span style={{ marginLeft: 'auto' }}>
+                  <Button
+                    size="small"
+                    theme="outline"
+                    type="primary"
+                    loading={aiMutation.isPending}
+                    onClick={() => aiMutation.mutate()}
+                  >
+                    运行分析
+                  </Button>
+                </span>
+              </div>
+              <AgentInsight
+                envelope={aiEnvelope}
+                empty="点右上角「运行分析」：统计逾期应收节点、金额与集中度，没配模型也能给出风险等级"
+              />
+            </>
+          )}
         </SectionCard>
       )}
 
       <Modal
-        title="更新履约状态"
+        width={520}
+        title="人工更新履约状态"
         visible={statusVisible}
         onCancel={() => setStatusVisible(false)}
-        onOk={() => {
-          if (!targetStatus) {
-            Toast.warning('请选择状态')
-            return
-          }
-          statusMutation.mutate()
-        }}
-        confirmLoading={statusMutation.isPending}
-        okText="更新"
+        footer={
+          <div className="workflow-modal-actions">
+            <Button onClick={() => setStatusVisible(false)}>取消</Button>
+            <GuardedButton
+              theme="outline"
+              action={completingDelivery ? '确认完成交付' : '更新状态'}
+              disabled={Boolean(statusBlocked)}
+              blockedReasons={statusBlocked ? [statusBlocked] : []}
+              loading={statusMutation.isPending}
+              hintBelow
+              onClick={() => statusMutation.mutate()}
+            >
+              {completingDelivery ? '确认完成交付' : '更新'}
+            </GuardedButton>
+          </div>
+        }
       >
         <div style={{ marginBottom: 12, color: 'var(--crm-text-3)', fontSize: 13 }}>
           MES 未接入前由人工维护；接入后这一步会由 MES 回传自动完成。
@@ -1423,134 +2278,254 @@ export default function OrderDetailPage() {
         <Select
           placeholder="选择状态"
           value={targetStatus ?? undefined}
-          onChange={(value) => setTargetStatus(value as string)}
+          onChange={(value) => {
+            statusMutation.reset()
+            setTargetStatus(value as string)
+          }}
           optionList={[
             { value: 'pending', label: '待生产' },
             { value: 'in_production', label: '生产中' },
             { value: 'shipped', label: '已发货' },
             { value: 'delivered', label: '已签收' },
-            { value: 'completed', label: '已完成' },
+            { value: 'completed', label: '交付已完成' },
             // 「已取消」**故意不在这里**：取消订单是不可逆的终态动作，
             // 还要连带处理回款与应收，必须走右上角那个专门的「取消订单」。
             // 放在这个下拉里，用户看不到后果，规则也会被绕过。
           ]}
           style={{ width: '100%' }}
         />
+        {completingDelivery && !completionBlocked && hasUnreceived && (
+          <p className="workflow-guide" style={{ marginTop: 12 }}>
+            {waitingForPayment}。确认后会标记交付完成，财务仍可继续登记和确认回款。
+          </p>
+        )}
+        {completionBlocked && (
+          <Button size="small" theme="borderless" style={{ marginTop: 8 }} onClick={() => {
+            setStatusVisible(false)
+            setActiveKey('shipments')
+            orderTabsRef.current?.scrollIntoView({ block: 'start' })
+            orderTabsRef.current?.focus({ preventScroll: true })
+          }}>
+            去发货批次
+          </Button>
+        )}
+        {statusMutation.error && (
+          <Banner type="danger" fullMode={false} closeIcon={null} description={statusMutation.error.message} />
+        )}
       </Modal>
 
       {/* 取消订单：把"取消到底会影响什么"写在确认之前 */}
       <Modal
+        width={520}
+        className="order-cancel-modal"
         title="取消订单"
         visible={cancelVisible}
-        onCancel={() => setCancelVisible(false)}
-        onOk={() => cancelMutation.mutate()}
-        confirmLoading={cancelMutation.isPending}
-        okText="确认取消订单"
-        cancelText="再想想"
-        okButtonProps={{ type: 'danger' }}
+        onCancel={() => { if (!cancelMutation.isPending) setCancelVisible(false) }}
+        footer={
+          <div className="workflow-modal-actions">
+            <Button disabled={cancelMutation.isPending} onClick={() => setCancelVisible(false)}>保留订单</Button>
+            <GuardedButton
+              type="danger"
+              theme="outline"
+              action="取消订单"
+              disabled={Boolean(cancellationBlocked)}
+              blockedReasons={cancellationBlocked ? [cancellationBlocked] : []}
+              loading={cancelMutation.isPending}
+              hintBelow
+              onClick={() => cancelMutation.mutate()}
+            >
+              确认取消订单
+            </GuardedButton>
+          </div>
+        }
       >
-        <div style={{ display: 'grid', gap: 10, fontSize: 13 }}>
-          <div>
-            即将取消订单 <b>{order.order_no}</b>
-            {order.customer_name ? `（${order.customer_name}）` : ''}， 金额{' '}
-            {formatMoney(order.total_amount, order.currency)}。
-            <b>取消不可撤销。</b>
-          </div>
-          <div>取消会连带做这几件事：</div>
-          <ul style={{ margin: 0, paddingLeft: 20, color: 'var(--crm-text-2)' }}>
-            <li>
-              未回清的应收计划
-              {(() => {
-                const open = (receivablesQuery.data ?? []).filter(
-                  (row) => row.status !== 'paid' && row.status !== 'cancelled',
-                ).length
-                return open ? `（当前 ${open} 笔）` : ''
-              })()}
-              → 一并作废，<b>不再发催收和逾期提醒</b>
-            </li>
-            <li>还在「待确认」的回款 → 随订单驳回</li>
-            <li>还没发货的发货批次 → 随订单取消（已发货的保留，那是既成事实）</li>
-          </ul>
-          <div style={{ color: 'var(--crm-caution, #b26a00)' }}>
-            这单如果已经收到过「已确认」的回款，系统会<b>直接拒绝取消</b> ——
-            钱不能跟着订单静默消失，请先人工处理回款。
-          </div>
-          <div style={{ color: 'var(--crm-text-3)' }}>
-            商机成交状态不会自动回退；确需撤销请走失单流程由人工评估。
-          </div>
+        <div className="order-cancel-details">
+          <p className="workflow-guide">
+            <strong>{order.order_no}</strong>
+            {order.customer_name ? ` · ${order.customer_name}` : ''}
+            {' · '}{formatMoney(order.total_amount_exact ?? order.total_amount, order.currency)}
+          </p>
+          {cancellationBlocked ? (
+            <Banner type="warning" fullMode={false} closeIcon={null} title="已有确认回款">
+              <Button size="small" theme="borderless" onClick={() => {
+                setCancelVisible(false)
+                setActiveKey('payments')
+                orderTabsRef.current?.scrollIntoView({ block: 'start' })
+                orderTabsRef.current?.focus({ preventScroll: true })
+              }}>查看回款记录</Button>
+            </Banner>
+          ) : (
+            <>
+              <strong>取消后无法恢复</strong>
+              <dl className="order-cancel-impact">
+                <div>
+                  <dt>{receivablesQuery.isSuccess ? `${cancelPlanCount} 期未收清应收` : '未收清的应收计划'}</dt>
+                  <dd>作废并停止催收</dd>
+                </div>
+                <div>
+                  <dt>{paymentsQuery.isSuccess ? `${pendingPayments} 笔待确认回款` : '待确认的回款'}</dt>
+                  <dd>随单驳回</dd>
+                </div>
+                <div>
+                  <dt>{shipmentsQuery.isSuccess && shipment ? `${shipment.summary.pending_batch_count} 个待发批次` : '待发的批次'}</dt>
+                  <dd>随单取消</dd>
+                </div>
+              </dl>
+              <p className="workflow-guide">已签合同和已确认回款须先处理。未生效的交期变更会随订单作废。</p>
+              {order.opportunity_id && <p className="workflow-guide">如需撤销商机成交，请另到商机核对并处理。</p>}
+            </>
+          )}
+          {cancelMutation.error && !cancellationBlocked && (
+            <Banner type="danger" fullMode={false} closeIcon={null} title="取消未完成" description={cancelMutation.error.message} />
+          )}
         </div>
       </Modal>
 
       <Modal
+        width={600}
+        className="receivable-plan-modal"
         title="生成应收计划"
+        style={{ maxWidth: 'calc(100vw - 32px)' }}
         visible={generateVisible}
-        onCancel={() => setGenerateVisible(false)}
-        onOk={() => generateMutation.mutate()}
-        confirmLoading={generateMutation.isPending}
-        okText="生成"
+        onCancel={() => { if (!generateMutation.isPending) setGenerateVisible(false) }}
+        footer={
+          <div className="workflow-modal-actions">
+            <Button disabled={generateMutation.isPending} onClick={() => setGenerateVisible(false)}>取消</Button>
+            <GuardedButton
+              theme="outline"
+              action="生成应收计划"
+              disabled={generateBlocked.length > 0}
+              blockedReasons={generateBlocked}
+              loading={generateMutation.isPending}
+              hintBelow
+              onClick={() => generateMutation.mutate()}
+            >
+              生成应收计划
+            </GuardedButton>
+          </div>
+        }
       >
-        <div style={{ display: 'grid', gap: 12 }}>
-          <div style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
-            按订单金额 30% 定金 + 70% 尾款生成两个应收节点（合计{' '}
-            {formatMoney(order.total_amount, order.currency)}）
-          </div>
-          <div>
-            <div style={{ marginBottom: 4 }}>定金到期日</div>
-            <DatePicker
-              value={generateDates.first}
-              onChange={(date) => setGenerateDates({ ...generateDates, first: date as Date })}
-              style={{ width: '100%' }}
-            />
-          </div>
-          <div>
-            <div style={{ marginBottom: 4 }}>尾款到期日</div>
-            <DatePicker
-              value={generateDates.second}
-              onChange={(date) => setGenerateDates({ ...generateDates, second: date as Date })}
-              style={{ width: '100%' }}
-            />
-          </div>
+        <div className="receivable-picker">
+          <p className="receivable-picker-guide">
+            按订单总额 <strong>{formatMoney(receivableTotal, order.currency)}</strong> 划分各期应收。
+            请核对每期名称、比例和到期日，确认后一次保存全部期次。
+          </p>
+          {generateMutation.error && (
+            <Banner type="danger" fullMode={false} closeIcon={null} title="应收计划未生成" description={generateMutation.error.message} />
+          )}
+          <ReceivablePlanPicker
+            mode="installments"
+            totalAmount={receivableTotal}
+            rows={generateRows}
+            onRowsChange={setGenerateRows}
+            currency={order.currency}
+          />
         </div>
       </Modal>
 
+      {dueEdit && (
+        <Modal
+          width={420}
+          title="修改应收到期日"
+          visible
+          onCancel={() => { if (!dueMutation.isPending) setDueEdit(null) }}
+          footer={
+            <div className="workflow-modal-actions">
+              <Button disabled={dueMutation.isPending} onClick={() => setDueEdit(null)}>取消</Button>
+              <GuardedButton
+                theme="outline"
+                action="保存到期日"
+                disabled={!newDueDay || newDueDay === dueEdit.plan.due_date}
+                blockedReasons={[newDueDay ? '请选择不同的到期日。' : '请选择新的到期日。']}
+                loading={dueMutation.isPending}
+                hintBelow
+                onClick={() => { if (newDueDay) dueMutation.mutate({ planId: dueEdit.plan.id, day: newDueDay }) }}
+              >
+                保存到期日
+              </GuardedButton>
+            </div>
+          }
+        >
+          <div className="receivable-picker">
+            <p className="receivable-picker-guide">
+              <strong>{dueEdit.plan.plan_name}</strong> · 原到期日 {dueEdit.plan.due_date ?? '未填写'}
+            </p>
+            <div>
+              <FormLabel required><span id="receivable-new-due-label">新到期日</span></FormLabel>
+              <DatePicker
+                aria-labelledby="receivable-new-due-label"
+                style={{ width: '100%' }}
+                value={dueEdit.date ?? undefined}
+                disabled={dueMutation.isPending}
+                onChange={date => setDueEdit(current => current ? { ...current, date: date as Date | null } : current)}
+              />
+            </div>
+            <p className="receivable-picker-guide">系统会按新日期判断是否逾期，已分到各期的回款会保留原归属。</p>
+            {dueMutation.error && (
+              <Banner type="danger" fullMode={false} closeIcon={null} description={dueMutation.error.message} />
+            )}
+          </div>
+        </Modal>
+      )}
+
+      {/* 调整回款分配（第十批）：整份替换式提交，原因会进审计 */}
+      <AllocationAdjustModal
+        // ⚠️ `key` 让"每打开一次就是一次全新挂载"：弹窗内部的编辑状态用惰性初值，
+        // 不必在 effect 里 setState（那会多跑一轮渲染，且触发
+        // react-hooks/set-state-in-effect）。换一笔回款也会重建，不会串数据。
+        key={allocationPayment?.id ?? 'none'}
+        visible={allocationPayment !== null}
+        payment={allocationPayment}
+        plans={receivablesQuery.data ?? []}
+        currency={order?.currency}
+        canEdit={canPayment}
+        onClose={() => setAllocationPayment(null)}
+        onSaved={() => {
+          paymentsQuery.refetch()
+          receivablesQuery.refetch()
+        }}
+      />
+
       <Modal
+        width={520}
         title={`登记回款：${paymentTarget?.plan_name ?? ''}`}
+        style={{ maxWidth: 'calc(100vw - 32px)' }}
         visible={Boolean(paymentTarget)}
         onCancel={() => setPaymentTarget(null)}
         onOk={() => {
-          if (!paymentForm.amount.trim() || Number(paymentForm.amount) <= 0) {
-            Toast.warning('请输入有效金额')
+          if (!paymentForm.amount.trim() || !Number.isFinite(Number(paymentForm.amount)) || Number(paymentForm.amount) <= 0) {
+            Toast.warning('请填写大于 0 的实际到账金额。')
             return
           }
           paymentMutation.mutate()
         }}
         confirmLoading={paymentMutation.isPending}
-        okText="登记"
+        okText="提交财务确认"
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
             该节点未收{' '}
             {formatMoney(
-              paymentTarget?.remaining_amount ?? 0,
+              paymentTarget?.remaining_amount_exact ?? paymentTarget?.remaining_amount ?? 0,
               paymentTarget?.currency ?? order.currency,
             )}
           </div>
-          <Input
-            value={paymentForm.amount}
-            onChange={(value) => setPaymentForm({ ...paymentForm, amount: value })}
-            placeholder="收款金额"
-          />
-          <DatePicker
-            value={paymentForm.date}
-            onChange={(date) => setPaymentForm({ ...paymentForm, date: (date as Date) ?? new Date() })}
-            style={{ width: '100%' }}
-          />
-          <Select
-            value={methodOption.selectValue}
-            onChange={methodOption.onSelect}
-            optionList={PAYMENT_METHODS.map((value) => ({ value, label: value }))}
-            style={{ width: '100%' }}
-          />
+          <div>
+            <FormLabel required>实际到账金额</FormLabel>
+            <Input aria-label="实际到账金额" inputMode="decimal" value={paymentForm.amount}
+              onChange={(value) => setPaymentForm({ ...paymentForm, amount: value })} />
+          </div>
+          <div>
+            <FormLabel required>实际到账日期</FormLabel>
+            <DatePicker aria-label="实际到账日期" value={paymentForm.date}
+              onChange={(date) => setPaymentForm({ ...paymentForm, date: (date as Date) ?? new Date() })}
+              style={{ width: '100%' }} />
+          </div>
+          <div>
+            <FormLabel>收款方式</FormLabel>
+            <Select aria-label="收款方式" value={methodOption.selectValue} onChange={methodOption.onSelect}
+              optionList={PAYMENT_METHODS.map((value) => ({ value, label: value }))} style={{ width: '100%' }} />
+          </div>
           {methodOption.showInput && (
             <Input
               value={methodOption.inputValue}
@@ -1559,7 +2534,7 @@ export default function OrderDetailPage() {
             />
           )}
           <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
-            登记后需要财务确认，确认后才会计入已回款。
+            请按实际到账填写。{canPayment ? '提交后可在「回款记录」补传凭证，再确认到账。' : '提交后可在「回款记录」查看进度，财务确认后才计入已收金额。'}
           </div>
         </div>
       </Modal>

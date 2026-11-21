@@ -22,6 +22,14 @@ check_approval_rules
 check_approval_inbox
 check_agent_stream
 check_scheduler
+# 钉钉人员绑定（直连库、不依赖网络）：验的是"把账号和钉钉成员对上的规矩"——
+# 手机号优先、姓名唯一才认、重名不猜、已绑不改绑、绝不自动建账号。
+# 用替身通讯录，所以不会真的去打扰钉钉那边的人。
+check_dingtalk_user_bind
+# 钉钉扫码登录（不依赖网络）：身份只由服务端换（授权码→令牌→unionId→userid）、
+# 五种拒绝理由分开报、一个钉钉号对上多个账号一律拒绝、state/ticket 一次性。
+# 同样用替身，不会真的去打扰钉钉。
+check_dingtalk_login
 check_quote_center_acceptance
 check_custom_no_sku
 # 定制询价修订链（第十二批 12.6）：删掉某一版之后，仍能以更早的版本出新版 ——
@@ -33,6 +41,12 @@ check_custom_no_sku
 # ⚠️ 它**必须显式传 API_BASE**：不给就拒跑（会建询价、打并发请求）。
 check_inquiry_revision_chain
 check_sample_production
+# 打样单软删与恢复（2026-10-15 补，03-API §41.17）：只让"还没走流程的"删
+# （pending / rejected），删完对其它入口一律等于不存在（详情、编辑、审批、寄出
+# 全 404）；已批准 / 已寄出 / 已签收拒绝（400）；「已删除」筛选里只有已删的；
+# 恢复用同一把钥匙（sample:manage），删除与恢复各留一条审计。
+# 紧跟 check_sample_production：同属打样这一类，一起跑便于排查。
+check_sample_soft_delete
 check_sales_attribution
 check_duplicate_arbitration
 check_sales_targets
@@ -324,5 +338,278 @@ check_logistics_rate_admin
 check_trade_mode_gate
 # 第十二批六条返修的独立反例与正向对照。
 check_twelfth_round_repairs
+# 产品中心：按 SKU 编码 / SKU 名称也能搜到产品（主人 2026-10-10 提的口径）。
+# 重点守两处容易改错的：① 不能被"一个产品下 N 个匹配 SKU"撑成重复行（join 会踩、exists 不会）；
+# ② 软删的 SKU 不算数。
+check_product_search_by_sku
+# Agent 核价工具与普通接口必须同一套数值校验（issue #14）：
+# 工具先过一遍 `PricingRequest`，两条路径对同一批数字给出同一结论。
+check_agent_pricing_validation
+# 跟单节点不能脱离真实发货/回款而手填完成（issue #11）：`first_shipment`/`deposit`/`payment`
+# 由真实事实派生；人工节点（签约/产前样）可登记但标明「人工声明」。
+check_milestone_facts
+# 订单「已完成」必须有履约依据 + 回退要留理由（issue #10）。
+# 守一处最容易改坏的边界：非完成态之间的正常流转不能被闸门误拦。
+check_order_completion_evidence
+# 停用/删除的 SKU 必须贯穿所有新业务入口（issue #7）：查价 / 加需求 / 报价 / 手工建单 / 核价。
+# 守一条最容易改坏的边界：**历史单据不受影响**（停用后已发的报价照常能打开）。
+check_sku_availability
+# 价格规则 / 客户特殊价的搜索与分页（主人："没有搜索功能，一旦很多就太乱了，根本找不到"）。
+# 从前前端写死 `{page:1, page_size:100}`：既搜不了，第 101 条以后也看不到。
+check_price_rule_search
+# 会「切换当前依据 / 覆盖金额 / 结束流程 / 登记商务事实 / 写外部系统」的五个动作，
+# 必须先确认（42206）再执行；文案要能直接当确认弹窗的正文。
+check_confirm_gates
+# 「确认了主数据但报价接不上」的那座桥：link-master 不依赖价格，
+# 查不到价/手工价的明细也能接上；价格与成本快照一个字不动。
+check_master_link_bridge
+# 主数据确认完整路径（核对本地值 → 确认字段 → 生成快照 → 报价引用）：
+# 逐字段独立确认、按变化处理（不造空转版本、留核对痕迹）、本地改了要提示、
+# 报价预览后才刷新、已发送不给刷、两个状态分开显示。
+check_master_confirm_path
+# 本地直接确认主数据：补上"零差异 → 没有可引用版本 → 正式发送被硬拦"缺的那一段。
+# 守三处：① 本地建 SKU 后确实零确认零快照（复现）；② 确认后真实闸门放行；
+# ③ 幂等（值没变不新增版本）+ 空规格是合法已确认值（不能当成缺字段）。
+check_master_local_confirm
+# GitHub issue 整改批次一：#3 金额口径（整单优惠不得把总额打到 0 以下）、
+# #9 目标利润金额（试算价 = 成本+目标利润；无成本不再 500）、
+# #6 复制报价的商机可见性与客户一致性、#5 成本可见性、#12 统计拆列。
+check_issue_batch_round1
+# 第三批六条返修（C3-01 / C3-02 / C3-06）的独立反例与正向对照。
+# 断言写的是**当时复现出来的那个反例**，退回去改坏了一定会红。
+# 库名只认 DATABASE_URL（与夹具同源），并过 require_isolated_db 防呆。
+check_c3_round_repairs
+# 第四批八条返修（C4-01 … C4-08）的独立反例与正向对照。
+# 含两处"最容易被改回去"的边界：待发批次的数量语义（C4-05）、
+# 旧合同（无请求指纹）比较里"没传字段"与"显式传 null"的区别（C4-06）。
+check_c4_round_repairs
+# 2026-10-12 资金风险修复：折扣/硬底、金额舍入、PDF 闸门、Agent 失败回滚、核定并发。
+check_audit_risk_repairs
+# 2026-10-12 第二轮 11 项修复：并发改费用重读、Excel 闸门、毛利率不可计算、
+# ERP 回写/推单边界、幂等跨订单、推单确认契约、单价精度与公式注入、外币档位与利润顺序。
+check_round2_risk_repairs
+# 2026-10-12 第三轮 7 项修复：预览类型判定与沙箱、跟单节点按财务事实重建、
+# 未来发货日、合同附件同判据、复制/复购的 SKU 可用性、被替代协议不再提醒、续签生效日。
+check_round3_risk_repairs
+# 2026-10-12 第四轮：定制需求与报价的**客户一致性**。
+# 主人提问核实："能把 A 客户的需求挂进 B 客户的报价" —— 实测确实能，
+# 且需求编号/标题会落进快照跟着对客文件流出去。这条同时守两条路
+# （单条追加 / 整版替换）与前端下拉的过滤参数，并留一条"同客户正常路径不许误伤"。
+check_inquiry_quote_scope
+# 2026-10-12 第四轮：报价的**客户与商机必须同一家**（主人拍板口径）。
+# 注意它不是"堵跨客户挂商机"——那本来就发生不了（客户跟着商机走）；
+# 它堵的是**参数互相矛盾却被当成成功**：请求里的 customer_id 以前会被静默丢掉。
+check_quote_customer_consistency
+# 2026-10-12 第四轮：合同 / 回款 / 物流报价 / 附件 四处"能不能挂到别家记录上"。
+# 这四条**当前都被拦住了**（这就是要钉住的结论）：
+#   合同  → 所选订单/报价不属于该客户（含"订单与报价互不匹配"）
+#   回款  → 该订单不在你的数据范围内（推导型：客户由订单推出）
+#   物流  → 所选商机不属于该客户
+#   附件  → 挂载/读取都判目标对象的数据范围
+# 它同时留下"同客户正常路径不被误伤"的正向对照，改歪了会红。
+check_cross_entity_scope4
+# 2026-10-12 复审遗留 P1（主人复审指出，已复现并修复）：跟单页 GET 与财务改应收的
+# 真并发交错。**必须真库**（SQLite 忽略 FOR UPDATE）+ 独立后端，所以放在真库脚本段。
+# 它证明两件事：① 有人持订单锁时这个 GET 会排队等（而不是直接跑完）；
+#              ② 端点按**新事实**收尾，不会把"未收齐"写成"收款完成"。
+# 离线替身是 ops/check_milestone_lock.py（CI 里跑，秒级）。
+check_milestone_lock_race
+# 2026-10-12 第四批审查 6 项（3 个 P1、3 个 P2）的真库端到端验证：
+#   账期识别（预付比例不当账期）、外币让价（直接拒）、回款未来日期（登记/修改/确认
+#   三处都拦）、CSV 公式注入、CSV 多余列（业务错误而非 500）。
+# 离线回归在 backend/tests/test_round4_review_fixes.py + test_approval_rules_engine.py。
+check_round4_review_fixes
+# 2026-10-12 第五批审查 5 项（2 个 P1、3 个 P2）。其中 P1-1（并发普通结账互相覆盖）
+# **必须真库**：`pg_advisory_xact_lock` 的互斥只有 PostgreSQL 有，SQLite 直接跳过。
+# 它证明：两个并发的普通结账只能成功一个，另一个必须报「已经结过账了」。
+# 其余四项的离线回归在 backend/tests/test_round5_review_fixes.py。
+check_actuals_period_lock
+# 2026-10-12 第四批返修（复审独立复验后仍不合格的两项）：
+#   ① 合同 PDF 清理的两条失败路径 —— 写审计失败必须清、**提交回执丢失不许删原件**；
+#   ② 人民币白名单（改 trade_mode 也不放行外币）由 check_trade_mode_gate 覆盖。
+# 真库 + 真存储目录故障注入，所以放真库脚本段。
+check_contract_pdf_cleanup
+# 2026-10-12 第五批返修：任务「客户端版本」校验的精度。
+# 复审实测同一秒内的旧版本能覆盖同事的改动（`replace(microsecond=0)` 惹的祸）。
+# 离线只能断言"源码里没有截断"，"旧版本必须 409、当前版本必须成功"要真接口。
+# 2026-10-12 第四批**再返修**：
+#   ① 账期解析补了单位（月/年）、全部分句、取最长——离线断言在
+#      tests/test_approval_rules_engine.py（`TestPaymentTermsDays`）；
+#   ② 核价入口接人民币白名单 —— 已并进 check_trade_mode_gate（6.5 / 6.6 两节）；
+#   ③ 合同 PDF 在**被取消**时也要清干净 —— 已并进 check_contract_pdf_cleanup（路径 C）。
+check_task_version_conflict
+# 2026-10-12 运费死胡同的两道闸（主人拍板 A+B）：
+#   A 运费闸前置到「提交审批」——报批前没确认运费就拒，不再等到发送才发现；
+#   B 已批过/已锁版的版本允许**只补运费**（代收代付、不进产品价，不用重审）——
+#     方案 A 上线前已经锁死的那些存量单靠它解套，否则只能新建版本重走审批。
+# 反面也钉住了：锁版后非运费（折扣/服务费）一律拒、运费不许改成别的分类。
+check_freight_deadlock
+# 2026-10-13 接手别人做的"数据字典接入业务"时实测发现：受控字典只在
+# **单个新建入口**生效，批量导入照样能把字典外的值写进库（同一份 CSV：
+# 单个新建 400、导入 200 成功）。也就是留个 Excel 后门就能绕过"受控"。
+# 这套件逐个入口扫一遍：合法值放行、非法值一律拒、坏行必须被计数。
+check_dictionary_enforcement
+# 2026-10-13 主人卡在"删不掉自动生成的全款 → 生成按钮不出现 → 分期进不去"。
+# 改动是给应收节点加删除入口、把生成弹窗从写死 30/70 改成可编辑（含 3 期以上）。
+# 这些全靠"顺序与前置条件"成立，单测证明不了，所以钉成接口套件：
+#   ★有回款的节点删不掉（后端硬拦）★比例合计≠1 被拒（且不改库）
+#   ★三期以上"先生成再 PATCH 补名称/日期"之后，合计仍等于订单总额（后端零改动）
+check_receivable_delete_and_split
+# 2026-10-13 改动三：转单时直接选收款方式（从前写死一条「全款」，
+# 想拆定金/尾款得转完单再回订单页删掉重建）。三条单测证明不了的风险钉在这里：
+#   ★不传 = 仍是一条「全款」（向后兼容——坏了所有既有入口都会静默不建应收）
+#   ★各期之和严格 = 订单总额（末期补差，不靠"比例打得刚好"）
+#   ★非法比例在**参数阶段**就拒且不留订单壳
+check_convert_with_payment_plan
+# 第七批 10 项（2026-10-13）。两个会话各修了一半，合并后统一守门：
+#   ★P1-1 成本四项没填全 → 不完整 → 毛利未知、不命中免审
+#         （这条有三个洞：审批规则的毛利判据、核价的 approval_required、
+#           以及**提交审批时会按快照重判一遍 approval_required** —— 前两个堵完
+#           仍然被放行，是第三个洞放的行）
+#   ★P1-2 同 SKU 同生效日两条成本 → 核价与导入都显式报错，不静默挑一条
+#   ★P1-3 已签合同的订单不能被取消（并发交错那一半在 check_contract_sign_lock）
+#   ★P1-4 无 price:manage：版本对比不给成本/毛利，模拟不给成本反推价
+#   ★P2-5/P2-6/P2-7/P2-8/P2-10 见脚本文档
+check_batch7_repairs
+check_sku_auto_code
+# P1-3 的并发交错那一半：必须受控交错才验得出来，单独一套
+check_contract_sign_lock
+# 第九批 8 项（2026-10-13）：分期负数 / 日期退一天 / 差异改判 / 数值约束 /
+# 预览与落库不一致 / 三期以上半成品 / 名称超长 / 金额溢出。
+# 另含 ⑨ 客户负责人可指定（主人 2026-10-13 追问后补的前端入口 + 后端校验）。
+# 每组都带**正向对照**（只验"该拒的拒了"会把闸门写太宽也变绿）。
+check_batch9_repairs
+check_batch11_repairs
+# 「我的权限」：三种身份都要拿得到中文名，且只下发自己持有的那部分
+check_personal_permissions_api
+# 「找个人」：关键字只认姓名/登录名、状态与部门能叠加、翻页真的换人
+check_user_list_filters
 # 守门必须放最后：它断言"前面所有套件跑完没留下可见夹具"
 check_fixture_residue
+
+# 交期确认与负责人转移的锁/资格（第十批审查 ⑤，2026-10-13）：
+# 「旧负责人过了权限检查、卡在订单锁上，主管在锁内把负责人改掉并提交，
+#   旧请求拿到锁后照样确认成功」——用 NOWAIT 确定性判定 + 真并发交错，
+# 并反向验证过（两道判据一起撤掉时第 ④ 段立刻变红）。
+check_schedule_confirm_race
+
+# 作废月结协议与续签扫描的并发（第十批 ⑦，2026-10-13）：
+# 「扫描读到有效协议 → 另一事务作废并提交 → 扫描随后提交」会留下一条没人管的
+# 待续签任务（作废侧取消不到尚未提交的那条）。用 NOWAIT 确定性判定 + 真并发交错，
+# 反向验证过：撤掉扫描的锁，第 ③ 段立刻变红并复现出 pending 任务。
+check_contract_scan_race
+
+# 退款更正只更新同一条待处理台账（第十批 ①，2026-10-13 端到端）：
+# 「外部退款先核定 100、再更正为 200 并重新核定」原来会生成两条 pending（100+200=300），
+# 因为差异指纹把金额算进哈希、更正必然出新差异，只按 source_diff_id 去重就绕过去了。
+# 这条走真链路：写外部事实 → run_reconciliation 出差异 → confirm_diff 核定 → 复核台账。
+check_refund_correction
+
+# 回款分配的算法与「已收」口径（第十批回款分配）：
+# 超收按到期日抵后续期、每期必须实际分到钱才算完成、人工结论不被自动分配覆盖，
+# 以及一条实测踩过的判据坑 —— 「已收」读分配表时的兜底必须按**整笔回款**判
+# （按这一期没有分配判会让被挪走的那一期凭空显示已收，双计）。
+# 那个洞是浏览器端到端验证时才暴露的，固化成 ③ 段。
+check_allocation_rules
+
+# 第十二批：完整分配消费链、人工空/部分分配、真实并发与精确金额
+check_batch12_allocation_chain
+
+# 第十三批返修（N01~N06）的反例回归：金额/日期传 null 必须是**参数错误而不是 500**、
+# 不传字段不能把原值抹成 null、可空字段仍能清空。这套一直没进 CI，且夹具用错了客户
+# （建了新客户却复用别人商机）导致**根本跑不起来** —— 2026-10-14 修好夹具并登记。
+check_thirteenth_round_repairs
+
+# 「指向别家记录」的外键横向排查（主人 2026-10-12 要求逐条核实的同一形态）：
+# 报价挂别家客户/联系人/定制需求等路径逐条打探针，输出 BLOCKED / LEAKED / SKIP。
+# 2026-10-14 实跑：挡住 2 条、口子 0 条。登记进 CI 以守住这个面。
+check_cross_entity_scope
+# 通知「投递失败 → 自动重试 → 真的补发成功」端到端（第六批第 8 条的"验到底"补课）。
+# 2026-10-14 实跑 24 条通过。与 `check_notification_retry` 分工：那个测重试计数与
+# 退避，这个测"重试之后到底发出去了没有"。
+check_notification_retry_e2e
+
+# 第十四批：订单改派锁内重判 + Numeric(16,3) 实发尾数真库回归
+check_batch14_order_safety
+# 算价的**回退链**：明确填写的 0 不能被当成"没填"（2026-10-14 审查第 21 条）。
+# 原来 `standard_price = rule.standard_price or 成本反推价` —— 规则里写 0 会返回
+# 28.57；`margin` 那条 `or` 串还会把 0/负数漏过，且下界从无守卫。
+check_price_fallback_zero
+
+# 第十五批：来源核定并发、订单取消与月结替代生效链路
+check_batch15_financial_lifecycle
+
+# 企业员工首次钉钉登录默认业务员：并发与原子回滚
+check_dingtalk_signup
+
+# 个人账号设置：密码登录、会话吊销与并发重名
+check_personal_account
+
+# 独立会签权限：通知/待办/转交/否决/撤权一致性
+check_cosign_permission
+
+# 企微批量客户建档：PG并发幂等及手工关联互斥
+check_wecom_customer_import
+
+# AI动作确认/拒绝/取消共享终态：真实PG并发与权限边界
+check_agent_action_race
+
+# 订单逾期提醒与取消共享父子锁序：真实PG等待与跳过回归
+check_overdue_reminder_race
+
+# 成本导入首次空行互斥：真实PG等待/逆序批次/预览确认/删除
+check_cost_import_race
+
+# 公海预告：扫描快照重查、忙碌补扫及候选/客户锁序
+check_pool_scan_race
+
+# ERP同事件并发回调：查询自动flush冲突/真实驱动诊断/取消终态
+check_erp_callback_race
+
+# 客户改派与合同签署/回款确认：真实PG等待、权限刷新和共享锁兼容
+check_customer_transfer_document_race
+
+# Agent真实ASGI取消：半段回复保存/工具回滚/提交已完成去重
+check_agent_stream_cancellation
+
+# 签单/回款/复购结账金额：真实PG/ASGI精度、冻结读取、超限拒绝/重算保留及旧数字兼容
+check_target_signed_precision
+
+# 发货业绩：同价同量不同明细、不同价格与分批发货不得漏算
+check_target_shipment_lines
+
+# 团队冻结实绩：三层部门、五指标精确汇总/明细、四范围及源事实消失
+check_target_frozen_scope
+
+# 订单财务概览：合法大额到账/分配/待确认及精确字段兼容
+check_order_finance_precision
+
+# 主联系人：等待客户锁后重复选择原主联系人必须实际持久化
+check_contact_primary_race
+
+# 手工/报价转单客户动态：大额到分、普通金额、应收与重复转单保护
+check_order_progress_precision
+
+# 报价提交审批：大额通知/客户动态到分及重复提交保护
+check_quote_submission_precision
+
+# 排发货批次弱网/并发防重、内容冲突与当前权限
+check_shipment_request_key
+
+# 批量线索分配原因：255字边界/超长拒绝与零写入
+check_lead_batch_reason
+
+# 编号配置组合长度及真实建单取号兜底
+check_numbering_length
+
+# 企微成员清单未知响应失败留痕；明确空清单/两页去重兼容
+check_wecom_follow_member_response
+
+# 发货计划/实发数量到三位精确字符串与防重回放
+check_shipment_quantity_precision
+
+# 订单草稿精确数量/单价、仅改备注不改原值及CNY/修订校验
+check_order_draft_precision
+
+# 从报价创建订单草稿/打样精确数量、单价与防重
+check_source_quantity_precision

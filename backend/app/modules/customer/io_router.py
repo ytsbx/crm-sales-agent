@@ -7,9 +7,9 @@ from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
-from app.core.csvio import csv_bytes, parse_csv_bytes
+from app.core.csvio import csv_bytes, parse_csv_bytes, read_upload_bytes
 from app.core.database import get_db
-from app.core.deps import CurrentUser, client_ip, require_permission
+from app.core.deps import CurrentUser, client_ip, ensure_permission, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.importing import ImportReport, RowErrors, finalize, row_savepoint
 from app.modules.contact_util import find_duplicate_customers
@@ -17,6 +17,7 @@ from app.modules.customer import io as io_util
 from app.modules.customer import service as svc
 from app.modules.customer.model import Customer
 from app.modules.customer.schema import CustomerExportFilter, CustomerExportPurpose
+from app.modules.settings import service as settings_service
 from app.modules.user.model import User
 
 router = APIRouter(tags=["Customer"])
@@ -278,7 +279,7 @@ async def import_customers(
     """
     from app.core.data_scope import scoped_owner_ids
 
-    raw = await file.read()
+    raw = await read_upload_bytes(file)
     file_sha256 = hashlib.sha256(raw).hexdigest()
     rows = parse_csv_bytes(raw, required_headers=["客户名称"], label="文件")
     report = ImportReport("customer", len(rows))
@@ -304,6 +305,36 @@ async def import_customers(
         if date_error:
             errs.add(date_error)
 
+        # ⚠️ **导入必须走和单个新建同一道字典校验**（2026-10-13 补）。
+        #
+        # 前一版只在 `POST /customers` 与 `PATCH /customers/{id}` 里调了
+        # `ensure_dictionary_value`，而导入这条路是直接
+        # `level=(row.get("客户等级") or "").strip() or None` 落库 ——
+        # 两条路两把尺子：管理员把某个等级停用之后，一份 CSV 照样能把它写回去。
+        # **受控字典只在单个入口生效，就等于没生效**（留个 Excel 后门就行）。
+        #
+        # 这里并进 `errs`（本文件的既有风格：坏数据进失败清单、说清原因，
+        # 不算程序错），而不是抛异常。
+        # 判据**复用** `ensure_dictionary_value`，不在这里手写一遍查询：
+        # 同一个规则写两处，早晚一处改了另一处没改（这个项目已经因为
+        # "两把尺子"栽过好几次）。它抛的文案本身就指路"去系统设置维护"，
+        # 直接拿来用；只是这里要的是"进失败清单"而不是"整个请求失败"，
+        # 所以 catch 下来并进 `errs`。
+        raw_level = (row.get("客户等级") or "").strip()
+        if raw_level:
+            try:
+                await settings_service.ensure_dictionary_value(
+                    session, type="customer_level", code=raw_level, field_label="客户等级"
+                )
+            except AppError as exc:
+                errs.add(exc.message)
+
+        owner_login = (row.get("负责人登录名") or "").strip()
+        # 导入文件里明确指定负责人属于分配动作；空白才按导入人归属。
+        # 否则只有 customer:create 的账号可以借 Excel 入口绕过 customer:assign，
+        # 与单个新建、线索导入的权限口径不一致。
+        if owner_login:
+            ensure_permission(user, "customer:assign")
         owner_id, owner_error, owner_info = await io_util.resolve_owner_checked(
             session, row.get("负责人登录名"), user.id
         )
@@ -327,6 +358,7 @@ async def import_customers(
             continue
 
         try:
+            dispute_info = None
             async with row_savepoint(session):
                 duplicates = await find_duplicate_customers(
                     session,
@@ -342,9 +374,7 @@ async def import_customers(
                 # 正是文档点名要避免的。
                 if duplicates:
                     top = duplicates[0]
-                    report.disputed_row(
-                        index,
-                        name,
+                    dispute_info = dict(
                         # 范围不足的调用者只得到"这是重复"，拿不到对方是谁
                         candidate=None if scope is not None else top.get("name"),
                         score=None if scope is not None else top.get("score"),
@@ -378,7 +408,12 @@ async def import_customers(
                 )
                 session.add(customer)
                 await session.flush()
-                if report.disputed and report.disputed[-1].get("row") == index:
+                if last_contact is not None:
+                    await write_audit(
+                        session, operator_id=user.id, action="import", business_type="customer",
+                        business_id=customer.id, after={"last_followup_at": last_contact},
+                    )
+                if dispute_info is not None:
                     from app.modules.customer import duplicates as dup_service
 
                     await dup_service.open_cases_for_customer(
@@ -397,6 +432,9 @@ async def import_customers(
                 last_contact_unknown=last_contact is None,
                 owner_id=owner_id,
             )
+            # 只有整行（含裁定单）保存点成功，才能报告“已进待裁定”。
+            if dispute_info is not None:
+                report.disputed_row(index, name, **dispute_info)
             if last_contact is None:
                 unknown_contact_rows.append(
                     {"row": index, "id": customer_id, "name": customer_name}

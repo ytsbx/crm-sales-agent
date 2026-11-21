@@ -1,14 +1,21 @@
 """合同模板填充与文档台账的业务逻辑（§3.6/场景14）。"""
 
+import asyncio
+import hashlib
+import json
 import re
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import select
+import logging
+
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.textfit import fit_column
+from app.core.draft_visibility import draft_scope
 from app.core.errors import AppError, ErrorCode
-from app.core.timebase import today_business
+from app.core.timebase import business_day_end, today_business, to_business
 from app.core.response import paginate
 from app.modules.contract.model import (
     DOC_STATUS_LABEL,
@@ -40,6 +47,68 @@ MISSING_REASON_LABEL: dict[str, str] = {
 
 def _f(value) -> str:
     return "" if value is None else str(value)
+
+
+def _request_fingerprint(payload) -> str:
+    """合同生成幂等键对应的完整业务请求指纹。
+
+    只用 customer/template 会把同一把键换订单、报价版本或正文附加字段的
+    请求错误地回放成旧合同。指纹放进生成快照的内部字段，不新增迁移，且不
+    暴露给前端。
+    """
+    data = payload.model_dump(mode="json", exclude={"request_key"})
+    raw = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+#: 生成时会被**后端改写**的请求字段。
+#:
+#: - `quote_id` / `quote_version_id`：只选订单时由 `order.quote_version_id` 带出，
+#:   也可以由版本反推报价单；
+#: - `title`：不传（或传 null）时生成「销售合同-客户名」这种默认标题。
+#:
+#: 旧合同拿请求现值比库里值时必须跳过这几个：客户端**无法区分**
+#: "传 null 让后端补全"与"不传"，补全后的值本来就不等于请求原值。
+_AUTO_FILLED_FIELDS = frozenset({"quote_id", "quote_version_id", "title"})
+
+#: 旧合同能逐字段比较的字段（模型上确实有对应快照列）。
+_ECHO_COMPARABLE = (
+    "order_id",
+    "quote_id",
+    "quote_version_id",
+    "title",
+    "expiry_date",
+    "effective_date",
+    "parent_id",
+)
+
+
+def _request_echo(payload) -> dict:
+    """客户端当初提交的原值（只留参与比较的字段），**JSON 可序列化**。
+
+    不带 `request_key`：它已经被幂等分支用掉了，且同一把键本来就是前提。
+
+    ⚠️ 必须走 `model_dump(mode="json")`：`filled_data` 是 JSON 列，
+    直接塞 `date` 对象会在 flush 时报
+    `TypeError: Object of type date is not JSON serializable`（实测 500）。
+    """
+    dumped = payload.model_dump(mode="json")
+    return {field: dumped[field] for field in _ECHO_COMPARABLE if field in payload.model_fields_set}
+
+
+def _request_values(payload) -> dict:
+    """参与比较时**请求侧**的取值：只含本次请求**明确提交过**的字段。
+
+    键集与 `_request_echo` 完全一致（两边都只收 `model_fields_set` 里的字段），
+    所以可以直接逐键比较，不会因为"一边有键一边没有"而误判。
+
+    ⚠️ 必须走 `model_dump(mode="json")`，不能用 `getattr(payload, field)`：
+    后者拿到的是 `date` 对象，而回显里存的是 `"2026-11-01"` 字符串 ——
+    **字符串永远不等于 date**，内容完全相同的重试会被误判成冲突
+    （比 500 更隐蔽：只在"日期非空"时出现）。
+    """
+    dumped = payload.model_dump(mode="json")
+    return {field: dumped.get(field) for field in _ECHO_COMPARABLE if field in payload.model_fields_set}
 
 
 class _QuoteSource:
@@ -141,11 +210,15 @@ def render_template(
 
 
 async def _header_snapshot(
-    session: AsyncSession, *, customer, order, quote, quote_version
+    session: AsyncSession, *, customer, order, quote, quote_version, our_company: str | None = None
 ) -> dict:
     """生成时的抬头快照（存进 filled_data 的 `_header` 键）。
 
-    含：公司名（系统设置里的抬头）、客户名、关联的订单号 / 报价号 / 报价版本号。
+    含：公司名、客户名、关联的订单号 / 报价号 / 报价版本号。
+
+    公司名优先用经办人这次填写的「我方主体」；没填才回落到系统设置里的默认抬头。
+    2026-11-13 已确认签约主体由经办人填写，上传合同再拿全局默认值会显示成
+    「未设置公司抬头」，与发起 OA 时填的内容对不上。
 
     存它就是为了"历史原件下载出来和当初一模一样"：客户改名、公司换抬头、
     报价后来出了 V2，都不该让已经发出去的那份合同跟着变。
@@ -153,8 +226,9 @@ async def _header_snapshot(
     """
     from app.modules.settings import service as settings_service
 
+    entered = (our_company or "").strip()
     return {
-        "company_name": await settings_service.get_text(session, "company_name", "text", ""),
+        "company_name": entered or await settings_service.get_text(session, "company_name", "text", ""),
         "customer_name": customer.name,
         "order_no": order.order_no if order is not None else None,
         "quote_no": quote.quote_no if quote is not None else None,
@@ -206,7 +280,15 @@ def serialize_document(
         "quote_version_no": header.get("quote_version_no"),
         "template_id": doc.template_id,
         "content_snapshot": doc.content_snapshot,
-        "filled_data": doc.filled_data,
+        "filled_data": ({key: value for key, value in filled.items()
+                         if key != "_supersession_task_states"} if doc.filled_data is not None else None),
+        "source_type": filled.get("_source_type", "crm_template"),
+        "original_file_id": filled.get("_original_file_id"),
+        "contract_origin": filled.get("_contract_origin"),
+        "our_company": filled.get("_our_company"),
+        "counterparty_name": filled.get("_counterparty_name"),
+        "contract_origin_label": {"company": "我方合同", "customer": "客户合同"}.get(filled.get("_contract_origin"), "历史未标注"),
+        "dingtalk_oa": filled.get("_dingtalk_oa"),
         "missing_fields": missing,
         # 抬头快照（生成时的公司名/客户名/单号）：详情页据此说明"当时是以谁的名义出的"
         "header_snapshot": header or None,
@@ -222,6 +304,7 @@ def serialize_document(
         "parent_doc_no": parent_doc_no,
         "signed_at": doc.signed_at,
         "void_reason": doc.void_reason,
+        "deleted_at": doc.deleted_at,
         "created_at": doc.created_at,
     }
 
@@ -315,6 +398,7 @@ async def generate_document(
     不再新建——网络重试和连点两次都不该在台账上留下两份一模一样的草稿
     （两份还各有一个 doc_no，事后分不清哪份有效）。
     """
+    request_fingerprint = _request_fingerprint(payload)
     if payload.request_key:
         # 先拿 advisory lock 再查：连点 / 网络重发会让两个请求同时越过"查不到"这一句，
         # 后者 INSERT 时撞 request_key 唯一约束、被错误兜底成 500（而不是"返回原来那份"）。
@@ -323,16 +407,23 @@ async def generate_document(
 
         from sqlalchemy import text as _text
 
-        await session.execute(
-            _text("SELECT pg_advisory_xact_lock(:key)"),
-            {
-                "key": int.from_bytes(
-                    hashlib.sha256(f"contract-doc:{payload.request_key}".encode()).digest()[:8],
-                    "big",
-                    signed=True,
-                )
-            },
-        )
+        # SQLite（内存测试/本地开发）没有 PostgreSQL advisory lock；请求键的
+        # 唯一约束仍负责兜底，生产 PostgreSQL 才启用事务锁来串行化重试。
+        try:
+            dialect = session.get_bind().dialect.name
+        except Exception:  # noqa: BLE001
+            dialect = ""
+        if dialect == "postgresql":
+            await session.execute(
+                _text("SELECT pg_advisory_xact_lock(:key)"),
+                {
+                    "key": int.from_bytes(
+                        hashlib.sha256(f"contract-doc:{payload.request_key}".encode()).digest()[:8],
+                        "big",
+                        signed=True,
+                    )
+                },
+            )
         replayed = (
             await session.execute(
                 select(ContractDocument).where(
@@ -345,18 +436,73 @@ async def generate_document(
             # 命中幂等键，但这一份不是本次要生成的那份：说明编号被复用/猜到了。
             # 直接返回它等于把**别人客户的合同快照**交给调用方——路由层的范围校验
             # 只针对本次请求里的客户，管不到被返回的这一份。键相同内容不同一律拒绝。
-            if (
-                replayed.customer_id != payload.customer_id
-                or replayed.template_id != payload.template_id
-            ):
+            stored_fingerprint = (replayed.filled_data or {}).get("_request_fingerprint")
+            if stored_fingerprint is not None and stored_fingerprint != request_fingerprint:
+                raise AppError(
+                    ErrorCode.PARAM_ERROR, "该请求编号已用于不同内容的合同，请换一个编号", 409
+                )
+            # 没有指纹的文档只能逐字段比。这里有**两个坑**，都不是靠直觉能对的：
+            #
+            # ❶ 判据是 `model_fields_set`，不是 `payload.x is not None`。
+            #    可选字段不传时模型给默认值 None，拿默认值反推请求内容会把
+            #    旧的 `title=None` 误判成冲突；而**显式传 null 是一次真实意图**，必须比。
+            #    （`is not None` 把两者混成一种：旧合同到期日 11-01、显式传
+            #    `expiry_date: null` 会被静默回放 —— 复核 2026-10-10 抓到的就是这条。）
+            #
+            # ❷ **不能拿"补全后的值"当基准**：`quote_id` / `quote_version_id` 会由订单带出、
+            #    `title` 会生成默认值。客户端**分不清**"传 null 让后端补全"与"不传"，
+            #    所以拿请求里的 null 去比补全后的版本 id，**内容完全相同的幂等重试会 409**
+            #    （复核 2026-10-10 第二轮抓到的回归）。
+            #
+            # 优先用生成时存下的 `_request_echo`（客户端原值，同一把尺子）；
+            # 那之前生成的老行没有回显，只能退化成"跳过会被自动补全的字段"。
+            echo = (replayed.filled_data or {}).get("_request_echo")
+            submitted = payload.model_fields_set
+            if isinstance(echo, dict):
+                requested = _request_values(payload)
+                legacy_mismatch = replayed.customer_id != payload.customer_id or replayed.template_id != payload.template_id or any(
+                    echo.get(field) != requested.get(field) for field in submitted
+                )
+            else:
+                # 连回显都没有的最老行（本轮修复之前生成的）：只能逐字段比，
+                # 但**跳过条件要收窄**——
+                #   只有"请求传空 **且** 这个字段会被生成逻辑自动补全"才跳过。
+                # 不能无条件跳过这三个字段（复核 2026-10-10 第三轮指出的：
+                # 从前那样写，同一把请求编号**明确换成另一个报价/版本/标题**也会
+                # 成功回放原合同 —— 实测 code=0，而修改前是 409）。
+                # 明确提交的**非空值**没有任何"自动补全"能解释，必须比。
+                def _legacy_field_differs(field: str) -> bool:
+                    if field not in submitted:
+                        return False  # 请求根本没提这个字段，不该拿去比
+                    incoming = getattr(payload, field)
+                    stored = getattr(replayed, field)
+                    if field in _AUTO_FILLED_FIELDS and incoming is None:
+                        # 传 null = 让后端补全，客户端**分不清**它与"不传"；
+                        # 补全后的值当然不等于 null，不能据此判冲突。
+                        return False
+                    return stored != incoming
+
+                legacy_mismatch = replayed.customer_id != payload.customer_id or replayed.template_id != payload.template_id or any(
+                    _legacy_field_differs(field) for field in _ECHO_COMPARABLE
+                )
+            if stored_fingerprint is None and legacy_mismatch:
                 raise AppError(
                     ErrorCode.PARAM_ERROR, "该请求编号已用于另一份合同，请换一个编号", 409
                 )
             return replayed, True
 
-    template = await session.get(ContractTemplate, payload.template_id)
-    if template is None or template.deleted_at is not None or not template.enabled:
-        raise AppError(ErrorCode.NOT_FOUND, "模板不存在或已停用", 404)
+    from types import SimpleNamespace
+    original_id = getattr(payload, "original_file_id", None)
+    if original_id:
+        if payload.source_type != "customer_drafted" or payload.template_id is not None:
+            raise AppError(ErrorCode.PARAM_ERROR, "客户原稿不能与生成模板同时使用", 422)
+        template = SimpleNamespace(id=None, doc_type="contract", body="")
+    else:
+        if payload.source_type == "customer_drafted":
+            raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "请上传客户提供的合同原文件", 422)
+        template = await session.get(ContractTemplate, payload.template_id) if payload.template_id else None
+        if template is None or template.deleted_at is not None or not template.enabled:
+            raise AppError(ErrorCode.NOT_FOUND, "请选择可用合同模板", 404)
     customer = await session.get(Customer, payload.customer_id)
     if customer is None or customer.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
@@ -366,8 +512,8 @@ async def generate_document(
     if order is not None and order.customer_id != customer.id:
         raise AppError(ErrorCode.PARAM_ERROR, "所选订单不属于该客户", 422)
     quote = await session.get(Quote, payload.quote_id) if payload.quote_id else None
-    if payload.quote_id and quote is None:
-        raise AppError(ErrorCode.NOT_FOUND, "报价单不存在", 404)
+    if payload.quote_id and (quote is None or quote.deleted_at is not None):
+        raise AppError(ErrorCode.NOT_FOUND, "报价单不存在或已删除", 404)
     if quote is not None and quote.customer_id != customer.id:
         raise AppError(ErrorCode.PARAM_ERROR, "所选报价不属于该客户", 422)
     # 报价版本：合同据此钉死金额与条款。不传也能生成（提前备合同的口径），
@@ -393,10 +539,42 @@ async def generate_document(
     # 由版本反推报价单：只给了版本号（或上面从订单带出来的）时把报价单补上
     if quote is None and quote_version is not None:
         quote = await session.get(Quote, quote_version.quote_id)
+        if quote is None or quote.deleted_at is not None:
+            raise AppError(ErrorCode.NOT_FOUND, "报价单不存在或已删除", 404)
 
     if order is not None and quote is not None and order.quote_id not in (None, quote.id):
         raise AppError(ErrorCode.PARAM_ERROR, "所选报价与订单不匹配", 422)
+
+    # 订单与合同必须钉在**同一版**报价上（C4-02，2026-10-09 修）。
+    #
+    # 实测过的反例：订单依据 V1（100 元），生成合同时显式选 V2（999 元）——
+    # 原校验只比 `order.quote_id` 与 `quote.id`（**整份报价单**），不比版本，
+    # 于是合同照样生成，抬头里同时印着"订单号 SO-xxx"和"报价版本 V2"，
+    # **同一份合同上两个依据对不上**，而且签署闸门看到合同挂了订单就直接放行
+    # （见 `_ensure_signable_source`），能一路签下去 —— 对外文件签完收不回来。
+    #
+    # 口径（主人 2026-10-09 拍板 A）：**直接拦住**，不让人选不一致的版本。
+    # 为什么不放行+提醒：合同是要签字盖章的对外文件，靠"人看一眼提示"风险太高，
+    # 与报价那种"内部先看一眼再发"的场景不同。
+    # 不传版本的路径不受影响：上面那段"跟订单走"会自动带出订单依据的那一版。
+    if (
+        order is not None
+        and quote_version is not None
+        and order.quote_version_id is not None
+        and order.quote_version_id != quote_version.id
+    ):
+        order_version = await session.get(QuoteVersion, order.quote_version_id)
+        order_no = order_version.version_no if order_version is not None else order.quote_version_id
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"所选报价版本（第 {quote_version.version_no} 版）与订单依据的版本"
+            f"（第 {order_no} 版）不一致，不能生成合同："
+            f"请选订单依据的那一版，或先在订单上变更报价依据",
+            422,
+        )
     parent = None
+    if payload.supersede_parent and payload.parent_id is None:
+        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "替代旧协议必须选择要替代的月结协议", 422)
     if payload.parent_id is not None:
         parent = await session.get(ContractDocument, payload.parent_id)
         if parent is None or parent.deleted_at is not None:
@@ -405,12 +583,53 @@ async def generate_document(
             raise AppError(ErrorCode.PARAM_ERROR, "被补充的合同文档不属于该客户", 422)
         # 「替代旧协议」只对月结协议有意义：销售合同之间的衍生件是**补充协议**，
         # 不存在"替代"——两份合同可以同时有效，靠条款说明相互关系。
-        if payload.supersede_parent and parent.doc_type != "monthly":
+        if payload.supersede_parent and (parent.doc_type != "monthly" or template.doc_type != "monthly"):
             raise AppError(
                 ErrorCode.PARAM_ERROR,
-                "只有月结协议才有「替代旧协议」这个动作；销售合同的衍生件请用补充协议",
+                "替代旧协议只能在两份月结协议之间进行，请选择月结协议模板；销售合同请用补充协议",
                 422,
             )
+        # ---- 月结续签：生效日**必填**（第三批审查 P2，2026-10-12）----
+        #
+        # schema 注释与模型都写着"续签时必填"，代码却一直允许空值：只记到期日
+        # 处理不了「提前签、未来才生效」——那种情况下旧协议还得继续适用一段，
+        # 没有生效日就分不清"新版什么时候开始管事"。
+        #
+        # 位置很关键：必须在**生成正文、取号、以及取消旧协议待办之前**。
+        # 放在后面的话，校验失败时号已经取走了、旧协议的待办也已经被取消 ——
+        # 用户看到报错，库里却已经动过一半。
+        if parent.doc_type == "monthly":
+            if payload.effective_date is None:
+                raise AppError(
+                    ErrorCode.REQUIRED_FIELD_MISSING,
+                    "月结协议续签必须填写**生效日**：协议什么时候开始适用，"
+                    "决定旧协议还要继续适用到哪一天。请补上生效日再生成。",
+                    422,
+                )
+            if (
+                payload.expiry_date is not None
+                and payload.effective_date > payload.expiry_date
+            ):
+                raise AppError(
+                    ErrorCode.PARAM_ERROR,
+                    f"生效日（{payload.effective_date}）不能晚于到期日"
+                    f"（{payload.expiry_date}）—— 一份协议不可能到期之后才生效。",
+                    422,
+                )
+
+    # 生效日与到期日的先后关系对**所有**合同都成立（普通合同草稿只是允许不填，
+    # 不等于允许填成一个逻辑上不可能的组合）。同样放在生成与取号之前。
+    if (
+        payload.effective_date is not None
+        and payload.expiry_date is not None
+        and payload.effective_date > payload.expiry_date
+    ):
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"生效日（{payload.effective_date}）不能晚于到期日（{payload.expiry_date}）"
+            "—— 一份协议不可能到期之后才生效。",
+            422,
+        )
 
     content, filled, missing = render_template(
         template.body,
@@ -425,11 +644,37 @@ async def generate_document(
         # 事实——只在当时弹个提示、过后无据可查，等于没修。
         # 用 `_` 开头是跟项目里"内部键"的约定走，序列化时不会被当成业务字段。
         filled = {**filled, "_missing": missing}
+    filled = {**filled, "_request_fingerprint": request_fingerprint, "_source_type": payload.source_type}
+    if original_id:
+        filled["_original_file_id"] = original_id
+        if payload.contract_origin:
+            filled["_contract_origin"] = payload.contract_origin
+        if (payload.contract_number or "").strip():
+            filled["_contract_number"] = payload.contract_number.strip()
+        if (payload.our_company or "").strip():
+            filled["_our_company"] = payload.our_company.strip()
+        if (payload.counterparty_name or "").strip():
+            filled["_counterparty_name"] = payload.counterparty_name.strip()
+        if (payload.contract_number_rule_type or "").strip():
+            filled["_contract_number_rule_type"] = payload.contract_number_rule_type.strip()
+        if (payload.contract_number_rule_fix or "").strip():
+            filled["_contract_number_rule_fix"] = payload.contract_number_rule_fix.strip()
+        content = "上传的合同原件，完整条款以随附原文件为准。"
+    # 请求回显：**存客户端当初提交的原值**（2026-10-10 修 C4-06 的自动补全边界）。
+    #
+    # 为什么需要它：`quote_id` / `quote_version_id` 会**由订单带出**、
+    # `title` 会生成默认值 —— 落库的是"补全后的值"。旧合同没有指纹，
+    # 只能"拿请求现值比库里值"，于是**内容完全相同的幂等重试会被误判成冲突**：
+    #   原请求只选订单、报价与版本传 null → 后端带出真实版本 → 重试时
+    #   `None != 补全后的版本 id` → 409（实测）。
+    # 把当初的请求原值存下来，比较就走**同一把尺子**，不再拿补全值当基准。
+    filled["_request_echo"] = _request_echo(payload)
     # 抬头快照：下载历史原件时用**当时**的客户名 / 公司名 / 单号。
     # 不存的话，客户改名之后同一份合同再下载，正文还是老名字（走快照）、
     # 抬头却已经是新名字——同一编号两次下载内容不同，对外文件出这种事说不清。
     filled["_header"] = await _header_snapshot(
-        session, customer=customer, order=order, quote=quote, quote_version=quote_version
+        session, customer=customer, order=order, quote=quote, quote_version=quote_version,
+        our_company=payload.our_company,
     )
     from app.modules.settings import numbering
 
@@ -438,8 +683,17 @@ async def generate_document(
             session, "contract", model=ContractDocument, column=ContractDocument.doc_no
         ),
         doc_type=template.doc_type,
-        title=payload.title
-        or f"{DOC_TYPE_LABEL.get(template.doc_type, template.doc_type)}-{customer.name}",
+        # ⚠️ 标题必须收进 `String(200)`（2026-10-14 审查修）：默认标题是
+        # `f"{类型}-{客户名}"`，而**客户名本身允许 200 字**（`customer/schema.py`），
+        # 加个"销售合同-"前缀就 204 —— 用户给长名客户生成合同必撞
+        # `value too long for type character varying(200)` → **500**。
+        # `payload.title` 原来也没上限，显式传 201+ 字同样炸（schema 已补 `max_length`）。
+        # 这里用共享助手截断（截断留 `…`，看得出来被截过），不改用户填的原值。
+        title=fit_column(
+            payload.title or customer.name,
+            200,
+            prefix="" if payload.title else f"{DOC_TYPE_LABEL.get(template.doc_type, template.doc_type)}-",
+        ),
         customer_id=customer.id,
         order_id=payload.order_id,
         # 存**解析后**的报价与版本：上面从订单自动带出来的那一份也要落库，
@@ -459,32 +713,17 @@ async def generate_document(
     session.add(doc)
     await session.flush()
 
-    # 续签替代旧协议（业务口径 2026-10-05「精细」）：**勾了才动**。
-    # 不勾就什么都不做——提前续签、旧协议还在适用期是很常见的情况，
-    # 一登记就把旧协议掐掉会让还在生效的协议没人管。
+    # 2026-10-14 用户确认：草稿只记录替代意图；已签署且到生效日才停止旧提醒。
     if payload.supersede_parent and parent is not None:
-        cancelled = await cancel_auto_tasks(session, parent.id)
-        doc.filled_data = {
-            **filled,
-            "_supersedes": {
-                "id": parent.id,
-                "doc_no": parent.doc_no,
-                "cancelled_tasks": cancelled,
-            },
-        }
-        # 旧协议上留痕，但**不改状态、不动作废**（那是另一回事，要主管点头）：
-        # 只让后人能回答"这份协议为什么不再提醒了"。
-        parent.filled_data = {
-            **(parent.filled_data or {}),
-            "_superseded_by": {"id": doc.id, "doc_no": doc.doc_no},
-        }
+        doc.filled_data = {**filled, "_supersedes": {"id": parent.id, "doc_no": parent.doc_no}}
         await session.flush()
 
     return doc, False
 
 
 async def get_doc_or_404(
-    session: AsyncSession, doc_id: int, *, for_update: bool = False
+    session: AsyncSession, doc_id: int, *, for_update: bool = False,
+    protect_transfer: bool = False,
 ) -> ContractDocument:
     """取合同文档；`for_update=True` 时加行锁。
 
@@ -492,20 +731,41 @@ async def get_doc_or_404(
     否则两个人同时点「登记签署」，两边都读到 `draft`、都通过检查，
     结果挂上两份签署件、发出两条签署通知——台账上签字页有两张，
     事后说不清哪张才算数。行锁让后来者读到已改的状态，被既有的状态检查挡掉。
+
+    签署入口 protect_transfer=True：在任何合同/来源订单/文件锁之前保护客户
+    引用，与改派的客户排他锁互斥。这里只读标识；权限、状态仍在锁后重查。
     """
+    customer_id = None
+    if protect_transfer:
+        from app.modules.customer.locking import protect_customer_transfer
+
+        customer_id = await session.scalar(
+            select(ContractDocument.customer_id).where(ContractDocument.id == doc_id)
+        )
+        if customer_id is not None:
+            await protect_customer_transfer(session, customer_id)
     if for_update:
-        doc = (
-            await session.execute(
-                select(ContractDocument)
-                .where(ContractDocument.id == doc_id)
-                .with_for_update()
-                .execution_options(populate_existing=True)
-            )
-        ).scalar_one_or_none()
+        ancestors = []
+        current_id = doc_id
+        while current_id is not None:
+            if current_id in ancestors:
+                raise AppError(ErrorCode.PARAM_ERROR, "合同关系链存在循环，请联系管理员修复", 409)
+            ancestors.append(current_id)
+            current_id = (await session.execute(
+                select(ContractDocument.parent_id).where(ContractDocument.id == current_id)
+            )).scalar_one_or_none()
+        locked = (await session.execute(
+            select(ContractDocument).where(ContractDocument.id.in_(ancestors))
+            .order_by(ContractDocument.id).with_for_update()
+            .execution_options(populate_existing=True)
+        )).scalars().all()
+        doc = next((row for row in locked if row.id == doc_id), None)
     else:
         doc = await session.get(ContractDocument, doc_id)
     if doc is None or doc.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "合同文档不存在", 404)
+    if protect_transfer and doc.customer_id != customer_id:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "合同所属客户已变化，请刷新后重试", 409)
     return doc
 
 
@@ -547,7 +807,7 @@ async def build_pdf_data(session: AsyncSession, doc: ContractDocument) -> dict:
         "doc_type_label": DOC_TYPE_LABEL.get(doc.doc_type, doc.doc_type),
         "status_label": DOC_STATUS_LABEL.get(doc.status, doc.status),
         "customer_name": customer_name,
-        "created_date": doc.created_at.strftime("%Y-%m-%d") if doc.created_at else None,
+        "created_date": to_business(doc.created_at).strftime("%Y-%m-%d") if doc.created_at else None,
         "order_no": order_no,
         "quote_no": quote_no,
         "quote_version_no": header.get("quote_version_no"),
@@ -580,28 +840,185 @@ async def attach_generated_pdf(
     # reportlab 是同步 CPU 活，丢线程池，别卡住事件循环（与下载路径一致）
     pdf_bytes = await asyncio.to_thread(render_contract_pdf, data)
     object_key, size, checksum = await storage.save_bytes(pdf_bytes, ".pdf")
-    record = FileRecord(
-        storage_provider=settings.storage_provider,
-        object_key=object_key,
-        file_name=f"{doc.doc_no}.pdf",
-        mime_type="application/pdf",
-        size=size,
-        checksum=checksum,
-        uploaded_by=user_id,
-    )
-    session.add(record)
-    await session.flush()
-    session.add(
-        BusinessFile(
-            business_type="contract",
-            business_id=doc.id,
-            file_id=record.id,
-            category="generated",
+    # 从落盘这一刻起就登记：外层（router）提交成功后要注销它
+    remember_pending_object(session, object_key)
+    # ⚠️ 从这里往下的任何一步失败，**盘上这个 PDF 就是孤儿**（第四批审查 P2）：
+    # 文件已经落盘，但登记文件 / 登记附件 / 回填 `generated_file_id` / 外层提交
+    # 任一环节出错，数据库整个回滚（合同与文件记录都没了），盘上的对象却留着 ——
+    # 实测"数据库 0 条、存储替身里 PDF 仍在、删除补偿调用 0 次"。
+    # 一份合同重试几次就攒几个没人认领的 PDF，既占空间又让"哪份是正式件"说不清。
+    #
+    # 所以：记住本次的 `object_key`，失败时**精确删掉这一次**的对象。
+    # 只删自己刚写的那一个键 —— 不做"按前缀扫一遍"那种清理，那会误删别的东西。
+    try:
+        record = FileRecord(
+            storage_provider=settings.storage_provider,
+            object_key=object_key,
+            file_name=f"{doc.doc_no}.pdf",
+            mime_type="application/pdf",
+            size=size,
+            checksum=checksum,
+            uploaded_by=user_id,
         )
-    )
-    doc.generated_file_id = record.id
-    await session.flush()
+        session.add(record)
+        await session.flush()
+        session.add(
+            BusinessFile(
+                business_type="contract",
+                business_id=doc.id,
+                file_id=record.id,
+                category="generated",
+            )
+        )
+        doc.generated_file_id = record.id
+        await session.flush()
+    except Exception:
+        # 这一层兜的是"本函数内部失败"（flush 撞约束、附件登记失败…）。
+        # 事务这时还没提交，数据库那边的回滚由调用方/会话负责；
+        # 这里只负责把**已经落盘**的 PDF 清掉，别让它变成孤儿。
+        #
+        # `storage.delete_object` 是同步文件操作且失败不抛（见 storage 实现），
+        # 所以放进异常路径不会出现"清理又抛错、把原始错误盖掉"的情况。
+        storage.delete_object(object_key)
+        raise
     return record.id
+
+
+#: 会话级"已落盘、尚未提交"的对象键登记表。
+#:
+#: 为什么需要：`attach_generated_pdf` 落盘 PDF 之后，**外层还有事要做**
+#: （写时间线、写审计、`session.commit()`）。那些步骤失败时事务回滚，
+#: 数据库里什么都不剩，而盘上的 PDF 已经在了 —— 第四批审查 P2 实测
+#: "数据库 0 条、存储里 PDF 仍在、删除补偿 0 次"。
+#:
+#: 这里只做一件事：把"本次落盘、还没提交"的键挂到 session 上，
+#: 提交成功后**注销**（那时它就是正式件了，不能删），
+#: 提交失败才由调用方精确删掉。按 session 存而不是全局存，避免并发请求互相误删。
+#:
+#: ⚠️ 用 `id(session)` 当键、值用 `WeakSet` 无关紧要，这里用普通 dict +
+#: 显式注销：请求级 session 生命周期短，漏一两个键不会长大。
+logger = logging.getLogger(__name__)
+
+_PENDING_OBJECTS: dict[int, set[str]] = {}
+
+
+def remember_pending_object(session: AsyncSession, object_key: str) -> None:
+    """登记"这个对象已落盘、随事务提交才作数"。"""
+    _PENDING_OBJECTS.setdefault(id(session), set()).add(object_key)
+
+
+def take_pending_objects(session: AsyncSession) -> list[str]:
+    """取走该会话待决的对象键（取走即清空，避免重复删除）。"""
+    return sorted(_PENDING_OBJECTS.pop(id(session), set()))
+
+
+async def _cancel_safe(coro, *, label: str, _retries: int = 2):
+    """跑一段清理逻辑，**即使被取消也要跑完**（第四批复审 P2，2026-10-12）。
+
+    ## 为什么必须单独处理 `CancelledError`
+
+    `asyncio.CancelledError` 继承的是 `BaseException`，**不是** `Exception` ——
+    所以 `except Exception:` 那种写法**捕不到取消**，取消一来清理就半途而废。
+    复审实测（PDF 保存后、审计等待处注入取消）：
+
+        合同 0 条、文件记录 0 条，**存储仍有 1 份 PDF**，**待清理登记仍有 1 条**
+
+    两条后果分开看：孤儿 PDF 只是占空间；而**登记留在会话上**更麻烦 ——
+    那个会话之后一旦再走清理，会把一个早已没人管的键当成待删对象。
+
+    ## 做法
+
+    `asyncio.shield` 让这段清理**不被当前的取消打断**，但外层仍会收到取消 ——
+    "先清干净、再继续抛取消"，取消语义一点没变。
+    被再取消一次（shield 只挡一层）时重试，最多 `_retries` 次；
+    仍然失败就放弃清理并记日志 —— **清理失败绝不能盖过取消本身**，
+    否则调用方（可能是 FastAPI 的取消处理）会看到一个莫名其妙的异常。
+    """
+    for attempt in range(_retries + 1):
+        try:
+            return await asyncio.shield(coro)
+        except asyncio.CancelledError:
+            if attempt >= _retries:
+                logger.warning("%s：清理被连续取消，放弃（登记已注销，对象成为孤儿）", label)
+                return None
+            logger.info("%s：清理期间又被取消，重试第 %d 次", label, attempt + 1)
+        except Exception:  # noqa: BLE001 —— 清理的失败不许盖过原来的错误/取消
+            logger.exception("%s：清理失败（保留对象，避免误删）", label)
+            return None
+    return None
+
+
+async def cleanup_pending_objects(session: AsyncSession) -> int:
+    """**安全清理**：本次落盘、但没能提交的对象，逐个核查后再删。
+
+    返回真正删掉几个。
+
+    ## 为什么要核查，不能直接删（第四批复审 P1，2026-10-12）
+
+    我上一版是 `except Exception: for key in take_pending_objects(): delete_object(key)` ——
+    看着很合理，实际有**数据丢失**风险：
+
+        `session.commit()` 抛异常 **不等于** 事务没提交。
+        提交成功但"回执"丢了（网络断、连接被掐）时，数据库里**合同和文件记录都在**，
+        而异常照抛 → 于是把**已经入库的原件 PDF 删掉了**。
+        结果：合同记录 1 条、文件记录 1 条，下载 404。
+
+    这比原来那个"留下孤儿 PDF"严重得多：孤儿只是浪费空间，
+    删掉原件是**把用户的东西弄丢了**。
+
+    ## 判据
+
+    先 `rollback()`（把会话从失败事务里摘出来，之后才能查库），
+    再按 `object_key` 查 `file_records`：
+
+    - **查得到** → 这一笔已经提交，它是正式件，**保留**；
+    - **查不到** → 确实没提交，删掉。
+    """
+    from sqlalchemy import select
+
+    from app.modules.file.model import FileRecord
+    from app.modules.file import storage
+
+    # ⚠️ **先把登记取出来**（`take_pending_objects` 一取就清空）：
+    # 万一后面被取消，登记也不会留在会话上被反复当成待清理对象。
+    keys = take_pending_objects(session)
+    if not keys:
+        return 0
+    # 会话还在失败事务里的话，任何查询都会报 "current transaction is aborted"
+    try:
+        await session.rollback()
+    except Exception:  # noqa: BLE001 —— 回滚本身失败就当作查不到，但下面仍要复查
+        pass
+
+    deleted = 0
+    for key in keys:
+        try:
+            row = (
+                await session.execute(
+                    select(FileRecord.id)
+                    .where(FileRecord.object_key == key)
+                    .execution_options(populate_existing=True)
+                )
+            ).scalars().first()
+        except asyncio.CancelledError:
+            # 取消也要把剩下的键处理完（见 `_cancel_safe` 的说明）：
+            # 核查**没有结论**就绝不删 —— 宁可留孤儿。
+            logger.warning("合同 PDF 清理：核查 %s 时被取消，保留该对象", key)
+            continue
+        except Exception:  # noqa: BLE001 —— **核查不了就不删**：宁可留孤儿，不能删原件
+            logger.warning("合同 PDF 清理：核查 %s 失败，保留该对象", key)
+            continue
+        if row is not None:
+            logger.info("合同 PDF 清理：%s 已入库（提交成功了），保留", key)
+            continue
+        try:
+            storage.delete_object(key)
+        except asyncio.CancelledError:
+            # 删除本身是同步调用，正常不会被取消；真被取消就当没删成（留着孤儿）
+            logger.warning("合同 PDF 清理：删除 %s 时被取消", key)
+            continue
+        deleted += 1
+    return deleted
 
 
 async def list_signed_files(session: AsyncSession, doc_id: int) -> list[dict]:
@@ -682,8 +1099,55 @@ async def _ensure_signable_source(session: AsyncSession, doc: ContractDocument) 
     if doc.doc_type == "monthly":
         return
     if doc.order_id is not None:
-        order = await session.get(SalesOrder, doc.order_id)
-        if order is not None and order.status != "cancelled":
+        # ⚠️ **锁住订单行再判状态**（第七批 P1-3）。
+        #
+        # 原来是 `session.get(SalesOrder, ...)` —— 不加锁的读。审查用受控交错复现：
+        # 签署这边先读到"订单有效"，另一请求把订单取消并**提交**，签署再继续
+        # 锁文件、落库，最后订单已取消、合同却已签署，**签署时间还晚于取消时间**。
+        #
+        # 加锁顺序（刻意选的，不是随手放的）：本函数由 `sign_document` 调用，
+        # 调用前后已有的锁是 **合同文档行（router 里 for_update）→ 文件行**。
+        # 这里插在文档锁之后、文件锁之前，整体顺序是
+        # **订单 → 合同文档 → 文件**里"文档先于订单"的反例吗？不是：
+        # 取消订单那条路（`order/router.py` 的 `get_visible_order(for_update=True)`）
+        # **只锁订单、从不锁合同文档**，所以两边不存在"我持文档等订单、你持订单等文档"
+        # 的环。将来若让取消去动合同，这个顺序必须重新审一遍。
+        #
+        # 锁后必须**重新读状态**：identity map 里可能已有旧对象，
+        # 不加 `populate_existing` 就会拿着锁比对旧值（项目里踩过同样的坑）。
+        order = (
+            await session.execute(
+                select(SalesOrder)
+                .where(SalesOrder.id == doc.order_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if order is not None and order.status == "cancelled":
+            # 拿到锁才发现订单已取消 —— 与"依据不一致"同一个口径：不放行。
+            raise AppError(
+                ErrorCode.STATUS_NOT_ALLOWED,
+                "这份合同关联的订单已被取消，不能登记签署："
+                "订单取消后合同不再有履约依据，如仍需签署请按现行依据重新生成一份",
+                422,
+            )
+        if order is not None:
+            # ⚠️ 挂订单**不等于"依据一定没问题"**（C4-02，2026-10-09 修）。
+            # 这里原先无条件 `return`，等于"只要合同挂了未取消的订单就跳过全部依据校验"——
+            # 于是生成阶段被放过的版本不一致（订单 V1 / 合同 V2）到签署阶段**再放一次**，
+            # 一路签完。现在：订单自己的依据与合同钉的版本对不上时，不放行。
+            # 订单也没记版本（手工建单）时维持老口径：有订单就算有依据。
+            if (
+                order.quote_version_id is not None
+                and doc.quote_version_id is not None
+                and order.quote_version_id != doc.quote_version_id
+            ):
+                raise AppError(
+                    ErrorCode.STATUS_NOT_ALLOWED,
+                    "这份合同依据的报价版本与关联订单的依据不一致，不能登记签署："
+                    "请按订单依据的那一版重新生成一份合同",
+                    422,
+                )
             return
     if doc.quote_id is not None:
         # 锁住报价行再读（第十批 10.8 复审）：下面要拿"当前版本"当判据，
@@ -746,11 +1210,23 @@ async def sign_document(
     """
     from app.modules.file.model import BusinessFile
 
+    doc = await get_doc_or_404(session, doc.id, for_update=True)
     if doc.status == "signed":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该文档已登记签署")
     if doc.status == "void":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已作废的文档不能签署")
     await _ensure_signable_source(session, doc)
+    original_id = (doc.filled_data or {}).get("_original_file_id")
+    # 上传原稿的合同必须先审批通过；没有发起记录也不能直接回签。
+    if original_id or (doc.filled_data or {}).get("_dingtalk_oa"):
+        from app.modules.oa import service as oa_service
+        approval = await oa_service.latest_contract_row(session, doc.id)
+        if approval is None or approval.status != "approved":
+            raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "OA 合同审批通过后才能登记回签归档", 422)
+    if original_id and file_id == original_id:
+        raise AppError(ErrorCode.PARAM_ERROR, "请上传双方签好的合同，不能直接使用提交前的原稿", 422)
+    if doc.parent_id is not None and (doc.filled_data or {}).get("_supersedes") and doc.effective_date is None:
+        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "替代旧月结协议前必须填写生效日，请按完整信息重新生成续签协议", 422)
     # 登记签署 = 给一份**已存在**的文件加 `signed` 引用。加引用之前先锁住文件行，
     # 与删除入口（通用删除、回款删凭证）用同一把锁：否则财务那边正在删回款凭证时，
     # 这边可以把同一份文件登记成签署件 → 出现指向已删文件的悬空引用
@@ -763,6 +1239,9 @@ async def sign_document(
     record = await file_service.lock_file_row(session, file_id)
     if record is None:
         raise AppError(ErrorCode.NOT_FOUND, "文件不存在，请先通过 /files/upload 上传", 404)
+    if original_id:
+        from app.modules.contract.customer_flow import verified_content
+        verified_content(record)
     # 不能把系统自己出的生成稿登记成"客户签回来的那一份"：那会让台账上
     # "下载到的到底是生成稿还是签署件"彻底分不清，而且生成稿会因此被列入
     # signed 保护集、看起来像一份真的签署证据。
@@ -794,6 +1273,21 @@ async def sign_document(
     if note:
         doc.filled_data = {**(doc.filled_data or {}), "sign_note": note}
     await session.flush()
+    # 客户起草合同的待办直到回签件真正登记才结束。
+    from app.modules.task.model import Task
+    await session.execute(
+        update(Task)
+        .where(
+            Task.source_business_type == "contract",
+            Task.source_business_id == doc.id,
+            Task.source_key == f"contract:signed-upload:{doc.id}",
+            Task.status.in_(("pending", "doing")),
+        )
+        .values(status="done", completed_at=datetime.now(UTC), completion_note="已上传并登记客户回签文件")
+    )
+    if doc.parent_id is not None and (doc.filled_data or {}).get("_supersedes"):
+        await refresh_supersession(session, doc.parent_id)
+
 
 
 async def void_document(session: AsyncSession, doc: ContractDocument, *, reason: str) -> int:
@@ -802,12 +1296,15 @@ async def void_document(session: AsyncSession, doc: ContractDocument, *, reason:
     作废之后就不该再提醒了——否则负责人会收到"某某协议即将到期"的待办，
     点进去发现那份协议早就作废了（审查第 7 条）。
     """
+    doc = await get_doc_or_404(session, doc.id, for_update=True)
     if doc.status == "void":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "文档已经是作废状态")
     doc.status = "void"
     doc.void_reason = reason
     cancelled = await cancel_auto_tasks(session, doc.id)
     await session.flush()
+    if doc.parent_id is not None and (doc.filled_data or {}).get("_supersedes"):
+        await refresh_supersession(session, doc.parent_id)
     return cancelled
 
 
@@ -821,6 +1318,9 @@ async def list_documents(
     quote_id: int | None = None,
     page: int = 1,
     page_size: int = 20,
+    deleted_only: bool = False,
+    keyword: str | None = None,
+    viewer_id: int | None = None,
 ) -> tuple[list[dict], int]:
     """台账（分页）：数据范围跟客户负责人**当前**归属走——
 
@@ -836,8 +1336,19 @@ async def list_documents(
     stmt = (
         select(ContractDocument)
         .join(Customer, Customer.id == ContractDocument.customer_id)
-        .where(ContractDocument.deleted_at.is_(None))
+        # ⚠️ `SalesOrder` 必须 **outerjoin**（2026-10-14 修，我第一版漏了）：
+        # 下面的范围判据要用 `SalesOrder.owner_id`（与 `visibility.py` 的三级回退
+        # 对齐），而这里原来只 join 了 `Customer` —— 少了这个 join 时 SQLAlchemy
+        # 会把 `sales_orders` 加进 FROM 变成**笛卡尔积**，行数被放大、
+        # 分页与 `total` 全错（CI 上 `check_contract_documents` 四条断言同时红，
+        # 就是我先漏了这个 join）。`outerjoin` 而非 `join`：合同可以没有来源订单。
+        .outerjoin(SalesOrder, SalesOrder.id == ContractDocument.order_id)
+        .where(ContractDocument.deleted_at.is_not(None) if deleted_only else ContractDocument.deleted_at.is_(None))
     )
+    if keyword and keyword.strip():
+        stmt = stmt.where(or_(ContractDocument.doc_no.icontains(keyword.strip(), autoescape=True),
+                              ContractDocument.title.icontains(keyword.strip(), autoescape=True),
+                              Customer.name.icontains(keyword.strip(), autoescape=True)))
     if customer_id:
         stmt = stmt.where(ContractDocument.customer_id == customer_id)
     if order_id:
@@ -846,8 +1357,27 @@ async def list_documents(
         stmt = stmt.where(ContractDocument.quote_id == quote_id)
     if status:
         stmt = stmt.where(ContractDocument.status == status)
+    scope = None
     if owner_ids is not None:
-        stmt = stmt.where(Customer.owner_id.in_(owner_ids))
+        # ⚠️ 台账的范围判据必须与 `visibility.py::contract_scope_owner_id` **等价**
+        # （2026-10-14 审查修）。原来这里写的是裸 `Customer.owner_id.in_(owner_ids)`
+        # —— 客户负责人为 NULL 时 `IN (...)` **恒不成立**，于是那份合同对**所有**
+        # 非全量范围的人从台账里消失；而详情 / 生成稿下载 / 签署原件下载走的是
+        # "客户负责人 → 订单负责人 → 创建人"三级回退，**同一份合同照样打得开**。
+        # 触发很常见：客户被"超期未跟进自动回收"进公海时 `owner_id` 被置 NULL
+        # （`settings/service.py` 的回收），而合同不会跟着消失。
+        # 结果就是业务在台账里找不到自己客户已签的合同（以为丢了），
+        # 却能从订单页/客户页点开同一份 —— 正是 `visibility.py` 开头要消灭的
+        # "同一份合同两个答案"，它自己的注释也写着"不能因为客户进公海就谁都点不开"。
+        # 这里用 COALESCE 把三级回退表达成**同一条 SQL**，与 Python 判据逐级对齐。
+        # 用 `or_` 逐级表达（而不是 `COALESCE(...) IN (...)`）：三级归属全为空的
+        # 合同在 `COALESCE` 写法下结果是 NULL，`NULL IN (...)` 仍不成立；
+        # 逐级 `or_` 更直白，也和 `visibility.py` 的 if 链一一对应。
+        scope = func.coalesce(Customer.owner_id, SalesOrder.owner_id, ContractDocument.created_by).in_(owner_ids)
+    if viewer_id is not None:
+        stmt = stmt.where(draft_scope(ContractDocument, viewer_id, scope))
+    elif scope is not None:
+        stmt = stmt.where(scope)
     docs, total = await paginate(
         session, stmt.order_by(ContractDocument.created_at.desc()), page, page_size
     )
@@ -885,7 +1415,7 @@ async def list_documents(
     ], total
 
 
-async def list_amendments(session: AsyncSession, doc_id: int) -> list[dict]:
+async def list_amendments(session: AsyncSession, doc_id: int, *, viewer_id: int) -> list[dict]:
     """这份文档下面挂了哪些衍生件（补充协议 / 续签）。
 
     关系链往下走的那一半：往上看是 `parent_doc_no`，往下看是这个。
@@ -904,6 +1434,7 @@ async def list_amendments(session: AsyncSession, doc_id: int) -> list[dict]:
             .where(
                 ContractDocument.parent_id == doc_id,
                 ContractDocument.deleted_at.is_(None),
+                draft_scope(ContractDocument, viewer_id),
             )
             .order_by(ContractDocument.id.desc())
         )
@@ -957,6 +1488,105 @@ async def cancel_auto_tasks(session: AsyncSession, doc_id: int) -> int:
     return len(rows)
 
 
+_SUPERSESSION_TASK_NOTE = "[月结续签自动取消]"
+
+
+async def refresh_supersession(session: AsyncSession, parent_id: int, *, today=None) -> bool:
+    """根据已签署、生效的替代协议同步旧协议与提醒；只恢复本函数明确取消的任务。
+
+    调用方签署/作废先按祖先→子文档加锁；扫描先按文档 id 顺序加锁。
+    子文档状态变更都须先持有父锁，因此这里只读子状态，不倒序锁子文档。
+    """
+    from app.modules.task.model import Task
+
+    parent = (await session.execute(
+        select(ContractDocument).where(ContractDocument.id == parent_id)
+        .with_for_update().execution_options(populate_existing=True)
+    )).scalar_one_or_none()
+    if parent is None or parent.doc_type != "monthly":
+        return False
+    today = today or today_business()
+    data = dict(parent.filled_data or {})
+    previous = data.get("_superseded_by") or {}
+    # 兼容旧标记，但用目标文档的真实状态和日期复核，草稿/作废不能继续停旧提醒。
+    try:
+        previous_id = int(previous.get("id"))
+    except (TypeError, ValueError):
+        previous_id = None
+    candidates = (await session.execute(
+        select(ContractDocument).where(or_(ContractDocument.parent_id == parent_id,
+                                          ContractDocument.id == previous_id))
+        .execution_options(populate_existing=True)
+    )).scalars().all()
+    eligible = []
+    for child in candidates:
+        intent = (child.filled_data or {}).get("_supersedes") or {}
+        is_replacement = intent.get("id") == parent_id or child.id == previous_id
+        if (is_replacement and child.id != parent_id and child.customer_id == parent.customer_id
+                and child.doc_type == "monthly" and child.status == "signed" and child.deleted_at is None
+                and child.effective_date is not None and child.effective_date <= today):
+            eligible.append(child)
+    winner = max(eligible, key=lambda row: (row.effective_date or date.min, row.id), default=None)
+    states = list(data.get("_supersession_task_states") or [])
+    if winner is not None:
+        data["_superseded_by"] = {"id": winner.id, "doc_no": winner.doc_no,
+            "effective_date": winner.effective_date.isoformat() if winner.effective_date else None}
+        tasks = (await session.execute(select(Task).where(
+            Task.source_business_type == "contract", Task.source_business_id == parent_id,
+            Task.status.in_(("pending", "doing")),
+        ).order_by(Task.id).with_for_update().execution_options(populate_existing=True))).scalars().all()
+        for task in tasks:
+            states.append({"id": task.id, "status": task.status, "completion_note": task.completion_note})
+            task.status = "cancelled"
+            task.completion_note = _SUPERSESSION_TASK_NOTE
+        if states:
+            data["_supersession_task_states"] = states
+    else:
+        data.pop("_superseded_by", None)
+        # 不重开人工取消/已完成的任务；旧算法没留下取消来源的历史任务也不猜。
+        if (states and parent.status == "signed" and parent.deleted_at is None
+                and (parent.expiry_date is None or parent.expiry_date >= today)):
+            tasks = (await session.execute(select(Task).where(
+                Task.id.in_([row["id"] for row in states]),
+                Task.source_business_type == "contract", Task.source_business_id == parent_id,
+            ).order_by(Task.id).with_for_update().execution_options(populate_existing=True))).scalars().all()
+            by_id = {row.id: row for row in tasks}
+            for state in states:
+                task = by_id.get(state["id"])
+                if task and task.status == "cancelled" and task.completion_note == _SUPERSESSION_TASK_NOTE:
+                    task.status = state["status"]
+                    task.completion_note = state["completion_note"]
+        data.pop("_supersession_task_states", None)
+    if data != (parent.filled_data or {}):
+        parent.filled_data = data
+    await session.flush()
+    return winner is not None
+
+
+def is_superseded(doc: "ContractDocument") -> bool:
+    """这份协议是否已经被续签**替代**（续签时勾了「替代旧协议」）。"""
+    return bool((doc.filled_data or {}).get("_superseded_by"))
+
+
+def should_remind(doc: "ContractDocument") -> bool:
+    """这份协议现在**还应不应该**产生到期提醒 —— 全项目唯一判据。
+
+    为什么必须抽出来（第三批审查 P2，2026-10-12）：替代旧协议这个动作只结束
+    **当时已经存在**的待办（`cancel_auto_tasks`），而旧协议仍保留 `signed`。
+    如果替代发生在提醒窗口**之前**，当时没有任何待办可结束 —— 等日期进入窗口，
+    扫描只看状态和到期日，就会给一份"明确已被替代"的旧协议凭空建出提醒。
+
+    所以"要不要提醒"必须同时看**替代标记**：扫描建提醒、以及以后任何新增的
+    提醒入口都走这里，避免又出现"这条路径忘了看标记"。
+    """
+    return (
+        doc.doc_type == "monthly"
+        and doc.status == "signed"
+        and doc.deleted_at is None
+        and not is_superseded(doc)
+    )
+
+
 async def notify_expiring_monthly(session: AsyncSession, *, owner_id: int | None = None) -> int:
     """月结协议到期前提醒负责人（§3.6），返回本轮新建条数。
 
@@ -998,17 +1628,43 @@ async def notify_expiring_monthly(session: AsyncSession, *, owner_id: int | None
     ]
     if owner_id is not None:
         conditions.append(Customer.owner_id == owner_id)
+    # ⚠️ **锁住这些协议行再建任务**（第十批审查 ⑦，2026-10-13）。
+    #
+    # 原来这里是普通查询（无锁）。实测的竞态：
+    #   扫描读到协议有效 → 准备建续签任务；
+    #   另一事务**作废**该协议并提交（作废侧走 `get_doc_or_404(..., for_update=True)`，
+    #   它锁的是*行*，但扫描不持锁，所以两边不互相等）；
+    #   扫描随后提交 → 终态是"协议已 void、续签任务仍 pending"。
+    # 作废侧靠 `cancel_auto_tasks` 取消任务，可它**看不到扫描尚未提交**的那条，
+    # 于是留下一条没人管的待办（还会在到期前反复提醒一个已作废的协议）。
+    #
+    # 修法与报告一致：**扫描生成任务前锁住并刷新协议，在锁内重新判断是否要提醒**。
+    # 锁与作废/续签替代共用同一把（都是对 `contract_documents` 行 `FOR UPDATE`），
+    # 锁序也一致（单表单行，无嵌套）。
+    #
+    # 为什么整批 `FOR UPDATE` 而不是逐条：候选集由"30 天内到期"限定，
+    # 正常是十几条；逐条锁会让"锁定顺序"依赖遍历顺序，反而更容易与作废侧交叉等待。
+    # 拿锁后用 `populate_existing` 刷新，`should_remind(doc)` 判的就是**锁内最新**状态。
     rows = (
         await session.execute(
             select(ContractDocument, Customer.owner_id, Customer.name)
             .join(Customer, Customer.id == ContractDocument.customer_id)
             .where(*conditions)
+            .order_by(ContractDocument.id)
+            .with_for_update(of=ContractDocument)
+            .execution_options(populate_existing=True)
         )
     ).all()
     created = 0
     for doc, owner_id_of_doc, customer_name in rows:
         owner = owner_id_of_doc
         if owner is None:
+            continue
+        # 已被续签替代的旧协议**不再提醒**（第三批审查 P2，2026-10-12）：
+        # 替代动作发生在提醒窗口之前时，当时没有待办可结束，只靠 SQL 条件
+        # 会在进入窗口后凭空建出一条提醒。判据只有 `should_remind` 一份。
+        await refresh_supersession(session, doc.id, today=today)
+        if not should_remind(doc):
             continue
         source_key = _monthly_remind_key(doc.id, doc.expiry_date)
         existing = (
@@ -1029,7 +1685,13 @@ async def notify_expiring_monthly(session: AsyncSession, *, owner_id: int | None
                 # 截止时间取**协议到期日**，不是"此刻"。
                 # 用创建时刻会让这条待办一出生就带「已逾期」（due < now 立刻成立），
                 # 负责人看到的是"刚提醒我就已经迟了"，像系统出错。
-                due_at=datetime.combine(doc.expiry_date, time(23, 59), tzinfo=UTC),
+                #
+                # ⚠️ 「到期日 23:59」是**北京时间**的 23:59，必须先按业务时区构造
+                # 再转 UTC（第十批审查 ⑧，2026-10-13）。
+                # 原来写的是 `tzinfo=UTC` —— 把北京时间当成了 UTC，实际上早了 8 小时，
+                # 任务截止显示成**次日 07:59**（协议 10-13 到期 → 10-14 07:59），
+                # 相当于白送半天宽限，还跨了一天。
+                due_at=business_day_end(doc.expiry_date),
                 source="system",
                 source_rule_id=None,
                 source_business_type="contract",

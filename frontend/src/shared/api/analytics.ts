@@ -17,11 +17,19 @@ export interface DashboardSummary extends WithCurrencyWarnings {
   todo_count: number
   overdue_task_count: number
   stale_customer_count: number
+  stale_customer_days: number
   open_opportunity_count: number
   open_opportunity_amount: number
   pending_approval_count: number
   month_won_amount: number
+  month_order_goods_amount: number
+  month_order_logistics_amount: number
+  month_order_other_charge_amount: number
+  month_order_discount_amount: number
+  month_order_unverified_count: number
   month_received_amount: number
+  /** 同一口径下按「实际到账日」统计的本月回款，与按确认时间的主数字并列展示 */
+  month_received_by_arrival_amount: number
   pending_receivable_amount: number
   overdue_receivable_count: number
   open_lead_count: number
@@ -87,6 +95,7 @@ export interface QuoteStats {
   accept_rate: number
   approval_rate: number
   accepted_count: number
+  sent_count?: number
   approval_required_count: number
 }
 
@@ -106,15 +115,33 @@ export interface CustomerStats {
 export interface ProductStat {
   sku_id?: number
   sku_code: string
+  /** SKU 名称（如"田字塑料托盘 1200×1000 黑色"）。与 `product_name`（产品名）不同层 */
+  sku_name?: string | null
   specification?: string | null
   product_name?: string | null
-  /** PRD §23「询盘 / 报价 / 成交 / 失单 / 利润」 */
+  /** PRD §23「询盘 / 报价 / 成交 / 失单 / 利润」。
+   *
+   * ⚠️ 这几项**必须分开显示**，不能合成一个"报价次数"（issue #12）：
+   * 从前只有一个 `quote_times` = 所有报价明细的行数，不分草稿/正式、不排已删报价、
+   * 也不把同一报价的版本修订归一 —— 只复制一个版本，统计就凭空翻倍。
+   */
   inquiry_times: number
-  quote_times: number
+  /** 草稿：明细落在**未发送**的报价版本里 */
+  quote_draft_times: number
+  /** 正式报价：已提交审批或已发送，**按报价单去重**（V2/V3 修订不重复计数） */
+  quote_formal_times: number
+  /** 版本修订次数：这个 SKU 涉及多少个报价版本 */
+  version_revision_times: number
   quote_quantity: number
+  /** 成交（商机事实）：已成交商机的需求明细条数 */
   won_times: number
   lost_times: number
-  profit_amount: number
+  /** **实际成交数量**：来自订单明细（订单事实，不是商机需求行） */
+  order_won_quantity: number
+  /** **报价预估毛利**：正式报价明细的利润快照累计。
+   *  不是实际利润（未成交、未回款），所以名字里必须带"报价/预估"。
+   *  无 `price:manage` 权限时为 `null`（issue #5：知道报价和利润就能反推成本）。 */
+  quote_estimated_profit: number | null
 }
 
 export interface SalesUserStat {
@@ -124,11 +151,16 @@ export interface SalesUserStat {
   opportunity_count: number
   quote_count: number
   order_amount: number
+  order_amount_exact?: string
   followup_count: number
   received_amount: number
+  received_amount_exact?: string
 }
 
 export interface ReceivableStats extends WithCurrencyWarnings {
+  allocated_amount: number
+  unallocated_amount: number
+  unsettled_plan_amount: number
   plan_amount: number
   received_amount: number
   unreceived_amount: number
@@ -141,7 +173,6 @@ export interface StageConversionRow {
   stage_name: string
   sequence: number
   reached_count: number
-  conversion_from_previous: number | null
 }
 
 export interface OpportunityCycle {
@@ -182,6 +213,12 @@ export interface NotificationRow {
   wecom_next_retry_at?: string | null
   /** 失败 / 未投递的可人工补投。 */
   can_redispatch?: boolean
+  /**
+   * 补投"有没有用"的提示：非空表示**卡住的是环境配置**（推送开关关着、
+   * 没绑企微、没配企微应用），再点多少次都是同一结果 —— 界面把它显示在
+   * 补投入口旁边，用户就不用"点一下才知道没用"。
+   */
+  redispatch_hint?: string | null
 }
 
 export interface AuditLogRow {
@@ -200,6 +237,36 @@ export interface AuditLogRow {
 
 export function getDashboardSummary() {
   return api.get<DashboardSummary>('/dashboard/summary')
+}
+
+/** 待跟进客户清单里的一行（与工作台那个卡片的数字**同口径**）。 */
+export interface StaleCustomer {
+  id: number
+  name: string
+  level: string | null
+  owner_id: number | null
+  owner_name: string | null
+  last_followup_at: string | null
+  /** 距最近有效跟进/业务进展的天数；无记录时从建档起算。 */
+  days_since: number | null
+  next_followup_at: string | null
+  contact_name: string | null
+  contact_phone: string | null
+}
+
+/**
+ * 待跟进客户清单。
+ *
+ * 为什么单独一个接口（审查 + 主人确认）：工作台那个「30 天未联系」的卡片此前
+ * 只报数、点进去跳到**不带任何筛选**的客户列表，而列表也没有「待跟进」筛选项
+ * 与「最近跟进」列 —— 报了警却看不到是哪几个。口径与 `/dashboard/summary` 的
+ * `stale_customer_count` 完全一致，避免"卡片说 2 个、清单列出 3 个"。
+ */
+export function getStaleCustomers(query: { page?: number; page_size?: number } = {}) {
+  return api.get<PageResult<StaleCustomer> & { days: number }>(
+    '/dashboard/stale-customers',
+    query,
+  )
 }
 
 export function getDashboardTasks() {
@@ -242,6 +309,7 @@ export interface TeamSummary {
   team_won_count_this_month?: number
   team_won_amount_this_month?: number
   members?: TeamMemberRow[]
+  disabled_members?: Pick<TeamMemberRow, 'todo_count' | 'overdue_count' | 'won_amount_this_month'> | null
   risky_opportunities?: RiskOpportunity[]
   funnel?: FunnelRow[]
 }
@@ -285,7 +353,6 @@ export interface LeadStats {
   total: number
   converted_count: number
   conversion_rate: number
-  average_conversion_days: number | null
   by_source: NameValue[]
   by_status: NameValue[]
   invalid_reasons: NameValue[]
@@ -392,8 +459,19 @@ export function getDeliveryStats(riskLimit = 20) {
   return api.get<DeliveryStats>('/analytics/delivery', { risk_limit: riskLimit })
 }
 
-export function listNotifications(unreadOnly = false) {
-  return api.get<PageResult<NotificationRow>>('/notifications', { unread_only: unreadOnly, page_size: 50 })
+export function listNotifications(
+  unreadOnly = false,
+  dateFrom?: string,
+  dateTo?: string,
+  page = 1,
+) {
+  return api.get<PageResult<NotificationRow>>('/notifications', {
+    unread_only: unreadOnly,
+    date_from: dateFrom,
+    date_to: dateTo,
+    page,
+    page_size: 10,
+  })
 }
 
 export function getUnreadCount() {
@@ -406,6 +484,14 @@ export function markNotificationRead(id: number) {
 
 export function markAllNotificationsRead() {
   return api.post<null>('/notifications/read-all')
+}
+
+export function dismissNotification(id: number) {
+  return api.post<null>(`/notifications/${id}/dismiss`)
+}
+
+export function dismissReadNotifications() {
+  return api.post<null>('/notifications/dismiss-read')
 }
 
 /**
@@ -454,8 +540,25 @@ export function retryFailedNotifications(limit = 200) {
 }
 
 export function listAuditLogs(query: {
+  /**
+   * 关键字：**中文也认**（后端把界面上显示的中文反查回库里的英文码，
+   * 2026-10-15）。所以输「定制需求」和输 `custom_inquiry` 都能搜到；
+   * 另外还认**操作人姓名**和**对象编号**（`#12` 或 `12`）。
+   */
+  keyword?: string
   business_type?: string
   action?: string
+  /** 操作人（后端原来就支持，前端一直没用） */
+  operator_id?: number
+  /** 时间范围（ISO 字符串，后端按 created_at 过滤） */
+  start?: string
+  end?: string
+  /**
+   * 要**排除**的动作，英文逗号分隔（后端 2026-11-16 新增）。
+   * 传 `login,logout,refresh` 就是"登录相关的全不要，只看业务变更"。
+   * 跟 `action` 不冲突：`action` 是"只要某一种"，`exclude_actions` 是"某几种不要"。
+   */
+  exclude_actions?: string
   page?: number
   page_size?: number
 }) {
@@ -506,6 +609,15 @@ export interface SalesTargetRow {
   repeat_customer_variance: number
   repeat_customer_achievement: number | null
   remark?: string | null
+  sales_actual_exact?: string
+  shipped_actual_exact?: string
+  received_actual_exact?: string
+  repeat_customer_actual_exact?: string
+  sales_target_exact?: string
+  repeat_customer_target_exact?: string
+  sales_variance_exact?: string
+  repeat_customer_variance_exact?: string
+  updated_at?: string | null
 }
 
 export interface SalesTargetList {
@@ -603,6 +715,7 @@ export function getSalesTargetDrilldown(params: {
 // 文档要求"销售额分别显示签单、发货、回款"且"系统分别保存计算口径与数据来源"。
 
 export interface TargetBasisRow {
+  value_exact?: string
   month: string
   value: number
 }
@@ -630,41 +743,11 @@ export function upsertSalesTarget(payload: {
   /** 团队目标（文档 §六 :121）：填了就按部门设，与 user_id 互斥 */
   department_id?: number | null
   new_customer_target: number
-  sales_target: number
+  sales_target: number | string
   /** 复购（老客净额）目标，口径见后端 target_bases.py */
-  repeat_customer_target?: number
+  repeat_customer_target?: number | string
   remark?: string | null
+  expected_updated_at?: string
 }) {
   return api.post<{ target_id: number }>('/sales-targets/upsert', payload)
-}
-
-/** 操作耗时埋点（场景18）：计时只能前端做，服务端只校验与聚合。 */
-export function reportOperationTiming(payload: {
-  operation: 'quote_from_inquiry' | 'sample_create'
-  duration_ms: number
-  business_type?: string | null
-  business_id?: number | null
-  typed_fields?: number
-  rework_count?: number
-}) {
-  return api.post<{ id: number }>('/usage/timings', payload)
-}
-
-export function getOperationTimingSummary(days = 30) {
-  return api.get<{
-    days: number
-    operations: { value: string; label: string }[]
-    summary: {
-      operation: string
-      operation_label: string
-      samples: number
-      avg_ms: number | null
-      median_ms: number | null
-      p90_ms: number | null
-      avg_typed_fields: number | null
-      avg_rework_count: number | null
-    }[]
-    by_user: { user_id: number; user_name: string; samples: number; avg_ms: number }[]
-    note: string
-  }>('/usage/timings/summary', { days })
 }

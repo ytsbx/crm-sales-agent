@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { formatBeijingDate, formatBeijingTime } from '../../shared/beijing-time'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -16,24 +17,44 @@ import {
 import { usePermissions } from '../../shared/hooks/permissions'
 import { useAuthStore } from '../../shared/store/auth'
 import SectionCard from '../../shared/components/SectionCard'
+import PageHeader from '../../shared/components/PageHeader'
 import FormLabel from '../../shared/components/FormLabel'
+import { emptyNode } from '../../shared/components/EmptyState'
 import {
   createCase,
+  deleteCaseDraft,
   getCase,
   listCases,
   reviseCase,
   reviewCase,
   submitCase,
   updateCase,
+  withdrawPublishedCase,
   type CaseEvidenceItem,
   type CaseRow,
 } from '../../shared/api/cases'
 import { listQuotes } from '../../shared/api/quote'
 import { listOrders } from '../../shared/api/order'
 import { listSamples } from '../../shared/api/sample'
-import { listCustomers } from '../../shared/api/customer'
+import { getCustomer, listCustomers } from '../../shared/api/customer'
 import { getCustomerTimeline } from '../../shared/api/followup'
-import { optionMatcher, withCode } from '../../shared/components/optionMatch'
+import { optionMatcher } from '../../shared/components/optionMatch'
+import RecordSearchSelect from '../../shared/components/RecordSearchSelect'
+
+const EMPTY_FILTERS = {
+  keyword: '',
+  status: undefined as string | undefined,
+  // 第四批 §5.1.6：下面这几个筛选此前只是前端没接通，
+  // 看起来像"只能按关键词和状态搜"。
+  industry: undefined as string | undefined,
+  product_line: undefined as string | undefined,
+  stage: undefined as string | undefined,
+  problem_tags: undefined as string | undefined,
+  // **客户类型**（企业/个人）：取自关联客户，与「行业」不是一回事。
+  // 方案 §3.7 的检索维度是"客户类型、产品线、阶段及问题"——
+  // 之前拿「行业」顶替了客户类型，两个筛选合一，等于少一个维度。
+  customer_type: undefined as string | undefined,
+}
 
 const STAGES = ['understanding', 'quote', 'sample', 'first_order', 'repeat', 'stable']
 /** 证据类别 → 详情页的跳转路径（点开原单核对）。 */
@@ -51,7 +72,7 @@ const STAGE_LABEL: Record<string, string> = {
 const STATUS_TONE: Record<string, 'green' | 'grey' | 'orange' | 'red'> = {
   published: 'green', draft: 'grey', pending_review: 'orange', rejected: 'red',
   // 被修订版取代的旧版：**仍可读、只是不能再改**（§5.1.5），所以是中性灰不是"错"的红
-  superseded: 'grey',
+  superseded: 'grey', withdrawn: 'grey',
 }
 
 const EMPTY_FORM = {
@@ -79,26 +100,25 @@ const EMPTY_FORM = {
 }
 
 export default function CasesPage() {
+  /* 1024 宽内容区约 700px，案例表七列合计 1026px，「作者 / 行业/产品线 / 操作」
+     整块被裁到卡片外、底部常驻横向滚动条。窄屏切紧凑档：作者和行业/产品线
+     并到标题第二行小字。 */
+  const [compact, setCompact] = useState(() => window.innerWidth < 1200)
+  useEffect(() => {
+    const onResize = () => setCompact(window.innerWidth < 1200)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
   const queryClient = useQueryClient()
-  const { can, isReviewer } = usePermissions()
+  const { can, isReviewer: hasReviewerRole } = usePermissions()
+  const isReviewer = hasReviewerRole || can('settings:manage')
   // 「开修订稿」后端只放行**作者或主管**（其余人 403）。前端据此显隐按钮，
   // 免得每个人点一下都被拒——真正的拦截仍在后端。
   const currentUserId = useAuthStore((state) => state.user?.id)
-  const [filters, setFilters] = useState({
-    keyword: '',
-    status: undefined as string | undefined,
-    // 第四批 §5.1.6：下面这几个筛选此前只是前端没接通，
-    // 看起来像"只能按关键词和状态搜"。
-    industry: undefined as string | undefined,
-    product_line: undefined as string | undefined,
-    stage: undefined as string | undefined,
-    problem_tags: undefined as string | undefined,
-    // **客户类型**（企业/个人）：取自关联客户，与「行业」不是一回事。
-    // 方案 §3.7 的检索维度是"客户类型、产品线、阶段及问题"——
-    // 之前拿「行业」顶替了客户类型，两个筛选合一，等于少一个维度。
-    customer_type: undefined as string | undefined,
-  })
+  const [filters, setFilters] = useState(EMPTY_FILTERS)
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
   const [includeHistory, setIncludeHistory] = useState(false)
   //: 「按单据挑」那个下拉当前选中的值（格式 `kind:id`），点「添加」才进证据列表
   const [evidencePick, setEvidencePick] = useState<string | undefined>(undefined)
@@ -109,23 +129,29 @@ export default function CasesPage() {
     setFilters((current) => ({ ...current, ...patch }))
     setPage(1)
   }
+  const resetFilters = (status?: string) => {
+    setFilters({ ...EMPTY_FILTERS, status })
+    setIncludeHistory(false)
+    setPage(1)
+  }
+  const hasOtherFilters = includeHistory || Object.entries(filters).some(([key, value]) => key !== 'status' && Boolean(value))
+  const hasFilters = hasOtherFilters || Boolean(filters.status)
+  const onlyPendingReview = filters.status === 'pending_review' && !hasOtherFilters
 
   const casesQuery = useQuery({
-    queryKey: ['cases', filters, page, includeHistory],
+    queryKey: ['cases', filters, page, pageSize, includeHistory],
     queryFn: () =>
-      listCases({ ...filters, page, page_size: 20, include_history: includeHistory }),
+      listCases({ ...filters, page, page_size: pageSize, include_history: includeHistory }),
   })
-  const customersQuery = useQuery({
-    queryKey: ['case-customers'],
-    queryFn: () => listCustomers({ page: 1, page_size: 200 }),
-  })
-
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ['cases'] })
   }
 
   const [editVisible, setEditVisible] = useState(false)
   const [editId, setEditId] = useState<number | null>(null)
+  // 正在编辑的那一行本身：弹窗左下要不要给「删除这份案例」，得看它的状态和作者，
+  // 光有 id 判不了（主人 2026-11-21「这个难道没有删除的地方吗」—— 打开弹窗想删，找不到入口）
+  const [editMeta, setEditMeta] = useState<CaseRow | null>(null)
   const [form, setForm] = useState(EMPTY_FORM)
   const [detail, setDetail] = useState<CaseRow | null>(null)
   // 驳回意见改成**真弹窗填写**。原先写死一句"请补充关键动作与可复用做法"，
@@ -164,21 +190,34 @@ export default function CasesPage() {
     }
   }
 
-  // 证据单据（§3.7）：选了客户才去拉这个客户的报价/订单/打样
+  // 证据单据（§3.7）：选了客户才去拉这个客户的报价/订单/打样。
+  // 同一客户下单据可能超过一页，循环取全，避免第 101 条以后选不到。
   const evidenceCustomerId = editVisible ? form.customer_id : undefined
+  const fetchAll = async <T extends { id: number }>(
+    load: (page: number) => Promise<{ items: T[]; total: number; page: number; page_size: number }>,
+  ) => {
+    const first = await load(1)
+    const all = [...first.items]
+    for (let page = 2; all.length < first.total; page += 1) {
+      const next = await load(page)
+      if (!next.items.length) break
+      all.push(...next.items)
+    }
+    return { ...first, items: all }
+  }
   const quotesQuery = useQuery({
     queryKey: ['case-quotes', evidenceCustomerId],
-    queryFn: () => listQuotes({ customer_id: evidenceCustomerId, page_size: 100 }),
+    queryFn: () => fetchAll((page) => listQuotes({ customer_id: evidenceCustomerId, page, page_size: 100 })),
     enabled: Boolean(evidenceCustomerId),
   })
   const ordersQuery = useQuery({
     queryKey: ['case-orders', evidenceCustomerId],
-    queryFn: () => listOrders({ customer_id: evidenceCustomerId, page_size: 100 }),
+    queryFn: () => fetchAll((page) => listOrders({ customer_id: evidenceCustomerId, page, page_size: 100 })),
     enabled: Boolean(evidenceCustomerId),
   })
   const samplesQuery = useQuery({
     queryKey: ['case-samples', evidenceCustomerId],
-    queryFn: () => listSamples({ customer_id: evidenceCustomerId, page_size: 100 }),
+    queryFn: () => fetchAll((page) => listSamples({ customer_id: evidenceCustomerId, page, page_size: 100 })),
     enabled: Boolean(evidenceCustomerId),
   })
   // 表单里那份时间线（「从时间线挑」用）：跟着表单选的客户走
@@ -225,11 +264,15 @@ export default function CasesPage() {
 
   const openCreate = () => {
     setEditId(null)
+    // 关键：不清的话，新建弹窗左下会挂着上一条案例的「删除这份案例」——
+    // 点下去删的是别人那条，比没有入口严重得多。
+    setEditMeta(null)
     setForm(EMPTY_FORM)
     setEditVisible(true)
   }
   const openEdit = (row: CaseRow) => {
     setEditId(row.id)
+    setEditMeta(row)
     setForm({
       ...EMPTY_FORM,
       title: row.title,
@@ -287,6 +330,7 @@ export default function CasesPage() {
           kind: item.kind,
           business_id: item.business_id,
           label: item.label ?? null,
+          note: item.note || null,
         })),
       }
       return editId ? updateCase(editId, payload) : createCase(payload)
@@ -301,7 +345,9 @@ export default function CasesPage() {
   const submitMutation = useMutation({
     mutationFn: (id: number) => submitCase(id),
     onSuccess: () => {
-      Toast.success('已提交审核')
+      Toast.success(isReviewer
+        ? '已提交审核。在「案例库」筛选「待审核」，可对这条案例点「通过」或「驳回」。'
+        : '已提交审核。请有审核权限的同事在「案例库」筛选「待审核」处理。')
       refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -320,31 +366,75 @@ export default function CasesPage() {
     },
     onError: (error: Error) => Toast.error(error.message),
   })
+  const deleteMutation = useMutation({
+    mutationFn: deleteCaseDraft,
+    onSuccess: (_, id) => {
+      Toast.success('案例已删除')
+      setDetail((current) => current?.id === id ? null : current)
+      refresh()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+  const withdrawMutation = useMutation({
+    mutationFn: withdrawPublishedCase,
+    onSuccess: () => {
+      Toast.success('案例已撤下，历史已保留')
+      refresh()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
   // 开修订稿（§5.1.5）：已发布的那一版**只读**，要改就复制一份新的重新走审核。
   // 后端做了幂等——同一原版最多一份在途修订稿，重复点不会建出一堆 V2。
   const reviseMutation = useMutation({
     mutationFn: (id: number) => reviseCase(id),
     onSuccess: (result) => {
-      Toast.success(
-        `已开第 ${result.version ?? 2} 版修订稿（草稿）。原版继续可供培训；改完记得提交审核`,
-      )
+      const version = `第 ${result.version ?? 2} 版`
+      Toast.success(result.status === 'pending_review'
+        ? `${version}正在等审核。通过前，原版仍可供培训。`
+        : `新版草稿（${version}）已就绪。请在列表找到这版，点「编辑」，改完再点「提交审核」。`)
       refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
   })
 
   return (
-    <div style={{ padding: 20, maxWidth: 1200, margin: '0 auto' }}>
-      <SectionCard>
+    <div className="page-container">
+      {/* 案例库原来没有页头（2026-11-17 视觉审视 D-03）：从侧栏点进来，
+          屏幕最上面直接就是搜索框，不知道自己在哪个模块，也没有全局动作的位置。
+          补一个标准页头：标题 + 一句"这些案子能干什么"的副标题 + 右上新建。
+          新建按钮从工具条挪到页头右上，工具条只留筛选。 */}
+      <PageHeader
+        title="案例库"
+        subtitle="审核通过的案例才能拿去培训；编写中与待审核的只有相关人能看见"
+        extra={
+          can('quote:view') && (
+            <Button type="primary" theme="outline" onClick={openCreate}>
+              新建案例
+            </Button>
+          )
+        }
+      />
+      <SectionCard
+        className={(casesQuery.data?.items?.length ?? 0) <= 8 ? 'auto-height' : undefined}
+      >
         <div className="toolbar" style={{ marginBottom: 10 }}>
+          {isReviewer && !onlyPendingReview && (
+            <Button theme="outline" onClick={() => resetFilters('pending_review')}>查看待审核</Button>
+          )}
+          {/* 七个筛选控件原来宽度参差（190 / 105 / 100 / 105 / 100 / 100 / 100），
+              一线排开像随手摆的；统一成 210 + 6×108 后左边缘对齐、节奏一致
+              （2026-11-19 巡检）。 */}
+          {/* 工具栏是 flex + wrap，子项默认可以被压：7 个控件设了 108 宽，
+              实际渲染成 95 / 115 / 78 / 80 / 64 / 74 —— 一排在视觉上仍是参差
+              （2026-11-21 截图核对）。加 flexShrink:0，宽度才真是设定的宽度。 */}
           <Input
-            style={{ width: 200 }}
+            style={{ width: 210, flexShrink: 0 }}
             placeholder="搜标题 / 做法 / 关键动作"
             value={filters.keyword}
             onChange={(v) => applyFilter({ keyword: v })}
           />
           <Select
-            style={{ width: 120 }}
+            style={{ width: 108, flexShrink: 0 }}
             placeholder="状态"
             value={filters.status}
             onChange={(v) => applyFilter({ status: v as string | undefined })}
@@ -353,12 +443,13 @@ export default function CasesPage() {
               { value: 'pending_review', label: '待审核' },
               { value: 'draft', label: '编写中' },
               { value: 'rejected', label: '已驳回' },
+              ...(includeHistory ? [{ value: 'withdrawn', label: '已撤下' }] : []),
             ]}
             showClear
           />
           {/* 行业/产品线是自由文本，用输入框（后端按包含匹配，不用打全称） */}
           <Input
-            style={{ width: 110 }}
+            style={{ width: 108, flexShrink: 0 }}
             placeholder="行业"
             value={filters.industry ?? ''}
             onChange={(v) => applyFilter({ industry: v || undefined })}
@@ -366,7 +457,7 @@ export default function CasesPage() {
           {/* 客户类型：企业 / 个人。取自关联客户档案，
               与上面那个「行业」是两件事（一个企业客户可以属于任何行业）。 */}
           <Select
-            style={{ width: 110 }}
+            style={{ width: 108, flexShrink: 0 }}
             placeholder="客户类型"
             value={filters.customer_type}
             showClear
@@ -377,13 +468,13 @@ export default function CasesPage() {
             ]}
           />
           <Input
-            style={{ width: 110 }}
+            style={{ width: 108, flexShrink: 0 }}
             placeholder="产品线"
             value={filters.product_line ?? ''}
             onChange={(v) => applyFilter({ product_line: v || undefined })}
           />
           <Select
-            style={{ width: 110 }}
+            style={{ width: 108, flexShrink: 0 }}
             placeholder="阶段"
             value={filters.stage}
             onChange={(v) => applyFilter({ stage: v as string | undefined })}
@@ -391,7 +482,7 @@ export default function CasesPage() {
             showClear
           />
           <Input
-            style={{ width: 110 }}
+            style={{ width: 108, flexShrink: 0 }}
             placeholder="问题标签"
             value={filters.problem_tags ?? ''}
             onChange={(v) => applyFilter({ problem_tags: v || undefined })}
@@ -402,41 +493,90 @@ export default function CasesPage() {
               checked={includeHistory}
               onChange={(e) => {
                 setIncludeHistory(e.target.checked)
+                if (!e.target.checked && filters.status === 'withdrawn') applyFilter({ status: undefined })
                 setPage(1)
               }}
             />
-            <span title="默认只列当前版本；勾上会把被修订版取代的旧版本也列出来">
+            <span title="同时查看已被取代与已撤下的版本">
               含历史版本
             </span>
           </div>
-          <div style={{ flex: 1 }} />
-          {can('quote:view') && (
-            <Button theme="solid" onClick={openCreate}>
-              新建案例
-            </Button>
+          {/* 分页条在"一页装得下"时会收起，条数总得有个地方交代：
+              推到工具栏最右，跟搜索框同一行的灰字，位置固定不跳。 */}
+          {((casesQuery.data?.total ?? 0) > 0) && (
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)', marginLeft: 'auto', flexShrink: 0 }}>
+              共 {casesQuery.data?.total ?? 0} 条
+            </span>
           )}
         </div>
         <Table<CaseRow>
+          className="cases-table"
           columns={[
-            { title: '标题', dataIndex: 'title' },
-            { title: '作者', dataIndex: 'author_name', width: 100 },
-            { title: '行业', dataIndex: 'industry', width: 100, render: (v: string | null) => v ?? '-' },
-            { title: '产品线', dataIndex: 'product_line', width: 100, render: (v: string | null) => v ?? '-' },
             {
-              title: '阶段',
-              dataIndex: 'stage_reached',
-              width: 90,
-              render: (v: string | null) => (v ? STAGE_LABEL[v] ?? v : '-'),
+              title: '标题',
+              dataIndex: 'title',
+              /* 原来是"超过 22 个字就切掉"：这个 22 是按当年列宽估的，
+                 字宽一变就切得多余或不够；标题短一点明明放得下也被切。
+                 改成给这一列定宽 + CSS 省略号 —— 有多少空间就显示多少，
+                 悬停看全文。 */
+              width: compact ? 232 : 316,
+              render: (v: string, record: CaseRow) => (
+                <div style={{ minWidth: 0 }}>
+                  {/* 标题本身就是进详情的入口：原来标题是死的，要读到它讲什么
+                      得先跑到最右边点「详情」——同一个动作两个位置。
+                      现在标题可点（蓝色 = 可跳转，与全站表格链接一致），
+                      操作列里的「详情」随之去掉，那里只留真正的动作。 */}
+                  <a
+                    href="#"
+                    title={v}
+                    onClick={(e) => {
+                      e.preventDefault()
+                      void openDetail(record)
+                    }}
+                    /* 标题是这份案例的主体，原来卡在 300px 单行、一律省略成
+                       「…毛利只…」，看不出讲的是什么。宽屏放开成最多两行：
+                       316px 一列大概两行就能装下，悬停仍可看全文。 */
+                    style={{
+                      display: 'block',
+                      overflow: 'hidden',
+                      textOverflow: compact ? 'ellipsis' : 'clip',
+                      whiteSpace: compact ? 'nowrap' : 'normal',
+                      lineHeight: 1.45,
+                    }}
+                  >
+                    {v}
+                  </a>
+                  {compact && (
+                    <div
+                      style={{
+                        marginTop: 2,
+                        fontSize: 11,
+                        color: 'var(--crm-text-3)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {[record.author_name, record.industry, record.product_line]
+                        .filter(Boolean)
+                        .join(' · ') || '-'}
+                    </div>
+                  )}
+                </div>
+              ),
             },
+            // 列顺序按「看这份案例时要先判断什么」排：给哪个客户做的、审到哪一步了，
+            // 比"谁写的"重要得多。原来作者排第 2，客户和状态被挤到第 6、第 7 位，
+            // 一屏扫过去先看到作者名，而不是能不能用。
             {
               title: '客户',
-              width: 150,
+              width: compact ? 108 : 146,
               render: (_: unknown, record: CaseRow) => record.customer_name ?? record.customer_label ?? '-',
             },
             {
               title: '状态',
               dataIndex: 'status_label',
-              width: 150,
+              width: compact ? 100 : 108,
               render: (v: string, record: CaseRow) => (
                 <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
                   <Tag color={STATUS_TONE[record.status] ?? 'grey'}>{v}</Tag>
@@ -450,17 +590,59 @@ export default function CasesPage() {
               ),
             },
             {
+              title: '阶段',
+              dataIndex: 'stage_reached',
+              width: compact ? 92 : 86,
+              render: (v: string | null) => (v ? STAGE_LABEL[v] ?? v : '-'),
+            },
+            ...(compact ? [] : [{ title: '作者', dataIndex: 'author_name', width: 78 }]),
+            // 行业 / 产品线合成一列：两者都是"这条经验适合什么场景"的分类标签，
+            // 分开占两列各 100 宽，把标题挤得只剩 300；合并成一列省下 100。
+            ...(compact
+              ? []
+              : [{
+                  title: '行业 / 产品线',
+                  width: 132,
+                  render: (_: unknown, record: CaseRow) => {
+                    const parts = [record.industry, record.product_line].filter(Boolean)
+                    return parts.length ? parts.join(' · ') : '-'
+                  },
+                }]),
+            {
               title: '操作',
-              width: 240,
+              width: compact ? 150 : 190,
+              /* 原来是一排蓝色小字（详情 / 编辑 / 提交审核 / 开修订稿 / 通过 / 驳回 / 撤下），
+                 七个动作同重量，只有提交和通过点了之后会改变状态，却和"编辑"长得一模一样。
+                 现在：标题已经可点（详情去掉）；会推进状态的两个动作走主按钮（提交审核 / 通过），
+                 驳回与撤下走红色文字按钮，编辑和开修订稿走普通文字按钮。 */
               render: (_: unknown, record: CaseRow) => (
-                <span style={{ display: 'inline-flex', gap: 10 }}>
-                  <a onClick={() => void openDetail(record)}>详情</a>
+                <span style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'center' }}>
                   {(record.status === 'draft' || record.status === 'rejected') && (
                     <>
-                      <a onClick={() => openEdit(record)}>编辑</a>
-                      <a onClick={() => submitMutation.mutate(record.id)}>提交审核</a>
+                      <Button theme="borderless" size="small" onClick={() => openEdit(record)}>
+                        编辑
+                      </Button>
+                      <Popconfirm title="确认提交这份案例审核？" onConfirm={() => submitMutation.mutate(record.id)}>
+                        {/* 2026-11-20：列表行内的动作不该有"主按钮"——
+                            一行里的「提交审核」白底描边，旁边三个是纯蓝字，
+                            看着像那一行只有这一个能点。整列统一文字按钮。 */}
+                        <Button type="tertiary" theme="borderless" size="small">提交审核</Button>
+                      </Popconfirm>
                     </>
                   )}
+                  {(record.status === 'draft' || record.status === 'rejected') &&
+                    (isReviewer || record.author_id === currentUserId) && (
+                      <Popconfirm
+                        title="删除这份案例？"
+                        content={`「${record.title}」将从案例库移除。`}
+                        okText="删除"
+                        onConfirm={() => deleteMutation.mutate(record.id)}
+                      >
+                        <Button type="danger" theme="borderless" size="small" disabled={deleteMutation.isPending}>
+                          删除
+                        </Button>
+                      </Popconfirm>
+                    )}
                   {/* 只有**当前发布版**能开修订稿。
                       ⚠️ 已被取代的旧版**不给**这个入口（实测确认过的坑）：
                       从 V1 开出来的草稿取的是 V1 的旧内容、版本号还会跟已发布的 V2 撞号，
@@ -468,7 +650,14 @@ export default function CasesPage() {
                       旧版仍然读得到（见上面的详情弹窗），只是不能从它派生新版本。 */}
                   {record.status === 'published' &&
                     (isReviewer || record.author_id === currentUserId) && (
-                      <a onClick={() => reviseMutation.mutate(record.id)}>开修订稿</a>
+                      <Popconfirm
+                        title="修改已发布的案例？"
+                        content="系统会准备一份新版草稿。编辑并提交审核后，新版通过才会替换当前发布版。在此期间，大家仍可查看和使用原版。"
+                        okText="准备新版草稿"
+                        onConfirm={() => reviseMutation.mutate(record.id)}
+                      >
+                        <Button theme="borderless" size="small">修改案例</Button>
+                      </Popconfirm>
                     )}
                   {isReviewer && record.status === 'pending_review' && (
                     <>
@@ -476,21 +665,35 @@ export default function CasesPage() {
                           「驳回」本来就走原因弹窗，那条不用加。 */}
                       <Popconfirm
                         title="通过这份案例的审核？"
-                        content="通过后案例立即发布，会成为可被引用的基线，只能靠开修订稿再改。"
+                        content="通过后案例立即发布，可以用于培训。以后可通过「修改案例」提交新版。"
                         onConfirm={() => reviewMutation.mutate({ id: record.id, approve: true })}
                       >
-                        <a style={{ color: 'var(--crm-success)' }}>通过</a>
+                        <Button type="tertiary" theme="borderless" size="small">通过</Button>
                       </Popconfirm>
-                      <a
-                        style={{ color: 'var(--crm-danger, #d45)' }}
+                      <Button
+                        type="danger"
+                        theme="borderless"
+                        size="small"
                         onClick={() => {
                           setReviewNote('')
                           setReviewModal({ visible: true, id: record.id })
                         }}
                       >
                         驳回
-                      </a>
+                      </Button>
                     </>
+                  )}
+                  {isReviewer && (record.status === 'published' || record.status === 'superseded') && (
+                    <Popconfirm
+                      title="撤下这个案例版本？"
+                      content="撤下后退出学习列表，作者和审核人仍可查看历史版本与审核记录。"
+                      onConfirm={() => withdrawMutation.mutate(record.id)}
+                    >
+                      <Button type="danger" theme="borderless" size="small">撤下</Button>
+                    </Popconfirm>
+                  )}
+                  {record.status === 'pending_review' && !isReviewer && (
+                    <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>等待有权限的同事审核</span>
                   )}
                 </span>
               ),
@@ -499,13 +702,23 @@ export default function CasesPage() {
           dataSource={casesQuery.data?.items ?? []}
           loading={casesQuery.isLoading}
           rowKey="id"
-          pagination={{
+          /* 12 条挂「显示第 1-12 条 / 翻页 / 每页条数」只是噪音：
+             总数不过一页就收起分页条，条数交给上方工具栏的灰字。 */
+          pagination={(casesQuery.data?.total ?? 0) <= pageSize ? false : {
             currentPage: page,
-            pageSize: 20,
+            pageSize,
             total: casesQuery.data?.total ?? 0,
             onPageChange: setPage,
+            showSizeChanger: true,
+            pageSizeOpts: [10, 20, 50, 100],
+            onPageSizeChange: (size: number) => { setPageSize(size); setPage(1) },
           }}
-          empty="还没有案例——把做得好的单子沉淀下来"
+          empty={emptyNode(casesQuery, {
+            title: onlyPendingReview ? '暂无待审核案例' : hasFilters ? '没有符合筛选条件的案例' : '还没有案例',
+            hint: hasFilters ? undefined : '可以把一次有效的做法整理成案例，提交审核后供团队学习。',
+            action: hasFilters ? <Button size="small" onClick={() => resetFilters()}>查看全部案例</Button>
+              : can('quote:view') ? <Button size="small" onClick={openCreate}>新建案例</Button> : undefined,
+          })}
         />
       </SectionCard>
 
@@ -547,11 +760,47 @@ export default function CasesPage() {
         title={editId ? '编辑案例' : '新建案例'}
         visible={editVisible}
         onCancel={() => setEditVisible(false)}
-        onOk={() => saveMutation.mutate()}
-        confirmLoading={saveMutation.isPending}
-        okText="保存"
-        cancelText="取消"
-        width={680}
+        width={860}
+        // 这个表单有十一块，整弹窗比屏幕还高，底部「保存 / 取消」得滚到最底才见得到 ——
+        // 内容区自己滚，动作条钉在窗口底（主人 2026-11-21 截图里就是看不到按钮）。
+        bodyStyle={{ maxHeight: 'calc(100vh - 250px)', overflowY: 'auto' }}
+        footer={
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            {/* 删除放在左下角、离「保存」最远的位置：编辑到一半误点的代价太大。
+                只对草稿/驳回单、且是作者或主管才出现 —— 跟列表行内那条同一套判据。 */}
+            <div>
+              {editMeta &&
+                (editMeta.status === 'draft' || editMeta.status === 'rejected') &&
+                (isReviewer || editMeta.author_id === currentUserId) && (
+                  <Popconfirm
+                    title="删除这份案例？"
+                    content={`「${editMeta.title}」将从案例库移除。`}
+                    okText="删除"
+                    onConfirm={() =>
+                      deleteMutation.mutate(editMeta.id, {
+                        onSuccess: () => setEditVisible(false),
+                      })
+                    }
+                  >
+                    <Button type="danger" theme="borderless" disabled={deleteMutation.isPending}>
+                      删除这份案例
+                    </Button>
+                  </Popconfirm>
+                )}
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <Button onClick={() => setEditVisible(false)}>取消</Button>
+              <Button
+                type="primary"
+                theme="outline"
+                loading={saveMutation.isPending}
+                onClick={() => saveMutation.mutate()}
+              >
+                保存
+              </Button>
+            </div>
+          </div>
+        }
       >
         <div style={{ display: 'grid', gap: 10 }}>
           <div>
@@ -560,23 +809,26 @@ export default function CasesPage() {
           </div>
           <div>
             <FormLabel hint="看案例的人可按权限跳转过去">关联客户</FormLabel>
-            <Select
-              style={{ width: '100%' }}
-              placeholder="选择客户"
-              filter={optionMatcher}
-              showClear
+            <RecordSearchSelect
+              key={`case-customer-${editVisible}`}
+              scope="case-customer"
+              enabled={editVisible}
+              placeholder="按客户名称或编号搜索"
               value={form.customer_id}
-              onChange={(v) =>
+              list={listCustomers}
+              lookup={getCustomer}
+              labelOf={(customer) => customer.name}
+              onChange={(customer) =>
                 setForm({
                   ...form,
-                  customer_id: v as number | undefined,
+                  customer_id: customer?.id,
                   // 换客户时清掉旧证据，避免挂到别的客户的单据上
                   quote_id: undefined,
                   order_id: undefined,
                   sample_id: undefined,
                 })
               }
-              optionList={(customersQuery.data?.items ?? []).map((c) => ({ value: c.id, label: withCode(c.name, c.id) }))}
+              style={{ width: '100%' }}
             />
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))', gap: 10 }}>
@@ -633,29 +885,40 @@ export default function CasesPage() {
                   form.evidences.map((item) => (
                     <div
                       key={`${item.kind}:${item.business_id}`}
-                      style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}
+                      style={{ display: 'grid', gap: 4, fontSize: 13 }}
                     >
-                      <Tag size="small" color="blue">
-                        {item.kind_label}
-                      </Tag>
-                      <span style={{ flex: 1 }}>{item.label || `#${item.business_id}`}</span>
-                      <a
-                        style={{ color: 'var(--crm-danger, #d45)' }}
-                        onClick={() =>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <Tag size="small" color="blue">
+                          {item.kind_label}
+                        </Tag>
+                        <span style={{ flex: 1 }}>{item.label}</span>
+                        <a
+                          style={{ color: 'var(--crm-danger, #d45)' }}
+                          onClick={() =>
+                            setForm({
+                              ...form,
+                              evidences: form.evidences.filter(
+                                (row) => row.kind !== item.kind || row.business_id !== item.business_id,
+                              ),
+                            })
+                          }
+                        >
+                          移除
+                        </a>
+                      </div>
+                      <Input
+                        size="small"
+                        aria-label="证据备注"
+                        placeholder="备注（选填，随证据分享）"
+                        maxLength={255}
+                        value={item.note ?? ''}
+                        onChange={(note) =>
                           setForm({
                             ...form,
-                            evidences: form.evidences.filter(
-                              (row) =>
-                                !(
-                                  row.kind === item.kind &&
-                                  row.business_id === item.business_id
-                                ),
-                            ),
+                            evidences: form.evidences.map((row) => row === item ? { ...row, note } : row),
                           })
                         }
-                      >
-                        移除
-                      </a>
+                      />
                     </div>
                   ))
                 )}
@@ -682,7 +945,7 @@ export default function CasesPage() {
                       })),
                       ...(samplesQuery.data?.items ?? []).map((sp) => ({
                         value: `sample:${sp.id}`,
-                        label: `打样 #${sp.id} · ${sp.status_label ?? sp.status}`,
+                        label: `打样单编号 ${sp.id} · ${sp.status_label ?? sp.status}`,
                       })),
                     ]}
                   />
@@ -716,28 +979,62 @@ export default function CasesPage() {
                     fontSize: 12.5,
                   }}
                 >
-                  {(formTimelineQuery.data ?? []).map((event, index) => (
-                    <div
-                      key={`${event.at}-${index}`}
-                      style={{ display: 'flex', alignItems: 'center', gap: 8 }}
-                    >
-                      <span style={{ color: 'var(--crm-text-3)' }}>
-                        {event.at?.slice(0, 10)}
-                      </span>
-                      <span style={{ flex: 1 }}>{event.title}</span>
-                      {event.source ? (
-                        <a
-                          onClick={() =>
-                            addEvidence(`${event.source!.type}:${event.source!.id}`)
-                          }
-                        >
-                          设为证据
-                        </a>
-                      ) : (
-                        <span style={{ color: 'var(--crm-text-3)' }}>非单据</span>
-                      )}
-                    </div>
-                  ))}
+                  {(formTimelineQuery.data ?? []).map((event, index) => {
+                    /* 原来一行只有「日期 + 类型」：连着十条「2026-11-14 业务进展」，
+                       根本分不清哪条能证明这次的做法（2026-11-17 视觉审视 V2-10）。
+                       改成三段：日期降为小字，中间放事件摘要（没有摘要退回标题），
+                       下面一行补事件类型、操作人，主次一眼分得开。 */
+                    const summary = (event.detail ?? '').replace(/\s+/g, ' ').trim()
+                    const main = summary || event.title
+                    const sub = [event.title, event.operator_name].filter(Boolean).join(' · ')
+                    return (
+                      <div
+                        key={`${event.at}-${index}`}
+                        style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}
+                      >
+                        <span style={{ color: 'var(--crm-text-3)', flex: '0 0 auto' }}>
+                          {event.at ? formatBeijingDate(event.at) : ''}
+                        </span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div
+                            title={main}
+                            style={{
+                              color: 'var(--crm-text)',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {main}
+                          </div>
+                          {sub && (
+                            <div
+                              style={{
+                                fontSize: 11,
+                                color: 'var(--crm-text-3)',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {sub}
+                            </div>
+                          )}
+                        </div>
+                        {event.source ? (
+                          <a
+                            onClick={() =>
+                              addEvidence(`${event.source!.type}:${event.source!.id}`)
+                            }
+                          >
+                            设为证据
+                          </a>
+                        ) : (
+                          <span style={{ color: 'var(--crm-text-3)', flex: '0 0 auto' }}>非单据</span>
+                        )}
+                      </div>
+                    )
+                  })}
                   {(formTimelineQuery.data ?? []).length === 0 && (
                     <div style={{ color: 'var(--crm-text-3)' }}>这个客户还没有时间线事件</div>
                   )}
@@ -753,11 +1050,20 @@ export default function CasesPage() {
             <FormLabel>客户目标</FormLabel>
             <TextArea rows={2} value={form.goal} onChange={(v) => setForm({ ...form, goal: v })} />
           </div>
-          {/* 下面两项**刻意不标红星**：存草稿时后端根本不要求它们，
-              只有「提交审核」才要求两者至少填一项（cases/service.py 的 submit_case）。
-              标成必填就是假的 —— 用 hint 把真实规则讲出来。 */}
+          {/* 下面两项**不打实心红星**：存草稿时后端根本不要求它们，只有「提交审核」
+              才要求两者至少填一项（cases/service.py 的 submit_case）—— 按
+              `03-API` 设计文档的口径是**二选一，不是各自必填**，打实心星就是撒谎
+              （2026-10-06 因此把星号去掉过）。
+              但只留灰字又不显眼（主人 2026-10-13 截图：「这个必填的怎么没有标注 * 号」），
+              所以用 `conditionallyRequired`：**空心灰星**代表"有条件下必填"，
+              条件由 hint 讲清。 */}
           <div>
-            <FormLabel hint="与「可复用做法」至少填一项（提交审核时校验）">关键动作</FormLabel>
+            <FormLabel
+              conditionallyRequired
+              hint="提交审核时，与「可复用做法」至少填一项（存草稿不要求）"
+            >
+              关键动作
+            </FormLabel>
             <TextArea rows={2} value={form.key_actions} onChange={(v) => setForm({ ...form, key_actions: v })} />
           </div>
           <div>
@@ -773,7 +1079,12 @@ export default function CasesPage() {
             <TextArea rows={2} value={form.result} onChange={(v) => setForm({ ...form, result: v })} />
           </div>
           <div>
-            <FormLabel hint="与「关键动作」至少填一项">可复用做法</FormLabel>
+            <FormLabel
+              conditionallyRequired
+              hint="提交审核时，与「关键动作」至少填一项（存草稿不要求）"
+            >
+              可复用做法
+            </FormLabel>
             <TextArea rows={2} value={form.lessons} onChange={(v) => setForm({ ...form, lessons: v })} />
           </div>
         </div>
@@ -798,6 +1109,9 @@ export default function CasesPage() {
       >
         {detail && (
           <div style={{ display: 'grid', gap: 10, fontSize: 14 }}>
+            {detail.status === 'withdrawn' && (
+              <Banner type="info" closeIcon={null} description="此版本已撤下，内容与审核记录保留供查阅。" />
+            )}
             {/* 已被取代的旧版：**内容照常可读**（培训资料不断档），但必须说清
                 "这是历史版本、且不能再改"，否则读者会照着过时的做法用，
                 作者也会纳闷为什么编辑按钮没了（§5.1.5 的口径）。 */}
@@ -824,7 +1138,7 @@ export default function CasesPage() {
             {/* 修订稿：说明它是从哪一版改出来的，免得作者忘了自己在改什么。
                 已发布和在途要说**不一样**的话——对已经发布的版本说"审核通过后会替换它"，
                 用户会困惑"不是已经发布了吗"。 */}
-            {detail.revision_of_id && detail.status !== 'superseded' && (
+            {detail.revision_of_id && detail.status !== 'superseded' && detail.status !== 'withdrawn' && (
               <Banner
                 type="info"
                 closeIcon={null}
@@ -838,7 +1152,7 @@ export default function CasesPage() {
                     <span>
                       本版是第 {detail.version ?? 2} 版（从第 {(detail.version ?? 2) - 1} 版改出）的
                       {detail.status === 'pending_review' ? '待审稿' : '草稿'}。
-                      原版继续可供培训；这一版审核通过后会替换它为当前版本。
+                      原版仍可供培训。新版审核通过后才会替换原版。
                     </span>
                   )
                 }
@@ -873,35 +1187,50 @@ export default function CasesPage() {
               {detail.product_line ? ` · ${detail.product_line}` : ''}
               {detail.stage_reached ? ` · ${STAGE_LABEL[detail.stage_reached] ?? detail.stage_reached}` : ''}
             </div>
-            {([
-              ['客户背景', detail.background],
-              ['客户目标', detail.goal],
-              ['关键动作', detail.key_actions],
-              ['异议处理', detail.objection_handling],
-              ['报价/打样经过', detail.process],
-              ['结果', detail.result],
-              ['可复用做法', detail.lessons],
-            ] as const)
-              .filter(([, text]) => text)
-              .map(([label, text]) => (
+            {(() => {
+              const sections = ([
+                ['客户背景', detail.background],
+                ['客户目标', detail.goal],
+                ['关键动作', detail.key_actions],
+                ['异议处理', detail.objection_handling],
+                ['报价/打样经过', detail.process],
+                ['结果', detail.result],
+                ['可复用做法', detail.lessons],
+              ] as const).filter(([, text]) => text)
+              // 正文一段都没填时，整块会只剩大片空白，看的人以为加载失败
+              // （2026-11-17 视觉审视 V2-09）。这里明确说「还没写」，并指出在哪补。
+              if (sections.length === 0) {
+                return (
+                  <div className="case-empty-body">
+                    <div>这条案例的正文还没有填写：客户目标、关键动作、结果、可复用做法都是空的。</div>
+                    <div className="case-empty-hint">
+                      点右上角「编辑」把这几段补上，审核通过后它才会成为可培训的案例。
+                    </div>
+                  </div>
+                )
+              }
+              return sections.map(([label, text]) => (
                 <div key={label}>
                   <div style={{ fontWeight: 600, marginBottom: 2 }}>{label}</div>
                   <div style={{ whiteSpace: 'pre-wrap', color: 'var(--crm-text-2)' }}>{text}</div>
                 </div>
-              ))}
+              ))
+            })()}
             {(detail.evidences ?? []).length > 0 ? (
               <div style={{ display: 'grid', gap: 4, fontSize: 13 }}>
                 <span style={{ color: 'var(--crm-text-3)' }}>
                   证据单据（{(detail.evidences ?? []).length} 条，可点开原单）：
                 </span>
                 {(detail.evidences ?? []).map((item) => (
-                  <Link
-                    key={`${item.kind}:${item.business_id}`}
-                    to={EVIDENCE_PATH[item.kind] ? `${EVIDENCE_PATH[item.kind]}${item.business_id}` : '#'}
-                  >
-                    {item.label || `${item.kind_label} #${item.business_id}`}
-                    <span style={{ color: 'var(--crm-text-3)' }}> · {item.kind_label}</span>
-                  </Link>
+                  <div key={`${item.kind}:${item.business_id}`}>
+                    <Link to={EVIDENCE_PATH[item.kind] ? `${EVIDENCE_PATH[item.kind]}${item.business_id}` : '#'}>
+                      {item.label || `${item.kind_label}（暂无编号）`}
+                      <span style={{ color: 'var(--crm-text-3)' }}> · {item.kind_label}</span>
+                    </Link>
+                    {item.note && (
+                      <div style={{ whiteSpace: 'pre-wrap', color: 'var(--crm-text-2)' }}>{item.note}</div>
+                    )}
+                  </div>
                 ))}
               </div>
             ) : (
@@ -945,10 +1274,10 @@ export default function CasesPage() {
                         </span>
                         <span style={{ flex: 1 }} />
                         <span style={{ color: 'var(--crm-text-3)' }}>
-                          {round.reviewer_name || '—'}
+                          {round.reviewer_name || '-'}
                         </span>
                         <span style={{ color: 'var(--crm-text-3)' }}>
-                          {round.reviewed_at ? round.reviewed_at.slice(0, 16).replace('T', ' ') : ''}
+                          {round.reviewed_at ? formatBeijingTime(round.reviewed_at) : ''}
                         </span>
                       </div>
                       {round.note && (

@@ -1,15 +1,31 @@
-import { useState } from 'react'
+import { formatBeijingDate, formatBeijingTime } from '../../shared/beijing-time'
+import { useEffect, useState } from 'react'
 import PageHeader from '../../shared/components/PageHeader'
-import { Link } from 'react-router-dom'
+import HelpTip from '../../shared/components/HelpTip'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { emptyText } from '../../shared/hooks/emptyText'
-import { Button, Checkbox, DatePicker, Input, Modal, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
+import { emptyNode } from '../../shared/components/EmptyState'
+import { Banner, Button, Checkbox, DatePicker, Input, Modal, Popconfirm, Select, Table, Toast } from '@douyinfe/semi-ui'
 
-import { completeTask, createTask, listTasks, postponeTask, type Task } from '../../shared/api/task'
+import {
+  batchCompleteTasks,
+  batchHandoverTasks,
+  completeTask,
+  createTask,
+  listHandoverCandidates,
+  listTasks,
+  postponeTask,
+  transferTask,
+  type Task,
+} from '../../shared/api/task'
+import UserSearchSelect from '../../shared/components/UserSearchSelect'
 import type { TagTone } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
+import StatusDot from '../../shared/components/StatusDot'
+import { formatMoney } from '../../shared/components/money'
+import { usePermissions } from '../../shared/hooks/permissions'
 
 const PRIORITY_COLOR: Record<string, TagTone> = { high: 'red', normal: 'blue', low: 'grey' }
 
@@ -25,56 +41,91 @@ function primaryTaskLink(record: Task): { label: string; to: string } | null {
   if (record.source_business_type === 'sample' && record.source_business_id) {
     // 打样单没有独立编号字段，用 id（打样列表里也是显示「打样申请 #id」）
     return {
-      label: `打样单 #${record.source_business_id}`,
+      label: `打样单编号 ${record.source_business_id}`,
       to: `/samples/${record.source_business_id}`,
     }
   }
   if (record.quote_id) {
     return {
-      label: `报价 ${record.quote_no ?? `#${record.quote_id}`}`,
+      // 报价一定有单号（`quote_no` 非空），所以**没有**退回内部编号的分支
+      label: `报价 ${record.quote_no}`,
       to: `/quotes/${record.quote_id}`,
     }
   }
   if (record.order_id) {
     return {
-      label: `订单 ${record.order_no ?? `#${record.order_id}`}`,
+      label: `订单 ${record.order_no}`,
       to: `/orders/${record.order_id}`,
     }
   }
   if (record.source_business_type === 'contract' && record.source_business_id) {
     return {
-      label: `月结协议 ${record.source_doc_no ?? `#${record.source_business_id}`}`,
-      to: '/documents',
+      label: `${record.task_type === 'contract_signed_upload' ? '合同' : '月结协议'} ${record.source_doc_no || ''}`,
+      to: `/documents?contract=${record.source_business_id}`,
     }
   }
   if (record.opportunity_id) {
-    return { label: `商机 #${record.opportunity_id}`, to: `/opportunities/${record.opportunity_id}` }
+    return { label: `商机编号 ${record.opportunity_id}`, to: `/opportunities/${record.opportunity_id}` }
   }
-  if (record.customer_id) {
-    return { label: `客户 #${record.customer_id}`, to: `/customers/${record.customer_id}` }
+  if (record.customer_id && record.customer_name) {
+    return { label: record.customer_name, to: `/customers/${record.customer_id}` }
   }
   return null
 }
 
 export default function TaskListPage() {
   const queryClient = useQueryClient()
-  const [mine, setMine] = useState(true)
-  const [status, setStatus] = useState<string | undefined>('pending')
-  const [overdue, setOverdue] = useState(false)
-  const [page, setPage] = useState(1)
+  const { can, isReviewer } = usePermissions()
+  const canManage = can('task:manage')
+  const canHandover = isReviewer && canManage
+  const [searchParams, setSearchParams] = useSearchParams()
+  const handover = canHandover && searchParams.get('handover') === 'true'
+  const mine = searchParams.get('mine') !== 'false'
+  const status = searchParams.has('status') ? searchParams.get('status') || undefined : 'pending'
+  const overdue = searchParams.get('overdue') === 'true'
+  const setFilter = (name: string, value: string) => {
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous)
+      next.set(name, value)
+      if (name !== 'page') next.set('page', '1')
+      return next
+    }, { replace: true })
+  }
+  const requestedPage = Number(searchParams.get('page') ?? 1)
+  const page = Number.isSafeInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1
+  const setPage = (value: number) => setFilter('page', String(value))
   const [pageSize, setPageSize] = useState(20)
 
   const [createVisible, setCreateVisible] = useState(false)
   const [form, setForm] = useState({ title: '', priority: 'normal', due_at: null as Date | null })
   const [postponeTarget, setPostponeTarget] = useState<Task | null>(null)
   const [postponeDue, setPostponeDue] = useState<Date | null>(null)
+  // 转交（审查 B2-06）：接口与 api 函数一直有，页面此前没有入口
+  const [transferTarget, setTransferTarget] = useState<Task | null>(null)
+  const [transferOwner, setTransferOwner] = useState<number | null>(null)
+  // 批量完成（审查 B2-06）：勾选 + 批量操作入口
+  const [selectedVersions, setSelectedVersions] = useState<Record<number, string>>({})
+  const selectedIds = Object.keys(selectedVersions).map(Number)
+  const clearSelection = () => setSelectedVersions({})
+  const [handoverVisible, setHandoverVisible] = useState(false)
+  const [candidateKeyword, setCandidateKeyword] = useState('')
 
   const query = useQuery({
-    queryKey: ['tasks', { mine, status, overdue, page, pageSize }],
-    queryFn: () => listTasks({ mine, status, overdue: overdue || undefined, page, page_size: pageSize }),
+    queryKey: ['tasks', { handover, mine, status, overdue, page, pageSize }],
+    queryFn: () => listTasks({
+      ...(handover ? { handover: true } : { mine, status, overdue: overdue || undefined }),
+      page,
+      page_size: pageSize,
+    }),
   })
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['tasks'] })
+
+  const candidatesQuery = useQuery({
+    queryKey: ['task-handover-candidates', candidateKeyword],
+    queryFn: () => listHandoverCandidates(candidateKeyword),
+    enabled: handoverVisible,
+  })
 
   const createMutation = useMutation({
     mutationFn: () =>
@@ -92,8 +143,57 @@ export default function TaskListPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  const transferMutation = useMutation({
+    // 带上"用户看到的那一版"：并发时后端能判断出你看到的单子已经过期（审查 B2-03）
+    mutationFn: () => transferTask(transferTarget!.id, transferOwner!, transferTarget!.updated_at),
+    onSuccess: (task) => {
+      Toast.success(`已转交给「${task.owner_name ?? '新负责人'}」`)
+      setTransferTarget(null)
+      setTransferOwner(null)
+      void refresh()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  const batchCompleteMutation = useMutation({
+    mutationFn: () => batchCompleteTasks(selectedIds, undefined, selectedVersions),
+    onSuccess: (result) => {
+      // 成功 / 跳过 / 原因都要说清，否则操作的人不知道哪几条没成（审查 B2-06 的要求）
+      const done = result.completed?.length ?? 0
+      const skipped = result.skipped ?? []
+      if (skipped.length === 0) {
+        Toast.success(`已完成 ${done} 条`)
+      } else {
+        const detail = skipped
+          .map((row) => `编号 ${row.task_id} ${row.reason}`)
+          .slice(0, 3)
+          .join('；')
+        Toast.warning(
+          `已完成 ${done} 条，跳过 ${skipped.length} 条：${detail}${skipped.length > 3 ? ' …' : ''}`,
+        )
+      }
+      clearSelection()
+      void refresh()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  const handoverMutation = useMutation({
+    mutationFn: () => batchHandoverTasks(selectedIds, transferOwner!),
+    onSuccess: ({ task_ids }) => {
+      Toast.success(`已交接 ${task_ids.length} 条待办`)
+      setHandoverVisible(false)
+      clearSelection()
+      void refresh()
+    },
+  })
+
   const completeMutation = useMutation({
-    mutationFn: (id: number) => completeTask(id),
+    // 版本取**列表里这一行**的 `updated_at` —— 那正是用户点按钮时屏幕上那一版
+    mutationFn: (id: number) => {
+      const row = (query.data?.items ?? []).find((t) => t.id === id)
+      return completeTask(id, undefined, row?.updated_at)
+    },
     onSuccess: () => {
       Toast.success('任务已完成')
       void refresh()
@@ -102,7 +202,8 @@ export default function TaskListPage() {
   })
 
   const postponeMutation = useMutation({
-    mutationFn: () => postponeTask(postponeTarget!.id, postponeDue!.toISOString()),
+    mutationFn: () =>
+      postponeTask(postponeTarget!.id, postponeDue!.toISOString(), postponeTarget!.updated_at),
     onSuccess: () => {
       Toast.success('任务已延期')
       setPostponeTarget(null)
@@ -112,42 +213,129 @@ export default function TaskListPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  /* 1024 宽内容区约 700px，任务表七列合计 909px+，「截止时间」右半截
+     「状态 / 操作」整列被裁，底部还挂横向滚动条。窄屏切紧凑档。 */
+  const [compact, setCompact] = useState(() => window.innerWidth < 1200)
+  useEffect(() => {
+    const onResize = () => setCompact(window.innerWidth < 1200)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
   const columns = [
-    { title: '任务', dataIndex: 'title' },
+    {
+      title: '',
+      width: 44,
+      // 终态任务不能再批量完成，勾选框直接禁用（后端也会跳过并给原因）
+      render: (_: unknown, record: Task) => (
+        <Checkbox
+          checked={selectedIds.includes(record.id)}
+          aria-label={`选择任务 ${record.title}`}
+          disabled={record.status === 'done' || record.status === 'cancelled' || (!handover && record.task_type === 'contract_signed_upload')}
+          title={!handover && record.task_type === 'contract_signed_upload' ? '上传回签件归档后自动完成' : undefined}
+          onChange={(e) => {
+            const on = (e.target as HTMLInputElement).checked
+            setSelectedVersions((prev) => {
+              if (on) return { ...prev, [record.id]: record.updated_at }
+              const next = { ...prev }
+              delete next[record.id]
+              return next
+            })
+          }}
+        />
+      ),
+    },
+    {
+      title: '任务',
+      dataIndex: 'title',
+      // 任务名是这一行唯一的"这是哪条"，纯文本、不是链接 —— 按主标识加深（cell-strong）
+      className: 'cell-strong',
+      // 206 装不下「【全场景演示】客户需求确认…」这类标题，一屏八行全是省略号。
+      // 从截止时间 / 状态 / 优先级 / 操作 各让一点给它（合计仍 1114，没有横滚）。
+      width: compact ? 152 : 248,
+      /* 这一列 206px，长任务会被省略成「【全场景演示】客户需求确…」。
+         试过两种改法都不成：（1）放开两行 —— 中文按字断行把末尾编号甩到第二行，
+         一行只剩一个「1」，比截断更难看；（2）加宽到 244 —— 八列合计超出内容区，
+         表格底下立刻冒出横向滚动条。
+         所以保持单行省略，长任务靠悬停看全文（这一格已带 title）。 */
+      render: (text: string, record: Task) => (
+        <>
+          <span
+            title={text}
+            style={{
+              display: 'block',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {text}
+          </span>
+          {!!record.receivable_plans?.length && (
+            <details style={{ marginTop: 4, fontSize: 12, color: 'var(--crm-text-2)' }}>
+              <summary>查看 {record.receivable_plans.length} 期应收</summary>
+              {record.receivable_plans.map((plan) => (
+                <div key={plan.id} style={{ marginTop: 4 }}>
+                  <div>{plan.plan_name} · {formatBeijingDate(plan.due_date)}</div>
+                  应收 {formatMoney(plan.amount_exact, 'CNY')} · 未收 {formatMoney(plan.remaining_amount_exact, 'CNY')}
+                </div>
+              ))}
+            </details>
+          )}
+        </>
+      ),
+    },
     {
       title: '关联',
-      width: 220,
+      width: compact ? 108 : 208,
       render: (_: unknown, record: Task) => {
         // 一张任务可能同时挂着客户、商机、报价、订单、打样、合同。这一列只显示
         // **最具体的那一个**并直接跳过去；全铺出来会挤成六行，而用户要找的通常
         // 就是那份原件（第十一批 11.6 复审：此前只认合同 + 商机 + 客户，
         // 报价/订单/打样一律退化成「客户 #3」，看不出业务来源是哪一份）。
         const link = primaryTaskLink(record)
-        if (!link) return '-'
+        if (!link) return record.customer_id ? '客户不可查看' : '-'
         return (
-          <Link to={link.to} style={{ color: 'var(--crm-primary)' }}>
+          <Link to={link.to} title={link.label} style={{ color: 'var(--crm-primary)' }}>
             {link.label}
           </Link>
         )
       },
     },
     {
-      title: '优先级',
+      title: (
+        <span className="crm-help-label">
+          优先级
+          <HelpTip forLabel="优先级" text="建任务时选的轻重缓急，和截止时间无关。优先级越高越该先做。" />
+        </span>
+      ),
       dataIndex: 'priority',
-      width: 90,
+      width: compact ? 76 : 78,
       render: (value: string, record: Task) => (
-        <Tag color={PRIORITY_COLOR[value] ?? 'grey'}>{record.priority_label}</Tag>
+        <StatusDot label={record.priority_label} tone={(PRIORITY_COLOR[value] ?? 'grey') as TagTone} />
       ),
     },
     {
       title: '截止时间',
       dataIndex: 'due_at',
-      width: 190,
+      /* 190 放不下「2026/11/2 09:28 + 逾期标签」，日期被折成了两行；
+         日期和标签必须待在同一行，否则整表的行高参差不齐。 */
+      width: compact ? 94 : 206,
+      // 逾期别拼成括号跟在日期后面（「2026/11/2 09:28:47（已逾期）」又长又糊）：
+      // 日期一个色、状态一个小标签，扫一眼就分得出来
       render: (value: string | null, record: Task) =>
         value ? (
-          <span style={{ color: record.overdue ? 'var(--crm-error)' : undefined }}>
-            {new Date(value).toLocaleString('zh-CN')}
-            {record.overdue ? '（已逾期）' : ''}
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+            {/* 精确到分钟就够：任务截止时间带秒既没用、又把这一列撑得很长。
+                逾期时**只有**后面的红点标「逾期」，日期本身不再染红 ——
+                一屏十条里九条逾期时，整列红字会连成一片红墙，反而看不出最急的是哪条。 */}
+            <span>
+              {/* 窄屏省掉年份：94px 只放得下「11-20 15:21」，逾期标签另起一行 */}
+              {compact ? formatBeijingTime(value).slice(5, 16) : formatBeijingTime(value).slice(0, 16)}
+            </span>
+            {record.overdue && (
+              <StatusDot label="逾期" tone="red" bold />
+            )}
           </span>
         ) : (
           '-'
@@ -156,32 +344,81 @@ export default function TaskListPage() {
     {
       title: '状态',
       dataIndex: 'status_label',
-      width: 100,
-      render: (value: string) => (value === '已完成' ? <Tag color="green">{value}</Tag> : value),
+      width: compact ? 92 : 86,
+      // 状态一列也统一成圆点：只有「已完成」上绿点，其余保持灰点，
+      // 和「优先级」列的写法对齐，整行不会一半是色块一半是裸文字。
+      render: (value: string) => (
+        <StatusDot label={value} tone={value === '已完成' ? 'green' : value === '逾期' ? 'red' : 'grey'} />
+      ),
     },
-    { title: '负责人', dataIndex: 'owner_name', width: 100, render: (v: string | null) => v ?? '-' },
+    ...(compact
+      ? []
+      : [{ title: '负责人', dataIndex: 'owner_name', width: 108, render: (v: string | null) => v ?? '-' }]),
     {
       title: '操作',
-      width: 140,
+      width: compact ? 132 : 172,
       render: (_: unknown, record: Task) =>
         record.status === 'done' || record.status === 'cancelled' ? (
           '-'
-        ) : (
-          <div style={{ display: 'flex', gap: 10 }}>
-            <a style={{ color: 'var(--crm-primary)' }} onClick={() => completeMutation.mutate(record.id)}>
-              完成
-            </a>
-            <a
-              style={{ color: 'var(--crm-primary)' }}
+        ) : record.task_type === 'contract_signed_upload' ? (
+          // 文案只留动作，说明放进 title：宽屏那 12 个字的括号注释会把操作列撑出表格
+          // （2026-11-18 截图：1440 下这张表出现横向滚动条，右边「去登记回签」被切）
+          <Link to={`/documents?contract=${record.source_business_id}`} title="归档后自动完成">
+              {'去登记回签'}
+            </Link>
+        ) : canManage ? (
+          <div
+            style={
+              compact
+                /* 8 → 12：三个动作词（完成 / 延期 / 转交）贴着排像一串，
+                   和线索中心同批调整（2026-11-19）。 */
+                ? { display: 'flex', gap: 12, whiteSpace: 'nowrap', fontSize: 13 }
+                : { display: 'flex', gap: 10 }
+            }
+          >
+            <Popconfirm
+              title="确认完成这条任务？"
+              content="完成后任务会从未完成列表中移除。"
+              onConfirm={() => completeMutation.mutate(record.id)}
+            >
+              {/* 一条任务只有一个"了结"的动作（完成），延期和转交只是把它推给别处，
+                  三个词原来一样重，看不出该点哪个。完成走主按钮，其余文字按钮。 */}
+              {/* 「完成」也不该是白底描边小药丸：列表行里的动作一律纯文字，
+                  它是这条任务唯一的了结动作，用字重区分，不加框（2026-11-20）。 */}
+              <Button
+                type="tertiary"
+                theme="borderless"
+                size="small"
+                style={{ color: 'var(--crm-primary)', fontWeight: 600 }}
+              >
+                完成
+              </Button>
+            </Popconfirm>
+            <Button
+              type="tertiary"
+              theme="borderless"
+              size="small"
               onClick={() => {
                 setPostponeTarget(record)
                 setPostponeDue(null)
               }}
             >
               延期
-            </a>
+            </Button>
+            {/* 转交（审查 B2-06）：接口与 api 函数一直有，此前没有页面入口 */}
+            <Button
+              type="tertiary"
+              theme="borderless"
+              size="small"
+              onClick={() => {
+                setTransferTarget(record)
+                setTransferOwner(null)
+              }}
+            >
+              转交
+            </Button>
           </div>
-        ),
+        ) : '-',
     },
   ]
 
@@ -192,13 +429,45 @@ export default function TaskListPage() {
         subtitle="任务记录的是「接下来要做什么」，跟进记录的是「已经发生了什么」"
       />
 
-      <SectionCard>
+      {/* 只有几行任务时，卡片不该被拉满整屏（详见 .card-block.auto-height） */}
+      <SectionCard className={(query.data?.items?.length ?? 0) <= 8 ? 'auto-height' : undefined}>
         <div className="toolbar">
+          {/* 「待办交接」是个筛选开关，不是主操作 —— 原来和「新建任务」并排
+              两个白底描边，看不出谁主谁次。改成文字按钮，打开时加粗变主色。 */}
+          {canHandover && (
+            <Button
+              type="tertiary"
+              theme="borderless"
+              style={handover ? { color: 'var(--crm-primary)', fontWeight: 600 } : undefined}
+              onClick={() => {
+              clearSelection()
+              setFilter('handover', String(!handover))
+            }}>
+              {handover ? '返回任务列表' : '待办交接'}
+            </Button>
+          )}
+          {handover ? (
+            <>
+              <span className="crm-help-label">
+                停用员工的未完成待办
+                <HelpTip forLabel="待办交接" text="员工停用后，他名下没做完的任务要交给别人继续做。这里可以勾选一批，统一转交。" />
+              </span>
+              <div style={{ flex: 1 }} />
+              <Button type="primary" theme="outline" disabled={selectedIds.length === 0} onClick={() => {
+                setTransferOwner(null)
+                setCandidateKeyword('')
+                handoverMutation.reset()
+                setHandoverVisible(true)
+              }}>
+                批量交接{selectedIds.length ? `（已选 ${selectedIds.length}）` : ''}
+              </Button>
+            </>
+          ) : (
+          <>
           <Checkbox
             checked={mine}
             onChange={(event) => {
-              setMine(Boolean(event.target.checked))
-              setPage(1)
+              setFilter('mine', String(Boolean(event.target.checked)))
             }}
           >
             只看我的
@@ -207,10 +476,10 @@ export default function TaskListPage() {
             placeholder="状态"
             value={status}
             onChange={(value) => {
-              setStatus(value as string | undefined)
-              setPage(1)
+              setFilter('status', (value as string | undefined) ?? '')
             }}
             optionList={[
+              { value: 'active', label: '未完成' },
               { value: 'pending', label: '待处理' },
               { value: 'doing', label: '处理中' },
               { value: 'done', label: '已完成' },
@@ -222,40 +491,144 @@ export default function TaskListPage() {
           <Checkbox
             checked={overdue}
             onChange={(event) => {
-              setOverdue(Boolean(event.target.checked))
-              setPage(1)
+              setFilter('overdue', String(Boolean(event.target.checked)))
             }}
           >
             只看逾期
           </Checkbox>
           <div style={{ flex: 1 }} />
-          <Button theme="solid" onClick={() => setCreateVisible(true)}>
+          {/* 批量完成（审查 B2-06）：勾选后一次性完成，成功/跳过与原因都要说清。
+              没勾任何任务时按钮是灰的 —— 按规矩得说明缺什么，不能只给一个点不动的灰块。 */}
+          {canManage && <>
+          {selectedIds.length === 0 && (
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>先勾选任务才能批量完成。</span>
+          )}
+          <Popconfirm
+            title={`确认完成选中的 ${selectedIds.length} 条任务？`}
+            onConfirm={() => batchCompleteMutation.mutate()}
+            disabled={selectedIds.length === 0 || batchCompleteMutation.isPending}
+          >
+            <Button
+              disabled={selectedIds.length === 0 || batchCompleteMutation.isPending}
+              loading={batchCompleteMutation.isPending}
+            >
+              批量完成{selectedIds.length ? `（已选 ${selectedIds.length}）` : ''}
+            </Button>
+          </Popconfirm>
+          <Button type="primary" theme="outline" onClick={() => setCreateVisible(true)}>
             新建任务
           </Button>
+          </>}
+          </>
+          )}
         </div>
 
         <Table<Task>
-          columns={columns}
+          key={handover ? 'handover' : 'tasks'}
+          className="tasks-table"
+          columns={handover ? columns.filter(({ title }) => title !== '操作' && title !== '负责人')
+            : canManage ? columns : columns.slice(1)}
+          groupBy={handover ? (row) => `employee-${row?.handover_from_user_id}` : undefined}
+          expandAllGroupRows={handover}
+          renderGroupSection={handover ? (key) => {
+            const employee = query.data?.items.find((row) => `employee-${row.handover_from_user_id}` === key)
+            return <span>原负责人 · {employee?.handover_from_user_name ?? `员工编号 ${employee?.handover_from_user_id}`}</span>
+          } : undefined}
           dataSource={query.data?.items ?? []}
           loading={query.isLoading}
           rowKey="id"
-          empty={emptyText(query, '没有任务')}
-          pagination={{
+          empty={emptyNode(query, {
+            title: handover ? '没有待交接的任务'
+              : overdue ? '当前没有符合条件的逾期任务'
+                : status === 'pending' ? '没有待处理的任务'
+                  : status ? '当前状态下没有任务' : '没有任务',
+            hint: !handover && status === 'pending' && !overdue
+              ? '「待处理」只看还没开始的任务。处理中和待处理的任务都可以在「未完成」里查看。'
+              : undefined,
+            action: handover ? undefined : overdue ? (
+              <Button size="small" onClick={() => setFilter('overdue', 'false')}>取消逾期筛选</Button>
+            ) : status === 'pending' ? (
+              <Button size="small" onClick={() => setFilter('status', 'active')}>查看全部未完成</Button>
+            ) : status ? (
+              <Button size="small" onClick={() => setFilter('status', '')}>查看所有状态</Button>
+            ) : canManage ? (
+              <Button size="small" onClick={() => setCreateVisible(true)}>新建任务</Button>
+            ) : undefined,
+          })}
+          pagination={(query.data?.total ?? 0) <= pageSize ? false : {
             currentPage: page,
             pageSize,
             total: query.data?.total ?? 0,
             showSizeChanger: true,
-            onPageChange: (next: number) => setPage(next),
+            onPageChange: (next: number) => {
+              if (handover) clearSelection()
+              setPage(next)
+            },
             onPageSizeChange: (size: number) => {
+              if (handover) clearSelection()
               setPageSize(size)
               setPage(1)
             },
           }}
         />
+        {query.isSuccess && (query.data?.total ?? 0) <= pageSize && (
+          <div style={{ marginTop: 10, textAlign: 'right', fontSize: 12, color: 'var(--crm-text-3)' }}>
+            共 {query.data?.total ?? 0} 条
+          </div>
+        )}
       </SectionCard>
 
       <Modal
-        title="新建任务"
+        width={520}
+        title={`交接 ${selectedIds.length} 条待办`}
+        visible={handoverVisible}
+        onCancel={() => setHandoverVisible(false)}
+        onOk={() => handoverMutation.mutate()}
+        okButtonProps={{ disabled: !transferOwner }}
+        confirmLoading={handoverMutation.isPending}
+        okText="确认交接"
+      >
+        <FormLabel required>接手人</FormLabel>
+        <Select
+          placeholder="输入姓名搜索在职同事"
+          value={transferOwner ?? undefined}
+          onChange={(value) => setTransferOwner(value as number)}
+          onSearch={setCandidateKeyword}
+          remote
+          filter
+          loading={candidatesQuery.isFetching}
+          style={{ width: '100%' }}
+          optionList={(candidatesQuery.data?.items ?? []).map((user) => ({
+            value: user.id, label: `${user.name}（${user.username}）`,
+          }))}
+        />
+        {(handoverMutation.error || candidatesQuery.error) && (
+          <Banner type="danger" closeIcon={null} style={{ marginTop: 12 }}
+            description={(handoverMutation.error ?? candidatesQuery.error)?.message}
+            icon={null} />
+        )}
+        {handoverMutation.isError && (
+          <Button theme="borderless" onClick={() => {
+            setHandoverVisible(false)
+            clearSelection()
+            void refresh()
+          }}>刷新交接清单</Button>
+        )}
+      </Modal>
+
+      <Modal
+        width={600}
+        title={
+          <div className="modal-head">
+            <span className="modal-head-icon" aria-hidden>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><path d="M4 6h10" /><path d="M4 12h10" /><path d="M4 18h7" /><path d="M17 16.5l2 2 3.5-4" /></svg>
+            </span>
+            <div>
+              新建任务
+              <div className="modal-subtitle">写清要做什么、什么时候做完</div>
+            </div>
+          </div>
+        }
         visible={createVisible}
         onCancel={() => setCreateVisible(false)}
         onOk={() => {
@@ -268,50 +641,51 @@ export default function TaskListPage() {
         confirmLoading={createMutation.isPending}
         okText="创建"
       >
-        <div style={{ display: 'grid', gap: 12 }}>
-          <div>
-            <FormLabel required>任务标题</FormLabel>
-            <Input
-              value={form.title}
-              onChange={(v) => setForm({ ...form, title: v })}
-              placeholder="例如：周五前回复客户报价"
-            />
-          </div>
-          <div style={{ display: 'flex', gap: 12 }}>
-            <div>
-              {/* 「优先级」这句说明必须如实：查过全库，priority **不参与任何**
-                  排序、筛选、提醒或统计（任务列表是按「状态 → 截止时间」排的，
-                  见 backend/app/modules/task/router.py 的 order_by）。
-                  它唯一的去处是列表里那个彩色标签。
-                  不写这句，用户会以为选「高」就会被优先处理——那是个空承诺。
-                  ⚠️ 商机详情页有一个一模一样的弹窗，改文案时两处同步。 */}
-              <FormLabel hint="仅作轻重标记，不影响排序和提醒">优先级</FormLabel>
-              <Select
-                value={form.priority}
-                onChange={(value) => setForm({ ...form, priority: value as string })}
-                optionList={[
-                  { value: 'high', label: '高' },
-                  { value: 'normal', label: '中' },
-                  { value: 'low', label: '低' },
-                ]}
-                style={{ width: 140 }}
-              />
+                <div className="form-cards">
+          <section className="form-card">
+            <div className="form-card-title">要做的事</div>
+            <div className="form-card-grid">
+              <div className="full">
+                <div className="form-field-label">任务标题<span className="req">*</span></div>
+                <Input
+                  value={form.title}
+                  onChange={(v) => setForm({ ...form, title: v })}
+                  placeholder="例如：周五前回复客户报价"
+                />
+              </div>
+              <div>
+                <div className="form-field-label">优先级</div>
+                <Select
+                  value={form.priority}
+                  onChange={(value) => setForm({ ...form, priority: value as string })}
+                  optionList={[
+                    { value: 'high', label: '高' },
+                    { value: 'normal', label: '中' },
+                    { value: 'low', label: '低' },
+                  ]}
+                  style={{ width: '100%' }}
+                />
+              </div>
+              <div>
+                <div className="form-field-label">截止时间</div>
+                <DatePicker
+                  type="dateTime"
+                  value={form.due_at ?? undefined}
+                  onChange={(date) => setForm({ ...form, due_at: (date as Date) ?? null })}
+                  placeholder="选择时间"
+                  style={{ width: '100%' }}
+                />
+              </div>
+              <div className="full form-tip">
+                优先级只是轻重标记，不影响排序和提醒；列表按「状态 → 截止时间」排。
+              </div>
             </div>
-            <div style={{ flex: 1 }}>
-              <FormLabel>截止时间</FormLabel>
-              <DatePicker
-                type="dateTime"
-                value={form.due_at ?? undefined}
-                onChange={(date) => setForm({ ...form, due_at: (date as Date) ?? null })}
-                placeholder="选择时间"
-                style={{ width: '100%' }}
-              />
-            </div>
-          </div>
+          </section>
         </div>
       </Modal>
 
       <Modal
+        width={520}
         title={`延期任务：${postponeTarget?.title ?? ''}`}
         visible={Boolean(postponeTarget)}
         onCancel={() => setPostponeTarget(null)}
@@ -331,6 +705,40 @@ export default function TaskListPage() {
           onChange={(date) => setPostponeDue((date as Date) ?? null)}
           style={{ width: '100%' }}
         />
+      </Modal>
+
+      {/* 转交（审查 B2-06）：目标只列在职人员，停用的后端也会拦 */}
+      <Modal
+        width={520}
+        title={`转交任务：${transferTarget?.title ?? ''}`}
+        visible={Boolean(transferTarget)}
+        onCancel={() => {
+          setTransferTarget(null)
+          setTransferOwner(null)
+        }}
+        onOk={() => {
+          if (!transferOwner) {
+            Toast.warning('请选择转交给谁')
+            return
+          }
+          transferMutation.mutate()
+        }}
+        confirmLoading={transferMutation.isPending}
+        okText="确认转交"
+      >
+        <FormLabel>转交给</FormLabel>
+        <UserSearchSelect
+          queryScope="task-transfer"
+          activeOnly
+          enabled={transferTarget !== null}
+          placeholder="按姓名或登录账号搜索在职同事"
+          value={transferOwner ?? undefined}
+          onChange={(value) => setTransferOwner(value ?? null)}
+          style={{ width: '100%' }}
+        />
+        <div style={{ marginTop: 8, color: 'var(--crm-text-secondary)', fontSize: 12 }}>
+          转交只改「谁来做」；这条任务原来是谁的、什么时候建的，审计里都留着。
+        </div>
       </Modal>
     </div>
   )

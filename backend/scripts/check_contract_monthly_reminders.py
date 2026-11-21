@@ -94,6 +94,14 @@ async def main():
                 "expiry_date": expiry.isoformat(),
                 **({"parent_id": parent_id} if parent_id else {}),
                 **({"supersede_parent": True} if supersede else {}),
+                # 续签（带 parent_id）**必须**填生效日（第三批审查 P2）：
+                # 只记到期日分不清"新版从哪天开始适用"、旧协议还要适用到哪一天。
+                # 生效日取**今天**（与上面 `soon` 同一把 UTC 尺子），不晚于到期日。
+                **(
+                    {"effective_date": datetime.now(UTC).date().isoformat()}
+                    if parent_id
+                    else {}
+                ),
             },
         )
         doc_ids.append(doc["id"])

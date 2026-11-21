@@ -18,10 +18,11 @@ import hashlib
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.csvio import csv_bytes, parse_csv_bytes
+from app.core.csvio import csv_bytes, parse_csv_bytes, read_upload_bytes
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.importing import (
@@ -35,6 +36,7 @@ from app.core.importing import (
 from app.modules.customer.model import Customer
 from app.modules.pricing import service as svc
 from app.modules.pricing.model import CustomerPriceRule, PriceRule, ProductCost
+from app.modules.pricing.schema import CostCreate
 from app.modules.product.model import Sku
 
 router = APIRouter(tags=["Pricing"])
@@ -45,6 +47,38 @@ LEVELS = {"A", "B", "C", "D"}
 #: 美元数字和人民币数字直接相加，得出一个看着正常的错毛利。
 COST_CURRENCIES = {"CNY"}
 REMARK_MAX = 255
+
+
+#: 「历史标记」列的表头（两个导入共用同一份模板口径）。
+_HISTORICAL_HEADER = "历史标记(填1=历史资料)"
+#: 判为"是历史资料"的写法
+_HISTORICAL_TRUE = {"1", "是", "y", "yes", "true", "t", "历史", "历史资料"}
+#: 判为"不是"的写法（空值也算"不是"）
+_HISTORICAL_FALSE = {"", "0", "否", "n", "no", "false", "f", "-", "—", "当前", "现行"}
+
+
+def _parse_historical(raw: object) -> bool | None:
+    """把「历史标记」列解析成 True/False；**认不出的写法返回 None**（由调用方报行失败）。
+
+    ⚠️ 2026-10-14 审查修。原判据是"**非空即真**"：只要这一格有字，
+    就当成"是历史资料"。而表头写的是"填1=历史资料" ——
+    用户按常见习惯填 `0` / `否` / `N` / `false` / `-` 想表达"不是"，
+    却全部被判成历史资料，规则落成 `status='historical'`。
+
+    后果是**静默失效**：`find_price_rule` / `find_customer_price` 只认 `active`，
+    这条价**永远不参与取价**；同时 `historical` 还会跳过区间冲突检查，
+    连"和现有规则重叠"的提示都不给。导入报告只说"已新增 1 条"，
+    用户不会知道自己的价没生效（实测：填 `0`/`否`/`N`/`no`/`false`/`-` 全中招）。
+
+    现在按白名单解析：认识的写法给明确 True/False，**认不出的报行失败**（不猜）。
+    """
+    text = str(raw or "").strip().lower()
+    if text in _HISTORICAL_TRUE:
+        return True
+    if text in _HISTORICAL_FALSE:
+        return False
+    return None
+
 
 
 async def _sku_map_by_code(session: AsyncSession, codes: set[str]) -> dict[str, Sku]:
@@ -103,6 +137,25 @@ async def price_rule_template(_: CurrentUser = Depends(require_permission("price
     )
 
 
+async def _lock_import_skus(session: AsyncSession, sku_map: dict) -> None:
+    """导入前把本批涉及的 SKU **全部**加锁（审查 P1：导入绕过了并发冲突保护）。
+
+    从前导入只调 `find_price_rule_conflict` / `find_customer_price_conflict` 查一遍，
+    而"查"和"写"之间没有锁 —— 与页面新增并发时，两边都查到"没有冲突"、
+    都插入，最终**同一 SKU 同一区间留下两条启用规则**（实测指导价 66 与 55 并存）。
+
+    两点讲究：
+    - **按 SKU id 升序**逐个加锁。多 SKU 的文件里，若两个导入按不同顺序拿锁，
+      互相等对方持有的锁就会死锁；统一升序可以避免。
+    - 一次事务内拿完全部锁再开始写入：本批所有行的冲突检查都在持锁状态下进行。
+
+    导入本来就是"整批一个事务"，所以用事务级 advisory lock（连接级会在结束时释放，
+    但事务级更精确：提交/回滚即释放）。
+    """
+    for sku_id in sorted({sku.id for sku in sku_map.values()}):
+        await svc.lock_sku_price_rules(session, sku_id)
+
+
 @router.post("/price-rules/import")
 async def import_price_rules(
     request: Request,
@@ -113,7 +166,7 @@ async def import_price_rules(
     session: AsyncSession = Depends(get_db),
 ):
     """批量导入价格规则。同 SKU 同等级且区间重叠的行判失败（与界面维护同一规则）。"""
-    raw = await file.read()
+    raw = await read_upload_bytes(file)
     file_sha256 = hashlib.sha256(raw).hexdigest()
     rows = parse_csv_bytes(
         raw, required_headers=["SKU编码", "指导价"], label="文件"
@@ -122,6 +175,9 @@ async def import_price_rules(
 
     codes = {(row.get("SKU编码") or "").strip() for row in rows}
     sku_map = await _sku_map_by_code(session, codes)
+    # ⚠️ 加锁必须在**任何冲突检查之前**（审查 P1）：否则与页面新增并发时，
+    # 两边都查到"没有冲突"、都插入，同一区间落两条启用规则。
+    await _lock_import_skus(session, sku_map)
 
     for index, row in enumerate(rows, start=2):
         code = (row.get("SKU编码") or "").strip()
@@ -166,7 +222,15 @@ async def import_price_rules(
             continue
         sku = sku_map[code]
 
-        historical = (row.get("历史标记(填1=历史资料)") or "").strip()
+        historical = _parse_historical(row.get(_HISTORICAL_HEADER))
+        if historical is None:
+            report.failed_row(
+                index,
+                "historical_flag_invalid",
+                "「历史标记」只认 1/是/y/yes/true 或 0/否/n/no/false（留空=不是）；"
+                f"收到的是「{row.get(_HISTORICAL_HEADER)!r}」",
+            )
+            continue
         rule_status = "historical" if historical else "active"
         try:
             async with row_savepoint(session):
@@ -184,7 +248,7 @@ async def import_price_rules(
                     if conflict is not None:
                         # 业务性拒绝不是异常：直接记行失败，不要走 savepoint 的异常通道
                         raise RowRejected(
-                            f"与现有规则 #{conflict.id}（数量 {conflict.min_qty}-"
+                            f"与现有规则编号 {conflict.id}（数量 {conflict.min_qty}-"
                             f"{conflict.max_qty or '∞'}、等级 {conflict.customer_level or '通用'}）"
                             "重叠，请先处理"
                         )
@@ -205,7 +269,13 @@ async def import_price_rules(
                 session.add(rule)
                 await session.flush()
                 rule_id = rule.id
-            report.created_row(index, code, id=rule_id, sku_code=code)
+            report.created_row(
+                index, code, id=rule_id, sku_code=code,
+                # 把**实际落成的状态**回传：用户填了"历史标记"却看不出结果时，
+                # 只能靠"这条价怎么不生效"去猜（2026-10-14 审查修）
+                status=rule_status,
+                status_label="历史资料（不参与取价）" if rule_status == "historical" else "当前有效",
+            )
         except RowRejected as rejected:
             report.failed_row(index, code, str(rejected))
         except Exception as exc:  # 单行失败不影响其它行
@@ -272,13 +342,15 @@ async def import_customer_prices(
     """
     from app.core.data_scope import scoped_owner_ids
 
-    raw = await file.read()
+    raw = await read_upload_bytes(file)
     file_sha256 = hashlib.sha256(raw).hexdigest()
     rows = parse_csv_bytes(raw, required_headers=["SKU编码", "约定价"], label="文件")
     report = ImportReport("customer_price_rule", len(rows))
 
     codes = {(row.get("SKU编码") or "").strip() for row in rows}
     sku_map = await _sku_map_by_code(session, codes)
+    # 同 `import_price_rules`：锁必须在冲突检查之前（审查 P1，两个入口都复现了）
+    await _lock_import_skus(session, sku_map)
     owner_ids = await scoped_owner_ids(session, user)
 
     for index, row in enumerate(rows, start=2):
@@ -368,7 +440,15 @@ async def import_customer_prices(
                 )
                 continue
 
-        historical = (row.get("历史标记(填1=历史资料)") or "").strip()
+        historical = _parse_historical(row.get(_HISTORICAL_HEADER))
+        if historical is None:
+            report.failed_row(
+                index,
+                "historical_flag_invalid",
+                "「历史标记」只认 1/是/y/yes/true 或 0/否/n/no/false（留空=不是）；"
+                f"收到的是「{row.get(_HISTORICAL_HEADER)!r}」",
+            )
+            continue
         rule_status = "historical" if historical else "active"
         try:
             async with row_savepoint(session):
@@ -384,7 +464,7 @@ async def import_customer_prices(
                     )
                     if conflict is not None:
                         raise RowRejected(
-                            f"该客户此 SKU 已有规则 #{conflict.id}（数量 {conflict.min_qty}-"
+                            f"该客户此 SKU 已有规则编号 {conflict.id}（数量 {conflict.min_qty}-"
                             f"{conflict.max_qty or '∞'}）重叠，请先处理"
                         )
                 rule = CustomerPriceRule(
@@ -402,7 +482,13 @@ async def import_customer_prices(
                 session.add(rule)
                 await session.flush()
                 rule_id = rule.id
-            report.created_row(index, code, id=rule_id, sku_code=code)
+            report.created_row(
+                index, code, id=rule_id, sku_code=code,
+                # 把**实际落成的状态**回传：用户填了"历史标记"却看不出结果时，
+                # 只能靠"这条价怎么不生效"去猜（2026-10-14 审查修）
+                status=rule_status,
+                status_label="历史资料（不参与取价）" if rule_status == "historical" else "当前有效",
+            )
         except RowRejected as rejected:
             report.failed_row(index, code, str(rejected))
         except Exception as exc:
@@ -443,6 +529,27 @@ async def cost_template(_: CurrentUser = Depends(require_permission("price:manag
     )
 
 
+async def _lock_cost_import_skus(session: AsyncSession, sku_map: dict[str, Sku]) -> dict[str, Sku]:
+    """先按ID锁全部产品，再锁SKU；首次无成本行时也能与其它写入口互斥。"""
+    from app.modules.product import service as product_service
+
+    products = {}
+    for product_id in sorted({sku.product_id for sku in sku_map.values()}):
+        product = await product_service.lock_product(session, product_id)
+        if product is not None and product.deleted_at is None:
+            products[product.id] = product
+    locked = {}
+    for code, original in sorted(sku_map.items(), key=lambda item: item[1].id):
+        sku = (await session.execute(
+            select(Sku).where(Sku.id == original.id).with_for_update()
+            .execution_options(populate_existing=True)
+        )).scalar_one_or_none()
+        if (sku is not None and sku.sku_code == code
+                and sku.product_id in products and sku.deleted_at is None):
+            locked[code] = sku
+    return locked
+
+
 @router.post("/costs/import")
 async def import_costs(
     request: Request,
@@ -464,7 +571,7 @@ async def import_costs(
     - 更新同日已有版本时，空白 = **保留旧值**；
     - 币种只接受人民币（用户 2026-10-06 确认），外币成本本轮不支持。
     """
-    raw = await file.read()
+    raw = await read_upload_bytes(file)
     file_sha256 = hashlib.sha256(raw).hexdigest()
     rows = parse_csv_bytes(
         raw, required_headers=["SKU编码", "生效起始日(YYYY-MM-DD)"], label="文件"
@@ -473,6 +580,7 @@ async def import_costs(
 
     codes = {(row.get("SKU编码") or "").strip() for row in rows}
     sku_map = await _sku_map_by_code(session, codes)
+    sku_map = await _lock_cost_import_skus(session, sku_map)
 
     for index, row in enumerate(rows, start=2):
         code = (row.get("SKU编码") or "").strip()
@@ -515,6 +623,22 @@ async def import_costs(
             "package_cost": package,
             "processing_cost": processing,
         }
+        # 与页面成本录入使用同一字段约束，避免数据库把微小正数静默舍入为零。
+        try:
+            CostCreate.model_validate({**provided, "effective_from": effective_from})
+        except ValidationError as exc:
+            labels = {
+                "purchase_cost": "采购成本", "production_cost": "生产成本",
+                "package_cost": "包装成本", "processing_cost": "加工成本",
+            }
+            for error in exc.errors():
+                field = str(error["loc"][0])
+                errs.add(
+                    f"{labels.get(field, field)}不符合成本录入精度要求"
+                    "（最多14位数字、4位小数，与页面录入一致）"
+                )
+            report.failed_row(index, code, errs.reasons)
+            continue
         filled = {key: value for key, value in provided.items() if value is not None}
 
         try:
@@ -533,7 +657,25 @@ async def import_costs(
                         .with_for_update()
                         .execution_options(populate_existing=True)
                     )
-                ).scalars().first()
+                # ⚠️ **不许 `.first()` 静默挑一条**（第七批 P1-2）。
+                #
+                # 同日允许存在多条（`effective_from` 无唯一约束）。原来这里
+                # 没有 order_by，`.first()` 取到哪条由数据库返回顺序决定 ——
+                # 实测：同日已有 70 和 100 两条时导入 200，系统报"更新成功"，
+                # 却改了较早那条，而核价按另一条算，**成本实际仍是 100**。
+                # 用户看到"更新成功但没生效"，只会怀疑自己。
+                #
+                # 口径（主人 2026-10-13 确认）：**遇歧义直接报错**，不猜。
+                ).scalars().all()
+                if len(existing) > 1:
+                    ids = "、".join(str(row.id) for row in existing)
+                    raise RowRejected(
+                        f"该 SKU 在同一天已有 {len(existing)} 条成本版本（编号 {ids}），"
+                        "导入无法确定该更新哪一条。请先在价格中心把多余的那条停用或删除，"
+                        "再重新导入 —— 系统不会替你猜（猜错会出现"
+                        "「导入说更新成功、核价却用另一条」的情况）"
+                    )
+                existing = existing[0] if existing else None
                 if existing is not None:
                     # 原值指纹必须在**动它之前**算：确认导入时再算一次比对，
                     # 就能发现"预览之后别人改过这一行"（审查 2026-10-07 第二轮实测：
@@ -565,13 +707,13 @@ async def import_costs(
                     if changed:
                         report.updated_row(
                             index, code, id=existing.id, changed=True,
-                            reason=f"已更新同日成本版本 #{existing.id}",
+                            reason=f"已更新同日成本版本编号 {existing.id}",
                             baseline=baseline,
                         )
                     else:
                         report.skipped_row(
                             index, code,
-                            f"同日成本版本 #{existing.id} 与本次内容一致，未改动",
+                            f"同日成本版本编号 {existing.id} 与本次内容一致，未改动",
                         )
                     continue
 

@@ -5,7 +5,7 @@
 因此这里只存"它想做什么"（AgentAction）和"实际做成了什么"（AgentExecution）。
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import BigInteger, DateTime, Index, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
@@ -16,6 +16,7 @@ ACTION_STATUS_LABEL = {
     "proposed": "已提议",
     "awaiting_confirmation": "待用户确认",
     "approval_required": "需审批",
+    "expired": "已过期",
     "executed": "已执行",
     "rejected": "已拒绝",
     "cancelled": "已取消",
@@ -33,6 +34,7 @@ class AgentSession(Base, IdMixin, TimestampMixin):
     title: Mapped[str] = mapped_column(String(200), default="新会话")
     context_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     context_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AgentMessage(Base, IdMixin):
@@ -66,7 +68,7 @@ class AgentAction(Base, IdMixin):
     confirmed_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(), server_default=func.now(),
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), server_default=func.now(),
         nullable=False,
     )
 

@@ -20,7 +20,7 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import false, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.data_scope import ensure_in_scope, scoped_owner_ids
@@ -29,7 +29,8 @@ from app.core.timebase import today_business, to_business
 from app.modules.customer.model import Customer
 from app.modules.opportunity.model import Opportunity, OpportunityStage
 from app.modules.order.model import SalesOrder
-from app.modules.payment.model import PaymentRecord, ReceivablePlan
+from app.modules.payment import service as payment_service
+from app.modules.payment.model import ReceivablePlan
 from app.modules.task.model import Task
 from app.modules.user.model import User
 
@@ -86,6 +87,40 @@ def _is_overdue(due_at, today) -> bool:
     if due_at is None:
         return False
     return to_business(due_at).date() < today
+
+
+async def _visible_open_opportunities(
+    session: AsyncSession, user, *, customer_id: int
+) -> int | None:
+    """某客户名下**当前用户看得见**的进行中商机数。
+
+    与 `_visible_open_tasks` 对称，为什么需要它（2026-10-14 审查）：
+    `followup_suggestion` 与客户摘要两处都在统计"这个客户还有几个商机在谈"，
+    但**既没判 `opportunity:view`、也没按数据范围收窄** —— 而紧邻的任务计数
+    （`_visible_open_tasks`）两道都有，注释还写着"原来这里不按负责人过滤，
+    于是 14 天没跟进的建议里会混进别人负责的逾期任务"。
+
+    触发面（实测过的路径）：`data_scope=self` 的用户对**公海客户**
+    （`owner_id` 为空，任何有 `customer:view` 的人都能打开）调
+    `/agent/followup-suggestion`，就能读到**别人负责**的进行中商机条数，
+    并把它写进建议文案、随 payload 一起送给大模型；没有 `opportunity:view`
+    的账号同样能拿到这个数。
+
+    返回 `None` 表示**没有 `opportunity:view` 权限**（"看不到" ≠ "一条都没有"）。
+    """
+    if not ("admin" in getattr(user, "roles", []) or user.has("opportunity:view")):
+        return None
+
+    stmt = select(func.count(Opportunity.id)).where(
+        Opportunity.customer_id == customer_id,
+        Opportunity.status == "open",
+        Opportunity.deleted_at.is_(None),
+    )
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is not None:
+        # 与 `_visible_open_tasks` 同口径：`[]` 用恒假条件，不用 `in_([])`。
+        stmt = stmt.where(Opportunity.owner_id.in_(owner_ids) if owner_ids else false())
+    return int((await session.execute(stmt)).scalar_one())
 
 
 async def _visible_open_tasks(
@@ -149,8 +184,8 @@ async def receivable_risk(session: AsyncSession, user, *, order_id: int | None =
     today = today_business()
     visible = await _visible_order_ids(session, user)
 
-    stmt = select(ReceivablePlan).where(
-        ReceivablePlan.status.in_(("pending", "partial", "overdue"))
+    stmt = select(ReceivablePlan).join(SalesOrder, SalesOrder.id == ReceivablePlan.order_id).where(
+        ReceivablePlan.status != "cancelled", SalesOrder.status != "cancelled"
     )
     if order_id is not None:
         order = await session.get(SalesOrder, order_id)
@@ -163,27 +198,22 @@ async def receivable_risk(session: AsyncSession, user, *, order_id: int | None =
 
     plans = (await session.execute(stmt)).scalars().all()
 
-    received_map: dict[int, Decimal] = {}
-    if plans:
-        rows = (
-            await session.execute(
-                select(
-                    PaymentRecord.receivable_plan_id,
-                    func.coalesce(func.sum(PaymentRecord.received_amount), 0),
-                )
-                .where(
-                    PaymentRecord.receivable_plan_id.in_([p.id for p in plans]),
-                    PaymentRecord.status == "confirmed",
-                )
-                .group_by(PaymentRecord.receivable_plan_id)
-            )
-        ).all()
-        received_map = {int(pid): Decimal(total) for pid, total in rows}
-
+    received_map = await payment_service.confirmed_amounts(session, [p.id for p in plans])
+    orders_stmt = select(SalesOrder.id).where(SalesOrder.status != "cancelled")
+    if order_id is not None:
+        orders_stmt = orders_stmt.where(SalesOrder.id == order_id)
+    elif visible is not None:
+        orders_stmt = orders_stmt.where(SalesOrder.id.in_(visible))
+    order_ids = (await session.execute(orders_stmt)).scalars().all()
+    cash = await payment_service.allocation_totals(session, order_ids)
     overdue: list[dict] = []
     upcoming: list[dict] = []
     overdue_amount = ZERO
     open_amount = ZERO
+
+    # 逾期判定走全项目唯一判据（2026-10-13 口径：到期未收齐即逾期，
+    # 收过部分款也算）—— 与报表、审批条件同一份逻辑
+    from app.modules.payment.service import is_plan_overdue
 
     for plan in plans:
         received = received_map.get(plan.id, ZERO)
@@ -200,7 +230,11 @@ async def receivable_risk(session: AsyncSession, user, *, order_id: int | None =
             "received_amount": _f(received),
             "remaining_amount": _f(remaining),
         }
-        if plan.due_date < today:
+        # 逾期判定走全项目唯一判据（2026-10-13 口径：到期未收齐即逾期，
+        # 收过部分款也算）—— 与报表、审批条件同一份逻辑
+        if is_plan_overdue(
+            status=plan.status, balance=remaining, due_date=plan.due_date, today=today
+        ):
             item["overdue_days"] = (today - plan.due_date).days
             overdue_amount += remaining
             overdue.append(item)
@@ -249,6 +283,7 @@ async def receivable_risk(session: AsyncSession, user, *, order_id: int | None =
                     "ratio": round(float(top_amount / open_amount), 4),
                 }
 
+    unallocated_cash = sum((t["unallocated_amount"] for t in cash.values()), ZERO)
     level = "high" if overdue_amount > 0 else ("medium" if open_amount > 0 else "low")
     insights: list[str] = []
     if overdue:
@@ -258,12 +293,16 @@ async def receivable_risk(session: AsyncSession, user, *, order_id: int | None =
         )
     if concentration and concentration["ratio"] >= 0.5:
         insights.append(
-            f"未收金额的 {concentration['ratio'] * 100:.0f}% 集中在"
+            f"应收期未结金额的 {concentration['ratio'] * 100:.0f}% 集中在"
             f"「{concentration['customer_name']}」一家，单一客户风险偏高"
         )
     if not overdue and open_amount > 0:
-        insights.append(f"暂逾期记录，未收合计 {_f(open_amount)} 元")
+                # ⚠️ 这句原来是「暂逾期记录，未收合计 …」—— 少一个「无」字，
+        # 读起来像"暂时逾期了"，意思正好反了（主人 2026-10-13 看界面时发现的）。
+        insights.append(f"暂无逾期记录，应收期未结合计 {_f(open_amount)} 元")
 
+    if unallocated_cash > 0:
+        insights.append(f"已有 {_f(unallocated_cash)} 元确认到账但待分配；节点未结清不代表客户尚未付款，请先核对分配再催款")
     return {
         "scope": {"order_id": order_id},
         "level": level,
@@ -272,6 +311,9 @@ async def receivable_risk(session: AsyncSession, user, *, order_id: int | None =
             "overdue_count": len(overdue),
             "overdue_amount": _f(overdue_amount),
             "open_amount": _f(open_amount),
+            "received_amount": _f(sum((t["received_amount"] for t in cash.values()), ZERO)),
+            "allocated_amount": _f(sum((t["allocated_amount"] for t in cash.values()), ZERO)),
+            "unallocated_amount": _f(sum((t["unallocated_amount"] for t in cash.values()), ZERO)),
             "upcoming_count": len(upcoming),
         },
         "overdue": overdue,
@@ -336,11 +378,11 @@ async def customer_summary(session: AsyncSession, user, *, customer_id: int) -> 
     if len(amounts) == 1:
         single = amounts[0]
         insights.append(
-            f"累计成交 {single['amount']:.2f} {single['currency'] or '（币种待核实）'}"
+            f"累计成交 {Decimal(single.get('amount_exact') or str(single['amount'])):.2f} {single['currency'] or '（币种待核实）'}"
         )
     elif amounts:
         parts = "；".join(
-            f"{item['currency'] or '币种待核实'} {item['amount']:.2f}" for item in amounts
+            f"{item['currency'] or '币种待核实'} {Decimal(item.get('amount_exact') or str(item['amount'])):.2f}" for item in amounts
         )
         insights.append(f"累计成交（分币种）：{parts}")
 
@@ -419,16 +461,10 @@ async def followup_suggestion(
         # 只算**自己范围内**的待办（§9.1 复审）：原来这里不按负责人过滤，
         # 于是"14 天没跟进"的建议里会混进别人负责的逾期任务。
         open_tasks = await _visible_open_tasks(session, user, customer_id=customer_id) or []
-        open_opportunities = int(
-            (
-                await session.execute(
-                    select(func.count(Opportunity.id)).where(
-                        Opportunity.customer_id == customer_id,
-                        Opportunity.status == "open",
-                        Opportunity.deleted_at.is_(None),
-                    )
-                )
-            ).scalar_one()
+        # ⚠️ 必须判权限 + 按数据范围收窄（与上面那行任务计数同一口径）：
+        # 原来这里是裸 count，公海客户的商机条数会漏给范围外的人。
+        open_opportunities = (
+            await _visible_open_opportunities(session, user, customer_id=customer_id) or 0
         )
         target = {"type": "customer", "id": customer.id, "name": customer.name}
     else:
@@ -707,9 +743,18 @@ async def quote_draft(
     lines: list[dict] = []
     warnings: list[str] = []
 
-    for item in items:
+    for index, item in enumerate(items, start=1):
         if item.sku_id is None:
-            warnings.append(f"需求「{item.sku_id or '未指定 SKU'}」没有对应 SKU，跳过")
+            # ⚠️ 文案必须给出**能定位到那一行**的信息（2026-10-14 审查修）。
+            # 原来写的是 `item.sku_id or '未指定 SKU'` —— 而这条分支的前提就是
+            # `sku_id is None`，所以占位符**永远命中**，输出恒为
+            # "需求「未指定 SKU」没有对应 SKU"，等于什么都没说；
+            # 有用的需求名（`specification`）反而丢了。
+            # 这里用行序号（唯一一定存在的信息），再把规格带上。
+            where = f"第 {index} 条需求"
+            if (item.specification or "").strip():
+                where += f"（{item.specification.strip()}）"
+            warnings.append(f"{where}没有对应 SKU，已跳过核价")
             continue
         result = await pricing_service.calculate_price(
             session,
@@ -720,6 +765,19 @@ async def quote_draft(
             role_codes=user.roles,
         )
         price = result["recommended_price"]
+        # ⚠️ **算钱用未脱敏的值，返回用脱敏后的值** —— 顺序不能反：
+        # `_sanitize_pricing_result` 在"没有价格规则来源"时会把 `recommended_price`
+        # 也置空（该函数自己的注释：无规则时 standard/recommended = cost/(1-margin)，
+        # 能反推成本）。所以先取出 price 算金额，再脱敏。
+        #
+        # 为什么这里必须脱敏（2026-10-14 审查）：本函数逐行返回
+        # standard_price / minimum_price / protection_price，而同文件的
+        # `pricing_analysis`（:643）已经调了 `_sanitize_pricing_result`，
+        # `/pricing/*` 四个出口也都调了 —— 只有这一处漏着，且这些数还会整份进
+        # commentary 提示词，等于再用自然语言把底价念一遍。
+        from app.modules.pricing.router import _sanitize_pricing_result
+
+        result = _sanitize_pricing_result(result, user)
         # quantity 是 Decimal，recommended_price 经 _f 变成了 float ——
         # 直接相乘会 TypeError，先统一成 Decimal 再算钱。
         quantity = item.quantity or Decimal(0)

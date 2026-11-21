@@ -321,8 +321,10 @@ async def build_fixtures() -> None:
 
         # 在途订单：构成履约保护。
         # ⚠️ 状态必须落在 protection_detail 认的那一组
-        # （pending / in_production / shipped / delivered）—— 用 "confirmed"
-        # 之类不构成保护，那断言就会"因为夹具没生效"而假红。
+        # （pending / in_production / shipped）—— 用 "confirmed" 之类不构成保护，
+        # 那断言就会"因为夹具没生效"而假红。
+        # 注意 `delivered` 自 2026-10-13 起**不再算在途**（货已交付，由未结应收兜底），
+        # 这里刻意用 `in_production`，不要图省事改成 delivered。
         for cid, tag in ((protected.id, "SO"), (protected2.id, "SO2")):
             s.add(
                 SalesOrder(

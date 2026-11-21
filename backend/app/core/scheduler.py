@@ -16,6 +16,7 @@
 """
 
 import logging
+from datetime import UTC, datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -51,41 +52,53 @@ async def run_public_pool_recycle_job() -> None:
 
 
 async def run_auto_tasks_job() -> None:
-    """每天定时：按自动任务规则生成跟进任务（同一对象不会重复生成）。"""
-    async with SessionLocal() as session:
-        result = await settings_service.run_auto_tasks(
-            session, operator_id=None, source="SCHEDULER"
-        )
-        if result.get("failed_rule_count"):
-            logger.warning("自动任务规则配置错误，已跳过：%s", result.get("rule_errors"))
-        # 月结协议到期提醒（§3.6）+ 报价有效期届满提醒（§3.4）：
-        # 都挂在同一个每日任务里，不新增调度项
-        from app.modules.contract import service as contract_service
-        from app.modules.quote import service as quote_service
-        from app.modules.task.scanning import lock_task_scan
+    """每日扫描分步提交，单项失败时继续处理其他提醒。"""
+    from app.modules.contract import service as contract_service
+    from app.modules.contract.customer_flow import remind_countersigns
+    from app.modules.notification import service as notification_service
+    from app.modules.payment import service as payment_service
+    from app.modules.quote import service as quote_service
+    from app.modules.task.scanning import lock_task_scan
 
-        await lock_task_scan(session)
-        expired = await contract_service.notify_expiring_monthly(session)
-        expired_quotes = await quote_service.notify_expired_quotes(session)
-        # 第三个时钟（§2.3）：约定的下次跟进时间到了却没联系 → 推负责人一次
-        due_followups = await settings_service.notify_due_followups(session)
-        await write_audit(
-            session, operator_id=None, source="SCHEDULER", action="run_followup_deadlines",
-            business_type="task_rule", business_id=None,
-            after={"expired_quotes_count": expired_quotes, "due_followups_count": due_followups,
-                   "monthly_expiring_count": expired},
-        )
-        await session.commit()
-        from app.modules.notification import service as notification_service
-        await notification_service.dispatch_pending(session)
+    failed_steps: list[str] = []
+
+    async def run_step(name, action, /, *, lock_scan=False, **kwargs):
+        try:
+            async with SessionLocal() as session:
+                if lock_scan:
+                    await lock_task_scan(session)
+                result = await action(session, **kwargs)
+                await session.commit()
+                return result
+        except Exception:
+            failed_steps.append(name)
+            logger.exception("每日自动任务步骤失败：%s", name)
+            return None
+
+    refreshed = await run_step("应收逾期刷新", payment_service.refresh_overdue_plans, commit_per_order=True)
+    result = await run_step("生成自动任务", settings_service.run_auto_tasks, operator_id=None, source="SCHEDULER")
+    if result and result.get("failed_rule_count"):
+        logger.warning("自动任务规则配置错误，已跳过：%s", result.get("rule_errors"))
+
+    countersigns = await run_step("合同回签提醒", remind_countersigns, lock_scan=True)
+    expired = await run_step("月结到期提醒", contract_service.notify_expiring_monthly, lock_scan=True)
+    expired_quotes = await run_step("报价到期提醒", quote_service.notify_expired_quotes)
+    due_followups = await run_step("约定跟进提醒", settings_service.notify_due_followups)
+    await run_step(
+        "每日扫描审计", write_audit,
+        operator_id=None, source="SCHEDULER", action="run_followup_deadlines",
+        business_type="task_rule", business_id=None,
+        after={"expired_quotes_count": expired_quotes, "due_followups_count": due_followups,
+               "monthly_expiring_count": expired, "countersign_due_count": countersigns,
+               "overdue_plans_refreshed": refreshed, "failed_steps": list(failed_steps)},
+    )
+    await run_step("通知投递", notification_service.dispatch_pending)
     logger.info(
-        "定时自动任务完成：生成 %s 条任务（其中 %s 个客户因\"已约定下次跟进\"豁免），"
-        "月结到期提醒 %s 条，报价到期提醒 %s 条，约定跟进到期提醒 %s 条",
-        result.get("created_count"),
-        result.get("agreed_skipped_count"),
-        expired,
-        expired_quotes,
-        due_followups,
+        "定时自动任务结束：刷新逾期应收 %s 个节点，生成 %s 条任务（约定跟进豁免 %s 个客户），"
+        "合同回签提醒 %s 条，月结到期提醒 %s 条，报价到期提醒 %s 条，约定跟进到期提醒 %s 条，失败步骤：%s",
+        refreshed, result.get("created_count") if result is not None else None,
+        result.get("agreed_skipped_count") if result is not None else None,
+        countersigns, expired, expired_quotes, due_followups, failed_steps,
     )
 
 
@@ -163,10 +176,23 @@ async def run_oa_sync_job() -> None:
     async with SessionLocal() as session:
         result = await dingtalk_service.sync_pending_instances(session)
         await session.commit()
-    if result["checked"]:
-        logger.info(
-            "OA 审批状态同步：检查 %s 条，状态变更 %s 条", result["checked"], result["changed"]
-        )
+    logger.info(
+        "OA 审批状态同步完成：检查 %s 条，状态变更 %s 条", result["checked"], result["changed"]
+    )
+
+
+def _register_oa_sync_job() -> None:
+    scheduler.add_job(
+        run_oa_sync_job,
+        "interval",
+        minutes=settings.scheduler_oa_sync_minutes,
+        id="oa_sync",
+        name="OA 审批状态同步（周期）",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=300,
+        next_run_time=datetime.now(UTC),
+    )
 
 
 def start_scheduler() -> None:
@@ -175,8 +201,25 @@ def start_scheduler() -> None:
     max_instances=1：上一轮还没跑完不允许并发第二轮；coalesce：错过多次
     触发只补跑一次（比如机器停了一天，开机后不会连环补跑）。
     """
+    from app.modules.wecom import client as wecom_client, service as wecom_service
+
+    wecom = wecom_client.get_client()
+    wecom_events_enabled = wecom.callback_ready() and wecom.external_ready()
+    if wecom_events_enabled:
+        async def sync_wecom_events() -> None:
+            async with SessionLocal() as session:
+                await wecom_service.sync_contact_events(session)
+
+        scheduler.add_job(sync_wecom_events, "interval", minutes=1, id="wecom_contact_events",
+                          name="企微联系人变更同步", max_instances=1, coalesce=True)
+
     if not settings.scheduler_enabled:
-        logger.info("定时任务调度已关闭（SCHEDULER_ENABLED=false），公海回收/自动任务需手动触发")
+        if settings.scheduler_oa_sync_enabled:
+            _register_oa_sync_job()
+        if settings.scheduler_oa_sync_enabled or wecom_events_enabled:
+            scheduler.start()
+        logger.info("通用定时任务已关闭；OA 自动同步：%s；企微变更同步：%s",
+                    settings.scheduler_oa_sync_enabled, wecom_events_enabled)
         return
 
     scheduler.add_job(
@@ -233,16 +276,7 @@ def start_scheduler() -> None:
         coalesce=True,
         misfire_grace_time=3600,
     )
-    scheduler.add_job(
-        run_oa_sync_job,
-        "interval",
-        minutes=settings.scheduler_oa_sync_minutes,
-        id="oa_sync",
-        name="OA 审批状态同步（周期）",
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=300,
-    )
+    _register_oa_sync_job()
     scheduler.start()
     logger.info(
         "定时任务调度已启动：公海回收每天 %02d:00、自动任务规则每天 %02d:10、"

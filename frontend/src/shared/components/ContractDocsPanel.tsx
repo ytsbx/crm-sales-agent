@@ -16,7 +16,7 @@
 import { Fragment, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Tag } from '@douyinfe/semi-ui'
+import { Button, Tag } from '@douyinfe/semi-ui'
 
 import { listContractDocuments, type ContractDocument } from '../api/contract'
 import { downloadContractDoc } from '../download-contract'
@@ -49,6 +49,8 @@ interface Props {
   pageSize?: number
   empty?: string
   style?: React.CSSProperties
+  /** 是否自带卡片外壳。塞进别的卡片里时传 false，避免卡片套卡片。 */
+  boxed?: boolean
 }
 
 export default function ContractDocsPanel({
@@ -59,6 +61,7 @@ export default function ContractDocsPanel({
   pageSize = 5,
   empty = '还没有挂着这家客户的合同文档',
   style,
+  boxed = true,
 }: Props) {
   const { can } = usePermissions()
   // 列表接口要的是 order:view：没这个权限的角色不该看见入口（后端也会拦）
@@ -88,15 +91,29 @@ export default function ContractDocsPanel({
     body = <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>读取中…</div>
   } else if (rows.length === 0) {
     body = (
-      <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>
-        {empty}
-        <div style={{ marginTop: 4 }}>
-          如果合同是从订单发起的、当时没关联报价，这里按报价筛就看不到 —— 去
-          <Link to="/documents" style={{ margin: '0 2px' }}>
-            合同台账
-          </Link>
-          按客户查。
-        </div>
+      // 原来是两行灰字 + 卡片底部一大片空白，整张卡看着像「半截」
+      // （2026-11-16 客户详情巡检）。合成一行，右侧给一个明确的去处。
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
+          flexWrap: 'wrap',
+          /* 空态说明原来用三级灰，在浅灰底上几乎看不见（主人 2026-11-17："太淡了"）。
+             二级灰仍属次要文字，但至少能读清。 */
+          color: 'var(--crm-text-2)',
+          fontSize: 13,
+        }}
+      >
+        <span>
+          {empty}。如果合同是从订单发起的、当时没关联报价，按报价筛就看不到。
+        </span>
+        <Link to="/documents">
+          <Button size="small" theme="borderless">
+            去合同台账按客户查
+          </Button>
+        </Link>
       </div>
     )
   } else {
@@ -131,7 +148,7 @@ export default function ContractDocsPanel({
               </span>
             )}
             <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 12 }}>
-              <a onClick={() => void downloadContractDoc(doc)}>下载生成稿</a>
+              <a onClick={() => void downloadContractDoc(doc)}>下载合同原稿</a>
             </span>
           </div>
         ))}
@@ -144,6 +161,10 @@ export default function ContractDocsPanel({
       </Fragment>
     )
   }
+
+  // boxed=false：调用方要把这块塞进它自己的卡片里（比如报价详情的「对外与归档」），
+  // 再包一层 SectionCard 就成了卡片套卡片。
+  if (!boxed) return <>{body}</>
 
   return (
     <SectionCard title={title} style={style}>

@@ -1,10 +1,10 @@
 """价格中心与核价接口（对齐 03-API §16 ~ §19）。"""
 
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import Text, cast, select
+from sqlalchemy import BigInteger, Text, cast, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -12,9 +12,12 @@ from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.importing import RowErrors
+from app.core.money import line_amount
 from app.core.response import ok, page_data, paginate
+from app.core.trade_mode import ensure_currency_allowed
 from app.modules.customer.model import Customer
 from app.modules.pricing import service as svc
+from app.modules.pricing.logistics import rate_specificity
 from app.modules.pricing.model import (
     CustomerPriceRule,
     ExchangeRate,
@@ -40,16 +43,29 @@ from app.modules.pricing.schema import (
     PricingRequest,
 )
 from app.modules.product.model import Product, Sku
+from app.modules.product import service as product_svc
 from app.modules.user.model import Role
 
 router = APIRouter(tags=["Pricing"])
 
 
-async def _sku_code_map(session: AsyncSession, sku_ids: list[int]) -> dict[int, str]:
+async def _sku_label_map(
+    session: AsyncSession, sku_ids: list[int]
+) -> dict[int, tuple[str | None, str | None]]:
+    """`{sku_id: (编码, 名称)}`。
+
+    原来只取编码（`_sku_code_map`）。价目/专属价两张表上满屏 `LL-100L-WH` 这种
+    编码，看的人认不出是哪个产品，所以把名称一起取回来（2026-10-10 修）。
+    **不额外多查一次库**：同一条 SELECT 多带一列而已。
+    """
     if not sku_ids:
         return {}
-    rows = (await session.execute(select(Sku.id, Sku.sku_code).where(Sku.id.in_(sku_ids)))).all()
-    return {int(sid): code for sid, code in rows}
+    rows = (
+        await session.execute(
+            select(Sku.id, Sku.sku_code, Sku.name).where(Sku.id.in_(sku_ids))
+        )
+    ).all()
+    return {int(sid): (code, name) for sid, code, name in rows}
 
 
 # ---------------------------------------------------------------- 成本
@@ -65,6 +81,8 @@ async def list_costs(
     sku = await session.get(Sku, sku_id)
     if sku is None:
         raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
+    if sku.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在或已删除", 404)
     rows = (
         await session.execute(
             select(ProductCost)
@@ -83,9 +101,14 @@ async def create_cost(
     user: CurrentUser = Depends(require_permission("price:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    sku = await session.get(Sku, sku_id)
-    if sku is None:
+    # 写成本与产品级联删除共用「产品 → SKU」锁序；否则删除产品拿到产品锁后
+    # 仍可能在并发窗口里新增一条挂在已删 SKU 上的成本。
+    locked_sku = await product_svc.lock_sku_with_product(session, sku_id)
+    if locked_sku is None:
         raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
+    sku, product = locked_sku
+    if sku.deleted_at is not None or product.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在或已删除", 404)
     # 与导入同一套校验（第七批 7.2/7.4：导入、预览、页面维护不能各校验一套，
     # 否则"页面拦得住、导入绕得过"永远修不干净）
     values = payload.model_dump()
@@ -227,14 +250,44 @@ async def list_price_rules(
     if sku_id:
         stmt = stmt.where(PriceRule.sku_id == sku_id)
     if keyword:
-        stmt = stmt.where(Sku.sku_code.ilike(f"%{keyword.strip()}%"))
+        # 搜索范围（2026-10-10 主人："价格规则那里没有搜索功能，一旦很多就太乱了"）：
+        # 编码 / SKU 名称 / 规格 / 所属产品名 **都要能搜到**。
+        # 只搜编码时，人记得住的是"田字塑料托盘"而不是"TP-1210-ST" ——
+        # 满屏编码认不出是哪个产品（与 `_sku_label_map` 把名称一起取回来同一个理由）。
+        like = f"%{keyword.strip()}%"
+        matched_product = (
+            select(Product.id)
+            .where(
+                Product.id == Sku.product_id,
+                Product.deleted_at.is_(None),
+                or_(
+                    Product.name.ilike(like),
+                    Product.product_line.ilike(like),
+                    Product.brand.ilike(like),
+                ),
+            )
+            .exists()
+        )
+        stmt = stmt.where(
+            or_(
+                Sku.sku_code.ilike(like),
+                Sku.name.ilike(like),
+                Sku.specification.ilike(like),
+                matched_product,
+            )
+        )
     stmt = stmt.order_by(PriceRule.id.desc())
     rows, total = await paginate(session, stmt, page, page_size)
-    codes = await _sku_code_map(session, [rule.sku_id for rule in rows])
+    labels = await _sku_label_map(session, [rule.sku_id for rule in rows])
     # 最低保护价按权限隐藏（与核价/查价同判据；`_` 用不上权限，这里要判）
     can_see_cost = user.has("price:manage")
     items = [
-        svc.serialize_price_rule(rule, codes.get(rule.sku_id), can_see_cost=can_see_cost)
+        svc.serialize_price_rule(
+            rule,
+            (labels.get(rule.sku_id) or (None, None))[0],
+            can_see_cost=can_see_cost,
+            sku_name=(labels.get(rule.sku_id) or (None, None))[1],
+        )
         for rule in rows
     ]
     return ok(page_data(items, total, page, page_size))
@@ -251,6 +304,69 @@ def _reject_bad_price_rule(**values) -> None:
     svc.check_price_rule_values(errs, **values)
     if errs:
         raise AppError(ErrorCode.PARAM_ERROR, "；".join(errs.reasons), 400)
+
+
+#: 不允许在原地改的**价钱类**字段：改了就等于换了一套定价。
+#: 正确做法是停用旧的 + 新增一条（生效时序看得见），见 `update_price_rule`。
+_PRICE_FIELDS_ON_RULE = {
+    "standard_price": "标准价",
+    "guide_price": "指导价",
+    "minimum_price": "最低保护价",
+    "target_margin": "目标利润率",
+}
+
+
+def _reject_in_place_price_change(rule: PriceRule, changes: dict) -> None:
+    """挡住"原地改价钱"，但放行**值没变**的幂等回传。
+
+    `exclude_unset=True` 已经把"没传的字段"排除了，所以这里只看调用方真的传了的。
+    值没变一律放行 —— 否则"编辑数量区间"这种表单整份提交（顺带把价钱原样带回来）
+    会被误拦，那就成了为了拦一种错制造另一种错。
+
+    ⚠️ **`None` 与 `0` 是两回事，必须分别比较**（2026-10-09 审查指出，我修的第一版
+    在这里错了）。它们的业务含义不同：
+
+      - `NULL` = **这条规则没维护这个价钱** → 取价继续往通用规则回退；
+      - `0`    = **明确就是零元** → 取价到此为止，客户拿到 0。
+
+    从前这里把两边都 `Decimal("0") if x is None else ...`，于是"原值 NULL、传 0"
+    被判成"没变"而放行 —— 接口返回 200，库里从 NULL 变成 0，**该客户查价从
+    回退价（如通用指导价 66）直接变成 0 元**，等于绕过了整套"不许原地改价"的保护。
+    实测复现：`guide_price=NULL` 的规则 `PATCH {"guide_price": 0}` → 200、
+    库内 `0.0000`。
+
+    当时的理由是"序列化会把 NULL 归一成 0，前端读回来再回传就是 0" ——
+    **这个说法本身是错的**：`serialize_price_rule` 用 `_f()` 序列化，
+    `_f(None)` 返回 `None`（实测 GET 回来仍是 `null`，不是 0）。
+    所以前端原样回传的是 `null`，本来就是"没变"，不需要靠合并这两种值来放行。
+
+    报错要**点名哪些字段**并给出正确路径，不能只说"不允许"。
+    """
+    changed = []
+    for field, label in _PRICE_FIELDS_ON_RULE.items():
+        if field not in changes:
+            continue
+        incoming = changes[field]
+        current = getattr(rule, field)
+        # ① 都是 NULL → 没变（`min()`/`getattr` 都可能给 None，正常放行）
+        if incoming is None and current is None:
+            continue
+        # ② 一边 NULL、一边有值 → **变了**。NULL↔0 正是要拦的那一类：
+        #    它会把"没维护 → 回退"改成"就是零元"，取价结果天差地别。
+        if (incoming is None) != (current is None):
+            changed.append(label)
+            continue
+        # ③ 都是数值 → 按数值比（`exclude_unset` 已保证"没传"不会走到这儿）
+        if Decimal(str(incoming)) != Decimal(str(current)):
+            changed.append(label)
+    if changed:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"价格规则不支持原地修改价格（{'、'.join(changed)}）—— "
+            "改价钱请「停用这条规则 + 新增一条」，这样生效时序在单据上看得见；"
+            "本次可改的是数量区间、有效期、客户等级与备注",
+            400,
+        )
 
 
 @router.post("/price-rules")
@@ -273,6 +389,10 @@ async def create_price_rule(
     sku = await session.get(Sku, payload.sku_id)
     if sku is None:
         raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
+    # **先拿这个 SKU 的写锁，再读冲突**（审查 R05）：顺序反过来的话，两个并发
+    # 请求都已经读完"没有冲突"了，再串行也改不了各自已经做出的判断 ——
+    # 实测那样会两条都落库、区间重叠。
+    await svc.lock_sku_price_rules(session, payload.sku_id)
     # 冲突检查（方案 §4.1）：同 SKU 同等级的数量区间与有效期都重叠时拒绝，
     # 宁可让人处理冲突资料，也不能让取价随机命中一条
     conflict = await svc.find_price_rule_conflict(
@@ -287,7 +407,7 @@ async def create_price_rule(
     if conflict is not None:
         raise AppError(
             ErrorCode.DUPLICATE,
-            f"与现有规则 #{conflict.id}（数量 {conflict.min_qty}-{conflict.max_qty or '∞'}、"
+            f"与现有规则编号 {conflict.id}（数量 {conflict.min_qty}-{conflict.max_qty or '∞'}、"
             f"有效期 {conflict.effective_from or '∞'} ~ {conflict.effective_to or '∞'}）区间重叠，请调整数量或有效期",
         )
     rule = PriceRule(**payload.model_dump(), status="active")
@@ -306,6 +426,80 @@ async def create_price_rule(
     return ok(svc.serialize_price_rule(rule, sku.sku_code), "价格规则已创建")
 
 
+async def _locked_price_rule(session: AsyncSession, rule_id: int) -> PriceRule:
+    """拿锁 → **重读** → 校验记录仍在（审查 P2：编辑与删除并发会 500）。
+
+    从前这里用 `scalar_one()`：编辑请求先读到记录、在等锁期间记录被**删除**，
+    锁后重读拿到 0 行，`scalar_one()` 直接抛 `NoResultFound` → **500**。
+    对使用者来说"我编辑的时候别人把它删了"应该是一句能看懂的话，不是服务器错误。
+
+    三步的顺序不能换：
+      1. 先读一次拿到 `sku_id`（不拿锁就没法知道该锁哪个 SKU）；
+      2. 拿 SKU 锁 —— 删除也走同一把锁，于是两边真正串行；
+      3. 锁后重读，**`scalar_one_or_none`**，为 None 说明记录已消失 → 404。
+    """
+    probe = await session.get(PriceRule, rule_id)
+    if probe is None:
+        raise AppError(ErrorCode.NOT_FOUND, "价格规则不存在", 404)
+    await svc.lock_sku_price_rules(session, probe.sku_id)
+    # ⚠️ 这里必须**同时加行锁**（`with_for_update`），只加建议锁不够 ——
+    # `pg_advisory_xact_lock` 不阻塞"读行"：删除事务还没提交时，重读照样能看到那一行，
+    # 于是以为记录还在、继续改，等到 flush 时行已被删 → `StaleDataError`
+    # （"expected to update 1 row(s); 0 were matched"）→ 500。实测时间线：
+    # 重读在 0.70s 就返回了（拿着那一行），而删除事务 3.04s 才提交。
+    #
+    # `with_for_update()` 会**等删除事务结束**，然后按最新已提交快照重新求值 WHERE：
+    # 行已消失 → 0 行 → 下面给 404，而不是 500。
+    rule = (
+        await session.execute(
+            select(PriceRule)
+            .where(PriceRule.id == rule_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if rule is None:
+        raise AppError(
+            ErrorCode.NOT_FOUND,
+            "这条价格规则刚刚被删除（可能有其他人同时在操作），请刷新后重试",
+            404,
+        )
+    return rule
+
+
+async def _locked_customer_price_rule(
+    session: AsyncSession, rule_id: int
+) -> CustomerPriceRule:
+    """同 `_locked_price_rule`，针对客户特殊价（审查 P2 的 500 就在这条路径上）。"""
+    probe = await session.get(CustomerPriceRule, rule_id)
+    if probe is None:
+        raise AppError(ErrorCode.NOT_FOUND, "客户特殊价不存在", 404)
+    await svc.lock_sku_price_rules(session, probe.sku_id)
+    # ⚠️ 这里必须**同时加行锁**（`with_for_update`），只加建议锁不够 ——
+    # `pg_advisory_xact_lock` 不阻塞"读行"：删除事务还没提交时，重读照样能看到那一行，
+    # 于是以为记录还在、继续改，等到 flush 时行已被删 → `StaleDataError`
+    # （"expected to update 1 row(s); 0 were matched"）→ 500。实测时间线：
+    # 重读在 0.70s 就返回了（拿着那一行），而删除事务 3.04s 才提交。
+    #
+    # `with_for_update()` 会**等删除事务结束**，然后按最新已提交快照重新求值 WHERE：
+    # 行已消失 → 0 行 → 下面给 404，而不是 500。
+    rule = (
+        await session.execute(
+            select(CustomerPriceRule)
+            .where(CustomerPriceRule.id == rule_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if rule is None:
+        raise AppError(
+            ErrorCode.NOT_FOUND,
+            "这条客户特殊价刚刚被删除（可能有其他人同时在操作），请刷新后重试",
+            404,
+        )
+    return rule
+
+
 @router.patch("/price-rules/{rule_id}")
 async def update_price_rule(
     rule_id: int,
@@ -314,9 +508,25 @@ async def update_price_rule(
     user: CurrentUser = Depends(require_permission("price:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    rule = await session.get(PriceRule, rule_id)
-    if rule is None:
-        raise AppError(ErrorCode.NOT_FOUND, "价格规则不存在", 404)
+    """改价格规则（03-API §16 PATCH）。
+
+    **允许改**：数量区间 / 有效期 / 备注 / 客户等级 / 状态 —— 这些是"这条规则
+    在什么条件下适用"，填错了就该能改回来。
+
+    **不允许原地改价钱**（标准价 / 指导价 / 最低保护价 / 目标利润率）：
+    改价钱等于换了一套定价，正确做法是**停用旧的 + 新增一条**，
+    这样"这条从哪天起不再生效、那条从哪天起生效"在单据上看得见；
+    原地改会让同一个 id 的金额随时间漂移，事后问"当时为什么是这个价"
+    只能翻审计日志。（口径 2026-10-09 与主人确认。）
+
+    挡住而不是静默忽略：静默忽略会让人以为改成功了，那比报错危险得多。
+    传"与当前值相同"的价钱不算改（允许幂等回传），否则表单整份提交会被误拦。
+
+    **拿锁与重读都收在 `_locked_price_rule` 里**：删除走同一把锁，
+    两边真正串行；记录在等锁期间被删时给 404 而不是 500（审查 P2）。
+    """
+    rule = await _locked_price_rule(session, rule_id)
+    _reject_in_place_price_change(rule, payload.model_dump(exclude_unset=True))
     before = svc.serialize_price_rule(rule)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(rule, field, value)
@@ -336,22 +546,43 @@ async def update_price_rule(
     except AppError:
         await session.rollback()
         raise
-    # 改动后仍不能与其他规则重叠（排除自己）
-    conflict = await svc.find_price_rule_conflict(
-        session,
-        sku_id=rule.sku_id,
-        customer_level=rule.customer_level,
-        min_qty=rule.min_qty,
-        max_qty=rule.max_qty,
-        effective_from=rule.effective_from,
-        effective_to=rule.effective_to,
-        exclude_id=rule.id,
-    )
+    # 改动后仍不能与其他规则重叠（排除自己）——**但只在合并后规则仍是"启用"时才查**
+    # （2026-10-09 审查 R06）。
+    #
+    # 从前这里无条件查，于是出现一个反直觉的拒绝：一条**已经停用**的规则，
+    # 仅仅改一下备注就会被判"区间重叠，请调整数量或有效期"—— 而它根本不生效，
+    # 停用后那段区间早就被别人合法占用了。实测复现：
+    #   规则 A(50000-50999) 停用 → 在**同一区间**新建启用规则 B（放行，因为
+    #   `find_price_rule_conflict` 只看 active）→ 改 A 的备注 → 40901 被拒。
+    # 业务操作规范恰恰是"停用旧的、新增新的替代"，这条误拒直接挡住规范操作。
+    #
+    # 停用的规则不产生冲突（取价时命中不到它）；真正需要校验冲突的时机是
+    # **重新启用**（`status` 改回 active）—— 那时合并后的 `rule.status` 就是 active，
+    # 走下面这段，冲突照拦不误。
+    conflict = None
+    if rule.status == "active":
+        conflict = await svc.find_price_rule_conflict(
+            session,
+            sku_id=rule.sku_id,
+            customer_level=rule.customer_level,
+            min_qty=rule.min_qty,
+            max_qty=rule.max_qty,
+            effective_from=rule.effective_from,
+            effective_to=rule.effective_to,
+            exclude_id=rule.id,
+        )
     if conflict is not None:
+        # ⚠️ 顺序要紧：**先把值读出来，再 rollback**。
+        # `conflict` 是异步会话里的 ORM 对象，`rollback()` 会让它的属性**过期**；
+        # 过期之后再访问属性会触发同步 lazy-load I/O → `MissingGreenlet`，
+        # 于是"区间重叠"这个本该是 40901 的业务拒绝变成 500（实测踩到）。
+        conflict_id = conflict.id
+        conflict_min = conflict.min_qty
+        conflict_max = conflict.max_qty
         await session.rollback()
         raise AppError(
             ErrorCode.DUPLICATE,
-            f"与现有规则 #{conflict.id}（数量 {conflict.min_qty}-{conflict.max_qty or '∞'}）区间重叠，请调整数量或有效期",
+            f"与现有规则编号 {conflict_id}（数量 {conflict_min}-{conflict_max or '∞'}）区间重叠，请调整数量或有效期",
         )
     await session.flush()
     await write_audit(
@@ -375,9 +606,28 @@ async def delete_price_rule(
     user: CurrentUser = Depends(require_permission("price:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    rule = await session.get(PriceRule, rule_id)
-    if rule is None:
-        raise AppError(ErrorCode.NOT_FOUND, "价格规则不存在", 404)
+    # ⚠️ 必须走 `_locked_price_rule`（拿锁 **+ 锁后重读**），不能只拿锁
+    # （审查 P2 第二次指出这个入口）。只拿锁的后果实测过：
+    #   1. 规则原本 `disabled`，停用请求 `session.get` 读到它（内存里就是 disabled）；
+    #   2. 它在等锁期间，另一请求"恢复启用"拿到锁并提交（库内变 `active`）；
+    #   3. 停用请求继续，把内存对象再赋一次 `"disabled"` —— **同值赋值，
+    #      ORM 认为没有变化、不产生 UPDATE**，于是什么也没写；
+    #   4. 接口照样返回 200「价格规则已停用」，**而库里仍是 active**。
+    # 用户看到"停用成功"，规则却还在生效 —— 比报错危险得多。
+    rule = await _locked_price_rule(session, rule_id)
+    # ⚠️ 用**显式 UPDATE**，不靠 ORM 的变更检测（审查 P2 第二次指出这个入口）。
+    #
+    # 只拿锁不重读的旧写法实测过：规则原本 `disabled`，停用请求读到它之后在等锁期间
+    # 被"恢复启用"抢先提交（库内变 `active`），它继续时把内存对象**再赋一次同值**
+    # —— ORM 认为没变化、**根本不发 UPDATE**，接口照样回 200「价格规则已停用」，
+    # 而库里仍是 active。用户看到"停用成功"、规则却还在生效，比报错危险得多。
+    #
+    # 上面已经重读了（拿锁 + `populate_existing`），但这里再显式写一次语句：
+    # **幂等写**（delete 语义本来就幂等），且不再依赖"内存对象与库内是否一致"
+    # 这个隐含前提 —— 那一类缺陷从此整体消失。
+    await session.execute(
+        update(PriceRule).where(PriceRule.id == rule.id).values(status="disabled")
+    )
     rule.status = "disabled"
     await write_audit(
         session,
@@ -396,6 +646,7 @@ async def delete_price_rule(
 @router.get("/customer-price-rules")
 async def list_customer_price_rules(
     customer_id: int | None = None,
+    keyword: str | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     user: CurrentUser = Depends(require_permission("product:view")),
@@ -432,8 +683,40 @@ async def list_customer_price_rules(
         if condition is not None:
             visible_customers = select(Customer.id).where(condition)
             stmt = stmt.where(CustomerPriceRule.customer_id.in_(visible_customers))
+    if keyword:
+        # 搜索范围与价格规则同一份口径：编码 / SKU 名称 / 规格 / 产品名(+产品线/品牌) /
+        # 客户名 都要能搜到（2026-10-10 主人："价格规则那里没有搜索功能，一旦很多就太乱了"）。
+        # 专属价这张表同理：记不住编码，记得住"田字塑料托盘"和客户名。
+        like = f"%{keyword.strip()}%"
+        matched_sku = (
+            select(Sku.id)
+            .join(Product, Product.id == Sku.product_id)
+            .where(
+                Sku.id == CustomerPriceRule.sku_id,
+                Sku.deleted_at.is_(None),
+                Product.deleted_at.is_(None),
+                or_(
+                    Sku.sku_code.ilike(like),
+                    Sku.name.ilike(like),
+                    Sku.specification.ilike(like),
+                    Product.name.ilike(like),
+                    Product.product_line.ilike(like),
+                    Product.brand.ilike(like),
+                ),
+            )
+            .exists()
+        )
+        matched_customer = (
+            select(Customer.id)
+            .where(
+                Customer.id == CustomerPriceRule.customer_id,
+                Customer.name.ilike(like),
+            )
+            .exists()
+        )
+        stmt = stmt.where(or_(matched_sku, matched_customer))
     rows, total = await paginate(session, stmt.order_by(CustomerPriceRule.id.desc()), page, page_size)
-    codes = await _sku_code_map(session, [rule.sku_id for rule in rows])
+    labels = await _sku_label_map(session, [rule.sku_id for rule in rows])
     customer_ids = {rule.customer_id for rule in rows}
     names: dict[int, str] = {}
     if customer_ids:
@@ -446,9 +729,10 @@ async def list_customer_price_rules(
     items = [
         svc.serialize_customer_price(
             rule,
-            codes.get(rule.sku_id),
+            (labels.get(rule.sku_id) or (None, None))[0],
             names.get(rule.customer_id),
             can_see_cost=user.has("price:manage"),
+            sku_name=(labels.get(rule.sku_id) or (None, None))[1],
         )
         for rule in rows
     ]
@@ -478,6 +762,10 @@ async def create_customer_price_rule(
     )
     rule = CustomerPriceRule(**payload.model_dump())
     # 冲突检查：同客户同 SKU 的数量/有效期重叠直接拒绝（方案 §4.1）
+    # 同一个 SKU 串行（审查 R05）：与价格规则**共用同一把 SKU 锁** ——
+    # 两者都要占用该 SKU 的数量区间，共用一把才能保证判断依据是最新的，
+    # 也不会引入第二套锁序。必须在读冲突之前拿。
+    await svc.lock_sku_price_rules(session, payload.sku_id)
     conflict = await svc.find_customer_price_conflict(
         session,
         customer_id=payload.customer_id,
@@ -490,7 +778,7 @@ async def create_customer_price_rule(
     if conflict is not None:
         raise AppError(
             ErrorCode.DUPLICATE,
-            f"该客户此 SKU 已有规则 #{conflict.id}（数量 {conflict.min_qty}-{conflict.max_qty or '∞'}）区间重叠，请调整数量或有效期",
+            f"该客户此 SKU 已有规则编号 {conflict.id}（数量 {conflict.min_qty}-{conflict.max_qty or '∞'}）区间重叠，请调整数量或有效期",
         )
     session.add(rule)
     await session.flush()
@@ -519,11 +807,11 @@ async def update_customer_price_rule(
 
     部分更新：只改传进来的字段。不支持改 customer_id / sku_id ——
     那等于换一条规则，删除重建更清楚。
-    """
-    rule = await session.get(CustomerPriceRule, rule_id)
-    if rule is None:
-        raise AppError(ErrorCode.NOT_FOUND, "客户特殊价不存在", 404)
 
+    拿锁与重读收在 `_locked_customer_price_rule` 里：删除走同一把锁，
+    记录在等锁期间被删时给 **404** 而不是 500（审查 P2 实测过 `scalar_one()` 抛 500）。
+    """
+    rule = await _locked_customer_price_rule(session, rule_id)
     before = svc.serialize_customer_price(rule)
     changes = payload.model_dump(exclude_unset=True)
 
@@ -561,22 +849,35 @@ async def update_customer_price_rule(
         await session.rollback()
         raise
 
-    # 改动后仍不能与其他规则重叠（排除自己）
-    conflict = await svc.find_customer_price_conflict(
-        session,
-        customer_id=rule.customer_id,
-        sku_id=rule.sku_id,
-        min_qty=rule.min_qty,
-        max_qty=rule.max_qty,
-        effective_from=rule.effective_from,
-        effective_to=rule.effective_to,
-        exclude_id=rule.id,
-    )
+    # 改动后仍不能与其他规则重叠（排除自己）——与 `update_price_rule` 同一判据：
+    # **只在合并后仍是"当前售价"（active）时才查**（2026-10-09 审查 R06 同类）。
+    # `historical` 是历史资料（A14），按定义不参与匹配与冲突检查，
+    # 那么"只改它的备注"也不该被判区间重叠。
+    # `find_customer_price_conflict` 内部已经只查 active 规则，这里再按状态分支，
+    # 是为了与价格规则保持同一条口径，也避免将来两条路各改一半。
+    conflict = None
+    if rule.status == "active":
+        conflict = await svc.find_customer_price_conflict(
+            session,
+            customer_id=rule.customer_id,
+            sku_id=rule.sku_id,
+            min_qty=rule.min_qty,
+            max_qty=rule.max_qty,
+            effective_from=rule.effective_from,
+            effective_to=rule.effective_to,
+            exclude_id=rule.id,
+        )
     if conflict is not None:
+        # 同 `update_price_rule`：**先读值再 rollback**。rollback 会让 ORM 对象的
+        # 属性过期，过期后访问属性会触发同步 lazy-load I/O → MissingGreenlet，
+        # 把本该 40901 的"区间重叠"变成 500。
+        conflict_id = conflict.id
+        conflict_min = conflict.min_qty
+        conflict_max = conflict.max_qty
         await session.rollback()
         raise AppError(
             ErrorCode.DUPLICATE,
-            f"该客户此 SKU 已有规则 #{conflict.id}（数量 {conflict.min_qty}-{conflict.max_qty or '∞'}）区间重叠，请调整数量或有效期",
+            f"该客户此 SKU 已有规则编号 {conflict_id}（数量 {conflict_min}-{conflict_max or '∞'}）区间重叠，请调整数量或有效期",
         )
 
     await session.flush()
@@ -601,9 +902,11 @@ async def delete_customer_price_rule(
     user: CurrentUser = Depends(require_permission("price:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    rule = await session.get(CustomerPriceRule, rule_id)
-    if rule is None:
-        raise AppError(ErrorCode.NOT_FOUND, "客户特殊价不存在", 404)
+    # 同 `delete_price_rule`：走 `_locked_customer_price_rule`（拿锁 + 锁后重读）。
+    # 这条是**硬删除**，ORM 一定会发 DELETE，所以上面那种"同值赋值被跳过"不会发生；
+    # 但同样要重读 —— 数据范围判断（`customer_id`）必须基于**锁后的最新记录**，
+    # 否则读到的可能是别人刚改过的旧归属。
+    rule = await _locked_customer_price_rule(session, rule_id)
     # 与新增 / 修改 / 列表**同一份判据**：这条规则属于哪个客户，那个客户就得在
     # 操作人的数据范围内。原来只查 price:manage —— "本人仅自己"范围的业务员拿 id
     # 就能删掉别人客户的专属价，删完那个客户后续报价改用通用价，等于悄悄改价。
@@ -696,6 +999,28 @@ async def list_logistics_rates(
     return ok([svc.serialize_logistics_rate(rate) for rate in rows])
 
 
+async def _lock_logistics_rate_changes(session: AsyncSession) -> None:
+    if svc._session_dialect(session) == "postgresql":
+        await session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended('crm:logistics-rates', 0))"))
+
+
+async def _reject_logistics_rate_conflict(session: AsyncSession, rate: LogisticsRate) -> None:
+    if rate.status != "active":
+        return
+    rows = (await session.execute(select(LogisticsRate).where(
+        LogisticsRate.status == "active", LogisticsRate.provider == rate.provider,
+        LogisticsRate.shipping_method == rate.shipping_method,
+    ).order_by(LogisticsRate.id))).scalars().all()
+    for other in rows:
+        if other.id == rate.id or rate_specificity(other) != rate_specificity(rate):
+            continue
+        origin_overlaps = None in (rate.origin_region, other.origin_region) or rate.origin_region == other.origin_region
+        destination_overlaps = None in (rate.destination_region, other.destination_region) or rate.destination_region == other.destination_region
+        if origin_overlaps and destination_overlaps:
+            raise AppError(ErrorCode.DUPLICATE,
+                           f"同一承运商和运输方式的路线与已启用费率（编号 {other.id}）重叠，请修改路线或先停用原费率。", 409)
+
+
 @router.post("/logistics/rates")
 async def create_logistics_rate(
     payload: LogisticsRateCreate,
@@ -703,7 +1028,9 @@ async def create_logistics_rate(
     user: CurrentUser = Depends(require_permission("price:manage")),
     session: AsyncSession = Depends(get_db),
 ):
+    await _lock_logistics_rate_changes(session)
     rate = LogisticsRate(**payload.model_dump(), status="active")
+    await _reject_logistics_rate_conflict(session, rate)
     session.add(rate)
     await session.flush()
     await write_audit(
@@ -738,11 +1065,18 @@ async def update_logistics_rate(
     （`logistics.rate_query`），所以"先停掉别再参与核价、数据留着"是可行做法，
     不必非得删。
     """
+    await _lock_logistics_rate_changes(session)
     rate = await session.get(LogisticsRate, rate_id)
     if rate is None:
         raise AppError(ErrorCode.NOT_FOUND, "费率不存在", 404)
     before = svc.serialize_logistics_rate(rate)
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    await _reject_logistics_rate_conflict(session, LogisticsRate(**{
+        "id": rate.id, "status": rate.status,
+        **{field: getattr(rate, field) for field in LogisticsRateCreate.model_fields},
+        **changes,
+    }))
+    for field, value in changes.items():
         setattr(rate, field, value)
     await session.flush()
     await write_audit(
@@ -797,7 +1131,7 @@ async def _ensure_customer_visible(
     from app.core.data_scope import ensure_in_scope
 
     customer = await session.get(Customer, customer_id)
-    if customer is None:
+    if customer is None or customer.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
     await ensure_in_scope(
         session, user, owner_id=customer.owner_id, label="客户", allow_unowned=True
@@ -845,10 +1179,14 @@ def _sanitize_pricing_result(result: dict, user: CurrentUser) -> dict:
     for key in (
         "protection_price",
         "minimum_price",
+        "minimum_price_cny",
         # 绝对底价由成本推出（成本×(1+X)），同样能反推成本（D7 判定层）
         "hard_floor_price",
         "profit",
         "profit_rate",
+        # 指导价/协议价可以公开，但与其对应的利润仍能反推成本。
+        "recommended_profit",
+        "recommended_profit_rate",
         "profit_with_refund",
         "profit_rate_with_refund",
         "cost_in_quote_currency",
@@ -880,6 +1218,18 @@ def _sanitize_pricing_result(result: dict, user: CurrentUser) -> dict:
             if key != "source":
                 cost[key] = None
         result["cost"]["source"] = "成本与保护价仅价格管理员可见"
+    # `inputs` 里也藏着成本派生值（第七批 P1-4）：`target_profit_price` 是
+    # 「成本 + 目标利润」，销售给一个"目标利润 1 元"就能拿它减 1 反推出成本。
+    # 原来的脱敏只扫了顶层键，漏掉整个 inputs 子字典。
+    inputs = result.get("inputs")
+    if isinstance(inputs, dict):
+        for key in ("target_profit_price", "target_profit_amount", "profit_target_met"):
+            if key in inputs:
+                inputs[key] = None
+        # `base_cost` 本身若被带出来，同样直接是成本
+        for key in ("base_cost", "cost", "unit_cost"):
+            if key in inputs:
+                inputs[key] = None
     for rule_key in ("price_rule", "customer_price_rule"):
         rule = result.get(rule_key)
         if isinstance(rule, dict):
@@ -907,20 +1257,21 @@ async def lookup_price(
     if sku is None:
         raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
     customer = await session.get(Customer, customer_id)
-    if customer is None:
+    if customer is None or customer.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
     await ensure_in_scope(
         session, user, owner_id=customer.owner_id, label="客户", allow_unowned=True
     )
 
-    # 公海客户（无负责人）不参与专属价匹配：协议价只对负责人可见，
-    # 数据范围放行只代表"这个客户你能看"，不代表"他的协议价你能看"
     result = await svc.lookup_applicable_price(
         session,
         customer=customer,
         sku_id=sku_id,
         quantity=quantity,
-        include_customer_specific=customer.owner_id is not None,
+        # 公海客户不参与专属价：判据已收进
+        # `pricing_service.customer_specific_allowed`（**全项目只此一处**）——
+        # 不传即按客户自动判。原来这里与查价路由各写一份，
+        # 于是 `price_drift` / `refresh_prices` 两个出口漏了（见该函数说明）。
     )
     result.update(
         {
@@ -974,6 +1325,18 @@ async def calculate(
 ):
     await _ensure_customer_visible(session, user, payload.customer_id)
     await _guard_level_override(session, user, customer_id=payload.customer_id, requested_level=payload.customer_level)
+    # 币种固定白名单（第四批复审返修，2026-10-12）。
+    #
+    # 创建报价的入口早就拦了，**核价这个入口漏着** —— 复审实测：
+    # `domestic` 口径下传 `USD` + 汇率 7，接口照样成功，人民币建议价 100
+    # 被折算成 `USD 14.2857` 返回。折算本身没算错，错在"系统根本不该有外币"
+    # 这件事被绕过了一次。
+    #
+    # 为什么拦在**端点**而不是 `svc.calculate_price` 里：那个函数还有一条
+    # "按报价版本重算"的调用方（`quote/service.py`），历史外币版本要靠它算得出数
+    # （那种数据只可能来自口径曾经放开时建的、或 ERP 同步进来的）。
+    # 拦在函数里会把历史数据的读取路径一起堵死 —— 那是另一码事。
+    currency = await ensure_currency_allowed(session, payload.currency)
     result = await svc.calculate_price(
         session,
         sku_id=payload.sku_id,
@@ -981,10 +1344,10 @@ async def calculate(
         customer_id=payload.customer_id,
         logistics_cost=payload.logistics_cost,
         target_margin=payload.target_margin,
-        target_profit_amount=payload.target_profit_amount,
+        target_profit_amount=payload.target_profit_amount if user.has("price:manage") else None,
         quoted_price=payload.quoted_price,
         role_codes=user.roles,
-        currency=payload.currency,
+        currency=currency,
         exchange_rate=payload.exchange_rate,
         tax_refund_rate=payload.tax_refund_rate,
         customer_level=payload.customer_level,
@@ -1006,6 +1369,9 @@ async def batch_calculate(
     for item in items:
         await _ensure_customer_visible(session, user, item.customer_id)
         await _guard_level_override(session, user, customer_id=item.customer_id, requested_level=item.customer_level)
+        # 同一条白名单。**整批拒绝**而不是"跳过那一条"：核价结果是要拿去报价的，
+        # 悄悄少算一条比直接报错更难发现（用户会以为那一行只是没数据）。
+        currency = await ensure_currency_allowed(session, item.currency)
         results.append(
             _sanitize_pricing_result(
                 await svc.calculate_price(
@@ -1015,10 +1381,10 @@ async def batch_calculate(
                     customer_id=item.customer_id,
                     logistics_cost=item.logistics_cost,
                     target_margin=item.target_margin,
-                    target_profit_amount=item.target_profit_amount,
+                    target_profit_amount=item.target_profit_amount if user.has("price:manage") else None,
                     quoted_price=item.quoted_price,
                     role_codes=user.roles,
-                    currency=item.currency,
+                    currency=currency,
                     exchange_rate=item.exchange_rate,
                     tax_refund_rate=item.tax_refund_rate,
                     customer_level=item.customer_level,
@@ -1057,10 +1423,13 @@ async def check_price_permission(
         customer_id=payload.customer_id,
         logistics_cost=payload.logistics_cost,
         target_margin=payload.target_margin,
-        target_profit_amount=payload.target_profit_amount,
+        target_profit_amount=payload.target_profit_amount if user.has("price:manage") else None,
         quoted_price=payload.quoted_price,
         role_codes=user.roles,
-        currency=payload.currency,
+        # 币种走固定白名单（第七批 P2-5）：这个入口从前**没接** —— 实测传 USD + 汇率 7
+        # 照样成功，还返回 `allowed=true`，等于"外币能不能报"这件事在这个入口被绕过。
+        # 用返回的**规范化**值（不是原样透传）：`cny ` 这类带空格的写法也会被归一到 CNY。
+        currency=await ensure_currency_allowed(session, payload.currency),
         exchange_rate=payload.exchange_rate,
         tax_refund_rate=payload.tax_refund_rate,
         customer_level=payload.customer_level,
@@ -1132,7 +1501,7 @@ async def simulate_pricing(
         session, user, customer_id=payload.base.customer_id, requested_level=payload.base.customer_level
     )
     base = payload.base
-    quantize = Decimal("0.01")
+    quantize = Decimal("0.0001")
 
     common = dict(
         sku_id=base.sku_id,
@@ -1140,9 +1509,10 @@ async def simulate_pricing(
         customer_id=base.customer_id,
         logistics_cost=base.logistics_cost,
         target_margin=base.target_margin,
-        target_profit_amount=base.target_profit_amount,
+        target_profit_amount=base.target_profit_amount if user.has("price:manage") else None,
         role_codes=user.roles,
-        currency=base.currency,
+        # 同上（第七批 P2-5）：simulate 从前也没接白名单，实测 USD + 汇率 7 成功返回。
+        currency=await ensure_currency_allowed(session, base.currency),
         exchange_rate=base.exchange_rate,
         tax_refund_rate=base.tax_refund_rate,
         customer_level=base.customer_level,
@@ -1155,15 +1525,38 @@ async def simulate_pricing(
     # 先算一次不带报价的基准，拿到建议价/保护价等锚点
     baseline = await svc.calculate_price(session, quoted_price=None, **common)
 
+    blocked_reason: str | None = None
     candidates = [c for c in payload.candidates if c and c > 0]
-    if not candidates and payload.margins:
+    # ⚠️ **"按利润率反推候选价"这条路，对没有 price:manage 的人关掉**（第七批 P1-4）。
+    #
+    # 它算的是 `价 = 成本 / (1 − 利润率)`：销售给一个利润率 50%，
+    # 拿到候选价 140，除以 (1−50%) 就还原出成本 70 —— 等于把成本送出去了。
+    # 显式传成交价（`candidates`）的那条路**保留**：那是"我想报这个价，
+    # 帮我看看赚不赚、要不要审批"的正当用法，且用户本来就知道自己传了什么。
+    margin_derived = bool(payload.margins) and not candidates
+    can_simulate_margin = user.has("price:manage") and baseline["cost"]["cost_complete"]
+    blocked_margin_simulation = margin_derived and not can_simulate_margin
+    if margin_derived and can_simulate_margin:
         cost = Decimal(str(baseline["cost_in_quote_currency"] or 0))
         for margin in payload.margins:
             if margin is None or margin <= 0 or margin >= 1:
                 continue
             # 价 = 成本 / (1 - 利润率)
-            candidates.append((cost / (Decimal(1) - Decimal(str(margin)))).quantize(quantize))
-    if not candidates:
+            candidates.append(
+                (cost / (Decimal(1) - Decimal(str(margin)))).quantize(
+                    quantize, rounding=ROUND_HALF_UP
+                )
+            )
+    if blocked_margin_simulation:
+        # 明确回"算不了 + 为什么"，而不是给一个空列表让人猜（主人反复提过的口径：
+        # 点不了 / 出不来结果都必须说明原因）。
+        blocked_reason = (
+            "按利润率反推候选价需要完整的生效成本，请先补齐成本。"
+            if user.has("price:manage")
+            else "按利润率反推候选价仅价格管理员可用，可直接输入想试算的报价。"
+        )
+    _sanitize_pricing_result(baseline, user)
+    if not candidates and not blocked_margin_simulation:
         # 三个关键点位：建议价、最低可自主定价、公司保护价
         for anchor in (
             baseline["recommended_price"],
@@ -1172,7 +1565,9 @@ async def simulate_pricing(
         ):
             value = Decimal(str(anchor)) if anchor is not None else None
             if value is not None and value > 0:
-                candidates.append(value.quantize(quantize))
+                candidates.append(value.quantize(quantize, rounding=ROUND_HALF_UP))
+        if not candidates and not user.has("price:manage"):
+            blocked_reason = "当前没有可用的建议价，请填写想试算的候选报价"
 
     # 去重并保序，避免同一档位算两遍
     seen: set[str] = set()
@@ -1186,6 +1581,8 @@ async def simulate_pricing(
     rows = []
     for price in unique:
         result = await svc.calculate_price(session, quoted_price=price, **common)
+        # 与正式报价逐行到分同源，不从浮点响应反算金额。
+        amount = line_amount(base.quantity, price)
         triggers = result["approval_triggers"]
         reasons = []
         if triggers["below_protection_price"]:
@@ -1199,13 +1596,11 @@ async def simulate_pricing(
         rows.append(
             {
                 "quoted_price": result["quoted_price"],
+                "quoted_price_exact": str(price),
                 "profit": result["profit"],
                 "profit_rate": result["profit_rate"],
-                "amount": (
-                    float(Decimal(str(result["quoted_price"])) * Decimal(str(base.quantity)))
-                    if result["quoted_price"] is not None
-                    else None
-                ),
+                "amount": float(amount),
+                "amount_exact": str(amount),
                 "approval_required": result["approval_required"],
                 "reasons": reasons,
             }
@@ -1216,13 +1611,16 @@ async def simulate_pricing(
         for row in rows:
             row["profit"] = None
             row["profit_rate"] = None
-    _sanitize_pricing_result(baseline, user)
-
     return ok(
         {
             "sku": baseline["sku"],
             "quantity": baseline["quantity"],
             "currency": baseline["currency"],
+            # ⚠️ 这几项**逐个**取自 `baseline` —— 而 baseline 已被
+            # `_sanitize_pricing_result` 就地改成脱敏后的值（第七批 P1-4）。
+            # 从前这里是在脱敏**之前**抄的，等于把成本又原样放回返回体，
+            # 而且 `candidates` 由 `margins` + 成本算出（价 = 成本/(1−利润率)），
+            # 拿到候选价就能反推成本。现在一律从脱敏后的 baseline 取。
             "cost_in_quote_currency": baseline["cost_in_quote_currency"],
             "standard_price": baseline["standard_price"],
             "recommended_price": baseline["recommended_price"],
@@ -1230,6 +1628,9 @@ async def simulate_pricing(
             "minimum_price": baseline["minimum_price"],
             "protection_price": baseline["protection_price"],
             "scenarios": rows,
+            #: 有值 = "这次模拟算不了，原因是……"。空 = 正常出结果。
+            #: 前端照它显示一句中文，别让用户对着空列表猜。
+            "blocked_reason": blocked_reason,
         }
     )
 
@@ -1265,12 +1666,13 @@ async def pricing_history(
             ("quote", "quote_item", "product_cost", "price_rule", "customer_price_rule")
         )
     )
+    stmt = await _scope_pricing_history(session, user, stmt, AuditLog)
     if sku_id is not None:
         stmt = _filter_history_by_sku(stmt, AuditLog, sku_id)
     if customer_id is not None:
         stmt = stmt.where(
             (AuditLog.business_type == "customer_price_rule")
-            & AuditLog.after_data["customer_id"].astext == str(customer_id)
+            & _history_snapshot_id_condition(AuditLog, "customer_id", customer_id)
         )
     rows, total = await paginate(session, stmt.order_by(AuditLog.id.desc()), page, page_size)
 
@@ -1321,21 +1723,89 @@ async def pricing_history(
     )
 
 
-def _filter_history_by_sku(stmt, audit_model, sku_id: int):
-    """按 SKU 过滤核价历史。
+async def _scope_pricing_history(session, user, stmt, audit_model):
+    """在分页、计数和摘要反查之前，按原单权限过滤审计记录。
 
-    审计日志的 `before_data` / `after_data` 是 JSON 列（不是 PostgreSQL
-    原生 jsonb 类型，走的是项目自己的 JSONType），所以**没有 `.astext`**。
-    统一用 `cast(Text)` 再按文本匹配：
-
-    - 顶层 `sku_id` 用精确串匹配（带引号，避免 1 命中 12）；
-    - 报价单的明细数组里 SKU 在 `items[*].sku_id`，用 LIKE 兜住。
+    明细可能已硬删，所以允许从审计快照追溯父单。无法再追溯有效原单的
+    历史仅保留给全量价格管理员；这不能成为查看仍存在的越权原单的通道。
     """
-    key = f'%"sku_id": {sku_id}'  # JSON 序列化后形如 "sku_id": 12
-    return stmt.where(
-        (cast(audit_model.before_data, Text).like(f'%{key}%'))
-        | (cast(audit_model.after_data, Text).like(f'%{key}%'))
+    from app.core.data_scope import scoped_owner_ids
+    from app.core.draft_visibility import draft_scope, private_draft
+    from app.modules.quote.model import Quote, QuoteItem, QuoteVersion
+
+    owners = await scoped_owner_ids(session, user)
+    is_admin = "admin" in user.roles
+    full_price_manager = owners is None and (is_admin or user.has("price:manage"))
+
+    def source_id(key, model, column):
+        # 只转换快照编号，保留原单主键上的索引；同时兼容旧快照中的字符串编号。
+        current = (select(column).where(model.id == audit_model.business_id)
+                   .correlate(audit_model).scalar_subquery())
+        return func.coalesce(
+            current,
+            cast(audit_model.after_data[key].as_string(), BigInteger),
+            cast(audit_model.before_data[key].as_string(), BigInteger),
+        )
+
+    def allow(kind, source, visible, has_permission):
+        existing = source.correlate(audit_model).exists()
+        permitted = source.where(*visible).correlate(audit_model).exists()
+        condition = permitted if has_permission else False
+        if full_price_manager:
+            condition = or_(condition, ~existing)
+        return (audit_model.business_type == kind) & condition
+
+    quote_scope = draft_scope(Quote, user.id, Quote.owner_id.in_(owners) if owners is not None else None)
+    version_scope = or_(~private_draft(QuoteVersion), func.coalesce(
+        QuoteVersion.created_by, Quote.created_by, Quote.owner_id,
+    ) == user.id)
+    quote_source = select(Quote.id).where(
+        Quote.id == audit_model.business_id, Quote.deleted_at.is_(None)
     )
+    version_id = source_id("quote_version_id", QuoteItem, QuoteItem.quote_version_id)
+    item_source = (select(Quote.id).join(QuoteVersion, QuoteVersion.quote_id == Quote.id)
+                   .where(QuoteVersion.id == version_id, Quote.deleted_at.is_(None)))
+    customer_id = source_id("customer_id", CustomerPriceRule, CustomerPriceRule.customer_id)
+    customer_source = select(Customer.id).where(
+        Customer.id == customer_id, Customer.deleted_at.is_(None)
+    )
+    customer_scope = [] if owners is None else [
+        or_(Customer.owner_id.is_(None), Customer.owner_id.in_(owners))
+    ]
+    conditions = [
+        allow("quote", quote_source, [quote_scope], is_admin or user.has("quote:view")),
+        allow("quote_item", item_source, [quote_scope, version_scope], is_admin or user.has("quote:view")),
+        allow("customer_price_rule", customer_source, customer_scope,
+              is_admin or user.has("customer:view")),
+    ]
+    # 通用成本和价格规则没有负责人，跟随关联产品的可见性；成本快照仍由原有
+    # price:manage 脱敏规则控制，不扩大普通用户的字段权限。
+    for kind, model in (("product_cost", ProductCost), ("price_rule", PriceRule)):
+        sku_id = source_id("sku_id", model, model.sku_id)
+        source = (select(Sku.id).join(Product, Product.id == Sku.product_id)
+                  .where(Sku.id == sku_id,
+                         Sku.deleted_at.is_(None), Product.deleted_at.is_(None)))
+        conditions.append(allow(kind, source, [], is_admin or user.has("product:view")))
+    return stmt.where(or_(*conditions))
+
+
+def _history_snapshot_id_condition(audit_model, field: str, value: int):
+    """匹配完整的 JSON 数字编号，兼容顶层字段和明细数组。
+
+    原来的 LIKE 没有编号右边界，查 1 会匹配 12、100。数字后必须是逗号
+    或对象结束符；删除等动作可能只有 before 快照，两份都需要检查。
+    沿用现有 JSONType 序列化后的文本格式；PostgreSQL JSONB 文本输出也使用
+    相同分隔符。field 仅由本模块固定字段名调用，模式通过绑定参数传入。
+    """
+    return or_(
+        *(cast(snapshot, Text).like(f'%"{field}": {int(value)}{ending}%')
+          for snapshot in (audit_model.before_data, audit_model.after_data)
+          for ending in (",", "}"))
+    )
+
+
+def _filter_history_by_sku(stmt, audit_model, sku_id: int):
+    return stmt.where(_history_snapshot_id_condition(audit_model, "sku_id", sku_id))
 
 
 async def _history_targets(session: AsyncSession, rows) -> dict[tuple[str, int], dict]:
@@ -1499,6 +1969,11 @@ async def products_for_pricing(
             {
                 "id": sku.id,
                 "sku_code": sku.sku_code,
+                # SKU 名称（如"田字塑料托盘 1200×1000 黑色"）。与 product_name
+                # （产品名）不是一回事：一个产品下多个 SKU 靠它区分。
+                # 下拉选项满屏 `TP-1210-ST · 1200×1000×150mm 标准` 认不出是哪个
+                # （2026-10-10 修）。
+                "name": sku.name,
                 "specification": sku.specification,
                 "product_name": product_name,
                 "moq": sku.moq,
@@ -1595,7 +2070,9 @@ async def create_exchange_rate(
 @router.get("/costs/{cost_id}")
 async def get_cost(
     cost_id: int,
-    _: CurrentUser = Depends(require_permission("product:view")),
+    # 成本属于价格管理员的敏感数据；列表入口已用 price:manage，单条入口也必须
+    # 保持同一口径，否则普通产品查看权限拿到 cost_id 就能反查采购/生产成本。
+    _: CurrentUser = Depends(require_permission("price:manage")),
     session: AsyncSession = Depends(get_db),
 ):
     """单条成本记录（03-API §16）。"""
@@ -1608,7 +2085,8 @@ async def get_cost(
 @router.get("/skus/{sku_id}/cost-history")
 async def cost_history(
     sku_id: int,
-    _: CurrentUser = Depends(require_permission("product:view")),
+    # 历史记录同样包含完整成本，不能因是“历史”就降级为产品查看权限。
+    _: CurrentUser = Depends(require_permission("price:manage")),
     session: AsyncSession = Depends(get_db),
 ):
     """某 SKU 的成本变更历史。
@@ -1648,13 +2126,13 @@ async def get_price_rule(
     row = await session.get(PriceRule, rule_id)
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, "价格规则不存在", 404)
-    codes = await _sku_code_map(session, [row.sku_id])
+    labels = await _sku_label_map(session, [row.sku_id])
+    code, name = labels.get(row.sku_id) or (None, None)
     # 单条也要按权限隐藏保护价（§7.3 复审：列表/指定查询/单条一个口径，
     # 否则"列表里看不到保护价，拿 id 单独查就看到了"）
+    # 名称同理：列表有、单条没有的话，点进去反而认不出是哪个 SKU。
     return ok(
-        svc.serialize_price_rule(
-            row, codes.get(row.sku_id), can_see_cost=user.has("price:manage")
-        )
+        svc.serialize_price_rule(row, code, can_see_cost=user.has("price:manage"), sku_name=name)
     )
 
 

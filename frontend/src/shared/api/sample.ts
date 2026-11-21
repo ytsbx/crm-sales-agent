@@ -63,10 +63,11 @@ export interface SampleRequestRow {
   status_label: string
   /** 审批轮次（§3.2）：驳回后重提 / 已批准后改车间依据会自增。 */
   review_round?: number
-  /** 修订版（§3.3）：第几版、取代了谁、又被谁取代（superseded_by 有值即冻结只读）。 */
+  /** 原版可能锁定，而当前用户无权打开下一版。 */
   version?: number
   parent_id?: number | null
   superseded_by?: number | null
+  revision_locked?: boolean
   remark?: string | null
   reject_reason?: string | null
   requested_at?: string | null
@@ -74,6 +75,28 @@ export interface SampleRequestRow {
   shipped_at?: string | null
   signed_at?: string | null
   feedback?: string | null
+  // ---- 同序 OA《打样申请单》上的格（2026-10-15）----
+  /** 打样类型 / 产品大类 / 样品制作单位：选项**照抄同序 OA 下拉**，值就是那几项之一。 */
+  sample_type?: string | null
+  product_category?: string | null
+  maker_unit?: string | null
+  /** 打样目的 / 紧急程度 / 样品情况：同样是同序 OA 上的勾选项。 */
+  sample_purpose?: string | null
+  urgency?: string | null
+  sample_situation?: string | null
+  /** 预计工时（小时）。打样积分是**派生值** = 工时 × 10，不入参、由后端算。 */
+  estimated_hours?: number | null
+  /** 打样积分（只读）：后端按 `estimated_hours × 10` 现算。 */
+  craft_points?: number | null
+  /** 「打样具体要求」六格：整段文字，导出时落进 Excel 的 B8~B13。 */
+  material_spec?: string | null
+  product_size?: string | null
+  printing?: string | null
+  accessories?: string | null
+  packaging?: string | null
+  craft_requirement?: string | null
+  /** 申请单上只有一格「产品名称」，而明细可以一行多样 —— 显式给。 */
+  product_name?: string | null
   // ---- 生产打样资料（文档 §3.5）----
   // 材质 / 工艺 / 图纸版本**不在这里**：它们逐行不同，跟着 items 走。
   purpose?: string | null
@@ -108,6 +131,20 @@ export interface SampleRequestRow {
   customer_confirmed_at?: string | null
   confirm_remark?: string | null
   created_at?: string | null
+  /**
+   * 软删（2026-10-15）：这一条是不是已经被删掉、正躺在「已删除」里。
+   * 操作列据此在「详情」和「恢复」之间切换 —— 已删的单子后端查详情一律 404。
+   */
+  is_deleted?: boolean
+  deleted_at?: string | null
+  /**
+   * 这张单现在能不能删。
+   *
+   * 判据在后端（`sample/model.SAMPLE_DELETABLE_STATUSES`：只有待审批 / 已驳回能删），
+   * 由列表接口下发 —— 前端**别自己按 status 拼一份**，那份迟早和后端分叉
+   * （与 `attachment_locked` 是同一个道理）。
+   */
+  can_delete?: boolean
   items: SampleItem[]
   shipments: SampleShipment[]
 }
@@ -118,6 +155,8 @@ export function listSamples(query: {
   customer_id?: number
   opportunity_id?: number
   owner_id?: number
+  /** 只看已软删的（「已删除」那个筛选项用）；不传 = 只看没删的 */
+  include_deleted?: boolean
   page?: number
   page_size?: number
 }) {
@@ -135,6 +174,36 @@ export function createSample(payload: Record<string, unknown>) {
 export function updateSample(id: number, payload: Record<string, unknown>) {
   return api.patch<SampleRequestRow>(`/samples/${id}`, payload)
 }
+
+/**
+ * 软删一张样品申请（2026-10-15 补）。
+ *
+ * 只允许**还没走流程**的（待审批 / 已驳回）：已批准 / 已寄出 / 已签收的，
+ * 后端会回 400 并说清原因 —— 那几张连着审批留痕与车间依据。
+ * 删掉的是标记不是数据：行、审计、附件都留着，需要时可在「已删除」里恢复。
+ */
+export function deleteSample(id: number) {
+  return api.delete<null>(`/samples/${id}`)
+}
+
+/** 把一张被软删的样品申请捡回来（与删除共用 `sample:manage` 权限）。 */
+export function restoreSample(id: number) {
+  return api.post<null>(`/samples/${id}/restore`)
+}
+
+/** 导出**填好的**《打样申请单》Excel（同序 OA「定制打样审批」那份单子）。
+ *
+ * 为什么要有它：发起打样在 CRM，流程回到同序 OA 走；同序 OA 那份单子是公司现有表单
+ * （表头印着"表单编码：D01-003"），格式不能改 —— 所以这里把 CRM 已有的数据
+ * 填进原版式的底稿，业务员**下载即传**，不用重打一遍。
+ *
+ * ⚠️ 单子上采购回复 / 打样部回复 / 打样人 / 完成时间 / 样品确认人**是空的**：
+ * 那是生产部与采购在同序 OA 里填的（批注原文"此处为采购填写"）。那不是漏了。
+ */
+export function exportSampleApplicationForm(id: number) {
+  return api.download(`/samples/${id}/application-form`)
+}
+
 
 export function approveSample(id: number, approved: boolean, rejectReason?: string) {
   return api.post<SampleRequestRow>(`/samples/${id}/approve`, {
@@ -199,8 +268,13 @@ export function reviseSample(id: number, remark?: string) {
  *
  * 后端规则：**必须先签收**才能确认——客户收到样品才谈得上接受。
  */
-export function confirmSample(id: number, accepted: boolean, remark?: string) {
-  return api.post<SampleRequestRow>(`/samples/${id}/confirm`, {
+export function confirmSample(
+  id: number,
+  accepted: boolean,
+  remark?: string,
+  confirm = false,
+) {
+  return api.post<SampleRequestRow>(`/samples/${id}/confirm${confirm ? '?confirm=true' : ''}`, {
     accepted,
     remark: remark ?? null,
   })
@@ -242,7 +316,8 @@ export function getSampleSource(source: SampleSourceRef) {
   return api.get<SampleSourcePreview>('/samples/source', source as Record<string, number>)
 }
 export function createSampleFromSource(payload: SampleSourceRef & {
-  request_key: string; items: { source_item_id: number; quantity: number; specification?: string; remark?: string }[]
+  use_dingtalk?: boolean
+  request_key: string; items: { source_item_id: number; quantity: number | string; specification?: string; remark?: string }[]
 }) {
   return api.post<SampleRequestRow>('/samples/from-source', payload)
 }

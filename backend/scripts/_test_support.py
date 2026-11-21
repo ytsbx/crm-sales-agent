@@ -52,10 +52,26 @@ from sqlalchemy import text
 
 __all__ = ["align_id_sequences", "require_api_base", "require_isolated_db"]
 
-#: 开发后端的端口：测试默认不许打
-DEV_PORTS = {8000}
-#: 正式库的库名：测试默认不许连
-DEV_DATABASES = {"crm_sales_agent"}
+#: 非一次性后端（**不该被测试打到**）：生产 8000 + 开发联调 8008
+DEV_PORTS = {8000, 8008}
+#: 非一次性库（**不该被测试连上**）：
+#:   crm_sales_agent  生产/领导用
+#:   crm_prod         开发联调用（5274 那套），**里面是给人看的演示数据**
+#:
+#: ⚠️ `crm_prod` 是后补的（2026-10-09）。在这之前它既不在黑名单、也不像一次性库
+#: （不带 `crm_iso`/`crm_check`/`crm_test` 前缀，也不以 `_test` 结尾），于是**被放行** ——
+#: 实测留下了 `Independent C3 audit ...` 这类审查夹具客户，混进了给领导/自己看的演示数据。
+#: 规则：**测试一律用一次性库**；演示库是给人看的，不是给脚本写删的。
+#: 绝不能被**探针/测试**写入的库。
+#:
+#: ⚠️ 主人 2026-10-14 明确过："5173 那个是给 leader 用的，所有改动先对 5274 弄，
+#: 不要往 5173 丢垃圾数据"。对应关系：
+#:   · **5173** = 生产静态服务 + 后端 8000 → 库 `crm_sales_agent`（leader 在用）；
+#:   · **5274** = 开发服务（vite） + 后端 8008 → 库 `crm_prod`（随便造）。
+#: 所以"验收/探针"一律打 5274（或一次性隔离库），**不要打 5173**。
+#: 我自己就在 5173 上造过两条"上线核对-分配"客户，直到主人指出才清掉 ——
+#: 这个名单就是防那件事再发生。
+DEV_DATABASES = {"crm_sales_agent", "crm_prod"}
 #: 一次性库的命名规则（前缀或后缀命中其一即可）
 ISOLATED_DB_PREFIXES = ("crm_iso", "crm_check", "crm_test")
 ISOLATED_DB_SUFFIXES = ("_test",)
@@ -123,7 +139,9 @@ def require_isolated_db() -> str:
             _warn_escape_hatch(f"DATABASE_URL 指的是开发库 {name}")
             return name
         raise SystemExit(
-            f"拒绝执行：DATABASE_URL 指向开发库 {name}。\n"
+            f"拒绝执行：DATABASE_URL 指向**不能给测试用的库** {name}。\n"
+            f"  · crm_sales_agent 是 5173（给 leader 用的那套）的库，只读不写；\n"
+            f"  · crm_prod 是 5274（开发）的库，要造数据请用它，或建一次性隔离库。\n"
             f"  要临时验一次，设 {ALLOW_ENV}=1。"
         )
     if not (name.startswith(ISOLATED_DB_PREFIXES) or name.endswith(ISOLATED_DB_SUFFIXES)):
@@ -177,3 +195,29 @@ async def align_id_sequences(session, tables) -> None:
             ),
             {"t": table},
         )
+
+
+def confirm_freight_before_submit(call, token: str, version_id: int, amount: str = "0"):
+    """提交审批**之前**先把运费确认掉（2026-10-12 口径：运费闸前置到这一环）。
+
+    ## 为什么套件都要走这一步
+
+    从前"确认运费"只在「标记已发送」那一刻硬校验，而版本一提交审批就锁死、
+    费用入口只对草稿开放 —— 报批时没填运费的单一律死锁（发送时才发现，
+    撤回又只对「审批中」有效），只能新建版本重走审批。闸门提前之后，
+    **正规流程变成"先确认运费、再提交审批"**，所以套件也要照这个顺序走。
+
+    ⚠️ **别把这个助手当成"绕过校验"**：它不是改库、不是关开关，
+    而是照真实业务的顺序多做一个正当动作（0 元运费也要显式填 0）。
+    运费闸本身有没有生效，由 `check_freight_deadlock.py` 专测。
+
+    用法（把原来的提交调用换成它）：
+
+        status, res = confirm_freight_before_submit(call, token, version_id)
+    """
+    return call(
+        "POST",
+        f"/quote-versions/{version_id}/charges",
+        token,
+        {"charge_type": "logistics", "description": "实际运费（套件夹具）", "amount": amount},
+    )

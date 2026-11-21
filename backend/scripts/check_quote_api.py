@@ -30,7 +30,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from _test_support import require_api_base, require_isolated_db
+from _test_support import confirm_freight_before_submit, require_api_base, require_isolated_db
 
 require_isolated_db()
 
@@ -179,6 +179,58 @@ async def clean():
         await s.commit()
 
 
+def assert_master_data_unconfirmed(sku_ids):
+    """前提自检：本套件要有**未确认主数据**的 SKU 才能验 §8.14 的提示（2026-10-09 补）。
+
+    这条断言从前**静默依赖库的初始状态**：它假设演示 SKU 的主数据还没确认过。
+    但 `scripts/confirm_sku_master.py` 与 `check_master_confirmed_empty_value.py`
+    都会确认它 —— 谁先跑，后面这个套件就失败，而报错只是"提示里没有'主数据提醒'"，
+    完全看不出是**库的状态被人改过**（我本人就在本会话踩了两次，排查了很久）。
+
+    所以把它变成**明确的前置条件**：一个未确认的 SKU 都没有时，直接说清原因与解法
+    （换一次性库），而不是让一条业务断言莫名其妙地红。
+    """
+    import threading
+
+    from app.core.config import settings
+
+    result: dict = {}
+
+    def _worker():
+        # 开**独立线程 + 独立事件循环**：`main()` 是同步的但外层已在事件循环里，
+        # 直接 asyncio.run 会报 "cannot be called from a running event loop"
+        # （本文件末尾的并发断言也是这么绕的）。
+        async def _inner():
+            import asyncpg
+
+            conn = await asyncpg.connect(settings.database_url.replace('+asyncpg', ''))
+            try:
+                result['fresh'] = await conn.fetchval(
+                    "select count(*) from skus s where s.id = any($1::bigint[]) "
+                    "and not exists (select 1 from sku_field_authorities a "
+                    "                where a.sku_id = s.id and a.status = 'confirmed')",
+                    list(sku_ids),
+                )
+            finally:
+                await conn.close()
+
+        asyncio.run(_inner())
+
+    t = threading.Thread(target=_worker)
+    t.start()
+    t.join()
+    fresh = result.get('fresh', 0)
+    if not fresh:
+        raise SystemExit(
+            "前提不满足：用来验 §8.14 的演示 SKU 主数据**全部已确认**，"
+            "「未确认时不阻断但提示」这条断言无从验证。\n"
+            "  原因通常是本库先跑过 confirm_sku_master.py / "
+            "check_master_confirmed_empty_value.py（它们会确认主数据）。\n"
+            "  解法：换一个全新的一次性库（migrate + seed）再跑本套件。"
+        )
+    return fresh
+
+
 def main():
     admin = login('admin', 'admin123')
     zhangsan = login('zhangsan', '123456')
@@ -187,6 +239,8 @@ def main():
 
     status, res = call('GET', '/pricing/sku-options', token=admin)
     skus = [row['id'] for row in res['data'][:3]]
+    # 前提自检：至少有一个未确认主数据的 SKU，否则下面 §8.14 那条断言必然假失败
+    assert_master_data_unconfirmed(skus)
 
     def quick_opp(token, customer_id, title):
         """D8：报价必须挂商机——用例报价前先造一条快捷商机。"""
@@ -282,7 +336,7 @@ def main():
 
     print()
     print('=== 4. 复制版本 ===')
-    status, res = call('POST', f'/quotes/{quote_id}/versions', token=admin)
+    status, res = call('POST', f'/quotes/{quote_id}/versions?confirm=true', token=admin)
     check('先建一版（用于验证 copy）', res.get('code'), 0)
     v2_id = res['data']['id']
 
@@ -387,6 +441,16 @@ def main():
         token=lisi,
         body=[{'sku_id': skus[0], 'quantity': 100, 'quoted_price': 1}],
     )
+    # ⚠️ 提交审批前要先确认运费（2026-10-12 口径：运费闸前置到这一环）。
+    # 从前这里直接提交——那时审批**不校验运费**，而版本一提交就锁死、
+    # 费用入口只对草稿开放，于是"报批时还没问准运费"的单子必然死锁
+    # （发送时才发现缺运费，撤回也救不了）。闸门提前之后，流程是：
+    # 先确认运费（哪怕是 0 元）→ 再提交审批。
+    status, res = call(
+        'POST', f'/quote-versions/{lisi_version_id}/charges', token=lisi,
+        body={'charge_type': 'logistics', 'description': '实际运费', 'amount': '0'},
+    )
+    check('提交审批前先确认运费（0 元也要显式填）', res.get('code'), 0)
     status, res = call(
         'POST', f'/quote-versions/{lisi_version_id}/submit-approval', token=lisi, body={}
     )
@@ -427,6 +491,8 @@ def main():
     # §4 已复制到 V3；历史 V1 不能再借审批改变整张报价状态。
     # 发送登记与失效用当前版走真实流程，历史版本仍用于上述快照/复制回归。
     version_id = source_version_id
+    # 同样先确认运费再提交（闸门已前置，见上面那处的说明）
+    confirm_freight_before_submit(call, admin, version_id)
     status, res = call('POST', f'/quote-versions/{version_id}/submit-approval', token=admin, body={})
     check('当前版本通过审批', res.get('code'), 0)
     check('当前版本审批状态', (res.get('data') or {}).get('version', {}).get('approval_status'), 'approved')
@@ -484,14 +550,29 @@ def main():
     print()
     print('=== 11. PDF（两个路径同一实现）===')
     status, res = call('GET', f'/quote-versions/{v2_id}/pdf', token=admin)
-    check('GET pdf', status, 200)
+    check('未审批版本 GET pdf 被拒', status, 422)
+    check('未审批版本错误码', res.get('code'), 42203)
     check_true(
-        '返回 PDF', res.get('_ctype', '').startswith('application/pdf'), str(res.get('_ctype'))
+        '未审批版本没有返回 PDF', not res.get('_ctype', '').startswith('application/pdf'), str(res.get('_ctype'))
     )
     status, res = call('POST', f'/quote-versions/{v2_id}/generate-pdf', token=admin)
-    check('POST generate-pdf', status, 200)
+    check('未审批版本 POST generate-pdf 被拒', status, 422)
+    check('未审批版本 POST 错误码', res.get('code'), 42203)
     check_true(
-        '同样返回 PDF', res.get('_ctype', '').startswith('application/pdf'), str(res.get('_ctype'))
+        '未审批版本 POST 没有返回 PDF', not res.get('_ctype', '').startswith('application/pdf'), str(res.get('_ctype'))
+    )
+
+    # 审批不能代替主数据和实际运费确认；此夹具尚未确认，两个出口均须拒绝。
+    # 已确认版本的正向对照在 check_audit_risk_repairs 中覆盖。
+    status, res = call('GET', f'/quote-versions/{version_id}/pdf', token=admin)
+    check('已审批但未确认主数据 GET pdf 被拒', status, 422)
+    check_true(
+        '未确认版本没有返回正式 PDF', not res.get('_ctype', '').startswith('application/pdf'), str(res.get('_ctype'))
+    )
+    status, res = call('POST', f'/quote-versions/{version_id}/generate-pdf', token=admin)
+    check('已审批但未确认主数据 POST generate-pdf 被拒', status, 422)
+    check_true(
+        '别名同样没有返回正式 PDF', not res.get('_ctype', '').startswith('application/pdf'), str(res.get('_ctype'))
     )
 
     print()

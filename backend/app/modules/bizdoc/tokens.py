@@ -31,8 +31,24 @@ SOURCE_FIELDS: dict[str, dict[str, str]] = {
     "customer": {
         "name": "客户名称",
         "level": "客户等级",
-        "phone": "客户电话",
+        # ⚠️ 这里**曾有** `"phone": "客户电话"`（2026-10-14 审查移除）：
+        # `Customer` 表上根本没有 phone 列（电话在 `contacts.phone` 上），
+        # 而 `resolve_tokens` 走 `getattr(obj, field, None)` → **恒为 None**
+        # → 恒报"来源存在，但该字段当前没有值"。于是它成了"**存得下、生不成**"：
+        # 模板保存时校验通过（保存与运行期共用这份白名单），生成时永远填不出来，
+        # 报错文案还让人去补一个不存在的字段。业务真正要的电话改由下面
+        # `contact.phone` 提供。
         "address": "客户地址",
+    },
+    #: 联系人（打样指令单要印"客户联系人/电话"，见 19-打样指令单字段清单）。
+    #: 值由 `_persist` 按 `built["contact_id"]` 取库提供；没有联系人时该来源缺席，
+    #: 引用它会得到「来源不可用」，语义准确。
+    "contact": {
+        "name": "联系人姓名",
+        "phone": "联系电话",
+        "mobile": "联系手机",
+        "email": "联系邮箱",
+        "title": "联系人职务",
     },
     "order": {
         "order_no": "订单编号",

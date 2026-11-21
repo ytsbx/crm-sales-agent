@@ -135,6 +135,13 @@ async def record_and_notify(
     在业务事务内调用：留痕随业务一起 commit；企微投递由调用方
     commit 后 `dispatch_pending`。通知环节异常只告警，不回滚业务。
     """
+    identity = sample_id or (business_id if business_type == "sample" else None)
+    if identity is not None:
+        from app.core.draft_visibility import private_draft
+        from app.modules.sample.model import SampleRequest
+
+        if await session.scalar(select(private_draft(SampleRequest)).where(SampleRequest.id == identity)):
+            return
     event_key = event_key or f"progress:{uuid4().hex}"
     recorded = await record_progress_event(
         session, customer_id=customer_id,

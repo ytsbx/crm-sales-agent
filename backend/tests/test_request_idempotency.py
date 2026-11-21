@@ -15,7 +15,7 @@
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import event, select
+from sqlalchemy import event, select, text
 from sqlalchemy.orm import Session
 
 from tests.conftest import SyncSessionAsAsync, _register_sqlite_bigint_as_integer
@@ -95,6 +95,29 @@ async def test_same_key_same_payload_replays(session):
     assert second.should_replay is True
     assert second.replay_payload == {"id": 7, "name": "宏远包装"}
     assert second.replay_id == 7
+
+
+@pytest.mark.anyio
+async def test_concurrent_reservation_replay_preserves_prior_write(session, monkeypatch):
+    key = dict(user_id=1, action="customer:create", request_key="race", payload=PAYLOAD)
+    winner = await reserve(session, **key)
+    await complete(session, winner, result_payload={"id": 7})
+    await session.execute(text("CREATE TABLE prior_write (id INTEGER)"))
+    await session.commit()
+    await session.execute(text("INSERT INTO prior_write VALUES (1)"))
+
+    # 模拟首次查询时另一请求尚未提交，再走真实的唯一约束冲突。
+    execute = session.execute
+
+    async def miss_once(_stmt):
+        monkeypatch.setattr(session, "execute", execute)
+        return await execute(select(RequestKey).where(RequestKey.id < 0))
+
+    monkeypatch.setattr(session, "execute", miss_once)
+    replay = await reserve(session, **key)
+    assert replay.replay_payload == {"id": 7}
+    await session.commit()
+    assert (await session.execute(text("SELECT id FROM prior_write"))).scalar_one() == 1
 
 
 @pytest.mark.anyio

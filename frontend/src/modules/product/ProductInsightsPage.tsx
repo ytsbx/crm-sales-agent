@@ -1,10 +1,19 @@
-import { useState } from 'react'
+import { formatBeijingTime } from '../../shared/beijing-time'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, Input, Modal, Select, Table, Tag, Toast, TextArea } from '@douyinfe/semi-ui'
+import { Button, Input, Modal, Popconfirm, Select, Table, Tag, Toast, TextArea } from '@douyinfe/semi-ui'
+import { parseOptionalNumber } from '../../shared/number-input'
+import { isSafeExternalUrl, safeExternalUrls } from '../../shared/safe-url'
 import { usePermissions } from '../../shared/hooks/permissions'
+import PageHeader from '../../shared/components/PageHeader'
+import HelpTip from '../../shared/components/HelpTip'
 import SectionCard from '../../shared/components/SectionCard'
+import { formatUnitPrice } from '../../shared/components/money'
+import StatusDot from '../../shared/components/StatusDot'
+import type { TagTone } from '../../shared/types'
 import FormLabel from '../../shared/components/FormLabel'
+import { emptyNode } from '../../shared/components/EmptyState'
 import { listCustomers } from '../../shared/api/customer'
 import {
   convertProductInsight,
@@ -18,7 +27,7 @@ import {
   type InsightRound,
   type ProductInsightRow,
 } from '../../shared/api/insight'
-import { optionMatcher, withCode } from '../../shared/components/optionMatch'
+import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
 import { otherOption } from '../../shared/components/otherOption'
 
 const SOURCES = ['展会', '1688/阿里', '客户反馈', '竞品调研', '社媒', '供应商推荐', '其他']
@@ -42,13 +51,28 @@ const EMPTY_FORM = {
   images: '',
 }
 
-/** 参考图：一行一个 URL → 数组。空行去掉，避免存一堆空串。 */
+/**
+ * 参考图：一行一个 URL → 数组。空行去掉，避免存一堆空串。
+ *
+ * ⚠️ 顺带校验协议（2026-10-14 审查修）：只收 `http/https`。
+ * 这里是**录入侧**的闸（给出可读提示），渲染侧还会再判一次
+ * （`safeExternalUrls`）—— 两道都要，因为历史数据与导入数据绕不过录入侧。
+ */
 function parseImages(text: string): string[] | null {
   const list = text
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean)
   return list.length ? list : null
+}
+
+/** 返回不合法的那些行（给用户点名），空数组 = 全合法。 */
+function invalidImageUrls(text: string): string[] {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !isSafeExternalUrl(line))
 }
 
 /**
@@ -68,7 +92,7 @@ const ROUND_CONTENT_LABEL: Record<string, string> = {
 
 /** 时间戳转成人看的格式。 */
 function fmtTime(value: string | null): string {
-  return value ? new Date(value).toLocaleString('zh-CN') : '—'
+  return value ? formatBeijingTime(value) : '-'
 }
 
 /** 快照里的值转成能看的字：空值说「未填」，而不是显示 null。 */
@@ -79,6 +103,15 @@ function fmtValue(value: unknown): string {
 
 /** 新品洞察（§3.3 第三类：运营日常选品 → 评审 → 转需求）。 */
 export default function ProductInsightsPage() {
+  /* 1024 宽内容区约 700px，新品洞察七列合计 770px+（产品方向还是自适应），
+     「状态 / 操作」被裁到卡片外。窄屏切紧凑档：列宽收紧，负责人收掉。 */
+  const [compact, setCompact] = useState(() => window.innerWidth < 1200)
+  useEffect(() => {
+    const onResize = () => setCompact(window.innerWidth < 1200)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
   const queryClient = useQueryClient()
   const { can } = usePermissions()
   const canManage = can('product:manage')
@@ -89,10 +122,11 @@ export default function ProductInsightsPage() {
   const [status, setStatus] = useState<string | undefined>()
   const [keyword, setKeyword] = useState('')
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
 
   const query = useQuery({
-    queryKey: ['product-insights', { status, keyword, page }],
-    queryFn: () => listProductInsights({ status, keyword, page, page_size: 20 }),
+    queryKey: ['product-insights', { status, keyword, page, pageSize }],
+    queryFn: () => listProductInsights({ status, keyword, page, page_size: pageSize }),
   })
 
   // 审核历史（R08）：列表那一行只有**最后一轮**的意见与结果，
@@ -142,6 +176,16 @@ export default function ProductInsightsPage() {
 
   const saveMutation = useMutation({
     mutationFn: () => {
+      // ⚠️ 参考图先过协议闸（2026-10-14 审查修）：不合法的地址**不提交**，
+      // 并点名是哪几行 —— 存进去再靠渲染侧挡，等于把坏数据留在库里
+      // （历史数据/导入数据都绕不过渲染侧，但录入侧该拦的要拦）。
+      const badImages = invalidImageUrls(form.images)
+      if (badImages.length) {
+        throw new Error(
+          `参考图只能是 http/https 开头的地址，这几行不合法：${badImages.slice(0, 3).join('、')}` +
+            (badImages.length > 3 ? ` 等 ${badImages.length} 行` : ''),
+        )
+      }
       // 空字符串一律发 null：`''` 与"没填"在业务上是同一件事，
       // 存进去以后按空串渲染会出现"填过但看不出内容"的行。
       // **传 null 才能真正清空**（§6.2：更新里原来用 `if value is not None` 判断，
@@ -152,7 +196,16 @@ export default function ProductInsightsPage() {
         target_customer: form.target_customer || null,
         direction: form.direction || null,
         selling_points: form.selling_points || null,
-        price_assumption: form.price_assumption ? Number(form.price_assumption) : null,
+        // 不能直接 Number(x)：填「8.5元」→ NaN → JSON null，而 null 在这条
+        // 接口上等于「用户明确清空」—— 两者分不清，输入被静默丢掉
+        // （2026-10-14 审查修）。坏输入一律拦下并点名。
+        price_assumption: (() => {
+          const v = parseOptionalNumber(form.price_assumption)
+          if (typeof v === 'number' && Number.isNaN(v)) {
+            throw new Error('价格假设只能填数字')
+          }
+          return v
+        })(),
         conclusion: form.conclusion || null,
         images: parseImages(form.images),
       }
@@ -237,8 +290,17 @@ export default function ProductInsightsPage() {
     mutationFn: () =>
       convertProductInsight(convertTarget!.id, {
         customer_id: convertCustomerId ?? null,
-        quantity: convertForm.quantity ? Number(convertForm.quantity) : null,
-        target_price: convertForm.target_price ? Number(convertForm.target_price) : null,
+        // 同上：字母会被静默变成 null，转需求后数量为空
+        quantity: (() => {
+          const v = parseOptionalNumber(convertForm.quantity)
+          if (typeof v === 'number' && Number.isNaN(v)) throw new Error('数量只能填数字')
+          return v
+        })(),
+        target_price: (() => {
+          const v = parseOptionalNumber(convertForm.target_price)
+          if (typeof v === 'number' && Number.isNaN(v)) throw new Error('目标价只能填数字')
+          return v
+        })(),
         remark: convertForm.remark || null,
         request_key: convertKey,
       }),
@@ -253,15 +315,35 @@ export default function ProductInsightsPage() {
 
   return (
     <div className="page-container">
-      <SectionCard>
+      {/* 这页原来直接从卡片开始，没有页头 —— 从别的模块切过来会觉得「少了点什么」。
+          补一个与其他页一致的标题区（2026-11-16 巡检）。 */}
+      <PageHeader
+        title="新品洞察"
+        subtitle="市场来源 → 产品方向 → 评审 → 转需求；价格为内部假设，不构成正式指导价"
+        /* 新建类动作归到页头右上，与客户 / 商机 / 产品各列表页同一处 ——
+           原来它插在筛选行里，和搜索框、状态下拉挤在一排（2026-11-20）。 */
+        extra={
+          canManage && (
+            <Button type="primary" theme="outline" onClick={openCreate}>
+              记录新品洞察
+            </Button>
+          )
+        }
+      />
+      <SectionCard
+        className={(query.data?.items?.length ?? 0) <= 8 ? 'auto-height' : undefined}
+      >
         <div className="toolbar" style={{ marginBottom: 10 }}>
-          <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-            运营选品沉淀：市场来源 → 产品方向 → 评审通过 → 转需求。
-            价格只是内部假设，未经确认不会成为正式指导价
-          </span>
-          <div style={{ flex: 1 }} />
+          {canReview && (status !== 'under_review' || keyword) && (
+            <Button theme="outline" onClick={() => { setStatus('under_review'); setKeyword(''); setPage(1) }}>
+              查看待评审
+            </Button>
+          )}
+          {/* 原来这里有一个 flex:1 占位，把搜索/状态/按钮全推到最右边 ——
+              全站其他列表页的筛选都在左边起头，这一页孤零零靠右，看着像浮在卡上。
+              去掉占位，与别页一致。 */}
           <Input
-            style={{ width: 200 }}
+            style={{ width: 150 }}
             placeholder="搜标题"
             value={keyword}
             onChange={setKeyword}
@@ -284,29 +366,61 @@ export default function ProductInsightsPage() {
               { value: 'converted', label: '已转需求' },
             ]}
           />
-          {canManage && (
-            <Button theme="solid" onClick={openCreate}>
-              记录新品洞察
-            </Button>
+          {/* 一屏放得下就不摆分页条，条数用一句灰字交代（与订单草稿、审批中心同一规则）。 */}
+          {!query.isLoading && (query.data?.total ?? 0) > 0 && (
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>共 {query.data?.total} 条</span>
           )}
         </div>
         <Table<ProductInsightRow>
+          className="insights-table"
           columns={[
             {
-              title: '产品方向',
+              title: (
+                <span className="crm-help-label">
+                  产品方向
+                  <HelpTip forLabel="产品方向" text="一条待评估的产品机会或方向，不是已经上架的产品。" />
+                </span>
+              ),
               dataIndex: 'title',
+              width: compact ? 200 : undefined,
               render: (text: string, record: ProductInsightRow) => (
-                <div>
-                  <div style={{ fontWeight: 600 }}>{text}</div>
+                <div style={{ minWidth: 0 }}>
+                  <div
+                    title={text}
+                    style={{
+                      fontWeight: 600,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {text}
+                  </div>
                   {record.selling_points && (
-                    <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                    <div
+                      title={record.selling_points}
+                      style={{
+                        fontSize: 12,
+                        color: 'var(--crm-text-3)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
                       假设卖点：{record.selling_points}
                     </div>
                   )}
                   {record.images && record.images.length > 0 && (
                     <div style={{ fontSize: 12, display: 'inline-flex', gap: 6 }}>
                       参考图：
-                      {record.images.slice(0, 3).map((url, i) => (
+                      {/* ⚠️ 必须过滤协议（2026-10-14 审查修）。
+                          `images` 的来源是自由文本 TextArea（一行一个地址），
+                          后端 `images: list[str]` 也不校验协议 —— 存进
+                          `javascript:…` 后，**React 不会拦 `href` 的协议**，
+                          任何人点一下「1」就在 CRM 同源下执行脚本。
+                          这里只把 http/https 渲染成链接；不合法的**不渲染成 <a>**
+                          （退化成纯文本标记），而不是"渲染了再拦点击"。 */}
+                      {safeExternalUrls(record.images).slice(0, 3).map((url, i) => (
                         <a key={url} href={url} target="_blank" rel="noreferrer">
                           {i + 1}
                         </a>
@@ -316,40 +430,53 @@ export default function ProductInsightsPage() {
                 </div>
               ),
             },
-            { title: '来源', dataIndex: 'source', width: 100, render: (v: string | null) => v ?? '-' },
+            ...(compact
+              ? []
+              : [{ title: '来源', dataIndex: 'source', width: 100, render: (v: string | null) => v ?? '-' }]),
             {
               title: '目标客户',
               dataIndex: 'target_customer',
-              width: 120,
+              width: compact ? 124 : 120,
               render: (v: string | null) => v ?? '-',
             },
             {
               title: '价格假设',
               dataIndex: 'price_assumption',
-              width: 100,
-              render: (v: number | null) =>
-                v == null ? '-' : <span style={{ color: 'var(--crm-text-3)' }}>¥{v}（假设）</span>,
+              width: compact ? 92 : 100,
+              // 金额右对齐（全站口径 .cell-right）：¥2.30 / ¥86.00 / ¥12.50
+              // 长短不一，居中时小数点各在一处，比不出量级。
+              className: 'cell-right',
+              // 每行都挂"（假设）"是纯噪音：表头已经写着「价格假设」，
+              // 一列四行重复同样四个字，反而把数字本身压得看不出来。
+              // 单价保真（2026-11-17）：最少两位、最多 4 位，不截断。
+              // ¥2.3 / ¥86 / ¥4.8 统一成 ¥2.30 / ¥86.00 / ¥4.80，但 3.3333 仍是 3.3333。
+              render: (v: number | null) => (v == null ? '-' : formatUnitPrice(v, 'CNY')),
             },
-            { title: '负责人', dataIndex: 'owner_name', width: 80, render: (v: string | null) => v ?? '-' },
+            ...(compact
+              ? []
+              : [{ title: '负责人', dataIndex: 'owner_name', width: 80, render: (v: string | null) => v ?? '-' }]),
             {
-              title: '状态',
-              width: 120,
+              title: (
+                <span className="crm-help-label">
+                  状态
+                  <HelpTip forLabel="洞察状态" text="已转需求 = 这条洞察已经变成一张定制需求单，后续到「定制需求」里跟进。" />
+                </span>
+              ),
+              width: compact ? 110 : 170,
               render: (_: unknown, record: ProductInsightRow) => (
-                <div>
-                  <Tag color={STATUS_TONE[record.status] ?? 'grey'}>{record.status_label}</Tag>
+                /* 这一格原来塞三行：状态 / 第 N 轮 / 意见（还被截成"…"），
+                   于是同一张表里这行比别的行高出一截，节奏全乱。
+                   意见本来就有「审核历史」可看全文，这里收进悬停提示，
+                   格子只留"到哪一步了、第几轮"。 */
+                <div title={record.review_note ? `意见：${record.review_note}` : undefined}>
+                  <StatusDot
+                    label={record.status_label ?? record.status}
+                    tone={(STATUS_TONE[record.status] ?? 'grey') as TagTone}
+                  />
                   {/* 轮次：驳回过几次、现在是第几轮，一眼看得出（§6.1(1)） */}
                   {(record.review_round ?? 1) > 1 && (
                     <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
                       第 {record.review_round} 轮
-                    </div>
-                  )}
-                  {record.review_note && (
-                    <div
-                      style={{ fontSize: 12, color: 'var(--crm-text-3)' }}
-                      title={record.review_note}
-                    >
-                      意见：{record.review_note.slice(0, 10)}
-                      {record.review_note.length > 10 ? '…' : ''}
                     </div>
                   )}
                 </div>
@@ -357,7 +484,7 @@ export default function ProductInsightsPage() {
             },
             {
               title: '操作',
-              width: 230,
+              width: compact ? 170 : 200,
               render: (_: unknown, record: ProductInsightRow) => {
                 // 逐条可操作性（R08）：后端随每一行下发"这条归不归我管""我现在能不能评"。
                 // 原来只按权限码判，于是**数据范围外**的那几条也长着「编辑 / 提交评审 /
@@ -368,21 +495,38 @@ export default function ProductInsightsPage() {
                 const reviewable =
                   record.can_review ?? (canReview && record.status === 'under_review')
                 return (
-                  <span style={{ display: 'inline-flex', gap: 10, flexWrap: 'wrap' }}>
+                  /* 操作列原来是 inline-flex，按钮组按内容宽度贴左，
+                     表头「操作」却居中 —— 一行三四个动作时表头和数据错开十几像素。
+                     改成占满整格的 flex + 居中：动作多也始终压在表头下方。 */
+                  <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center' }}>
                     {editable && record.status !== 'converted' && record.status !== 'under_review' && (
                       <a onClick={() => openEdit(record)}>编辑</a>
                     )}
                     {editable && (record.status === 'draft' || record.status === 'rejected') && (
-                      <a onClick={() => submitMutation.mutate(record.id)}>提交评审</a>
+                      <Popconfirm title="确认提交这条新品洞察评审？" onConfirm={() => submitMutation.mutate(record.id)}><a>提交评审</a></Popconfirm>
                     )}
+                    {/* 原来「通过 / 否决」是两个同字重的绿字红字，和旁边「编辑 / 转需求」
+                        长得一样重（2026-11-20 巡检："一排小字看不出该点哪个"）。
+                        现在：通过 = 主按钮（这条洞察的推进动作），否决 = 红色文字按钮
+                        （终止动作，但不需要抢主按钮的位置）。 */}
                     {reviewable && (
                       <>
-                        <a style={{ color: 'var(--crm-success)' }} onClick={() => openReview(record, true)}>
+                        <Button
+                          size="small"
+                          type="primary"
+                          theme="solid"
+                          onClick={() => openReview(record, true)}
+                        >
                           通过
-                        </a>
-                        <a style={{ color: 'var(--crm-error)' }} onClick={() => openReview(record, false)}>
+                        </Button>
+                        <Button
+                          size="small"
+                          type="danger"
+                          theme="borderless"
+                          onClick={() => openReview(record, false)}
+                        >
                           否决
-                        </a>
+                        </Button>
                       </>
                     )}
                     {editable && record.status === 'approved' && (
@@ -391,13 +535,13 @@ export default function ProductInsightsPage() {
                     {/* 审核历史：能看见这一页的人就能看它的评审史（后端读入口同权限） */}
                     <a
                       style={{ color: 'var(--crm-text-2)' }}
+                      title="审核历史"
                       onClick={() => setHistoryTarget(record)}
                     >
-                      审核历史
+                      {compact ? '历史' : '审核历史'}
                     </a>
-                    {/* 已转：给得出去的深链，不是一串死编号（§6.1(7)） */}
                     {record.converted_inquiry_id && (
-                      <Link to="/inquiries?keyword=" style={{ color: 'var(--crm-text-3)' }}>
+                      <Link to={`/inquiries?inquiry_id=${record.converted_inquiry_id}`} style={{ color: 'var(--crm-text-3)' }}>
                         已转需求 #{record.converted_inquiry_id}
                       </Link>
                     )}
@@ -409,13 +553,23 @@ export default function ProductInsightsPage() {
           dataSource={query.data?.items ?? []}
           loading={query.isLoading}
           rowKey="id"
-          pagination={{
+          pagination={((query.data?.total ?? 0) <= pageSize) ? false : {
             currentPage: page,
-            pageSize: 20,
+            pageSize,
             total: query.data?.total ?? 0,
             onPageChange: setPage,
+            showSizeChanger: true,
+            pageSizeOpts: [10, 20, 50, 100],
+            onPageSizeChange: (size: number) => { setPageSize(size); setPage(1) },
           }}
-          empty="还没有新品洞察——运营看到好方向就记进来"
+          empty={emptyNode(query, {
+            title: status === 'under_review' && !keyword ? '暂无待评审的新品洞察'
+              : status || keyword ? '没有符合筛选条件的新品洞察' : '还没有新品洞察',
+            hint: status || keyword ? undefined : '记录值得评估的产品方向。评审通过后，可以转成定制需求。',
+            action: status || keyword ? (
+              <Button size="small" onClick={() => { setStatus(undefined); setKeyword(''); setPage(1) }}>查看全部洞察</Button>
+            ) : canManage ? <Button size="small" onClick={openCreate}>记录新品洞察</Button> : undefined,
+          })}
         />
       </SectionCard>
 
@@ -427,7 +581,7 @@ export default function ProductInsightsPage() {
         confirmLoading={saveMutation.isPending}
         okText="保存"
         cancelText="取消"
-        width={620}
+        width={680}
       >
         <div style={{ display: 'grid', gap: 10 }}>
           <div>
@@ -550,7 +704,7 @@ export default function ProductInsightsPage() {
         confirmLoading={convertMutation.isPending}
         okText="确认转换"
         cancelText="取消"
-        width={600}
+        width={520}
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
@@ -571,10 +725,11 @@ export default function ProductInsightsPage() {
               onSearch={setConvertKeyword}
               value={convertCustomerId}
               onChange={(v) => setConvertCustomerId(v as number | undefined)}
-              optionList={(convertCustomers.data?.items ?? []).map((c) => ({
-                value: c.id,
-                label: withCode(c.name, c.id),
-              }))}
+              optionList={optionsWithCodeOnDuplicate(
+                convertCustomers.data?.items ?? [],
+                (c) => c.name,
+                (c) => c.id,
+              )}
             />
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', gap: 10 }}>
@@ -619,13 +774,13 @@ export default function ProductInsightsPage() {
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
             <Button onClick={() => setConvertResult(null)}>知道了</Button>
             {convertResult && (
-              <Link to={`/inquiries?keyword=${encodeURIComponent(convertResult.inquiry_no ?? '')}`}>
-                <Button theme="solid">去看这条需求</Button>
+              <Link to={`/inquiries?inquiry_id=${convertResult.inquiry_id}`}>
+                <Button type="primary" theme="outline">去看这条需求</Button>
               </Link>
             )}
           </div>
         }
-        width={460}
+        width={520}
       >
         {convertResult && (
           <div style={{ display: 'grid', gap: 6 }}>
@@ -634,7 +789,7 @@ export default function ProductInsightsPage() {
                 {convertResult.origin_label ?? convertResult.origin}
               </Tag>
             </div>
-            <div>需求编号：{convertResult.inquiry_no ?? `#${convertResult.inquiry_id}`}</div>
+            <div>需求单号：{convertResult.inquiry_no ?? '-'}</div>
             {convertResult.origin === 'internal_dev' && (
               <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
                 这是内部开发需求，不是客户提出的采购需求 —— 对外报价、承诺交期前先确认客户。
@@ -652,7 +807,7 @@ export default function ProductInsightsPage() {
         visible={Boolean(historyTarget)}
         onCancel={() => setHistoryTarget(null)}
         footer={<Button onClick={() => setHistoryTarget(null)}>关闭</Button>}
-        width={620}
+        width={680}
       >
         {roundsQuery.isLoading && (
           <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>加载中…</div>
@@ -681,7 +836,7 @@ export default function ProductInsightsPage() {
                   </Tag>
                   <div style={{ flex: 1 }} />
                   <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                    提交：{round.submitted_by_name ?? '—'} · {fmtTime(round.submitted_at)}
+                    提交：{round.submitted_by_name ?? '-'} · {fmtTime(round.submitted_at)}
                   </span>
                 </div>
 
@@ -713,7 +868,7 @@ export default function ProductInsightsPage() {
                 )}
                 {round.reviewed_at && (
                   <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                    评审：{round.reviewer_name ?? '—'} · {fmtTime(round.reviewed_at)}
+                    评审：{round.reviewer_name ?? '-'} · {fmtTime(round.reviewed_at)}
                   </div>
                 )}
               </div>

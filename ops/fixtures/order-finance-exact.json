@@ -1,0 +1,20 @@
+{
+  "order_amount": 99999999999999.98,
+  "planned_amount": 99999999999999.98,
+  "allocated_amount": 99999999999999.98,
+  "unallocated_amount": 99999999999999.98,
+  "unsettled_plan_amount": 0.0,
+  "received_amount": 199999999999999.97,
+  "pending_confirm_amount": 99999999999999.98,
+  "unreceived_amount": -99999999999999.98,
+  "plan_count": 1,
+  "overdue_count": 0,
+  "order_amount_exact": "99999999999999.99",
+  "planned_amount_exact": "99999999999999.99",
+  "allocated_amount_exact": "99999999999999.99",
+  "unallocated_amount_exact": "99999999999999.99",
+  "pending_confirm_amount_exact": "99999999999999.99",
+  "received_amount_exact": "199999999999999.98",
+  "unreceived_amount_exact": "-99999999999999.99",
+  "unsettled_plan_amount_exact": "0.00"
+}

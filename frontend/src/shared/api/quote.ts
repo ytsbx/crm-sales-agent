@@ -15,6 +15,7 @@ export interface Quote {
   current_version_id?: number | null
   current_version_no?: number | null
   current_version_amount?: number | null
+  current_version_amount_exact?: string | null
   /** 当前版本的币种（第九批 §9.9）：金额不能假设是人民币 */
   currency?: string | null
   approval_status?: string | null
@@ -31,6 +32,19 @@ export interface QuoteVersion {
   charge_amount: number
   discount_amount: number
   total_amount: number
+  total_amount_exact?: string | null
+  /**
+   * 金额拆分（2026-10-09「产品价格与运费分离」）。
+   *
+   * ⚠️ 这两个值**已经含在** `total_amount` 里了（`charge_amount` 也等于两者之和）。
+   * 页面只能拿它们做**分项展示**，绝对不要再加到总额上——那是重复计费。
+   * 恒等式：`charge_amount === logistics_amount + other_charge_amount`
+   */
+  logistics_amount: number
+  other_charge_amount: number
+  /** 本版产品核价口径：legacy（成本含运费）/ actual_pass_through（运费代收代付） */
+  pricing_basis: string
+  pricing_basis_label?: string
   payment_terms?: string | null
   delivery_terms?: string | null
   remark?: string | null
@@ -41,6 +55,26 @@ export interface QuoteVersion {
   accepted_at?: string | null
   declined_at?: string | null
   total_profit?: number | null
+}
+
+/**
+ * 金额汇总 —— **后端算好的那一份**（`quote.service.amount_summary`）。
+ *
+ * 页面优先用它，不要自己按明细再算一遍：页面、对客 Excel/PDF、订单、应收
+ * 必须共用同一份公式，两套公式迟早对不上，而这里对不上就是钱对不上。
+ */
+export interface QuoteAmountSummary {
+  goods_amount: number
+  /** 运费（代收代付）：向客户收取的金额，同时也是公司付给承运商的金额 */
+  logistics_amount: number
+  other_charge_amount: number
+  charge_amount: number
+  /** 优惠：**负数**（与库内约定一致） */
+  discount_amount: number
+  total_amount: number
+  currency?: string | null
+  pricing_basis: string
+  pricing_basis_label?: string
 }
 
 export interface QuoteItemRow {
@@ -54,8 +88,9 @@ export interface QuoteItemRow {
   is_custom?: boolean
   specification?: string | null
   quantity: number
-  cost_snapshot: number
-  logistics_cost_snapshot: number
+  quantity_exact?: string
+  cost_snapshot: number | null
+  logistics_cost_snapshot: number | null
   standard_price_snapshot?: number | null
   recommended_price_snapshot?: number | null
   minimum_price_snapshot?: number | null
@@ -63,9 +98,11 @@ export interface QuoteItemRow {
   price_source?: string | null
   customer_level_snapshot?: string | null
   quoted_price: number
+  quoted_price_exact?: string | null
   amount: number
-  profit_snapshot: number
-  profit_rate_snapshot: number
+  amount_exact?: string | null
+  profit_snapshot: number | null
+  profit_rate_snapshot: number | null
   approval_required: boolean
   approval_reason?: string | null
   remark?: string | null
@@ -77,7 +114,17 @@ export interface QuoteChargeRow {
   type_label?: string | null
   description?: string | null
   amount: number
+  amount_exact?: string | null
   is_discount: boolean
+  /** 后端判定：这条费用是不是"向客户收取的运费"（只认分类码物流，不看说明文字） */
+  is_logistics?: boolean
+  /**
+   * 运费被业务确认的时刻。
+   *
+   * `null` = **尚未确认**。注意金额为 0 **不等于**已确认零运费：
+   * 空输入与"明确是零运费"必须分得开，正式发送要求后者。
+   */
+  logistics_confirmed_at?: string | null
 }
 
 export interface ApprovalRecordRow {
@@ -101,7 +148,15 @@ export interface ApprovalRecordRow {
 export type WithMasterWarnings<T> = T & { master_warnings?: string[] }
 
 export interface QuoteVersionDetail {
+  cost_problems?: { item_id: number; sku_id: number | null; label: string; reason: string }[]
   version: QuoteVersion
+  /** 后端统一的金额汇总（货款/运费/其他费用/优惠/合计），页面直接用它 */
+  summary?: QuoteAmountSummary
+  /**
+   * 运费尚未确认时的人话原因（后端给）；`null`/缺省 = 已确认可以正式发送。
+   * 与 `master_warnings` 同一性质：要**持续显示**，不能只闪一次 Toast。
+   */
+  freight_unconfirmed_reason?: string | null
   quote: Quote | null
   items: QuoteItemRow[]
   charges: QuoteChargeRow[]
@@ -126,6 +181,7 @@ export interface VersionComparisonRow {
   sku_count: number
   quantity: number
   amount_total: number
+  amount_total_exact?: string | null
   charge_amount: number
   discount_amount: number
   total_amount: number
@@ -157,13 +213,17 @@ export interface VersionComparisonChange {
   field: 'added' | 'removed' | 'quantity' | 'quoted_price' | 'charge_amount' | 'discount_amount'
   before: number | null
   after: number | null
+  before_exact?: string | null
+  after_exact?: string | null
 }
 
 export interface VersionComparisonDiff {
   from_version_no: number
   to_version_no: number
   amount_delta: number
+  amount_delta_exact?: string | null
   profit_delta: number
+  profit_delta_exact?: string | null
   margin_delta: number
   changes: VersionComparisonChange[]
 }
@@ -188,9 +248,10 @@ export interface ApprovalRow {
     quote_no?: string
     version_no?: number
     reason?: string
-    offending?: Array<{ sku_code: string; quoted_price: number; minimum_price: number; profit_rate: number }>
+    offending?: Array<{ sku_code: string; quoted_price?: number | null; minimum_price?: number | null; profit_rate?: number | null; reason?: string }>
     authorized_min_margin?: number
-    co_sign?: { label?: string; role_codes?: string[]; status?: string } | null
+    current_assignee_name?: string | null
+    co_sign?: { label?: string; permission_code?: string; role_codes?: string[]; status?: string } | null
     auto_passed?: boolean
   } | null
   created_at: string
@@ -228,6 +289,14 @@ export function createQuote(payload: {
   return api.post<WithMasterWarnings<{ quote_id: number; version_id: number; warnings?: string[] }>>('/quotes', payload)
 }
 
+export function deleteQuote(quoteId: number) {
+  return api.delete<null>(`/quotes/${quoteId}`)
+}
+
+export function refreshQuoteCosts(versionId: number) {
+  return api.post<{ refreshed: number }>(`/quote-versions/${versionId}/cost-refresh`)
+}
+
 export function listQuoteVersions(quoteId: number) {
   return api.get<QuoteVersion[]>(`/quotes/${quoteId}/versions`)
 }
@@ -249,14 +318,77 @@ export function getPriceDrift(versionId: number) {
 }
 
 /** 一键把系统带价的明细刷新到当前适用价（手工价不动） */
+/** 报价草稿刷新主数据前的预览：会变什么、能不能刷。 */
+export interface QuoteMasterRefreshPreview {
+  item_id: number
+  sku_id: number
+  sku_code: string
+  /** 明细当前引用的主数据版本（空 = 生成时还没有可引用的已确认版本） */
+  master_version_no: number | null
+  /** 从未引用过任何已确认版本 —— 它最需要刷新（刷新才会把版本号钉上去） */
+  never_referenced: boolean
+  confirmed_version_no: number | null
+  unconfirmed: string[]
+  unconfirmed_labels: string[]
+  changes: { field: string; label: string; before: string | null; after: string | null }[]
+}
+
+export interface QuoteMasterRefreshState {
+  items: QuoteMasterRefreshPreview[]
+  changed_count: number
+  never_referenced_count: number
+  item_count: number
+  display_field_labels: string[]
+  /** 已发送 / 已审批的版本为 false（内容是对客承诺，只能新建版本） */
+  refreshable: boolean
+  sent: boolean
+  blocked_reason?: string
+  message: string
+}
+
+export function getQuoteMasterRefreshPreview(versionId: number) {
+  return api.get<QuoteMasterRefreshState>(`/quote-versions/${versionId}/master-refresh-preview`)
+}
+
+/**
+ * **一键修复：接入最新已确认主数据**（主人 2026-10-10 拍板的方案二）。
+ *
+ * 为什么要有这条**独立于价格**的路：黄条说"没有可引用的已确认主数据版本"，
+ * 用户去产品中心确认完回来点「刷新主数据」，**黄条还在** —— 因为刷新走的是
+ * 重新核价，而它在"手工定价"或"查不到价"时直接跳过整条明细。
+ * 于是「接主数据」被「查不到价」挡住了。
+ *
+ * 主数据版本号回答的是"这一行对着哪一版名称/规格/单位"，与卖多少钱无关，
+ * 所以这条接口**只重建对客三字段 + 钉版本号，价格/成本/利润一个字不动**。
+ */
+export function linkMasterData(versionId: number) {
+  return api.post<{
+    linked: number
+    already_linked: number
+    missing: { item_id: number; sku_code: string; missing_labels: string[] }[]
+    missing_count: number
+    message: string
+  }>(`/quote-versions/${versionId}/link-master`)
+}
+
 export function refreshPrices(versionId: number) {
   return api.post<{ refreshed: number; skipped: number }>(
     `/quote-versions/${versionId}/price-refresh`,
   )
 }
 
-export function createQuoteVersion(quoteId: number) {
-  return api.post<QuoteVersion>(`/quotes/${quoteId}/versions`)
+/**
+ * 新建报价版本。
+ *
+ * ⚠️ 这个动作**不是「多一份草稿」**：它会切换当前版本、把报价状态改回草稿、
+ * 并自动结束旧版还在走的审批流程，而系统里没有撤销入口。
+ * 后端因此要求 `confirm=true`；不带会返回 42206 并给出「点了会怎样」的说明
+ * （由 `ConfirmRequiredModal` 展示给用户确认）。
+ */
+export function createQuoteVersion(quoteId: number, confirm = false) {
+  return api.post<QuoteVersion>(
+    `/quotes/${quoteId}/versions${confirm ? '?confirm=true' : ''}`,
+  )
 }
 
 /** 报价多方案对比（What-if）：逐版本汇总 + 与上一版的差异明细。 */
@@ -297,6 +429,19 @@ export function addQuoteCharge(versionId: number, payload: Record<string, unknow
   return api.post<QuoteChargeRow>(`/quote-versions/${versionId}/charges`, payload)
 }
 
+/**
+ * 改一条附加费用（03-API §22）。只传要改的字段。
+ *
+ * 锁版（已提交审批 / 已发送）之后**只有运费**能改 —— 判据在后端
+ * `quote/service.py::ensure_charge_change_allowed`，前端只管把入口露出来。
+ *
+ * 后端一直有这个端点，是前端从来没接过（从前只能"删了再加"）——
+ * 而"再加"会把两条运费**累加**进总额，2026-10-14 修的正是这个坑。
+ */
+export function updateQuoteCharge(chargeId: number, payload: Record<string, unknown>) {
+  return api.patch<QuoteChargeRow>(`/quote-charges/${chargeId}`, payload)
+}
+
 export function deleteQuoteCharge(chargeId: number) {
   return api.delete<null>(`/quote-charges/${chargeId}`)
 }
@@ -314,6 +459,27 @@ export function withdrawApproval(versionId: number) {
 
 export function markSent(versionId: number, payload: { channel: string; receiver?: string; request_key?: string }) {
   return api.post<QuoteVersion>(`/quote-versions/${versionId}/mark-sent`, payload)
+}
+
+/** 一条发送记录（谁、什么渠道、发给了谁、什么时候）。 */
+export interface QuoteSendLogRow {
+  id: number
+  channel: string
+  receiver: string | null
+  status: string
+  sent_at: string
+}
+
+/**
+ * 这份报价版本**发过给谁**。
+ *
+ * ⚠️ 接口一直都在（后端 `GET /quote-versions/{id}/send-logs`，还专门做了数据范围校验
+ * ——发送记录里有收件人，不校验就能看到别人把报价发给了谁），但**前端一直没有入口**：
+ * 用户登记完"标记已发送"之后，界面上再也看不到自己登记过什么，"发给谁"这件事
+ * 变成了不可核对的黑盒（主人 2026-10-12 反馈：连"是发给客户还是发给主管"都看不出来）。
+ */
+export function getSendLogs(versionId: number) {
+  return api.get<QuoteSendLogRow[]>(`/quote-versions/${versionId}/send-logs`)
 }
 
 export function acceptQuote(versionId: number) {
@@ -334,7 +500,7 @@ export function listApprovals(query: { status?: string; mine?: boolean; pending_
 }
 
 export function approveApproval(id: number) {
-  return api.post<null>(`/approvals/${id}/approve`)
+  return api.post<{ current_node: 'co_sign' } | null>(`/approvals/${id}/approve`)
 }
 
 export function rejectApproval(id: number, comment?: string) {

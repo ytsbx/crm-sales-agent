@@ -1,3 +1,4 @@
+import { showDownloadResult } from '../../shared/download-feedback'
 import { useRef, useState } from 'react'
 import { Button, Popconfirm, Toast } from '@douyinfe/semi-ui'
 
@@ -54,7 +55,7 @@ export default function PaymentVoucherControl({ payment, onChanged }: Props) {
         <>
           <a
             style={{ color: 'var(--crm-primary)' }}
-            onClick={() => void downloadPaymentVoucher(payment.id, filename)}
+            onClick={() => void showDownloadResult(downloadPaymentVoucher(payment.id, filename))}
           >
             {filename}
           </a>

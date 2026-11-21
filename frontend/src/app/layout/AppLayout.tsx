@@ -1,3 +1,4 @@
+import { Button, Dropdown, Modal, Tooltip } from '@douyinfe/semi-ui'
 import { useEffect, useState } from 'react'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { IconIndentLeft, IconIndentRight } from '@douyinfe/semi-icons'
@@ -6,14 +7,23 @@ import TabBar from './TabBar'
 import GlobalSearch from './GlobalSearch'
 import NotificationBell from '../../modules/common/NotificationBell'
 import CopilotDrawer from '../../modules/common/CopilotDrawer'
-import { matchMenu, menuLabel, visibleMenuGroups } from '../menu'
+import { hasPermission, matchMenu, menuLabel, visibleMenuGroups } from '../menu'
 import { logout } from '../../shared/api/auth'
 import { useAuthStore } from '../../shared/store/auth'
+import { useCurrentUserSync } from '../../shared/hooks/useCurrentUserSync'
 import { useTabsStore } from '../../shared/store/tabs'
 import { useCopilotStore } from '../../shared/store/copilot'
+import { readLocalStorage, writeLocalStorage } from '../../shared/browser-storage'
 
 /** 独立页面（不在左侧菜单里）的页签名 */
-const EXTRA_TABS: Record<string, string> = { '/pricing': '核价', '/order-drafts': '订单草稿' }
+/* 不在侧边菜单里、但仍然要有个正经页签名的路由。
+   `/pool-recycle` 是公海回收复核的老链接（菜单已收进「客户中心 › 回收复核」），
+   没登记名字时页签会退回上次的「工作台」，看着像点错了页面（2026-11-20 实拍）。 */
+const EXTRA_TABS: Record<string, string> = {
+  '/pricing': '核价',
+  '/order-drafts': '订单草稿',
+  '/pool-recycle': '公海回收',
+}
 
 /** 角色代号 → 中文名 */
 const ROLE_LABEL: Record<string, string> = {
@@ -28,24 +38,30 @@ export default function AppLayout() {
   const location = useLocation()
   const user = useAuthStore((state) => state.user)
   const clear = useAuthStore((state) => state.clear)
+  const [credentialsDismissed, setCredentialsDismissed] = useState<number | null>(null)
   const openTab = useTabsStore((state) => state.openTab)
   const openCopilot = useCopilotStore((state) => state.openWith)
   // 移动端（场景23）：侧边栏变成抽屉，顶栏汉堡键开合
   const [siderOpen, setSiderOpen] = useState(false)
   // 桌面端侧边栏折叠：默认展开，状态记住，下次进来保持一致
   const [siderCollapsed, setSiderCollapsed] = useState(
-    () => localStorage.getItem('sider-collapsed') === '1',
+    () => readLocalStorage('sider-collapsed') === '1',
   )
 
   useEffect(() => {
-    localStorage.setItem('sider-collapsed', siderCollapsed ? '1' : '0')
+    writeLocalStorage('sider-collapsed', siderCollapsed ? '1' : '0')
   }, [siderCollapsed])
 
+  // 权限**跟着服务器走**：启动拉一次 + 每 60 秒一次（主人 2026-10-12 拍板）。
+  // 从前只在登录时抄一次，于是管理员改权限后在线的人刷新也没用。
+  useCurrentUserSync()
   const currentMenu = matchMenu(location.pathname)
-  // 左侧菜单按当前用户权限过滤：财务不再看到线索/商机等入口，admin 直通全量
+  // 左侧菜单**不再按权限过滤**（主人 2026-10-12 拍板选 A）：
+  // 入口留着，点进去由 RoutePermissionGuard 说明"该功能存在、只是你没权限"。
+  // 从前直接隐藏入口，用户分不清"没权限"和"没做这个功能"。
   const menuGroups = visibleMenuGroups(user)
   const detailMatch = location.pathname.match(
-    /^\/(customers|products|opportunities|quotes|orders|order-drafts)\/\d+$/,
+    /^\/(customers|products|opportunities|quotes|orders|order-drafts|samples)\/\d+$/,
   )
   const detailLabel = detailMatch
     ? {
@@ -55,24 +71,39 @@ export default function AppLayout() {
         quotes: '报价详情',
         orders: '订单详情',
         'order-drafts': '订单草稿详情',
+        samples: '样品详情',
       }[detailMatch[1]]
     : null
+  // 只把字符串放进依赖；`detailMatch` 是每次渲染新建的数组，放进依赖会触发循环。
+  const detailParent = detailMatch ? `/${detailMatch[1]}` : null
 
   useEffect(() => {
     // 路由变化即收起抽屉：手机上点完菜单立刻看到页面
     setSiderOpen(false)
-    if (detailLabel) {
-      openTab({ key: location.pathname, label: detailLabel, path: location.pathname })
+    if (detailLabel && detailParent) {
+      openTab({
+        key: location.pathname,
+        label: detailLabel,
+        path: location.pathname,
+        kind: 'detail',
+        parentKey: detailParent,
+      })
     } else if (EXTRA_TABS[location.pathname]) {
       openTab({
         key: location.pathname,
         label: EXTRA_TABS[location.pathname],
         path: location.pathname,
+        kind: 'module',
       })
     } else if (currentMenu) {
-      openTab({ key: currentMenu.path, label: currentMenu.label, path: currentMenu.path })
+      openTab({
+        key: currentMenu.path,
+        label: currentMenu.label,
+        path: currentMenu.path,
+        kind: 'module',
+      })
     }
-  }, [location.pathname, currentMenu, detailLabel, openTab])
+  }, [location.pathname, currentMenu, detailLabel, detailParent, openTab])
 
   const handleLogout = () => {
     // 先取 token、再清状态：清完之后请求拦截器就取不到它了，
@@ -111,9 +142,9 @@ export default function AppLayout() {
           ×
         </button>
         <div className="sider-brand">
-          <div className="sider-logo">S</div>
+          <img className="sider-logo" src="/tianchu-logo.svg?v=tc1" alt="" />
           <div className="sider-brand-text">
-            <div className="sider-brand-name">Sales CRM</div>
+            <div className="sider-brand-name">天初CRM</div>
             <div className="sider-brand-sub">企业协同工作平台</div>
           </div>
           {/* 折叠开关固定在品牌行右侧：侧栏本身是滚动容器，
@@ -129,26 +160,55 @@ export default function AppLayout() {
           </button>
         </div>
 
-        {menuGroups.map((group) => (
-          <div key={group.title}>
+        {menuGroups.map((group, groupIndex) => (
+          /* nav-group / data-group 只给样式用：三组图标各给一点颜色，
+             整列图标全灰是「素」的最大来源之一（见 index.css 末尾） */
+          <div key={group.title} className="nav-group" data-group={groupIndex}>
             <div className="nav-group-title">{group.title}</div>
             {group.items.map((item) => {
               const Icon = item.icon
               const active = currentMenu?.key === item.key
               // 同一个入口对不同身份可能该叫不同名字（主管看到的是「公海回收复核」）
               const label = menuLabel(item, user)
-              return (
+              // 没权限的入口**照常可点**（点进去由 RoutePermissionGuard 说明原因），
+              // 只做一点视觉区分；`title` 让悬停时就知道是怎么回事 ——
+              // 但不改变"点得动"这件事，否则又回到"点了没反应"。
+              const denied = !hasPermission(user, item.permission)
+              const hint = denied ? `${label}（当前角色没有权限，点开有说明）` : label
+              const link = (
                 <Link
                   key={item.key}
                   to={item.path}
-                  className={active ? 'nav-link active' : 'nav-link'}
-                  title={siderCollapsed ? label : undefined}
+                  className={[
+                    'nav-link',
+                    active ? 'active' : '',
+                    denied ? 'nav-link-denied' : '',
+                  ].filter(Boolean).join(' ')}
+                  /* 收起态不用系统原生 title（那个要等一秒、还是灰底小框），
+                     改用下面的 Semi Tooltip 立刻浮出来；展开态有文字，不需要提示。 */
+                  title={!siderCollapsed && denied ? hint : undefined}
                 >
                   <span className="nav-icon">
                     <Icon />
                   </span>
                   <span>{label}</span>
                 </Link>
+              )
+              /* 收起后只剩图标，鼠标必须能立刻知道这是哪个模块 ——
+                 2026-11-17 主人问「鼠标放哪做悬浮效果，显示是哪个模块」。
+                 鼠标移到任意一条竖条（43px 宽、整条都算）就往右浮出模块名，
+                 mouseEnterDelay 0.12s：扫过菜单时不会闪成一片，稍停一下才出来。 */
+              if (!siderCollapsed) return link
+              return (
+                <Tooltip
+                  key={item.key}
+                  content={<span style={{ fontWeight: 600 }}>{hint}</span>}
+                  position="right"
+                  mouseEnterDelay={0.12}
+                  mouseLeaveDelay={0.05}
+                >
+                  {link}
+                </Tooltip>
               )
             })}
           </div>
@@ -163,7 +223,8 @@ export default function AppLayout() {
           >
             退出登录
           </a>
-          <div>Semi Design 风格 · v1.1</div>
+          {/* 侧栏底部原来印「Semi Design 风格 · v1.1」—— 技术栈版本信息，
+              跟业务同事每天的工作无关，还稀释了整块界面的完整度（V-01）。删掉不补装饰。 */}
         </div>
       </aside>
 
@@ -185,14 +246,34 @@ export default function AppLayout() {
           </button>
           <NotificationBell />
           <div className="header-user">
-            <div className="header-avatar">{user?.name?.slice(0, 1) ?? '?'}</div>
-            <div className="header-user-meta" style={{ lineHeight: 1.25 }}>
-              <div style={{ fontSize: 13, fontWeight: 600 }}>{user?.name ?? '未登录'}</div>
-              <div style={{ fontSize: 11, color: 'var(--crm-text-3)' }}>
-                {user?.department ?? '未分配部门'} ·{' '}
-                {(user?.roles ?? []).map((role) => ROLE_LABEL[role] ?? role).join(' / ') || '无角色'}
+            {/* 头像这一块做成可点的下拉：以前它只是一张不会动的图，
+                改密码 / 看权限全靠自己知道深链。现在「个人设置」就在手边。
+                手机上顶栏的「退出」链接是收起来的（CSS），这个下拉就成了
+                唯一的登出入口 —— 所以菜单里也要有退出。 */}
+            <Dropdown
+              trigger="click"
+              position="bottomRight"
+              render={
+                <Dropdown.Menu>
+                  <Dropdown.Item onClick={() => navigate('/settings?tab=profile')}>
+                    个人设置
+                  </Dropdown.Item>
+                  <Dropdown.Item onClick={handleLogout}>退出登录</Dropdown.Item>
+                </Dropdown.Menu>
+              }
+            >
+              <div className="header-user-trigger" title="个人设置与退出">
+                <div className="header-user-meta" style={{ lineHeight: 1.25 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{user?.name ?? '未登录'}</div>
+                  <div style={{ fontSize: 11, color: 'var(--crm-text-3)' }}>
+                    {user?.department ?? '未分配部门'} ·{' '}
+                    {(user?.roles ?? [])
+                      .map((role) => ROLE_LABEL[role] ?? role)
+                      .join(' / ') || '无角色'}
+                  </div>
+                </div>
               </div>
-            </div>
+            </Dropdown>
             <a className="header-logout" onClick={handleLogout} style={{ fontSize: 12, color: 'var(--crm-primary)', cursor: 'pointer' }}>
               退出
             </a>
@@ -207,6 +288,14 @@ export default function AppLayout() {
 
       {/* 全局 Copilot 抽屉：任何页面都能拉开，自动带上当前页面的业务上下文 */}
       <CopilotDrawer />
+      <Modal title="你的登录账号已生成" visible={Boolean(user?.initial_password_pending && credentialsDismissed !== user?.id)}
+        onCancel={() => setCredentialsDismissed(user?.id ?? null)}
+        footer={<><Button onClick={() => setCredentialsDismissed(user?.id ?? null)}>我知道了</Button>
+          <Button theme="solid" onClick={() => { setCredentialsDismissed(user?.id ?? null); navigate('/settings?tab=profile') }}>去修改账号密码</Button></>}>
+        <p>登录名：<strong style={{ overflowWrap: 'anywhere' }}>{user?.username}</strong></p>
+        <p>初始密码：<strong>123456</strong></p>
+        <p>以后可使用账号密码或同序 OA 扫码登录；在「我的」里可以自行修改（点头像也能进）。</p>
+      </Modal>
     </div>
   )
 }

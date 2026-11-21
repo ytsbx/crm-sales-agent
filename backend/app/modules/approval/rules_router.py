@@ -5,10 +5,11 @@
 """
 
 from datetime import UTC, datetime
+from math import isfinite
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -62,18 +63,18 @@ def _validate_payload(payload: RulePayload) -> None:
                 f"字段「{info['label']}」不支持操作符 {cond.op}，可用：{'/'.join(info['ops'])}",
                 422,
             )
-        if info["value_type"] == "number" and not isinstance(cond.value, (int, float)):
+        if info["value_type"] == "number" and (
+            type(cond.value) not in (int, float)
+            or (isinstance(cond.value, float) and not isfinite(cond.value))
+        ):
             raise AppError(ErrorCode.PARAM_ERROR, f"「{info['label']}」的阈值必须是数字", 422)
         if info["value_type"] == "bool" and not isinstance(cond.value, bool):
             raise AppError(ErrorCode.PARAM_ERROR, f"「{info['label']}」的阈值必须是 true/false", 422)
     if payload.kind == "exception_route":
-        codes = payload.action.get("add_node_role_codes")
-        if not codes or not isinstance(codes, list):
-            raise AppError(
-                ErrorCode.PARAM_ERROR,
-                "异常加签规则必须指定会签角色（add_node_role_codes）",
-                422,
-            )
+        # 旧规则中的角色字段可读取以兼容历史版本，但不再决定谁能会签。
+        permission = payload.action.get("add_node_permission", "quote:finance_approve")
+        if permission != "quote:finance_approve":
+            raise AppError(ErrorCode.PARAM_ERROR, "异常会签使用独立的财务会签权限", 422)
 
 
 def _snapshot(rule: ApprovalRule) -> dict:
@@ -85,6 +86,37 @@ def _snapshot(rule: ApprovalRule) -> dict:
         "action": rule.action,
         "description": rule.description,
     }
+
+
+async def _lock_rule_activation(session: AsyncSession) -> None:
+    if session.get_bind().dialect.name == 'postgresql':
+        await session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended('crm:quote-rule-activation', 0))"))
+
+
+def _approval_effect(payload: dict) -> tuple:
+    kind = payload['kind']
+    if kind == 'exception_route':
+        return kind, bool((payload.get('action') or {}).get('veto', True))
+    return (kind,)
+
+
+async def _reject_rule_conflicts(
+    session: AsyncSession, rule_id: int | None, candidate: dict, *, operation: str = "生效",
+) -> None:
+    conflicts = [
+        published.get('name') or other.name
+        for other, published in await rules_engine.load_active_rules(session)
+        if other.id != rule_id
+        and _approval_effect(published) != _approval_effect(candidate)
+        and rules_engine.conditions_overlap(candidate.get('conditions') or [], published.get('conditions') or [])
+    ]
+    if conflicts:
+        names = '、'.join(f'「{name}」' for name in conflicts)
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f'规则「{candidate["name"]}」与{names}的条件存在重叠，审批结果不同，不能{operation}。请调整条件后重试。',
+            409,
+        )
 
 
 async def _get_rule(session: AsyncSession, rule_id: int) -> ApprovalRule:
@@ -157,6 +189,8 @@ async def create_rule(
         action=payload.action,
         description=payload.description,
     )
+    await _lock_rule_activation(session)
+    await _reject_rule_conflicts(session, None, _snapshot(rule), operation="创建")
     session.add(rule)
     await session.flush()
     await write_audit(
@@ -203,7 +237,17 @@ async def sandbox(
     fired: int | None = None
     for rule in rules:
         matched, detail = rules_engine.evaluate_conditions(rule.conditions or [], ctx)
-        if matched and fired is None:
+        # ⚠️ **只有启用且已发布的规则才算"会被执行"**（第十批审查 ⑪，2026-10-13）。
+        #
+        # 实际提交走的是 `rules_engine.load_active_rules`：
+        # `enabled.is_(True) AND published_version_no > 0`。
+        # 这里原来只看"条件命中"，于是：一条**已停用**的高优先免审规则会让沙盒
+        # 显示"免审，无需人工审批"，而实际提交却进主管审批 —— 沙盒把人骗了。
+        #
+        # 停用/未发布的规则继续**展示条件试算**（沙盒的本来用途，含未发布的启用草稿），
+        # 只是不能当"已执行的规则"。
+        executable = bool(rule.enabled) and int(rule.published_version_no or 0) > 0
+        if matched and fired is None and executable:
             fired = rule.id
         results.append(
             {
@@ -214,19 +258,47 @@ async def sandbox(
                 "enabled": rule.enabled,
                 "published_version_no": rule.published_version_no,
                 "matched": matched,
+                "executable": executable,
                 "fired": fired == rule.id,
                 "effect": rules_engine.effect_summary(rule.kind, rule.action) if matched else None,
                 "conditions_detail": rules_engine._cond_detail_pretty(detail),
             }
         )
+    # ⚠️ **按权限脱敏**（第十批审查 ③，2026-10-13）。
+    #
+    # 这个返回里有 `gross_margin` / `min_item_margin`（由成本推出）与
+    # `total_amount`（售价）。只给 `quote:view`、没有 `price:manage` 的人
+    # 拿到这两个就能反推成本：实测售价 100、毛利率 80% → 成本 20。
+    # `conditions_detail` 里的 `actual` 同样是毛利率的实际值，一起擦。
+    #
+    # 报告点名的四类泄漏都要处理，只删一个字段没用；这里覆盖 ①②，
+    # ③（成本派生底价）在报价侧由 `quote.service.strip_comparison_cost` 管，
+    # ④（文字原因）见下面 `strip_cost_reason`。
+    # 用项目既有的判权限 API（），别自己去翻属性名
+    can_see_cost = user.has("price:manage")
+    safe_ctx = rules_engine.strip_cost_context(ctx, can_see_cost=can_see_cost)
+    safe_results = results
+    if not can_see_cost:
+        safe_results = [
+            {
+                **r,
+                "conditions_detail": [
+                    ({**row, "actual": None, "actual_label": "无权限查看"}
+                     if row.get("field") in rules_engine.COST_SENSITIVE_SET else row)
+                    for row in (r.get("conditions_detail") or [])
+                ],
+            }
+            for r in results
+        ]
     return ok(
         {
-            "context": ctx,
+            "context": safe_ctx,
             "context_fields": rules_engine.CONTEXT_FIELDS,
-            "rules": results,
+            "cost_fields_hidden": not can_see_cost,
+            "rules": safe_results,
             "fired_rule_id": fired,
             "fired_effect": next(
-                (r["effect"] for r in results if r["fired"]), None
+                (r["effect"] for r in safe_results if r["fired"]), None
             ),
         }
     )
@@ -241,15 +313,14 @@ async def update_rule(
     session: AsyncSession = Depends(get_db),
 ):
     """编辑草稿。改动**不立即生效**——引擎只按已发布版本求值，要生效请发布。"""
+    await _lock_rule_activation(session)
     rule = await _get_rule(session, rule_id)
     _validate_payload(payload)
+    changes = payload.model_dump(exclude={"enabled"})
+    await _reject_rule_conflicts(session, rule_id, changes, operation="保存")
     before = rules_engine.serialize_rule(rule)
-    rule.name = payload.name
-    rule.kind = payload.kind
-    rule.priority = payload.priority
-    rule.conditions = [c.model_dump() for c in payload.conditions]
-    rule.action = payload.action
-    rule.description = payload.description
+    for field, value in changes.items():
+        setattr(rule, field, value)
     await session.flush()
     await write_audit(
         session,
@@ -282,12 +353,21 @@ async def toggle_rule(
 
     未发布过的规则打开开关也**不会**生效——没有已发布版本就没有可求值的内容。
     """
+    await _lock_rule_activation(session)
     rule = await _get_rule(session, rule_id)
     if payload.enabled and rule.published_version_no == 0:
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED, "该规则从未发布过，请先发布再启用", 422
         )
     before = rule.enabled
+    if payload.enabled and not before:
+        version = (await session.execute(select(ApprovalRuleVersion).where(
+            ApprovalRuleVersion.rule_id == rule.id,
+            ApprovalRuleVersion.version_no == rule.published_version_no,
+        ))).scalar_one_or_none()
+        if version is None:
+            raise AppError(ErrorCode.STATUS_NOT_ALLOWED, '规则缺少发布版本，请先重新发布', 422)
+        await _reject_rule_conflicts(session, rule.id, version.payload)
     rule.enabled = payload.enabled
     await session.flush()
     await write_audit(
@@ -308,23 +388,50 @@ async def toggle_rule(
 async def publish_rule(
     rule_id: int,
     request: Request,
+    confirm: bool = False,
     user: CurrentUser = Depends(require_permission("settings:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """把当前草稿发布成新版本：生成不可变快照，引擎从此按这一版求值。"""
+    """把当前草稿发布成新版本：生成不可变快照，引擎从此按这一版求值。
+
+    ⚠️ **必须先确认**（审查 2026-10-10）：发布之后**后续所有提交的报价审批
+    都按新规则算**，会直接改变"哪些报价要审批、走哪一级"。
+    所以先让用户看清这一版规则的关键条件再发。
+    """
+    await _lock_rule_activation(session)
     rule = await _get_rule(session, rule_id)
-    rule.conditions = rule.conditions or []
     _validate_payload(
         RulePayload(
             name=rule.name,
             kind=rule.kind,
             priority=rule.priority,
             enabled=rule.enabled,
-            conditions=[RuleCondition(**c) for c in rule.conditions],
+            conditions=[RuleCondition(**c) for c in rule.conditions or []],
             action=rule.action or {},
             description=rule.description,
         )
     )
+    await _reject_rule_conflicts(session, rule.id, _snapshot(rule), operation="发布")
+    if not confirm:
+        from app.core.confirmation import confirmation_message
+
+        from app.modules.approval.rules_engine import describe_conditions
+
+        detail = "；".join(
+            [
+                f"规则「{rule.name}」（{rule.kind}，优先级 {rule.priority}、"
+                f"{'启用' if rule.enabled else '停用'}）",
+                "条件：" + (describe_conditions(rule.conditions or []) or "（无条件）"),
+                f"将发布为 V{rule.published_version_no + 1}，"
+                "**之后提交的报价审批按新规则计算**",
+                "已提交/已审批的历史报价不受影响",
+            ]
+        )
+        raise AppError(
+            ErrorCode.CONFIRM_REQUIRED,
+            confirmation_message(action="发布审批规则", detail=detail),
+            422,
+        )
     new_no = rule.published_version_no + 1
     session.add(
         ApprovalRuleVersion(
@@ -387,6 +494,7 @@ async def delete_rule(
     session: AsyncSession = Depends(get_db),
 ):
     """删除规则。审批单上的规则痕迹存的是名称快照，删规则不影响历史留痕。"""
+    await _lock_rule_activation(session)
     rule = await _get_rule(session, rule_id)
     before = rules_engine.serialize_rule(rule)
     # 先删子表再删父表：ORM 的单元OfWork不保证无关对象的删除顺序，

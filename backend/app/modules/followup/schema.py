@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from app.core.patch_schema import PatchModel
+from app.core.patch_schema import CreateModel, PatchModel
 
 
 ExemptionReason = Literal["customer_declined", "business_closed", "waiting_external"]
@@ -17,7 +17,7 @@ def validate_plan(next_action, planned_at, exemption_reason):
         raise ValueError("请填写下一动作和下次跟进时间，或选择免填原因")
 
 
-class FollowUpCreate(BaseModel):
+class FollowUpCreate(CreateModel):
     content: str = Field(min_length=1)
     followup_type: str = "电话"
     customer_id: int | None = None

@@ -176,6 +176,13 @@ class FakeUser:
         return True
 
 
+class CustomerCreateOnlyUser(FakeUser):
+    roles = []
+
+    def has(self, code: str) -> bool:
+        return code == "customer:create"
+
+
 def seed_basics(db: DB) -> None:
     db.raw.add(
         User(id=1, name="测试管理员", username="tester", password_hash="x", status="active")
@@ -286,6 +293,12 @@ def test_sku_int_columns_refuse_truncation():
     with pytest.raises(ValueError, match="不是合法整数"):
         sku_fields_from_row({"SKU编码": "SKU-1", "MOQ": "2.9"})
     assert sku_fields_from_row({"SKU编码": "SKU-1", "MOQ": "3"})["moq"] == 3
+    # 表头两种写法都收（2026-10-10 把模板/导出改成中文「起订量」）：
+    # 既有的旧表格写的是 `MOQ`，新模板写的是 `起订量`，读的时候都不能失败。
+    assert sku_fields_from_row({"SKU编码": "SKU-1", "起订量": "5"})["moq"] == 5
+    # 中文表头同样**不许截断**（2.9 抛错，不是悄悄变 2）
+    with pytest.raises(ValueError):
+        sku_fields_from_row({"SKU编码": "SKU-1", "起订量": "2.9"})
 
 
 def test_sku_numeric_columns_reject_nan_and_negative():
@@ -511,6 +524,27 @@ def test_customer_import_unknown_owner_fails_instead_of_taking_importer(db):
     assert db.scalars_all(select(Customer)) == []
     assert result["data"]["failed_count"] == 1
     assert "找不到登录名" in result["data"]["failed"][0]["reason"]
+
+
+def test_customer_import_owner_requires_assign_permission(db):
+    """负责人列不能成为绕过 customer:assign 的批量改派入口。"""
+    from app.modules.customer import io_router as customer_io_router
+
+    seed_basics(db)
+    with pytest.raises(AppError) as caught:
+        asyncio.run(
+            customer_io_router.import_customers(
+                request=FakeRequest(),
+                file=upload(CUSTOMER_HEADER + "越权客户,tester,2025-01-01\n"),
+                preview=False,
+                preview_token=None,
+                user=CustomerCreateOnlyUser(),
+                session=db.session,
+            )
+        )
+    assert caught.value.http_status == 403
+    assert "customer:assign" in caught.value.message
+    assert db.scalars_all(select(Customer)) == []
 
 
 def test_customer_import_marks_unknown_contact_time(db):
@@ -882,3 +916,36 @@ def test_import_refuses_when_target_row_changed_since_preview(db):
     assert "原数据已被改动" in caught.value.message
     # 关键：库里的 200 不能被 20 覆盖
     assert float(db.scalars_one(select(ProductCost)).purchase_cost) == 200.0
+
+
+@pytest.mark.parametrize("column", range(4))
+@pytest.mark.parametrize("value", ["0.00001", "1e-10000", "10000000000"])
+@pytest.mark.parametrize("preview", [False, True])
+def test_cost_import_rejects_unrepresentable_values(db, column, value, preview):
+    from app.modules.pricing import io_router as pricing_io
+
+    seed_basics(db)
+    fields = ["0", "0", "0", "0"]
+    fields[column] = value
+    csv_text = COST_HEADER + "SKU-1," + ",".join(fields) + ",CNY,2026-10-01,,精度回归\n"
+    result = asyncio.run(pricing_io.import_costs(
+        request=FakeRequest(), file=upload(csv_text), preview=preview,
+        preview_token=None, user=FakeUser(), session=db.session,
+    ))
+    assert result["data"]["failed_count"] == 1
+    assert "精度" in result["data"]["failed"][0]["reason"]
+    assert db.scalars_all(select(ProductCost)) == []
+
+
+@pytest.mark.parametrize("value", ["0", "0.0001", "1.23000", "9999999999.9999"])
+def test_cost_import_preserves_representable_values(db, value):
+    from app.modules.pricing import io_router as pricing_io
+
+    seed_basics(db)
+    csv_text = COST_HEADER + f"SKU-1,{value},,,,CNY,2026-10-01,,合法精度\n"
+    result = asyncio.run(pricing_io.import_costs(
+        request=FakeRequest(), file=upload(csv_text), preview=False,
+        preview_token=None, user=FakeUser(), session=db.session,
+    ))
+    assert result["data"]["created_count"] == 1
+    assert db.scalars_one(select(ProductCost)).purchase_cost == Decimal(value)

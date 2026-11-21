@@ -1,9 +1,11 @@
 import type { ReactNode } from 'react'
-import { createBrowserRouter, Navigate } from 'react-router-dom'
+import { createBrowserRouter, Navigate, useLocation } from 'react-router-dom'
 
 import AppLayout from './layout/AppLayout'
+import RoutePermissionGuard from './RoutePermissionGuard'
 import { lazyPage } from './lazyPage'
 import { useAuthStore } from '../shared/store/auth'
+import { loginUrl } from '../shared/safe-url'
 
 // ---------------------------------------------------------------------------
 // 页面按需加载（第九批 §9.11）
@@ -38,6 +40,7 @@ const WeComPage = lazyPage(() => import('../modules/wecom/WeComPage'))
 const ProductListPage = lazyPage(() => import('../modules/product/ProductListPage'))
 const ProductDetailPage = lazyPage(() => import('../modules/product/ProductDetailPage'))
 const RecycleBinPage = lazyPage(() => import('../modules/recycle/RecycleBinPage'))
+const PoolRecyclePage = lazyPage(() => import('../modules/recycle/PoolRecyclePage'))
 const PriceCenterPage = lazyPage(() => import('../modules/pricing/PriceCenterPage'))
 const PricingPage = lazyPage(() => import('../modules/pricing/PricingPage'))
 const LogisticsPage = lazyPage(() => import('../modules/logistics/LogisticsPage'))
@@ -49,8 +52,9 @@ const SettingsPage = lazyPage(() => import('../modules/settings/SettingsPage'))
 
 function RequireAuth({ children }: { children: ReactNode }) {
   const token = useAuthStore((state) => state.token)
+  const { pathname, search, hash } = useLocation()
   if (!token) {
-    return <Navigate to="/login" replace />
+    return <Navigate to={loginUrl(pathname + search + hash)} replace />
   }
   return <>{children}</>
 }
@@ -65,6 +69,16 @@ export const router = createBrowserRouter([
       </RequireAuth>
     ),
     children: [
+      {
+        // 权限守卫套在所有子路由外面（主人 2026-10-12 拍板：入口留着、点进来说原因）。
+        // 为什么是 pathless layout 而不是逐个包：逐个包迟早漏一个，
+        // 而漏掉的那个页面会渲染出来、接口全 403、用户只看到"系统坏了"。
+        //
+        // 守卫必须放在**路由树里**（不能用 `window.location` 判），
+        // 所以它是 element 而不是在 AppLayout 里判 —— AppLayout 里没有
+        // 与路由同步的 location。
+        element: <RoutePermissionGuard />,
+        children: [
       { index: true, element: <Navigate to="/workbench" replace /> },
       { path: 'workbench', element: <WorkbenchPage /> },
       { path: 'customers', element: <CustomerListPage /> },
@@ -107,6 +121,7 @@ export const router = createBrowserRouter([
       },
       { path: 'products/:id', element: <ProductDetailPage /> },
       { path: 'recycle-bin', element: <RecycleBinPage /> },
+      { path: 'pool-recycle', element: <PoolRecyclePage /> },
       {
         path: 'prices',
         element: <PriceCenterPage />,
@@ -131,6 +146,8 @@ export const router = createBrowserRouter([
       {
         path: 'settings',
         element: <SettingsPage />,
+      },
+        ],
       },
     ],
   },
