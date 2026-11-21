@@ -574,19 +574,22 @@ export default function AnalyticsPage() {
                 label: '报价接受率',
                 tone: 'success',
                 value: `${((quote?.accept_rate ?? 0) * 100).toFixed(0)}%`,
-                hint: `报价单 ${quote?.quote_count ?? 0} 张`,
+                // 接受率的分母是「已决」（成交 + 失单），不是全部报价张数 —— 副标题必须给对基数。
+                hint: `成交 ${quote?.accepted_count ?? 0} / 已决 ${Math.round((quote?.accepted_count ?? 0) / (quote?.accept_rate || 1))} 张`,
               },
               {
-                label: '平均让价幅度',
+                // 让价为负 = 整体报得比建议价还高，写成「-0.20%」像算错了 —— 按符号切「让价 / 加价」。
+                label: (quote?.average_discount ?? 0) >= 0 ? '平均让价幅度' : '平均加价幅度',
                 tone: 'warning',
-                value: `${((quote?.average_discount ?? 0) * 100).toFixed(2)}%`,
+                value: `${Math.abs((quote?.average_discount ?? 0) * 100).toFixed(2)}%`,
                 hint: `平均版本数 ${quote?.average_versions ?? 0}`,
               },
               {
                 label: '低价审批比例',
                 tone: 'warning',
-                value: `${((quote?.approval_rate ?? 0) * 100).toFixed(0)}%`,
-                hint: `需审批 ${quote?.approval_required_count ?? 0} 次`,
+                // 同页下方「低价审批率」按报价明细行算（3/44），这里统一，避免两个数打架。
+                value: `${((pricing?.low_price_approval_rate ?? 0) * 100).toFixed(0)}%`,
+                hint: `需审批 ${pricing?.approval_required_count ?? 0} 行 / 明细 ${pricing?.item_count ?? 0} 行`,
               },
 
               {

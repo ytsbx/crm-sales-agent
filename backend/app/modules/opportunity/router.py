@@ -334,9 +334,17 @@ async def funnel(
     user: CurrentUser = Depends(require_permission("opportunity:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    """销售漏斗：按阶段统计未成交商机的数量与金额。"""
+    """销售漏斗：按阶段统计未成交商机的数量与金额。
+
+    只返回未成交阶段（is_win=False）：这是"在谈"商机的存量分布，把「成交」档
+    也列出来永远是 0，看起来像"一单没成交"（2026-11-21 审查修）。
+    """
     stages = (
-        await session.execute(select(OpportunityStage).order_by(OpportunityStage.sequence.asc()))
+        await session.execute(
+            select(OpportunityStage)
+            .where(OpportunityStage.is_win.is_(False))
+            .order_by(OpportunityStage.sequence.asc())
+        )
     ).scalars().all()
     stmt = await svc.apply_data_scope(
         select(
