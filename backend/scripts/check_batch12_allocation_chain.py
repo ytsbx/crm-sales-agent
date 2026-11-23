@@ -86,6 +86,12 @@ async def main():
             async with SessionLocal() as s:
                 pid_box.append(await s.scalar(text('select pg_backend_pid()')));ready.set()
                 await svc.refresh_overdue_plans(s);await s.commit()
+        # 让第 2 期重新成为「需要刷新」的候选（未逾期但已到期），
+        # 否则 refresh 根本不会去锁订单，这段并发验证就落空了。
+        async with SessionLocal() as s:
+            plan=await s.get(ReceivablePlan,pids[1])
+            plan.status='pending';plan.due_date=today_business()-timedelta(days=1)
+            await s.commit()
         async with SessionLocal() as s:
             await svc.lock_order(s,order_id)
             worker=asyncio.create_task(refresh());await ready.wait();await wait_blocked(pid_box[0],worker)

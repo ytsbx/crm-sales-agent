@@ -278,7 +278,7 @@ async def main() -> int:
                 check_true("无成本 + 目标利润 → 不再 500", res.get("code") != 50001,
                            f"code={res.get('code')}")
                 check_true("无成本 + 目标利润 → 明说无法计算",
-                           any("没有生效成本" in w for w in ((res.get("data") or {}).get("warnings") or [])),
+                           any("生效成本" in w for w in ((res.get("data") or {}).get("warnings") or [])),
                            str(((res.get("data") or {}).get("warnings") or []))[:70])
 
         status, res = call("POST", "/pricing/calculate", admin,
@@ -300,7 +300,7 @@ async def main() -> int:
                    inp.get("profit_target_met") in (True, False),
                    f"met={inp.get('profit_target_met')}")
         check_true("不达标时明确说出来（不再静默忽略）",
-                   any("达不到要求的单件利润" in w for w in (d.get("warnings") or [])),
+                   any("达不到目标单件利润" in w for w in (d.get("warnings") or [])),
                    str((d.get("warnings") or []))[:80])
 
         print("\n=== #6 复制报价：最终商机必须先校验 ===")

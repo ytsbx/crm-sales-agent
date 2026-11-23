@@ -68,8 +68,9 @@ async def main():
         assert len({r['data']['id'] for _,r in results})==1
         draft=results[0][1]['data']; did=draft['id']; assert draft['status']=='draft' and draft['items'][0]['unit_price']==10
         req('POST','/order-drafts',{**body,'remark':'changed'},expected=409)
-        req('GET',f'/order-drafts/{did}',expected=403,token=salesman)
-        req('GET',f'/order-drafts/source?quote_version_id={vid}',expected=403,token=salesman)
+        # 越权读取按产品口径**隐藏存在性**（404），不是 403。
+        req('GET',f'/order-drafts/{did}',expected=404,token=salesman)
+        req('GET',f'/order-drafts/source?quote_version_id={vid}',expected=404,token=salesman)
         async with SessionLocal() as s:
             assert not (await s.execute(select(SalesOrder.id).where(SalesOrder.customer_id.in_(cids)))).scalars().all()
             assert not (await s.execute(select(ReceivablePlan.id).join(SalesOrder,SalesOrder.id==ReceivablePlan.order_id).where(SalesOrder.customer_id.in_(cids)))).scalars().all()

@@ -359,8 +359,9 @@ async def cancel_action(
     只有未执行、未拒绝、未失败的动作能取消 —— 已经落地的动作不能"取消"，
     那是业务回滚，得走各自的业务接口。
     """
-    action = await _get_action(session, action_id, user.id, for_update=True)
-    # 与确认、拒绝共享动作行锁，锁后重读，避免取消覆盖已执行结果。
+    # 归属校验不锁会话；与确认、拒绝共享的是下面的动作行锁。
+    action = await _get_action(session, action_id, user.id)
+    # 锁后重读，避免取消覆盖已执行结果。
     await session.refresh(action, with_for_update=True)
     before = runtime.require_action_not_expired(action)
     if before in ("executed", "rejected", "cancelled", "failed"):
@@ -550,7 +551,9 @@ async def confirm_action(
     action = await session.get(AgentAction, action_id)
     if action is None:
         raise AppError(ErrorCode.NOT_FOUND, "动作不存在", 404)
-    agent_session = await runtime.get_active_session(session, action.session_id, user.id, for_update=True)
+    # 归属校验不需要锁会话行：真正防并发双击的是 `execute_action` 里的动作行锁。
+    # 锁会话会把"拒绝正在校验归属"与"确认"串行化，反而拖住确认。
+    agent_session = await runtime.get_active_session(session, action.session_id, user.id)
     if agent_session.user_id != user.id:
         raise AppError(ErrorCode.FORBIDDEN, "只能确认自己的会话", 403)
     result = await runtime.execute_action(session, action=action, user=user)
@@ -568,8 +571,9 @@ async def reject_action(
     action = await session.get(AgentAction, action_id)
     if action is None:
         raise AppError(ErrorCode.NOT_FOUND, "动作不存在", 404)
-    await runtime.get_active_session(session, action.session_id, user.id, for_update=True)
-    # 确认与拒绝共享动作行锁；等待后重读，避免用旧状态覆盖已完成动作。
+    # 归属校验不锁会话；确认与拒绝共享的是下面这把**动作行锁**，
+    # 等待后重读，避免用旧状态覆盖已完成动作。
+    await runtime.get_active_session(session, action.session_id, user.id)
     await session.refresh(action, with_for_update=True)
     if runtime.require_action_not_expired(action) not in runtime.PENDING_ACTION_STATUSES:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该动作已经处理过了")

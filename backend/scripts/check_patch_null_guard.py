@@ -284,6 +284,9 @@ async def main():
         rule = api("POST", "/numbering-rules", {
             "code": MARKER, "name": f"{MARKER}规则",
             "prefix": "AB", "date_format": "%Y%m%d",
+            # 流水不按周期归零，日期格式才允许留空：
+            # 每日归零却没有日期部分会在不同天生成同一个号。
+            "reset_period": "none",
         })
         rule_id = rule["id"]
 

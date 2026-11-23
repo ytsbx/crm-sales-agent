@@ -619,6 +619,14 @@ async def check_receivable_due_reminder() -> None:
                            status="paid", created_at=datetime.now(UTC)),
         ])
 
+        # 其它「提前 N 天」的应收规则会先生成提醒，而扫描按订单去重，
+        # 于是本规则永远轮不到。测「今天」边界前先把它们停用，收尾再恢复。
+        other_rules = list((await session.execute(select(TaskRule).where(
+            TaskRule.trigger_type == "receivable_due", TaskRule.status == "active",
+        ))).scalars())
+        other_rule_ids = [row.id for row in other_rules]
+        for row in other_rules:
+            row.status = "inactive"
         rule = TaskRule(code=f"{PREFIX}_due0", name=f"{PREFIX}到期当天提醒",
                         trigger_type="receivable_due", trigger_config={"days": 0},
                         action_config={"title": f"{PREFIX}应收到期"}, status="active")
@@ -672,6 +680,11 @@ async def check_receivable_due_reminder() -> None:
                 check(f"到期日相同但{label} → 不该生成催收", hit, 0)
         finally:
             order_ids = f"{order.id}, {cancelled_order.id}, {settled_order.id}"
+            if other_rule_ids:
+                await session.execute(text(
+                    "update task_rules set status='active' where id in ("
+                    + ",".join(str(int(i)) for i in other_rule_ids) + ")"
+                ))
             for sql in (
                 f"delete from tasks where source_rule_id = {rule.id}",
                 f"delete from task_rules where id = {rule.id}",

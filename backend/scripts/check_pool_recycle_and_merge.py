@@ -112,7 +112,7 @@ async def cleanup() -> None:
             "delete from audit_logs where business_type in "
             "('public_pool_candidate','public_pool_rule','customer_duplicate_case') "
             "and after_data::text like :m",
-            "delete from public_pool_rules where level like :r",
+            "delete from public_pool_rules where level like :r or remark like :m",
             "delete from customers where name like :p",
             "delete from leads where name like :p",
             "delete from user_roles where user_id in (select id from users where username like :u)",
@@ -381,7 +381,7 @@ async def main() -> int:
             Task(title=f"{PREFIX}已完成待办{stamp}", customer_id=dup_existing.id,
                  owner_id=a_id, status="done"),
         ])
-        rule = PublicPoolRule(level="Z", days=60, enabled=True)
+        rule = PublicPoolRule(level="Z", days=60, enabled=True, remark=f"{PREFIX}套件回收规则")
         s.add(rule)
         await s.flush()
         await s.commit()

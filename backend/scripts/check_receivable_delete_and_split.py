@@ -219,7 +219,7 @@ def main() -> int:
     check("删除成功", res.get("code"), 0)
     check("应收少了一条", len(receivables(admin, order_id)), before - 1)
 
-    print("\n=== 5. 三期以上：先生成、再用 PATCH 补名称/到期日（后端零改动）===")
+    print("\n=== 5. 三期以上：整份计划一次提交（名称/到期日逐期给全）===")
     # 清场：先删回款、再删节点（顺序反了会被"已有回款记录"挡住 —— 那正是第 3 条的判据）
     mid = db(f"select id from payment_records where order_id={order_id} limit 1")
     if mid and not str(mid).startswith("SQLERR"):
@@ -235,28 +235,33 @@ def main() -> int:
         {
             "ratios": [0.2, 0.3, 0.5],
             "first_due_date": str(today),
-            "first_name": "首款",
-            "second_name": "二期款",
+            # 三期及以上必须逐期给全到期日（后端已支持整份计划）。
+            "due_dates": [
+                str(today),
+                str(today + timedelta(days=60)),
+                str(today + timedelta(days=120)),
+            ],
+            "names": ["首款", "二期款", "验收款"],
         },
     )
     check("三期生成成功", res.get("code"), 0)
     rows = receivables(admin, order_id)
     check("三期", len(rows), 3)
     check_true(
-        "第 3 期自动命名（后端只有两个名称槽位）",
-        rows[2]["plan_name"].startswith("第 3"),
+        "第 3 期名称按提交值落库",
+        rows[2]["plan_name"] == "验收款",
         rows[2]["plan_name"],
     )
     check_true(
-        "第 3 期到期日回落到第一期（现状的局限，所以前端要补）",
-        str(rows[2]["due_date"]) == str(rows[0]["due_date"]),
-        f"{rows[2]['due_date']} vs {rows[0]['due_date']}",
+        "第 3 期到期日按提交值落库",
+        str(rows[2]["due_date"]) == str(today + timedelta(days=120)),
+        rows[2]["due_date"],
     )
     third = rows[2]
-    new_due = str(today + timedelta(days=120))
+    new_due = str(today + timedelta(days=150))
     status, res = call("PATCH", f"/receivables/{third['id']}", admin,
                        {"plan_name": "验收款", "due_date": new_due})
-    check("PATCH 补名称/日期成功", res.get("code"), 0)
+    check("PATCH 改名称/日期成功", res.get("code"), 0)
     rows = receivables(admin, order_id)
     fixed = [r for r in rows if r["id"] == third["id"]][0]
     check_true(

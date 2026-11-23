@@ -49,6 +49,8 @@ async def fixture(user, tag):
         s.add_all([order, tpl, scan]); await s.flush()
         doc = ContractDocument(doc_no=tag, doc_type="contract", title=tag, customer_id=c.id,
                                order_id=order.id, template_id=tpl.id, content_snapshot="正文",
+                               # 私人草稿只看创建人；本套件用当前用户扮演创建/签署人。
+                               created_by=user.id,
                                status="draft", created_at=datetime.now(UTC))
         s.add(doc); await s.commit()
         return order.id, doc.id, scan.id

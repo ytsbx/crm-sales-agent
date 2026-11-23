@@ -130,8 +130,9 @@ async def main():
             await session.commit()
             file_ids.append(record.id)
             sign_file_id = record.id
+        # 合同是 admin 建的：私人草稿只对创建人开放，签署也用创建人身份。
         api("POST", f"/contract-documents/{doc['id']}/sign",
-            body={"file_id": sign_file_id}, token=zhangsan)
+            body={"file_id": sign_file_id}, token=admin)
         return doc
 
     def find_task(doc_id: int) -> dict | None:

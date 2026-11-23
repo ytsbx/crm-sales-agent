@@ -212,7 +212,7 @@ async def main():
     print('=== 3. 规则 CRUD / 发布 / 版本 ===')
     status, res = call('POST', '/approval-rules', token=admin, body={
         'name': f'CHK{RUN}测试规则', 'kind': 'auto_pass', 'priority': 99,
-        'conditions': [{'field': 'gross_margin', 'op': 'gte', 'value': 10}],
+        'conditions': [{'field': 'gross_margin', 'op': 'gte', 'value': 30}, {'field': 'customer_has_overdue', 'op': 'eq', 'value': True}],
         'description': '回归测试用'})
     check('建草稿', res.get('code'), 0)
     rule_id = res['data']['id']
@@ -225,7 +225,7 @@ async def main():
     check('发布 V1', res['data']['published_version_no'], 1)
     status, res = call('PATCH', f'/approval-rules/{rule_id}', token=admin, body={
         'name': f'CHK{RUN}测试规则', 'kind': 'auto_pass', 'priority': 98,
-        'conditions': [{'field': 'gross_margin', 'op': 'gte', 'value': 20}]})
+        'conditions': [{'field': 'gross_margin', 'op': 'gte', 'value': 35}, {'field': 'customer_has_overdue', 'op': 'eq', 'value': True}]})
     check_true('改草稿后标记有变更', res['data']['has_draft_changes'] is True, '')
     status, res = call('POST', f'/approval-rules/{rule_id}/publish?confirm=true', token=admin)
     check('发布 V2', res['data']['published_version_no'], 2)
@@ -330,7 +330,7 @@ async def main():
     print('=== 5. 沙盒试算（单 B：低毛利）===')
     version_b = quote_b['version_id']
     check_true('单 B 有版本', version_b is not None, str(quote_b)[:100])
-    status, res = call('POST', '/approval-rules/sandbox', token=admin,
+    status, res = call('POST', '/approval-rules/sandbox', token=zhangsan,
                        body={'quote_version_id': version_b})
     check('沙盒可跑', res.get('code'), 0)
     sandbox_b = res['data']

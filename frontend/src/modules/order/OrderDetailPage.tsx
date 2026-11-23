@@ -1778,17 +1778,22 @@ export default function OrderDetailPage() {
                       // 原样拼出来就是「周转箱03-1 实发 1200；周转箱03-1 实发 1800」，
                       // 而列宽只有 232，后半截被截成省略号（2026-11-20 截图）。
                       // 同 SKU 先合并再加总，一行说完。
-                      const bySku = new Map<string, number>()
+                      // 合并按「千分之一」整数加：先 Number() 会把 9999999999999.999
+                      // 变成 9999999999999.998，大数量下末位就漂了。
+                      const bySku = new Map<string, bigint>()
                       record.items.forEach((item) => {
                         const qty = shipped
                           ? item.shipped_qty_exact ?? item.shipped_qty
                           : item.planned_qty_exact ?? item.planned_qty
                         const key = item.sku ?? String(item.order_item_id)
-                        bySku.set(key, (bySku.get(key) ?? 0) + Number(qty ?? 0))
+                        bySku.set(key, (bySku.get(key) ?? 0n) + shipmentQuantityUnits(String(qty ?? 0)))
                       })
                       const tag = shipped ? '实发' : '计划'
                       const text = [...bySku]
-                        .map(([sku, qty]) => `${sku} ${tag} ${shipmentQuantity(qty)}`)
+                        .map(([sku, units]) => {
+                          const qty = `${units / 1000n}.${String(units % 1000n).padStart(3, '0')}`
+                          return `${sku} ${tag} ${shipmentQuantity(qty)}`
+                        })
                         .join('；')
                       return text ? <span title={text}>{text}</span> : '-'
                     },

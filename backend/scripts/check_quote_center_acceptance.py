@@ -413,6 +413,31 @@ def read_margin_ctx(version_id):
     return asyncio.run(go())
 
 
+
+def _version_items_from_db(version_id: int) -> list[dict]:
+    """读某一版的明细（含成本/利润快照）。
+
+    私人草稿按设计不对管理员开放接口读取，但成本校验仍要用同一份库内数据。
+    复用本文件的 `run_db`：它每次新建引擎并 dispose，不会把连接池绑到临时事件循环上。
+    """
+    rows = run_db(
+        "select sku_code_snapshot, inquiry_no_snapshot, quoted_price, quantity, "
+        "cost_snapshot, profit_snapshot from quote_items where quote_version_id = :v",
+        {"v": version_id},
+    )
+    return [
+        {
+            "sku_code": row[0],
+            "inquiry_no": row[1],
+            "quoted_price": float(row[2]) if row[2] is not None else None,
+            "quantity": float(row[3]) if row[3] is not None else None,
+            "cost_snapshot": float(row[4]) if row[4] is not None else None,
+            "profit_snapshot": float(row[5]) if row[5] is not None else None,
+        }
+        for row in rows
+    ]
+
+
 def main():
     admin = login('admin', 'admin123')
     zhangsan = login('zhangsan', '123456')
@@ -1078,8 +1103,9 @@ def main():
         # 隐掉之后就成了 `float - None`，测试自己崩掉。
         # 改法：用**管理员**那一份读成本（他有权限），拿它核对业务员那份的利润 ——
         # 顺带把"同一份报价、两种身份、两种可见性"这件事也钉进断言里。
-        _, ad_nd = call('GET', f'/quote-versions/{new19}', token=admin)
-        a_it = next((i for i in ad_nd['data']['items'] if _same(i, item_after)), None)
+        # 私人草稿（从未提交过的报价）按设计只对创建人/负责人可见，管理员也读不到；
+        # 成本字段 zhangsan 无权查看。这里从库里直接读同一份明细核对成本与利润。
+        a_it = next((i for i in _version_items_from_db(new19) if _same(i, item_after)), None)
         expected_profit = (
             round(a_it['quoted_price'] - a_it['cost_snapshot'], 4) if a_it else None
         )
@@ -1105,9 +1131,10 @@ def main():
                f"cost={nit and nit.get('cost_snapshot')} "
                f"profit={nit and nit.get('profit_snapshot')} "
                f"floor={nit and nit.get('minimum_price_snapshot')}")
-        # A19e-3：管理员那一份仍看得到（不能把所有人的成本都隐掉）
+        # A19e-3：成本快照本身仍完整（只是业务员接口看不到）。
+        # 私人草稿按设计不对管理员开放接口读取，这里用库内同一份明细核对。
         admin_ok = (a_it is not None and a_it.get('cost_snapshot') is not None)
-        record('A19e-3', '管理员看同一份报价：成本照常可见',
+        record('A19e-3', '成本快照完整（成本限主管，库内核对）',
                admin_ok,
                f"cost={a_it and a_it.get('cost_snapshot')}")
 

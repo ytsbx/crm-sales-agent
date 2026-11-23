@@ -210,12 +210,9 @@ async def main():
             old_root = await s.get(CustomInquiry, original['id'])
             old_root.opportunity_id = None
             await s.commit()
-        legacy_quote = request('POST', f"/custom-inquiries/{revised['id']}/create-quote",
-                               {'unit_cost': 10, 'quoted_price': 20})
-        qids.append(legacy_quote['quote_id']); vids.append(legacy_quote['version_id'])
-        assert legacy_quote['opportunity_id'] == oid
-        assert all(row['opportunity_id'] == oid for row in request(
-            'GET', f"/custom-inquiries/{original['id']}/history"))
+        # 同一条需求现在只允许挂一张报价：再次创建返回 409，调整请走报价版本。
+        request('POST', f"/custom-inquiries/{revised['id']}/create-quote",
+                {'unit_cost': 10, 'quoted_price': 20}, expected=409)
 
         # 旧需求先修订再报价，自动建商机只能建一次并写到整条修订链。
         root = request('POST', '/custom-inquiries', {'title': marker+'-auto', 'customer_id': cids[0]})
@@ -225,12 +222,14 @@ async def main():
         result = await asyncio.gather(*(asyncio.to_thread(call, 'POST',
             f"/custom-inquiries/{latest['id']}/create-quote", token=admin,
             body={'unit_cost': 10, 'quoted_price': 20}) for _ in range(2)))
-        for status, response in result:
-            assert status == 200, response
-            qids.append(response['data']['quote_id']); vids.append(response['data']['version_id'])
-        auto_oids = {response['data']['opportunity_id'] for _, response in result}
+        # 一条需求只允许挂一张报价：并发的第二次提交明确返回 409（不是静默再建一张）。
+        statuses = sorted(status for status, _ in result)
+        assert statuses == [200, 409], result
+        assert next(response for status, response in result if status == 409)['code'] == 40903
+        success = next(response for status, response in result if status == 200)
+        qids.append(success['data']['quote_id']); vids.append(success['data']['version_id'])
+        auto_oids = {success['data']['opportunity_id']}
         oids.extend(auto_oids)
-        assert len(auto_oids) == 1
         history = request('GET', f"/custom-inquiries/{root['id']}/history")
         assert all(row['opportunity_id'] in auto_oids for row in history)
         print('OK 商机需求链、修订链复用、客户/商机范围校验、报价草稿及文件不推进、正式发送推进、重试/并发/不回退、打样/订单关联与筛选')
@@ -260,8 +259,14 @@ async def main():
                     (QuoteSendLog, QuoteSendLog.quote_version_id.in_(vids)),
                     (QuoteVersion, QuoteVersion.quote_id.in_(qids)), (Quote, Quote.id.in_(qids)),
                     (CustomInquiry, CustomInquiry.id.in_(inquiries)),
-                    (OpportunityStageHistory, OpportunityStageHistory.opportunity_id.in_(oids)),
-                    (Opportunity, Opportunity.id.in_(oids)), (Customer, Customer.id.in_(cids)),
+                    (OpportunityStageHistory, OpportunityStageHistory.opportunity_id.in_(
+                        select(Opportunity.id).where(Opportunity.customer_id.in_(cids))
+                    )),
+                    (Opportunity, Opportunity.id.in_(oids)),
+                    # 自动建商机的并发路径历史上可能留下未登记进 oids 的孤儿，
+                    # 按客户兜底删干净再删客户，否则收尾会撞外键。
+                    (Opportunity, Opportunity.customer_id.in_(cids)),
+                    (Customer, Customer.id.in_(cids)),
                 ):
                     await s.execute(delete(model).where(condition))
                 await s.commit()

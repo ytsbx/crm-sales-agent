@@ -853,8 +853,11 @@ async def collect_transfer_scope(
             }
         )
 
+    # 订单草稿本身就是 status='draft'（`private_draft(OrderDraft)` 对它恒为真）。
+    # 之前套了 `~private_draft(...)`，等于把所有草稿都排除在交接之外：
+    # 预览里没有、执行也不迁，离职人的草稿连同生成文件成了没人能接的孤儿。
     for draft in (
-        await session.execute(select(OrderDraft).where(OrderDraft.owner_id == handover.id, ~private_draft(OrderDraft)))
+        await session.execute(select(OrderDraft).where(OrderDraft.owner_id == handover.id))
     ).scalars().all():
         scope["order_draft"].append(
             {

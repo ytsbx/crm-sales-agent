@@ -97,6 +97,7 @@ async def main():
     with patch.object(httpx, 'AsyncClient', forbidden_http):
         try:
             admin = login('admin', 'admin123')
+            zhangsan = login('zhangsan', '123456')
             finance = login('wangwu', '123456')
             async with SessionLocal() as s:
                 users = {u.username: u for u in (await s.execute(select(User))).scalars()}
@@ -198,8 +199,10 @@ async def main():
             created = request('POST', f'/quotes/{qid}/versions?confirm=true')
             vids.append(created['id'])
             draft = await snapshot(qid)
-            request('POST', f'/quote-versions/{vid}/accept')
-            request('POST', f'/quote-versions/{vid}/mark-sent', body)
+            # 建了新版后这张报价退回草稿，且它从未正式提交过 → 属于私人草稿，
+            # 只有作者/负责人能操作；夹具负责人是 zhangsan。
+            request('POST', f'/quote-versions/{vid}/accept', token=zhangsan)
+            request('POST', f'/quote-versions/{vid}/mark-sent', body, token=zhangsan)
             assert await snapshot(qid) == draft
 
             qid, vid, _, _ = facts['decline']

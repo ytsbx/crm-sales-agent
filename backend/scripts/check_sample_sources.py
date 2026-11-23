@@ -68,7 +68,8 @@ async def main():
         source = request('GET', f'/samples/source?quote_version_id={vid}')
         assert source['items'][0]['original_quantity'] == '10000.000' and not source['source']['is_historical']
         assert 'quoted_price' not in source['items'][0] and source['customer_id'] == cids[0]
-        request('GET', f'/samples/source?quote_version_id={vid}', token=salesman, expected=403)
+        # 越权读取按产品口径**隐藏存在性**（404），不是 403。
+        request('GET', f'/samples/source?quote_version_id={vid}', token=salesman, expected=404)
         request('GET', '/samples/source', expected=422)
         request('GET', f'/samples/source?quote_version_id={vid}&inquiry_id={iid}', expected=422)
         body={'quote_version_id':vid, 'request_key':str(uuid4()), 'items':[{'source_item_id':itemid}]}

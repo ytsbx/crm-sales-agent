@@ -158,8 +158,10 @@ async def clean(verbose=False):
         ('用例案例', f"delete from sales_cases where title like '%CHK{RUN}%'"),
         ('用例定制询价', f"delete from custom_inquiries where title like '%CHK{RUN}%'"),
         ('用例新品洞察', f"delete from product_insights where title like '%CHK{RUN}%'"),
-        # 合同台账（场景14）：附件→文档→模板，顺序服从外键
+        # 合同台账（场景14）：附件/OA 实例→文档→模板，顺序服从外键
         ('用例合同附件', f"delete from business_files where business_type='contract' and business_id in "
+                         f"(select id from contract_documents where customer_id in (select id from customers where name like 'CHK{RUN}%'))"),
+        ('用例合同 OA 实例', f"delete from oa_instances where inquiry_id in "
                          f"(select id from contract_documents where customer_id in (select id from customers where name like 'CHK{RUN}%'))"),
         ('用例合同文档', f"delete from contract_documents where customer_id in (select id from customers where name like 'CHK{RUN}%')"),
         ('用例合同模板', f"delete from contract_templates where name like 'CHK{RUN}%'"),
@@ -220,6 +222,7 @@ async def clean(verbose=False):
         await s.commit()
 
 
+ORIGINAL_FILE_ID = None
 SIGN_FILE_ID = None
 
 
@@ -617,34 +620,37 @@ async def main():
 
     print()
     print('=== 11. 合同模板与台账（§3.6/场景14）===')
-    status, res = call('POST', '/contract-templates', token=admin, body={
-        'doc_type': 'contract', 'name': f'CHK{RUN}标准销售合同',
-        'body': '客户 {{customer.name}}，付款方式 {{extra.付款方式}}，签约日 {{today}}。',
-    })
-    check('建模板', res.get('code'), 0)
-    template_id = res['data']['id']
-    status, res = call('POST', '/contract-templates', token=admin, body={
-        'doc_type': 'contract', 'name': f'CHK{RUN}标准销售合同', 'body': '第二版 {{customer.name}}',
-    })
-    check('同名模板=新版本', res['data']['version'], 2)
-    tpls = call('GET', '/contract-templates', token=admin)[1]['data']
-    check('旧版本仍存在',
-          sum(1 for t in tpls if t['name'] == f'CHK{RUN}标准销售合同'), 2)
-
+    # 合同模板生成已退役：现在只接受经办人上传的 Word/PDF 原文件。
+    # 用 ORIGINAL_FILE_ID（admin 上传的 PDF 记录）作为原文件走现在的建单入口。
     status, res = call('POST', '/contract-documents', token=admin, body={
-        'template_id': template_id, 'customer_id': customer_id,
+        'source_type': 'customer_drafted',
+        'original_file_id': ORIGINAL_FILE_ID,
+        'contract_origin': 'customer',
+        'title': f'CHK{RUN}标准销售合同',
+        'customer_id': customer_id,
         # 登记签署要求有正式依据（业务口径 2026-10-05）：条款可以先备，
         # 但签署前必须挂上正式订单或已发送/已接受的报价。这份下面要签，所以现在就绑上订单。
         'order_id': order_id,
-        'extra_fields': {'付款方式': '月结30天'},
     })
     check('生成合同草稿', res.get('code'), 0)
     doc_id, doc_no = res['data']['id'], res['data']['doc_no']
     check_true('编号 CT 前缀', doc_no.startswith('CT'), doc_no)
-    check_true('客户名已填入', f'CHK{RUN}' in res['data']['content_snapshot'],
-               res['data']['content_snapshot'][:60])
-    check_true('空白项已填入', '月结30天' in res['data']['content_snapshot'], '')
     check('草稿状态', res['data']['status'], 'draft')
+
+    # 上传原件的合同必须先经同序 OA 审批通过才能回签归档；
+    # 这里直接造一条已通过的 OA 实例，避免套件依赖真实 OA。
+    from datetime import UTC, datetime
+
+    from app.core.database import SessionLocal
+    from app.modules.dingtalk.model import OaInstance
+
+    async with SessionLocal() as s:
+        s.add(OaInstance(
+            inquiry_id=doc_id, inquiry_version=1, oa_type='contract',
+            idempotency_key=f'CHK{RUN}-contract-{doc_id}', status='approved',
+            created_at=datetime.now(UTC),
+        ))
+        await s.commit()
 
     status, res = call('POST', f'/contract-documents/{doc_id}/sign', token=admin,
                        body={'file_id': SIGN_FILE_ID, 'note': '线下签'})
@@ -1329,7 +1335,7 @@ async def main():
 
 if __name__ == '__main__':
     async def _driver():
-        global SIGN_FILE_ID
+        global ORIGINAL_FILE_ID, SIGN_FILE_ID
         print('=== 清库（跑前）===')
         await clean(verbose=True)
         print()
@@ -1337,15 +1343,27 @@ if __name__ == '__main__':
         # 这里只关心 sign 端点与附件挂载的链路）
         from app.core.database import SessionLocal
         from app.modules.file.model import FileRecord
+        from app.modules.file.storage import absolute_path
 
+        # 合同原文件现在必须真实可读（模板生成退役后走上传原件），
+        # 且签署件不能复用原稿：这里造"原稿"和"双方签好的扫描件"两条真实文件。
+        content = b'%PDF' + b'x' * 1230
         async with SessionLocal() as s:
-            record = FileRecord(
-                object_key=f'chk/{RUN}/signed.pdf', file_name='signed.pdf',
-                mime_type='application/pdf', size=1234, uploaded_by=1,
-            )
-            s.add(record)
+            ids = []
+            for name in ('original.pdf', 'signed.pdf'):
+                object_key = f'chk/{RUN}/{name}'
+                target = absolute_path(object_key)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(content)
+                record = FileRecord(
+                    object_key=object_key, file_name=name,
+                    mime_type='application/pdf', size=len(content), uploaded_by=1,
+                )
+                s.add(record)
+                await s.flush()
+                ids.append(record.id)
             await s.commit()
-            SIGN_FILE_ID = record.id
+            ORIGINAL_FILE_ID, SIGN_FILE_ID = ids
         print()
         try:
             await main()

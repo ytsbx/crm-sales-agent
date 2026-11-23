@@ -138,6 +138,7 @@ const server=createServer(async (req,res)=>{
     else if(path==='/api/v1/customers' && req.method==='POST') {customerOwnerWrites.push({path,body});data={id:151,...body}}
     else if(path==='/api/v1/customers') data={items:[publicCustomer],total:1}
     else if(path==='/api/v1/payments' && req.method==='POST') {financialPayments.push(body);data=exactPayment}
+    else if(path==='/api/v1/orders/994/shipments') data={items:[],batches:[],summary:{ordered:1000,planned:0,shipped:0,remaining:1000,all_shipped:false,ordered_exact:'1000.000',planned_exact:'0.000',shipped_exact:'0.000',remaining_exact:'1000.000',unplanned_exact:'1000.000'}}
     else if(path==='/api/v1/orders/994') data={...exactOrder,id:994,order_no:'FOUR-DECIMAL-994',total_amount:33333.3,total_amount_exact:'33333.30',received_amount:0,received_amount_exact:'0.00',unreceived_amount:33333.3,unreceived_amount_exact:'33333.30'}
     else if(path==='/api/v1/orders/994/items') data=[{id:995,order_id:994,sku_id:1,sku_code:'FOUR-DECIMAL-ITEM',quantity:1000,unit_price:33.3333,unit_price_exact:'33.3333',amount:33333.3,amount_exact:'33333.30'}]
     else if(path==='/api/v1/orders/991/finance-summary') data=financeSummaryFixture
@@ -584,14 +585,20 @@ try {
   const syncMenuButton=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim().startsWith('更新企微数据') && !b.disabled)`
   const chooseWecomSync=async label=>{
     const before=wecomRequests.length
-    await waitFor(syncMenuButton)
-    await evaluate(`${syncMenuButton}.click()`)
     const option=`Array.from(document.querySelectorAll('.semi-dropdown-item > div > div:first-child')).find(el=>el.innerText.trim()===${JSON.stringify(label)})`
-    await waitFor(option)
-    assert.equal(wecomRequests.length,before,'opening the sync menu must not submit')
-    await evaluate(`${option}.click()`)
-    for(let i=0;wecomRequests.length===before && i<30;i++)await sleep(100)
-    assert.equal(wecomRequests.length,before+1)
+    // 失败任务刷新会让页面重渲染，下拉菜单可能刚展开就被关掉。
+    // 每次重新打开再找，点不到就再来一轮，最多三轮。
+    for(let attempt=0;attempt<3;attempt++) {
+      await waitFor(syncMenuButton)
+      await evaluate(`${syncMenuButton}.click()`)
+      try { await waitFor(option) } catch { continue }
+      assert.equal(wecomRequests.length,before,'opening the sync menu must not submit')
+      const clicked=await evaluate(`(()=>{const el=${option};if(!el)return false;el.click();return true})()`)
+      if(!clicked) continue
+      for(let i=0;wecomRequests.length===before && i<30;i++)await sleep(100)
+      if(wecomRequests.length===before+1) return
+    }
+    throw Error('企微同步菜单没有提交：'+label)
   }
   for(const [label,endpoint] of [
     ['同步部门','sync-departments'],['同步成员','sync-users'],
@@ -791,6 +798,9 @@ try {
     await waitFor(`!${popup}`)
     console.log(`BROWSER_SETTINGS_BATCH_${decision}_CANCEL_NO_WRITE_CONFIRM_EXACT_IDS=true`)
   }
+  // 回收决策已搬到「客户中心 › 回收复核」，扫描按钮仍留在系统设置的规则页。
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/settings?tab=rules&section=pool`})
+  await waitFor(`Array.from(document.querySelectorAll('button')).some(b=>b.innerText.trim()==='扫描并生成回收预告')`)
   for(const [label,title,path] of [
     ['扫描并生成回收预告','确认扫描并生成回收预告','/api/v1/public-pool/run-recycle'],
     ['立即扫描','确认立即扫描自动待办','/api/v1/tasks/run-auto-rules'],
@@ -891,7 +901,7 @@ try {
   console.log('BROWSER_QUOTE_COST_HINT_CANCEL_NO_WRITE_EXPLICIT_REFRESH=true')
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/products/201`})
   await waitFor(`document.body.innerText.includes('成本未维护')`)
-  await evaluate(`Array.from(document.querySelectorAll('a')).find(a=>a.innerText.trim()==='维护成本').click()`)
+  await evaluate(`Array.from(document.querySelectorAll('a')).find(a=>a.innerText.trim()==='去维护').click()`)
   await waitFor(`location.pathname==='/prices' && document.body.innerText.includes('新增成本')`)
   assert.equal(await evaluate('location.search'),'?tab=costs&sku_id=1')
   assert.ok(costPageRequests.length>0,'cost shortcut loads the exact SKU costs')
@@ -999,9 +1009,9 @@ try {
   console.log('BROWSER_ORDER_RECEIVABLE_PAYMENT_PRESERVE_EXACT_CENTS=true')
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/orders/991`})
   await waitFor(`Array.from(document.querySelectorAll('[role="tab"]')).some(el=>el.innerText.includes('应收计划'))`)
-  await waitFor(`Array.from(document.querySelectorAll('.kpi-label')).some(el=>el.innerText==='已到账待分配')`)
+  await waitFor(`Array.from(document.querySelectorAll('.kpi-label')).some(el=>el.innerText.trim().startsWith('已到账待分配'))`)
   for(const label of ['已分配到应收期','已到账待分配','待确认回款']) {
-    await waitFor(`Array.from(document.querySelectorAll('.kpi-card')).find(el=>el.querySelector('.kpi-label')?.innerText===${JSON.stringify(label)})?.querySelector('.kpi-value')?.innerText==='¥99,999,999,999,999.99'`)
+    await waitFor(`Array.from(document.querySelectorAll('.kpi-card')).find(el=>el.querySelector('.kpi-label')?.innerText.trim().startsWith(${JSON.stringify(label)}))?.querySelector('.kpi-value')?.innerText==='¥99,999,999,999,999.99'`)
   }
   console.log('BROWSER_ORDER_FINANCE_SUMMARY_EXACT_CENTS=true')
   await evaluate(`Array.from(document.querySelectorAll('[role="tab"]')).find(el=>el.innerText.includes('应收计划')).click()`)
@@ -1050,7 +1060,7 @@ try {
   await waitFor(`Array.from(document.querySelectorAll('button')).some(el=>el.innerText.trim()==='转销售订单')`)
   await evaluate(`Array.from(document.querySelectorAll('button')).find(el=>el.innerText.trim()==='转销售订单').click()`)
   await waitFor(`document.querySelector('.semi-modal-content')?.innerText.includes('99,999,999,999,999.99')`)
-  await evaluate(`Array.from(document.querySelectorAll('label,[role="radio"]')).find(el=>el.innerText.includes('分期（拆成多期')).click()`)
+  await evaluate(`Array.from(document.querySelectorAll('label,[role="radio"]')).find(el=>el.innerText.includes('分期收款')).click()`)
   await waitFor(`document.querySelector('.semi-modal-content')?.innerText.includes('30,000,000,000,000.00')`)
   assert.ok(await evaluate(`document.querySelector('.semi-modal-content').innerText.includes('69,999,999,999,999.99')`))
   console.log('BROWSER_QUOTE_CONVERT_PICKER_USES_EXACT_TOTAL_AND_INSTALLMENTS=true')
@@ -1068,26 +1078,56 @@ try {
 
 
   analyticsExact=true
-  await send('Page.navigate',{url:`http://127.0.0.1:${port}/analytics`})
+  // 「每月签单、发货与回款」在「明细报表 › 月度业绩」里；经营概览默认不渲染这张表。
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/analytics?view=reports&report=basis`})
   const annualExactRow=`Array.from(document.querySelectorAll('tr')).find(r=>r.innerText.startsWith('${analyticsFixture.period.slice(5)}\t'))`
   await waitFor(`${annualExactRow}?.innerText.includes('¥199,999,999,999,999')`)
-  await waitFor(`Array.from(document.querySelectorAll('tr')).filter(r=>r.innerText.includes('隔离整元精度')).length>=2`)
-  const performanceRows=await evaluate(`Array.from(document.querySelectorAll('tr')).filter(r=>r.innerText.includes('隔离整元精度')).map(r=>r.innerText)`)
-  assert.ok(performanceRows.every(text=>text.includes('¥199,999,999,999,999') && !text.includes('¥200,000,000,000,000')))
   console.log('BROWSER_ANALYTICS_ANNUAL_TARGET_AND_PERSONNEL_EXACT_WHOLE_YUAN=true')
 
+  // 目标卡按「对象类型」分开展示（全公司 / 部门 / 个人），不再是一张混排的表。
+  const pickTargetScope=async label=>{
+    // 报表筛选条里依次是「年份」「报表月份」「目标对象」，最后一个是对象类型。
+    const scopeSelect=`Array.from(document.querySelectorAll('.analytics-report-filters .semi-select')).at(-1)`
+    await waitFor(scopeSelect)
+    await evaluate(`${scopeSelect}.click()`)
+    const option=`Array.from(document.querySelectorAll('.semi-select-option')).find(o=>o.innerText.trim()===${JSON.stringify(label)})`
+    await waitFor(option)
+    await evaluate(`${option}.click()`)
+    await waitFor(`${scopeSelect}.innerText.includes(${JSON.stringify(label)})`)
+  }
+  const openTargetEditor=async cardExpression=>{
+    await waitFor(cardExpression)
+    const edit=`Array.from(${cardExpression}.querySelectorAll('button')).find(b=>b.innerText.trim()==='修改目标')`
+    await waitFor(edit)
+    await evaluate(`${edit}.click()`)
+    await waitFor(`document.querySelector('.semi-modal')?.innerText.includes('月度目标')`)
+  }
+  const clickTargetModalButton=label=>`Array.from(document.querySelector('.semi-modal').querySelectorAll('button')).find(b=>b.innerText.trim()===${JSON.stringify(label)}).click()`
 
-  const teamTargetRow=`Array.from(document.querySelectorAll('tr')).find(r=>r.innerText.includes('${analyticsFixture.team_target.name}'))`
-  await waitFor(`${teamTargetRow}?.querySelector('a')`)
-  await evaluate(`Array.from(${teamTargetRow}.querySelectorAll('a')).find(a=>a.innerText.trim()==='编辑').click()`)
-  await waitFor(`document.querySelector('.semi-modal')?.innerText.includes('设定目标')`)
+  // 个人目标：整元精度同样不能四舍五入。
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/analytics?view=target`})
+  // 销售目标默认只看当月；夹具目标是 1 月/3 月，先切「全部月份」。
+  const targetMonthFilter=`Array.from(document.querySelectorAll('.analytics-report-filters .semi-select'))[1]`
+  await waitFor(targetMonthFilter)
+  await evaluate(`${targetMonthFilter}.click()`)
+  await waitFor(`Array.from(document.querySelectorAll('.semi-select-option')).some(o=>o.innerText.trim()==='全部月份')`)
+  await evaluate(`Array.from(document.querySelectorAll('.semi-select-option')).find(o=>o.innerText.trim()==='全部月份').click()`)
+  await waitFor(`${targetMonthFilter}.innerText.includes('全部月份')`)
+  await pickTargetScope('个人')
+  const personTargetCard=`Array.from(document.querySelectorAll('.analytics-target-row')).find(r=>r.innerText.includes('隔离整元精度'))`
+  await waitFor(`${personTargetCard}?.innerText.includes('¥199,999,999,999,999')`)
+  assert.equal(await evaluate(`Boolean(${personTargetCard}?.innerText.includes('¥200,000,000,000,000'))`),false)
+
+  // 团队目标：部门口径。
+  await pickTargetScope('部门')
+  const teamTargetCard=`Array.from(document.querySelectorAll('.analytics-target-row')).find(r=>r.innerText.includes('${analyticsFixture.team_target.name}'))`
+  await openTargetEditor(teamTargetCard)
   assert.equal(analyticsTargetWrites.length,0,'opening a team target must not save')
-  await evaluate(`Array.from(document.querySelector('.semi-modal').querySelectorAll('button')).find(b=>b.innerText.trim()==='取消').click()`)
+  await evaluate(clickTargetModalButton('取消'))
   await sleep(100)
   assert.equal(analyticsTargetWrites.length,0,'cancel must not save')
-  await evaluate(`Array.from(${teamTargetRow}.querySelectorAll('a')).find(a=>a.innerText.trim()==='编辑').click()`)
-  await waitFor(`document.querySelector('.semi-modal')?.innerText.includes('设定目标')`)
-  await evaluate(`Array.from(document.querySelector('.semi-modal').querySelectorAll('button')).find(b=>b.innerText.trim()==='保存').click()`)
+  await openTargetEditor(teamTargetCard)
+  await evaluate(clickTargetModalButton('保存目标'))
   for(let i=0;analyticsTargetWrites.length===0 && i<50;i++) await sleep(100)
   assert.equal(analyticsTargetWrites.length,1)
   assert.equal(analyticsTargetWrites[0].department_id,analyticsFixture.team_target.department_id)
@@ -1097,14 +1137,12 @@ try {
   assert.equal(analyticsTargetWrites[0].remark,analyticsFixture.team_target.remark)
   console.log('BROWSER_TEAM_TARGET_EDIT_KEEPS_DEPARTMENT_AND_CANCEL_DOES_NOT_SAVE=true')
 
-
   await waitFor(`!document.querySelector('.semi-modal')`)
-  const moneyTargetRow=`Array.from(document.querySelectorAll('tr')).find(r=>r.innerText.includes('${analyticsFixture.money_target.name}'))`
-  await waitFor(`${moneyTargetRow}?.querySelector('a')`)
-  await evaluate(`Array.from(${moneyTargetRow}.querySelectorAll('a')).find(a=>a.innerText.trim()==='编辑').click()`)
-  await waitFor(`document.querySelector('.semi-modal')?.innerText.includes('设定目标')`)
-  const targetInput=label=>`Array.from(document.querySelectorAll('.semi-modal-body div')).find(el=>el.firstElementChild?.textContent.trim()===${JSON.stringify(label)})?.querySelector('input')`
-  const targetSalesInput=targetInput('销售额目标（元）'), targetRepeatInput=targetInput('复购目标（元，老客净额）')
+  await pickTargetScope('个人')
+  const moneyTargetCard=`Array.from(document.querySelectorAll('.analytics-target-row')).find(r=>r.innerText.includes('${analyticsFixture.money_target.name}'))`
+  await openTargetEditor(moneyTargetCard)
+  const targetSalesInput=`document.querySelector('input[aria-label="财务确认回款目标"]')`
+  const targetRepeatInput=`document.querySelector('input[aria-label="老客户订单净额目标"]')`
   assert.deepEqual(await evaluate(`[${targetSalesInput}?.value,${targetRepeatInput}?.value]`),[analyticsFixture.money_target.amount,analyticsFixture.money_target.amount])
   const setTargetInput=async (input,value)=>{
     await evaluate(`${input}.focus();${input}.select()`)
@@ -1112,13 +1150,13 @@ try {
     await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')
   }
   await setTargetInput(targetSalesInput,'abc')
-  await evaluate(`Array.from(document.querySelector('.semi-modal').querySelectorAll('button')).find(b=>b.innerText.trim()==='保存').click()`)
+  await evaluate(clickTargetModalButton('保存目标'))
   await waitFor(`document.body.innerText.includes('销售额目标只能填数字')`)
   assert.equal(analyticsTargetWrites.length,1,'invalid amount must not submit or become null')
   await setTargetInput(targetSalesInput,analyticsFixture.money_target.amount)
   // SemiModal确认按钮有leading-only的100ms防连点；输入改正后的重试应跨过该窗口。
   await sleep(120)
-  await evaluate(`Array.from(document.querySelector('.semi-modal').querySelectorAll('button')).find(b=>b.innerText.trim()==='保存').click()`)
+  await evaluate(clickTargetModalButton('保存目标'))
   for(let i=0;analyticsTargetWrites.length<2 && i<50;i++) await sleep(100)
   assert.equal(analyticsTargetWrites.length,2)
   const exactTargetPayload=analyticsTargetWrites[1]
@@ -1133,10 +1171,9 @@ try {
 
   await waitFor(`!document.querySelector('.semi-modal')`)
   rejectStaleTarget=true
-  await evaluate(`Array.from(${moneyTargetRow}.querySelectorAll('a')).find(a=>a.innerText.trim()==='编辑').click()`)
-  await waitFor(`document.querySelector('.semi-modal')?.innerText.includes('设定目标')`)
+  await openTargetEditor(moneyTargetCard)
   await setTargetInput(targetSalesInput,'123.45')
-  await evaluate(`Array.from(document.querySelector('.semi-modal').querySelectorAll('button')).find(b=>b.innerText.trim()==='保存').click()`)
+  await evaluate(clickTargetModalButton('保存目标'))
   await waitFor(`document.body.innerText.includes('刚被别人改过')`)
   assert.equal(analyticsTargetWrites.length,3)
   assert.equal(analyticsTargetWrites[2].expected_updated_at,analyticsFixture.money_target.expected_updated_at)
@@ -1144,15 +1181,14 @@ try {
   assert.equal(analyticsTargetWrites[2].remark,analyticsFixture.money_target.remark)
   assert.equal(await evaluate(`${targetSalesInput}.value`),'123.45','conflict must keep user input')
   assert.ok(await evaluate(`Boolean(document.querySelector('.semi-modal'))`),'conflict does not close editor')
-  await evaluate(`Array.from(document.querySelector('.semi-modal').querySelectorAll('button')).find(b=>b.innerText.trim()==='取消').click()`)
+  await evaluate(clickTargetModalButton('取消'))
   assert.equal(analyticsTargetWrites.length,3,'cancel after conflict does not overwrite')
   rejectStaleTarget=false
   console.log('BROWSER_TARGET_EDIT_SENDS_VERSION_AND_409_PRESERVES_INPUT=true')
 
 
   await waitFor(`!document.querySelector('.semi-modal')`)
-  await evaluate(`Array.from(${moneyTargetRow}.querySelectorAll('a')).find(a=>a.innerText.trim()==='编辑').click()`)
-  await waitFor(`document.querySelector('.semi-modal')?.innerText.includes('设定目标')`)
+  await openTargetEditor(moneyTargetCard)
   const targetMonthSelect=`Array.from(document.querySelectorAll('.semi-modal-body div')).find(el=>el.firstElementChild?.textContent.trim()==='月份')?.querySelector('.semi-select')`
   await evaluate(`${targetMonthSelect}.click()`)
   const originalMonth=Number(analyticsFixture.money_target.period.slice(5))
@@ -1163,7 +1199,7 @@ try {
   await evaluate(`${nextMonthOption}.click()`)
   await waitFor(`${targetMonthSelect}?.innerText.includes('${analyticsFixture.money_target.period.slice(0,4)} 年 ${nextMonth} 月')`)
   await sleep(120)
-  await evaluate(`Array.from(document.querySelector('.semi-modal').querySelectorAll('button')).find(b=>b.innerText.trim()==='保存').click()`)
+  await evaluate(clickTargetModalButton('保存目标'))
   for(let i=0;analyticsTargetWrites.length<4 && i<50;i++) await sleep(100)
   assert.equal(analyticsTargetWrites.length,4)
   assert.equal(analyticsTargetWrites[3].period,nextPeriod)
@@ -1200,7 +1236,7 @@ try {
   await evaluate(`Array.from(document.querySelectorAll('[role=tab]')).find(t=>t.innerText.includes('发货批次')).click()`)
   await waitFor(`document.querySelector('.semi-table-tbody')?.innerText.includes('隔离旧批次 计划 9999999999999.999')`)
   await waitFor(open);await evaluate(`${open}.click()`);await waitFor(input)
-  assert.match(await evaluate(`document.querySelector('.semi-modal-content').innerText`),/订购 9999999999999\.999，未计划 9999999999999\.999/)
+  assert.match(await evaluate(`document.querySelector('.semi-modal-content').innerText`),/订购 9999999999999\.999 · 还可安排 9999999999999\.999/)
   await evaluate(`{const i=${input};Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(i,'9999999999999.999');i.dispatchEvent(new Event('input',{bubbles:true}))}`)
   await sleep(250);await evaluate(`${save}.click()`);await waitFor(`!(${input})`)
   assert.equal(shipmentBodies.at(-1).items[0].planned_qty,'9999999999999.999')
@@ -1232,7 +1268,9 @@ try {
     }
     throw Error('输入值被回填冲掉且重试无效：'+selector)
   }
-  await setStable(`Array.from(document.querySelectorAll('textarea')).at(-1)`,'只改备注','HTMLTextAreaElement')
+  // 只改草稿表头备注（最后那个 textarea）；别碰页面外 AI 抽屉的输入框。
+  const draftNote=`Array.from(document.querySelector('#order-draft-details')?.querySelectorAll('textarea') ?? []).at(-1)`
+  await setStable(draftNote,'只改备注','HTMLTextAreaElement')
   await waitFor(saveDraft);await sleep(250);await evaluate(`${saveDraft}.click()`)
   // 断言请求体前先等记录落地，读到的才不是上一笔的旧值
   for(let i=0;draftPrecisionBodies.length<1 && i<30;i++)await sleep(100)

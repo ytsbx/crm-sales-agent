@@ -329,7 +329,10 @@ async def build_fixtures() -> dict:
             quote_no=f"{PREFIX}{STAMP}",
             customer_id=quote_customer.id,
             owner_id=quote_only.id,
-            status="draft",
+            # 不是私人草稿：私人草稿按设计只对作者/负责人可见，
+            # 本套件要验的是"有 file:view 没 quote:view"的附件权限，
+            # 不能让管理员先被草稿隐私挡在门外。
+            status="sent",
             created_by=quote_only.id,
             created_at=datetime.now(UTC),
         )

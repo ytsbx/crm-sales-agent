@@ -372,7 +372,7 @@ async def main():
     ids['quotes'].append(quote_id)
 
     status, payload = call('POST', f'/quote-versions/{version_id}/items', token=token, body={
-        'inquiry_id': inquiry_id,
+        'inquiry_id': revised['id'],
         'item_name': '异形包装（定制）',
         'quantity': 500,
         'unit_cost': 8.0,
@@ -464,7 +464,7 @@ async def main():
     status, payload = call('POST', '/samples', token=token, body={
         'customer_id': customer_id,
         'remark': f'CHK定制打样-{STAMP}',
-        'items': [{'inquiry_id': inquiry_id, 'quantity': 2, 'remark': '看材质手感'}],
+        'items': [{'inquiry_id': revised['id'], 'quantity': 2, 'remark': '看材质手感'}],
     })
     check('建定制打样成功', status, 200)
     sample = payload['data']
@@ -487,14 +487,14 @@ async def main():
                str(payload.get('message'))[:60])
 
     status, payload = call('POST', f'/quote-versions/{version_id}/items', token=token, body={
-        'inquiry_id': inquiry_id, 'quantity': 1, 'quoted_price': 10,
+        'inquiry_id': revised['id'], 'quantity': 1, 'quoted_price': 10,
     })
     check('定制项不给成本 → 422', status, 422)
     check_true('错误说明成本为什么必须有', '成本' in (payload.get('message') or ''),
                str(payload.get('message'))[:60])
 
     status, payload = call('POST', f'/quote-versions/{version_id}/items', token=token, body={
-        'inquiry_id': inquiry_id, 'quantity': 1, 'unit_cost': 5,
+        'inquiry_id': revised['id'], 'quantity': 1, 'unit_cost': 5,
     })
     check('定制项不给报价 → 422', status, 422)
 
@@ -505,14 +505,26 @@ async def main():
 
     print()
     print('=== 7. 需求一键转报价（§3.1：从需求页可发起报价）===')
-    status, payload = call('POST', f'/custom-inquiries/{inquiry_id}/create-quote', token=token, body={
+    # 一条需求只允许挂一张报价；上面那条已挂明细，这里另起一条未报价的需求。
+    status, payload = call('POST', '/custom-inquiries', token=token, body={
+        'title': title + '-一键报价',
+        'customer_id': customer_id,
+        'quantity': 100,
+    })
+    check('建待报价需求成功', status, 200)
+    direct_inquiry = payload['data']
+    ids['inquiries'].append(direct_inquiry['id'])
+    status, payload = call('POST', f"/custom-inquiries/{direct_inquiry['id']}/create-quote", token=token, body={
         'unit_cost': 8.0,
         'quoted_price': 11.5,
     })
     check('一键转报价成功', status, 200)
     direct = payload.get('data') or {}
     ids['quotes'].append(direct['quote_id'])
-    check('带回报价单号与需求编号', direct.get('inquiry_no'), inquiry['inquiry_no'])
+    # 一键报价会顺带建商机；把它登记进清理清单，否则收尾会留下 CHK 商机。
+    if direct.get('opportunity_id'):
+        ids['opportunities'].append(direct['opportunity_id'])
+    check('带回报价单号与需求编号', direct.get('inquiry_no'), direct_inquiry['inquiry_no'])
     check_true('同时回报是否触发审批（省得点进去才发现）',
                direct.get('approval_required') is False,
                str(direct.get('approval_required')))
@@ -520,7 +532,7 @@ async def main():
     direct_item = (payload.get('data') or [{}])[0]
     check_true('生成的明细就是定制项',
                direct_item.get('is_custom') is True
-               and direct_item.get('inquiry_no') == inquiry['inquiry_no'],
+               and direct_item.get('inquiry_no') == direct_inquiry['inquiry_no'],
                str(direct_item.get('inquiry_no')))
 
     # 需求没挂客户时不能报价（否则报价单没有客户，等于凭空造单据）

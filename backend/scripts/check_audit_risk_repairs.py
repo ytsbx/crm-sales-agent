@@ -196,7 +196,7 @@ async def discount_cases():
         session.add(rule)
         await session.flush()
         session.add(ApprovalRuleVersion(rule_id=rule.id, version_no=1,
-                    payload={"name": role.code, "kind": "auto_pass", "conditions": [], "action": {}}, published_by=user.id))
+                    payload={"name": role.code, "kind": "auto_pass", "priority": 1, "conditions": [], "action": {}}, published_by=user.id))
         await session.flush()
         await _confirm_freight(session, version)
         instance, required = await quotes.submit_for_approval(

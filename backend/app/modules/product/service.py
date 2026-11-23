@@ -293,15 +293,21 @@ async def ensure_skus_for_new_business(
     判据仍然只有 `require_sku_for_new_business` 一份，这里只负责收集与措辞。
     """
     problems: list[str] = []
+    codes: set[int] = set()
     for sku_id in sorted({int(x) for x in sku_ids if x is not None}):
         try:
             await require_sku_for_new_business(session, sku_id)
         except AppError as error:
             problems.append(error.message)
+            codes.add(error.code)
     if problems:
+        # 整批汇总仍要分清「不存在」和「停用」：前者是找不到（404），
+        # 后者是状态不允许（409）。混在一批里时按 404 处理 ——
+        # 引用了根本不存在的商品，比"停售了"更需要先纠正数据。
+        missing = ErrorCode.NOT_FOUND in codes
         raise AppError(
-            ErrorCode.STATUS_NOT_ALLOWED,
+            ErrorCode.NOT_FOUND if missing else ErrorCode.STATUS_NOT_ALLOWED,
             "以下商品当前不能用于新业务，本次操作已整单取消（没有写入任何数据）："
             + "；".join(problems),
-            409,
+            404 if missing else 409,
         )
