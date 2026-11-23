@@ -1,3 +1,9 @@
+## 2026-11-23 · 移除工作台首次使用引导（发布 dd3f0fc0）
+
+- 用户要求删除工作台「第一次使用？看看从哪里开始」折叠块。已删除该组件及 `workbench-start` 样式；前端构建、frontend-static 与 14 项前端测试通过。
+- 使用统一发布入口：从 git archive `dd3f0fc049c6d57ed027e0bd51749254b509fe7b` 构建，基线为线上 `07915f62`，无迁移/依赖变化；服务器预检通过后 `--apply` 返回 `verified`，备份 `/opt/crm-sales-agent/backup/unified-dd3f0fc049c6-09oz9vx0`。
+- 核验：服务 active、/health 数据库 ok；DEPLOYED_COMMIT 与 WEB_DEPLOYED_COMMIT 均为 dd3f0fc0，RELEASE.json 528 项 verified；数据库 head 保持 c92b6f8143de；公网首页 SHA256 `37c67f97fdc6c8b1036f1a21a23a2ec37959d782b08199dcd182ec1149402fd9` 与包内一致，包内前端已不含该引导文案。
+
 ## 2026-11-23 · 生产发布 07915f62（迁移感知手动发布）
 
 - 用户当次批准按「备份 → 迁移 → 切换 → 健康检查」发布。发布前核实线上源码与服务器版本记录 a673ddeb 逐文件一致（其 492 项发布清单中的后端/迁移文件全部哈希匹配，差异只在构建产物 web 资源）；生产库 crm_sales_agent 23.2MB，alembic head 为 e7b3c1d5f9a2。
