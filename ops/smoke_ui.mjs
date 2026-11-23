@@ -1535,7 +1535,10 @@ async function main() {
         method: 'POST', body: JSON.stringify({ unit_cost: 10, quoted_price: 20 }),
       })
       INTERACTIONS.push({ name: '48-sample-source-quantities', path: `/quotes/${quote.quote_id}`, clicks: [],
-        expect: ['原采购数量', '本次样品数量', '打样来源'], expectAll: true,
+        // 交互末尾会停在打样详情；「打样来源」在那里可核对。
+        // 原采购数量/本次样品数量在「申请打样」弹窗里，由下面的
+        // sampleSource 交互逐项核对。
+        expect: ['打样来源'], expectAll: true,
         sampleSource: { ...quote, inquiryId: inquiry.id, opportunityId: quote.opportunity_id },
       })
     }
