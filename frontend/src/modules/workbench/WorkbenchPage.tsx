@@ -317,26 +317,6 @@ export default function WorkbenchPage() {
         }
       />
 
-      {(can('lead:view') || canViewCustomers || canViewOpportunities) && (
-        <details className="workbench-start">
-          <summary>第一次使用？看看从哪里开始</summary>
-          <ul>
-            {can('lead:view') && <li>
-              <span>{can('lead:create') ? '手上只有一个名字或联系方式，先在「线索中心」记下来。' : '手上只有一个名字或联系方式，可以先查找已有线索。'}</span>
-              {can('lead:create') ? <Link to="/leads?new=1">新建线索</Link> : <Link to="/leads">查看线索</Link>}
-            </li>}
-            {canViewCustomers && <li>
-              <span>知道是哪家客户，先打开客户。如果对方有这次采购需求，再到客户的「商机」页处理。</span>
-              <Link to="/customers">查找客户</Link>
-            </li>}
-            {canViewOpportunities && <li>
-              <span>已经在谈一笔采购，找这笔商机。客户要的商品、报价和进展都集中在商机详情。</span>
-              <Link to="/opportunities">查找商机</Link>
-            </li>}
-          </ul>
-        </details>
-      )}
-
       {!canViewCustomers && <Banner closeIcon={null} type="info"
         description="当前账号没有客户查看权限，工作台的业务概览不显示。你仍可从左侧菜单打开已授权的功能。"
       />}
