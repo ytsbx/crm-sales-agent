@@ -560,18 +560,21 @@ def sec_sku_images(admin: str) -> None:
     check_true("③ 不存在的 SKU 仍被拒（没有放开成来者不拒）",
                res3.get("code") != 0, f"code={res3.get('code')}")
 
-    # ④ 权限反例：zhangsan(salesperson) 有 file:manage + product:view，
-    #    但**没有 product:manage** —— 看得见图，不能传图。
+    # ④ 权限反例：财务没有 product:manage —— 不能给 SKU 传图。
     #    这条守的是"附件跟随业务对象"的口径：上传是**写入**，要目标模块的写权限。
+    #    2026-11-23 起业务员也有 product:manage，所以反例改用财务账号。
+    caiwu = login_as("wangwu", "123456")
+    if caiwu:
+        _, res4 = _upload(png, "sku", sku, caiwu)
+        check_true("④ 无产品写权限的人不能给 SKU 传图",
+                   res4.get("code") != 0, f"code={res4.get('code')}")
+    else:
+        print("  --   wangwu 登录失败，跳过权限反例")
+    # 读取仍只要 product:view：业务员（有该权限）看得见
     zs = login_as("zhangsan", "123456")
     if zs:
-        _, res4 = _upload(png, "sku", sku, zs)
-        check_true("④ 有文件权但无产品写权限的人不能给 SKU 传图",
-                   res4.get("code") != 0, f"code={res4.get('code')}")
         _, res5 = call("GET", f"/business/sku/{sku}/files", zs)
-        check("④ 但他看得见（读取只要 product:view）", res5.get("code"), 0)
-    else:
-        print("  --   zhangsan 登录失败，跳过权限反例")
+        check("④ 业务员看得见（读取只要 product:view）", res5.get("code"), 0)
 
     # ⑤ 批量接口（SKU 列表显示缩略图要靠它，逐行查就是 N+1）
     skus = db("select string_agg(id::text, ',') from (select id from skus order by id limit 3) t")

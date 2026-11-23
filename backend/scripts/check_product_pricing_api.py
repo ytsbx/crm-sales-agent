@@ -1022,17 +1022,21 @@ async def main():
         await _s.commit()
 
     print('=== 10. 权限门槛 ===')
-    for label, method, path, body in [
-        ('产品导入', 'POST', '/products/import', None),
-        ('SKU 导入', 'POST', '/skus/import', None),
-        ('改客户特殊价', 'PATCH', f'/customer-price-rules/{rule_id}', {'agreed_price': 1}),
+    # 2026-11-23 起业务员也有 product:manage，导入的产品权限反例改用财务账号；
+    # 客户特殊价仍要 price:manage，继续用张三验证。
+    wangwu = login('wangwu', '123456')
+    for actor, label, method, path, body in [
+        ('财务', '产品导入', 'POST', '/products/import', None),
+        ('财务', 'SKU 导入', 'POST', '/skus/import', None),
+        ('张三', '改客户特殊价', 'PATCH', f'/customer-price-rules/{rule_id}', {'agreed_price': 1}),
     ]:
+        token = wangwu if actor == '财务' else zhangsan
         if body is None:
             # 导入是 multipart，这里只验权限：空 body 也应先被权限挡下
-            status, res = call(method, path, token=zhangsan)
+            status, res = call(method, path, token=token)
         else:
-            status, res = call(method, path, token=zhangsan, body=body)
-        check(f'张三{label}被拒', res.get('code'), 40301)
+            status, res = call(method, path, token=token, body=body)
+        check(f'{actor}{label}被拒', res.get('code'), 40301)
 
     status, res = call('GET', '/pricing/history', token=zhangsan)
     check('张三可以看核价历史（product:view）', res.get('code'), 0)

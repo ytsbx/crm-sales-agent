@@ -136,6 +136,11 @@ async def main() -> int:
     if not zs:
         print("  业务员登录失败:", res)
         return 1
+    status, res = call("POST", "/auth/login", body={"username": "wangwu", "password": "123456"})
+    wangwu = (res.get("data") or {}).get("access_token")
+    if not wangwu:
+        print("  财务登录失败:", res)
+        return 1
 
     try:
         await cleanup()
@@ -165,8 +170,8 @@ async def main() -> int:
         check_true("require_confirmed_master 拦住", not allowed, why[:76])
 
         print("\n=== ③ 权限：无 product:manage 者不能确认 ===")
-        status, res = call("POST", f"/sku-master/skus/{sku}/confirm-local", zs, {"sku_id": sku})
-        check_true("业务员被拒", res.get("code") != 0, f"code={res.get('code')}")
+        status, res = call("POST", f"/sku-master/skus/{sku}/confirm-local", wangwu, {"sku_id": sku})
+        check_true("财务（无 product:manage）被拒", res.get("code") != 0, f"code={res.get('code')}")
         check("  且没有写入确认记录", await _confirmed_version(sku), 0)
 
         print("\n=== ④ 本地直接确认（三个字段一起）===")

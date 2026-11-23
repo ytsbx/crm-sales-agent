@@ -426,12 +426,11 @@ async def main() -> int:
         ).scalars().all()
     # 挂上了就等于授权了：越权请求即使只回 403、关联却已落库，文件也已经漏了。
     check('越权挂载未留下任何关联', len(leaked), 0)
-    # 2026-10-07 收紧：产品附件的写入授权改为 product:manage（原来是 file:manage）。
-    # 张三（销售）有 file:manage 但没有 product:manage —— 连自己上传的文件也挂不上，
-    # 这正是收紧的目的：产品不该被"只管文件、不管产品"的人改。
-    check_denied('销售只有 file:manage：连自己的文件也不能挂到产品上',
-                 call('POST', f'/products/{product_id}/files?file_id={victim_file_id}',
-                      owner_token)[0])
+    # 2026-11-23 起业务员也有 product:manage（主人确认）：自己的文件可以挂到产品上。
+    # "没有 product:manage 就被拒"这一档由 check_attachment_business_auth 的受限账号覆盖。
+    check('销售有 product:manage：可以把自己的文件挂到产品上',
+          call('POST', f'/products/{product_id}/files?file_id={victim_file_id}',
+               owner_token)[0], 200)
     # 对照：换成有 product:manage 的主管挂自己的文件 —— 证明被拒是权限，不是接口坏了。
     check('有 product:manage 的人可以给产品挂自己的文件（对照）',
           call('POST', f'/products/{product_id}/files?file_id={mgr_file_id}',

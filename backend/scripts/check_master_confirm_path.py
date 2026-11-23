@@ -127,7 +127,9 @@ def main() -> int:
     admin = (res.get("data") or {}).get("access_token")
     status, res = call("POST", "/auth/login", body={"username": "zhangsan", "password": "123456"})
     zs = (res.get("data") or {}).get("access_token")
-    if not admin or not zs:
+    status, res = call("POST", "/auth/login", body={"username": "wangwu", "password": "123456"})
+    wangwu = (res.get("data") or {}).get("access_token")
+    if not admin or not zs or not wangwu:
         print("  登录失败")
         return 1
     _cleanup()
@@ -221,8 +223,8 @@ def main() -> int:
     check("**只产生一版快照**（并发的重复确认不垒版本）", versions, 1)
 
     print("\n=== 无权限拒绝 ===")
-    _, res = call("POST", f"/sku-master/skus/{sku}/confirm-local", zs, {"sku_id": sku})
-    check_true("业务员（无 product:manage）被拒", res.get("code") != 0, f"code={res.get('code')}")
+    _, res = call("POST", f"/sku-master/skus/{sku}/confirm-local", wangwu, {"sku_id": sku})
+    check_true("财务（无 product:manage）被拒", res.get("code") != 0, f"code={res.get('code')}")
     check("  且没有写入任何确认记录",
           db(f"select count(*) from sku_field_authorities where sku_id={sku2}"), 3)
 

@@ -1400,6 +1400,7 @@ async def main() -> int:
     try:
         admin = login("admin", "admin123")
         sales = login("zhangsan", "123456")
+        no_product_manage = login("wangwu", "123456")  # 财务：无 product:manage
 
         # ============================================================ 线索
         print()
@@ -1488,10 +1489,10 @@ async def main() -> int:
 
         print()
         print("=== 7. 产品：能看 ≠ 能恢复 ===")
-        status, _ = call("POST", f"/products/{ids['product_b']}/restore", token=sales)
-        check_true("业务员（无 product:manage）恢复产品被拒", status == 403, f"实际 {status}")
-        status, _ = call("POST", f"/skus/{ids['sku_b1']}/restore", token=sales)
-        check_true("业务员恢复 SKU 也被拒", status == 403, f"实际 {status}")
+        status, _ = call("POST", f"/products/{ids['product_b']}/restore", token=no_product_manage)
+        check_true("财务（无 product:manage）恢复产品被拒", status == 403, f"实际 {status}")
+        status, _ = call("POST", f"/skus/{ids['sku_b1']}/restore", token=no_product_manage)
+        check_true("财务恢复 SKU 也被拒", status == 403, f"实际 {status}")
 
         # ============================================================ 客户（只读）
         print()
