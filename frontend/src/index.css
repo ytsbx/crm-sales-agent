@@ -6759,3 +6759,25 @@ table:not(.semi-table) td.cell-right {
     background-color 150ms var(--crm-ease),
     box-shadow 150ms var(--crm-ease);
 }
+/* ---- 点击反馈：把「按下去」这一层补齐（2026-11-23）----
+   现状：悬停有过渡（卡片上抬、行底色渐变），但按下这一瞬间没有任何变化，
+   点完只能靠页面跳转或 Toast 才知道点到了。
+   这里只补按下态，不加位移超过 2px 的动画，也不做涟漪。 */
+.kpi-card:active {
+  /* 上抬 2px 的悬停态按下时收回到 1px 并极轻微内收：
+     "按到了"这件事靠手感传达，不靠闪光 */
+  transform: translateY(-1px) scale(.995);
+  box-shadow: var(--crm-shadow);
+}
+
+/* 整行可点的表格：按下时底色比悬停再深一档，松手即恢复 */
+.semi-table-tbody > .semi-table-row:active > .semi-table-row-cell {
+  background: #e6eeff;
+  transition: background-color 60ms linear;
+}
+
+/* 侧栏与页签按钮：按下内收 1px，方向跟随各自的悬停方向 */
+.nav-link:active,
+.sidebar-link:active {
+  transform: translateY(0.5px);
+}
