@@ -111,6 +111,7 @@ export default function TaskListPage() {
     enabled: transferTarget !== null,
   })
 
+  const [flashTaskId, setFlashTaskId] = useState<number | null>(null)
   const createMutation = useMutation({
     mutationFn: () =>
       createTask({
@@ -118,8 +119,12 @@ export default function TaskListPage() {
         due_at: form.due_at ? form.due_at.toISOString() : null,
         priority: form.priority,
       }),
-    onSuccess: () => {
+    onSuccess: (created) => {
       Toast.success('任务已创建')
+      if (created?.id) {
+        setFlashTaskId(created.id)
+        window.setTimeout(() => setFlashTaskId((cur) => (cur === created.id ? null : cur)), 1500)
+      }
       setCreateVisible(false)
       setForm({ title: '', priority: 'normal', due_at: null })
       void refresh()

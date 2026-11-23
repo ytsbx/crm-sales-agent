@@ -6781,3 +6781,19 @@ table:not(.semi-table) td.cell-right {
 .sidebar-link:active {
   transform: translateY(0.5px);
 }
+/* ---- 操作完成后的「结果确认」：刚保存/新建的那一条短暂亮一下（2026-11-23）----
+   为什么不是按钮变「已保存 ✓」：这几处的保存都在弹窗里，成功后弹窗立刻关闭，
+   按钮根本没机会露出新文案；把关窗延迟 1 秒又会拖慢每一次操作。
+   改成把确认感放在结果上：关窗后，列表里刚建的那一行（或刚改的那块内容）
+   用主色底轻轻亮 1.4 秒再褪掉 —— 用户不需要看 Toast 去找"到底存没存上"。 */
+@keyframes crm-flash-bg {
+  0%   { background-color: var(--crm-primary-soft); }
+  100% { background-color: transparent; }
+}
+.semi-table-row.flash-updated > .semi-table-row-cell {
+  animation: crm-flash-bg 1.4s var(--crm-ease) both;
+}
+.flash-updated {
+  border-radius: 6px;
+  animation: crm-flash-bg 1.4s var(--crm-ease) both;
+}
