@@ -433,6 +433,7 @@ export default function TaskListPage() {
         </div>
 
         <Table<Task>
+          rowClassName={(row?: Task) => (row && row.id === flashTaskId ? 'flash-updated' : '')}
           className="tasks-table"
           columns={columns}
           dataSource={query.data?.items ?? []}
