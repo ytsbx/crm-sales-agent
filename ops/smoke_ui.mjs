@@ -1631,7 +1631,7 @@ async function main() {
         await sleep(300)
         // 点掉二次确认，请求才会真的发出去（数量是 2 ≠ 原数量，后端应当回 422）
         if (await clickPopconfirm(client) !== 'clicked') throw new Error('正式下单的二次确认没弹出来')
-        if(!await waitForText(client,'草稿明细、币种或付款条件与客户确认报价不一致')) { const diag=await client.send('Runtime.evaluate',{expression: `JSON.stringify({text:document.body.innerText,buttons:Array.from(document.querySelectorAll('button')).filter(n=>n.innerText.includes('确认正式下单')).map(n=>({text:n.innerText,disabled:n.disabled,aria:n.getAttribute('aria-disabled')}))})`,returnByValue:true}); throw new Error('未观察到数量不符阻断：'+diag.result.value) }
+        if(!await waitForText(client,'与客户确认报价不一致')) { const diag=await client.send('Runtime.evaluate',{expression: `JSON.stringify({text:document.body.innerText,buttons:Array.from(document.querySelectorAll('button')).filter(n=>n.innerText.includes('确认正式下单')).map(n=>({text:n.innerText,disabled:n.disabled,aria:n.getAttribute('aria-disabled')}))})`,returnByValue:true}); throw new Error('未观察到数量不符阻断：'+diag.result.value) }
         await setQuantity(10000)
         await clickByText(client,'确认正式下单')
         await sleep(300)
