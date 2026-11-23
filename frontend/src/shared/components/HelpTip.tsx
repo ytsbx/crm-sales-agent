@@ -1,7 +1,12 @@
 import { useId, useState } from 'react'
 import { Popover } from '@douyinfe/semi-ui'
 
-export default function HelpTip({ forLabel, text }: { forLabel: string; text: string }) {
+export default function HelpTip({ forLabel, text, variant = 'field' }: {
+  forLabel: string
+  text: string
+  /* 'metric'：指标口径（实心蓝，更醒目）；'field'：字段说明（浅蓝描边） */
+  variant?: 'metric' | 'field'
+}) {
   const id = useId()
   const [mode, setMode] = useState<'hover' | 'pinned' | null>(null)
 
@@ -19,7 +24,7 @@ export default function HelpTip({ forLabel, text }: { forLabel: string; text: st
     >
       <button
         type="button"
-        className="crm-help-tip"
+        className={`crm-help-tip crm-help-tip--${variant}`}
         aria-label={`${forLabel}说明`}
         aria-expanded={mode !== null}
         aria-describedby={mode !== null ? id : undefined}

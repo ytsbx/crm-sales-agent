@@ -6641,28 +6641,44 @@ table:not(.semi-table) td.cell-right {
 }
 
 .crm-help-tip {
+  /* 原来是一圈灰描边 + 灰问号，跟正文一个色号，既像脏点又看不出能点。
+     改成蓝系：浅蓝底、蓝问号 —— 「有说明、可以点」一眼能认。 */
   display: inline-grid;
   place-items: center;
   flex: none;
-  width: 16px;
-  height: 16px;
+  width: 15px;
+  height: 15px;
   padding: 0;
-  border: 1px solid currentColor;
+  border: 1px solid var(--crm-border);
   border-radius: 50%;
   background: transparent;
   color: var(--crm-text-3);
   font-family: inherit;
-  font-weight: 600;
+  font-weight: 700;
   font-size: 11px;
   line-height: 1;
   cursor: help;
+  transition:
+    background var(--crm-dur-fast) var(--crm-ease),
+    color var(--crm-dur-fast) var(--crm-ease);
+}
+
+/* 两级区分：指标口径（metric）用实心蓝，表单/字段说明用浅蓝描边。
+   同一页里两者并存时，读者一眼能分出「这个数怎么算的」和「这一栏怎么填」。 */
+.crm-help-tip--metric {
+  width: 16px;
+  height: 16px;
+  background: transparent;
+  border-color: var(--crm-primary);
+  color: var(--crm-primary);
 }
 
 .crm-help-tip:hover,
 .crm-help-tip:focus-visible,
 .crm-help-tip[aria-expanded="true"] {
+  background: var(--crm-primary-soft);
+  border-color: var(--crm-primary);
   color: var(--crm-primary);
-  background: var(--crm-surface-low);
 }
 
 .crm-help-tip:focus-visible {
@@ -6676,4 +6692,70 @@ table:not(.semi-table) td.cell-right {
   font-size: 13px;
   line-height: 1.6;
   white-space: normal;
+}
+
+/* ============================================================
+   浮层与子页面的出场动效（2026-11-23）
+   ------------------------------------------------------------
+   只解决「浮层是啪一下出现」这个问题：位移不超过 8px、
+   时长 140–240ms、播完即停，不做任何循环动画。
+   系统开「减少动效」时由上面的全局兜底统一压到 0.01ms。
+   ============================================================ */
+@keyframes crm-pop-in {
+  from { opacity: 0; transform: translateY(-3px) scale(.985); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes crm-sheet-in {
+  from { opacity: 0; transform: translateX(18px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes crm-toast-in {
+  from { opacity: 0; transform: translateY(-8px) scale(.985); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes crm-soft-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* 问号气泡、下拉菜单、选择器面板：从锚点附近轻轻长出来，
+   不再是「啪」地出现一整个框。 */
+.semi-popover,
+.semi-dropdown-menu,
+.semi-select-option-list {
+  animation: crm-pop-in 160ms cubic-bezier(.22, 1, .36, 1) both;
+  transform-origin: center top;
+}
+
+/* 右滑抽屉（审计日志、AI 助手）：从右侧滑入，和「划出来」的预期一致 */
+.semi-sidesheet-inner {
+  animation: crm-sheet-in 220ms cubic-bezier(.22, 1, .36, 1) both;
+}
+
+/* 站内提示：从页签栏下方落下来，而不是凭空盖在标题上 */
+.semi-toast-content {
+  animation: crm-toast-in 200ms cubic-bezier(.22, 1, .36, 1) both;
+}
+
+/* 空状态、骨架屏：淡入，避免「空无一物」突然占满一屏 */
+.semi-empty {
+  animation: crm-soft-fade-in 240ms var(--crm-ease) both;
+}
+/* ---- 操作反馈：只补「有动作但没过渡」的两处（2026-11-23）----
+   按钮：悬停换色原本是瞬变，和旁边的卡片过渡对不上；
+        这里统一 140ms 的颜色/边框/阴影过渡，点击下沉仍由上面的 :active 负责。
+   表格行：悬停底色也是瞬变，扫读时一行行闪；改成 150ms 淡入，
+        行内 2px 主色指示条跟着一起过渡，不额外加位移。 */
+.semi-button {
+  transition:
+    background-color 140ms var(--crm-ease),
+    border-color 140ms var(--crm-ease),
+    color 140ms var(--crm-ease),
+    box-shadow 160ms var(--crm-ease),
+    transform 80ms var(--crm-ease);
+}
+.semi-table-tbody > .semi-table-row > .semi-table-row-cell {
+  transition:
+    background-color 150ms var(--crm-ease),
+    box-shadow 150ms var(--crm-ease);
 }

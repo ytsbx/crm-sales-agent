@@ -58,7 +58,7 @@ export default function KpiStrip({
           >
             <div className="kpi-label crm-help-label">
               {item.label}
-              {item.help && <HelpTip forLabel={item.label} text={item.help} />}
+              {item.help && <HelpTip forLabel={item.label} text={item.help} variant="metric" />}
             </div>
             <div className="kpi-value" style={{ color: tintValues ? tone.color : undefined }}>
               {item.value}
