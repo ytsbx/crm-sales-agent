@@ -131,6 +131,8 @@ SALES_PERMISSIONS = [
     # 业务员可软删自己负责的客户；主管的 `customer:delete` 仍是按数据范围删。
     "customer:delete_own",
     "product:view",
+    # 2026-11-23 主人确认：业务员可以新建/维护产品与 SKU。
+    "product:manage",
     "opportunity:view",
     "opportunity:manage",
     "lead:view",
