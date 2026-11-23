@@ -1,3 +1,14 @@
+## 2026-11-23 · 生产发布 07915f62（迁移感知手动发布）
+
+- 用户当次批准按「备份 → 迁移 → 切换 → 健康检查」发布。发布前核实线上源码与服务器版本记录 a673ddeb 逐文件一致（其 492 项发布清单中的后端/迁移文件全部哈希匹配，差异只在构建产物 web 资源）；生产库 crm_sales_agent 23.2MB，alembic head 为 e7b3c1d5f9a2。
+- 待应用 5 个线性迁移：f3a8 登录会话令牌、d7c2 公海恢复权限、b3e9 通知忽略时间、759c 企微权限拆分、c92b AI 会话删除标记。均为新增可空列或补权限数据，离线渲染的 SQL 在单事务内，旧代码可兼容回退。
+- 依赖差异只用名称集合核对：服务器未安装的仅有 httpx2-jsfetch（Emscripten 专用）与 tzdata（Linux 使用系统时区库），且新包在服务器现有虚拟环境下导入通过，因此未升级/重建 venv，未改 .env、服务配置或业务数据。
+- 备份：`/opt/crm-sales-agent/backup/pre-66775a0a-20261123T012141Z`，含 crm.dump（pg_restore --list 可读）、backend-app.tar.gz、web-dist.tar.gz、三份原版本记录与 SHA256SUMS；逐项校验通过。
+- 发布包：`/tmp/crm-release-07915f62.tar.gz`，SHA256 `992d8376cf3f579b5694b3dacb1d00255a920e9689dd3486d184214ff5cb3fa3`，来自 `git archive 07915f626d790e777b942d57dc8eb361edbd2a14`；529 文件清单在服务器预检、Python 语法、alembic heads 与新代码 import 均通过。因统一发布入口只接受无迁移变更，本次按批准方案使用独立发布脚本；失败会自动恢复后端 app、完整前端入口与三份版本记录并重启核验。
+- 正式执行：停服后应用 5 个迁移，替换 backend/app、alembic 与 requirements，启动服务；公网首页及直接引用入口资源逐字节校验通过，随后替换首页。结果 `APPLY VERIFIED`，备份目录保留。
+- 核验：crm-sales.service active，内部 /health 返回数据库 ok；alembic head `c92b6f8143de`；DEPLOYED_COMMIT 与 WEB_DEPLOYED_COMMIT 均为完整 07915f62，RELEASE.json `status=verified`、529 项；服务器安装后的 529 个文件与发布包 manifest 逐一哈希一致；公网 index SHA256 `167ee91fc0d614017bd4a2ecb6658573cfa85ab85fa4d6a311f6730d42aea787` 与本地构建产物一致；新权限码 customer:pool_restore、wecom:sync_directory/contacts/import/transfer 及预览码已落库；旧哈希前端资源保留（assets 235 个）。日志末尾未见异常。
+- 残余：服务器虚拟环境的 fastapi 0.143 / sqlalchemy 2.1.4 / pydantic 2.14.1 低于锁文件的 0.165 / 2.1.9 / 2.14.3，本次以导入、启动、迁移与健康检查证明可用，后续升级依赖需另立窗口；生产只做了只读核验，未用真实业务数据执行发送、审批、删除等写操作；统一发布入口尚不支持迁移变更，后续带迁移发布仍需按本次流程单独审批。
+
 ## 2026-11-21 · PR CI 全量套件与 UI 冒烟修复
 
 - 起因：PR #28 的后端套件与 UI 冒烟失败。按 CI 等价条件（crm_iso_test、CI=true、无 OA 配置）在本机复现，逐项修复后用全新库全量重跑。
