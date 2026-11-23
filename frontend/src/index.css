@@ -7515,19 +7515,10 @@ table:not(.semi-table) td.cell-right {
   background-color: transparent !important;
   box-shadow: none !important;
 }
-/* Semi 的 Tooltip / Popover 是两层壳：外面 `.semi-tooltip-*` 铺了一层灰底和 8/12 内边距，
-   里面 `.semi-popover` 又是一块白色圆角面板 —— 所以每个气泡看着都是「框套框」。
-   这里把外壳剥掉（透明、零内边距），只让里面的面板作为唯一一层。 */
-.semi-tooltip-wrapper,
-.semi-tooltip-content {
-  background: transparent;
-  background-color: transparent;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
-  color: inherit;
-}
+/* ⚠️ 不要剥 `.semi-tooltip-wrapper` 的底色和内边距：Semi 的 Tooltip 只有这一层
+   （深色底 + 8/12 留白），箭头颜色也取自同一层。之前按 Popover 的思路把它
+   改成透明 + padding:0，结果侧边栏收起态的模块名贴在图标上、箭头压在文字里。
+   Tooltip 没有内层 `.semi-popover`，「框套框」只发生在 Popover/HelpTip 上。 */
 .semi-popover-wrapper .semi-popover-content {
   background: transparent;
   border-radius: 0;
