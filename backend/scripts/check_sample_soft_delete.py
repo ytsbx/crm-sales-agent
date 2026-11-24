@@ -38,7 +38,7 @@ import urllib.request
 
 from sqlalchemy import select, text
 
-from _test_support import require_api_base, require_isolated_db
+from _test_support import force_sample_review, require_api_base, require_isolated_db
 
 require_isolated_db()
 
@@ -187,8 +187,10 @@ async def main():
     check('详情 404（已删的看不见）', status, 404)
     status, _ = call('PATCH', f'/samples/{pending_id}', token=token, body={'purpose': '偷改'})
     check('编辑入口 404（删掉的不能被改）', status, 404)
-    status, _ = call('POST', f'/samples/{pending_id}/approve', token=token,
-                     body={'approved': True})
+    # 本地 approve 已收口到同序 OA（bdd6efc9）；「删掉的不能被审批」在新载体下
+    # = 删掉的不能提交 OA（审批入口换到 dingtalk-submit，404 守卫照旧）。
+    status, _ = call('POST', f'/samples/{pending_id}/dingtalk-submit', token=token,
+                     body={'mode': 'standalone', 'fields': {}})
     check('审批入口 404（删掉的不能被审批）', status, 404)
     status, _ = call('POST', f'/samples/{pending_id}/ship', token=token,
                      body={'carrier': '顺丰', 'tracking_no': f'CHKSD{stamp}'})
@@ -208,9 +210,11 @@ async def main():
     check('拒绝理由是人话', '没有被删除' in (res.get('message') or ''), True)
 
     print('=== 4. 走了流程的删不掉 ===')
-    status, res = call('POST', f'/samples/{pending_id}/approve', token=token,
-                       body={'approved': True})
-    check('批准成功', res.get('code'), 0)
+    # 审批结果走直插（approve 已收口到同序 OA，bdd6efc9）；「走了流程删不掉」照旧断言
+    async with SessionLocal() as session:
+        await force_sample_review(session, pending_id, 'approved')
+    row = row_of(token, pending_id)
+    check('批准成功', row and row['status'], 'approved')
     row = row_of(token, pending_id)
     check('已批准的单子 can_delete=False', row and row['can_delete'], False)
     status, res = call('DELETE', f'/samples/{pending_id}', token=token)
@@ -238,11 +242,13 @@ async def main():
 
     print('=== 5. 被驳回的能删（驳回不是终态，但可以就此作罢）===')
     rejected_id = await make_sample(token, customer_id, sku_id, 'CHKSD 会被驳回')
-    _, res = call('POST', f'/samples/{rejected_id}/approve', token=token,
-                  body={'approved': False, 'reject_reason': '规格没写清'})
-    check('驳回成功', res.get('code'), 0)
+    # 驳回结果走直插（approve/reject 已收口到同序 OA，bdd6efc9）
+    async with SessionLocal() as session:
+        await force_sample_review(session, rejected_id, 'rejected', reason='规格没写清')
+    row = row_of(token, rejected_id)
+    check('驳回成功', row and row['status'], 'rejected')
     # 模拟已同步的钉钉拒绝终态：submitted 是历史标记，不能永远锁住回收入口。
-    import app.main  # 注册外键关联模型，供隔离库 ORM 夹具使用
+    import app.main  # noqa: F401  注册外键关联模型，供隔离库 ORM 夹具使用
     from app.modules.sample.model import SampleRequest
     async with SessionLocal() as session:
         rejected = await session.get(SampleRequest, rejected_id)

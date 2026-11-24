@@ -43,7 +43,7 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from sqlalchemy import delete, func, select
-from _test_support import require_isolated_db
+from _test_support import force_sample_review, require_isolated_db
 
 require_isolated_db()
 
@@ -304,7 +304,9 @@ async def main():
         check("0 元与未填是两个状态", zero["sample_fee"] == 0, zero["sample_fee"])
 
         print("=== 5. 制作完成重试去重 ===")
-        api("POST", f"/samples/{sid}/approve", body={"approved": True}, token=zhangsan)
+        # 审批结果走直插（approve 已收口到同序 OA，bdd6efc9）
+        async with SessionLocal() as session:
+            await force_sample_review(session, sid, "approved")
         _, first = call("POST", f"/samples/{sid}/made", token=zhangsan, body={"remark": "车间已完成"})
         _, second = call("POST", f"/samples/{sid}/made", token=zhangsan, body={"remark": "车间已完成"})
         check("同内容重发被识别为没有变化", "没有变化" in (second.get("message") or ""), second.get("message"))
@@ -353,7 +355,8 @@ async def main():
         gate_id = gate["id"]
         sample_ids.append(gate_id)
         gate_item = api("GET", f"/samples/{gate_id}/items", token=zhangsan)[0]["id"]
-        api("POST", f"/samples/{gate_id}/approve", body={"approved": True}, token=zhangsan)
+        async with SessionLocal() as session:
+            await force_sample_review(session, gate_id, "approved")
         after = api(
             "PATCH", f"/samples/{gate_id}/items/{gate_item}", token=zhangsan,
             body={"material": f"{MARKER} 304不锈钢"},
@@ -365,7 +368,8 @@ async def main():
         check("改动确实落库了（不是只退状态）",
               after["items"][0]["material"] == f"{MARKER} 304不锈钢")
 
-        api("POST", f"/samples/{gate_id}/approve", body={"approved": True}, token=zhangsan)
+        async with SessionLocal() as session:
+            await force_sample_review(session, gate_id, "approved")
         after = api(
             "PATCH", f"/samples/{gate_id}", token=zhangsan,
             body={"target_completion_date": "2026-12-31"},
@@ -426,8 +430,10 @@ async def main():
         # 之前状态机里 rejected 是个空集 —— 驳回过的单子既改不了也重报不了，
         # 只能重开一张，中间的沟通痕迹全断。业务方 2026-10-05 定：驳回可重提。
         print("=== 7.5 驳回可重提：改完资料自动回到「待审批」 ===")
-        api("POST", f"/samples/{fresh_id}/approve",
-            body={"approved": False, "reject_reason": "费用超预算"}, token=zhangsan)
+        # 驳回结果走直插（本地 approve 已收口到同序 OA，bdd6efc9）；
+        # 「改资料自动回待审批」的产品逻辑在 _reopen（router.py），照旧断言。
+        async with SessionLocal() as session:
+            await force_sample_review(session, fresh_id, "rejected", reason="费用超预算")
         rej = api("GET", f"/samples/{fresh_id}", token=zhangsan)
         check("驳回后状态是「已拒绝」", rej["status"] == "rejected", rej["status"])
 
@@ -441,83 +447,65 @@ async def main():
               after["reject_reason"] == "费用超预算", after["reject_reason"])
 
         # 明细侧走的是同一道闸门，也要能重提
-        api("POST", f"/samples/{fresh_id}/approve",
-            body={"approved": False, "reject_reason": "材质不对"}, token=zhangsan)
+        async with SessionLocal() as session:
+            await force_sample_review(session, fresh_id, "rejected", reason="材质不对")
         after = api("PATCH", f"/samples/{fresh_id}/items/{fresh_item}", token=zhangsan,
                     body={"material": f"{MARKER} 316不锈钢"})
         check("已驳回的单子改明细依据 → 重新提交待审批",
               after["status"] == "pending", after["status"])
 
         # 同值重发不能算"改了东西"：否则手抖点两下保存就把单子踢回待审批
-        api("POST", f"/samples/{fresh_id}/approve",
-            body={"approved": False, "reject_reason": "还是不批"}, token=zhangsan)
+        async with SessionLocal() as session:
+            await force_sample_review(session, fresh_id, "rejected", reason="还是不批")
         same = api("PATCH", f"/samples/{fresh_id}/items/{fresh_item}", token=zhangsan,
                    body={"material": f"{MARKER} 316不锈钢"})
         check("已驳回的单子同值重发不算改动（仍停在已拒绝）",
               same["status"] == "rejected", same["status"])
 
         # === 7.6 已驳回的两个出口：跟单原样重提 / 主管改判 ===
-        # 7.5 测的是"改完资料自动回待审批"。这里测另外两条（业务方 2026-10-05 定）：
-        # 一个字不改地原样再报，以及主管发现驳错了直接批回来。
-        print("=== 7.6 已驳回的两个出口：原样重提 / 直接改判 ===")
+        # 「原样重提/改判」入口自 bdd6efc9 起统一走同序 OA（本地 resubmit/approve 收口 409）。
+        # CI 无外部 OA，这里守住：收口提示是人话、OA 提交明确拒绝而不是 500；
+        # 「驳回后重提」的完整链路在有 OA 的环境走通（QUALITY_PROGRESS 打样 84 单）。
+        print("=== 7.6 已驳回的出口：本地端点已收口，重提走同序 OA ===")
         before_resubmit = api("GET", f"/samples/{fresh_id}", token=zhangsan)
         check("准备条件：该单此刻是「已拒绝」",
               before_resubmit["status"] == "rejected", before_resubmit["status"])
-
-        after = api("POST", f"/samples/{fresh_id}/resubmit", token=zhangsan)
-        check("已驳回可以原样重新提交 → 待审批", after["status"] == "pending", after["status"])
-        check("原样重提不动物料：备注没被改掉",
-              after["remark"] == f"{MARKER} 已重报费用", after["remark"])
-        check("原样重提保留上次驳回原因（主管要知道为什么被打回）",
-              after["reject_reason"] == "还是不批", after["reject_reason"])
-
-        # 只有"已驳回"需要重提，别的状态调它应该被拦
         status, result = call("POST", f"/samples/{fresh_id}/resubmit", token=zhangsan)
-        check("待审批的单子不需要重提（被拦）", rejected(status), f"HTTP {status} {result}")
+        check("本地 resubmit 已收口 409（重提统一走同序 OA）", status == 409, f"HTTP {status}")
+        check("收口提示是人话", "同序 OA" in (result.get("message") or ""), result.get("message"))
+        status, result = call("POST", f"/samples/{fresh_id}/dingtalk-submit", token=zhangsan,
+                              body={"mode": "standalone", "fields": {}, "resubmit": True})
+        check("OA 提交在未配置同序时明确拒绝（409，不是 500）",
+              status == 409, f"HTTP {status} {result}")
 
-        # === 7.7 审批轮次：驳回重提是新的一轮，弱网重试不算新轮次 ===
-        # 旧实现的通知/时间线事件键是**固定**的 `sample:approve:{id}` / `sample:resubmit:{id}`，
-        # 于是第二轮会撞上第一轮的键被去重吞掉——事后只看得到一轮，
-        # "驳回过几次、每轮批的是哪版资料"全丢（第一批返修 §3.2）。
-        # 上面这串操作已经产生了几轮，先确认轮次真的在涨、且被拦的重提不虚增。
-        # 用 .get 取：旧代码的 detail 里没有这个字段，那样应当**干净地 FAIL 而不是崩**，
-        # 修复前后的对比才有意义。本文件的 check 是**条件式**（label, condition, detail）。
-        round_now = api("GET", f"/samples/{fresh_id}", token=zhangsan).get("review_round")
-        check("此刻有明确的审批轮次（第 4 轮，不是恒为 1）", round_now == 4,
-              f"review_round={round_now}")
-        check("被拦的那次重提没有虚增轮次",
-              api("GET", f"/samples/{fresh_id}", token=zhangsan).get("review_round") == round_now,
-              f"review_round={round_now}")
-        if round_now is not None:
-            api("POST", f"/samples/{fresh_id}/approve",
-                body={"approved": False, "reject_reason": "轮次回归"}, token=zhangsan)
-            r1 = api("POST", f"/samples/{fresh_id}/resubmit", token=zhangsan,
-                     body={"request_key": f"CHK{fresh_id}-re-round"})
-            check("带键重提开出一个新轮次", r1.get("review_round") == round_now + 1,
-                  f"review_round={r1.get('review_round')}")
-            # 同一个键再来一次 = 弱网重试：幂等，不加轮次、也不重复通知
-            r2 = api("POST", f"/samples/{fresh_id}/resubmit", token=zhangsan,
-                     body={"request_key": f"CHK{fresh_id}-re-round"})
-            check("同一个请求键重试是幂等的（轮次不变）",
-                  r2.get("review_round") == round_now + 1,
-                  f"review_round={r2.get('review_round')}")
-            # 换一把键：仍然按原口径被拦——**不是"带了键就放行"**
-            status, result = call("POST", f"/samples/{fresh_id}/resubmit", token=zhangsan,
-                                  body={"request_key": f"CHK{fresh_id}-re-other"})
-            check("换一把键仍被拦（幂等只认同一次提交）", rejected(status),
-                  f"HTTP {status} {result}")
+        # === 7.7 审批轮次：改资料重提开新一轮（router._reopen 自增，第一批返修 §3.2）===
+        # 「原样重提」的 request_key 幂等机制随本地 resubmit 端点收口退场；
+        # 轮次语义由「改资料 → 回待审批」承担：一次真的重新提交就是新的一轮。
+        print("=== 7.7 审批轮次：改资料重提开新一轮 ===")
+        round_before = api("GET", f"/samples/{fresh_id}", token=zhangsan).get("review_round")
+        async with SessionLocal() as session:
+            await force_sample_review(session, fresh_id, "rejected", reason="轮次回归")
+        after = api("PATCH", f"/samples/{fresh_id}", token=zhangsan,
+                    body={"remark": f"{MARKER} 轮次重提"})
+        check("改资料重提回待审批", after["status"] == "pending", after["status"])
+        check("重提开了新轮次（review_round +1）",
+              after.get("review_round") == round_before + 1,
+              f"review_round={after.get('review_round')}（原 {round_before}）")
+        check("待审批期间反复改资料不虚增轮次",
+              api("PATCH", f"/samples/{fresh_id}", token=zhangsan,
+                  body={"remark": f"{MARKER} 轮次重提二"}).get("review_round") == round_before + 1)
 
-        # 主管改判：上一次驳错了，直接批回来，不必让跟单先改点什么再绕一圈
-        api("POST", f"/samples/{fresh_id}/approve",
-            body={"approved": False, "reject_reason": "误驳了"}, token=zhangsan)
-        after = api("POST", f"/samples/{fresh_id}/approve",
-                    body={"approved": True}, token=zhangsan)
+        # 主管改判：上一次驳错了，直接批回来（改判入口在同序 OA；
+        # 本地直插等价于改判后的同步结果）
+        async with SessionLocal() as session:
+            await force_sample_review(session, fresh_id, "approved")
+        after = api("GET", f"/samples/{fresh_id}", token=zhangsan)
         check("已驳回时主管可直接改判为批准", after["status"] == "approved", after["status"])
         check("改判批准后驳回原因被清掉（结论已经不是驳回了）",
               after["reject_reason"] is None, after["reject_reason"])
 
         status, result = call("POST", f"/samples/{fresh_id}/resubmit", token=zhangsan)
-        check("已批准的单子不能重提（被拦）", rejected(status), f"HTTP {status} {result}")
+        check("已批准的单子不能重提（本地端点已收口 409）", status == 409, f"HTTP {status}")
 
         # 已批准的单子加明细同样要重批：新明细带进来的材质/工艺/图纸版本也是车间依据，
         # 之前这里只挡了已寄样/已签收，已批准的单子能随便加，是个漏口
@@ -558,7 +546,8 @@ async def main():
         )
         check("重新把图纸挂回打样单", status == 200, f"HTTP {status} {res}")
 
-        api("POST", f"/samples/{lock_id}/approve", body={"approved": True}, token=zhangsan)
+        async with SessionLocal() as session:
+            await force_sample_review(session, lock_id, "approved")
         made = api("POST", f"/samples/{lock_id}/made", token=zhangsan,
                    body={"remark": "按图纸制作完成", "basis_file_ids": [dwg_id]})
         basis = made.get("basis_files") or []
@@ -610,7 +599,8 @@ async def main():
             token=zhangsan)
         stranger_id = stranger["id"]
         sample_ids.append(stranger_id)
-        api("POST", f"/samples/{stranger_id}/approve", body={"approved": True}, token=zhangsan)
+        async with SessionLocal() as session:
+            await force_sample_review(session, stranger_id, "approved")
         status, result = call(
             "POST", f"/samples/{stranger_id}/made", token=zhangsan,
             body={"remark": "拿别单的图纸当依据", "basis_file_ids": [dwg_id]},

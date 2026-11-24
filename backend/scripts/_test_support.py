@@ -221,3 +221,62 @@ def confirm_freight_before_submit(call, token: str, version_id: int, amount: str
         token,
         {"charge_type": "logistics", "description": "实际运费（套件夹具）", "amount": amount},
     )
+
+
+async def force_sample_review(session, sample_id: int, status: str, *, reason: str | None = None) -> None:
+    """把打样单置为指定审批结果（approved / rejected）——套件造审批态用。
+
+    ## 为什么需要它
+
+    打样审批自 bdd6efc9 起统一收口到同序 OA（本地 POST /samples/{id}/approve|resubmit
+    一律 409「打样审批统一在同序 OA 办理」），approved/rejected 只由 OA 审批同步写入。
+    接口套件没有外部 OA 可用，造审批结果走**直插**：样品状态 + 一条 approved/rejected
+    的 OA 审批记录（`require_sample_approved` 闸门查的是 oa_instances，光改
+    sample_requests.status 过不了闸 —— smoke_ui 踩过）。
+
+    ⚠️ 这不是"绕过校验"：顺序守卫本身（没批准不能登记制作/寄样）由各套件照旧断言，
+    这里只负责把"审批结果"这个**前置事实**造出来（等价 OA 同步写入）。
+    只动 pending/rejected 的样品（状态机合法入口）；0 行更新抛错，不静默。
+
+    用法（把原来的 approve/reject 调用换成它）：
+
+        await force_sample_review(session, sample_id, 'approved')
+        await force_sample_review(session, sample_id, 'rejected', reason='规格没写清')
+    """
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from sqlalchemy import text
+
+    if status not in ("approved", "rejected"):
+        raise ValueError(f"status 只能是 approved/rejected，收到 {status!r}")
+    now = datetime.now(UTC)
+    row = (
+        await session.execute(text("SELECT version FROM sample_requests WHERE id=:id"), {"id": sample_id})
+    ).first()
+    if row is None:
+        raise RuntimeError(f"样品 {sample_id} 不存在")
+    result = await session.execute(
+        text(
+            "UPDATE sample_requests SET status=:st, approved_at=:now, reject_reason=:rr "
+            "WHERE id=:id AND status IN ('pending','rejected')"
+        ),
+        {"st": status, "now": now, "rr": reason, "id": sample_id},
+    )
+    await session.execute(
+        text(
+            "INSERT INTO oa_instances "
+            "(inquiry_id, inquiry_version, oa_type, idempotency_key, submit_round, provider, status, created_at, updated_at) "
+            "VALUES (:sid, :ver, 'sample', :key, 1, 'self_oa', :st, :now, :now)"
+        ),
+        {
+            "sid": sample_id,
+            "ver": int(row.version or 1),
+            "key": f"chk-review-{sample_id}-{uuid4().hex}",
+            "st": status,
+            "now": now,
+        },
+    )
+    await session.commit()
+    if result.rowcount != 1:
+        raise RuntimeError(f"样品 {sample_id} 未能置为 {status}（状态不是 pending/rejected）")
