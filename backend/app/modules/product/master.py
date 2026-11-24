@@ -41,7 +41,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from sqlalchemy import Select, func, select, text
@@ -190,9 +190,14 @@ def _text(value: Any) -> str | None:
 
 
 def _json_value(value: Any) -> Any:
-    """把字段值转成能进 JSON 列、又能与本地值直接比较的形状。"""
+    """把字段值转成能进 JSON 列的形状。
+
+    Q6 决策3（主人拍板）：Decimal 存**原值字符串**（精确留档，历史 float 行不重写）；
+    "变没变"的比较不走这里_raw 形状，统一走 _normalize_for_compare 精确归一；
+    指纹原料在 build_sku_diff_key 里还原老 float 形状，存量差异键零换血。
+    """
     if isinstance(value, Decimal):
-        return float(value)
+        return format(value, 'f')
     return value
 
 
@@ -269,10 +274,44 @@ def build_sku_diff_key(
         "field_name": field_name or "",
     }
     if values is not None:
-        raw = json.dumps(values, ensure_ascii=False, sort_keys=True, default=str)
+        raw = json.dumps(_fingerprint_values(values, field_name),
+                         ensure_ascii=False, sort_keys=True, default=str)
         payload["values"] = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
     text = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return "skudiff-" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:48]
+
+
+def _fingerprint_values(values: Any, field_name: str | None) -> Any:
+    """Q6 决策3：指纹原料保持**老 float/int 形状**，存量差异键零换血。
+
+    快照/留痕已改存精确字符串，但指纹若跟着变形状，存量 pending 差异的
+    diff_key 会一次性失配→重复开单。这里只对**数值字段**把字符串还原成
+    float（整数字段还原 int），与历史 json.dumps 形状逐字一致；
+    16 位边界老 float 本就塌缩，还原后同样塌缩→键仍稳定。
+    文本字段/非数值字符串原样，枚举指纹不受影响。
+    """
+    if not isinstance(values, dict) or field_name is None:
+        return values
+    numeric = field_name in _INT_FIELDS or field_name in _DECIMAL_FIELDS
+    if not numeric:
+        return values
+
+    def legacy_shape(v: Any) -> Any:
+        if isinstance(v, Decimal):
+            return float(v)
+        if isinstance(v, str):
+            try:
+                dec = Decimal(v)
+            except (InvalidOperation, ValueError):
+                return v
+            if not dec.is_finite():
+                return v
+            if field_name in _INT_FIELDS and dec == dec.to_integral_value():
+                return int(dec)
+            return float(dec)
+        return v
+
+    return {key: legacy_shape(v) for key, v in values.items()}
 
 
 async def _upsert_diff(session: AsyncSession, fields: dict[str, Any]) -> tuple[IntegrationDiff, str]:
@@ -415,7 +454,7 @@ async def _authority_for(
 
 async def require_local_editable(session: AsyncSession, sku: Sku, values: dict) -> None:
     fields = {field for field in MASTER_FIELDS.keys() & values.keys()
-              if local_value(sku, field) != _json_value(values[field])}
+              if _normalize_for_compare(local_value(sku, field)) != _normalize_for_compare(values[field])}
     if not fields:
         return
     rows = (await session.execute(select(SkuFieldAuthority).where(
@@ -496,7 +535,7 @@ async def _raise_field_diffs(
         created += 1
         return created, "empty"
 
-    if confirmed_version and confirmed is not None and _json_value(incoming) != confirmed:
+    if confirmed_version and confirmed is not None and _normalize_for_compare(incoming) != _normalize_for_compare(confirmed):
         values = {"confirmed": confirmed, "incoming": _json_value(incoming)}
         await _upsert_diff(
             session,
@@ -533,7 +572,7 @@ async def _raise_field_diffs(
         created += 1
         return created, "differs"
 
-    if _json_value(incoming) == current:
+    if _normalize_for_compare(incoming) == _normalize_for_compare(current):
         return 0, "same"
 
     diff_type = _diff_conflict_type(field)
@@ -1264,15 +1303,25 @@ async def _confirm_field(
 
 
 def _normalize_for_compare(value: Any) -> str:
-    """把确认值归一成可比较的字符串。
+    """把值归一成可比较的**精确十进制文本键**。
 
     为什么不能直接比：`confirmed_value` 是 JSONB，`None` 与 `""` 都要能与
     本地值如实对照；数字 `30` 与 `"30"` 在不同来源下含义相同，不该因为类型
     差异被当成"变了"而多记一次确认。
+    Q6 决策3：数值再统一去掉尾零/科学计数（'1.90'、1.9、Decimal('1.900')
+    归一成同一个键），历史 float 行与新字符串行混比不刷伪差异；
+    16 位边界上老 float 糊掉的值与新精确值**判为不同**（修掉漏同步）。
+    非数字文本原样 str，None→"" 语义保持。
     """
     if value is None:
         return ""
-    return str(value)
+    try:
+        dec = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return str(value)
+    if not dec.is_finite():
+        return str(value)
+    return format(dec.normalize(), 'f')
 
 
 def _validate_resolution(diff: IntegrationDiff, resolution: str, note: str | None) -> None:
@@ -1538,8 +1587,9 @@ async def confirm_sku_diff(
                 authority.source_system, authority.external_identity
             ) == (diff.system_type, diff.external_id)
             if (resolution == RESOLUTION_TAKE_EXTERNAL or same_origin) and (
-                not same_origin or authority.source_value != diff.incoming_value
-                or diff.current_value != local_value(sku, diff.field_name)
+                not same_origin
+                or _normalize_for_compare(authority.source_value) != _normalize_for_compare(diff.incoming_value)
+                or _normalize_for_compare(diff.current_value) != _normalize_for_compare(local_value(sku, diff.field_name))
             ):
                 raise AppError(ErrorCode.VERSION_CONFLICT, "差异所用数据已变化，请刷新后核定最新差异", 409)
 
@@ -1757,13 +1807,11 @@ async def sku_master_overview(session: AsyncSession, sku_id: int) -> dict:
         confirmed = row.confirmed_value if row else None
         has_confirmed = bool(row and (row.confirmed_version or 0) > 0)
         # 「本地值已修改、尚未重新确认」：本地值与已确认值不一致（issue 建议第 4 条）。
-        # 判据用**字符串比较**并显式区分 None 与 ""：
-        #   - 从没确认过（has_confirmed=False）不算"已修改"，那是"未确认"；
-        #   - 确认值 `""`（合法的空规格）与本地 `None` 要不要算不一致？
-        #     算 —— 它们是不同的值，"确认了空、现在填了东西"必须提示。
-        _lv = "" if local is None else str(local)
-        _cv = "" if confirmed is None else str(confirmed)
-        differs = has_confirmed and (_lv != _cv)
+        # Q6 决策3：数值走精确归一比较（'1.90' 与 1.9 算同值，不刷"已修改"）；
+        # 文本保持原 str 语义并显式区分 None 与 ""（归一函数 None→"" 与原口径一致）。
+        differs = has_confirmed and (
+            _normalize_for_compare(local) != _normalize_for_compare(confirmed)
+        )
         fields.append(
             {
                 "field_name": field,

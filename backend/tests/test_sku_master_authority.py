@@ -146,7 +146,7 @@ def test_verified_authority_and_latest_source_prevent_stale_adoption():
             _confirm(session, other["id"], RESOLUTION_TAKE_EXTERNAL, "其他来源")
     with pytest.raises(AppError, match="通过差异核定"):
         asyncio.run(m.require_local_editable(session, _get(session, Sku, sku_id), {"weight": 20}))
-    newest = next(row for row in diffs if row["system_type"] == JUSHUITAN and row["incoming_value"] == 12)
+    newest = next(row for row in diffs if row["system_type"] == JUSHUITAN and row["incoming_value"] == '12')
     _confirm(session, newest["id"], RESOLUTION_TAKE_EXTERNAL, "已比对")
     assert _get(session, Sku, sku_id).weight == 12
 
@@ -546,7 +546,7 @@ def test_unmatched_source_merges_nonempty_fields_until_matching(match_by_ingest)
             source_updated_at=NOW - timedelta(minutes=1))
     _ingest(session, external_code="NEW-1", fields={"unit": None})
     assert _get(session, SkuIdentitySource, source_id).source_payload == {
-        "name": "新版名称", "unit": "箱", "weight": 5,
+        "name": "新版名称", "unit": "箱", "weight": '5',  # Q6 决策3：快照数值存原值字符串
     }
 
     sku_id = _sku(session, code="NEW-1", name="本地名称", unit="件")

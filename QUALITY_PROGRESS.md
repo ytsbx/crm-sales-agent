@@ -5386,3 +5386,14 @@
 
 - 当前工作树全量后端 2236 项通过。八批提交存在，但精度闭环仍未完成。调用实际规则上下文和求值函数，在隔离依赖下构造售价 2000 元、成本 1559.10 元：毛利 22.045%，当前 float 后两位舍入得到 22.05%，精确半偶为 22.04%，前者命中 >=22.05% 规则。须明确业务要按未舍入值还是按既有两位舍入比较。
 - 复用实际入参模型和 JSON 渲染函数复现：阈值带小数的大额 JSON 数字 .99 读入即变 .98，重试回放转换也会让 .99 变 .98。回放结果差异未证明业务金额被重复写入或改写。价格中心客户专属价仍在提交前转 JS Number，Node 复现四位单价末位变动；前端往返未做浏览器全链验收。无业务代码、生产或数据库改动。
+
+### 应收分期尾差现状核对
+
+- 本机调用 `split_amounts`，100 元按 33.33%、33.33%、33.34% 分得 33.33、33.33、33.34 元。前期按精确半偶取分，末期取余额。订单界面要求填写比例并预览各期金额，没有为末期补差单独提示。未修改业务代码或生产环境。
+
+### float→Decimal 专项 Q6 决策3 落地（ERP 同步商品主数据：快照字符串+精确比较+指纹零换血）
+
+- 主人拍板"ERP 同步商品选 3，精确比较"。product/master.py 三链拆分：① `_json_value` Decimal→原值字符串（format 'f'）进 JSONB 快照/留痕（local_value/incoming_value/confirmed 值/authority.source_value/source_payload 快照/详情展示），历史 float 行不重写、新行自愈为字符串；② 比较链统一 `_normalize_for_compare` 升级为精确十进制归一键（数值去尾零与科学计数，'1.90'/1.9/Decimal('1.900') 同键；非数字文本原样 str、None→"" 语义保持），覆盖 require_local_editable、confirmed 比对、同值跳过、权威过期判定、"本地已修改未确认"判定六处——历史 float 行与新字符串行混比不刷伪差异，16 位边界老 float 糊值（.98）与新精确值（.99）判为不同，修掉漏同步；③ `build_sku_diff_key` 增 `_fingerprint_values`：仅数值字段（_INT_FIELDS/_DECIMAL_FIELDS）把字符串/Decimal 还原老 float/int 形状进指纹原料，存量 pending 差异 diff_key 零换血、不重复开单；文本字段指纹不受影响。`_upsert_diff` 行内原始 != 保留（老行自愈更新为字符串，status 不动）。
+- 证据与测试：新增 tests/test_decimal_q6_master_sync.py 5 项（快照精确字符串、归一同键、16 位边界判不同、指纹跨形状逐字稳定含整数字段、文本字段不动）；test_sku_master_authority 2 处快照断言按决策改字符串口径（incoming_value=='12'、source_payload weight=='5'），其余权威/确认/停源用例零破坏。隔离库全量 2251 项通过（基线 2246+5）。
+- 边界说明：15 位有效数字内 float 序列化往返本就不丢（DBL_DIG=15），Q6 修的是 16 位边界（Numeric(16,2) 天花板）与混型伪差异；比较归一只影响"变没变"判定，不改任何落库金额刻度。前端跟进：master 展示值/快照值为字符串（归前端会话）。
+- 台账 review/FLOAT-REFACTOR.md Q6 条改✅落地、§5 残留核对移除 master:195 待决项。挂起三项（ERP 推单报文、外币 fx、收款比例 HALF_EVEN）维持不碰；毛利率逢五口径仍待主人拍板。只推 GitHub，服务器只读未部署。

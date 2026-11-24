@@ -198,13 +198,18 @@ JS Number 解析 15-16 位上限是前端既有问题，本轮后端改造不使
   新增 test_decimal_q5_threshold_config 8 项；conflicts 存储断言收紧字符串；
   全量 2246 通过。settings get_number 比率配置（default_min_margin 等）≤15 位
   往返安全，16 位边界同类残留记台账不扩范围。
-- **Q6（批4 新发现）master._json_value 三链耦合**：待决策，批4 未碰。该 helper 同时服务
-  ① JSONB 版本快照/authority.source_value 落库、② 本地值比较（local_value vs incoming、
-  confirmed vs incoming）、③ build_sku_diff_key 差异指纹。改 Decimal→字符串后：
-  历史 confirmed 行仍是 float，str≠float 会把"没变"判成"变了"→ 伪差异/伪冲突；
-  指纹 payload 形状变化 → 存量 pending 差异键一次性失配。候选：比较侧统一
-  Decimal(str(x)) 归一 + 接受指纹一次性 churn（需评估存量差异行数），或维持 float
-  仅快照侧字符串化（比较链继续 float，精度边界依旧）。涉及业务口径，先问主人。
+- **Q6（批4 新发现）master._json_value 三链耦合**：✅ **决策3 已落地（2026-11-24，主人拍板"ERP 同步商品选 3，精确比较"）**。
+  三链拆分：① 快照/留痕 `_json_value` Decimal→原值字符串（format 'f'，历史 float 行不重写，
+  新行自愈为字符串）；② 比较链统一升级 `_normalize_for_compare` 为精确十进制归一键
+  （数值去尾零/科学计数：'1.90'/1.9/Decimal('1.900') 同键→不刷伪差异/伪"已修改"；
+  非数字文本原样 str、None→"" 语义保持；16 位边界老 float 糊值与新精确值判不同→修掉漏同步），
+  覆盖 require_local_editable、confirmed 比对、同值跳过、权威过期判定（source_value/current_value）、
+  "本地已修改未确认"判定；③ 指纹 `build_sku_diff_key` 增 `_fingerprint_values`：仅数值字段
+  （_INT_FIELDS/_DECIMAL_FIELDS）把字符串/Decimal 还原老 float/int 形状→存量 diff_key 零换血
+  （16 位老 float 本就塌缩，还原后同塌缩，键仍稳定），文本字段指纹不受影响。
+  测试 test_decimal_q6_master_sync.py 5 项（精确字符串/归一同键/边界判不同/指纹跨形状稳定/文本不动）；
+  test_sku_master_authority 2 处快照断言改字符串口径（incoming_value '12'、source_payload weight '5'）。
+  全量 2251 绿。前端跟进：master 展示值/快照值为字符串。
 
 ## 4. 执行状态
 
@@ -252,8 +257,9 @@ JS Number 解析 15-16 位上限是前端既有问题，本轮后端改造不使
 允许保留类：① 比率/百分比输出 float（Q3：quote profit_rate/authorized_min_margin、
 targets 达成率、rules_engine 毛利率、analytics average_discount、pricing 权限比率）；
 ② 挂起三项（ERP 推单报文 erp/service:172-186 B06-04、外币 fx 遗留分支、收款比例
-HALF_EVEN B03-15 含 payment/schema ratios 注解）；③ 待决策 Q4 回放分支 audit.py:56
-（decimal_as_str=False）、Q5 settings get_number/_strict_ratio 配置侧、Q6 master:195；
+HALF_EVEN B03-15 含 payment/schema ratios 注解）；③ Q4 已落地（回放改精确原文解包；
+audit.py json_safe 的 decimal_as_str=False 模式保留给其它审计消费方）、Q5 settings
+get_number/_strict_ratio 配置侧（≤15 位往返安全，16 位边界记台账不扩范围）；Q6 已落地见决策行；
 ④ 非金额 float（dingtalk 登录态/token 过期、notification 重试次数、bizdoc PDF 列宽、
 相似度/百分位/停留天数等）；⑤ Agent 工具入参 float 注解（入口契约，已注释）；
 ⑥ 注释与 isinstance 守卫。除此之外 app/modules+app/core 无金额 float 强转残留。
