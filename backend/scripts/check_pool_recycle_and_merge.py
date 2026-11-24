@@ -783,7 +783,26 @@ async def main() -> int:
         # 所以再补一条确定性的：先在独立连接的事务里锁住那一行不提交，
         # 再发请求量耗时 —— 真取了行锁就会被卡住。
         # （实测价值：修复前有过 [200,200] 也有过 [200,422]，光靠并发断言守不住。）
-        await _assert_locks(session_factory=SessionLocal, case_id=race_case_id)
+        # ⚠️ 锁验证必须拿**还没裁定**的案件：bdd6efc9 起 resolve 对已结案的案件
+        # 在**加锁之前**就快拒（422「该撞单已裁定过」），根本走不到那把 FOR UPDATE
+        # —— 拿上面已结案的 race_case 量耗时会恒得 0 秒假红。再造一对开个新案件。
+        async with SessionLocal() as s:
+            lock_pair = f"{PREFIX}锁验{stamp}"
+            k1 = Customer(name=lock_pair, domain=f"{PREFIX}d.example.com",
+                          owner_id=a_id, status="active", pool_status="private")
+            k2 = Customer(name=f"{lock_pair}有限公司", domain=f"{PREFIX}d.example.com",
+                          owner_id=b_id, status="active", pool_status="private")
+            s.add_all([k1, k2])
+            await s.flush()
+            k2_id = k2.id
+            await s.commit()
+        async with SessionLocal() as s:
+            cases = await dup.open_cases_for_customer(
+                s, customer=await s.get(Customer, k2_id), source="manual", actor_id=1
+            )
+            lock_case_id = cases[0].id
+            await s.commit()
+        await _assert_locks(session_factory=SessionLocal, case_id=lock_case_id)
 
     finally:
         await cleanup()
