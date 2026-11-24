@@ -1904,7 +1904,11 @@ async function main() {
         if (!restored.result.value.includes('我手上最该先跟的商机是哪个？')) problems.push('工作台 AI 提问：失败后问题丢失，不能重试')
         await clickByText(client, '发送')
         // 安全前置强制 AI key 为空；验收真实提问已提交，并显示模型未配置的真实结果。
-        if (!await waitForText(client, 'Agent 还没有配置模型', 8000)) problems.push('工作台分析：重试后未显示服务端结果')
+        // ⚠️ 假红提示（2026-11-24）：这条断言依赖**后端进程** DEEPSEEK_API_KEY 为空。
+        // 守卫只查本脚本进程的 env——本地 backend/.env 配了真 key 时后端会真跑模型
+        // （实测日志见 4 次 chat/completions 200），这句永远等不到。
+        // 本地跑请用 `DEEPSEEK_API_KEY=` 清空后端启动环境（与 OA_BASE_URL= 同款）。
+        if (!await waitForText(client, 'Agent 还没有配置模型', 8000)) problems.push('工作台分析：重试后未显示服务端结果（若本地后端配了 DEEPSEEK_API_KEY 会真跑模型导致假红——请清空后端启动环境的 DEEPSEEK_API_KEY）')
         const after = await checkedJson('/agent/sessions', auth.token)
         const created = after.filter((row) => !before.some((previous) => previous.id === row.id))
         if (created.length !== 1) problems.push('工作台分析：重试没有创建唯一会话')
