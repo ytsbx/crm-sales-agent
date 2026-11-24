@@ -859,6 +859,7 @@ async def ship_sample(
     _assert_not_future(payload.shipped_at, "寄出日期")
     shipped_at = _parse_business_date(payload.shipped_at) if payload.shipped_at else svc.now()
     _assert_not_before(shipped_at, sample.made_at, "寄出日期", "制作完成时间")
+    before_status = sample.status
     shipment = SampleShipment(
         sample_request_id=sample.id,
         carrier=payload.carrier,
@@ -880,6 +881,7 @@ async def ship_sample(
         action="ship",
         business_type="sample",
         business_id=sample.id,
+        before={"status": before_status},
         after=after,
         ip=client_ip(request),
     )
@@ -920,6 +922,7 @@ async def sign_sample(
     _assert_not_future(payload.signed_at, "签收日期")
     signed_at = _parse_business_date(payload.signed_at) if payload.signed_at else svc.now()
     _assert_not_before(signed_at, sample.shipped_at, "签收日期", "寄出日期")
+    before_status = sample.status
     sample.status = "signed"
     sample.signed_at = signed_at
 
@@ -938,6 +941,7 @@ async def sign_sample(
         action="sign",
         business_type="sample",
         business_id=sample.id,
+        before={"status": before_status},
         after=after,
         ip=client_ip(request),
     )
@@ -969,6 +973,7 @@ async def feedback_sample(
 
     if sample.feedback == payload.feedback:
         return ok(await svc.detail(session, sample, user), "反馈没有变化")
+    before_feedback = sample.feedback
     sample.feedback = payload.feedback
     await svc.record_opportunity_touch(session, sample, "客户已反馈")
     await session.flush()
@@ -980,6 +985,7 @@ async def feedback_sample(
         action="feedback",
         business_type="sample",
         business_id=sample.id,
+        before={"feedback": before_feedback},
         after=after,
         ip=client_ip(request),
     )
@@ -1059,6 +1065,7 @@ async def register_sample_made(
         }
     )
     sample.made_events = events
+    before_made_at = sample.made_at
     sample.made_at = made_at
     # ---- 制作依据快照（2026-10-06）----
     # 显式指定"这次照哪几份文件做的"。校验三点：
@@ -1136,6 +1143,7 @@ async def register_sample_made(
         action="sample_made",
         business_type="sample",
         business_id=sample.id,
+        before={"made_at": before_made_at.isoformat() if before_made_at else None},
         after={"made_at": sample.made_at.isoformat()},
         ip=client_ip(request),
     )
@@ -1221,6 +1229,7 @@ async def confirm_sample(
     if payload.confirmed_at is not None:
         _assert_not_future(payload.confirmed_at, "客户确认时间")
     _assert_not_before(confirmed_at, sample.signed_at, "客户确认时间", "签收时间")
+    before_confirm = {"confirm_status": sample.confirm_status, "customer_confirmed_at": sample.customer_confirmed_at.isoformat() if sample.customer_confirmed_at else None}
     sample.confirm_status = decision
     sample.customer_confirmed_at = confirmed_at
     sample.confirm_remark = payload.remark
@@ -1238,6 +1247,7 @@ async def confirm_sample(
         action="sample_confirm",
         business_type="sample",
         business_id=sample.id,
+        before=before_confirm,
         after={
             "confirm_status": sample.confirm_status,
             "customer_confirmed_at": sample.customer_confirmed_at.isoformat(),

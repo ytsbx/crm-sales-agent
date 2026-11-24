@@ -5262,3 +5262,11 @@
 - lead：claim 补 before.owner_id=null；release 补 before.owner/status；discard 补 before.status/owner。
 - opportunity：change_stage 补 before.stage_id；lose 补 before.status/stage；reopen 补 before.status/stage/loss_reason。
 - 均为审计快照补全，不改业务行为；全量 2191 项通过。
+
+### P3 用例补强·第五批（打样状态迁移审计补 before）
+
+- ship/sign 补 before.status；feedback 补 before.feedback；
+  sample_made 补 before.made_at；sample_confirm 补 before.confirm_status/confirmed_at。
+- 仅审计快照补全，不改业务行为；全量 2191 项通过。
+- 创建幂等（其余模块）经核实**不做**：弹窗 confirmLoading=isPending 已挡双击与弱网再点
+  （LeadListPage:693、OpportunityListPage:424），重复概率极低且可删，不值得动库+改前端。
