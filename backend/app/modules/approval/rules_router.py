@@ -248,7 +248,7 @@ async def sandbox(
     quote = await quote_service.get_visible_quote(session, user, version.quote_id)
     items = await quote_service.version_items(session, version.id)
     ctx = await rules_engine.build_context(
-        session, quote=quote, version=version, items=items, fx=version.exchange_rate_snapshot
+        session, quote=quote, version=version, items=items
     )
 
     rules = (

@@ -717,23 +717,24 @@ async def apply_exchange_rate_snapshot(
 
 
 def convert_cny_to(
-    value: Decimal | None, *, to_currency: str | None, rate: Decimal | None
+    value: Decimal | None, *, to_currency: str | None
 ) -> tuple[Decimal | None, str | None]:
     """把**人民币**金额折成目标币种，返回 (金额, 警告)。
 
     汇率表约定：`rate` 表示「1 单位目标币种 = rate 元人民币」，所以人民币 → 外币是除。
 
-    只支持「人民币 ↔ 某外币」这一种折算。这是因为系统只做国内业务、
-    汇率表也只维护对人民币的汇率；若将来真要报非人民币对非人民币的价，
-    必须先补一张交叉汇率表，届时这里应显式报错而不是硬算一个错数字。
-    缺汇率时不猜，返回警告交给调用方——静默按 1:1 会把人民币价当成美元价。
+    只支持人民币：外币折算死行已拆除（主人 2026-11-24 确认本部署无外币老单、
+    也不会存在外币），非 CNY 目标显式拒绝（项目规矩：非人民币明确拒绝），
+    不再静默算一个看着像真的数。
     """
     target = (to_currency or "CNY").upper()
     if value is None or target == "CNY":
         return value, None
-    if rate is None or rate <= 0:
-        return None, f"报价币种是 {target}，但该报价版本没有汇率快照，无法把人民币目标价折算过去，已忽略"
-    return (value / rate).quantize(Decimal("0.0001")), None
+    raise AppError(
+        ErrorCode.STATUS_NOT_ALLOWED,
+        f"报价币种是 {target}：本系统只支持人民币，外币折算已拆除",
+        400,
+    )
 
 
 async def require_quote_customer_contact(
@@ -913,7 +914,6 @@ async def create_quote(
             target_price, fx_warning = convert_cny_to(
                 opp_item.target_price,
                 to_currency=version.currency,
-                rate=version.exchange_rate_snapshot,
             )
             if fx_warning:
                 item_warnings.append(fx_warning)
@@ -956,8 +956,7 @@ async def create_quote(
                 quoted_price, _ = convert_cny_to(
                     lookup_values["unit_price"],
                     to_currency=version.currency,
-                    rate=version.exchange_rate_snapshot,
-                )
+                    )
                 item_warnings.append(
                     f"SKU {sku_label}：拟报价取系统适用价 ¥{lookup['unit_price']}（{lookup['source_label']}），"
                     f"客户目标价 ¥{target_price} 已单独记录"
@@ -1002,9 +1001,8 @@ async def create_quote(
         "quote_no": quote.quote_no,
         "version_id": version.id,
         "currency": version.currency,
-        "exchange_rate_snapshot": (
-            float(version.exchange_rate_snapshot) if version.exchange_rate_snapshot else None
-        ),
+        # 外币死行拆除（主人确认无外币数据）：CNY 版本汇率快照恒 None，float 转换半截删除
+        "exchange_rate_snapshot": None,
         "item_count": len(await version_items(session, version.id)),
         "total_amount": version.total_amount,
         # 先攒的（联系人已删除等）+ 明细循环里攒的，一起交出去
@@ -1341,13 +1339,11 @@ async def _build_custom_item_snapshot(
     _assert_floor_in_range(minimum_price)
     # 利润必须与报价同币种：外币单要先把人民币成本折过去再减，
     # 否则会算出"50 美元 − 350 人民币"这种假数字（与定价服务 cost_in_quote_currency 同口径）
-    fx = version.exchange_rate_snapshot
-    foreign = (version.currency or "CNY").upper() != "CNY" and bool(fx) and fx > 0
-    cost_in_quote = (basis_cost / fx) if foreign else basis_cost
+    cost_in_quote = basis_cost
     profit = price - cost_in_quote
     profit_rate = (profit / price) if price else ZERO
     # 比最低保护价同样要同币种：保护价是人民币，先把报价折过去
-    price_cny = (price * fx) if foreign else price
+    price_cny = price
     below_floor = price_cny < minimum_price
 
     # 需求被报价引用即视为已转下游（只在待评估/开发中时翻转，
@@ -1693,9 +1689,7 @@ async def apply_current_basis_to_item(
         item.minimum_price_snapshot = fresh_floor
 
     # ---- 利润：与报价同币种（人民币成本折过去再减）----
-    fx = version.exchange_rate_snapshot
-    foreign = (version.currency or "CNY").upper() != "CNY" and bool(fx) and fx > 0
-    cost_in_quote = (basis_cost / fx) if foreign else basis_cost
+    cost_in_quote = basis_cost
     profit = price - cost_in_quote
     item.profit_snapshot = profit
     item.profit_rate_snapshot = _stored_profit_rate(
@@ -2211,7 +2205,6 @@ async def price_drift(
     quote = await session.get(Quote, version.quote_id)
     items = await version_items(session, version.id)
     customer = await session.get(Customer, quote.customer_id) if quote else None
-    fx = version.exchange_rate_snapshot
     rows: list[dict] = []
     any_drift = False
     for item in items:
@@ -2244,7 +2237,6 @@ async def price_drift(
             current, _ = convert_cny_to(
                 lookup_values["unit_price"],
                 to_currency=version.currency,
-                rate=fx,
             )
         hand_priced = item.price_source is None
         drift = bool(
@@ -2275,7 +2267,6 @@ async def refresh_prices(
     quote = await session.get(Quote, version.quote_id)
     items = await version_items(session, version.id)
     customer = await session.get(Customer, quote.customer_id)
-    fx = version.exchange_rate_snapshot
     refreshed = 0
     skipped = 0
     for item in items:
@@ -2297,7 +2288,6 @@ async def refresh_prices(
         new_price, _ = convert_cny_to(
             lookup_values["unit_price"],
             to_currency=version.currency,
-            rate=fx,
         )
         rebuilt = await build_item_snapshot(
             session,
@@ -2410,8 +2400,6 @@ async def submit_for_approval(
     )
     # 审批判定统一在**人民币口径**下做：成本快照与 minimum_price_snapshot 都是人民币存的，
     # 而 quoted_price 可能是外币。不折算就会拿 3.92 美元去比 25.44 人民币，必然误判需审批。
-    fx = version.exchange_rate_snapshot
-    foreign = (version.currency or "CNY").upper() != "CNY" and fx and fx > 0
     # ---- 审批分档也要用**人民币**金额（第二轮审查 P2，2026-10-12）----
     #
     # `version.total_amount` 是**计价币种**的金额。外币报价直接拿它比档位，
@@ -2420,18 +2408,14 @@ async def submit_for_approval(
     # 折算只认**这一版快照里的汇率**（与上面所有金额判定同一个 fx），
     # 缺汇率时不猜（按 1:1 顶上去等于把美元当人民币报批）。
     currency_code = (version.currency or "CNY").upper()
-    if currency_code != "CNY" and not (fx and fx > 0):
+    # 外币死行拆除（主人确认无外币数据）：非 CNY 显式拒绝，档位金额直取人民币原值
+    if currency_code != "CNY":
         raise AppError(
-            ErrorCode.REQUIRED_FIELD_MISSING,
-            f"该版本币种是 {currency_code}，但没有汇率快照，无法折算人民币金额来确定审批档位。"
-            "请先在版本上补汇率（或新建版本重新取汇率），再提交审批。",
-            422,
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"版本币种是 {currency_code}：本系统只支持人民币，外币折算已拆除",
+            400,
         )
-    tier_amount = (
-        (version.total_amount or Decimal(0)) * fx
-        if currency_code != "CNY"
-        else version.total_amount or Decimal(0)
-    )
+    tier_amount = version.total_amount or Decimal(0)
     # 分档比较与留痕都用 Decimal 原值（float→Decimal 批2）：比较本已 Decimal
     # （见下方 tier_amount <= Decimal(cap)），这里不再为留痕提前转 float 丢分。
     total_amount_cny = tier_amount
@@ -2458,7 +2442,7 @@ async def submit_for_approval(
             if item_cost <= 0:
                 # 无成本记录：硬底无从计算，由保护价/利润判定兜住（A06 同口径）
                 continue
-            price_cny = (item.quoted_price * fx) if foreign else item.quoted_price
+            price_cny = item.quoted_price
             floor_cny = item_cost * factor
             if price_cny < floor_cny - eps:
                 # 脱敏纪律：底价由成本推出（mode=cost 时就是成本本身），
@@ -2473,9 +2457,9 @@ async def submit_for_approval(
             total_qty += item.quantity
         # 整单优惠摊到单价后的加权均价同样不得低于加权硬底
         if not hard_hits and total_qty:
-            revenue_cny = (version.total_amount * fx) if foreign else version.total_amount
+            revenue_cny = version.total_amount
             if not cost_includes_freight:
-                revenue_cny -= (version.logistics_amount * fx) if foreign else version.logistics_amount
+                revenue_cny -= version.logistics_amount
             # 零/负产品收入也必须硬拒；代收运费不能抵消优惠后的产品亏损。
             if revenue_cny is not None:
                 avg_price = revenue_cny / total_qty
@@ -2502,7 +2486,7 @@ async def submit_for_approval(
     for item in items:
         base_cost = item_unit_product_cost(item, includes_freight=cost_includes_freight)
         price = item.quoted_price
-        price_cny = (price * fx) if foreign else price
+        price_cny = price
         # ⚠️ **成本不完整、且这条明细没有保护价可依据 → 必须审批**
         # （第七批 P1-1 的最后一块）。
         #
@@ -2617,7 +2601,7 @@ async def submit_for_approval(
     # **任何审批都不该放过**，因此在这里硬拒（422），不生成可批的审批单。
     # 与下面硬底价那段同一个范式，出口文案也照它的写法给。
     _total_for_check = (
-        (version.total_amount * fx) if foreign else version.total_amount
+        version.total_amount
     ) or ZERO
     if _total_for_check <= 0:
         raise AppError(
@@ -2650,7 +2634,7 @@ async def submit_for_approval(
             item_unit_product_cost(item, includes_freight=cost_includes_freight) <= 0
             for item in items
         )
-        revenue_cny = (revenue * fx) if foreign else revenue
+        revenue_cny = revenue
         cost_total = sum(
             (
                 item_unit_product_cost(item, includes_freight=cost_includes_freight)
@@ -2662,7 +2646,7 @@ async def submit_for_approval(
         # 非运费口径：收入与成本一起把运费剔除（用**本版拆分列**，不重新猜分类）
         if not cost_includes_freight:
             logistics_cny = (
-                (version.logistics_amount * fx) if foreign else version.logistics_amount
+                version.logistics_amount
             ) or ZERO
             revenue_cny = revenue_cny - logistics_cny
         total_qty = sum((item.quantity for item in items), ZERO)
@@ -2726,7 +2710,7 @@ async def submit_for_approval(
     from app.modules.approval import rules_engine
 
     decision = await rules_engine.route(
-        session, quote=quote, version=version, items=items, fx=fx
+        session, quote=quote, version=version, items=items
     )
     rule_trace: dict | None = None
     co_sign: dict | None = None
@@ -2760,7 +2744,7 @@ async def submit_for_approval(
                     "total_amount": total_amount_cny,
                     "original_amount": version.total_amount or Decimal(0),
                     "currency": currency_code,
-                    "exchange_rate": float(fx) if currency_code != "CNY" and fx else None,
+                    "exchange_rate": None,  # 外币死行拆除：CNY 恒 None，字段形状保留
                     "auto_passed": True,
                     "rule_trace": rule_trace,
                 }),
@@ -2820,7 +2804,7 @@ async def submit_for_approval(
         "tier_amount_cny": amount,
         "original_amount": version.total_amount or Decimal(0),
         "currency": currency_code,
-        "exchange_rate": float(fx) if currency_code != "CNY" and fx else None,
+        "exchange_rate": None,  # 外币死行拆除：CNY 恒 None，字段形状保留
         "node_label": node_label,
         "node_role_codes": node_roles,
     }

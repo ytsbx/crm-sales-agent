@@ -125,7 +125,7 @@ async def test_delete_customer_followup_restores_evidence_or_marks_unknown(case,
 async def test_complete_allocation_all_consumers(case):
     raw,s,q,v=case;p=receipt(raw);await allocate(raw,s,p)
     assert await svc.confirmed_amounts(s,[1,2])=={1:D(100),2:D(100)}
-    context=await rules_engine.build_context(s,quote=q,version=v,items=[],fx=None)
+    context=await rules_engine.build_context(s,quote=q,version=v,items=[])
     assert not context['customer_has_overdue']
     assert (await tools.get_receivables_summary(tools.ToolContext(s,USER,1),1))['overdue_count']==0
     assert (await insights.receivable_risk(s,USER,order_id=1))['summary']['overdue_count']==0
@@ -217,7 +217,7 @@ async def test_moved_receipt_overdue_refresh_and_details(case):
     assert raw.get(ReceivablePlan,1).status=='overdue'
     details=(await router.plan_payments(2,USER,s))['data']
     assert len(details)==1 and details[0]['received_amount']==200 and details[0]['plan_allocated_amount']==200
-    assert (await rules_engine.build_context(s,quote=q,version=v,items=[],fx=None))['customer_has_overdue']
+    assert (await rules_engine.build_context(s,quote=q,version=v,items=[]))['customer_has_overdue']
 
 
 @pytest.mark.anyio

@@ -921,10 +921,9 @@ async def calculate_price(
 ) -> dict:
     """核价。
 
-    内贸口径（默认）：全人民币，无退税，行为与以前完全一致。
-    外贸口径（可选）：传入 currency ≠ CNY 且给 exchange_rate 时，
-    报价按外币计价、成本按汇率折算；再叠加出口退税。
-    **两种口径共用同一套代码，不需要切换模式**——传了参数就是外贸，不传就是内贸。
+    内贸口径：全人民币，无退税。
+    外币死行拆除（主人 2026-11-24 确认无外币老单、也不会存在外币）：
+    非 CNY 入口显式拒绝，不再"给外币静默算人民币数字"。
 
     PRD §13 的两类底价在这里**分开返回**，不再合并：
     - `protection_price`：最低保护价，来自价格规则/客户特殊价，是「公司规定不能低于」；
@@ -946,6 +945,13 @@ async def calculate_price(
       里是含运费的，回看/重算老版本时必须按老口径，否则等于改写已发出去的报价。
       调用方从这里传入口径，见 `quote/service.build_item_snapshot`。
     """
+    # 外币显式拒绝（死行拆除配套）：项目规矩非人民币明确拒绝
+    if currency.upper() != "CNY":
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"报价币种是 {currency}：本系统只支持人民币，外币折算已拆除",
+            422,
+        )
     # 停用/删除的 SKU 不接新业务（issue #7：从前只判 `deleted_at`，
     # 停用之后查价照样返回 status=ok 与有效适用价，"停售"对销售完全失效）。
     from app.modules.product.service import require_available_sku
@@ -1160,32 +1166,13 @@ async def calculate_price(
         else [None, None]
     )
 
-    # ---- 外贸口径（可选）：把价格类数字统一折成计价币种，避免"美元价 vs 人民币底线"这种错比 ----
-    is_foreign = currency.upper() != "CNY"
+    # ---- 外贸口径死行拆除（主人 2026-11-24 确认无外币老单、也不会存在外币）----
+    # 原"折成计价币种"分支与缺汇率 warning 不可达，已删；CNY 直通路径与字段形状保留。
     fx = exchange_rate
-    if is_foreign and (fx is None or fx <= 0):
-        warnings.append(f"报价币种是 {currency}，但没有提供汇率，暂按人民币口径核价")
-        fx = None
     cost_for_profit = base_cost
     #: 底价的**人民币原值**。报价明细的 minimum_price_snapshot 必须存人民币
-    #: （前端那个格子写的是 ¥，审批与整单加权底价也都在人民币口径下比），
-    #: 而下面外贸分支会把 floor_price 折成计价币种——所以先留一份原值出去。
+    #: （前端那个格子写的是 ¥，审批与整单加权底价也都在人民币口径下比）。
     floor_price_cny = floor_price
-    if is_foreign and fx:
-        def convert(value: Decimal | None) -> Decimal | None:
-            return None if value is None else (value / fx).quantize(Decimal("0.0001"))
-        standard_price = convert(standard_price)
-        recommended = convert(recommended)
-        floor_price = convert(floor_price)
-        # 授权底价同样必须折成计价币种：下面 below_authorized 拿它和 check_price 比，
-        # 不折就会拿美元价 vs 人民币底线（10 号文档第八节踩过的坑，这里别改回去）
-        floor_from_margin = convert(floor_from_margin)
-        if hard_floor_price is not None:
-            hard_floor_price = convert(hard_floor_price)
-        if protection_price is not None:
-            protection_price = convert(protection_price)
-        recommended_range = [convert(recommended_range[0]), convert(recommended_range[1])]
-        cost_for_profit = convert(base_cost)
 
     def metrics(price: Decimal | None) -> tuple[Decimal | None, Decimal | None]:
         if price is None or not has_cost:
@@ -1211,24 +1198,19 @@ async def calculate_price(
     # 主人口径：没有外币、不做汇率、更不存在"国内业务的出口退税"。
     # 与其靠"默认值是 0"，不如在国内路径上直接拒绝非零值 ——
     # 默认值可以被配置改掉，而这个判断不会。
-    if not is_foreign and refund_rate:
+    if refund_rate:
         raise AppError(
             ErrorCode.PARAM_ERROR,
             "国内业务（人民币）不存在出口退税，不能传入退税率；"
             "请去掉退税率后重新核价",
             422,
         )
-    if refund_rate is None and is_foreign:
-        refund_rate = Decimal(
-            str(await settings_service.get_number(session, "export_tax_refund_rate", "ratio", 0.0))
-        )
+    # 外币默认退税率读取死行已拆除（无外币数据）；国内非零退税率拒绝守卫保留。
     refund_rate = refund_rate or ZERO
 
     # 退税：简化按「商品成本 × 退税率」估算（生产企业免抵退更复杂，待财务给准确口径）
     tax_refund_cny = (goods_cost * refund_rate).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP) if refund_rate else ZERO
-    tax_refund = tax_refund_cny if not (is_foreign and fx) else (tax_refund_cny / fx).quantize(
-        Decimal("0.0001")
-    )
+    tax_refund = tax_refund_cny  # 外币折算半截死行拆除
     profit_with_refund = (profit + tax_refund) if profit is not None else None
     profit_rate_with_refund = (
         (profit_with_refund / check_price) if profit_with_refund is not None and check_price else None
@@ -1285,12 +1267,10 @@ async def calculate_price(
 
     # 绝对底价触发器：不算进 approval_required（它根本不是"需审批"，是"不可批"），
     # 提交审批/核价权限检查会单独立拿这个标志做硬拒绝（D7）。
-    # 外币但无汇率时整个口径是混的（上面已 warning"暂按人民币口径"），
-    # 此时拿美元数字硬比人民币底价会假阳性硬拒——宁可不判，也不误杀
+    # 外币缺汇率混口径守卫死行已拆除（无外币数据）；CNY 硬底价判定保留。
     below_hard_floor = bool(
         hard_floor_price is not None
         and check_price is not None
-        and not (is_foreign and fx is None)
         and check_price < hard_floor_price - Decimal("0.0001")
     )
     if quoted_price is not None and below_hard_floor:

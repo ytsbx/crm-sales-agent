@@ -5427,3 +5427,11 @@
 - 主人批准"应该可以删"：audit.json_safe 的 decimal_as_str=False（转 float 再复印）老模式拆除——Q4 后全 app/测试零调用方（scripts/ops 仅旧备份快照命中）；现传 False 显式 ValueError 而非静默丢精度；True 原文字符串、None 保留 Decimal 两档不变。新增 test_decimal_q4_replay 1 项（False 报错/True 字符串/None 原值）。全量 2266 绿。
 - 外币事实纠偏（主人 2026-11-24）：**本部署根本没有外币老单、也不会存在外币**。此前"档案重印出口"顾虑基于历史数据可能存在之假设，主人以业务事实否定 → quote 994/2751/2811 等 fx 读出口在本部署实为死代码；删除待主人一个字（入口 trade_mode 开关与 ERP 同步不拦仍留作守卫，防未来外部传入）。台账§5 已留痕。
 - 只推 GitHub，服务器只读未部署。
+
+### float→Decimal 专项：外币 fx 死行拆除（2026-11-24，主人拍板"删"）
+
+- 拆除清单：quote/service serialize 汇率快照与两处输出 float(fx) 半截→None（字段形状保留，前端 pricing.ts exchange_rate?: number|null 契约不撕）；convert_cny_to 外币折算半截与 rate 参数删除、非 CNY 显式 AppError；10 处 `(X*fx) if foreign else X` 条件半截简化为 CNY 侧、foreign/fx 死定义删除；审批档位外币缺汇率守卫改非 CNY 显式拒绝、tier_amount 直取人民币原值；rules_engine.route/build_context 的 fx 参数链与 to_cny 外币半截删除（调用方 quote/rules_router/batch12 测试同步）。
+- pricing/service：外贸折算块（standard/recommended/floor/授权/hard/protection/range/cost 折外币）、缺汇率 warning、外币默认退税率读取、tax_refund 折算半截、硬底价外币混口径子句删除；calculate_price 入口非 CNY 显式 422 拒绝（不再"给外币静默算人民币数字"）；国内非零退税率拒绝守卫保留并简化为 `if refund_rate:`。
+- 保留不动：ExchangeRate 模型/表、resolve/apply_exchange_rate_snapshot 写路径（CNY 置 None）、入口 trade_mode 开关、审计字段标签、cost_in_quote_currency 等字段形状（CNY 恒原值/None）；pricing/router 汇率表序列化 float(rate) 重分类允许保留（比率展示、活 CRUD）。
+- 回归锁 tests/test_decimal_fx_removal.py（3 例：CNY 直通/convert 外币显式拒/核价外币显式拒）。隔离全量 **2269 passed**，pyflakes 清零。
+- 只推 GitHub，服务器只读未部署。剩余欠账：ERP 推单报文契约核实（B06-04）；部署与 Q7/B03-15 两份业务打招呼归主人/流程。

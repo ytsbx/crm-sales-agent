@@ -514,18 +514,15 @@ async def build_context(
     quote: Quote,
     version: QuoteVersion,
     items: list[QuoteItem],
-    fx: Decimal | None,
 ) -> dict:
     """把一张报价单翻译成条件求值可用的上下文（全部国内口径、人民币）。"""
     # 函数内导入：`quote.service` 在提交审批时会 import 本模块，
     # 模块级互相导入会成环。这里只要两个纯函数，没有初始化副作用。
     from app.modules.quote import service as quote_service
 
-    foreign = (version.currency or "CNY").upper() != "CNY" and fx and fx > 0
-
     def to_cny(amount: Decimal) -> Decimal:
-        """把**计价币种**的金额折成人民币。只用于报价侧的金额。"""
-        return amount * fx if foreign else amount
+        """外币死行拆除（主人确认无外币数据）：金额恒人民币，原样返回。"""
+        return amount
 
     def cny_as_is(amount: Decimal) -> Decimal:
         """人民币金额原样返回。
@@ -826,13 +823,12 @@ async def route(
     quote: Quote,
     version: QuoteVersion,
     items: list[QuoteItem],
-    fx: Decimal | None,
 ) -> RuleDecision | None:
     """提交审批时的路由判定：返回第一条命中的规则；没有规则命中返回 None（走原金额分档）。"""
     active = await load_active_rules(session)
     if not active:
         return None
-    ctx = await build_context(session, quote=quote, version=version, items=items, fx=fx)
+    ctx = await build_context(session, quote=quote, version=version, items=items)
     for rule, payload in active:
         matched, detail = evaluate_conditions(payload.get("conditions") or [], ctx)
         if matched:

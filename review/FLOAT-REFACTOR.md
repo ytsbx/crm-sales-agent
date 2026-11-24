@@ -152,7 +152,7 @@
 | 位置 | 内容 | 原因 |
 |---|---|---|
 | erp/service.py:172-186 | 推单报文 pay_amount/qty/price/amount float | B06-04：聚水潭实际接口数字类型/精度未核实，外部契约取舍 |
-| quote/service.py:985/2739/2799、pricing/router.py:2013、rules_engine.py:439(to_cny 外币分支) | 汇率快照/汇率表序列化 float | 外币遗留分支；CNY-only 规则下是否保留/删除待用户单独决定（进度 1310 行） |
+| quote/service.py 汇率快照/输出 float(fx)、convert_cny_to 外币半截与 rate 参数、10 处 `(X*fx) if foreign else X`、审批档位外币守卫；pricing/service 外贸折算块/缺汇率 warning/外币默认退税率/退税折算/硬底价外币子句；rules_engine fx 参数链与 to_cny 外币半截 | 外币折算死行 | ✅ **已拆除（2026-11-24 主人拍板"删"，事实：本部署无外币老单、也不会存在外币）**：非 CNY 显式拒绝（convert_cny_to/审批档位/核价入口），不再静默算人民币数字贴外币标签；CNY 直通路径与 exchange_rate 字段形状（恒 None）保留；ExchangeRate 模型/表、resolve/apply 写路径、入口 trade_mode 开关、国内非零退税率守卫保留。pricing/router:2013 汇率**表**序列化 float(rate) 重分类为允许保留（比率展示、活 CRUD、≤15 位往返安全）。回归锁 test_decimal_fx_removal 3 例，全量 2269 绿 |
 | payment 收款比例拆分 HALF_EVEN（B03-15） | split_amounts 默认银行家舍入 | ✅ **决策1 已落地（主人 2026-11-24 拍板"统一四舍五入"）**：split_amounts 显式 ROUND_HALF_UP 与 core/money 同口径；顺带统一全系统结算钱/量纲 quantize 默认半偶残留（order 总额、quote 底价/版本六金额/3207/3210、logistics 重量体积/计费、pricing 单价/退税、insights 金额、reconcile 对账串）共 24 处补 rounding=ROUND_HALF_UP；fx 挂起路径/守卫/统计类不动。守恒锁/负数期拒绝不变；已落库计划不动，新拆账/预览生效（口径变更主人打招呼）。测试 test_decimal_b03_15_split_half_up.py 5 项。全量 2265 绿 |
 
 ## 2. 分批计划（每批：改造→定向精度回归→全量回归→回写进度→提交只推 GitHub）
@@ -279,8 +279,9 @@ JS Number 解析 15-16 位上限是前端既有问题，本轮后端改造不使
 
 允许保留类：① 比率/百分比输出 float（Q3：quote profit_rate/authorized_min_margin、
 targets 达成率、rules_engine 毛利率**展示值**（判断已改真值 Q7）、analytics average_discount、pricing 权限比率）；
-② 挂起项（ERP 推单报文 erp/service:172-186 B06-04、外币 fx 遗留读出口——**主人 2026-11-24 确认本部署无外币老单、也不会存在外币**，
-该读出口实为死代码，删除待主人一个字；入口 trade_mode 开关与 ERP 同步不拦仍留作守卫）、B03-15 已落地见决策行；③ Q4 已落地（回放改精确原文解包；audit.py json_safe 的 decimal_as_str=False float 复印模式
+② 挂起项（ERP 推单报文 erp/service:172-186 B06-04；**外币 fx 死行已拆除✅** 2026-11-24 主人拍板"删"，
+事实：本部署无外币老单、也不会存在外币；非 CNY 显式拒绝，入口 trade_mode 开关与 ERP 同步不拦仍留作守卫；
+汇率表序列化 float(rate) 属允许保留比率展示）、B03-15 已落地见决策行；③ Q4 已落地（回放改精确原文解包；audit.py json_safe 的 decimal_as_str=False float 复印模式
 **已拆除**——2026-11-24 主人批准，Q4 后零调用方，传 False 显式 ValueError）、Q5 settings
 get_number/_strict_ratio 配置侧（≤15 位往返安全，16 位边界记台账不扩范围）；Q6 已落地见决策行；
 ④ 非金额 float（dingtalk 登录态/token 过期、notification 重试次数、bizdoc PDF 列宽、
