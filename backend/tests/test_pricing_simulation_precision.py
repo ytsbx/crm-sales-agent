@@ -51,7 +51,7 @@ async def test_candidate_amount_matches_formal_line_without_float_roundtrip(case
     row = (await router.simulate_pricing(payload, USER, session))['data']['scenarios'][0]
     expected = line_amount(D(quantity), D(price))
     assert row['amount_exact'] == str(expected)
-    assert row['amount'] == float(expected)
+    assert row['amount'] == expected
     assert row['quoted_price_exact'] == price
 
 

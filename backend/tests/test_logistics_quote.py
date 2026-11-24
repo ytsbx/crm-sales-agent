@@ -50,8 +50,10 @@ async def test_logistics_confirmation_and_history_keep_exact_cents(monkeypatch):
     def confirmation(amount):
         return LogisticsCalculateRequest(sku_id=1, save=True, selected_rate_id=1, expected_amount=amount)
 
+    # 批4 后 selected["amount"] 已是精确 Decimal，原样回传不再漂移；
+    # 用旧 float 客户端的丢尾数回传验证"运费已变化"防线仍然生效。
     with pytest.raises(AppError, match="运费已变化"):
-        await logistics_router.calculate(confirmation(selected["amount"]), request, user, session)
+        await logistics_router.calculate(confirmation(float(selected["amount"])), request, user, session)
     assert not rows
 
     await logistics_router.calculate(confirmation(selected["amount_exact"]), request, user, session)

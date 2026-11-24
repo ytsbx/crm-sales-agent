@@ -1288,7 +1288,7 @@ async def lookup_price(
         {
             "customer": {"id": customer.id, "name": customer.name, "level": customer.level},
             "sku": {"id": sku.id, "sku_code": sku.sku_code, "name": sku.name},
-            "quantity": float(quantity),
+            "quantity": quantity,
         }
     )
 
@@ -1307,7 +1307,7 @@ async def lookup_price(
             # 货成本口径与核价一致：采购+生产+包装+加工。用模型上的 total_cost，
             # 不要在这里手写四项相加 —— 第七批 7.4 之后这四列可空，
             # 手写相加遇到 NULL 会直接 TypeError。
-            result["cost"] = float(cost.total_cost)
+            result["cost"] = cost.total_cost
             # 未提供的成本项按 0 计入合计，必须一并说出"缺哪几项"，
             # 否则查价页会把它当成完整成本，毛利率看着偏高却没人知道原因
             missing = cost.missing_components
@@ -1610,7 +1610,7 @@ async def simulate_pricing(
                 "quoted_price_exact": str(price),
                 "profit": result["profit"],
                 "profit_rate": result["profit_rate"],
-                "amount": float(amount),
+                "amount": amount,
                 "amount_exact": str(amount),
                 "approval_required": result["approval_required"],
                 "reasons": reasons,
@@ -1989,7 +1989,7 @@ async def products_for_pricing(
                 "product_name": product_name,
                 "moq": sku.moq,
                 "unit": sku.unit,
-                "weight": float(sku.weight) if sku.weight is not None else None,
+                "weight": sku.weight if sku.weight is not None else None,
             }
             for sku, product_name in rows
         ]

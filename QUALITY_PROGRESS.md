@@ -5323,3 +5323,11 @@
 - 连带修复（批1 基础设施补漏）：11 个测试文件里本地自搭 `FastAPI()` 仍用旧 JSONResponse，全局 Decimal 编码器注册生效后跨测试污染致 json.dumps TypeError（单跑不炸、全量炸）；统一改 `FastAPI(default_response_class=DecimalJSONResponse)` 与主应用接线一致。
 - 测试断言收紧：batch12 审计 allocations 与序列化结果按 amount==amount_exact 逐字相等（比旧 float 断言更严）；order_finance_summary_precision 数字字段断言 float→Decimal 逐位相等。新增 test_decimal_batch3_order_payment 4 项（订单/订单行大金额 Decimal+线路逐位、草稿 DB 往返、财务概览大金额线路）。替身 SQLite 的 Numeric 经 float 存储属测试环境限制（生产 PG 精确），DB 往返用例改用 double 可精确表示值，大金额精度由序列化层用例保证。
 - 全量 2220 项通过。提交只推 GitHub；未部署、未动库、服务器未碰；另一会话未提交改动不纳入。
+
+### float→Decimal 专项 · 批4 落地（2026-11-24，本会话）
+
+- pricing/service `_f` 透传（成本四项/总额、价格规则/客户协议价/权限/物流费率序列化）；纯比率出参（target_margin/minimum_margin/discount_limit）按 Q3 显式 float 保前端契约；resolve_discount_limit 注解纠正为 Decimal（库列本就是 Numeric，比较侧批前已 Decimal(str()) 归一）；审批话术去掉 float() 强转；rule_payload 两分支补 unit_price/standard_price/minimum_price 的 *_exact（查价→报价回填往返链）。
+- pricing/logistics `_f` 原 round(float,4) 对库刻度 Numeric(10,4)/(10,2) 无损，改 Decimal 透传；试算 amount/by_weight/by_volume 去 float 并补 by_*_exact。pricing/router 查价 quantity/cost、模拟 amount、SKU 列表 weight 四出口去 float。product/service `_number` 物理量透传（B20-07）。
+- **master._json_value 挂起 Q6 未碰**：核实其同时服务 JSONB 快照、本地值比较、差异指纹三链；改字符串会对历史 float confirmed 值产生伪差异、指纹一次性失配，属业务口径取舍，已列候选方案待主人拍板。
+- 测试连带：quote_cost_gate 三处旧 float 断言收紧 Decimal（含 isinstance public float→Decimal、parametrize 浮点字面量改字符串）；pricing_simulation_precision amount 断言收紧；logistics 确认防线用例改用"旧 float 客户端丢尾数回传"验证运费已变化仍拒（精确回传现在合法通过，符合新契约）。新增 test_decimal_batch4_pricing_product 3 项。
+- 全量 2223 项通过。提交只推 GitHub；未部署、未动库、服务器未碰；另一会话未提交改动不纳入。

@@ -187,6 +187,13 @@ JS Number 解析 15-16 位上限是前端既有问题，本轮后端改造不使
   实际阈值多为整元小额、风险低；根治需 JSONB 无损读写（parse_float=Decimal 全局影响面大）
   或阈值改字符串配置（契约/校验取舍）。另：毛利率 round 两位的半偶舍入边界属口径待决策，
   批2 保持原口径未动。
+- **Q6（批4 新发现）master._json_value 三链耦合**：待决策，批4 未碰。该 helper 同时服务
+  ① JSONB 版本快照/authority.source_value 落库、② 本地值比较（local_value vs incoming、
+  confirmed vs incoming）、③ build_sku_diff_key 差异指纹。改 Decimal→字符串后：
+  历史 confirmed 行仍是 float，str≠float 会把"没变"判成"变了"→ 伪差异/伪冲突；
+  指纹 payload 形状变化 → 存量 pending 差异键一次性失配。候选：比较侧统一
+  Decimal(str(x)) 归一 + 接受指纹一次性 churn（需评估存量差异行数），或维持 float
+  仅快照侧字符串化（比较链继续 float，精度边界依旧）。涉及业务口径，先问主人。
 
 ## 4. 执行状态
 
@@ -202,7 +209,11 @@ JS Number 解析 15-16 位上限是前端既有问题，本轮后端改造不使
       连带：11 个测试文件本地 FastAPI() 统一接 DecimalJSONResponse（与主应用同款出口，
       修跨测试编码器注册污染）、batch12 审计断言收紧为 exact 字符串逐字相等、
       finance precision 断言 float→Decimal；新增批3 边界 4 项；全量 2220 通过）
-- [ ] 批4 定价/物流/产品
+- [x] 批4 定价/物流/产品（pricing/service _f 透传 + 比率出参显式 float + resolve_discount_limit
+      注解纠正 Decimal + rule_payload 补三 exact；logistics _f 透传（库刻度无损）+ 试算三金额
+      Decimal + by_*_exact；pricing/router 四出口去 float；product/service _number 透传；
+      master._json_value 挂起 Q6 未碰；旧 float 断言收紧、物流漂移防线改用丢尾数回传验证；
+      新增批4 边界 3 项；全量 2223 通过）
 - [ ] 批5 客户/商机/询价
 - [ ] 批6 分析/目标
 - [ ] 批7 打样/洞察

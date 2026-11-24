@@ -524,16 +524,16 @@ async def test_auto_quote_price_and_price_snapshots_keep_decimal_rule(case, monk
         role_codes=USER.roles, snapshot_out=snapshots)
     assert snapshots['recommended_price'] == expected
     assert snapshots['minimum_price_cny'] == expected
-    assert isinstance(public['recommended_price'], float)
+    assert isinstance(public['recommended_price'], Decimal)
     assert 'snapshot_out' not in public and 'snapshot_values' not in public
 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("source, margin, expected_price, target_price", [
-    ("computed", None, 180.1234, 180.1234),
-    ("guidance", None, 150, 180.1234),
-    ("agreement", None, 160, 180.1234),
-    ("computed", Decimal("0.20"), 125.15425, None),
+    ("computed", None, '180.1234', '180.1234'),
+    ("guidance", None, '150', '180.1234'),
+    ("agreement", None, '160', '180.1234'),
+    ("computed", Decimal("0.20"), '125.15425', None),
     ("incomplete", None, None, None),
 ])
 async def test_absolute_profit_target_fills_only_missing_applicable_price(
@@ -556,8 +556,8 @@ async def test_absolute_profit_target_fills_only_missing_applicable_price(
         session, sku_id=1, customer_id=1, quantity=Decimal(1), logistics_cost=Decimal(0),
         target_profit_amount=Decimal(80), target_margin=margin,
     )
-    assert result["recommended_price"] == expected_price
-    assert result["inputs"]["target_profit_price"] == target_price
+    assert result["recommended_price"] == (Decimal(expected_price) if expected_price is not None else None)
+    assert result["inputs"]["target_profit_price"] == (Decimal(target_price) if target_price is not None else None)
     assert result["inputs"]["profit_target_met"] is (
         expected_price == target_price if target_price is not None else None
     )
@@ -613,7 +613,7 @@ async def test_lookup_keeps_decimal_unit_price_for_quote_callers(case, monkeypat
     data = await pricing.lookup_applicable_price(
         session, customer=raw.get(Customer, 1), sku_id=1, quantity=Decimal('100'), snapshot_out=exact)
     assert exact['unit_price'] == expected
-    assert data['unit_price'] == float(expected)
+    assert data['unit_price'] == expected
     assert 'snapshot_out' not in data
 
 

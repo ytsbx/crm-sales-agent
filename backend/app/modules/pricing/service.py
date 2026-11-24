@@ -39,8 +39,12 @@ def discount_percentage(price: Decimal | None, standard_price: Decimal | None) -
     return (Decimal(1) - price / standard_price) * 100
 
 
-def _f(value: Decimal | None) -> float | None:
-    return None if value is None else float(value)
+def _f(value: Decimal | None) -> Decimal | None:
+    """序列化总闸：保留 Decimal 原值（float→Decimal 专项批4）。
+
+    JSON 出口（core/jsonio）按原值渲染精确数字；纯比率出参在调用点显式 float（Q3）。
+    """
+    return value
 
 
 def serialize_cost(cost: ProductCost, sku_code: str | None = None) -> dict:
@@ -94,7 +98,7 @@ def serialize_price_rule(
         "guide_price": _f(rule.guide_price),
         # 最低保护价按权限隐藏（§7.3 复审）：与核价/查价同一判据（`price:manage`）
         "minimum_price": _f(rule.minimum_price) if can_see_cost else None,
-        "target_margin": _f(rule.target_margin),
+        "target_margin": float(rule.target_margin) if rule.target_margin is not None else None,
         "currency": rule.currency,
         "effective_from": rule.effective_from,
         "effective_to": rule.effective_to,
@@ -139,8 +143,8 @@ def serialize_permission(permission: PricePermission, role_name: str | None = No
         "id": permission.id,
         "role_id": permission.role_id,
         "role_name": role_name,
-        "minimum_margin": _f(permission.minimum_margin),
-        "discount_limit": _f(permission.discount_limit),
+        "minimum_margin": float(permission.minimum_margin) if permission.minimum_margin is not None else None,
+        "discount_limit": float(permission.discount_limit) if permission.discount_limit is not None else None,
         "can_approve": permission.can_approve,
         "status": permission.status,
         "remark": permission.remark,
@@ -703,8 +707,11 @@ async def lookup_applicable_price(
             "source": source,
             "source_label": SOURCE_LABELS[source],
             "unit_price": _f(rule.guide_price),
+            "unit_price_exact": format(rule.guide_price, 'f') if rule.guide_price is not None else None,
             "standard_price": _f(rule.standard_price),
+            "standard_price_exact": format(rule.standard_price, 'f') if rule.standard_price is not None else None,
             "minimum_price": _f(rule.minimum_price),
+            "minimum_price_exact": format(rule.minimum_price, 'f') if rule.minimum_price is not None else None,
             "currency": rule.currency,
             "rule_id": rule.id,
             "effective_from": rule.effective_from,
@@ -727,8 +734,10 @@ async def lookup_applicable_price(
             "source": "customer_specific",
             "source_label": SOURCE_LABELS["customer_specific"],
             "unit_price": _f(customer_price.agreed_price),
+            "unit_price_exact": format(customer_price.agreed_price, 'f') if customer_price.agreed_price is not None else None,
             "standard_price": None,
             "minimum_price": _f(customer_price.minimum_price),
+            "minimum_price_exact": format(customer_price.minimum_price, 'f') if customer_price.minimum_price is not None else None,
             "currency": customer_price.currency,
             "rule_id": customer_price.id,
             "effective_from": customer_price.effective_from,
@@ -768,7 +777,7 @@ async def lookup_applicable_price(
             "unit_price": None, "fallback_note": None}
 
 
-async def resolve_discount_limit(session: AsyncSession, role_codes: list[str]) -> float | None:
+async def resolve_discount_limit(session: AsyncSession, role_codes: list[str]) -> Decimal | None:
     """取当前用户角色中最严格的折扣上限（%）；没配置返回 None（不参与判定）。
 
     discount_limit 此前只在价格权限页能配、计算从不读——配置形同虚设。
@@ -1306,7 +1315,7 @@ async def calculate_price(
             reason.append(f"利润率 {profit_rate * 100:.2f}% 低于授权 {min_margin * 100:.0f}%")
         if discount_exceeded:
             reason.append(
-                f"折扣 {discount_pct:.1f}% 超过角色上限 {float(role_discount_limit) * 100:.0f}%"
+                f"折扣 {discount_pct:.1f}% 超过角色上限 {role_discount_limit * 100:.0f}%"
             )
         warnings.append("该报价需要审批：" + "，".join(reason))
 

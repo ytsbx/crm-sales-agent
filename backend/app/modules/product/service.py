@@ -11,8 +11,9 @@ from app.core.errors import AppError, ErrorCode
 from app.modules.product.model import Product, Sku
 
 
-def _number(value: Decimal | None) -> float | None:
-    return None if value is None else float(value)
+def _number(value: Decimal | None) -> Decimal | None:
+    """物理量序列化保留 Decimal 原值（float→Decimal 专项批4，B20-07）。"""
+    return value
 
 
 def serialize_product(product: Product, *, sku_count: int = 0) -> dict:

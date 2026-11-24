@@ -28,8 +28,10 @@ _THOUSAND = Decimal(1000)
 _MILLION = Decimal(1000000)
 
 
-def _f(value) -> float | None:
-    return None if value is None else round(float(value), 4)
+def _f(value) -> Decimal | None:
+    # 费率列本身 Numeric(10,4)/min_charge Numeric(10,2)，原 round(float,4) 对库刻度无损；
+    # 批4 改 Decimal 透传，JSON 出口按原值渲染，不再经 float。
+    return value
 
 
 def serialize_rate(rate: LogisticsRate) -> dict:
@@ -396,11 +398,13 @@ def quote_rate(
         "shipping_method": rate.shipping_method,
         "origin_region": rate.origin_region,
         "destination_region": rate.destination_region,
-        "amount": float(amount),
+        "amount": amount,
         "amount_exact": format(amount, "f"),
         "currency": "CNY",
-        "by_weight_amount": float(by_weight),
-        "by_volume_amount": float(by_volume),
+        "by_weight_amount": by_weight,
+        "by_weight_amount_exact": format(by_weight, "f"),
+        "by_volume_amount": by_volume,
+        "by_volume_amount_exact": format(by_volume, "f"),
         "pricing_basis": "体积" if by_volume > by_weight else "重量",
         "above_minimum": not below_minimum,
         "min_charge": _f(minimum),
