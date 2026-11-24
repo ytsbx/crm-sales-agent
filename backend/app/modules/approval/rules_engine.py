@@ -81,23 +81,40 @@ class RuleDecision:
     matched: list = field(default_factory=list)
 
     def trace(self) -> dict:
-        """写进 approval_instances.summary 的痕迹（要能回答"当时按哪版规则走的"）。"""
+        """写进 approval_instances.summary 的痕迹（要能回答"当时按哪版规则走的"）。
+
+        summary 是 JSONB 列：Decimal 按原值字符串落痕（float→Decimal 批1/批2
+        口径），事后可精确复算；前端不消费这些数值键（已核实 ApprovalPage）。
+        """
         return {
             "rule_id": self.rule_id,
             "rule_name": self.rule_name,
             "kind": self.kind,
             "rule_version_no": self.version_no,
-            "matched_conditions": self.matched,
-            "context": {k: v for k, v in self.context.items() if not k.startswith("_")},
+            "matched_conditions": _exact_jsonable(self.matched),
+            "context": _exact_jsonable(
+                {k: v for k, v in self.context.items() if not k.startswith("_")}
+            ),
         }
 
 
 def _fmt(value) -> str:
     if isinstance(value, bool):
         return "是" if value else "否"
-    if isinstance(value, float):
+    if isinstance(value, (float, Decimal)):
         return f"{value:,.2f}"
     return str(value)
+
+
+def _exact_jsonable(value):
+    """JSONB 留痕用：Decimal→原值字符串（可精确复算），容器递归，其余原样。"""
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: _exact_jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_exact_jsonable(item) for item in value]
+    return value
 
 
 def describe_conditions(conditions: list[dict]) -> str:
@@ -149,6 +166,11 @@ def evaluate_conditions(conditions: list[dict], ctx: dict) -> tuple[bool, list[d
             })
             continue
         try:
+            # 金额上下文为 Decimal 时，把配置阈值（JSON int/float）归一为
+            # Decimal(str(...))：按配置文本的十进制意图比较，且避免
+            # Decimal 与 float 比较抛 TypeError 被下面静默判成"未命中"。
+            if isinstance(actual, Decimal) and isinstance(expected, (int, float)) and not isinstance(expected, bool):
+                expected = Decimal(str(expected))
             if op == "gte":
                 hit = actual >= expected
             elif op == "lte":
@@ -161,6 +183,11 @@ def evaluate_conditions(conditions: list[dict], ctx: dict) -> tuple[bool, list[d
                 hit = actual == expected
             elif op == "in":
                 values = expected if isinstance(expected, list) else [expected]
+                if isinstance(actual, Decimal):
+                    values = [
+                        Decimal(str(v)) if isinstance(v, (int, float)) and not isinstance(v, bool) else v
+                        for v in values
+                    ]
                 hit = actual in values
             else:
                 hit = False
@@ -436,7 +463,10 @@ async def build_context(
         """
         return amount
 
-    total_cny = float(to_cny(version.total_amount or Decimal(0)))
+    # 金额上下文保留 Decimal（float→Decimal 批2，B09-02）：16 位边界转 float
+    # 会丢一分，阈值比较可能误命中免审/极速通道。阈值侧在 evaluate_conditions
+    # 里同步归一为 Decimal，避免 Decimal 与 float 比较抛 TypeError 被静默判未命中。
+    total_cny = to_cny(version.total_amount or Decimal(0))
     prices = [to_cny(i.quoted_price) for i in items]
     # 产品核价成本逐版取口径（2026-10-09「产品价格与运费分离」）：
     # 新报价的运费由客户全额承担、公司原额代收代付，**不进产品利润**。
@@ -492,6 +522,8 @@ async def build_context(
     if any_missing_cost or revenue_for_margin <= 0:
         gross_margin = None
     else:
+        # 毛利率是**比率**不是钱（Q3）：保留既有 float + round 两位口径不变
+        # （半偶舍入边界属口径待决策，不在本批顺手改）；金额类上下文已 Decimal。
         gross_margin = float((revenue_for_margin - total_cost) / revenue_for_margin * 100)
     # 单件毛利率仍是"单件对单件"，不受上面的量纲修正影响。
     # 同样地：单价非正、成本缺失的行算不出毛利率，此时整列给 None
@@ -533,10 +565,11 @@ async def build_context(
         version.currency, prev_version.currency if prev_version else None,
         label="报价版本总额",
     )
-    concession = 0.0
+    concession = Decimal(0)
     if prev_version is not None:
         concession = max(
-            0.0, float((prev_version.total_amount or 0) - (version.total_amount or 0))
+            Decimal(0),
+            (prev_version.total_amount or Decimal(0)) - (version.total_amount or Decimal(0)),
         )
 
     # 「客户有逾期应收」条件（2026-10-13 口径统一）：

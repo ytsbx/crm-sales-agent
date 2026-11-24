@@ -93,7 +93,7 @@ def _serialize(instance: ApprovalInstance, ctx: dict, *, can_approve: bool = Fal
         "quote_no": quote.quote_no if quote else None,
         "version_id": version.id if version else None,
         "version_no": version.version_no if version else None,
-        "total_amount": float(version.total_amount) if version else None,
+        "total_amount": version.total_amount if version else None,
         "customer_name": ctx["customers"].get(quote.customer_id) if quote else None,
     }
 

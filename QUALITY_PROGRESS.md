@@ -5305,3 +5305,13 @@
 - 并发会话复核结论核实：分档比较本已 Decimal（quote/service.py:2778 `tier_amount <= Decimal(cap)`），2414 行 float 只进 summary/审计留痕→批2 修留痕；草稿 exact 字段本已存在但 float 字段仍在→批3 去 float；product/master `_json_value` 也用于本地值比较→批4 改字符串前须核对比较链。
 - 新增 tests/test_decimal_json_exit.py 11 项：编码器透传、真实 ASGI 线路文本逐位精确（大额/四位单价/三位数量）、零/负/科学计数/转义边界、NaN/Inf 拒绝、审计字符串化、回放数字形状钉死。全量 2212 项通过（基线 2201+11）；旧幂等 float 断言在 False 分支原样通过，未放宽。
 - 提交只推 GitHub（github remote），未推 Gitee；未部署、未动库、服务器未碰。另一会话（部门归属/精度复核）的未提交改动不纳入本提交；QUALITY_PROGRESS.md 为共享日志含其已写条目。
+
+### float→Decimal 专项 · 批2 落地（2026-11-24，本会话）
+
+- quote/service：`_f` 总闸改 Decimal 原值透传（明细/版本/费用/汇总出参一次收口）；offending、审批 summary、创建响应 total_amount、分档留痕 total_amount_cny 去 float；summary 两处落 JSONB 前经 json_safe（Decimal→原值字符串，前端已核实不消费这些数值键）。利润率/毛利率等纯比率按 Q3 保留 float（前端 ApprovalPage 对 profit_rate 做 *100/toFixed，契约不变）。
+- quote/router：调价 old_price、明细/费用/版本审计、附加费用审计、手动重算 before/after 四金额去 float（审计经 json_safe 字符串化，重算对比响应走批1 精确数字出口）。
+- approval/router：列表/详情 total_amount 去 float。rules_engine：金额上下文 total_cny/concession 改 Decimal（B09-02 ctx 侧）；evaluate_conditions 把配置阈值归一 Decimal(str(...))，修掉 Decimal×float TypeError 被静默判未命中（0.1 这类阈值旧实现永远不命中）；trace 落 JSONB 前 Decimal→字符串；_fmt 补 Decimal 分支。毛利率 float+round 两位口径保持不动（半偶边界属口径待决策）。
+- 分档比较核实本已 Decimal（2778 行），本批只修留痕，不重复修比较；外币 fx 字段挂起未碰。
+- 新发现残余项 Q5：规则阈值配置存 JSONB 经 float 读写，16 位阈值配置侧已失真（ctx 侧已修）；实际阈值多整元小额风险低，根治需无损 JSONB 或字符串配置，待决策不擅自改。
+- 测试：test_quote_cost_gate 版本对比 before/after 旧 float 断言收紧为 Decimal 精确比较（exact 断言原样保留）；新增 test_decimal_batch2_quote_approval 4 项（序列化 Decimal+线路逐位精确、三位数量边界、阈值归一边界/静默未命中修复、trace 字符串可复算、比率口径不变）。全量 2216 项通过。
+- 提交只推 GitHub；未部署、未动库、服务器未碰。

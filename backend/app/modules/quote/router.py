@@ -1305,7 +1305,7 @@ async def update_item(
     data = payload.model_dump(exclude_unset=True)
     quantity = data.get("quantity", item.quantity)
     price = data.get("quoted_price", item.quoted_price)
-    old_price = float(item.quoted_price)
+    old_price = item.quoted_price
     manual_price_changed = "quoted_price" in data and price != item.quoted_price
     logistics = data.get("logistics_cost")
     if logistics is not None:
@@ -1335,7 +1335,7 @@ async def update_item(
             business_type="quote",
             business_id=quote.id,
             before={"item_id": item.id, "quoted_price": old_price, "remark_only": True},
-            after={"item_id": item.id, "quoted_price": float(item.quoted_price)},
+            after={"item_id": item.id, "quoted_price": item.quoted_price},
             ip=client_ip(request),
         )
         await session.commit()
@@ -1398,7 +1398,7 @@ async def update_item(
         business_type="quote",
         business_id=quote.id,
         before={"item_id": item.id, "quoted_price": old_price},
-        after={"item_id": item.id, "quoted_price": float(item.quoted_price)},
+        after={"item_id": item.id, "quoted_price": item.quoted_price},
         ip=client_ip(request),
     )
     await session.commit()
@@ -1441,7 +1441,7 @@ async def delete_item(
         business_type="quote_item",
         business_id=item_id,
         before=before,
-        after={"quote_version_id": version.id, "total_amount": float(version.total_amount)},
+        after={"quote_version_id": version.id, "total_amount": version.total_amount},
         ip=client_ip(request),
     )
     await session.commit()
@@ -1501,7 +1501,7 @@ async def add_charge(
         business_id=charge.id,
         after={
             **svc.serialize_charge(charge),
-            "total_amount": float(version.total_amount),
+            "total_amount": version.total_amount,
         },
         ip=client_ip(request),
     )
@@ -1537,7 +1537,7 @@ async def delete_charge(
         business_type="quote_charge",
         business_id=charge_id,
         before=before,
-        after={"quote_version_id": version.id, "total_amount": float(version.total_amount)},
+        after={"quote_version_id": version.id, "total_amount": version.total_amount},
         ip=client_ip(request),
     )
     await session.commit()
@@ -2051,18 +2051,18 @@ async def recalculate_version(
     """
     version = await svc.get_visible_version(session, user, version_id, for_update=True)
     before = {
-        "subtotal_amount": float(version.subtotal_amount),
-        "charge_amount": float(version.charge_amount),
-        "discount_amount": float(version.discount_amount),
-        "total_amount": float(version.total_amount),
+        "subtotal_amount": version.subtotal_amount,
+        "charge_amount": version.charge_amount,
+        "discount_amount": version.discount_amount,
+        "total_amount": version.total_amount,
     }
     await svc.recalc_version(session, version)
     await session.flush()
     after = {
-        "subtotal_amount": float(version.subtotal_amount),
-        "charge_amount": float(version.charge_amount),
-        "discount_amount": float(version.discount_amount),
-        "total_amount": float(version.total_amount),
+        "subtotal_amount": version.subtotal_amount,
+        "charge_amount": version.charge_amount,
+        "discount_amount": version.discount_amount,
+        "total_amount": version.total_amount,
     }
     await write_audit(
         session,

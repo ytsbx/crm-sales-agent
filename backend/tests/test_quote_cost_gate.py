@@ -316,8 +316,8 @@ async def test_comparison_fee_changes_preserve_exact_values(field, before, after
         assert changes[0]['field'] == field
         assert changes[0]['before_exact'] == before
         assert changes[0]['after_exact'] == after
-        assert changes[0]['before'] == float(before)
-        assert changes[0]['after'] == float(after)
+        assert changes[0]['before'] == Decimal(before)
+        assert changes[0]['after'] == Decimal(after)
 
 
 @pytest.mark.anyio
@@ -379,8 +379,8 @@ async def test_comparison_item_changes_preserve_exact_values(kind):
     assert change['field'] == kind
     assert change['before_exact'] == (None if kind == 'added' else values[0])
     assert change['after_exact'] == (None if kind == 'removed' else values[1])
-    assert change['before'] == (None if kind == 'added' else float(values[0]))
-    assert change['after'] == (None if kind == 'removed' else float(values[1]))
+    assert change['before'] == (None if kind == 'added' else Decimal(values[0]))
+    assert change['after'] == (None if kind == 'removed' else Decimal(values[1]))
 
 
 @pytest.mark.parametrize('value,expected', [

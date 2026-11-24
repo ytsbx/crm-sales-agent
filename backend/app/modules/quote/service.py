@@ -7,6 +7,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.audit import json_safe
 from app.core.textfit import fit_column
 from app.core.draft_visibility import ensure_draft_access, private_draft
 from app.core.errors import AppError, ErrorCode
@@ -245,8 +246,14 @@ def quote_is_expired(valid_until, *, today=None) -> bool:
     return valid_until < (today or today_business())
 
 
-def _f(value: Decimal | None) -> float | None:
-    return None if value is None else float(value)
+def _f(value: Decimal | None) -> Decimal | None:
+    """序列化总闸：保留 Decimal 原值（float→Decimal 专项批2）。
+
+    从前转 float，16 位边界在出口丢一分；现在 JSON 出口（core/jsonio）按
+    原值渲染精确数字，这里原样透传。纯比率字段（利润率等）按 Q3 口径在
+    各自位置显式 float，不参与金额链。
+    """
+    return value
 
 
 #: 报价明细里**属于公司内部成本口径**的字段：无 `price:manage` 的操作人不该拿到。
@@ -334,7 +341,9 @@ def serialize_item(item: QuoteItem, *, can_see_cost: bool = True) -> dict:
         "amount": _f(line_amount(item.quantity, item.quoted_price)),
         "amount_exact": str(line_amount(item.quantity, item.quoted_price)),
         "profit_snapshot": _f(item.profit_snapshot),
-        "profit_rate_snapshot": _f(item.profit_rate_snapshot),
+        "profit_rate_snapshot": (
+            float(item.profit_rate_snapshot) if item.profit_rate_snapshot is not None else None
+        ),  # 纯比率输出保留 float（Q3）；前端对其做 *100/toFixed
         "approval_required": item.approval_required,
         "approval_reason": (
             "报价超出价格权限，需要审批" if hide and item.approval_reason
@@ -985,7 +994,7 @@ async def create_quote(
             float(version.exchange_rate_snapshot) if version.exchange_rate_snapshot else None
         ),
         "item_count": len(await version_items(session, version.id)),
-        "total_amount": float(version.total_amount),
+        "total_amount": version.total_amount,
         # 先攒的（联系人已删除等）+ 明细循环里攒的，一起交出去
         "warnings": early_warnings + item_warnings,
         # ORM 对象单独挂在下划线键下给路由用。
@@ -2411,7 +2420,9 @@ async def submit_for_approval(
         if currency_code != "CNY"
         else version.total_amount or Decimal(0)
     )
-    total_amount_cny = float(tier_amount)
+    # 分档比较与留痕都用 Decimal 原值（float→Decimal 批2）：比较本已 Decimal
+    # （见下方 tier_amount <= Decimal(cap)），这里不再为留痕提前转 float 丢分。
+    total_amount_cny = tier_amount
     # 产品核价是否含运费，由**这一版的口径**决定（见 `item_unit_product_cost`）。
     # 新报价：运费代收代付，不进产品成本与利润；历史版本：沿用含运费的老口径。
     cost_includes_freight = version_logistics_in_base_cost(version)
@@ -2500,8 +2511,8 @@ async def submit_for_approval(
             offending.append(
                 {
                     "sku_code": item.sku_code_snapshot,
-                    "quoted_price": float(price),
-                    "quoted_price_cny": float(price_cny),
+                    "quoted_price": price,
+                    "quoted_price_cny": price_cny,
                     "minimum_price": None,
                     "profit_rate": None,
                 }
@@ -2521,9 +2532,9 @@ async def submit_for_approval(
                 offending.append(
                     {
                         "sku_code": item.sku_code_snapshot,
-                        "quoted_price": float(price),
-                        "quoted_price_cny": float(price_cny),
-                        "minimum_price": float(floor),
+                        "quoted_price": price,
+                        "quoted_price_cny": price_cny,
+                        "minimum_price": floor,
                         "profit_rate": None,
                     }
                 )
@@ -2543,10 +2554,10 @@ async def submit_for_approval(
             offending.append(
                 {
                     "sku_code": item.sku_code_snapshot,
-                    "quoted_price": float(price),
-                    "quoted_price_cny": float(price_cny),
-                    "minimum_price": float(floor),
-                    "profit_rate": float(profit_rate),
+                    "quoted_price": price,
+                    "quoted_price_cny": price_cny,
+                    "minimum_price": floor,
+                    "profit_rate": float(profit_rate),  # 纯比率保留 float（Q3）
                 }
             )
         else:
@@ -2664,7 +2675,7 @@ async def submit_for_approval(
             offending.append(
                 {
                     "sku_code": "整单（优惠后）",
-                    "quoted_price_cny": float(revenue_cny),
+                    "quoted_price_cny": revenue_cny,
                     "profit_rate": float(whole_margin),
                     "reason": reason,
                 }
@@ -2727,19 +2738,20 @@ async def submit_for_approval(
                 status="approved",
                 current_node=None,
                 finished_at=datetime.now(UTC),
-                summary={
+                # JSONB 留痕：Decimal 按原值字符串存（批1 口径），可精确复算。
+                summary=json_safe({
                     "quote_no": quote.quote_no,
                     "version_no": version.version_no,
                     "reason": reason,
                     "offending": offending,
                     # 免审留痕同样按人民币口径（与下面那条审批单同一份取数）
                     "total_amount": total_amount_cny,
-                    "original_amount": float(version.total_amount or 0),
+                    "original_amount": version.total_amount or Decimal(0),
                     "currency": currency_code,
                     "exchange_rate": float(fx) if currency_code != "CNY" and fx else None,
                     "auto_passed": True,
                     "rule_trace": rule_trace,
-                },
+                }),
             )
             session.add(instance)
             await session.flush()
@@ -2794,7 +2806,7 @@ async def submit_for_approval(
         # 也要能复算"为什么走到这一级"（第二轮审查 P2，2026-10-12）
         "total_amount": amount,
         "tier_amount_cny": amount,
-        "original_amount": float(version.total_amount or 0),
+        "original_amount": version.total_amount or Decimal(0),
         "currency": currency_code,
         "exchange_rate": float(fx) if currency_code != "CNY" and fx else None,
         "node_label": node_label,
@@ -2812,7 +2824,8 @@ async def submit_for_approval(
         applicant_id=applicant_id,
         status="pending",
         current_node=node_code,
-        summary=summary,
+        # JSONB 留痕：Decimal 按原值字符串存（批1 口径），可精确复算。
+        summary=json_safe(summary),
     )
     session.add(instance)
     await session.flush()
@@ -3004,7 +3017,7 @@ async def version_comparison(session: AsyncSession, quote_id: int, *,
                 "total_amount": _f(version.total_amount),
                 "cost_total": _f(cost_total),
                 "profit_total": _f(profit_total),
-                "margin": _f(margin),
+                "margin": float(margin) if margin is not None else None,  # 纯比率保留 float（Q3）
                 "avg_price": _f(amount_total / quantity) if quantity else None,
                 "avg_cost": _f(cost_total / quantity) if quantity else None,
                 # 单件口径单独给一份，前端做滑杆测算时直接用，避免各自算错成本
