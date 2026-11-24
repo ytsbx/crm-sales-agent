@@ -252,13 +252,16 @@ def main():
     check('GET /receivables/{id}', res.get('code'), 0)
     check('带订单号', res['data']['order_no'] is not None, True)
 
+    # 尾款建 1300 而不是 1400：应收写入口有「计划合计 ≤ 订单总额」校验
+    # （assert_receivable_amount_fits，bdd6efc9 有意收紧）。下面「只改金额」
+    # 会把定金 600 改成 700，给尾款留出 100 的余量，合计 700+1300=2000 刚好装下。
     status, res = call('POST', '/receivables', token=admin,
-                       body={'plan_name': '尾款', 'due_date': next_due, 'amount': 1400})
+                       body={'plan_name': '尾款', 'due_date': next_due, 'amount': 1300})
     check('缺 order_id 被拒', res.get('code'), 40003)
 
     status, res = call('POST', '/receivables', token=admin,
                        body={'order_id': order_id, 'plan_name': '尾款', 'due_date': next_due,
-                             'amount': 1400})
+                             'amount': 1300})
     check('订单内入口同逻辑', res.get('code'), 0)
     plan2_id = res['data']['id']
 
