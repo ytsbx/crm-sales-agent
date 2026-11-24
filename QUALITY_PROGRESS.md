@@ -5434,4 +5434,4 @@
 - pricing/service：外贸折算块（standard/recommended/floor/授权/hard/protection/range/cost 折外币）、缺汇率 warning、外币默认退税率读取、tax_refund 折算半截、硬底价外币混口径子句删除；calculate_price 入口非 CNY 显式 422 拒绝（不再"给外币静默算人民币数字"）；国内非零退税率拒绝守卫保留并简化为 `if refund_rate:`。
 - 保留不动：ExchangeRate 模型/表、resolve/apply_exchange_rate_snapshot 写路径（CNY 置 None）、入口 trade_mode 开关、审计字段标签、cost_in_quote_currency 等字段形状（CNY 恒原值/None）；pricing/router 汇率表序列化 float(rate) 重分类允许保留（比率展示、活 CRUD）。
 - 回归锁 tests/test_decimal_fx_removal.py（3 例：CNY 直通/convert 外币显式拒/核价外币显式拒）。隔离全量 **2269 passed**，pyflakes 清零。
-- 只推 GitHub，服务器只读未部署。剩余欠账：ERP 推单报文契约核实（B06-04）；部署与 Q7/B03-15 两份业务打招呼归主人/流程。
+- 只推 GitHub，服务器只读未部署。**B06-04 结案不处理（主人 2026-11-24：ERP 根本就没接）**：推单报文契约核实无对象，erp 代码保留现状不动（与 4818 行早前"ERP 尚未接入"留痕一致）。float 专项挂起清单至此清零；剩余仅部署与 Q7/B03-15 两份业务打招呼，归主人/流程。

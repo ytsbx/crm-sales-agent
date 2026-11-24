@@ -279,9 +279,10 @@ JS Number 解析 15-16 位上限是前端既有问题，本轮后端改造不使
 
 允许保留类：① 比率/百分比输出 float（Q3：quote profit_rate/authorized_min_margin、
 targets 达成率、rules_engine 毛利率**展示值**（判断已改真值 Q7）、analytics average_discount、pricing 权限比率）；
-② 挂起项（ERP 推单报文 erp/service:172-186 B06-04；**外币 fx 死行已拆除✅** 2026-11-24 主人拍板"删"，
+② 挂起项清零（**外币 fx 死行已拆除✅** 2026-11-24 主人拍板"删"，
 事实：本部署无外币老单、也不会存在外币；非 CNY 显式拒绝，入口 trade_mode 开关与 ERP 同步不拦仍留作守卫；
-汇率表序列化 float(rate) 属允许保留比率展示）、B03-15 已落地见决策行；③ Q4 已落地（回放改精确原文解包；audit.py json_safe 的 decimal_as_str=False float 复印模式
+汇率表序列化 float(rate) 属允许保留比率展示；**ERP 推单报文 B06-04 结案不处理**：主人 2026-11-24 确认
+ERP 根本就没接（与进度 4818 行早前留痕一致），推单契约核实无对象，erp 代码保留现状不动）、B03-15 已落地见决策行；③ Q4 已落地（回放改精确原文解包；audit.py json_safe 的 decimal_as_str=False float 复印模式
 **已拆除**——2026-11-24 主人批准，Q4 后零调用方，传 False 显式 ValueError）、Q5 settings
 get_number/_strict_ratio 配置侧（≤15 位往返安全，16 位边界记台账不扩范围）；Q6 已落地见决策行；
 ④ 非金额 float（dingtalk 登录态/token 过期、notification 重试次数、bizdoc PDF 列宽、
