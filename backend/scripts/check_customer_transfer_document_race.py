@@ -51,7 +51,10 @@ async def fixture():
         order=SalesOrder(order_no='ISO-CON-'+uuid4().hex[:12],customer_id=cid,owner_id=uids[0],sales_owner_id=uids[0],currency='CNY',total_amount=1,status='pending');s.add(order);await s.flush();oids.append(order.id)
         files=[]
         for kind in ('original','signed-A','signed-B'):
-            content=b'%PDF-1.4\nsynthetic '+kind.encode();key=uuid4().hex+'.pdf';Path(scratch.name,key).write_bytes(content)
+            # 内容带逐案唯一后缀：bdd6efc9 起回签按「同 id 或同 checksum」查重
+            # （对方曾签署即命中，含已作废但留着 signed_at 的），各 case 内容相同
+            # 会让后面的 case 撞上前面 case 留下的同 checksum 记录（42206）。
+            content=b'%PDF-1.4\nsynthetic '+kind.encode()+b' '+uuid4().hex.encode();key=uuid4().hex+'.pdf';Path(scratch.name,key).write_bytes(content)
             f=FileRecord(object_key=key,file_name=kind+'.pdf',mime_type='application/pdf',size=len(content),checksum=hashlib.sha256(content).hexdigest(),uploaded_by=uids[0]);s.add(f);await s.flush();files.append(f.id);fids.append(f.id)
         doc=ContractDocument(doc_no='ISO-DOC-'+uuid4().hex[:12],doc_type='contract',title='synthetic contract',customer_id=cid,order_id=order.id,content_snapshot='synthetic',status='draft',filled_data={'_original_file_id':files[0]},created_by=uids[0],created_at=now);s.add(doc);await s.flush();dids.append(doc.id)
         s.add(OaInstance(inquiry_id=doc.id,inquiry_version=1,oa_type='contract',submit_round=1,idempotency_key='isolated-contract-'+uuid4().hex,instance_id='SYNTHETIC-'+uuid4().hex,status='approved',created_at=now));await s.commit()

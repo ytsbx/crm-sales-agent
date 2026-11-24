@@ -114,7 +114,9 @@ async def main():
                 file_name=f"{MARKER}-{doc['id']}.pdf",
                 mime_type="application/pdf",
                 size=8,
-                checksum="0" * 64,
+                # checksum 必须逐份不同：bdd6efc9 起回签文件按「同 id 或同 checksum」
+                # 查重（42206），夹具全用 0×64 会让第二份合同起签署被拒。
+                checksum=f"{doc['id']:064d}",
                 uploaded_by=zhangsan_id,
             )
             session.add(record)

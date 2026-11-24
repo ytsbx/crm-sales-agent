@@ -159,7 +159,10 @@ def sec_c401(admin: str) -> None:
         return db(f"select status from receivable_plans where id={pid}")
 
     # ① 正题
-    oid = fresh_order(100)
+    # 订单总额给 300 而不是 100：bdd6efc9 起「计划合计 ≤ 订单总额」是硬闸
+    # （assert_receivable_amount_fits，422），订单 100 时把本期改到 200 会被拒，
+    # 金额压根改不成，断言就永远停在 paid —— 只加夹具余量，断言期望一个字不动。
+    oid = fresh_order(300)
     pid = add_plan(oid, 100)
     pay(pid, 100)
     check("① 收齐后状态", st(pid), "paid")

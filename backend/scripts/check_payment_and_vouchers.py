@@ -9,6 +9,9 @@
   原先这条路径不写 `currency`，落到列默认的 CNY —— 美元订单分出来的几期全成了
   人民币，"金额看着对、代表的钱已经不同"；后面的回款又是跟着节点币种走的，
   于是错一路传到回款。手工新增那条路径一直是继承订单币种的，两条必须一致。
+  ⚠️ 口径收口后（2026-10-12「只做国内」固定白名单，见 `trade_mode.py`）：
+  **手工新增**对 USD/EUR 订单一律 400（第 1 节钉的就是这个拒收），**生成**与
+  历史外币节点的回款继承现行仍放行 —— 生成入口没接外币闸，已在转告清单。
 - **11.2（第 6–9 节）**：回款删凭证接入统一的文件保护。原先它直接
   `session.delete(FileRecord)` + 删磁盘文件，**通用删除那三道保护一道都没过** ——
   同一份文件先当回款凭证、又被关联成"合同已签文件"时，删凭证会让**已签合同的
@@ -248,18 +251,35 @@ async def main():
         eur_m, eur_g = made["EUR"]["M"], made["EUR"]["G"]
 
         # ---------------------------------------------- 11.1 手工新增应收
-        print("\n=== 1. 手工新增应收：币种跟着订单走（三条路径的对照基线）===")
+        print("\n=== 1. 手工新增应收：CNY 继承订单币种；外币一律拒（只做国内）===")
         for code, order_id in (("CNY", cny_m), ("USD", usd_m), ("EUR", eur_m)):
-            row = api(
+            status, res = call(
                 "POST",
                 f"/orders/{order_id}/receivables",
-                {
+                token=admin,
+                body={
                     "plan_name": f"{MARKER}手工{code}",
                     "due_date": "2026-11-10",
                     "amount": 10,
                 },
             )
-            check(f"手工新增（{code} 订单）→ 币种 {code}", row.get("currency") == code, row.get("currency"))
+            if code == "CNY":
+                row = res.get("data") or {}
+                check(f"手工新增（{code} 订单）→ 币种 {code}", row.get("currency") == code, row.get("currency"))
+                continue
+            # 2026-10-12 起「只做国内」是**固定白名单**（`trade_mode.py`，主人原话：
+            # 「只要确保不会有人可以用外币这个东西钻空子就行，有人用外币就给他报错」）。
+            # 手工新增走 `assert_receivable_amount_fits` 里的外币闸，USD/EUR 订单
+            # 一律 400 —— 从前这里是 200 并继承币种（当时的修复点），口径收口后作废。
+            # ⚠️ 按比例生成（第 2/3 节）与历史外币节点的回款继承（第 4 节）**现行
+            # 仍放行**（生成入口没接外币闸，已记转告清单）；那几节钉的是币种传播
+            # 与幂等，不是外币准入，断言保持原样。
+            check(f"手工新增（{code} 订单）→ 外币被拒（从前 200 并继承币种）", status == 400, status)
+            check(
+                f"被拒后 {code} 订单没有落库应收",
+                await plan_count(order_id) == 0,
+                await plan_count(order_id),
+            )
 
         # ---------------------------------------------- 11.1 按比例生成
         print("\n=== 2. 按比例生成：各期币种 = 订单币种（11.1 的核心）===")
@@ -277,7 +297,7 @@ async def main():
         )
         check("USD 订单按 30/70 生成 → 200", status == 200, status)
         cur = await plan_currencies(usd_g)
-        # 这张单上还有第 1 节手工建的一条（也是 USD），一起看
+        # 生成出来的两期（手工新增现在对 USD 订单是拒收的，见第 1 节）
         check("USD 订单上所有应收期都是 USD（★修复点：原先落到 CNY）", cur == ["USD", "USD"], cur)
         check("各期金额之和 = 订单金额", str(await plan_sum(usd_g)) == "100.00", await plan_sum(usd_g))
 

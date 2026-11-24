@@ -105,6 +105,28 @@ def check_true(label, ok, detail=""):
         print(f"  FAIL {label} {detail}")
 
 
+def mark_approved(sid) -> None:
+    """把打样置为「已批准」（本地 approve 已收口到同序 OA，bdd6efc9）。
+
+    与 smoke_ui 的 mark_sample_approved 同口径：样品状态 + 一条 approved 的
+    OA 审批记录**两条一起写** —— 顺序闸门（require_sample_approved）查的是
+    oa_instances 表，光改 sample_requests.status 过不了闸。只动 pending/rejected。
+    """
+    from uuid import uuid4
+    got = db(
+        f"update sample_requests set status='approved', approved_at=now() "
+        f"where id={sid} and status in ('pending','rejected') returning id"
+    )
+    if str(got).strip() != str(sid):
+        raise RuntimeError(f"样品 {sid} 未能置为 approved（状态不是 pending/rejected）: {got!r}")
+    db(
+        "insert into oa_instances (inquiry_id, inquiry_version, oa_type, idempotency_key, "
+        "submit_round, provider, status, created_at, updated_at) "
+        f"select id, coalesce(version, 1), 'sample', 'chk-c3-{sid}-{uuid4().hex}', "
+        f"1, 'self_oa', 'approved', now(), now() from sample_requests where id={sid}"
+    )
+
+
 # =====================================================================
 # C3-06：部门树并发互挂
 # =====================================================================
@@ -246,11 +268,15 @@ def sec_c302(admin: str, worker_token: str) -> None:
     check("③ 停用负责人被拒（从前 200）", mk("停用负责人", owner_id=worker)[0], 40001)
     db(f"update users set status='active' where id={worker}")
 
-    # ④ 负责人不能改成 null —— 否则原负责人立刻读不到这张单
+    # ④ 负责人不能改成 null —— 否则原负责人立刻读不到这张单。
+    # PATCH 用**业务员**身份发起：admin 替业务员建单属于「交接」，未提交草稿归
+    # 接收人私有（2026-11-20 拍板的草稿隐私：草稿仅创建账号可见，全局范围账号
+    # 也不例外；bdd6efc9 起交接单的草稿主算接收人），admin 直连会被 404 挡在
+    # 可见性门外，到不了负责人校验 —— 从前 admin 能进是隐私上线前的旧口径。
     code, sid = mk("改null", owner_id=worker)
     check("④ 建单（负责人=业务员）", code, 0)
     check("④ 负责人改 null 被拒（从前 200）",
-          call("PATCH", f"/samples/{sid}", admin, {"owner_id": None})[1].get("code"), 40003)
+          call("PATCH", f"/samples/{sid}", worker_token, {"owner_id": None})[1].get("code"), 40003)
     check("④ 库内负责人没被清掉",
           db(f"select owner_id from sample_requests where id={sid}"), str(worker))
     check_true("④ 原负责人仍能读到这张单",
@@ -360,7 +386,7 @@ def sec_c303(admin: str) -> None:
             "items": [{"sku_id": int(sku), "quantity": 1}]})
         sid = (r.get("data") or {}).get("id")
         if sid:
-            call("POST", f"/samples/{sid}/approve", admin, {})
+            mark_approved(sid)
         return sid
 
     def drop(sid):
@@ -368,6 +394,7 @@ def sec_c303(admin: str) -> None:
             return
         db(f"delete from sample_items where sample_request_id={sid}")
         db(f"delete from sample_shipments where sample_request_id={sid}")
+        db(f"delete from oa_instances where inquiry_id={sid} and oa_type='sample'")
         db(f"delete from sample_requests where id={sid}")
 
     # ①② 负数必须拒（从前 200 并落库）
@@ -415,7 +442,7 @@ def sec_c304(admin: str) -> None:
             "items": [{"sku_id": int(sku), "quantity": 1}]})
         sid = (r.get("data") or {}).get("id")
         if sid:
-            call("POST", f"/samples/{sid}/approve", admin, {})
+            mark_approved(sid)
         return sid
 
     def drop(sid):
@@ -423,6 +450,7 @@ def sec_c304(admin: str) -> None:
             return
         db(f"delete from sample_items where sample_request_id={sid}")
         db(f"delete from sample_shipments where sample_request_id={sid}")
+        db(f"delete from oa_instances where inquiry_id={sid} and oa_type='sample'")
         db(f"delete from sample_requests where id={sid}")
 
     # ① 签收早于寄出（从前 200）

@@ -373,7 +373,7 @@ async def main() -> int:
             )
             await s.commit()
 
-        print("=== 1. 关闸发起：人员/部门/图片/建单均不得调用 ===")
+        print("=== 1. 关闸 + 未配置同序：明确 422，不外呼、不记单 ===")
         external_attempts = []
 
         def forbidden_get_client():
@@ -386,31 +386,37 @@ async def main() -> int:
         async with SessionLocal() as s:
             admin = (await s.execute(select(User).where(User.username == "admin"))).scalars().one()
             user = CurrentUser(admin, permissions={"quote:manage"}, roles=[], data_scope="all")
-            dry = await dt_router.start_inquiry_approval(
-                inquiry_id=inquiry_id, payload=dt_router.StartApproval(),
-                request=fake_request(), user=user, session=s,
-            )
-            repeat = await dt_router.start_inquiry_approval(
-                inquiry_id=inquiry_id, payload=dt_router.StartApproval(),
-                request=fake_request(), user=user, session=s,
-            )
-            dry_row = await s.get(OaInstance, dry['data']['id'])
-            snapshot = {item['id']: item['value']
-                        for item in dry_row.form_snapshot['formComponentValues']}
-        check('关闸发起明确为 skipped', dry['data']['status'], 'skipped')
-        check('关闸重复点击复用同一行', repeat['data']['id'], dry['data']['id'])
-        check('关闸没有伪造钉钉身份', dry_row.originator_user_id, '')
-        check_true('待查询的人员和部门明确标记',
-                   '待查询' in snapshot[TEST_CONFIG['originator_component']]
-                   and '待查询' in snapshot[TEST_CONFIG['dept_component']])
-        check_true('图片只记待上传', '待上传' in snapshot[TEST_CONFIG['image_component']])
+            # bdd6efc9 起「总闸关 + 未配置同序 OA」不再记 skipped 草稿单，直接 422
+            # 提示保存草稿（与打样「未配置同序的提交一律挡」同一口径）。
+            # 从前 skipped → 同轮重试复用同一行那套发起态机在询价入口已不可达
+            # （合同发起仍是记 skipped 的老口径，差异见转告清单）。
+            for label in ("首次", "重复点击"):
+                try:
+                    await dt_router.start_inquiry_approval(
+                        inquiry_id=inquiry_id, payload=dt_router.StartApproval(),
+                        request=fake_request(), user=user, session=s,
+                    )
+                except AppError as exc:
+                    check(f'关闸发起被拒（{label}）', exc.http_status, 422)
+                    check_true(f'拒绝理由说清未配置同序（{label}）', '同序' in exc.message, exc.message)
+                else:
+                    check_true(f'{label} 必须被拒（从前记 skipped）', False)
+        async with SessionLocal() as s:
+            # ⚠️ inquiry_id 是样品/询价/合同共用列，必须按 oa_type 收窄 ——
+            # 否则别的套件残留的 sample 记录 id 撞上本套件的询价 id 就误伤。
+            rows = (await s.execute(
+                select(OaInstance).where(
+                    OaInstance.inquiry_id == inquiry_id, OaInstance.oa_type == 'inquiry'
+                )
+            )).scalars().all()
+        check('被拒后没有落库 OA 记录', len(rows), 0)
         check('关闸没有取得客户端', len(external_attempts), 0)
 
         # 只在本测试进程开启模拟路径，客户端仍全部为桩；验证 skipped 后可正确重建报文。
         settings.dingtalk_push_off = False
         dt.get_client = lambda: fake
         client_module.get_client = lambda: fake
-        print("=== 2. 假客户端发起：走 router，复用 skipped 记录 ===")
+        print("=== 2. 假客户端发起：走 router（关闸不记 skipped，直接新发）===")
         async with SessionLocal() as s:
             admin = (
                 await s.execute(select(User).where(User.username == "admin"))
@@ -424,7 +430,9 @@ async def main() -> int:
                 session=s,
             )
         check("接口返回码", resp.get("code"), 0)
-        check('模拟发起复用 skipped 的业务键', resp['data']['id'], dry['data']['id'])
+        check_true('模拟发起落了新一行（关闸已不记 skipped，无可复用记录）',
+                   isinstance(resp['data'].get('id'), int) and resp['data']['id'] > 0,
+                   f"id={resp['data'].get('id')}")
         check("外部建单被调用次数", fake.created, 1)
         check("按姓名找人时用的是 CRM 里的姓名", fake.searched_name, "系统管理员")
         check(
@@ -508,10 +516,17 @@ async def main() -> int:
         async with SessionLocal() as s:
             oa_id = resp['data']['id']
             before_sync = (await s.execute(select(OaInstance.__table__).where(OaInstance.id == oa_id))).one()
-            sync = await dt_router.trigger_oa_sync(request=fake_request(), user=user, session=s)
+            # bdd6efc9 删掉了批量手动同步 /dingtalk/oa-sync（手动只剩单条、轮询归定时
+            # 任务），单条同步在关闸时直接 422「历史审批仅供查看」——同样不外呼、
+            # 不改记录（从前批量入口返回 disabled + 开发阶段未执行的提示）。
+            try:
+                await dt_router.sync_oa_instance(oa_id=oa_id, user=user, session=s)
+            except AppError as exc:
+                check('关闸同步被拒', exc.http_status, 422)
+                check_true('关闸同步说清历史仅供查看', '仅供查看' in exc.message, exc.message)
+            else:
+                check_true('关闸同步必须被拒（从前返回 disabled）', False)
             after_sync = (await s.execute(select(OaInstance.__table__).where(OaInstance.id == oa_id))).one()
-            check('关闸同步明确返回未执行', sync['data']['disabled'], True)
-            check_true('同步提示不是成功检查零条', '开发阶段未执行' in sync['message'])
             check('关闸同步不改审批中的记录', after_sync, before_sync)
 
             row = await s.get(OaInstance, oa_id)
@@ -526,9 +541,11 @@ async def main() -> int:
                     request=fake_request(), user=user, session=s,
                 )
             except AppError as exc:
-                check('关闸重发返回 403', exc.http_status, 403)
-                check('关闸重发错误码', exc.code, ErrorCode.FORBIDDEN)
-                check_true('关闸重发明确提示未执行', '未执行' in exc.message or '已关闭' in exc.message)
+                # bdd6efc9 起关闸重发与关闸同步同一口径：409「历史审批仅供查看，
+                # 新审批请使用同序 OA」（从前是 403 FORBIDDEN + 未执行提示）。
+                check('关闸重发被拒', exc.http_status, 409)
+                check('关闸重发错误码', exc.code, ErrorCode.STATUS_NOT_ALLOWED)
+                check_true('关闸重发明确提示仅供查看', '仅供查看' in exc.message, exc.message)
             else:
                 check_true('关闸重发必须拒绝', False)
             after_resend = (await s.execute(select(OaInstance.__table__).where(OaInstance.id == oa_id))).one()
