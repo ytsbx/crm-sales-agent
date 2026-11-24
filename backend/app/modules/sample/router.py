@@ -34,6 +34,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import Response
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -308,6 +309,19 @@ async def create_sample(
     session: AsyncSession = Depends(get_db),
 ):
     """新建样品申请。明细可一次带上，也可稍后用 /samples/{id}/items 追加。"""
+    # B21-13：同请求键回放 → 直接返回已建的那单，双击/弱网重试不重复建。
+    if payload.request_key:
+        existing = (
+            await session.execute(
+                select(SampleRequest).where(
+                    SampleRequest.request_key == payload.request_key,
+                    SampleRequest.deleted_at.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            existing = await svc.get_visible_or_404(session, user, existing.id)
+            return ok(await svc.detail(session, existing, user), "样品申请已创建")
     opportunity = None
     customer_id = payload.customer_id
     if payload.opportunity_id:
@@ -341,6 +355,7 @@ async def create_sample(
 
     sample = SampleRequest(
         source_context=source_context,
+        request_key=payload.request_key,
         opportunity_id=payload.opportunity_id,
         customer_id=customer_id,
         contact_id=payload.contact_id,
@@ -353,7 +368,24 @@ async def create_sample(
         created_at=svc.now(),
     )
     session.add(sample)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError:
+        # B21-13：并发同键撞唯一约束 → 回滚后返回已建的那单（幂等），不 500
+        await session.rollback()
+        if payload.request_key:
+            existing = (
+                await session.execute(
+                    select(SampleRequest).where(
+                        SampleRequest.request_key == payload.request_key,
+                        SampleRequest.deleted_at.is_(None),
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                existing = await svc.get_visible_or_404(session, user, existing.id)
+                return ok(await svc.detail(session, existing, user), "样品申请已创建")
+        raise
 
     for item in payload.items:
         await _add_item(

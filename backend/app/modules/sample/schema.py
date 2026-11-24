@@ -72,6 +72,8 @@ class SampleCreate(BaseModel):
     use_dingtalk: bool = False
     model_config = ConfigDict(extra="ignore")
 
+    #: B21-13：弱网/双击重试带同一个键，后端认成幂等（模型已有唯一列，无需改库）。
+    request_key: str | None = Field(default=None, max_length=36)
     opportunity_id: int | None = None
     customer_id: int | None = None
     contact_id: int | None = None
