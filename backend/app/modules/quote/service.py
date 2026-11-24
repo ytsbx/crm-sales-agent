@@ -1240,12 +1240,25 @@ async def _build_custom_item_snapshot(
 
     **币种口径（2026-09-30 修正，别改回去）**：成本与运费按**人民币**录入，
     落成 `cost_snapshot` / `logistics_cost_snapshot` / `minimum_price_snapshot`；
-    只有报价 `quoted_price` 按报价版本币种。外币单的利润先按汇率把成本折过去再算。
+    只有报价 `quoted_price` 按报价版本币种。2026-11-24（e7aeb4a3）起非 CNY
+    **显式拒收**（主人口径「有人用外币就给他报错」），不再折算。
     原文案说"成本按报价币种填"，但审批判定、前端标签（¥）与整单加权底价三处
     都按人民币读同一批快照——于是美元单上 7 美元成本被当成 7 人民币，与 50 人民币的
     报价一比永远不触发低价审批与绝对底价，还显示虚高毛利。**静默放行，最危险的那种错。**
     """
     from app.modules.inquiry.model import CustomInquiry
+
+    # 非 CNY 显式拒收（e7aeb4a3 的收口在定制行漏了这一路）：定制行显式
+    # unit_cost 不过 calculate_price，那个入口的拒收拦不到这里 —— 不拦就会
+    # 算出「10 美元 − 300 人民币」的假利润（check_custom_no_sku 3c 实证）。
+    # 与 convert_cny_to / calculate_price 入口 / 审批档位同款错误。
+    currency_code = (version.currency or "CNY").upper()
+    if currency_code != "CNY":
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"报价币种是 {currency_code}：本系统只支持人民币，外币折算已拆除",
+            400,
+        )
 
     if not inquiry_id:
         raise AppError(
