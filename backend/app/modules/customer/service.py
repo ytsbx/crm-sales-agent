@@ -1,6 +1,7 @@
 """客户与联系人业务逻辑。"""
 
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from sqlalchemy import Select, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,9 +22,12 @@ from app.modules.customer import stage as stage_module
 from app.modules.user.model import User
 
 
-def _f(value) -> float | None:
-    """Decimal/None → float/None。序列化 Numeric 字段时统一走这里。"""
-    return None if value is None else float(value)
+def _f(value) -> Decimal | None:
+    """序列化总闸：保留 Decimal 原值（float→Decimal 专项批5）。
+
+    JSON 出口（core/jsonio）按原值渲染精确数字，不再经 float 丢尾数。
+    """
+    return value
 
 
 async def touch_progress(
@@ -302,7 +306,7 @@ async def customer_overview(
         order_amounts = [
             # currency 为空 = 历史数据没记币种，**如实标出来**（curreny 给 null），
             # 不默认当成人民币 —— 那等于给一条没根据的数字。
-            {"currency": currency, "amount": float(total or 0),
+            {"currency": currency, "amount": total if total is not None else Decimal(0),
              "amount_exact": str(total if total is not None else 0)}
             for currency, total in amount_rows
         ]

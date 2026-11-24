@@ -203,9 +203,15 @@ async def create_quote_from_inquiry(
             "opportunity_id": created["opportunity"].id,
             "inquiry_no": inquiry.inquiry_no,
             # 直接把"这一价是不是低了"告诉界面，省得销售回报价页才发现要审批
-            "quoted_price": float(item.quoted_price),
+            "quoted_price": item.quoted_price,
+            "quoted_price_exact": format(item.quoted_price, 'f'),
             "minimum_price": (
-                float(item.minimum_price_snapshot)
+                item.minimum_price_snapshot
+                if item.minimum_price_snapshot is not None
+                else None
+            ),
+            "minimum_price_exact": (
+                format(item.minimum_price_snapshot, 'f')
                 if item.minimum_price_snapshot is not None
                 else None
             ),

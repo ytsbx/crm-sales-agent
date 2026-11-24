@@ -1,6 +1,7 @@
 """商机中心接口（对齐 03-API §11 / §12 / §13）。"""
 
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select
@@ -362,15 +363,15 @@ async def funnel(
         session,
     )
     rows = (await session.execute(stmt)).all()
-    stats = {int(sid): (int(count), float(amount or 0)) for sid, count, amount in rows}
+    stats = {int(sid): (int(count), amount if amount is not None else Decimal(0)) for sid, count, amount in rows}
     return ok(
         [
             {
                 "stage_id": stage.id,
                 "stage_name": stage.name,
                 "sequence": stage.sequence,
-                "count": stats.get(stage.id, (0, 0.0))[0],
-                "amount": stats.get(stage.id, (0, 0.0))[1],
+                "count": stats.get(stage.id, (0, Decimal(0)))[0],
+                "amount": stats.get(stage.id, (0, Decimal(0)))[1],
             }
             for stage in stages
         ]
@@ -420,15 +421,15 @@ async def board_stats(
             ).group_by(sub.c.stage_id)
         )
     ).all()
-    stats = {int(sid): (int(count), float(amount or 0)) for sid, count, amount in rows}
+    stats = {int(sid): (int(count), amount if amount is not None else Decimal(0)) for sid, count, amount in rows}
     return ok(
         [
             {
                 "stage_id": stage.id,
                 "stage_name": stage.name,
                 "sequence": stage.sequence,
-                "count": stats.get(stage.id, (0, 0.0))[0],
-                "amount": stats.get(stage.id, (0, 0.0))[1],
+                "count": stats.get(stage.id, (0, Decimal(0)))[0],
+                "amount": stats.get(stage.id, (0, Decimal(0)))[1],
             }
             for stage in stages
         ]
@@ -685,7 +686,7 @@ async def opportunity_overview(
 
     # 报价金额要看当前版本，得再查一次 quote_versions
     current_version_ids = {row.current_version_id for row in quotes if row.current_version_id}
-    version_amounts: dict[int, float] = {}
+    version_amounts: dict[int, Decimal] = {}
     version_nos: dict[int, int] = {}
     if current_version_ids:
         from app.modules.quote.model import QuoteVersion
@@ -697,7 +698,7 @@ async def opportunity_overview(
                 )
             )
         ).all():
-            version_amounts[int(version_id)] = float(amount or 0)
+            version_amounts[int(version_id)] = amount if amount is not None else Decimal(0)
             version_nos[int(version_id)] = int(version_no)
 
     customers, owners, _ = await svc.enrichment(session, [opportunity])
@@ -712,7 +713,7 @@ async def opportunity_overview(
             ),
             "counts": {
                 "items": len(items),
-                "item_quantity": float(sum(item["quantity"] for item in items)),
+                "item_quantity": sum(item["quantity"] for item in items),
                 # null = 这个板块**无权限查看**（第十二批 12.1）。前端据此显示
                 # 「无权限查看」，别把"无权限"显示成"没有数据"。
                 "quotes": quote_total,

@@ -214,7 +214,10 @@ JS Number 解析 15-16 位上限是前端既有问题，本轮后端改造不使
       Decimal + by_*_exact；pricing/router 四出口去 float；product/service _number 透传；
       master._json_value 挂起 Q6 未碰；旧 float 断言收紧、物流漂移防线改用丢尾数回传验证；
       新增批4 边界 3 项；全量 2223 通过）
-- [ ] 批5 客户/商机/询价
+- [x] 批5 客户/商机/询价（customer/service _f 透传 + 订单币种聚合 Decimal、customer/router
+      当前版本金额、opportunity/service _number 透传、opportunity/router 漏斗/看板 SUM +
+      360 概览版本金额/数量 Decimal、inquiry/service 数量/目标价 + exact、inquiry/router
+      转报价 quoted/minimum + exact；零旧断言破坏；新增批5 边界 3 项；全量 2226 通过）
 - [ ] 批6 分析/目标
 - [ ] 批7 打样/洞察
 - [ ] 批8 Agent/ERP 入站

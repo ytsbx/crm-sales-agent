@@ -759,7 +759,7 @@ async def customer_quotes(
                 "valid_until": row.valid_until,
                 "current_version_id": row.current_version_id,
                 "current_version_no": version.version_no if version else None,
-                "current_version_amount": float(version.total_amount) if version else None,
+                "current_version_amount": version.total_amount if version else None,
                 "current_version_amount_exact": str(version.total_amount) if version else None,
                 # 币种跟着金额一起给（第九批 §9.9）：前端不能假设是人民币。
                 # 版本缺失时给 null，由前端提示"币种待核实"。

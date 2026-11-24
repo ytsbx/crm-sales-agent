@@ -124,8 +124,10 @@ def serialize(
         "customer_name": customer_name,
         "contact_id": inquiry.contact_id,
         "opportunity_id": inquiry.opportunity_id,
-        "quantity": float(inquiry.quantity) if inquiry.quantity is not None else None,
-        "target_price": float(inquiry.target_price) if inquiry.target_price is not None else None,
+        "quantity": inquiry.quantity if inquiry.quantity is not None else None,
+        "quantity_exact": format(inquiry.quantity, 'f') if inquiry.quantity is not None else None,
+        "target_price": inquiry.target_price if inquiry.target_price is not None else None,
+        "target_price_exact": format(inquiry.target_price, 'f') if inquiry.target_price is not None else None,
         "status": inquiry.status,
         "status_label": STATUS_LABELS.get(inquiry.status, inquiry.status),
         # 来源类型（第五批 §6.1(3)）：客户询价 / 内部开发需求。

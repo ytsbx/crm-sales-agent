@@ -22,8 +22,9 @@ from app.modules.product.model import Sku
 from app.modules.user.model import User
 
 
-def _number(value) -> float | None:
-    return None if value is None else float(value)
+def _number(value) -> Decimal | None:
+    """序列化总闸：保留 Decimal 原值（float→Decimal 专项批5，B19-03）。"""
+    return value
 
 
 def assert_regular_stage(stage: OpportunityStage) -> None:

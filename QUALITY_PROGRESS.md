@@ -5331,3 +5331,11 @@
 - **master._json_value 挂起 Q6 未碰**：核实其同时服务 JSONB 快照、本地值比较、差异指纹三链；改字符串会对历史 float confirmed 值产生伪差异、指纹一次性失配，属业务口径取舍，已列候选方案待主人拍板。
 - 测试连带：quote_cost_gate 三处旧 float 断言收紧 Decimal（含 isinstance public float→Decimal、parametrize 浮点字面量改字符串）；pricing_simulation_precision amount 断言收紧；logistics 确认防线用例改用"旧 float 客户端丢尾数回传"验证运费已变化仍拒（精确回传现在合法通过，符合新契约）。新增 test_decimal_batch4_pricing_product 3 项。
 - 全量 2223 项通过。提交只推 GitHub；未部署、未动库、服务器未碰；另一会话未提交改动不纳入。
+
+### float→Decimal 专项 · 批5 落地（2026-11-24，本会话）
+
+- customer/service `_f` 透传（概览商机 expected_amount、订单 total_amount）；按币种分组订单金额 float(total or 0)→Decimal 原值（amount_exact 旁路本已在；不同币种不合并的口径保持）。customer/router 客户报价当前版本金额去 float（exact 本已在）。
+- opportunity/service `_number` 透传（预计金额/明细数量/目标价/最近单价）；opportunity/router 漏斗与看板按阶段 SUM、360 概览版本金额字典与 item_quantity 去 float（空阶段默认 0.0→Decimal(0)）。
+- inquiry/service 序列化 quantity/target_price 去 float 并补 *_exact（询价编辑回填往返链）；inquiry/router 转报价响应 quoted_price/minimum_price 去 float 并补 *_exact。
+- 本批零旧断言破坏。新增 test_decimal_batch5_customer_opp_inquiry 3 项（商机/明细/询价 Decimal+exact+线路逐位）。全量 2226 项通过。
+- 提交只推 GitHub；未部署、未动库、服务器未碰；另一会话未提交改动不纳入。
