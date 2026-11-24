@@ -5373,6 +5373,15 @@
 - 测试：test_decimal_json_exit 回放形状用例与 test_request_idempotency JSON 安全用例的存储断言更新为"原文 str + 解包 Decimal"；新增 test_decimal_q4_replay 2 项（16 位大金额 complete→reserve 回放逐位精确含 datetime 往返、历史 dict 快照 float 原样回放）。全量 2238 项通过。
 - 提交只推 GitHub；未部署、未动库、服务器未碰。剩余待决策：Q5（推荐认边界）、Q6（推荐拆三链）、毛利率逢五规矩（推荐精确半偶）。
 
+### float→Decimal 专项 · Q5 决策3 落地（2026-11-24，主人拍板：阈值改字符串配置）
+
+- 配置侧根治：RuleCondition（rules_router）增 model_validator，数值字段阈值经 rules_engine.exact_threshold_str 归一**精确十进制字符串**存储（int/float/数字字符串入参全兼容，'1e5' 展开成 '100000'；非法串/NaN/Inf 抛 ValueError→422，脏配置进不了库）；枚举/布尔字段原样保留。_validate_payload 契约更新"数字或数字字符串"并复校验字符串有限性。
+- 求值/比较侧认字符串：evaluate_conditions 阈值 str→Decimal 逐位解析（历史 int/float 行仍 Decimal(str()) 最短往返老路），InvalidOperation 纳入静默未命中守卫；conditions_overlap 上下界统一 Decimal(str()) 归一（str/float 混比不再 TypeError）；_fmt 数字字符串与数字同展示口径（两位千分位）。历史 float 配置行在发布重建 RuleCondition 时自愈成字符串。
+- 契约影响（主人已知情选择）：GET 规则条件阈值返回字符串；前端配置页编辑/保存按字符串读写跟进（数字入参仍兼容，老前端不改也能写）。
+- 测试：新增 test_decimal_q5_threshold_config 8 项（16 位字符串逐位保留、数字归一、非法串 422、枚举不受影响、边界求值精确、str/float 混比 overlap、payload 校验、_fmt 口径）；conflicts 存储断言 int→字符串收紧。全量 2246 项通过。
+- 范围说明：settings get_number 的比率配置（default_min_margin/hard_floor 等）≤15 位往返安全，16 位天花板边界同类残留记台账，不扩本次范围。
+- 提交只推 GitHub；未部署、未动库、服务器未碰。剩余待决策：Q6（推荐拆三链）、毛利率逢五规矩（推荐精确半偶）。
+
 ### 金额精度专项收尾独立复核
 
 - 当前工作树全量后端 2236 项通过。八批提交存在，但精度闭环仍未完成。调用实际规则上下文和求值函数，在隔离依赖下构造售价 2000 元、成本 1559.10 元：毛利 22.045%，当前 float 后两位舍入得到 22.05%，精确半偶为 22.04%，前者命中 >=22.05% 规则。须明确业务要按未舍入值还是按既有两位舍入比较。

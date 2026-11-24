@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from math import isfinite
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,6 +28,24 @@ class RuleCondition(BaseModel):
     field: str
     op: str = "gte"
     value: object = None
+
+    @model_validator(mode="after")
+    def _canonical_threshold(self):
+        """Q5 决策3（主人拍板）：数值阈值统一存**精确字符串**，配置侧不再经 float。
+
+        入参兼容数字与数字字符串（老前端/脚本不用改也能写）；非法数字串在这里
+        就抛 ValidationError（422），不让脏配置进库。枚举/布尔字段原样保留。
+        历史 float 行在发布重建 RuleCondition 时也会自愈成字符串。
+        """
+        meta = next(
+            (f for f in rules_engine.CONTEXT_FIELDS if f["field"] == self.field), None
+        )
+        if meta is not None and meta["value_type"] == "number" and self.value is not None:
+            if isinstance(self.value, list):
+                self.value = [rules_engine.exact_threshold_str(v) for v in self.value]
+            else:
+                self.value = rules_engine.exact_threshold_str(self.value)
+        return self
 
 
 class RulePayload(BaseModel):
@@ -64,10 +82,15 @@ def _validate_payload(payload: RulePayload) -> None:
                 422,
             )
         if info["value_type"] == "number" and (
-            type(cond.value) not in (int, float)
+            type(cond.value) not in (int, float, str)
             or (isinstance(cond.value, float) and not isfinite(cond.value))
         ):
-            raise AppError(ErrorCode.PARAM_ERROR, f"「{info['label']}」的阈值必须是数字", 422)
+            raise AppError(ErrorCode.PARAM_ERROR, f"「{info['label']}」的阈值必须是数字或数字字符串", 422)
+        if info["value_type"] == "number" and isinstance(cond.value, str):
+            try:
+                rules_engine.exact_threshold_str(cond.value)
+            except ValueError:
+                raise AppError(ErrorCode.PARAM_ERROR, f"「{info['label']}」的阈值字符串不是有限数字", 422) from None
         if info["value_type"] == "bool" and not isinstance(cond.value, bool):
             raise AppError(ErrorCode.PARAM_ERROR, f"「{info['label']}」的阈值必须是 true/false", 422)
     if payload.kind == "exception_route":

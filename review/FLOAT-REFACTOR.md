@@ -186,11 +186,18 @@ JS Number 解析 15-16 位上限是前端既有问题，本轮后端改造不使
   payment/router 两处改传原始 body（不再预先 json_safe(False)）。对外数字契约不变。
   新增 test_decimal_q4_replay 2 项（16 位大金额回放逐位精确、老 dict 原样回放）；
   旧存储断言更新为原文+解包；全量 2238 通过。
-- **Q5（批2 新发现）规则阈值配置侧精度**：待调查/待决策。审批规则条件存 JSONB，读写经
-  Python float：16 位阈值在**配置写入/读取时**已失真（ctx 侧批2 已修，配置侧未修）。
-  实际阈值多为整元小额、风险低；根治需 JSONB 无损读写（parse_float=Decimal 全局影响面大）
-  或阈值改字符串配置（契约/校验取舍）。另：毛利率 round 两位的半偶舍入边界属口径待决策，
-  批2 保持原口径未动。
+- **Q5（批2 新发现）规则阈值配置侧精度**：✅ 已定（主人拍板走方案3 阈值改字符串配置，
+  2026-11-24 落地）。RuleCondition 增 model_validator：数值字段阈值统一归一
+  `exact_threshold_str`（精确十进制字符串，'1e5' 展开；接受 int/float/数字字符串，
+  非法/非有限抛 ValueError→422）；枚举/布尔字段原样。_validate_payload 契约更新为
+  "数字或数字字符串"。evaluate_conditions 认字符串阈值（Decimal 逐位解析，
+  InvalidOperation 静默未命中守卫扩围）；conditions_overlap 上下界归一 Decimal
+  （str/float 混比不炸）；_fmt 数字字符串与数字同展示口径。历史 float 行求值走
+  Decimal(str()) 老路、发布重建 RuleCondition 时自愈成字符串。**前端配置页跟进**：
+  GET 返回阈值为字符串，编辑页按字符串读写（数字入参仍兼容）。
+  新增 test_decimal_q5_threshold_config 8 项；conflicts 存储断言收紧字符串；
+  全量 2246 通过。settings get_number 比率配置（default_min_margin 等）≤15 位
+  往返安全，16 位边界同类残留记台账不扩范围。
 - **Q6（批4 新发现）master._json_value 三链耦合**：待决策，批4 未碰。该 helper 同时服务
   ① JSONB 版本快照/authority.source_value 落库、② 本地值比较（local_value vs incoming、
   confirmed vs incoming）、③ build_sku_diff_key 差异指纹。改 Decimal→字符串后：

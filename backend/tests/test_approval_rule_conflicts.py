@@ -160,7 +160,7 @@ def test_conflicting_draft_cannot_be_created_or_saved(monkeypatch):
         with pytest.raises(AppError, match='11.*高毛利小额自动免审.*不能保存') as error:
             asyncio.run(rules_router.update_rule(draft.id, candidate, None, user, session))
         assert error.value.http_status == 409
-        assert draft.conditions == [condition('gross_margin', 'lt', 25)]
+        assert draft.conditions == [condition('gross_margin', 'lt', '25')]
         assert raw.scalar(select(func.count()).select_from(ApprovalRuleVersion)) == 1
         audit.assert_not_awaited()
         # Editing an active rule must exclude its own published snapshot.

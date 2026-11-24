@@ -21,7 +21,7 @@ exception_route    异常加签：按金额分档走，末尾追加一个会签�
 
 import re
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -103,7 +103,31 @@ def _fmt(value) -> str:
         return "是" if value else "否"
     if isinstance(value, (float, Decimal)):
         return f"{value:,.2f}"
+    if isinstance(value, str):
+        # Q5 决策3：数值阈值存精确字符串；展示与 float/Decimal 同口径（两位千分位）
+        try:
+            return f"{Decimal(value):,.2f}"
+        except InvalidOperation:
+            return value
     return str(value)
+
+
+def exact_threshold_str(value) -> str:
+    """Q5 决策3：数值阈值归一为**精确十进制字符串**（配置侧根治 float 失真）。
+
+    接受 int/float/数字字符串：float 走 str() 最短往返（≤15 位可还原），
+    字符串原样精确解析；'1e5' 这类科学计数统一展开成普通十进制文本。
+    非有限/非数字抛 ValueError，由调用方（pydantic 校验/接口校验）转 422。
+    """
+    if isinstance(value, bool):
+        raise ValueError("布尔不是数值阈值")
+    try:
+        dec = Decimal(str(value))
+    except InvalidOperation:
+        raise ValueError(f"阈值不是数字：{value!r}") from None
+    if not dec.is_finite():
+        raise ValueError("阈值必须是有限数字")
+    return format(dec, "f")
 
 
 def _exact_jsonable(value):
@@ -166,10 +190,11 @@ def evaluate_conditions(conditions: list[dict], ctx: dict) -> tuple[bool, list[d
             })
             continue
         try:
-            # 金额上下文为 Decimal 时，把配置阈值（JSON int/float）归一为
-            # Decimal(str(...))：按配置文本的十进制意图比较，且避免
-            # Decimal 与 float 比较抛 TypeError 被下面静默判成"未命中"。
-            if isinstance(actual, Decimal) and isinstance(expected, (int, float)) and not isinstance(expected, bool):
+            # 金额上下文为 Decimal 时，把配置阈值归一为 Decimal：
+            # Q5 决策3 起新配置存精确字符串（逐位解析）；历史 int/float 行
+            # 走 Decimal(str(...)) 最短往返还原。避免 Decimal 与 float 比较
+            # 抛 TypeError 被下面静默判成"未命中"。
+            if isinstance(actual, Decimal) and isinstance(expected, (int, float, str)) and not isinstance(expected, bool):
                 expected = Decimal(str(expected))
             if op == "gte":
                 hit = actual >= expected
@@ -185,13 +210,13 @@ def evaluate_conditions(conditions: list[dict], ctx: dict) -> tuple[bool, list[d
                 values = expected if isinstance(expected, list) else [expected]
                 if isinstance(actual, Decimal):
                     values = [
-                        Decimal(str(v)) if isinstance(v, (int, float)) and not isinstance(v, bool) else v
+                        Decimal(str(v)) if isinstance(v, (int, float, str)) and not isinstance(v, bool) else v
                         for v in values
                     ]
                 hit = actual in values
             else:
                 hit = False
-        except TypeError:
+        except (TypeError, InvalidOperation):
             hit = False
         all_hit = all_hit and hit
         detail.append({
@@ -208,9 +233,11 @@ def conditions_overlap(left: list[dict], right: list[dict]) -> bool:
         if not conditions:
             continue
         if meta['value_type'] == 'number':
-            lower = max(((c['value'], c['op'] == 'gt') for c in conditions
+            # Q5 决策3：阈值可能是精确字符串（新）或 int/float（历史），
+            # 统一归一 Decimal 再比上下界，避免 str/float 混比 TypeError。
+            lower = max(((Decimal(str(c['value'])), c['op'] == 'gt') for c in conditions
                          if c['op'] in ('gte', 'gt')), default=None)
-            upper = min(((c['value'], c['op'] == 'lte') for c in conditions
+            upper = min(((Decimal(str(c['value'])), c['op'] == 'lte') for c in conditions
                          if c['op'] in ('lte', 'lt')), default=None)
             if lower and upper:
                 if lower[0] > upper[0] or (lower[0] == upper[0] and (lower[1] or not upper[1])):
