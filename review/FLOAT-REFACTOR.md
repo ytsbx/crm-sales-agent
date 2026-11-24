@@ -222,6 +222,17 @@ JS Number 解析 15-16 位上限是前端既有问题，本轮后端改造不使
   测试 test_decimal_q7_margin_exact.py 8 项（边界带/平局/真线/无真值键回退/逐行毛利率/解释文本/格式化/脱敏）。全量 2259 绿。
   前端跟进：审批详情展示精确毛利率（快照已带 `_gross_margin_exact` 字符串）。
   注：另一会话曾提"仅把 round 改半偶"提案，被主人本决策覆盖（显示半偶保留、判断改真值）。
+- **前端跟进四条由本会话接管闭环（2026-11-24，主人纠偏"谁告诉你前端不是你的活了"）**：
+  ① 往返 *_exact 消费：报价编辑种子/改价/草稿单价/打样来源单价与数量改读 *_exact（提交保持字符串）；
+  serialize_item 补 cost/package/logistics/standard/recommended/minimum/profit 六+一快照 *_exact 字符串键，
+  脱敏与数值键同口径隐掉（新增 masking 测试）；订单/回款/分配/洞察既有 exact 消费复核已在位。
+  ② Q5 配置页 RulesPanel 阈值改文本输入原样字符串读写（修 InputNumber 经 JS Number 读回丢分＋0 显示成空）。
+  ③ Q6 master 表单提交改原样字符串（toExactNumeric，修旧 toNumber 非法输入静默变 null 抹数据）；展示渲染字符串安全复核已在位。
+  ④ Q7 沙盒"本单实况"并列毛利率真值行；quote 成本闸门 reason 文本改 exact_decimal_text（core/money 新增，
+  有几位写几位）与判案真值一致；rules_engine _fmt_margin_exact 委托 core helper。
+  提交 666d7c3e（②③④+reason）、bc218ea9（①）。tsc 无错、全量 2260 绿。
+  **已知预览局限（记台账不扩范围）**：WhatIfPanel 为纯预览模拟器（无写路径），JS Number 计算在 16 位边界近似；
+  订单详情成本+运费展示加总同属 JS 预览加总（≤15 位安全）。写路径一律字符串/Decimal，不受影响。
 
 ## 4. 执行状态
 

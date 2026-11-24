@@ -5406,3 +5406,10 @@
 - 连带修 Q5 遗留（证伪发现）：数值字段 actual 为 float/int/str 时遇字符串阈值会 TypeError 静默判未命中、conditions_overlap 回灌阈值选项作 actual 时 str>=str 字典序误判；现数值字段双侧归一 Decimal（int 保留原样保住"30天"长相）。
 - 证据与测试：新增 tests/test_decimal_q7_margin_exact.py 8 项（边界带显示到线但真值未达不命中、平局不命中、真线命中、无真值键回退旧口径、逐行毛利率真值键、解释文本一致、真值格式化、脱敏抹精确键）。隔离库全量 2259 项通过（基线 2251+8）。
 - 台账 Q7 条✅、盘点表 rules_engine:495/503 行结案、§5 允许保留类改为"毛利率展示值"。另一会话"仅改半偶"提案被本决策覆盖（显示半偶保留、判断改真值）。至此 Q1-Q7 全部结案；挂起三项（ERP 推单报文、外币 fx、收款比例 HALF_EVEN）维持不碰。只推 GitHub，服务器只读未部署。
+
+### float→Decimal 专项前端跟进四条接管闭环（主人纠偏分工后本会话执行）
+
+- 主人纠偏"谁告诉你前端不是你的活了"，前端跟进不再推别会话。四条落地：① 往返 *_exact 消费——报价编辑种子/改价弹窗/草稿单价/打样来源单价与数量改读 *_exact、提交保持字符串；serialize_item 补六成本/底价快照+profit 的 *_exact 字符串键且脱敏同口径隐掉（test_decimal_batch2 新增 masking 用例）；订单/回款/分配/洞察既有 exact 消费复核已在位。② Q5 RulesPanel 阈值改文本输入原样字符串读写（修 InputNumber 经 JS Number 读回 16 位丢分、0 显示成空两病）。③ Q6 master 表单 toExactNumeric 原样字符串提交（修旧 toNumber 非法输入静默 null 抹数据）；展示字符串安全复核已在位。④ Q7 沙盒本单实况并列毛利率真值行；quote 成本闸门 reason 文本改 core/money.exact_decimal_text（有几位写几位）与判案真值一致防扯皮。
+- 验证：frontend tsc --noEmit 无错；隔离库全量 2260 项通过（2259+1 masking）。提交 666d7c3e、bc218ea9，只推 GitHub；另一会话未提交文件零扫入。
+- 已知预览局限记台账不扩范围：WhatIfPanel 纯预览模拟器（无写路径）JS Number 计算 16 位边界近似；订单详情成本+运费展示加总同属预览加总（≤15 位安全）。写路径一律字符串/Decimal。
+- 剩余欠账不变：收款比例舍入决策题（B03-15）、ERP 推单外部契约核实（B06-04）、两刀等解禁死代码（外币 fx、audit False 模式）；部署与 Q7 业务打招呼归主人/流程。
