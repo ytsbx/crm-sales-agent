@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from sqlalchemy import delete, insert, select
-from _test_support import require_isolated_db
+from _test_support import force_sample_review, require_isolated_db
 
 require_isolated_db()
 
@@ -171,7 +171,10 @@ async def main():
             sample = request('POST', '/samples', {'customer_id': customer_id, 'owner_id': sales.id,
                                                'items': [{'sku_id': sku, 'quantity': 1}]})
             sample_id = sample['id']
-            request('POST', f'/samples/{sample_id}/approve', {'approved': True})
+            # 审批结果走直插（本地 approve 已收口到同序 OA，bdd6efc9）；
+            # 后续 made/ship/sign 的顺序守卫照旧断言
+            async with SessionLocal() as _s:
+                await force_sample_review(_s, sample_id, 'approved')
             for _ in range(2): request('POST', f'/samples/{sample_id}/made', {})
             request('POST', f'/samples/{sample_id}/ship', {'carrier': '测试物流', 'tracking_no': marker})
             request('POST', f'/samples/{sample_id}/sign', {})
@@ -181,12 +184,18 @@ async def main():
                 request('POST', f'/samples/{sample_id}/confirm?confirm=true',
                         {'accepted': decision, 'remark': marker})
             sample_rows = await rows(FollowUp, FollowUp.sample_id == sample_id)
-            assert len(sample_rows) == 8, [f.content for f in sample_rows]
+            # 条数按「实际动作数」校准：made×2 去重后 1、反馈×2 去重后 1、
+            # confirm(F,F,T) 去重后 2、寄出 1、签收 1 → 6 条（重放不新增）。
+            # 10-05 的 8 条是旧口径：当时 made 还不去重（+1）、审批接口还写
+            # 「打样审批结果」留痕（+1）；审批收口到同序 OA（bdd6efc9）后
+            # 审批结果由 OA 同步落状态、不写跟进，P3 幂等批又把 made 去了重。
+            assert len(sample_rows) == 6, [f.content for f in sample_rows]
             assert all(f.owner_id == actor.id for f in sample_rows)
             sample_notices = [n for n in await notices() if n.business_type == 'sample' and n.business_id == sample_id]
-            assert len(sample_notices) == 16, len(sample_notices)
+            # 每条跟进发「负责人 + 排主管」两份通知：6 × 2 = 12（旧口径 8×2=16）
+            assert len(sample_notices) == 12, len(sample_notices)
             timeline = request('GET', f'/customers/{customer_id}/timeline', token=zhangsan)
-            assert len([e for e in timeline if e.get('source') == {'type': 'sample', 'id': sample_id}]) == 8
+            assert len([e for e in timeline if e.get('source') == {'type': 'sample', 'id': sample_id}]) == 6
             assert request('GET', f'/samples/{sample_id}', token=zhangsan)['id'] == sample_id
             for method, body in [('PATCH', {'content': '篡改'}), ('DELETE', None)]:
                 status, _ = call(method, f'/followups/{sample_rows[0].id}', token=admin, body=body)
