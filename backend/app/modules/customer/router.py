@@ -363,7 +363,15 @@ async def restore_customer(
         business_type="customer",
         business_id=customer.id,
         before=before,
-        after=svc.serialize_customer(customer),
+        # B13-08：恢复审计同样带单据 ids/数量
+        after={
+            **svc.serialize_customer(customer),
+            "document_transfer": {
+                "moved": documents.get("moved", {}),
+                "moved_total": documents.get("moved_total", 0),
+                "skipped_total": documents.get("skipped_total", 0),
+            },
+        },
         ip=client_ip(request),
     )
     await session.commit()
@@ -410,7 +418,15 @@ async def transfer_customer(
         business_type="customer",
         business_id=customer.id,
         before=before,
-        after=svc.serialize_customer(customer),
+        # B13-08：转移审计带单据 ids/数量，事后能复算"哪些单跟着走了"
+        after={
+            **svc.serialize_customer(customer),
+            "document_transfer": {
+                "moved": documents.get("moved", {}),
+                "moved_total": documents.get("moved_total", 0),
+                "skipped_total": documents.get("skipped_total", 0),
+            },
+        },
         ip=client_ip(request),
     )
     await session.commit()

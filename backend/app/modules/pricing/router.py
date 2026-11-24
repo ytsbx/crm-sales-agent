@@ -914,6 +914,7 @@ async def delete_customer_price_rule(
     await svc.ensure_customer_in_scope_for_price(
         session, user=user, customer_id=rule.customer_id
     )
+    before = svc.serialize_customer_price(rule)  # B02-14：删除留底整条旧规则
     await session.delete(rule)
     await write_audit(
         session,
@@ -921,6 +922,7 @@ async def delete_customer_price_rule(
         action="delete",
         business_type="customer_price_rule",
         business_id=rule_id,
+        before=before,
         ip=client_ip(request),
     )
     await session.commit()
@@ -976,6 +978,8 @@ async def upsert_price_permission(
     session: AsyncSession = Depends(get_db),
 ):
     role, permission = await _lock_role_price_permission(session, role_id)
+    # B02-14：旧利润率/折扣/审批权留底，审计才能复算"改之前是什么口径"
+    before = svc.serialize_permission(permission, role.name) if permission is not None else None
     if permission is None:
         permission = PricePermission(role_id=role_id, status="active")
         session.add(permission)
@@ -990,6 +994,7 @@ async def upsert_price_permission(
         action="update",
         business_type="price_permission",
         business_id=permission.id,
+        before=before,
         after=svc.serialize_permission(permission, role.name),
         ip=client_ip(request),
     )
@@ -1298,6 +1303,7 @@ async def lookup_price(
     result["can_see_cost"] = can_see_cost
     if not can_see_cost:
         result["minimum_price"] = None
+        result["minimum_price_exact"] = None
     if can_see_cost:
         cost = await svc.get_effective_cost(session, sku_id)
         if cost is None:
@@ -2184,6 +2190,7 @@ async def create_price_permission(
         action="create",
         business_type="price_permission",
         business_id=permission.id,
+        before=None,  # B02-14：新建无旧值；更新/删除路径留底见各自 before
         after=svc.serialize_permission(permission, role.name),
         ip=client_ip(request),
     )
@@ -2205,6 +2212,8 @@ async def patch_price_permission(
     PATCH 不会 —— 这正是两个方法并存的意义，所以这里单独实现而不是转发给 PUT。
     """
     role, permission = await _lock_role_price_permission(session, role_id)
+    # B02-14：旧利润率/折扣/审批权留底，审计才能复算"改之前是什么口径"
+    before = svc.serialize_permission(permission, role.name) if permission is not None else None
     if permission is None:
         raise AppError(
             ErrorCode.NOT_FOUND,

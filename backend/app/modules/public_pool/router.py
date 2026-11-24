@@ -152,7 +152,7 @@ async def assign_public_customer(
             "该客户已有负责人，请用客户详情里的「放入公海」以留下变更历史",
         )
     before_owner = customer.owner_id
-    await customer_service.transfer_customer(
+    documents = await customer_service.transfer_customer(
         session, user, customer, payload.owner_id, payload.reason or "公海指派"
     )
     await write_audit(
@@ -163,7 +163,15 @@ async def assign_public_customer(
         business_id=customer.id,
         # 审计要能回答"原来归谁、改成了谁、为什么"（返工单 6.1 第 6 条）
         before={"owner_id": before_owner},
-        after={"owner_id": payload.owner_id, "reason": payload.reason},
+        # B13-08：指派审计带单据 ids/数量
+        after={
+            "owner_id": payload.owner_id, "reason": payload.reason,
+            "document_transfer": {
+                "moved": documents.get("moved", {}),
+                "moved_total": documents.get("moved_total", 0),
+                "skipped_total": documents.get("skipped_total", 0),
+            },
+        },
         ip=client_ip(request),
     )
     await session.commit()

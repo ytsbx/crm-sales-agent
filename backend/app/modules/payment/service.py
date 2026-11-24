@@ -316,6 +316,8 @@ async def rebalance_order_allocations(
     # 旧分配，后到账的回款会一直占着前面各期的额度，让先到账的钱反而待分配。
     # 历史人工行代表完整人工决定，即使 allocation_mode 尚未补齐也不能动。
     record_ids = [record.id for record in records]
+    automatic: list[PaymentRecord] = []
+    before_map: dict[int, list[dict]] = {}
     if record_ids:
         manual_ids = set((await session.execute(
             select(PaymentAllocation.payment_id).where(
@@ -326,6 +328,17 @@ async def rebalance_order_allocations(
         automatic = [record for record in records
                      if record.allocation_mode != "manual" and record.id not in manual_ids]
         if automatic:
+            # B05-01：释放前先留底逐笔自动分配（原期/金额），重排审计才能复算
+            old_rows = (await session.execute(
+                select(PaymentAllocation).where(
+                    PaymentAllocation.payment_id.in_([r.id for r in automatic]),
+                    PaymentAllocation.source == "auto",
+                ).order_by(PaymentAllocation.plan_id)
+            )).scalars().all()
+            for row in old_rows:
+                before_map.setdefault(row.payment_id, []).append(
+                    {"plan_id": row.plan_id, "amount": row.amount}
+                )
             await session.execute(delete(PaymentAllocation).where(
                 PaymentAllocation.payment_id.in_([record.id for record in automatic]),
                 PaymentAllocation.source == "auto",
@@ -337,6 +350,27 @@ async def rebalance_order_allocations(
     for record in records:
         await allocate_payment(session, record, operator_id=operator_id)
     await session.flush()
+    # B05-01：逐笔回款写重排审计（原期/新期/金额），只记发生变化的笔
+    for record in automatic:
+        new_rows = (await session.execute(
+            select(PaymentAllocation).where(
+                PaymentAllocation.payment_id == record.id,
+                PaymentAllocation.source == "auto",
+            ).order_by(PaymentAllocation.plan_id)
+        )).scalars().all()
+        after_list = [{"plan_id": row.plan_id, "amount": row.amount} for row in new_rows]
+        before_list = before_map.get(record.id, [])
+        if before_list != after_list:
+            await write_audit(
+                session,
+                operator_id=operator_id,
+                source="SYSTEM" if operator_id is None else "WEB",
+                action="rebalance_allocation",
+                business_type="payment_record",
+                business_id=record.id,
+                before={"allocations": before_list},
+                after={"allocations": after_list},
+            )
     return len(records)
 
 

@@ -275,6 +275,7 @@ async def sync_approval(doc_id: int, user: CurrentUser = Depends(require_permiss
     row = await oa.lock_oa_business_then_instance(session, row)
     if row is None:
         fail("审批记录正在处理，请稍后同步", 409)
+    before_status = row.status  # B07-10：手工同步留痕前后状态
     doc = await visible_doc(session, user, doc_id)
     latest = await oa.get_by_business_key(session, inquiry_id=doc.id, inquiry_version=1, oa_type="contract")
     if latest is None or latest.id != row.id:
@@ -285,6 +286,10 @@ async def sync_approval(doc_id: int, user: CurrentUser = Depends(require_permiss
         if row is None:
             fail("审批状态已更新，请刷新后再同步", 409)
         await visible_doc(session, user, doc_id)
+        # B07-10：手工同步 OA 写审计（操作人/前后状态/实例），与发起审批同口径
+        await write_audit(session, operator_id=user.id, action="sync_contract_oa", business_type="contract", business_id=doc.id,
+                          before={"status": before_status, "instance_id": row.instance_id},
+                          after={"status": row.status, "instance_id": row.instance_id, "provider": "self_oa"})
         await session.commit()
         return ok(oa_service.serialize(row), "已同步 OA 审批")
     if settings.dingtalk_push_off:
@@ -303,6 +308,10 @@ async def sync_approval(doc_id: int, user: CurrentUser = Depends(require_permiss
         status == "pending" and row.status in {"approved", "rejected", "withdrawn"}
     ):
         await store_snapshot(session, doc, row, data)
+    # B07-10：手工同步钉钉审批同样留痕前后状态
+    await write_audit(session, operator_id=user.id, action="sync_contract_oa", business_type="contract", business_id=doc.id,
+                      before={"status": before_status, "instance_id": row.instance_id},
+                      after={"status": row.status, "instance_id": row.instance_id, "provider": "dingtalk"})
     await session.commit()
     return ok(oa.serialize(row), "已同步钉钉审批")
 

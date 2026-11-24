@@ -18,6 +18,8 @@ from tests.conftest import SyncSessionAsAsync, make_user
 @pytest.fixture
 def rebalance_db(db_session):
     now = datetime.now(UTC)
+    # B05-01 后重排逐笔写审计：fixture 统一建审计表（用例内再建带 checkfirst）
+    AuditLog.__table__.create(db_session.get_bind(), checkfirst=True)
     db_session.add(Customer(id=1, name="隔离客户"))
     db_session.flush()
     db_session.add(SalesOrder(id=1, order_no="REBALANCE-TEST", customer_id=1, total_amount=200))
@@ -72,7 +74,7 @@ async def test_changing_due_order_respects_receipt_priority(rebalance_db):
 @pytest.mark.anyio
 async def test_updating_only_due_date_keeps_receipt_allocations(rebalance_db):
     db = rebalance_db
-    AuditLog.__table__.create(db.get_bind())
+    AuditLog.__table__.create(db.get_bind(), checkfirst=True)
     session = await initialize(db)
     before = allocations(db)
     due = date(2026, 12, 15)
@@ -144,3 +146,22 @@ async def test_failed_rebalance_rolls_back_original_allocations(rebalance_db, mo
         await service.rebalance_order_allocations(session, 1)
     await session.rollback()
     assert allocations(db) == original
+
+
+@pytest.mark.anyio
+async def test_rebalance_writes_per_receipt_allocation_audit(rebalance_db):
+    """B05-01：重排必须逐笔留痕原期/新期/金额，审计能复算超收抵去哪了。"""
+    from sqlalchemy import select
+
+    db = rebalance_db
+    session = await initialize(db)
+    db.get(ReceivablePlan, 1).amount = Decimal(50)
+    db.flush()
+    await service.rebalance_order_allocations(session, 1)
+    rows = db.execute(
+        select(AuditLog).where(AuditLog.action == "rebalance_allocation")
+    ).scalars().all()
+    assert rows, "重排后没有逐笔分配审计"
+    for rec in rows:
+        assert rec.before_data["allocations"] != rec.after_data["allocations"]
+        assert all({"plan_id", "amount"} <= set(a) for a in rec.after_data["allocations"])

@@ -1157,8 +1157,17 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50, oa_i
             # 所以每份合同每个终态只提醒一次，轮询反复回写同一状态不会重复推送。
             marker = f'{row.id}:{row.status}'
             if new_status in ('approved', 'rejected') and (linked_contract.filled_data or {}).get('_oa_notified') != marker:
-                await _notify_contract_review_outcome(session, linked_contract, new_status)
-                linked_contract.filled_data = {**linked_contract.filled_data, '_oa_notified': marker}
+                # B11-08：单行隔离——一份合同的通知/待办失败不打断整批同步；
+                # savepoint 回滚半截写入，marker 不落、下轮轮询重试
+                try:
+                    async with session.begin_nested():
+                        await _notify_contract_review_outcome(session, linked_contract, new_status)
+                    linked_contract.filled_data = {**linked_contract.filled_data, '_oa_notified': marker}
+                except Exception:
+                    logger.warning(
+                        "合同审批结果通知失败，本轮跳过、下轮重试 contract=%s",
+                        linked_contract.id, exc_info=True,
+                    )
 
     await session.flush()
     return {"checked": checked, "changed": changed}

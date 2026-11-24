@@ -23,6 +23,7 @@ from app.modules.customer import service as customer_service
 from app.modules.customer.model import Customer
 from app.modules.opportunity.model import Opportunity
 from app.modules.opportunity.model import OpportunityItem
+from app.modules.order import service as order_service
 from app.modules.order.model import SalesOrder
 from app.modules.followup import service as followup_service
 from app.modules.notification import service as notification_service
@@ -1009,6 +1010,7 @@ async def create_version(
     if not confirm:
         from app.core.confirmation import confirmation_message
 
+        await order_service.ensure_no_active_order_for_quote(session, quote.id, user=user)
         # ⚠️ 下面这段查库**只是为了把提示写具体**（"基于 V2 创建 V3""会结束 V2 的待审批"）。
         # 它查不动时**不该**把用户挡在门外：确认这件事情本身照样要做，
         # 只是文案退回通用版。从前这里直接冒泡 → 500「服务器内部错误」，
@@ -1088,7 +1090,14 @@ async def get_version(
     quote = await session.get(Quote, version.quote_id)
     ctx = await _quote_context(session, [quote]) if quote else None
     cost_problems = svc.item_cost_problems(items)
+    order = await order_service.active_order_for_quote(session, version.quote_id)
+    cancelled_order_id = None if order is not None else (await session.execute(
+        select(SalesOrder.id).where(SalesOrder.quote_version_id == version_id, SalesOrder.status == "cancelled")
+    )).scalar_one_or_none()
     body = {
+        "has_active_order": order is not None,
+        "active_order": await order_service.quote_order_reference(session, user, order) if order is not None else None,
+        "version_order_cancelled": cancelled_order_id is not None,
         # ⚠️ 整单利润**也要按权限裁剪**（2026-10-14 审查修，实测泄露）。
         #
         # 同一份响应里逐条明细走 `serialize_item(can_see_cost=_can_see_cost(user))`，
@@ -1306,6 +1315,10 @@ async def update_item(
     quantity = data.get("quantity", item.quantity)
     price = data.get("quoted_price", item.quoted_price)
     old_price = item.quoted_price
+    # B01-10：审计 before 要能复算——数量/成本/运费旧值在一切改动之前留底
+    old_quantity = item.quantity
+    old_cost = item.cost_snapshot
+    old_logistics = item.logistics_cost_snapshot
     manual_price_changed = "quoted_price" in data and price != item.quoted_price
     logistics = data.get("logistics_cost")
     if logistics is not None:
@@ -1334,8 +1347,14 @@ async def update_item(
             action="update_item",
             business_type="quote",
             business_id=quote.id,
-            before={"item_id": item.id, "quoted_price": old_price, "remark_only": True},
-            after={"item_id": item.id, "quoted_price": item.quoted_price},
+            before={
+                "item_id": item.id, "quantity": old_quantity, "quoted_price": old_price,
+                "unit_cost": old_cost, "logistics_cost": old_logistics, "remark_only": True,
+            },
+            after={
+                "item_id": item.id, "quantity": item.quantity, "quoted_price": item.quoted_price,
+                "unit_cost": item.cost_snapshot, "logistics_cost": item.logistics_cost_snapshot,
+            },
             ip=client_ip(request),
         )
         await session.commit()
@@ -1397,8 +1416,14 @@ async def update_item(
         action="update_item",
         business_type="quote",
         business_id=quote.id,
-        before={"item_id": item.id, "quoted_price": old_price},
-        after={"item_id": item.id, "quoted_price": item.quoted_price},
+        before={
+            "item_id": item.id, "quantity": old_quantity, "quoted_price": old_price,
+            "unit_cost": old_cost, "logistics_cost": old_logistics,
+        },
+        after={
+            "item_id": item.id, "quantity": item.quantity, "quoted_price": item.quoted_price,
+            "unit_cost": item.cost_snapshot, "logistics_cost": item.logistics_cost_snapshot,
+        },
         ip=client_ip(request),
     )
     await session.commit()
