@@ -1557,6 +1557,7 @@ async def submit_approval(
     lifecycle.ensure_current_version(quote, version)
     if version.sent_at is not None:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该版本已经发送，不能再次提交审批")
+    before_approval = version.approval_status
     instance, required = await svc.submit_for_approval(
         session,
         quote=quote,
@@ -1583,6 +1584,7 @@ async def submit_approval(
         action="submit_approval",
         business_type="quote",
         business_id=quote.id,
+        before={"approval_status": before_approval},
         after={"approval_required": required, "approval_status": version.approval_status},
         ip=client_ip(request),
     )

@@ -703,6 +703,7 @@ async def sign_document(
 
     if not await can_access_file(session, user, payload.file_id):
         raise AppError(ErrorCode.DATA_SCOPE_DENIED, "无权将该文件登记为此合同的签署件", 403)
+    before_status = doc.status
     await svc.sign_document(
         session, doc, file_id=payload.file_id, note=payload.note, reuse_reason=payload.reuse_reason,
     )
@@ -723,6 +724,7 @@ async def sign_document(
         action="sign",
         business_type="contract",
         business_id=doc.id,
+        before={"status": before_status},
         after={
             "doc_no": doc.doc_no, "file_id": payload.file_id,
             **({"reuse_reason": doc.filled_data["_signed_file_reuse_reason"]}
@@ -891,6 +893,7 @@ async def void_document(
     await _ensure_doc_in_scope(session, user, doc)
     if doc.status == "signed" and not _is_manager(user):
         raise AppError(ErrorCode.FORBIDDEN, "已签署的合同要作废，需要主管权限", 403)
+    before_status = doc.status
     cancelled = await svc.void_document(session, doc, reason=payload.reason)
     await _record_contract_event(
         session,
@@ -909,6 +912,7 @@ async def void_document(
         action="void",
         business_type="contract",
         business_id=doc.id,
+        before={"status": before_status},
         after={"doc_no": doc.doc_no, "reason": payload.reason},
         ip=client_ip(request),
     )

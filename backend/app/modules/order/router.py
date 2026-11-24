@@ -910,6 +910,7 @@ async def change_status(
                 "请先在「发货批次」登记实际发货数量，再将订单标为已发货。",
                 422,
             )
+    before_status = order.status
     await svc.change_status(
         session, order, new_status=payload.status, operator_id=user.id, remark=payload.remark
     )
@@ -919,6 +920,7 @@ async def change_status(
         action="change_status",
         business_type="order",
         business_id=order.id,
+        before={"status": before_status},
         after={"status": payload.status},
         ip=client_ip(request),
     )

@@ -5270,3 +5270,10 @@
 - 仅审计快照补全，不改业务行为；全量 2191 项通过。
 - 创建幂等（其余模块）经核实**不做**：弹窗 confirmLoading=isPending 已挡双击与弱网再点
   （LeadListPage:693、OpportunityListPage:424），重复概率极低且可删，不值得动库+改前端。
+
+### P3 用例补强·第六批（B20-12 部分：报价/合同/订单状态迁移审计补 before）
+
+- quote submit_approval 补 before.approval_status；
+- contract sign/void 补 before.status；
+- order change_status 补 before.status。
+- 仅审计快照补全；全量 2191 项通过。
