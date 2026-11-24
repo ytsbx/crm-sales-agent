@@ -38,6 +38,7 @@ from collections import deque
 
 
 import json
+import logging
 import secrets
 import threading
 import time
@@ -75,6 +76,8 @@ from app.modules.dingtalk.model import (
     allowed_actions,
 )
 from app.modules.user.model import Department, User, Role, user_roles
+
+logger = logging.getLogger(__name__)
 
 #: 停在 `submitting` / 核定占用超过这个时长，就认为那次尝试已经死了
 #: （进程被杀、机器重启、调用方再也没回来），允许重新发起或重新占用。

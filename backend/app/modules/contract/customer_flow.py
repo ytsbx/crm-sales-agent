@@ -268,6 +268,8 @@ async def link_approval(doc_id: int, payload: LinkInput, user: CurrentUser = Dep
 
 async def sync_approval(doc_id: int, user: CurrentUser = Depends(require_permission("order:manage")), session: AsyncSession = Depends(get_db)):
     from app.core.response import ok
+    # B07-10 手工同步写审计用（与本文件其它函数同款局部导入）
+    from app.core.audit import write_audit
     doc = await visible_doc(session, user, doc_id)
     row = await oa.get_by_business_key(session, inquiry_id=doc.id, inquiry_version=1, oa_type="contract")
     if row is None or not row.instance_id:
