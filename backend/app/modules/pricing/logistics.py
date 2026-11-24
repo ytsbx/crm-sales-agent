@@ -34,6 +34,25 @@ def _f(value) -> Decimal | None:
     return value
 
 
+def _json_safe(value):
+    """JSONB 落库前的类型收口：Decimal → 精确字符串（不走 float）。
+
+    批4 把 option/measures 改成 Decimal 透传后，save_quote 把它们原样塞
+    raw_data（JSONB 列）——asyncpg 用标准库 json 序列化，Decimal 直接
+    TypeError → 接口 500。HTTP 出口有 DecimalJSONResponse 兜着，入库口
+    没有人管，这里补上。format(v, 'f') 按十进制原值展开，与 *_exact
+    字段/jsonio 出口同口径；容器递归，tuple 归一成 list。
+    其余类型（str/int/bool/None）原样通过。
+    """
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return value
+
+
 def serialize_rate(rate: LogisticsRate) -> dict:
     return {
         "id": rate.id,
@@ -597,12 +616,17 @@ async def save_quote(
         ),
         eta_days=option.get("eta_days"),
         provider=option.get("provider"),
-        raw_data={
-            "quantity_unit": prepared["sku"]["unit"],
-            "option": option,
-            "measures": {k: _f(v) if isinstance(v, Decimal) else v for k, v in measures.items()},
-            "warnings": prepared["warnings"],
-        },
+        # raw_data 是 JSONB：整个 dict 过 _json_safe，Decimal 一律转精确字符串。
+        # 原 measures 那句 {_f(v) ...} 是恒等透传（_f 只回传），对 JSONB 没有
+        # 实际收口作用，合并进 _json_safe 一并处理。
+        raw_data=_json_safe(
+            {
+                "quantity_unit": prepared["sku"]["unit"],
+                "option": option,
+                "measures": measures,
+                "warnings": prepared["warnings"],
+            }
+        ),
         created_by=user.id,
         created_at=datetime.now(UTC),
     )
