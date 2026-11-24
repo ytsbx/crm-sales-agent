@@ -327,11 +327,17 @@ def serialize_item(item: QuoteItem, *, can_see_cost: bool = True) -> dict:
         "quantity": _f(item.quantity),
         "quantity_exact": format(item.quantity, "f"),
         "cost_snapshot": _f(item.cost_snapshot),
+        "cost_snapshot_exact": str(item.cost_snapshot) if item.cost_snapshot is not None else None,
         "package_cost_snapshot": _f(item.package_cost_snapshot),
+        "package_cost_snapshot_exact": str(item.package_cost_snapshot) if item.package_cost_snapshot is not None else None,
         "logistics_cost_snapshot": _f(item.logistics_cost_snapshot),
+        "logistics_cost_snapshot_exact": str(item.logistics_cost_snapshot) if item.logistics_cost_snapshot is not None else None,
         "standard_price_snapshot": _f(item.standard_price_snapshot),
+        "standard_price_snapshot_exact": str(item.standard_price_snapshot) if item.standard_price_snapshot is not None else None,
         "recommended_price_snapshot": _f(item.recommended_price_snapshot),
+        "recommended_price_snapshot_exact": str(item.recommended_price_snapshot) if item.recommended_price_snapshot is not None else None,
         "minimum_price_snapshot": _f(item.minimum_price_snapshot),
+        "minimum_price_snapshot_exact": str(item.minimum_price_snapshot) if item.minimum_price_snapshot is not None else None,
         "price_source": item.price_source,
         "customer_level_snapshot": item.customer_level_snapshot,
         # §8.14：这条明细按哪一版 SKU 主数据算的（空＝当时还没有确认记录）
@@ -341,6 +347,7 @@ def serialize_item(item: QuoteItem, *, can_see_cost: bool = True) -> dict:
         "amount": _f(line_amount(item.quantity, item.quoted_price)),
         "amount_exact": str(line_amount(item.quantity, item.quoted_price)),
         "profit_snapshot": _f(item.profit_snapshot),
+        "profit_snapshot_exact": str(item.profit_snapshot) if item.profit_snapshot is not None else None,
         "profit_rate_snapshot": (
             float(item.profit_rate_snapshot) if item.profit_rate_snapshot is not None else None
         ),  # 纯比率输出保留 float（Q3）；前端对其做 *100/toFixed
@@ -357,11 +364,16 @@ def serialize_item(item: QuoteItem, *, can_see_cost: bool = True) -> dict:
             if own_cost_only and field == "cost_snapshot":
                 continue  # 业务员自己填的人工核价成本：照常回填，否则定制项没法编辑
             data[field] = None
+            # 精确字符串键与数值键同口径隐掉，否则成为反推成本的新泄漏口
+            if f"{field}_exact" in data:
+                data[f"{field}_exact"] = None
         if own_cost_only:
             # 包装/运费成本不是他的输入（系统按 SKU 算的），一并隐掉，
             # 免得从"成本 120 里含包装 5"这种拆分再反推内部口径
             data["package_cost_snapshot"] = None
             data["logistics_cost_snapshot"] = None
+            data["package_cost_snapshot_exact"] = None
+            data["logistics_cost_snapshot_exact"] = None
     return data
 
 

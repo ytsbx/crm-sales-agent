@@ -208,7 +208,7 @@ export default function OrderDraftsPage() {
             本次数量：<Input style={{ width: 130 }} aria-label="草稿数量" inputMode="decimal" value={String(row.quantity)} disabled={!editable} onChange={v => patch(index, { quantity: v })} />
           </span>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap' }}>
-            单价：<Input style={{ width: 130 }} aria-label="草稿单价" inputMode="decimal" value={row.unit_price == null ? '' : String(row.unit_price)} placeholder="未核价" disabled={!editable} onChange={v => patch(index, { unit_price: v === '' ? null : v })} />
+            单价：<Input style={{ width: 130 }} aria-label="草稿单价" inputMode="decimal" value={row.unit_price_exact ?? (row.unit_price == null ? '' : String(row.unit_price))} placeholder="未核价" disabled={!editable} onChange={v => patch(index, { unit_price: v === '' ? null : v })} />
           </span>
         </div>
         {/* 只读时也是 TextArea，默认给的是多行大框：一行「1200×800×5mm」被塞进

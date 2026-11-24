@@ -55,6 +55,19 @@ def test_serialize_item_decimal_and_wire_exact():
     qty_data = quotes.serialize_item(qty_item)
     assert qty_data["quantity"] == QTY and isinstance(qty_data["quantity"], Decimal)
     assert '"quantity":9999999999999.988' in jsonio.exact_json_dumps(qty_data)
+    # 前端跟进1：成本/底价快照补 *_exact 字符串键，编辑种子不经 JS Number 读回丢分。
+    assert data["cost_snapshot_exact"] == "1"
+    assert data["quoted_price_exact"] == "999999999999.9999"
+
+
+def test_serialize_item_cost_exact_keys_masked_with_numeric():
+    """无成本权限时精确字符串键与数值键同口径隐掉，不留反推成本的新泄漏口。"""
+    data = quotes.serialize_item(_item(), can_see_cost=False)
+    for field in ("cost_snapshot", "package_cost_snapshot", "logistics_cost_snapshot",
+                  "standard_price_snapshot", "recommended_price_snapshot",
+                  "minimum_price_snapshot", "profit_snapshot"):
+        assert data[field] is None
+        assert data[f"{field}_exact"] is None
 
 
 def test_rules_amount_threshold_decimal_boundary():

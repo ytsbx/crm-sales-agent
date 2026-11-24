@@ -326,7 +326,7 @@ export default function QuoteDetailPage() {
       quantity: item.quantity_exact ?? String(item.quantity ?? ''),
       quoted_price: item.quoted_price_exact ?? String(item.quoted_price ?? ''),
       // 定制件的成本快照就是当初人工填的核价成本，回填出来方便改
-      unit_cost: item.is_custom ? String(item.cost_snapshot ?? '') : '',
+      unit_cost: item.is_custom ? String(item.cost_snapshot_exact ?? item.cost_snapshot ?? '') : '',
       remark: item.remark ?? '',
     }))
     setItemRows(rows.length ? rows : [{ mode: 'sku', quantity: '1', quoted_price: '', unit_cost: '', remark: '' }])
@@ -2025,7 +2025,7 @@ export default function QuoteDetailPage() {
                 value:
                   record.recommended_price_snapshot == null
                     ? '-'
-                    : formatUnitPrice(record.recommended_price_snapshot, 'CNY'),
+                    : formatUnitPrice(record.recommended_price_snapshot_exact ?? record.recommended_price_snapshot, 'CNY'),
               },
               {
                 label: '最低保护价',
