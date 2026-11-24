@@ -142,8 +142,11 @@ def main() -> int:
     print("\n=== ② 反例成立的前提：真实事实确实都是 0 ===")
     summary = (call("GET", f"/orders/{oid}/shipments", admin)[1].get("data") or {}).get("summary") or {}
     confirmed = int(db(f"select count(*) from payment_records where order_id={oid} and status='confirmed'"))
+    # Decimal 精确出口（jsonio 批1）按原值渲染数字：'0' 解析成 int、'1.000' 解析成 float。
+    # 这里断言的是业务数值（实发为 0），不是 Python 类型 —— 归一成 float 再比，
+    # 免得数字字面量形态的变化被 str() 元组比较算成红。
     check("实发 0、无批次、已确认回款 0",
-          (summary.get("shipped"), summary.get("batch_count"), confirmed), (0.0, 0, 0))
+          (float(summary.get("shipped") or 0), summary.get("batch_count"), confirmed), (0.0, 0, 0))
 
     print("\n=== ③ 派生节点的计划日仍可调（不能把整个节点锁死）===")
     ms = _milestone(oid, "first_shipment")
@@ -196,11 +199,14 @@ def main() -> int:
           "items": [{"sku_id": sku, "quantity": 1, "unit_price": 100}]})
     oid2 = int(db(f"select id from sales_orders where customer_id={cid2} order by id desc limit 1"))
     call("GET", f"/orders/{oid2}/milestones", admin)
+    # 金额要能装进订单总额（1×100=100）：应收写入口有
+    # assert_receivable_amount_fits 校验「计划合计 ≤ 订单总额」，超额会被拒、
+    # 计划根本建不出来。这里测的是「未确认不标完成」，金额取 100 刚好收齐。
     call("POST", f"/orders/{oid2}/receivables", admin,
-         {"plan_name": "全额", "amount": 500, "due_date": "2026-11-01"})
+         {"plan_name": "全额", "amount": 100, "due_date": "2026-11-01"})
     plan2 = int(db(f"select id from receivable_plans where order_id={oid2} order by id desc limit 1"))
     call("POST", "/payments", admin,
-         {"receivable_plan_id": plan2, "received_amount": 500, "received_date": "2026-10-08"})
+         {"receivable_plan_id": plan2, "received_amount": 100, "received_date": "2026-10-08"})
     check("只登记回款、未确认 → 收款节点仍是空的",
           _milestone(oid2, "payment")["actual"], "-")
 

@@ -110,8 +110,11 @@ def main() -> int:
 
     print("\n=== ① 复现的反例：零发货记录 → 不能完成 ===")
     summary = (call("GET", f"/orders/{oid}/shipments", admin)[1].get("data") or {}).get("summary") or {}
+    # Decimal 精确出口（jsonio 批1）按原值渲染数字：'1.000' 解析成 float、'0' 解析成 int。
+    # 断言的是业务数值，不是 Python 类型 —— 归一成 float 再比。
     check("前提：订单订了 1、实发 0、没有批次",
-          (summary.get("ordered"), summary.get("shipped"), summary.get("batch_count")),
+          (float(summary.get("ordered") or 0), float(summary.get("shipped") or 0),
+           summary.get("batch_count")),
           (1.0, 0.0, 0))
     _, res = call("POST", f"/orders/{oid}/status", admin, {"status": "completed"})
     check("库内状态没变成 completed",
