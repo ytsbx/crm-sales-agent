@@ -360,6 +360,27 @@ async def main():
             await session.commit()
             fixture_file_id = fixture.id
 
+            # bdd6efc9 起签署件查重：同一份文件（同 id **或同 checksum**）
+            # 不能给另一份已签合同当回签件。下面三个"照常能签"的对照如果还
+            # 共用 fixture，会全撞 42206「这份文件已用于另一份合同的回签」——
+            # 那是查重在正常工作，不是对照要测的东西。每个对照各发一份新文件。
+            sign_files = []
+            for idx in range(3):
+                extra = FileRecord(
+                    storage_provider="local",
+                    object_key=f"_fixture/{MARKER}-{idx}.pdf",
+                    file_name=f"{MARKER}-签署件{idx}.pdf",
+                    mime_type="application/pdf",
+                    size=8,
+                    checksum=f"{idx + 1:064d}",
+                    uploaded_by=zhangsan_id,
+                )
+                session.add(extra)
+                await session.flush()
+                sign_files.append(extra.id)
+            await session.commit()
+            sign_file_a, sign_file_b, sign_file_c = sign_files
+
         status, result = call(
             "POST", f"/contract-documents/{no_source['id']}/sign",
             token=zhangsan, body={"file_id": fixture_file_id},
@@ -470,7 +491,7 @@ async def main():
         doc_ids.append(fresh_doc["id"])
         status, result = call(
             "POST", f"/contract-documents/{fresh_doc['id']}/sign",
-            token=zhangsan, body={"file_id": fixture_file_id},
+            token=zhangsan, body={"file_id": sign_file_a},
         )
         check("钉住「当前版本」→ 照常能签（对照）",
               status == 200, f"HTTP {status} {result}")
@@ -547,7 +568,7 @@ async def main():
               loose_doc.get("quote_version_id"))
         status, result = call(
             "POST", f"/contract-documents/{loose_doc['id']}/sign",
-            token=zhangsan, body={"file_id": fixture_file_id},
+            token=zhangsan, body={"file_id": sign_file_b},
         )
         check("没钉版本 → 沿用老口径可签（对照，证明没误伤这类合同）",
               status == 200, f"HTTP {status} {result}")
@@ -603,7 +624,7 @@ async def main():
         doc_ids.append(monthly_doc["id"])
         status, result = call(
             "POST", f"/contract-documents/{monthly_doc['id']}/sign",
-            token=zhangsan, body={"file_id": fixture_file_id},
+            token=zhangsan, body={"file_id": sign_file_c},
         )
         check("月结协议只关联客户也能登记签署（不受此限）",
               status == 200, f"HTTP {status} {result}")
