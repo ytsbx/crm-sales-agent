@@ -641,8 +641,10 @@ async function checkTwelfthRepairs(client, auth, problems) {
   if (!row.result.value.includes(owner.name)) problems.push('12-R6 列表负责人展示错误')
   if (await clickByText(client, '看板') !== 'clicked') throw new Error('12-R2 无法打开看板')
   if (!await waitForText(client, '已停用')) problems.push('12-R2 看板未保留停用阶段标识')
+  // 「推进 →」同被 a11y 改版换成 <button class="crm-text-action">（OpportunityBoard），
+  // 认死 a 标签就永远点不着——表现为 12-R2「未跳过停用阶段/没落到合法普通阶段」两条软红。
   const moved = await client.send('Runtime.evaluate', {
-    expression: `(() => {const title=Array.from(document.querySelectorAll('div')).find(el=>el.childElementCount===0 && el.innerText===${JSON.stringify(opportunity.title)}); const link=Array.from(title?.parentElement.querySelectorAll('a')??[]).find(el=>el.innerText.trim()==='推进 →'); if (!link) return false; link.click(); return true})()`, returnByValue: true,
+    expression: `(() => {const title=Array.from(document.querySelectorAll('div')).find(el=>el.childElementCount===0 && el.innerText===${JSON.stringify(opportunity.title)}); const link=Array.from(title?.parentElement.querySelectorAll('a, button')??[]).find(el=>el.innerText.trim()==='推进 →'); if (!link) return false; link.click(); return true})()`, returnByValue: true,
   })
   if (!moved.result.value || !await waitForText(client, `已推进到「${target.name}」`)) problems.push('12-R2 看板推进未跳过停用阶段')
   const saved = await checkedJson(`/opportunities/${opportunity.id}`, auth.token)
@@ -1687,7 +1689,7 @@ async function main() {
           if(!await waitForText(client, '计划发货日：2026-10-27')) throw new Error('确认后订单日期没有刷新')
           const rows=await checkedJson(`/orders/${orderId}/milestones`,auth.token)
           const contract=rows.find(n=>n.node==='contract')
-          await client.send('Runtime.evaluate',{expression:`(() => { const row=Array.from(document.querySelectorAll('tr')).find(n=>n.innerText.includes('签订合同')); Array.from(row?.querySelectorAll('a')||[]).find(n=>n.innerText==='登记')?.click(); })()`})
+          await client.send('Runtime.evaluate',{expression:`(() => { const row=Array.from(document.querySelectorAll('tr')).find(n=>n.innerText.includes('签订合同')); Array.from(row?.querySelectorAll('a, button')||[]).find(n=>n.innerText==='登记')?.click(); })()`})
           if(!await waitForText(client,'登记里程碑：签订合同')) throw new Error('节点登记未打开')
           await client.send('Runtime.evaluate',{expression:`document.querySelector('.semi-modal-content .semi-select')?.click()`})
           await sleep(150)
@@ -1775,7 +1777,10 @@ async function main() {
           const choice = await client.send('Runtime.evaluate', {
             expression: `(() => {
               const row = Array.from(document.querySelectorAll('.semi-modal-content tr')).find(node => node.cells?.[0]?.innerText.trim() === 'v1');
-              const link = Array.from(row?.querySelectorAll('a') ?? []).find(el => el.textContent.trim() === '按此版本申请打样');
+              // 017d20ca a11y 把行内动作从 <a> 改成 <button type="button">（crm-text-action），
+              // 这里认死 a 标签会永远找不到「按此版本申请打样」——CI 报「无法在历史表选择 V1」。
+              // 与「更多」那次同款漂移，选择器放宽到 a, button。
+              const link = Array.from(row?.querySelectorAll('a, button') ?? []).find(el => el.textContent.trim() === '按此版本申请打样');
               if (!link) return false; link.click(); return true;
             })()`, returnByValue: true,
           })
