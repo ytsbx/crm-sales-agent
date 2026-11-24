@@ -431,17 +431,36 @@ def sec_c402(admin: str) -> None:
             order_version = db(f"select coalesce(quote_version_id::text,'N') from sales_orders where id={oid}")
             check("前置：订单记下了依据版本（=V1）", order_version, str(v1))
 
-            # 报价再出一版 V2 —— 造出"订单依据 V1、报价已有 V2"的局面
-            call("POST", f"/quotes/{qid}/versions?confirm=true", admin, {})
-            v2 = db(f"select id from quote_versions where quote_id={qid} order by id desc limit 1")
-            check_true("前置：V2 与 V1 不同", v2 != v1, f"v1={v1} v2={v2}")
+            # 报价再出一版 V2 —— 造出"订单依据 V1、报价已有 V2"的局面。
+            # F01 转单防重（2026-11-24）后「转单后再造 V2」的 API 路径结构性
+            # 关死：报价一旦生成有效订单，create_version 被
+            # ensure_no_active_order_for_quote 挡 409「已生成有效订单，请在
+            # 原订单中处理」——产品有意设计，测试跟上。但 ① 的守卫本身
+            # （主人 2026-10-09 拍板 A：合同与订单必须钉同一版，直接拦）
+            # 必须保住：锁上线前的历史数据照样带着这种不一致状态。所以 V2
+            # 改直插库构造这个局面（同 check_pool_scan_race 的 late_candidate
+            # 先例），created_at 必须显式给（该列 NOT NULL 且无默认值）。
+            # 直插必须把「NOT NULL 且库层无默认」的列一次给全（ORM 的
+            # default=0 只对 ORM 插入生效，裸 SQL 拿不到）：金额四列、
+            # currency、approval_status、approval_required、created_at。
+            v2 = db(
+                f"insert into quote_versions "
+                f"(quote_id, version_no, created_at, subtotal_amount, charge_amount, "
+                f"discount_amount, total_amount, currency, approval_status, approval_required) "
+                f"values ({qid}, 2, now(), 0, 0, 0, 0, 'CNY', 'not_submitted', false) "
+                f"returning id"
+            )
+            check_true("前置：V2 与 V1 不同",
+                       v2.isdigit() and v2 != v1, f"v1={v1} v2={v2}")
 
             # ① 显式选 V2（与订单依据不一致）→ 必须拒
             status, res = call("POST", "/contract-documents", admin, {
                 "template_id": int(tid), "customer_id": int(cust), "order_id": int(oid),
                 "quote_id": int(qid), "quote_version_id": int(v2), "title": f"{MARK}-冲突合同"})
+            # 钉「不一致」文案：只判 code!=0 的话，夹具坏掉换来个 404 也会假过。
             check_true("① 依据与订单不一致被拒（从前 200 并生成）",
-                       res.get("code") != 0, f"code={res.get('code')} {str(res.get('message'))[:56]}")
+                       res.get("code") != 0 and "不一致" in str(res.get("message")),
+                       f"code={res.get('code')} {str(res.get('message'))[:56]}")
 
             # ② 对照：显式选订单依据的那一版 → 放行
             status, res = call("POST", "/contract-documents", admin, {
