@@ -43,9 +43,11 @@ def json_safe(value: Any, *, decimal_as_str: bool | None = True) -> Any:
 
     Decimal 默认按原值存字符串（float→Decimal 专项批1，B12-01）：转 float
     会在 16 位边界差一分，审计留痕就对不上账；字符串可精确复算，与 bizdoc
-    快照先例一致。`decimal_as_str=False` 转 float（历史回放契约，仅遗留路径）；
-    `decimal_as_str=None` 保留 Decimal 原值，供精确渲染器 exact_json_dumps 使用
-    （Q4 决策2：幂等快照存精确原文，不再经 float）。
+    快照先例一致。`decimal_as_str=None` 保留 Decimal 原值，供精确渲染器
+    exact_json_dumps 使用（Q4 决策2：幂等快照存精确原文，不再经 float）。
+    **float 复印模式（decimal_as_str=False）已拆除**（2026-11-24 主人批准）：
+    Q4 后全 app/测试零调用方，属没人按的老按钮；再有人传 False 显式报错，
+    而不是静默走丢精度的老路。
     """
     if isinstance(value, dict):
         return {key: json_safe(item, decimal_as_str=decimal_as_str) for key, item in value.items()}
@@ -56,7 +58,12 @@ def json_safe(value: Any, *, decimal_as_str: bool | None = True) -> Any:
     if isinstance(value, Decimal):
         if decimal_as_str is None:
             return value
-        return str(value) if decimal_as_str else float(value)
+        if not decimal_as_str:
+            raise ValueError(
+                "json_safe 的 float 复印模式（decimal_as_str=False）已拆除："
+                "转 float 会在 16 位边界差一分，审计留痕必须原文照抄"
+            )
+        return str(value)
     return value
 
 

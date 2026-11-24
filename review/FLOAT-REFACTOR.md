@@ -279,9 +279,9 @@ JS Number 解析 15-16 位上限是前端既有问题，本轮后端改造不使
 
 允许保留类：① 比率/百分比输出 float（Q3：quote profit_rate/authorized_min_margin、
 targets 达成率、rules_engine 毛利率**展示值**（判断已改真值 Q7）、analytics average_discount、pricing 权限比率）；
-② 挂起项（ERP 推单报文 erp/service:172-186 B06-04、外币 fx 遗留读出口——复核后非死代码、
-改法属业务决策维持挂起）；B03-15 已落地见决策行；③ Q4 已落地（回放改精确原文解包；
-audit.py json_safe 的 decimal_as_str=False 模式保留给其它审计消费方）、Q5 settings
+② 挂起项（ERP 推单报文 erp/service:172-186 B06-04、外币 fx 遗留读出口——**主人 2026-11-24 确认本部署无外币老单、也不会存在外币**，
+该读出口实为死代码，删除待主人一个字；入口 trade_mode 开关与 ERP 同步不拦仍留作守卫）、B03-15 已落地见决策行；③ Q4 已落地（回放改精确原文解包；audit.py json_safe 的 decimal_as_str=False float 复印模式
+**已拆除**——2026-11-24 主人批准，Q4 后零调用方，传 False 显式 ValueError）、Q5 settings
 get_number/_strict_ratio 配置侧（≤15 位往返安全，16 位边界记台账不扩范围）；Q6 已落地见决策行；
 ④ 非金额 float（dingtalk 登录态/token 过期、notification 重试次数、bizdoc PDF 列宽、
 相似度/百分位/停留天数等）；⑤ Agent 工具入参 float 注解（入口契约，已注释）；
