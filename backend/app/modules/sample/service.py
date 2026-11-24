@@ -31,8 +31,10 @@ from app.modules.sample.schema import POINTS_PER_HOUR  # noqa: E402
 ZERO = Decimal(0)
 
 
-def _f(value) -> float | None:
-    return None if value is None else round(float(value), 4)
+def _f(value) -> Decimal | None:
+    # 库刻度 Numeric(16,2)/(16,3)/(8,2)/(12,2)，原 round(float,4) 无损；
+    # 批7 改 Decimal 透传，JSON 出口按原值渲染（B21-01）。
+    return value
 
 
 #: 制作依据的四种状态（R06，2026-10-06）。光看 `basis_files` 空不空是分不出

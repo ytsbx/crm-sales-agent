@@ -5347,3 +5347,10 @@
 - **提交口径**：analytics/service.py 含另一会话未提交 team_summary hunk，用过滤 patch 只暂存本专项 8 个 hunk（git apply --cached），对方 hunk 原样留工作区，已核验暂存/未暂存 hunk 数。
 - 新增 test_decimal_batch6_analytics_targets 3 项（_f 总闸+线路、目标快照 Decimal+exact、存档舍入边界 2.675→2.68 与大金额线路）。全量 2229 项通过。
 - 提交只推 GitHub；未部署、未动库、服务器未碰。
+
+### float→Decimal 专项 · 批7 落地（2026-11-24，本会话）
+
+- sample/service `_f` 原 round(float,4) 对库刻度 Numeric(16,2)/(16,3)/(8,2)/(12,2) 无损，改 Decimal 透传（费用/运费/数量/工时/派生积分，B21-01）。
+- product_insight/router price_assumption 去 float 并补 exact（洞察编辑回填往返链）；_content_snapshot 评审快照 Decimal→原值字符串（Q2；核实快照只落 JSONB 与展示、不做值比较，历史 float 行不重写）；转需求描述价格假设改 format 'f'（文本更精确）。
+- 新增 test_decimal_batch7_sample_insight 3 项（申请费用/工时/积分、发货运费、洞察 exact+快照字符串可 json.dumps）。全量 2232 项通过。
+- 提交只推 GitHub；未部署、未动库、服务器未碰；另一会话未提交改动不纳入。

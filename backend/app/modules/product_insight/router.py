@@ -102,7 +102,10 @@ def _serialize(row: ProductInsight, *, owner_name: str | None = None) -> dict:
         "direction": row.direction,
         "selling_points": row.selling_points,
         "price_assumption": (
-            float(row.price_assumption) if row.price_assumption is not None else None
+            row.price_assumption if row.price_assumption is not None else None
+        ),
+        "price_assumption_exact": (
+            format(row.price_assumption, 'f') if row.price_assumption is not None else None
         ),
         "conclusion": row.conclusion,
         # 参考图：字段一直在模型里，但创建/更新/返回/页面四个环节都没打通（§6.1(6)）
@@ -135,11 +138,11 @@ def _content_snapshot(row: ProductInsight) -> dict:
     """这一轮"报的是什么"：只取受评审约束的那几项（返工单 P1-4）。
 
     存快照而不是只存"改了哪几个字段名"——事后要能回答"当时批准的是这一份内容"，
-    光记字段名答不了。价格转成 float 是为了 JSON 能直接存（`Decimal` 不是 JSON 类型）。
+    光记字段名答不了。价格按 Q2 存原值字符串（JSON 可存且不失真；历史 float 行不重写）。
     """
     return {
         field: (
-            float(value)
+            format(value, 'f')
             if isinstance(value, Decimal)
             else (value if isinstance(value, (str, int, float, bool, list, dict)) else None)
         )
@@ -758,7 +761,7 @@ async def convert_insight(
     if row.selling_points:
         parts.append(f"假设卖点：{row.selling_points}")
     if row.price_assumption is not None:
-        parts.append(f"价格假设（未确认，仅供内部参考）：{float(row.price_assumption)}")
+        parts.append(f"价格假设（未确认，仅供内部参考）：{format(row.price_assumption, 'f')}")
     if row.conclusion:
         parts.append(f"评估结论：{row.conclusion}")
 

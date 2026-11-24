@@ -225,7 +225,9 @@ JS Number 解析 15-16 位上限是前端既有问题，本轮后端改造不使
       Decimal 精确半偶（修 double 伪影边界，2.675→2.68）；router 目标保存响应去 float；
       analytics/service.py 选择性暂存 8 hunk，另一会话 team_summary hunk 留工作区；
       新增批6 边界 3 项；全量 2229 通过）
-- [ ] 批7 打样/洞察
+- [x] 批7 打样/洞察（sample/service _f 透传（库刻度≤3 位，round4 无损）；insight/router
+      price_assumption Decimal + exact、_content_snapshot 按 Q2 存原值字符串（只存只展示、
+      无值比较链，已核实）、转需求描述 format 'f'；新增批7 边界 3 项；全量 2232 通过）
 - [ ] 批8 Agent/ERP 入站
 
 备注：工作区另有离职处理会话的未提交改动（user/task/dingtalk/analytics 状态过滤、前端设置页、
