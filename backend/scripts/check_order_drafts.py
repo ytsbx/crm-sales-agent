@@ -129,7 +129,21 @@ async def main():
             customer=await s.get(Customer,cids[0]); customer.deleted_at=None; await s.commit()
         # confirm 是**查询参数**（不是 body）：套件的 req() 只发 JSON body，
         # 放 body 里到不了后端，会被 42206 拦住而看着像"没生效"。
-        v2=req('POST',f'/quotes/{qid}/versions?confirm=true')
+        #
+        # ⚠️ V2 改直插库（2026-11-24，F01 转单防重 017d20ca）：「报价已生成有效
+        # 订单后不再放行新版本」，转单后再 POST /quotes/{id}/versions 会被 40903
+        # 拦死（实测「这张报价已生成有效订单（SO…），请在原订单中处理」）——
+        # 「订单依据 V1、报价已有 V2」的局面 API 路径结构性关死，只可能来自历史
+        # 数据（口径未收口时建的/ERP 同步进来的），读取路径要有定义行为。与
+        # check_c4_round_repairs 同款修法、同 check_pool_scan_race 的
+        # late_candidate 先例。current_version_id 必须一起指过去，否则下面的
+        # is_historical（报价当前版本 ≠ 该版本）不会亮。
+        async with SessionLocal() as s:
+            v2_row=QuoteVersion(quote_id=qid,version_no=2,approval_status='not_submitted',
+                                created_at=datetime.now(UTC),subtotal_amount=0,total_amount=0)
+            s.add(v2_row); await s.flush()
+            q=await s.get(Quote,qid); q.current_version_id=v2_row.id; await s.commit()
+            v2={'id':v2_row.id}
         historical=req('GET',f'/order-drafts/source?quote_version_id={vid}')
         assert historical['source']['is_historical']
         old=req('POST','/order-drafts',{**body,'request_key':str(uuid4())})
