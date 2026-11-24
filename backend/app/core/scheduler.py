@@ -37,8 +37,9 @@ async def run_public_pool_recycle_job() -> None:
     等主管在「回收待复核」里批了才真的回收 —— 而且批准时还会再检查一遍
     这期间有没有新的履约事项。
 
-    ⚠️ 与自动任务一样靠 `lock_task_scan` 防重入：同一进程里两个扫描同时跑
-    会互相抢连接、也可能重复提名（虽然有唯一索引兜底）。
+    ⚠️ 防重入在 `run_public_pool_recycle` 内靠 `lock_recycle_scan`（B23-P1）：
+    同一进程/多实例两个回收扫描同时跑会互相抢连接、也可能重复提名
+    （虽然有唯一索引兜底），手动与定时共用同一把锁。
     """
     async with SessionLocal() as session:
         result = await settings_service.run_public_pool_recycle(

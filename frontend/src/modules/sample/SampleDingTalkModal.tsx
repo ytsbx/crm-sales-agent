@@ -7,7 +7,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, DatePicker, Input, Modal, Select, Table, TextArea, Toast, Upload } from '@douyinfe/semi-ui'
 import type { FileItem } from '@douyinfe/semi-ui/lib/es/upload/interface'
 import { api } from '../../shared/api/client'
-import { exportSampleApplicationForm, exportSampleApplicationTemplate } from '../../shared/api/sample'
+import { exportSampleApplicationForm } from '../../shared/api/sample'
 import { uploadFile } from '../../shared/api/file'
 import { type OaApprovalInstance, withdrawOaInstance } from '../../shared/api/dingtalk'
 import { newRequestKey } from '../../shared/api/requestKey'
@@ -251,9 +251,8 @@ export default function SampleDingTalkModal({sampleId,customerName,onClose}:{
                     onChange={({fileList})=>setDetailFiles(fileList)}>
                     <Button disabled={mutate.isPending}>选择样品明细表</Button>
                   </Upload>
-                  <Button size="small" theme="borderless" onClick={()=>exportSampleApplicationTemplate()}>下载模板</Button>
                   <span style={{fontSize:12,color:'var(--crm-text-3)'}}>
-                    先下载空白模板填好，再在这里上传；不再从 CRM 样品明细自动生成 Excel。
+                    按同序的做法上传填好的《样品明细明细表》；不再从 CRM 样品明细自动生成 Excel。
                   </span>
                 </div>}
                 {submitted && <div>已提交的资料已冻结，请在同序 OA 查看本轮附件。</div>}

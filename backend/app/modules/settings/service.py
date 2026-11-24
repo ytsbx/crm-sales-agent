@@ -43,7 +43,7 @@ from app.modules.settings.model import (
     TaskRule,
 )
 from app.modules.task.model import HANDOVER_SOURCE, Task
-from app.modules.task.scanning import lock_task_scan
+from app.modules.task.scanning import lock_recycle_scan, lock_task_scan
 from app.modules.followup.model import FollowUp
 from app.modules.user.model import Role, User
 
@@ -994,6 +994,8 @@ async def run_public_pool_recycle(
     活跃 = max(最近有效联系, 最近业务进展)；有效报价/在途订单/在途打样/
     未结应收的客户按政策保护（§11.2），保护明细随结果一并返回。
     """
+    # B23-P1：手动/定时共用同一把回收防重入锁，避免并发扫描重复提名/抢连接。
+    await lock_recycle_scan(session)
     rules = (
         await session.execute(
             select(PublicPoolRule).where(PublicPoolRule.enabled.is_(True))
