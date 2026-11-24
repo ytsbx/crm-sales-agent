@@ -121,9 +121,12 @@ def mark_approved(sid) -> None:
         raise RuntimeError(f"样品 {sid} 未能置为 approved（状态不是 pending/rejected）: {got!r}")
     db(
         "insert into oa_instances (inquiry_id, inquiry_version, oa_type, idempotency_key, "
-        "submit_round, provider, status, created_at, updated_at) "
+        "submit_round, provider, status, result, created_at, updated_at) "
         f"select id, coalesce(version, 1), 'sample', 'chk-c3-{sid}-{uuid4().hex}', "
-        f"1, 'self_oa', 'approved', now(), now() from sample_requests where id={sid}"
+        # 阶段小条（91cf2fc5 B09-01）：闸门不认整体大章，必须带 sample 小条
+        "1, 'self_oa', 'approved', "
+        "'{\"business_stages\": {\"sample\": {\"status\": \"approved\"}}}'::jsonb, now(), now() "
+        f"from sample_requests where id={sid}"
     )
 
 

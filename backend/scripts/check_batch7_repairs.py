@@ -48,6 +48,28 @@ MARK = "CHK7"
 RESULTS: list[tuple[str, bool, str]] = []
 
 
+def mark_sample_approved(sid) -> None:
+    """把打样置为「已批准」。本地 approve 已收口到同序 OA（bdd6efc9），
+    审批态直插（同 check_c3 的 mark_approved）：样品状态 + approved OA 记录
+    两条一起写。OA 行必须带阶段小条（91cf2fc5 B09-01：闸门不认整体大章）。
+    """
+    from uuid import uuid4
+    got = db(
+        f"update sample_requests set status='approved', approved_at=now() "
+        f"where id={sid} and status in ('pending','rejected') returning id"
+    )
+    if str(got).strip() != str(sid):
+        raise RuntimeError(f"样品 {sid} 未能置为 approved（状态不是 pending/rejected）: {got!r}")
+    db(
+        "insert into oa_instances (inquiry_id, inquiry_version, oa_type, idempotency_key, "
+        "submit_round, provider, status, result, created_at, updated_at) "
+        f"select id, coalesce(version, 1), 'sample', 'chk7-{sid}-{uuid4().hex}', "
+        "1, 'self_oa', 'approved', "
+        "'{\"business_stages\": {\"sample\": {\"status\": \"approved\"}}}'::jsonb, now(), now() "
+        f"from sample_requests where id={sid}"
+    )
+
+
 def call(method: str, path: str, token: str | None = None, body=None):
     req = urllib.request.Request(
         API + path, data=json.dumps(body).encode() if body is not None else None, method=method
@@ -351,7 +373,7 @@ def main() -> int:  # noqa: C901 —— 十条判据顺序写下来最清楚
     if not sid:
         check_true("样品夹具建立（跳过本条）", False, str(res.get("message"))[:70])
     else:
-        call("POST", f"/samples/{sid}/approve", admin, {})
+        mark_sample_approved(sid)  # 本地 approve 已收口（bdd6efc9），直插审批态
         future = (date.today() + timedelta(days=30)).isoformat() + "T02:00:00+00:00"
         status, res = call("POST", f"/samples/{sid}/made", admin,
                            {"made_at": future, "remark": "P2-8 未来"})

@@ -233,18 +233,14 @@ async def _seed_foreign_quote_item(customer_id: int, opportunity_id: int, sku_id
 
 
 async def _seed_foreign_compare(customer_id: int, opportunity_id: int, sku_id: int,
-                               quoted_price: str) -> tuple:
-    """用**同一份入参**分别建 CNY 与 USD 两个版本，返回两次落下的保护价快照。
+                                quoted_price: str) -> tuple:
+    """用**同一份入参**分别建 CNY 与 USD 两个版本：CNY 落快照、USD 显式拒收。
 
-    为什么不走接口（2026-10-14 查证后改成这样）：
-    `minimum_price_snapshot` 属于 `_COST_ONLY_ITEM_FIELDS`
-    （`quote/service.py:191`），**对没有 `price:manage` 的人本就该隐藏**
-    —— 底价由成本推出。所以"用业务员身份从接口读这个字段"永远是 `None`，
-    那是正确行为，拿它做断言必然假红（实测：库里存 `52.9412`、接口返回 `None`）。
-
-    这里直读产品函数 `build_item_snapshot`，测的正是这条要防的回归：
-    **快照不得随计价币种变**（被汇率缩小的话，USD 那次会得到一个小得多的数）。
-    两个版本走同一份入参：同客户、同 SKU、同数量、同报价。
+    判据演进（2026-11-24，e7aeb4a3「主人确认无外币数据」）：外币折算整路拆除，
+    产品函数对非 CNY **显式报错**（「本系统只支持人民币，外币折算已拆除」）——
+    从前防的「快照被汇率缩小成美元数」那条回归，在入口就结构性不可能了。
+    所以这里断言随之改为：CNY 照常落快照 + USD 拿到明确拒收（而不是落出一个
+    错币种的数）。两个版本走同一份入参：同客户、同 SKU、同数量、同报价。
 
     ⚠️ 用完必须 `engine.dispose()`：连接池**绑在创建它的那个事件循环**上，
     本函数由 `asyncio.run` 调用（每次一个新循环），不 dispose 的话，
@@ -259,10 +255,16 @@ async def _seed_foreign_compare(customer_id: int, opportunity_id: int, sku_id: i
             cny = await _seed_foreign_quote_item(
                 customer_id, opportunity_id, sku_id, "CNY", quoted_price, 2,
             )
-            usd = await _seed_foreign_quote_item(
-                customer_id, opportunity_id, sku_id, "USD", quoted_price, 2,
-            )
-            return cny[2], usd[2]
+            usd_reject = None
+            try:
+                await _seed_foreign_quote_item(
+                    customer_id, opportunity_id, sku_id, "USD", quoted_price, 2,
+                )
+            except Exception as exc:  # noqa: BLE001 —— 拒收是期望行为，记下原文
+                usd_reject = f'{type(exc).__name__}: {str(exc)[:120]}'
+            # 返回**报价 id**：CNY 那条是真落库的夹具，调用方必须登记进清理清单
+            # （2026-11-24 残渣案：漏登记的两条夹具报价把商机删除挡死了）。
+            return cny[0], cny[2], usd_reject
         finally:
             await engine.dispose()
 
@@ -407,8 +409,9 @@ def read_margin_ctx(version_id):
             items = (await session.execute(
                 select(QuoteItem).where(QuoteItem.quote_version_id == version_id)
             )).scalars().all()
+            # 外币折算已拆除（用户口径）：build_context 不再收 fx 参数
             return await build_context(session, quote=quote, version=version,
-                                       items=items, fx=None)
+                                       items=items)
 
     return asyncio.run(go())
 
@@ -507,6 +510,10 @@ def main():
     def cleanup():
         print()
         print('=== 清理验收临时数据 ===')
+        # 先取消订单（走 API 留审计；就算后面物理清失败，商机闸的
+        # 「未取消订单」那一半也先解掉）。
+        for oid in created_orders:
+            call('POST', f'/orders/{oid}/cancel', token=admin)
         # 六阶段"过程记录"自动留痕/通知（无 CHK 前缀）：按脚本启动时间窗清，
         # 只删本次运行产生的，不碰演示数据
         import asyncio
@@ -517,6 +524,37 @@ def main():
             from app.core.database import SessionLocal
 
             async with SessionLocal() as s:
+                # ① 成交建单（A13）留下的订单链：**物理删**。
+                # API 只有「取消」，但报价删除有「已转订单不能删」的追溯守卫
+                # （订单取消了也照样拦），订单行不清掉，accepted 报价就永远删不掉，
+                # 商机删除再被「名下有有效报价」挡住 —— 2026-11-24 残渣案第二层成因。
+                # 按 FK 图谱从上往下排；每条独立 try：一条被外键挡下其余照清且
+                # **出声**（db() 式静默漏清在本仓库被连坑过四次，别继承这个毛病）。
+                for sql in (
+                    "delete from order_shipment_batch_items where batch_id in "
+                    "(select id from order_shipment_batches where order_id = any(:order_ids))",
+                    "delete from order_shipment_batches where order_id = any(:order_ids)",
+                    "delete from order_schedule_changes where order_id = any(:order_ids)",
+                    "delete from order_status_history where order_id = any(:order_ids)",
+                    "delete from order_milestones where order_id = any(:order_ids)",
+                    "delete from order_draft_items where draft_id in "
+                    "(select id from order_drafts where order_id = any(:order_ids))",
+                    "delete from order_drafts where order_id = any(:order_ids)",
+                    "delete from payment_allocations where plan_id in "
+                    "(select id from receivable_plans where order_id = any(:order_ids)) "
+                    "or payment_id in "
+                    "(select id from payment_records where order_id = any(:order_ids))",
+                    "delete from payment_records where order_id = any(:order_ids)",
+                    "delete from receivable_plans where order_id = any(:order_ids)",
+                    "delete from contract_documents where order_id = any(:order_ids)",
+                    "delete from sales_order_items where order_id = any(:order_ids)",
+                    "delete from sales_orders where id = any(:order_ids)",
+                ):
+                    try:
+                        await s.execute(text(sql), {'order_ids': created_orders})
+                    except Exception as exc:  # noqa: BLE001 —— 漏清必须出声
+                        print(f'  （订单链清理语句失败：{str(exc)[:120]}）')
+                # ② 过程记录/通知与夹具规则成本（原有清单）
                 for sql in (
                     "delete from notifications where business_type in ('quote','order','sample') "
                     "and created_at > :ts",
@@ -542,10 +580,11 @@ def main():
             print(f'  （自动留痕清理跳过：{exc}）')
         for rid in rule_ids:
             call('DELETE', f'/price-rules/{rid}', token=admin)
-        for oid in created_orders:
-            call('POST', f'/orders/{oid}/cancel', token=admin)
-        for qid in created_quotes:
-            call('DELETE', f'/quotes/{qid}', token=admin)
+        # ⚠️ 删除令牌必须是**创建者本人**（2026-11-24 残渣案第一层）：报价草稿有
+        # 隐私保护（`draft_visibility.ensure_draft_access`），别人的私有草稿管理员
+        # 删只会 404「记录不存在」，而 call() 不抛异常 → 静默漏清、商机跟着删不掉。
+        for qid, tok in created_quotes:
+            call('DELETE', f'/quotes/{qid}', token=tok)
         for oid in created_opps:
             call('DELETE', f'/opportunities/{oid}', token=admin)
         for cid in customers.values():
@@ -638,7 +677,7 @@ def main():
             'customer_id': customers['A'], 'opportunity_id': opp_a05,
         })
         qid, vid = res['data']['quote_id'], res['data']['version_id']
-        created_quotes.append(qid)
+        created_quotes.append((qid, zhangsan))
         _, res = call('GET', f'/quote-versions/{vid}', token=zhangsan)
         quoted = res['data']['items'][0]['quoted_price']
         record('A05', '拟报价=适用价(85)而非目标价(52)', quoted == 85.0, f'quoted={quoted}')
@@ -673,7 +712,7 @@ def main():
         _, res = call('POST', '/quotes', token=zhangsan, body={
             'customer_id': customers['A'], 'opportunity_id': opp_a07,
         })
-        created_quotes.append(res['data']['quote_id'])
+        created_quotes.append((res['data']['quote_id'], zhangsan))
         warns = ' '.join(res['data'].get('warnings', []))
         record('A07', '包装/目的地随需求进入核价上下文', ('包装' in warns) or ('目的地' in warns),
                warns[:120])
@@ -752,7 +791,7 @@ def main():
              body={'sku_id': sku_id, 'quantity': 10, 'target_price': 85})
         _, res = call('POST', '/quotes', token=zhangsan, body={'opportunity_id': opp_a10})
         qid10, vid10 = res['data']['quote_id'], res['data']['version_id']
-        created_quotes.append(qid10)
+        created_quotes.append((qid10, zhangsan))
         call('POST', f'/quote-versions/{vid10}/items/batch', token=zhangsan,
              body=[{'sku_id': sku_id, 'quantity': 10, 'quoted_price': 85}])
         # 折扣按接口契约传**正数**（`amount: ge=0`），后端负责归一成负数入库
@@ -771,7 +810,7 @@ def main():
         call('POST', f'/opportunities/{opp_a10b}/items', token=zhangsan,
              body={'sku_id': sku_id, 'quantity': 10, 'target_price': 85})
         _, res2 = call('POST', '/quotes', token=zhangsan, body={'opportunity_id': opp_a10b})
-        created_quotes.append(res2['data']['quote_id'])
+        created_quotes.append((res2['data']['quote_id'], zhangsan))
         call('POST', f"/quote-versions/{res2['data']['version_id']}/items/batch", token=zhangsan,
              body=[{'sku_id': sku_id, 'quantity': 10, 'quoted_price': 85}])
         confirm_freight_before_submit(call, zhangsan, res2['data']['version_id'])
@@ -805,7 +844,7 @@ def main():
              body={'sku_id': sku_id, 'quantity': 1, 'target_price': 85})
         _, res = call('POST', '/quotes', token=zhangsan, body={'opportunity_id': opp_a12})
         qid12, vid12 = res['data']['quote_id'], res['data']['version_id']
-        created_quotes.append(qid12)
+        created_quotes.append((qid12, zhangsan))
         call('POST', f'/quote-versions/{vid12}/items/batch', token=zhangsan,
              body=[{'sku_id': sku_id, 'quantity': 1, 'quoted_price': 85}])
         _, res = call('POST', f'/quote-versions/{vid12}/send-email', token=zhangsan,
@@ -821,7 +860,7 @@ def main():
             'customer_id': customers['A'], 'opportunity_id': opp_a05,
         })
         qid17, vid17 = res['data']['quote_id'], res['data']['version_id']
-        created_quotes.append(qid17)
+        created_quotes.append((qid17, zhangsan))
         call('POST', f'/quote-versions/{vid17}/items/batch', token=zhangsan,
              body=[{'sku_id': sku_id, 'quantity': 1, 'quoted_price': 85}])
         confirm_freight_before_submit(call, zhangsan, vid17)
@@ -841,7 +880,7 @@ def main():
             'customer_id': customers['A'], 'opportunity_id': opp_a05,
         })
         qid13, vid13 = res['data']['quote_id'], res['data']['version_id']
-        created_quotes.append(qid13)
+        created_quotes.append((qid13, zhangsan))
         call('POST', f'/quote-versions/{vid13}/items/batch', token=zhangsan,
              body=[{'sku_id': sku_id, 'quantity': 10, 'quoted_price': 85}])
         # 运费分离（2026-10-09）：正式发送前必须已确认运费金额，而且**必须在提交
@@ -859,6 +898,11 @@ def main():
         _, res = call('POST', f'/opportunities/{opp_a05}/confirm-win', token=zhangsan, body={})
         first_ok = res.get('code') == 0
         order_id = (res.get('data') or {}).get('order_id')
+        # 成交建单的订单必须登记（2026-11-24 残渣案）：订单不清理，
+        # 「已转订单的报价不能删」的追溯守卫会把 accepted 报价永远挡在库里，
+        # 商机删除跟着被「名下有未取消的订单」挡住。清理细节见 cleanup()。
+        if order_id:
+            created_orders.append(order_id)
         _, res = call('POST', f'/opportunities/{opp_a05}/confirm-win', token=zhangsan, body={})
         retry = (res.get('data') or {}).get('order_id')
         record('A13', '确认成交建单；重试返回同一订单',
@@ -906,7 +950,7 @@ def main():
                  body={'sku_id': sku_id, 'quantity': 10, 'target_price': base_cost_15 * 0.5})
             _, res = call('POST', '/quotes', token=zhangsan, body={'opportunity_id': opp_a15})
             qid15, vid15 = res['data']['quote_id'], res['data']['version_id']
-            created_quotes.append(qid15)
+            created_quotes.append((qid15, zhangsan))
             _, vres = call('GET', f'/quote-versions/{vid15}', token=zhangsan)
             item15 = vres['data']['items'][0]
             call('PATCH', f"/quote-items/{item15['id']}", token=zhangsan,
@@ -930,39 +974,27 @@ def main():
             if rule15:
                 call('DELETE', f'/approval-rules/{rule15}', token=admin)
 
-        # ---------------- A16 外币单：保护价快照不得被汇率缩小 ----------------
+        # ---------------- A16 外币单：显式拒收，不再落错币种快照 ----------------
         print('== A16 外币单的保护价快照 ==')
-        # 回归要防的是：`minimum_price_snapshot` 一度被折成**计价币种**
-        # （美元单上 80 人民币的保护价存成 11.43），而审批判定按人民币读它
-        # —— 于是低于保护价的美元报价被静默放行。
-        #
-        # ⚠️ 这条 2026-10-14 之前**一直红**，但查证后**不是产品缺陷**，根因有两层：
-        #   ① 原写法打错接口（`/items` 传单对象）又读错层级
-        #      （明细在 GET 版本详情的 `data["items"][0]`），于是"人民币单"永远是 None
-        #      —— 连 404 的响应体都被当成成功响应 `.get()` 了；
-        #   ② 更要紧的一层：**`minimum_price_snapshot` 属于
-        #      `_COST_ONLY_ITEM_FIELDS`（quote/service.py:191），对没有
-        #      `price:manage` 的人**本就该隐藏**（底价是由成本推出的）。
-        #      所以张三（salesperson）从任何**接口**读它都会是 `None` —— 那是**正确行为**，
-        #      继续用张三 + 接口去断言这个字段，永远是假红。
-        #      （实测：库里那条 CNY 明细存的是 `52.9412`，接口返回 `None`。）
-        #
-        # 改法：**直读产品函数**——用同一份入参（同客户/同 SKU/同数量/同报价）
-        # 分别以 CNY 与 USD 两个 QuoteVersion 调 `build_item_snapshot`，
-        # 断言两次的 `minimum_price_snapshot` 相等。这直接测的就是那条回归
-        # （快照不得随币种变），既不受接口层脱敏影响，也不依赖夹具去配保护价规则。
+        # 判据演进（2026-11-24，e7aeb4a3 主人确认无外币数据）：外币折算拆除后，
+        # 产品函数对非 CNY 显式报错——从前防的「快照被汇率缩小成美元数」那条回归
+        # 在入口就结构性不可能了。断言随之改为：USD 显式拒收 + CNY 照常落快照。
+        # （接口白名单拒收那条前置照旧单独验。）
         try:
             _cid = customers['A']
             # 本脚本的 main() 是同步的（沿用仓库既有风格：需要异步时用 asyncio.run），
             # 与 `run_db` 同一个手法。
-            floor_cny_quote, floor_usd_quote = asyncio.run(
+            fix_qid, floor_cny_quote, usd_reject = asyncio.run(
                 _seed_foreign_compare(_cid, opp_a05, sku_id, '20')
             )
-            print(f'    · A16 直读产品函数：CNY={floor_cny_quote} USD={floor_usd_quote}')
+            # CNY 那条夹具报价是张三名下的**私有草稿**：必须登记，且删除时要用
+            # 张三的令牌（草稿隐私下管理员删它只会 404，见 cleanup 里的说明）。
+            created_quotes.append((fix_qid, zhangsan))
+            print(f'    · A16 直读产品函数：CNY={floor_cny_quote} USD拒收={usd_reject}')
         except Exception as exc:  # noqa: BLE001 —— 夹具失败要说出来，别静默跳过
-            record('A16', '外币单的保护价快照与人民币单一致（按人民币存）', False,
+            record('A16', '外币单显式拒收（只支持人民币），CNY 照常落快照', False,
                    f'直读产品函数失败：{type(exc).__name__}: {str(exc)[:140]}')
-            floor_cny_quote = floor_usd_quote = None
+            floor_cny_quote = usd_reject = None
 
         # 外币单走接口已经建不出来了（币种是固定白名单），这条前置单独验一次
         _, res = call('POST', '/quotes', token=zhangsan, body={
@@ -971,13 +1003,11 @@ def main():
         record('A16-前置', '走接口建外币报价已被白名单拒绝（40002）',
                res.get('code') == 40002, f"code={res.get('code')} {str(res.get('message'))[:40]}")
 
-        # ⚠️ 比较前对齐到 4 位小数：`build_item_snapshot` 落的是 quantize 前的原值，
-        # 两条路径精度写法可能不同（我第一版直接比，假红过一次）。
-        _q = lambda v: None if v is None else round(float(v), 4)  # noqa: E731
-        record('A16', '外币单的保护价快照与人民币单一致（按人民币存）',
-               floor_cny_quote is not None and _q(floor_cny_quote) == _q(floor_usd_quote),
-               f'CNY={floor_cny_quote} USD={floor_usd_quote}'
-               f'（若被折成美元应变成 {floor_cny_quote and round(floor_cny_quote / 7, 2)} 之类）')
+        record('A16', '外币单显式拒收（只支持人民币），CNY 照常落快照',
+               floor_cny_quote is not None and usd_reject is not None
+               and '只支持人民币' in usd_reject,
+               f'CNY快照={floor_cny_quote} USD拒收={usd_reject}'
+               '（USD 若不再拒收而是落出快照，就是回归）')
 
         # ---------------- A18 长客户名仍能建报价（§8.7 快照列长度）----------------
         # 快照列曾经写死 `varchar(128)`，而客户名允许 200 —— 129 字的名字一建报价
@@ -1000,7 +1030,7 @@ def main():
             _, res = call('POST', '/quotes', token=admin, body={'opportunity_id': long_oid})
             built = res.get('code') == 0
             if built:
-                created_quotes.append(res['data']['quote_id'])
+                created_quotes.append((res['data']['quote_id'], admin))
             record('A18', f'{length} 字客户名能建出报价',
                    built, f'len={len(name)} code={res.get("code")} {res.get("message")}')
 
@@ -1016,7 +1046,7 @@ def main():
         })
         fix19_quote = res['data']['quote_id']
         fix19_version = res['data']['version_id']
-        created_quotes.append(fix19_quote)
+        created_quotes.append((fix19_quote, zhangsan))
         _, res = call('POST', f'/quote-versions/{fix19_version}/items', token=zhangsan,
                       body={'sku_id': sku_id, 'quantity': 100, 'quoted_price': 100})
         fix19_item = res['data']['id']
@@ -1182,6 +1212,9 @@ def main():
         _, res_q = call('POST', '/quotes', token=admin, body={
             'customer_id': c_cust, 'opportunity_id': c_opp, 'currency': 'CNY'})
         q_id, v_id = res_q['data']['quote_id'], res_q['data']['version_id']
+        # 报价也要登记（2026-11-24 残渣案）：商机登记了、报价没登记，
+        # 清理删不掉报价 → 商机删除被「名下有有效报价」挡住。
+        created_quotes.append((q_id, admin))
         # 拟报价 95 低于保护价 99 → 应当触发审批
         call('POST', f'/quote-versions/{v_id}/items', token=admin, body={
             'sku_id': sku_id, 'quantity': 100, 'quoted_price': 95})
@@ -1214,6 +1247,7 @@ def main():
         _, res_q2 = call('POST', '/quotes', token=admin, body={
             'customer_id': c_cust, 'opportunity_id': opp2, 'currency': 'CNY'})
         q2, v2 = res_q2['data']['quote_id'], res_q2['data']['version_id']
+        created_quotes.append((q2, admin))  # 同上：不登记就会留残留
         call('POST', f'/quote-versions/{v2}/items', token=admin, body={
             'sku_id': sku_id, 'quantity': 100, 'quoted_price': 65})
         _, res_v2 = call('GET', f'/quote-versions/{v2}', token=admin)
@@ -1223,6 +1257,8 @@ def main():
         _, res_cl = call('POST', f'/quotes/{q2}/clone', token=admin, body={
             'customer_id': c_cust, 'opportunity_id': opp2, 'copy_items': True})
         clone_q = (res_cl.get('data') or {}).get('quote_id')
+        if clone_q:
+            created_quotes.append((clone_q, admin))  # 复制出来的报价同样是残留源
         rows = run_db("select profit_snapshot, quoted_price, cost_snapshot "
                       "from quote_items where quote_version_id in "
                       "(select id from quote_versions where quote_id=:q) "
@@ -1285,6 +1321,7 @@ def main():
             _, res_q = call('POST', '/quotes', token=admin, body={
                 'customer_id': c_cust, 'opportunity_id': opp, 'currency': 'CNY'})
             q2, v2 = res_q['data']['quote_id'], res_q['data']['version_id']
+            created_quotes.append((q2, admin))  # 同 A20：报价也要进清理清单
             call('POST', f'/quote-versions/{v2}/items', token=admin, body={
                 'sku_id': sku_id, 'quantity': 100, 'quoted_price': 95})
             _, res_v = call('GET', f'/quote-versions/{v2}', token=admin)

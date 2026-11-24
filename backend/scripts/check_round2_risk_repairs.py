@@ -349,9 +349,9 @@ async def probe_margin_none(session, owner_id, roles, user):
             version.subtotal_amount = subtotal
             await session.flush()
         items = await quotes.version_items(session, version.id)
+        # 外币折算已拆除（用户口径）：build_context 不再收 fx 参数
         ctx = await rules_engine.build_context(
             session, quote=quote, version=version, items=items,
-            fx=version.exchange_rate_snapshot,
         )
         return ctx
 
@@ -397,9 +397,9 @@ async def _ctx(session, owner_id, cost, price, quantity, subtotal=None):
         version.subtotal_amount = subtotal
         await session.flush()
     items = await quotes.version_items(session, version.id)
+    # 外币折算已拆除（用户口径）：build_context 不再收 fx 参数
     return await rules_engine.build_context(
         session, quote=quote, version=version, items=items,
-        fx=version.exchange_rate_snapshot,
     )
 
 
@@ -470,68 +470,41 @@ async def probe_excel_gates(session, owner_id, roles, user):
 
 
 async def probe_foreign_tier(session, owner_id, roles, user):
-    """⑩ 外币审批档位按人民币折算金额。"""
-    print("=== 10. 外币审批档位用人民币折算金额 ===")
+    """⑩ 外币审批档位：非 CNY 显式拒收。
+
+    原用例验「USD 10000 × 7 = 人民币 70000 落高档」——随 e7aeb4a3 外币折算
+    拆除退役：提交审批入口对非 CNY 显式拒收（「版本币种是 USD：本系统只支持
+    人民币」），「按原币数字选错档位」结构性不可能。断言随之改为：外币提审
+    显式拒收（不折算、缺汇率也不猜 1:1）。
+    """
+    print("=== 10. 外币审批档位：非 CNY 显式拒收 ===")
     levels = await settings_service.get_list(session, "approval_levels")
     print(f"  当前审批分级：{levels}")
     check_true("系统设置里有审批分级", bool(levels))
     if not levels:
         return
-    first_cap = levels[0].get("max_amount")
-    # USD 10000 × 7 = 人民币 70000；原币数字 10000 会落进第一档（上限 50000）。
-    # 成本给 90000 元人民币，让利润率低于角色授权线 → 必须生成审批单（否则会被免审吞掉，
-    # 档位就无从检查）。
-    quote, version, item, _sku, _cust = await make_quote(
-        session, owner_id=owner_id, unit_cost=Decimal("90000"), price=Decimal("10000"),
-        quantity=Decimal("1"), currency="USD", rate=Decimal("7"),
-    )
-    item.approval_required = True
-    item.approval_reason = "检查用：强制生成审批单"
-    await session.flush()
-    q = await session.get(Quote, quote.id)
-    v = await session.get(QuoteVersion, version.id)
-    # 运费闸已前置到提交审批（2026-10-12）：先确认运费再提交
-    await confirm_freight(session, v)
-    with patch.object(rules_engine, "route", return_value=None):
-        instance, _required = await quotes.submit_for_approval(
-            session, quote=q, version=v, applicant_id=user.id, user_roles=roles,
-            reason="外币档位检查",
+    for rate in (Decimal("7"), None):
+        quote, version, item, _sku, _cust = await make_quote(
+            session, owner_id=owner_id, unit_cost=Decimal("90000"), price=Decimal("10000"),
+            quantity=Decimal("1"), currency="USD", rate=rate,
         )
-    await session.flush()
-    check_true("生成了审批单（未被免审吞掉）", instance is not None)
-    if instance is None:
-        return
-    summary = instance.summary or {}
-    check("分档金额=人民币 70000", float(summary.get("total_amount", 0)), 70000.0)
-    check("留痕里的原币金额", float(summary.get("original_amount", 0)), 10000.0)
-    check("留痕里的币种", summary.get("currency"), "USD")
-    check("留痕里的汇率", float(summary.get("exchange_rate", 0)), 7.0)
-    check_true(
-        f"档位不再落在第一档（上限 {first_cap}）",
-        summary.get("node_label") != levels[0].get("label"),
-        f"实际档位 {summary.get('node_label')}",
-    )
-
-    # 缺汇率的外币版本：不得静默按 1:1 折算，必须明确报错
-    quote2, version2, item2, _sku2, _c2 = await make_quote(
-        session, owner_id=owner_id, unit_cost=Decimal("10"), price=Decimal("100"),
-        quantity=Decimal("1"), currency="USD", rate=None,
-    )
-    item2.approval_required = True
-    await session.flush()
-    await confirm_freight(session, version2)
-    try:
-        with patch.object(rules_engine, "route", return_value=None):
-            await quotes.submit_for_approval(
-                session, quote=await session.get(Quote, quote2.id),
-                version=await session.get(QuoteVersion, version2.id),
-                applicant_id=user.id, user_roles=roles, reason="缺汇率检查",
-            )
+        item.approval_required = True
+        item.approval_reason = "检查用：强制生成审批单"
+        await session.flush()
+        q = await session.get(Quote, quote.id)
+        v = await session.get(QuoteVersion, version.id)
+        await confirm_freight(session, v)
         error = None
-    except AppError as exc:
-        error = exc
-    check_true("缺汇率时明确拒绝（不猜）", error is not None, str(error))
-    check("拒绝原因指向汇率", code_of(error), ErrorCode.REQUIRED_FIELD_MISSING)
+        try:
+            with patch.object(rules_engine, "route", return_value=None):
+                await quotes.submit_for_approval(
+                    session, quote=q, version=v, applicant_id=user.id, user_roles=roles,
+                    reason="外币档位检查",
+                )
+        except AppError as exc:
+            error = exc
+        check_true(f"外币提审显式拒收（rate={rate}，不折算也不猜 1:1）",
+                   error is not None and "只支持人民币" in str(error), str(error))
 
 
 async def probe_foreign_new_version(session, owner_id, roles, user):

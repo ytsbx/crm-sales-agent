@@ -429,30 +429,30 @@ async def main():
     })
     check('走接口建美元报价已被白名单拒绝（40002）', payload.get('code'), 40002)
 
-    fx_quote, fx_version, fx_item, fx_margin = await seed_foreign_custom_item(
+    # 判据演进（2026-11-24，e7aeb4a3 主人确认无外币数据 + 非 CNY 显式拒收）：
+    # 从前防的「利润按汇率折算（10 − 300/7）」随外币折算拆除失效；新的定义行为是
+    # **显式拒收**（「本系统只支持人民币，外币折算已拆除」）。这里断言产品函数
+    # 对历史外币定制行同款拒收 —— 而不是静默算出 10−300=−290 的假利润
+    # （那正是这条用例最初要防的「不报错的错最危险」；3c 那个洞被本用例
+    # 第一个抓到：定制行显式 unit_cost 不过 calculate_price 的拒收入口）。
+    usd_reject = None
+    try:
+        await seed_foreign_custom_item(
+            customer_id, opportunity_id, inquiry_id, unit_cost=Decimal('300'),
+            quoted_price=Decimal('10'), currency='USD',
+        )
+    except Exception as exc:  # noqa: BLE001 —— 拒收是期望行为，记下原文
+        usd_reject = f'{type(exc).__name__}: {str(exc)[:120]}'
+    check_true('历史外币定制行走产品函数被显式拒收（只支持人民币，不静默算假利润）',
+               usd_reject is not None and '只支持人民币' in usd_reject,
+               f'拒收={usd_reject}（若拿到利润快照而不是报错，就是回归）')
+    # CNY 对照照常落一条，顺带把「需求被报价引用 → 已转商机」的前置留给第 4 段验
+    # （从前这个引用是外币夹具顺带留下的，外币拒收后显式补上，别再靠巧合）。
+    cny_quote, _cny_ver, _cny_item, _cny_margin = await seed_foreign_custom_item(
         customer_id, opportunity_id, inquiry_id, unit_cost=Decimal('300'),
-        quoted_price=Decimal('10'), currency='USD',
+        quoted_price=Decimal('10'), currency='CNY',
     )
-    ids['quotes'].append(fx_quote)
-    check_true('历史美元单定制行落库（走产品函数 build_item_snapshot）',
-               fx_item is not None, f'quote={fx_quote} version={fx_version}')
-    # 用**产品函数同一口径**的利润率算期望值（见夹具里的说明）
-    fx_floor300 = floor_of(Decimal('300'), fx_margin)
-    # ⚠️ 比较要统一类型：`Decimal('352.94') == 352.94` 是 **False**
-    # （float 会先转成二进制近似值），我第一版就这么假红了一次。
-    check(f'最低保护价按人民币存 300 ÷ (1−{fx_margin}) = {fx_floor300}',
-          round(float(fx_item.minimum_price_snapshot or 0), 2), fx_floor300)
-    # 下面两条是**能区分新旧实现**的断言，别改成"利润为负"这种两边都成立的弱断言：
-    #   旧实现 profit = 10 − 300 = −290（拿美元价直接减人民币成本）；
-    #   新实现 profit = 10 − 300/7 = −32.857（先把成本折成报价币种）。
-    # 只断言"为负"的话，改回去也照样绿——这正是这个 bug 一直没被发现的原因。
-    profit = float(fx_item.profit_snapshot or 0)
-    check_true('利润按汇率折算（10 − 300/7 ≈ −32.86，而不是 −290）',
-               abs(profit - (-32.8571)) < 0.01, f"profit={profit}")
-    price_cny = 10 * 7
-    check_true('10 美元=70 人民币 < 345 → 触发低价审批',
-               fx_item.approval_required is True and price_cny < 345,
-               f"approval_required={fx_item.approval_required}")
+    ids['quotes'].append(cny_quote)
 
     print()
     print('=== 4. 需求状态随报价推进 ===')

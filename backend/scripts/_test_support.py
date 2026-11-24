@@ -263,17 +263,23 @@ async def force_sample_review(session, sample_id: int, status: str, *, reason: s
         ),
         {"st": status, "now": now, "rr": reason, "id": sample_id},
     )
+    # 阶段小条（91cf2fc5 B09-01）：闸门不再认「整体大章 approved」，
+    # result.business_stages.sample.status 必须是 approved 才放行正式动作。
+    milestone = (
+        '{"business_stages": {"sample": {"status": "approved"}}}' if status == "approved" else None
+    )
     await session.execute(
         text(
             "INSERT INTO oa_instances "
-            "(inquiry_id, inquiry_version, oa_type, idempotency_key, submit_round, provider, status, created_at, updated_at) "
-            "VALUES (:sid, :ver, 'sample', :key, 1, 'self_oa', :st, :now, :now)"
+            "(inquiry_id, inquiry_version, oa_type, idempotency_key, submit_round, provider, status, result, created_at, updated_at) "
+            "VALUES (:sid, :ver, 'sample', :key, 1, 'self_oa', :st, CAST(:result AS jsonb), :now, :now)"
         ),
         {
             "sid": sample_id,
             "ver": int(row.version or 1),
             "key": f"chk-review-{sample_id}-{uuid4().hex}",
             "st": status,
+            "result": milestone,
             "now": now,
         },
     )

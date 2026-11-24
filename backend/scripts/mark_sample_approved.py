@@ -66,13 +66,16 @@ async def main() -> int:
         await s.execute(
             text(
                 "INSERT INTO oa_instances "
-                "(inquiry_id, inquiry_version, oa_type, idempotency_key, submit_round, provider, status, created_at, updated_at) "
-                "VALUES (:sid, :ver, 'sample', :key, 1, 'self_oa', 'approved', :now, :now)"
+                "(inquiry_id, inquiry_version, oa_type, idempotency_key, submit_round, provider, status, result, created_at, updated_at) "
+                "VALUES (:sid, :ver, 'sample', :key, 1, 'self_oa', 'approved', "
+                # 阶段小条（91cf2fc5 B09-01）：闸门不认整体大章，必须带 sample 小条
+                "CAST(:result AS jsonb), :now, :now)"
             ),
             {
                 "sid": sample_id,
                 "ver": int(row.version or 1),
                 "key": f"smoke-mark-{sample_id}-{uuid4().hex}",
+                "result": '{"business_stages": {"sample": {"status": "approved"}}}',
                 "now": now,
             },
         )

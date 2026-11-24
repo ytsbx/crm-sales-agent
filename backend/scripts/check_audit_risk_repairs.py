@@ -139,19 +139,18 @@ async def submit(session, user, role, quote, version):
 
 
 async def discount_cases():
+    # 外币对照两行随 e7aeb4a3 退役（非 CNY 显式拒收，不再折人民币比档）：
+    # 原 (7,10,USD,True)/(11.4286,10,USD,False) 验的是「折算后触发/不触发折扣」，
+    # 现在产品入口直接拒外币 —— 改成下面的拒收断言，别留死行。
     for price, cost, currency, expected in [
         (D(50), D(10), "CNY", True),
         (D(70), D(10), "CNY", False),
         (D("69.99"), D(10), "CNY", True),
         (D(50), D(0), "CNY", True),
-        (D(7), D(10), "USD", True),
-        (D("11.4286"), D(10), "USD", False),
     ]:
         async with sandbox() as session:
             user, role, sku, customer, quote, version = await fixture(session, cost)
             version.currency = currency
-            if currency != "CNY":
-                version.exchange_rate_snapshot = D(7)
             item = await add_item(session, role, sku, customer, version, price)
             instance, required = await submit(session, user, role, quote, version)
             assert required is expected
@@ -159,6 +158,15 @@ async def discount_cases():
             assert version.approval_status == ("pending" if expected else "approved")
             if expected:
                 assert instance and any("折扣" in row.get("reason", "") for row in instance.summary["offending"])
+
+    # 外币明细显式拒收（主人口径「有人用外币就给他报错」）。
+    # 码按实际路径钉：SKU 明细走 calculate_price 入口，那里用 PARAM_ERROR/422
+    # （与 convert_cny_to 的 STATUS_NOT_ALLOWED/400 不一致——转告清单已记）。
+    async with sandbox() as session:
+        user, role, sku, customer, quote, version = await fixture(session)
+        version.currency, version.exchange_rate_snapshot = "USD", D(7)
+        await expect_error(ErrorCode.PARAM_ERROR,
+                           lambda: add_item(session, role, sku, customer, version, D(7)))
 
     async with sandbox() as session:
         user, role, sku, customer, quote, version = await fixture(session)
@@ -236,12 +244,16 @@ async def foreign_and_rounding_cases():
         user, role, sku, customer, quote, version = await fixture(session)
         await session.execute(delete(ProductCost).where(ProductCost.sku_id == sku.id))
         await session.execute(delete(PriceRule).where(PriceRule.sku_id == sku.id))
+        # 「无价目规则 → 建议价留空」与币种无关，CNY 照验（原外币对照随
+        # e7aeb4a3 退役：非 CNY 显式拒收，改在下面断言拒收）。
         result = await pricing.calculate_price(session, sku_id=sku.id, quantity=D(1), quoted_price=D(10),
-            role_codes=[role.code], currency="USD", exchange_rate=D(7), logistics_cost=D(0))
+            role_codes=[role.code], logistics_cost=D(0))
         assert result["recommended_price"] is None and result["recommended_range"] == [None, None]
-        version.currency, version.exchange_rate_snapshot = "USD", D(7)
         row = await add_item(session, role, sku, customer, version, D(10))
         assert row.quoted_price == D(10) and row.recommended_price_snapshot is None
+        await expect_error(ErrorCode.PARAM_ERROR, lambda: pricing.calculate_price(
+            session, sku_id=sku.id, quantity=D(1), quoted_price=D(10),
+            role_codes=[role.code], currency="USD", exchange_rate=D(7), logistics_cost=D(0)))
 
     for legacy_mismatch in (False, True):
         async with sandbox() as session:
@@ -262,7 +274,7 @@ async def foreign_and_rounding_cases():
                 lines = list((await session.execute(select(SalesOrderItem).where(SalesOrderItem.order_id == order.id))).scalars())
                 plan = (await session.execute(select(ReceivablePlan).where(ReceivablePlan.order_id == order.id))).scalar_one()
                 assert sum((row.amount for row in lines), D(0)) == order.goods_amount == order.total_amount == plan.amount == D("99.99")
-    print("OK FX optional prices and quote/order/document/receivable line amounts; old mismatches rejected")
+    print("OK optional prices (no rules) + non-CNY rejected + quote/order/document/receivable line amounts; old mismatches rejected")
 
 
 async def pdf_cases():

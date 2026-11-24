@@ -106,7 +106,10 @@ async def main():
                 raise AssertionError('delete allocated target succeeded')
             except AppError as e:
                 assert e.http_status==422;await s.rollback()
-            await router.update_receivable(pids[0],ReceivableUpdate(amount=D(150)),REQ,actor,s)
+            # 金额改成 80（与原 100 不同即可）。原 150 在 bdd6efc9「计划合计
+            # ≤ 订单总额」收口后会被拒（150+100>200）——本条验的是"改金额
+            # 不动人工分配"，断言与具体数值无关。
+            await router.update_receivable(pids[0],ReceivableUpdate(amount=D(80)),REQ,actor,s)
             assert await svc.confirmed_amount(s,pids[1])==100
             assert await svc.confirmed_amount(s,pids[0])==0
         print('PASS 每日刷新与人工调整真实锁交错，删除守卫、应收修改尊重人工决定',flush=True)
