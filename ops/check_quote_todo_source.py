@@ -224,7 +224,9 @@ for item in parsed:
         if item["anchor"] != "quote-cost-status" or item["action"] != "查看成本缺项":
             fail("'cost_incomplete' 的成本导航说明或目标锚点与现有处理入口不一致")
         navigation = re.search(
-            r"\{todo\.anchor\s*&&\s*\(\s*<a\b.*?"
+            # 017d20ca a11y 把锚点导航从 <a> 改成了 <button type="button">，
+            # 跳转本体（getElementById(...).scrollIntoView）没变——两种标签都认。
+            r"\{todo\.anchor\s*&&\s*\(\s*<(?:a|button)\b.*?"
             r"onClick=\{\(\)\s*=>\s*\{\s*"
             r"document\.getElementById\(todo\.anchor as string\)\?\.scrollIntoView\(",
             page_text,
