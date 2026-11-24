@@ -491,6 +491,22 @@ async def run_turn_events(
                             user=user,
                             started_at=started,
                         )
+                    except Exception as exc:
+                        safe_msg = f"工具内部异常（{type(exc).__name__}）"
+                        result = {"error": safe_msg}
+                        await _record_execution(
+                            session,
+                            session_id=agent_session.id,
+                            action_id=None,
+                            tool_name=name,
+                            risk="L1",
+                            payload=args,
+                            output=None,
+                            status="failed",
+                            error=safe_msg,
+                            user=user,
+                            started_at=started,
+                        )
                     tool_trace.append(
                         {
                             "tool": name,
@@ -878,6 +894,25 @@ async def execute_action(
         )
         await session.commit()
         raise
+    except Exception as exc:
+        safe_msg = f"工具内部异常（{type(exc).__name__}）"
+        action.status = "failed"
+        action.result = {"error": safe_msg}
+        await _record_execution(
+            session,
+            session_id=action.session_id,
+            action_id=action.id,
+            tool_name=action.tool_name,
+            risk=action.risk_level,
+            payload=action.proposed_payload or {},
+            output=None,
+            status="failed",
+            error=safe_msg,
+            user=user,
+            started_at=started,
+        )
+        await session.commit()
+        raise AppError(ErrorCode.SYSTEM_ERROR, safe_msg, 502) from exc
 
     action.status = "executed"
     action.result = result
@@ -979,6 +1014,23 @@ async def retry_tool_call(
         )
         await session.commit()
         raise
+    except Exception as exc:
+        safe_msg = f"工具内部异常（{type(exc).__name__}）"
+        await _record_execution(
+            session,
+            session_id=agent_session.id,
+            action_id=execution_row.action_id,
+            tool_name=execution_row.tool_name,
+            risk=execution_row.risk_level,
+            payload=payload,
+            output=None,
+            status="failed",
+            error=safe_msg,
+            user=user,
+            started_at=started,
+        )
+        await session.commit()
+        raise AppError(ErrorCode.SYSTEM_ERROR, safe_msg, 502) from exc
 
     await _record_execution(
         session,

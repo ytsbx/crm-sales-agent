@@ -111,3 +111,17 @@ def test_evidence_scope_follows_module_permissions():
         "sample_id",
         "opportunity_id",
     }
+def test_new_case_rejects_empty_title_and_invalid_customer():
+    import pytest
+    from pydantic import ValidationError
+
+    from app.modules.cases.schema import CaseCreate, CaseUpdate
+
+    with pytest.raises(ValidationError):
+        CaseCreate(title="　 ")
+    with pytest.raises(ValidationError):
+        CaseCreate(title="案例", customer_id=0)
+    with pytest.raises(ValidationError):
+        CaseUpdate(customer_id=0)
+    assert CaseCreate(title="案例").customer_id is None
+    assert CaseUpdate(customer_id=None).model_dump(exclude_unset=True) == {"customer_id": None}

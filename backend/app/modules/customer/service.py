@@ -386,6 +386,7 @@ async def customer_overview(
                 "stage_name": stage_name,
                 "status": row.status,
                 "expected_amount": _f(row.expected_amount),
+                "expected_amount_exact": str(row.expected_amount) if row.expected_amount is not None else None,
                 "expected_close_date": row.expected_close_date,
                 "owner_id": row.owner_id,
             }
@@ -872,6 +873,7 @@ async def transfer_customer(
                 customer_id=customer.id,
                 from_owner_id=source_owner_id,
                 to_owner_id=new_owner_id,
+                operator_id=user.id,
             )
     return documents_service.empty_result()
 
@@ -1218,14 +1220,14 @@ async def move_contact_to_customer(
     contact: Contact,
     customer: Customer,
     *,
+    user: CurrentUser,
     is_primary: bool,
-) -> None:
+) -> dict:
     """把联系人改挂到另一个客户 —— `bind-customer` 与 `change-customer` **共用这一条路径**。
 
     ## 顺序：先锁客户、腾位，再写归属
 
-    ⚠️ 必须先把**两个客户行**按统一锁序锁上（`lock_customers_in_order`），
-    再把目标客户的主位腾出来，**最后**才动 `contact.customer_id`。
+    两个客户按编号加锁并复查权限，再锁定联系人核对旧归属，最后腾位和改挂。
 
     反过来（先改归属）会翻车：`take_primary_slot` 里那句 `select(...).with_for_update()`
     会触发 autoflush，把"已经挂到目标客户、却还带着主标记"的这条先写下去 ——
@@ -1242,11 +1244,23 @@ async def move_contact_to_customer(
     这条人走了之后，老客户名下可能就没有主联系人了 —— 这是允许的
     （"主联系人唯一"是**至多一个**，不是"必须有一个"），刻意不自动指认下一个。
     """
-    from app.modules.contact_util import lock_customers_in_order, take_primary_slot
+    from app.modules.contact_util import take_primary_slot
 
     old_customer_id = contact.customer_id
-    # ① 两个客户按统一锁序先锁住（重复取同一把锁无害）
-    await lock_customers_in_order(session, [old_customer_id, customer.id])
+    customer_ids = {cid for cid in (old_customer_id, customer.id) if cid is not None}
+    for customer_id in sorted(customer_ids):
+        await get_visible_customer(session, user, customer_id, for_update=True)
+
+    locked_contact = (await session.execute(
+        select(Contact).where(Contact.id == contact.id).with_for_update()
+        .execution_options(populate_existing=True)
+    )).scalar_one_or_none()
+    if locked_contact is None or locked_contact.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "联系人不存在", 404)
+    if locked_contact.customer_id != old_customer_id:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "联系人已改挂，请刷新后再操作", 409)
+    before = serialize_contact(locked_contact)
+
     # ② 要当主，就先把目标客户的主位腾出来（锁已取，这一步只取消别人的标记）
     if is_primary:
         await take_primary_slot(session, customer.id, exclude=contact.id)
@@ -1254,6 +1268,7 @@ async def move_contact_to_customer(
     contact.customer_id = customer.id
     contact.is_primary = is_primary
     await session.flush()
+    return before
 
 
 __all__ = [

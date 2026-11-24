@@ -380,7 +380,8 @@ async def list_insights(
     if status:
         stmt = stmt.where(ProductInsight.status == status)
     if keyword:
-        stmt = stmt.where(ProductInsight.title.ilike(f"%{keyword}%"))
+        _kw = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        stmt = stmt.where(ProductInsight.title.ilike(f"%{_kw}%", escape="\\"))
     owner_ids = await scoped_owner_ids(session, user)
     # 评审人看全部（待评审的那些不是他的，但他必须看得到）；其他人仍按数据范围。
     if owner_ids is not None and not _can_review(user):

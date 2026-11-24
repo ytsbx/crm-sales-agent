@@ -123,7 +123,10 @@ export default function WeComPage() {
     queryFn: () => listDictionaries('customer_level'),
   })
   const canManage = can('wecom:manage')
-  const canSearchCustomers = canManage && can('customer:view')
+  const canViewCustomers = can('customer:view')
+  const canBindCustomers = canManage && can('customer:update')
+  const canCreateCustomers = canManage && can('customer:create')
+  const canSearchCustomers = canBindCustomers && canViewCustomers
   const canSyncDirectory = can('wecom:sync_directory')
   const canSyncContacts = can('wecom:sync_contacts')
   const canSync = canSyncDirectory || canSyncContacts
@@ -188,7 +191,7 @@ export default function WeComPage() {
   const candidatesQuery = useQuery({
     queryKey: ['wecom-candidates', activeId],
     queryFn: () => getUnboundCandidates(activeId!),
-    enabled: Boolean(activeId),
+    enabled: canViewCustomers && Boolean(activeId),
   })
   const matchingCustomersQuery = useQuery({
     queryKey: ['wecom-customer-search', customerKeyword],
@@ -756,20 +759,21 @@ export default function WeComPage() {
             <Empty description="选中联系人后显示候选" />
           ) : (
             <>
-              {candidatesQuery.isLoading && (
+              {!canViewCustomers && <Empty description="需要客户查看权限才能查看匹配建议" />}
+              {canViewCustomers && candidatesQuery.isLoading && (
                 <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>匹配中…</div>
               )}
-              {candidatesQuery.isError && <div style={{ color: 'var(--crm-error)', fontSize: 13, marginBottom: 10 }}>
+              {canViewCustomers && candidatesQuery.isError && <div style={{ color: 'var(--crm-error)', fontSize: 13, marginBottom: 10 }}>
                 暂时无法查询已有客户。<Button size="small" theme="borderless" onClick={() => void candidatesQuery.refetch()}>重试</Button>
               </div>}
-              {candidatesQuery.isSuccess && candidatesQuery.data.candidates.length === 0 && (
+              {canViewCustomers && candidatesQuery.isSuccess && candidatesQuery.data.candidates.length === 0 && (
                 // 原来是一句灰字缩在左上角，这张卡又被右半区拉到半屏高，
                 // 中间空出近 200px、按钮孤零零贴在底下（2026-11-21 巡检）。
                 // 改成居中的两行字：用 margin auto 在剩余空间里站中间，不写 flex:1
                 // （写了会把 1fr 的行高顶破，右半区变长、底部按钮掉出屏幕）。
                 <div style={{ margin: 'auto 0', padding: '8px 0', textAlign: 'center' }}>
                   <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--crm-text-2)' }}>
-                    没有匹配建议
+                    当前查看范围内没有匹配建议
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 4 }}>
                     {canSearchCustomers ? '可按客户名称搜索现有档案，核对后再关联或新建。' : '可先核对客户中心的已有档案。'}
@@ -777,7 +781,7 @@ export default function WeComPage() {
                 </div>
               )}
               <div style={{ display: 'grid', gap: 8 }}>
-                {(candidatesQuery.data?.candidates ?? []).map((candidate, index) => (
+                {(canViewCustomers ? candidatesQuery.data?.candidates ?? [] : []).map((candidate, index) => (
                   <div
                     key={candidate.id}
                     style={{
@@ -798,7 +802,7 @@ export default function WeComPage() {
                     <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 4 }}>
                       {candidate.reasons.slice(0, 3).join('；')}
                     </div>
-                    {canManage && (
+                    {canBindCustomers && (
                       <Popconfirm title={`确认关联客户「${candidate.name}」？`} content="请核对匹配信息，确认是同一位客户。" disabled={bindMutation.isPending} onConfirm={() => bindMutation.mutate({ contactId: active.id, customerId: candidate.id })}>
                         <Button size="small" theme="outline" type="primary" style={{ marginTop: 8 }} loading={bindMutation.isPending}>关联已有客户</Button>
                       </Popconfirm>
@@ -820,7 +824,7 @@ export default function WeComPage() {
                       setManualBindContact(active)
                     }}>搜索已有客户</Button>
                   )}
-                  <Button
+                  {canCreateCustomers && <Button
                     onClick={() => {
                       createMutation.reset()
                       setCreateForm({
@@ -832,7 +836,7 @@ export default function WeComPage() {
                     }}
                   >
                     创建新客户
-                  </Button>
+                  </Button>}
                   <Popconfirm title={`将「${active.name || '未命名联系人'}」移出待确认？`}
                     content="企微联系人资料会保留，这条记录将从待确认列表移出。"
                     disabled={ignoreMutation.isPending} onConfirm={() => ignoreMutation.mutate(active)}>

@@ -50,8 +50,11 @@ def source_defaults(template, defaults):
 
 async def active_template(user):
     identity, code = service._template_config()
+    applicant = client.applicant_identity(user)
+    if not applicant:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "请联系管理员为当前账号绑定同序人员", 422)
     try:
-        templates = await client.list_templates(user.dingtalk_userid)
+        templates = await client.list_templates(applicant)
     except (client.OaError, client.OaNotConfigured, client.OaUnknownOutcome) as exc:
         raise AppError(ErrorCode.EXTERNAL_ERROR, '同序合同表单暂时无法读取，请稍后重试', 502) from exc
     matches = [t for t in templates if (t['id'] == identity if identity else t['code'] == code)]
@@ -65,11 +68,14 @@ async def submission_form(session, actor, doc):
     from app.modules.oa.inquiry import _department_name
     user = await session.get(User, actor.id)
     template = await active_template(user)
+    # 归属部门以同序为准：同序里每位申请人都有完整部门，CRM 的部门表可能没有对应项。
+    identity = template.get('applicant') or {}
+    department = identity.get('department_name') or await _department_name(session, user)
     filled = doc.filled_data or {}
     amount = await service._contract_amount(session, doc)
     defaults = {f['id']: f['default'] for f in template['fields'] if 'default' in f}
     defaults.update({
-        'applicant_name': user.name, 'department': await _department_name(session, user),
+        'applicant_name': identity.get('name') or user.name, 'department': department,
         'contract_name': doc.title, 'contract_files': '已上传的合同正文原文件',
         'start_type': '上传文件发起',
         'contract_number': filled.get('_contract_number') or doc.doc_no,
@@ -133,9 +139,9 @@ async def apply_extra_fields(session, user, doc, payload, extras, *, uploads=Non
                 if not path.is_file() or path.stat().st_size != row.size:
                     raise AppError(ErrorCode.PARAM_ERROR, '合同附件缺失或不完整，请重新上传', 422)
                 if uploads is None:
-                    saved = await client.upload_file(user.dingtalk_userid, row.file_name, path.read_bytes(), row.mime_type)
+                    saved = await client.upload_file(client.applicant_identity(user), row.file_name, path.read_bytes(), row.mime_type)
                 else:
-                    saved = await uploads.stage(user.dingtalk_userid, row.file_name, path, row.mime_type)
+                    saved = await uploads.stage(client.applicant_identity(user), row.file_name, path, row.mime_type)
                 attachments.append(str(saved['id']))
             payload['attachment_ids'].extend(attachments)
             value = attachments

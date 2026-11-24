@@ -1,6 +1,6 @@
 """Private CRM drafts retain their original account and business references."""
 
-from sqlalchemy import false, func, or_, select, true
+from sqlalchemy import case, false, func, or_, select, true
 
 from app.core.errors import AppError, ErrorCode
 
@@ -47,7 +47,11 @@ def private_draft(model):
 def draft_creator(model):
     if model.__tablename__ == "sales_cases":
         return model.author_id
-    if model.__tablename__ in {"quotes", "sample_requests", "order_drafts", "biz_docs"}:
+    if model.__tablename__ == "sample_requests":
+        handover_owner = model.source_context["handover_owner_id"].as_integer()
+        return case((handover_owner == model.owner_id, model.owner_id),
+                    else_=func.coalesce(model.created_by, model.owner_id))
+    if model.__tablename__ in {"quotes", "order_drafts", "biz_docs"}:
         return func.coalesce(model.created_by, model.owner_id)
     return model.created_by
 

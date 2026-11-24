@@ -2,6 +2,7 @@ import PersonalProfilePanel from './PersonalProfilePanel'
 import UnratedRulesPanel from './UnratedRulesPanel'
 import AutoTaskRulesPanel from './AutoTaskRulesPanel'
 import { customerLevelLabel } from '../../shared/customer-level'
+import { paymentCents } from '../../shared/payment-allocation'
 import { useState, useRef, type CSSProperties } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -29,7 +30,17 @@ import {
 } from '../../shared/api/system'
 import { createTag, deleteTag, listTags, updateTag, type TagRow } from '../../shared/api/customer'
 import { ApiError } from '../../shared/api/client'
-import { syncDingTalkUsers, type DingTalkSyncResult, type DingTalkUnmatched } from '../../shared/api/dingtalk'
+import {
+  alignDingTalkDepartments,
+  listOaMembers,
+  provisionOaUser,
+  setOaBinding,
+  syncDingTalkUsers,
+  type DepartmentAlignResult,
+  type OaMember,
+  type DingTalkSyncResult,
+  type DingTalkUnmatched,
+} from '../../shared/api/dingtalk'
 import MaskedContact from '../../shared/components/MaskedContact'
 import { useNotePrompt } from '../../shared/components/NotePromptModal'
 import PageHeader from '../../shared/components/PageHeader'
@@ -596,13 +607,17 @@ function CustomerScoreDetails({ details }: { details?: SystemSettingRow['custome
   )
 }
 
+function oaMemberLabel(member: OaMember) {
+  return [member.name, member.department || '未设部门', member.employee_number].filter(Boolean).join(' · ')
+}
+
 export default function SettingsPage() {
   /* 填原因的弹窗（2026-11-19）：原来这里三处都是 window.prompt，
      浏览器原生灰框、顶着"127.0.0.1:5275 显示"，没法做必填和字数提示。 */
   const notePrompt = useNotePrompt()
   // 支持深链：/settings?tab=rules
   const [searchParams, setSearchParams] = useSearchParams()
-  const { can } = usePermissions()
+  const { can, isAdmin } = usePermissions()
   const canManageUsers = can('user:manage')
   const canManageSettings = can('settings:manage')
   const canManageTags = can('customer:view') && can('customer:update')
@@ -953,7 +968,14 @@ export default function SettingsPage() {
     email: string
     department_id?: number
     role_ids: number[]
+    /** 选中的同序身份；有值时按同序通讯录建账号，姓名/部门由后端带入 */
+    oa_user_id?: string
+    /** 仅用于界面展示同序部门 */
+    oa_department?: string
   }>({ name: '', username: '', password: '', mobile: '', email: '', role_ids: [] })
+
+  const [oaBindingTarget, setOaBindingTarget] = useState<SystemUser | null>(null)
+  const [selectedOaMember, setSelectedOaMember] = useState<string | null>(null)
 
   const [roleModal, setRoleModal] = useState(false)
   const [roleEditTarget, setRoleEditTarget] = useState<SystemRole | null>(null)
@@ -981,6 +1003,14 @@ export default function SettingsPage() {
     enabled: roleModal,
   })
 
+  // 新建用户时可选同序身份：只在新建弹窗打开时读通讯录，避免每次进页面都拉。
+  const oaMembersQuery = useQuery({
+    queryKey: ['settings-oa-members'],
+    queryFn: listOaMembers,
+    enabled: isAdmin && ((userModal && !userEditTarget) || Boolean(oaBindingTarget)),
+    staleTime: 60_000,
+  })
+
   // 列表刷新统一走这里：**先取消在途请求再失效**，否则旧请求晚回来会把新数据盖掉。
   const refreshUsers = () => {
     void queryClient.cancelQueries({ queryKey: ['settings-users'] })
@@ -992,8 +1022,29 @@ export default function SettingsPage() {
   }
   const refreshDepts = () => void queryClient.invalidateQueries({ queryKey: ['settings-departments'] })
 
-  const userSaveMutation = useMutation({
+  const oaBindingMutation = useMutation({
+    mutationFn: ({ userId, oaUserId }: { userId: number; oaUserId: string | null }) =>
+      setOaBinding(userId, oaUserId),
+    onSuccess: () => {
+      Toast.success('同序人员绑定已保存')
+      setOaBindingTarget(null)
+      refreshUsers()
+      void queryClient.invalidateQueries({ queryKey: ['settings-oa-members'] })
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  const userSaveMutation = useMutation<{ id: number }, Error, void>({
     mutationFn: () => {
+      if (!userEditTarget && userForm.oa_user_id) {
+        // 选了同序身份：姓名和部门由通讯录决定，后端会在缺部门时按需补建。
+        return provisionOaUser({
+          oa_user_id: userForm.oa_user_id,
+          username: userForm.username,
+          password: userForm.password,
+          role_ids: userForm.role_ids,
+        })
+      }
       const payload: Record<string, unknown> = {
         name: userForm.name,
         mobile: userForm.mobile || null,
@@ -1013,9 +1064,10 @@ export default function SettingsPage() {
       })
     },
     onSuccess: () => {
-      Toast.success(userEditTarget ? '用户已保存' : '用户已创建')
+      Toast.success(userEditTarget ? '用户已保存' : userForm.oa_user_id ? '已按同序身份创建 CRM 账号' : '用户已创建')
       setUserModal(false)
       refreshUsers()
+      void queryClient.invalidateQueries({ queryKey: ['settings-oa-members'] })
     },
     onError: (error: Error) => Toast.error(error.message),
   })
@@ -1046,6 +1098,16 @@ export default function SettingsPage() {
     },
   })
   const dtSyncErrorStatus = dtSyncMutation.error instanceof ApiError ? dtSyncMutation.error.status : undefined
+
+  const [deptAlignResult, setDeptAlignResult] = useState<DepartmentAlignResult | null>(null)
+  const deptAlignMutation = useMutation({
+    mutationFn: alignDingTalkDepartments,
+    onSuccess: (result) => {
+      setDeptAlignResult(result)
+      refreshUsers()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
 
   const roleSaveMutation = useMutation({
     mutationFn: () =>
@@ -1219,7 +1281,7 @@ export default function SettingsPage() {
       title: '操作',
       // 120 不是 100：两个无边框小按钮（编辑 / 停用）加上单元格内边距，
       // 100 时「停用」会被省略成「…」，等于把功能藏掉了
-      width: 120,
+      width: isAdmin ? 195 : 120,
       // 表格比容器宽时固定在右侧：编辑/停用这两个按钮永远看得见
       fixed: 'right' as const,
       render: (_: unknown, record: SystemUser) => (
@@ -1243,6 +1305,14 @@ export default function SettingsPage() {
           >
             编辑
           </Button>
+          {isAdmin && (
+            <Button theme="borderless" size="small" onClick={() => {
+              setOaBindingTarget(record)
+              setSelectedOaMember(record.oa_user_id ?? null)
+            }}>
+              {record.oa_user_id ? '同序已绑定' : '绑定同序'}
+            </Button>
+          )}
           <Popconfirm
             title={`确认${record.status === 'active' ? '停用' : '启用'}账号「${record.name}」？`}
             content={record.status === 'active' ? '停用后该账号将无法继续使用系统。' : '启用后该账号可按现有权限使用系统。'}
@@ -1515,6 +1585,13 @@ export default function SettingsPage() {
                 <Popconfirm title="确认同步钉钉账号？" content="系统会从钉钉通讯录匹配已有的 CRM 账号，用于钉钉扫码登录。" onConfirm={() => dtSyncMutation.mutate()}>
                   <Button loading={dtSyncMutation.isPending}>同步钉钉账号</Button>
                 </Popconfirm>
+                <Popconfirm
+                  title="按同序部门覆盖现有账号归属？"
+                  content="只改部门，不改角色。数据范围是「本部门」的账号，可见数据会跟着部门变化，请核对结果。"
+                  onConfirm={() => deptAlignMutation.mutate()}
+                >
+                  <Button loading={deptAlignMutation.isPending}>按同序对齐部门</Button>
+                </Popconfirm>
                 <Button type="primary"
                   theme="outline"
                   onClick={() => {
@@ -1526,6 +1603,8 @@ export default function SettingsPage() {
                       mobile: '',
                       email: '',
                       role_ids: [],
+                      oa_user_id: undefined,
+                      oa_department: undefined,
                     })
                     setUserModal(true)
                   }}
@@ -1536,7 +1615,7 @@ export default function SettingsPage() {
               <Table<SystemUser> className="table-center settings-list-table"
                 // 等于各列宽之和（730）。设置页左侧还有一条二级导航，
                 // 表格区只有约 660 —— 写够总宽再配 fixed 操作列，比把列压扁可读
-                scroll={{ x: 730 }}
+                scroll={{ x: isAdmin ? 805 : 730 }}
                 columns={userColumns}
                 dataSource={usersQuery.data?.items ?? []}
                 loading={usersQuery.isLoading}
@@ -2234,17 +2313,18 @@ export default function SettingsPage() {
             {(dtSyncResult?.unmatched ?? []).length > 0 ? (
               <div style={{ marginTop: 12 }}>
                 <div style={{ fontWeight: 500, marginBottom: 6 }}>
-                  没对上的人（{(dtSyncResult?.unmatched ?? []).length} 个，要你去处理）
+                  没对上的人（{(dtSyncResult?.unmatched ?? []).length} 个）
                 </div>
                 <Table<DingTalkUnmatched>
                   columns={[
-                    { title: '姓名', dataIndex: 'name', width: 120 },
-                    { title: '手机', dataIndex: 'mobile', width: 150, render: (v: string | null) => <MaskedContact value={v} /> },
+                    { title: '姓名', dataIndex: 'name', width: 100 },
+                    { title: '钉钉通讯录部门', dataIndex: 'department', width: 140, render: (v?: string) => v || '-' },
+                    { title: '手机', dataIndex: 'mobile', width: 130, render: (v: string | null) => <MaskedContact value={v} /> },
                     { title: '原因', dataIndex: 'reason_label' },
                   ]}
                   dataSource={dtSyncResult?.unmatched ?? []}
-                  rowKey={(row?: DingTalkUnmatched) => `${row?.name ?? ''}|${row?.mobile ?? ''}`}
-                  pagination={false}
+                  rowKey={(row?: DingTalkUnmatched) => row?.dingtalk_userid ?? `${row?.name ?? ''}|${row?.mobile ?? ''}`}
+                  pagination={{ pageSize: 10, showSizeChanger: false }}
                   size="small"
                 />
               </div>
@@ -2268,6 +2348,67 @@ export default function SettingsPage() {
         )}
       </Modal>
 
+      <Modal
+        title="部门已按同序对齐"
+        visible={Boolean(deptAlignResult)}
+        onCancel={() => setDeptAlignResult(null)}
+        footer={<Button theme="solid" onClick={() => setDeptAlignResult(null)}>知道了</Button>}
+        width={620}
+      >
+        {deptAlignResult && <>
+          <p>
+            数据来源：同序 OA 目录；
+            匹配 {deptAlignResult.matched} 人，本次变更 {deptAlignResult.changes.length} 人。
+          </p>
+          {deptAlignResult.changes.length === 0 ? (
+            <p style={{ color: 'var(--crm-text-3)' }}>所有已匹配账号的部门都已经和同序一致。</p>
+          ) : (
+            <Table
+              columns={[
+                { title: '姓名', dataIndex: 'name', width: 110 },
+                { title: '原部门', dataIndex: 'current_department', render: (v: string) => v || '未设置' },
+                { title: '同序部门', dataIndex: 'dingtalk_department' },
+              ]}
+              dataSource={deptAlignResult.changes}
+              rowKey="id"
+              pagination={false}
+              size="small"
+            />
+          )}
+        </>}
+      </Modal>
+
+      <Modal
+        title={`绑定同序人员 · ${oaBindingTarget?.name ?? ''}`}
+        visible={Boolean(oaBindingTarget)}
+        onCancel={() => setOaBindingTarget(null)}
+        onOk={() => {
+          if (oaBindingTarget) oaBindingMutation.mutate({ userId: oaBindingTarget.id, oaUserId: selectedOaMember })
+        }}
+        okText="保存绑定"
+        okButtonProps={{ disabled: selectedOaMember === (oaBindingTarget?.oa_user_id ?? null) }}
+        confirmLoading={oaBindingMutation.isPending}
+      >
+        <p>合同、打样和询价会以所选同序人员的身份提交。请核对姓名、部门和工号。</p>
+        <Select
+          style={{ width: '100%' }}
+          aria-label="同序人员"
+          placeholder="选择同序人员"
+          filter
+          showClear
+          loading={oaMembersQuery.isFetching}
+          value={selectedOaMember ?? undefined}
+          onChange={(value) => setSelectedOaMember(typeof value === 'string' ? value : null)}
+          optionList={(oaMembersQuery.data ?? [])
+            .filter((member) => member.crm_user_id === null || member.crm_user_id === oaBindingTarget?.id)
+            .map((member) => ({ value: member.id, label: oaMemberLabel(member) }))}
+        />
+        {oaMembersQuery.isError && <p style={{ color: 'var(--crm-error)' }}>暂时读不到同序人员列表，请关闭后重试。</p>}
+        {oaBindingTarget?.oa_user_id && !oaMembersQuery.isError && !oaMembersQuery.isPending
+          && !oaMembersQuery.data?.some((member) => member.id === oaBindingTarget.oa_user_id)
+          && <p>原绑定的同序人员已不在在职名单。请选择新的同序人员。</p>}
+      </Modal>
+
       {/* 用户新增/编辑 */}
       <Modal
         width={520}
@@ -2279,6 +2420,43 @@ export default function SettingsPage() {
         okText="保存"
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {isAdmin && !userEditTarget && (
+            <div>
+              <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>
+                同序身份（可选）
+              </div>
+              <Select
+                style={{ width: '100%' }}
+                placeholder={oaMembersQuery.isPending ? '正在读取同序通讯录…' : '先选人；姓名和部门按同序带入'}
+                filter
+                showClear
+                loading={oaMembersQuery.isPending}
+                value={userForm.oa_user_id}
+                onChange={(value) => {
+                  const member = (oaMembersQuery.data ?? []).find((row) => row.id === value)
+                  setUserForm({
+                    ...userForm,
+                    oa_user_id: (value as string) || undefined,
+                    oa_department: member?.department ?? '',
+                    name: member?.name ?? userForm.name,
+                    department_id: undefined,
+                  })
+                }}
+                optionList={(oaMembersQuery.data ?? []).filter((member) => member.crm_user_id === null).map((member) => ({
+                  value: member.id,
+                  label: oaMemberLabel(member),
+                }))}
+              />
+              {oaMembersQuery.isError && (
+                <div style={{ color: 'var(--crm-error)', fontSize: 12, marginTop: 4 }}>
+                  暂时读不到同序通讯录，仍可手动填写姓名和部门。
+                </div>
+              )}
+              <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 4 }}>
+                选择后账号会绑定这个同序身份；所在部门按通讯录带入，CRM 没有时会按需补建，不导入整棵部门树。
+              </div>
+            </div>
+          )}
           {/* 姓名和登录名都是短输入，竖着排把弹窗拉高了 70px；
               并排放两列（手机号、邮箱那排也是这么做的）。 */}
           <div style={{ display: 'flex', gap: 12 }}>
@@ -2286,6 +2464,7 @@ export default function SettingsPage() {
               <FormLabel required style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>姓名</FormLabel>
               <Input
                 value={userForm.name}
+                disabled={Boolean(userForm.oa_user_id)}
                 onChange={(value) => setUserForm({ ...userForm, name: value })}
               />
             </div>
@@ -2321,17 +2500,23 @@ export default function SettingsPage() {
               填了也没人看。userForm 里这两个字段留着，编辑时按原值回传，
               不会把库里已有的手机号顺手清空。 */}
           <div>
-            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>部门</div>
-            <Select
-              style={{ width: '100%' }}
-              placeholder="选择部门"
-              showClear
-              value={userForm.department_id}
-              onChange={(value) =>
-                setUserForm({ ...userForm, department_id: (value as number) ?? undefined })
-              }
-              optionList={deptOptions}
-            />
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>
+              部门{userForm.oa_user_id ? '（按同序身份带入）' : ''}
+            </div>
+            {userForm.oa_user_id ? (
+              <Input readOnly value={userForm.oa_department || '同序身份未设部门'} />
+            ) : (
+              <Select
+                style={{ width: '100%' }}
+                placeholder="选择部门"
+                showClear
+                value={userForm.department_id}
+                onChange={(value) =>
+                  setUserForm({ ...userForm, department_id: (value as number) ?? undefined })
+                }
+                optionList={deptOptions}
+              />
+            )}
           </div>
           <div>
             <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>角色</div>
@@ -2593,7 +2778,7 @@ type ApprovalLevelDraft = {
  * 任何"帮他把非法字符删掉"的做法都只会把值改错（见下面 onChange 的注释）。
  * 所以这里**只认这一种写法**，别的当场拒绝。
  */
-const AMOUNT_TEXT_PATTERN = /^\d+(\.\d{1,2})?$/
+const AMOUNT_TEXT_PATTERN = /^0*\d{1,14}(\.\d{1,2})?$/
 
 function toApprovalDrafts(levels: Array<Record<string, unknown>>): ApprovalLevelDraft[] {
   return levels.map((item, index) => ({
@@ -2656,7 +2841,8 @@ function ApprovalLevelsEditor({
     }
     const next: Array<Record<string, unknown>> = []
     /* 上一档的金额上限，用来判「逐档递增」；null = 还没出现过上限（第一档或前面不限）。 */
-    let prevMax: number | null = null
+    let prevMax: bigint | null = null
+    let prevText = ''
     let prevLabel = ''
     for (let i = 0; i < drafts.length; i += 1) {
       const row = drafts[i]
@@ -2681,27 +2867,22 @@ function ApprovalLevelsEditor({
       if (!AMOUNT_TEXT_PATTERN.test(text)) {
         Toast.warning(
           `第 ${i + 1} 档的「金额上限」填的是「${text}」，不是有效金额：` +
-            '请填数字（最多两位小数，例如 50000 或 50000.00）；不限就留空。',
+            '请输入最多 14 位整数、两位小数的金额。最后一档留空表示不限金额。',
         )
         return
       }
-      // 正则已保证是合法数字串，这里不会再是 NaN
-      const parsed = Number(text)
-      /* 表格顺序就是判定顺序（后端从上往下找第一个没超上限的档）。
-         上限相等或倒挂时，**当前这一档**先命中，上面那档反而永远轮不到 ——
-         所以提示要说清「是谁不会被使用」，别指错对象
-         （2026-11-18 实测：第一档 500、第二档 200，被挡下的是第二档）。
-         前端先提示，最终仍以后端校验为准。 */
-      if (prevMax !== null && parsed <= prevMax) {
+      const cents = paymentCents(text)
+      if (prevMax !== null && cents <= prevMax) {
         Toast.warning(
-          `第 ${i + 1} 档的金额上限（${text}）必须大于第 ${i} 档「${prevLabel}」的 ${prevMax}：` +
+          `第 ${i + 1} 档的金额上限（${text}）必须大于第 ${i} 档「${prevLabel}」的 ${prevText}：` +
             `审批按顺序匹配，上限不大于上一档时，第 ${i + 1} 档不会被使用。`,
         )
         return
       }
-      prevMax = parsed
+      prevMax = cents
+      prevText = text
       prevLabel = label
-      next.push({ node: row.node, label, max_amount: parsed, role_codes: row.roleCodes })
+      next.push({ node: row.node, label, max_amount: text, role_codes: row.roleCodes })
     }
     onSave(next)
   }

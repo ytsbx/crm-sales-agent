@@ -8,7 +8,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import logging
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -659,6 +659,12 @@ async def generate_document(
             filled["_contract_number_rule_type"] = payload.contract_number_rule_type.strip()
         if (payload.contract_number_rule_fix or "").strip():
             filled["_contract_number_rule_fix"] = payload.contract_number_rule_fix.strip()
+        # 上传时填的同序模板字段（如「文件分类」）要留在合同上，
+        # 发起审批时 ContractOaForm 会按 `_oa_fields` 回显并提交。
+        oa_fields = {str(k): str(v) for k, v in (payload.extra_fields or {}).items()
+                     if v not in (None, "")}
+        if oa_fields:
+            filled["_oa_fields"] = {**(filled.get("_oa_fields") or {}), **oa_fields}
         content = "上传的合同原件，完整条款以随附原文件为准。"
     # 请求回显：**存客户端当初提交的原值**（2026-10-10 修 C4-06 的自动补全边界）。
     #
@@ -1029,6 +1035,10 @@ async def list_signed_files(session: AsyncSession, doc_id: int) -> list[dict]:
     """
     from app.modules.file.model import BusinessFile, FileRecord
 
+    doc = await session.get(ContractDocument, doc_id)
+    if doc is None or (doc.status != "signed" and doc.signed_at is None):
+        return []
+    signed_file_id = (doc.filled_data or {}).get("_signed_file_id")
     rows = (
         await session.execute(
             select(
@@ -1043,6 +1053,7 @@ async def list_signed_files(session: AsyncSession, doc_id: int) -> list[dict]:
                 BusinessFile.business_type == "contract",
                 BusinessFile.business_id == doc_id,
                 BusinessFile.category == "signed",
+                FileRecord.id == signed_file_id if signed_file_id is not None else True,
             )
             .order_by(BusinessFile.created_at.desc(), BusinessFile.id.desc())
         )
@@ -1201,14 +1212,44 @@ async def _ensure_signable_source(session: AsyncSession, doc: ContractDocument) 
     )
 
 
+async def _signed_file_used_elsewhere(session: AsyncSession, doc_id: int, record) -> bool:
+    from app.modules.file.model import BusinessFile, FileRecord
+
+    same_file = FileRecord.id == record.id
+    if record.checksum:
+        same_file = or_(same_file, FileRecord.checksum == record.checksum)
+        if session.get_bind().dialect.name == "postgresql":
+            # 同一份文件可以被重复上传成不同记录，文件行锁无法串行化这种情况。
+            digest = hashlib.sha256(f"contract-sign:{record.checksum}".encode()).digest()
+            await session.execute(
+                text("SELECT pg_advisory_xact_lock(:key)"),
+                {"key": int.from_bytes(digest[:8], "big", signed=True)},
+            )
+    signed_file = ContractDocument.filled_data["_signed_file_id"].as_integer()
+    return (await session.execute(
+        select(BusinessFile.id)
+        .join(ContractDocument, ContractDocument.id == BusinessFile.business_id)
+        .join(FileRecord, FileRecord.id == BusinessFile.file_id)
+        .where(
+            BusinessFile.business_type == "contract", BusinessFile.category == "signed",
+            ContractDocument.id != doc_id,
+            or_(ContractDocument.status == "signed", ContractDocument.signed_at.is_not(None)),
+            or_(signed_file.is_(None), signed_file == BusinessFile.file_id),
+            same_file,
+        )
+        .limit(1)
+    )).scalar_one_or_none() is not None
+
+
 async def sign_document(
-    session: AsyncSession, doc: ContractDocument, *, file_id: int, note: str | None
+    session: AsyncSession, doc: ContractDocument, *, file_id: int, note: str | None,
+    reuse_reason: str | None = None,
 ) -> None:
     """登记签署：签署件按通用附件挂到文档上（business_type=contract，category=signed）。
 
     签的是扫描件（电子签章不是前置）；草稿状态与签署件在台账上永远分明。
     """
-    from app.modules.file.model import BusinessFile
+    from app.modules.file.model import CONTRACT_PENDING_SIGNATURE, BusinessFile
 
     doc = await get_doc_or_404(session, doc.id, for_update=True)
     if doc.status == "signed":
@@ -1260,16 +1301,37 @@ async def sign_document(
             "这是系统生成的合同稿，不能登记为签署原件；请上传客户签回的扫描件",
             422,
         )
-    session.add(
-        BusinessFile(
+    if await _signed_file_used_elsewhere(session, doc.id, record):
+        reason = (reuse_reason or "").strip()
+        if not reason:
+            raise AppError(
+                ErrorCode.CONFIRM_REQUIRED,
+                "这份文件已用于另一份合同的回签，请核对是否选错。"
+                "如果这个 PDF 确实包含多份已签合同，请填写说明后再归档。",
+                422,
+            )
+        doc.filled_data = {**(doc.filled_data or {}), "_signed_file_reuse_reason": reason}
+    link = (await session.execute(
+        select(BusinessFile).where(
+            BusinessFile.business_type == "contract",
+            BusinessFile.business_id == doc.id,
+            BusinessFile.file_id == file_id,
+            BusinessFile.category.in_(("signed", CONTRACT_PENDING_SIGNATURE)),
+        ).order_by((BusinessFile.category == "signed").desc(), BusinessFile.id).limit(1)
+    )).scalar_one_or_none()
+    if link is None:
+        link = BusinessFile(
             business_type="contract",
             business_id=doc.id,
             file_id=file_id,
             category="signed",
         )
-    )
+        session.add(link)
+    else:
+        link.category = "signed"
     doc.status = "signed"
     doc.signed_at = datetime.now(UTC)
+    doc.filled_data = {**(doc.filled_data or {}), "_signed_file_id": file_id}
     if note:
         doc.filled_data = {**(doc.filled_data or {}), "sign_note": note}
     await session.flush()

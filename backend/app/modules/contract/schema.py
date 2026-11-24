@@ -84,6 +84,7 @@ class DocumentSign(BaseModel):
 
     file_id: int
     note: str | None = None
+    reuse_reason: str | None = Field(default=None, max_length=255)
 
 
 class DocumentVoid(BaseModel):

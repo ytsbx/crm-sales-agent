@@ -151,7 +151,7 @@ async def calculate(
 
     quoted_id = None
     if payload.save:
-        if payload.expected_amount is not None and Decimal(str(selected["amount"])) != payload.expected_amount:
+        if payload.expected_amount is not None and Decimal(selected["amount_exact"]) != payload.expected_amount:
             raise AppError(ErrorCode.PARAM_ERROR, "这条方案的运费已变化，请重新试算后再保存", 409)
         quote = await svc.save_quote(
             session,
@@ -177,6 +177,7 @@ async def calculate(
         {
             "sku": prepared["sku"],
             "quantity": prepared["quantity"],
+            "quantity_exact": prepared["quantity_exact"],
             "origin": prepared["origin"],
             "destination": prepared["destination"],
             "shipping_method": payload.shipping_method,

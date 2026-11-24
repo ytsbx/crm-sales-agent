@@ -49,6 +49,25 @@ def configured() -> bool:
     return bool(settings.oa_base_url and settings.oa_integration_secret)
 
 
+def applicant_identity(account) -> uuid.UUID | str | None:
+    oa_user_id = getattr(account, "oa_user_id", None)
+    return uuid.UUID(oa_user_id) if oa_user_id else getattr(account, "dingtalk_userid", None)
+
+
+def applicant_fields(identity: uuid.UUID | str) -> dict[str, str]:
+    key = "applicant_oa_user_id" if isinstance(identity, uuid.UUID) else "applicant_dingtalk_user_id"
+    return {key: str(identity)}
+
+
+def owns_approval(account, row) -> bool:
+    creator_id = getattr(row, "created_by", None)
+    if creator_id is not None:
+        return account is not None and account.id == creator_id
+    return bool(account and row.originator_user_id and row.originator_user_id in {
+        getattr(account, "oa_user_id", None), getattr(account, "dingtalk_userid", None),
+    })
+
+
 def _path_with_query(path: str, params: dict | None) -> str:
     if not params:
         return path
@@ -165,16 +184,26 @@ def _multipart(fields: dict[str, str], file_name: str, file_bytes: bytes, mime: 
     return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
 
 
-async def upload_file(dingtalk_user_id: str, file_name: str, file_bytes: bytes, mime: str | None = None) -> dict:
+async def upload_file(dingtalk_user_id: uuid.UUID | str, file_name: str, file_bytes: bytes, mime: str | None = None) -> dict:
     mime = mime or mimetypes.guess_type(file_name)[0] or "application/octet-stream"
     body, content_type = _multipart(
-        {"applicant_dingtalk_user_id": dingtalk_user_id}, file_name, file_bytes, mime
+        applicant_fields(dingtalk_user_id), file_name, file_bytes, mime
     )
     return await _request("POST", "/files/", body=body, content_type=content_type)
 
 
-async def list_templates(dingtalk_user_id: str) -> list[dict]:
+async def list_templates(dingtalk_user_id: uuid.UUID | str) -> list[dict]:
     data = await _request(
-        "GET", "/templates/", params={"applicant_dingtalk_user_id": dingtalk_user_id}
+        "GET", "/templates/", params=applicant_fields(dingtalk_user_id)
     )
     return list(data.get("results") or [])
+
+
+async def list_directory(applicant_dingtalk_user_id: str | None = None) -> dict:
+    """同序的只读人员/部门目录（企业、部门树、在职人员及钉钉身份）。
+
+    建账号、补部门以同序目录为准。
+    """
+    params = ({"applicant_dingtalk_user_id": applicant_dingtalk_user_id}
+              if applicant_dingtalk_user_id else None)
+    return await _request("GET", "/directory/", params=params)

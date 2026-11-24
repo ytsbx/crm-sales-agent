@@ -106,7 +106,6 @@ async def config(session):
             "corp_id": cfg.get("corp_id") or CONTRACT_CORP}
 
 
-@router.get("/contract-documents/{doc_id}/approval-entry")
 async def approval_entry(doc_id: int, user: CurrentUser = Depends(require_permission("order:manage")), session: AsyncSession = Depends(get_db)):
     from app.core.response import ok
     doc = await visible_doc(session, user, doc_id)
@@ -201,7 +200,6 @@ async def associate_instance(session, user, doc, instance_id, cfg, actor):
     return row
 
 
-@router.post("/contract-documents/{doc_id}/approval-auto-link")
 async def auto_link_approval(doc_id: int, user: CurrentUser = Depends(require_permission("order:manage")), session: AsyncSession = Depends(get_db)):
     from app.core.response import ok
     from app.modules.user.model import User
@@ -229,7 +227,6 @@ async def auto_link_approval(doc_id: int, user: CurrentUser = Depends(require_pe
     await write_audit(session,operator_id=user.id,action="start_contract_oa",business_type="contract",business_id=doc.id,after={"instance_id":row.instance_id,"mode":"external_auto_link"})
     await session.commit(); return ok(oa.serialize(row),"已自动找到并关联钉钉审批")
 
-@router.post("/contract-documents/{doc_id}/approval-link")
 async def link_approval(doc_id: int, payload: LinkInput, user: CurrentUser = Depends(require_permission("order:manage")), session: AsyncSession = Depends(get_db)):
     from app.core.response import ok
     from app.modules.user.model import User
@@ -269,7 +266,6 @@ async def link_approval(doc_id: int, payload: LinkInput, user: CurrentUser = Dep
     return ok(oa.serialize(row), "已核验并关联钉钉审批")
 
 
-@router.post("/contract-documents/{doc_id}/approval-sync")
 async def sync_approval(doc_id: int, user: CurrentUser = Depends(require_permission("order:manage")), session: AsyncSession = Depends(get_db)):
     from app.core.response import ok
     doc = await visible_doc(session, user, doc_id)
@@ -319,7 +315,13 @@ async def withdraw_before_void(session, user, doc):
         fail("OA 申请结果未明，请先核对审批，不能直接作废合同")
     from app.modules.user.model import User
     actor = await session.get(User, user.id)
-    if not actor or not actor.dingtalk_userid or actor.dingtalk_userid != row.originator_user_id:
+    if getattr(row, "provider", "dingtalk") == "self_oa":
+        from app.modules.oa.client import owns_approval
+
+        is_applicant = owns_approval(actor, row)
+    else:
+        is_applicant = bool(actor and actor.dingtalk_userid and actor.dingtalk_userid == row.originator_user_id)
+    if not is_applicant:
         fail("请由该 OA 审批的发起人先撤回，确认后再作废合同", 403)
     row = await oa.lock_oa_business_then_instance(session, row)
     if row is None or row.status != "pending":
@@ -341,7 +343,7 @@ async def withdraw_before_void(session, user, doc):
             raise
         return
     if settings.dingtalk_push_off:
-        fail("钉钉调用关闭，无法撤回在办审批；本次未作废合同")
+        fail("这是历史审批，请先核对原审批结果；本次未作废合同")
     operating_id = actor.dingtalk_userid
     async def send(instance_id):
         client = get_client()

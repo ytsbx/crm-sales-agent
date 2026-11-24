@@ -19,6 +19,8 @@
 
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -30,6 +32,8 @@ from app.modules.agent.tools import (
     ToolContext,
     ensure_tool_permission,
     get_customer_overview,
+    get_order,
+    get_product,
     get_receivables_summary,
     missing_permissions,
 )
@@ -39,6 +43,35 @@ from app.modules.payment.model import PaymentRecord, ReceivablePlan
 from app.modules.user.model import User
 
 NOW = datetime(2026, 10, 6, 12, 0, tzinfo=UTC)
+
+
+@pytest.mark.anyio
+async def test_agent_order_and_product_keep_three_decimal_places(monkeypatch):
+    from app.modules.order import service as order_service
+
+    async def get_row(*_args):
+        return row
+
+    def result(*_args):
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [line]))
+
+    session = SimpleNamespace(get=get_row, execute=AsyncMock(side_effect=result))
+    user = make_user(1, permissions={"order:view", "product:view"}, data_scope="all")
+    ctx = ToolContext(session=session, user=user, agent_session_id=1)
+    monkeypatch.setattr(order_service, "order_context", AsyncMock(return_value={"customers": {}}))
+    row = SalesOrder(id=1, order_no="SO-1", customer_id=1, currency="CNY", status="pending")
+    line = SimpleNamespace(sku_snapshot="SKU-1", specification=None, quantity=Decimal("0.001"),
+                           unit_price=Decimal("20.50"), amount=Decimal("0.02"))
+    order = await get_order(ctx, 1)
+    assert order["items"][0]["quantity"] == 0.001
+    assert order["items"][0]["amount"] == 0.02
+
+    from app.modules.product.model import Product, Sku
+
+    row = Product(id=1, name="测试产品")
+    line = Sku(id=1, sku_code="SKU-1", weight=Decimal("1.125"))
+    product = await get_product(ctx, 1)
+    assert product["skus"][0]["weight"] == 1.125
 
 
 def _ctx(session, user, action_id=None):
@@ -463,3 +496,12 @@ async def test_receivables_overdue_uses_decimal_remaining(db_session):
     assert data["overdue_count"] == 1
     assert data["overdue"][0]["remaining_amount"] == 100.25
     assert data["overdue"][0]["currency"] == "CNY"
+
+
+@pytest.mark.anyio
+async def test_overview_without_order_access_omits_order_based_receivable_estimate(db_session):
+    customer = _customer(db_session)
+    user = make_user(101, permissions={"customer:view", "payment:view"})
+    result = await get_customer_overview(_ctx(db_session, user), customer.id)
+    assert "pending_receivable_amount" not in result
+    assert any("查看正式应收" in block for block in result["unavailable_blocks"])

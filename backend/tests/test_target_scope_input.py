@@ -5,11 +5,42 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from app.core.database import get_db
+from app.core.deps import get_current_user
 from app.core.errors import AppError
-from app.modules.analytics.router import SalesTargetUpsert
+from app.modules.analytics.router import SalesTargetUpsert, router
 from app.modules.analytics import targets
+
+
+@pytest.mark.parametrize("year", [0, 1, 9999, 10000])
+def test_report_routes_reject_years_that_cannot_form_a_business_year(year):
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(roles=["admin"])
+    session = AsyncMock()
+    app.dependency_overrides[get_db] = lambda: session
+    client = TestClient(app)
+
+    for method, path in (
+        ("GET", "/sales-targets"),
+        ("GET", "/sales-targets/bases"),
+        ("POST", "/sales-targets/bases/refreeze"),
+    ):
+        response = client.request(method, path, params={"year": year})
+        assert response.status_code == 422
+        assert response.json()["detail"][0]["loc"] == ["query", "year"]
+    session.get.assert_not_awaited()
+    session.execute.assert_not_awaited()
+
+
+@pytest.mark.parametrize("period", ["0000-01", "0001-01", "9999-01"])
+def test_sales_targets_reject_months_outside_report_year_range(period):
+    with pytest.raises(AppError, match="年份超出可统计范围"):
+        targets.normalize_period(period)
 
 
 @pytest.mark.parametrize("field", ["user_id", "department_id"])

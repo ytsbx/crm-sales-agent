@@ -1,6 +1,7 @@
 """订单中心接口（对齐 03-API §27 / §28）。"""
 
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select
@@ -114,6 +115,22 @@ async def create_order(
     这条路径**不校验"客户已接受报价"**，因此限主管使用：否则它就是绕过客户确认、
     直接给自己敲单加业绩的后门（金额进成交额，却不生成应收）。
     """
+    request_key = idempotency.request_key_from(request, payload.request_key)
+    reservation = None
+    if request_key:
+        reservation = await idempotency.reserve(
+            session,
+            user_id=user.id,
+            action="order:create",
+            request_key=request_key,
+            payload=payload.model_dump(exclude={"request_key"}),
+            result_type="order",
+        )
+        if reservation.should_replay:
+            body = reservation.replay_payload
+            await svc.get_visible_order(session, user, body["order_id"])
+            return ok(body, "订单已创建，已返回原订单")
+
     await ensure_refs(
         session, model=Customer, ids={"customer_id": payload.customer_id}, label="客户"
     )
@@ -191,25 +208,23 @@ async def create_order(
         exclude_user_id=user.id,
         event_key=f"order:create:{order.id}",
     )
+    body = {
+        "order_id": order.id,
+        "order_no": order.order_no,
+        "total_amount": float(order.total_amount),
+        "currency": order.currency,
+    }
+    if reservation is not None:
+        await idempotency.complete(session, reservation, result_payload=body, result_id=order.id)
     await session.commit()
     await notification_service.dispatch_after_commit(session)
-    return ok(
-        {
-            "order_id": order.id,
-            "order_no": order.order_no,
-            "total_amount": float(order.total_amount),
-            # 币种跟着金额一起给（第九批 §9.9）：前端成功提示要按订单币种显示，
-            # 不能假设是人民币
-            "currency": order.currency,
-        },
-        "订单已创建",
-    )
+    return ok(body, "订单已创建")
 
 
 @router.post("/orders/{order_id}/refresh-status")
 async def refresh_status(
     order_id: int,
-    user: CurrentUser = Depends(require_permission("order:view")),
+    user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
     """拉取 ERP 履约状态并回写（03-API §27）。
@@ -887,6 +902,14 @@ async def change_status(
     # 状态切换先锁整单：与"登记发货"并发时，两边都必须串行化，
     # 否则同一时刻可能既取消成功又发货成功（第一批返修 §3.5）。
     order = await svc.get_visible_order(session, user, order_id, for_update=True)
+    if payload.status == "shipped" and order.status not in ("shipped", "cancelled"):
+        shipments = await svc.order_shipments(session, order)
+        if Decimal(shipments["summary"]["shipped_exact"]) <= 0:
+            raise AppError(
+                ErrorCode.STATUS_NOT_ALLOWED,
+                "请先在「发货批次」登记实际发货数量，再将订单标为已发货。",
+                422,
+            )
     await svc.change_status(
         session, order, new_status=payload.status, operator_id=user.id, remark=payload.remark
     )

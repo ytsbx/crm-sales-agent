@@ -20,6 +20,7 @@ import csv as csv_module
 import io
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from sqlalchemy import event, select
@@ -33,6 +34,7 @@ from app.core.importing import (
     ImportReport,
     RowErrors,
     diff_preview,
+    finalize,
     make_preview_token,
     read_preview_token,
     row_savepoint,
@@ -290,7 +292,7 @@ def test_negative_and_margin_range_are_rejected():
 
 def test_sku_int_columns_refuse_truncation():
     """MOQ 2.9 **不能**被截成 2（原来 int(float(x)) 就是这么干的）。"""
-    with pytest.raises(ValueError, match="不是合法整数"):
+    with pytest.raises(ValueError, match="必须是整数"):
         sku_fields_from_row({"SKU编码": "SKU-1", "MOQ": "2.9"})
     assert sku_fields_from_row({"SKU编码": "SKU-1", "MOQ": "3"})["moq"] == 3
     # 表头两种写法都收（2026-10-10 把模板/导出改成中文「起订量」）：
@@ -304,8 +306,34 @@ def test_sku_int_columns_refuse_truncation():
 def test_sku_numeric_columns_reject_nan_and_negative():
     with pytest.raises(ValueError):
         sku_fields_from_row({"SKU编码": "SKU-1", "重量": "NaN"})
-    with pytest.raises(ValueError, match="不能为负数"):
+    with pytest.raises(ValueError, match="不能是负数"):
         sku_fields_from_row({"SKU编码": "SKU-1", "装箱数": "-1"})
+
+
+@pytest.mark.parametrize(("column", "value", "hint"), [
+    ("重量", "1.0001", "3 位小数"),
+    ("箱规体积", "100000000", "4 位小数"),
+    ("MOQ", "1000000000000", "最多 12 位"),
+])
+def test_sku_csv_refuses_values_outside_the_regular_sku_limits(column, value, hint):
+    with pytest.raises(ValueError, match=hint):
+        sku_fields_from_row({column: value})
+
+
+@pytest.mark.anyio
+async def test_import_commit_failure_reports_unknown_outcome_without_database_details():
+    session = Mock(
+        commit=AsyncMock(side_effect=RuntimeError("internal constraint test_marker")),
+        rollback=AsyncMock(),
+    )
+    with pytest.raises(AppError) as captured:
+        await finalize(
+            session, ImportReport("product", 1), module="product", operator_id=1,
+            file_name="test.csv", file_sha256="sha", ip=None, preview=False,
+        )
+    assert "test_marker" not in captured.value.message
+    assert "核对" in captured.value.message
+    session.rollback.assert_awaited_once()
 
 
 def test_sku_text_length_is_reported_in_plain_language():
@@ -949,3 +977,30 @@ def test_cost_import_preserves_representable_values(db, value):
     ))
     assert result["data"]["created_count"] == 1
     assert db.scalars_one(select(ProductCost)).purchase_cost == Decimal(value)
+
+
+def test_product_import_hides_unexpected_write_error_and_continues(db):
+    from sqlalchemy.exc import IntegrityError
+    from app.modules.product import io_router as product_io
+
+    seed_basics(db)
+
+    @event.listens_for(db.raw, "before_flush")
+    def fail_one_row(session, _context, _instances):
+        if any(isinstance(row, Product) and row.name == "测试失败行" for row in session.new):
+            raise IntegrityError("INSERT INTO products", {}, RuntimeError("internal-db-error"))
+
+    result = asyncio.run(product_io.import_products(
+        request=FakeRequest(),
+        file=upload("产品名称\n测试失败行\n另一行正常\n"),
+        preview=False,
+        preview_token=None,
+        user=FakeUser(),
+        session=db.session,
+    ))["data"]
+    assert result["created_count"] == result["failed_count"] == 1
+    assert result["failed"][0]["row"] == 2
+    assert "联系管理员" in result["failed"][0]["reason"]
+    assert "INSERT INTO" not in str(result)
+    assert "internal-db-error" not in str(result)
+    assert "另一行正常" in db.scalars_all(select(Product.name))

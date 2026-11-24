@@ -12,8 +12,9 @@ export interface SystemUser {
   department_id?: number | null
   department?: string | null
   wecom_userid?: string | null
-  /** 同序 OA userid：**有值才代表这个人能用同序 OA 登录**（没绑定就是空）。 */
+  /** 钉钉扫码登录身份。 */
   dingtalk_userid?: string | null
+  oa_user_id?: string | null
   status: string
   /** 关联的角色。**含已停用的角色**（管理页要能看出"挂着但已停用"），逐项带 status。 */
   roles?: { id: number; code: string; name: string; data_scope: string; status?: string }[]

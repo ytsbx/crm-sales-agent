@@ -323,9 +323,12 @@ async def period_max_number(
     head = rule.prefix + (moment.strftime(rule.date_format) if rule.date_format else "")
     if not head:
         return 0
+    # B22-11：prefix 可含 %/_，不转义会匹配错号段、播种错流水
+    esc = head.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     latest = (
         await session.execute(
-            select(column).where(column.like(f"{head}%")).order_by(column.desc()).limit(1)
+            select(column).where(column.like(f"{esc}%", escape="\\"))
+            .order_by(column.desc()).limit(1)
         )
     ).scalar_one_or_none()
     if not latest:

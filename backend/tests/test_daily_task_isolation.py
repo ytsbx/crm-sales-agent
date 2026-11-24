@@ -1,16 +1,61 @@
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.core import scheduler
+from app.core import database, scheduler
 from app.core.audit import AuditLog, write_audit
 from app.modules.contract import customer_flow, service as contracts
 from app.modules.notification import service as notifications
+from app.modules.notification.model import Notification
 from app.modules.payment import service as payments
 from app.modules.quote import service as quotes
 from app.modules.settings import service as settings
+from app.modules.user.model import User
+from app.modules.wecom import client as wecom
 from tests.conftest import SyncSessionAsAsync, make_engine
+
+
+@pytest.mark.anyio
+async def test_retry_job_drains_pending_instant_notifications_without_waiting_for_daily_scan(monkeypatch):
+    engine = make_engine()
+    Notification.__table__.create(engine)
+    with Session(engine) as session:
+        session.add(User(id=1, name="接手人", username="test", password_hash="unused", wecom_userid="test-recipient"))
+        session.add_all([
+            Notification(user_id=1, type="task", title="交接待办", level=notifications.LEVEL_NORMAL, wecom_status="pending"),
+            Notification(user_id=1, type="task", title="汇总提醒", level=notifications.LEVEL_DIGEST, wecom_status="pending"),
+        ])
+        session.commit()
+
+    class SessionScope:
+        async def __aenter__(self):
+            self.session = Session(engine)
+            return SyncSessionAsAsync(self.session)
+
+        async def __aexit__(self, *args):
+            self.session.close()
+
+    send = AsyncMock()
+    monkeypatch.setattr(scheduler, "SessionLocal", SessionScope)
+    monkeypatch.setattr(database, "SessionLocal", SessionScope)
+    monkeypatch.setattr(wecom, "get_client", lambda: SimpleNamespace(send_text_card=send))
+    monkeypatch.setattr(scheduler.settings, "wecom_push_off", False)
+    monkeypatch.setattr(scheduler.settings, "wecom_agent_id", "test")
+    monkeypatch.setattr(scheduler.settings, "wecom_corp_id", "test")
+    monkeypatch.setattr(scheduler.settings, "wecom_contact_secret", "test")
+    monkeypatch.setattr(notifications, "materialize_business_notifications", AsyncMock())
+    monkeypatch.setattr(notifications, "retry_policy", AsyncMock(return_value={"enabled": False}))
+
+    await scheduler.run_notification_retry_job()
+
+    send.assert_awaited_once_with(to_user="test-recipient", title="交接待办", description="交接待办")
+    with Session(engine) as session:
+        assert {row.title: row.wecom_status for row in session.query(Notification)} == {
+            "交接待办": "sent", "汇总提醒": "pending",
+        }
+    engine.dispose()
 
 
 @pytest.mark.anyio

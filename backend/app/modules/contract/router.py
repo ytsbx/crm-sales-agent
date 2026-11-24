@@ -103,6 +103,7 @@ async def start_oa_contract_approval(
     session: AsyncSession = Depends(get_db),
 ):
     """发起自研 OA 合同审批；审批在 OA 完成，CRM 负责同步与回签。"""
+    from app.modules.oa import client as oa_client
     from app.modules.oa import service as oa_service
 
     prepared_template = None
@@ -115,8 +116,8 @@ async def start_oa_contract_approval(
         if draft.status != "draft":
             raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "只有待签草稿合同可以发起审批", 422)
         account = await session.get(User, user.id)
-        if account is None or not account.dingtalk_userid:
-            raise AppError(ErrorCode.PARAM_ERROR, "请先绑定本人钉钉账号，OA 才能按你名义发起", 422)
+        if not oa_client.applicant_identity(account):
+            raise AppError(ErrorCode.PARAM_ERROR, "请联系管理员为当前账号绑定同序人员后再提交", 422)
         prepared_template = await active_template(account)
     doc = await svc.get_doc_or_404(session, doc_id, for_update=True, protect_transfer=True)
     await _ensure_doc_in_scope(session, user, doc)
@@ -142,7 +143,6 @@ async def start_oa_contract_approval(
     return ok(oa_service.serialize(row), message)
 
 
-@router.post("/contract-documents/{doc_id}/dingtalk-oa")
 async def start_dingtalk_contract_approval(
     doc_id: int,
     request: Request,
@@ -354,7 +354,7 @@ async def start_dingtalk_contract_approval(
     return ok({**dingtalk_service.serialize(row), "result": outcome}, outcome["message"])
 
 
-@router.post("/contract-documents/{doc_id}/dingtalk-oa-withdraw")
+@router.post("/contract-documents/{doc_id}/oa-withdraw")
 async def withdraw_dingtalk_contract_approval(
     doc_id: int,
     request: Request,
@@ -382,10 +382,11 @@ async def withdraw_dingtalk_contract_approval(
     if row.status != "pending":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, f"当前 OA 审批状态为「{row.status}」，不能撤回", 422)
     if getattr(row, "provider", "dingtalk") == "self_oa":
+        from app.modules.oa import client as oa_client
         from app.modules.oa import service as oa_service
         from app.modules.user.model import User
         actor = await session.get(User, user.id)
-        if not actor or not actor.dingtalk_userid or actor.dingtalk_userid != row.originator_user_id:
+        if not oa_client.owns_approval(actor, row):
             raise AppError(ErrorCode.FORBIDDEN, "请由该 OA 审批的发起人先撤回，确认后再作废合同", 403)
         row = await oa_service.withdraw_contract_row(session, row, "CRM 撤回合同审批")
         await _ensure_doc_in_scope(session, user, doc)
@@ -398,7 +399,7 @@ async def withdraw_dingtalk_contract_approval(
         await session.commit()
         return ok(oa_service.serialize(row), "已撤回 OA 合同审批")
     if app_settings.dingtalk_push_off:
-        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "钉钉推送已关闭，无法向钉钉发送撤回请求", 422)
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "历史审批仅供查看，新审批请使用同序 OA", 422)
     from app.modules.contract.customer_flow import withdraw_before_void
     await withdraw_before_void(session, user, doc)
     await _ensure_doc_in_scope(session, user, doc)
@@ -615,6 +616,36 @@ async def create_document_record(payload: DocumentCreate, request: Request, user
     return ok(result, "合同草稿已生成")
 
 
+@router.get("/contract-documents/oa-field-options")
+async def contract_oa_field_options(
+    user: CurrentUser = Depends(require_permission("order:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """上传合同弹窗用的同序合同模板字段（只要定义，不需要合同 id）。
+
+    读不到模板时返回空字段和原因，不挡上传：文件分类等字段可以在发起审批时再补。
+    """
+    from app.modules.oa import client as oa_client
+    from app.modules.oa.contract_form import active_template
+    from app.modules.user.model import User
+
+    account = await session.get(User, user.id)
+    if not oa_client.applicant_identity(account):
+        return ok({"fields": [], "message": "当前账号还没绑定同序 OA，上传后可先保存，审批前再补字段"})
+    try:
+        template = await active_template(account)
+    except AppError as exc:
+        return ok({"fields": [], "message": exc.message})
+    return ok({"fields": [{
+        "id": field["id"], "label": field.get("label", field["id"]),
+        "type": field.get("type", "text"), "required": bool(field.get("required")),
+        "options": field.get("options") or [],
+        "presentation": field.get("presentation"),
+        "multiline": field.get("multiline"),
+        "help_text": field.get("help_text"),
+    } for field in template.get("fields") or []]})
+
+
 @router.get("/contract-documents/{doc_id}")
 async def get_document(
     doc_id: int,
@@ -672,7 +703,9 @@ async def sign_document(
 
     if not await can_access_file(session, user, payload.file_id):
         raise AppError(ErrorCode.DATA_SCOPE_DENIED, "无权将该文件登记为此合同的签署件", 403)
-    await svc.sign_document(session, doc, file_id=payload.file_id, note=payload.note)
+    await svc.sign_document(
+        session, doc, file_id=payload.file_id, note=payload.note, reuse_reason=payload.reuse_reason,
+    )
     # 接入客户时间线与通知（审查第 9 条）：审计回答"谁动了这个接口"，
     # 客户时间线回答"这个客户身上发生了什么"——两者用途不同，只写审计不够。
     # 复用打样/订单在用的同一套机制（写客户留痕 + 排主管通知），不另起一套。
@@ -690,7 +723,11 @@ async def sign_document(
         action="sign",
         business_type="contract",
         business_id=doc.id,
-        after={"doc_no": doc.doc_no, "file_id": payload.file_id},
+        after={
+            "doc_no": doc.doc_no, "file_id": payload.file_id,
+            **({"reuse_reason": doc.filled_data["_signed_file_reuse_reason"]}
+               if (doc.filled_data or {}).get("_signed_file_reuse_reason") else {}),
+        },
         ip=client_ip(request),
     )
     await session.commit()

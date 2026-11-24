@@ -4,17 +4,32 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppError
 from app.modules.approval import rules_engine, rules_router
 from app.modules.approval.model import ApprovalRule, ApprovalRuleVersion
+from app.modules.approval.schema import ApprovalDefinitionCreate, ApprovalDefinitionUpdate
 from tests.conftest import SyncSessionAsAsync, _register_sqlite_bigint_as_integer
 
 
 def condition(field, op, value):
     return {'field': field, 'op': op, 'value': value}
+
+
+def test_approval_text_respects_persisted_lengths():
+    rule = {"name": "测试规则", "kind": "express", "conditions": [condition("gross_margin", "gt", 22)]}
+    assert rules_router.RulePayload(**rule, description=None).description is None
+    assert rules_router.RulePayload(**rule, description="字" * 255).description == "字" * 255
+    with pytest.raises(ValidationError):
+        rules_router.RulePayload(**rule, description="字" * 256)
+    with pytest.raises(ValidationError):
+        ApprovalDefinitionCreate(code="test", name="测试流程", business_type="quote", status="a" * 17)
+    with pytest.raises(ValidationError, match="审批流名称最长 128"):
+        ApprovalDefinitionUpdate(name="字" * 129)
+    assert ApprovalDefinitionUpdate().model_dump(exclude_unset=True) == {}
 
 
 def test_boundary_can_be_strictly_excluded():

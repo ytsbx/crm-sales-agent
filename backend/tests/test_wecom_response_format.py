@@ -1,4 +1,6 @@
 """企微响应解析边界：纯HTTP替身，无真实第三方调用。"""
+import asyncio
+
 import httpx
 import pytest
 
@@ -130,3 +132,53 @@ async def test_invalid_token_is_not_cached_and_retry_recovers(monkeypatch, exter
         assert await client.access_token(external=external)=='valid-test-token'
         assert await client.access_token(external=external)=='valid-test-token'
         assert calls==2  # 有效令牌仍复用缓存，不增添每次取令牌的请求。
+
+
+@pytest.mark.anyio
+async def test_concurrent_token_requests_share_one_upstream_call(monkeypatch):
+    from app.core.config import settings
+    from app.modules.wecom import client as adapter
+
+    monkeypatch.setattr(settings, 'wecom_corp_id', 'isolated-concurrent-token')
+    monkeypatch.setattr(settings, 'wecom_contact_secret', 'isolated-secret')
+    monkeypatch.setattr(adapter, '_token_cache', {})
+    calls = 0
+
+    async def gettoken(api, *, params=None, json_body=None, access_token=None):
+        nonlocal calls
+        assert api == 'gettoken'
+        calls += 1
+        # 让另一个协程也有机会进入取令牌路径，稳定复现并发首次请求。
+        await asyncio.sleep(0)
+        return {'access_token': 'shared-token'}
+
+    client = WeComClient()
+    monkeypatch.setattr(client, '_call', gettoken)
+    tokens = await asyncio.gather(*(client.access_token() for _ in range(8)))
+
+    assert tokens == ['shared-token'] * 8
+    assert calls == 1
+
+
+@pytest.mark.anyio
+async def test_secret_rotation_does_not_reuse_previous_token(monkeypatch):
+    from app.core.config import settings
+    from app.modules.wecom import client as adapter
+
+    monkeypatch.setattr(settings, 'wecom_corp_id', 'isolated-secret-rotation')
+    monkeypatch.setattr(settings, 'wecom_contact_secret', 'old-isolated-secret')
+    monkeypatch.setattr(adapter, '_token_cache', {})
+    requested_secrets = []
+
+    async def gettoken(api, *, params=None, json_body=None, access_token=None):
+        assert api == 'gettoken'
+        requested_secrets.append(params['corpsecret'])
+        return {'access_token': f'token-{len(requested_secrets)}'}
+
+    client = WeComClient()
+    monkeypatch.setattr(client, '_call', gettoken)
+    assert await client.access_token() == 'token-1'
+
+    monkeypatch.setattr(settings, 'wecom_contact_secret', 'new-isolated-secret')
+    assert await client.access_token() == 'token-2'
+    assert requested_secrets == ['old-isolated-secret', 'new-isolated-secret']

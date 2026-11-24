@@ -34,6 +34,34 @@ OA_FIELDS = [
 
 
 NATIVE_INQUIRY_CODE = "key-account-product-inquiry"
+#: 同序《产品询价申请》销售段的字段与顺序。线上模板读不到时（OA 未启动、账号没映射、
+#: 模板暂时不可用），CRM 新建/编辑表单也照这一组展示，不能退回只剩 7 个 CRM 字段。
+SALES_TEMPLATE_FIELDS = [
+    {"id": "reporter", "label": "提报人", "type": "user", "required": True},
+    {"id": "product_name", "label": "产品名称", "type": "text", "required": True},
+    {"id": "report_department", "label": "提报部门", "type": "department", "required": True},
+    {"id": "quoter", "label": "对接报价员", "type": "user", "required": True},
+    {"id": "quote_scope", "label": "报价员负责范围", "type": "text", "required": True},
+    {"id": "reply_date", "label": "期望回复时间", "type": "date", "required": True},
+    {"id": "provide_sample", "label": "是否提供样品", "type": "choice", "required": True, "options": ["是", "否"]},
+    {"id": "delivery_time", "label": "大货交付时间", "type": "text", "required": False},
+    {"id": "customer", "label": "客户名称、联系人、联系方式", "type": "text", "required": True},
+    {"id": "product_reference", "label": "产品名称/编号", "type": "text", "required": True},
+    {"id": "specification", "label": "产品型号及规格", "type": "text", "required": True},
+    {"id": "quantity", "label": "预估订购数量", "type": "text", "required": True},
+    {"id": "requirements", "label": "材质及工艺要求", "type": "text", "required": True, "multiline": True},
+    {"id": "reference_images", "label": "产品参考图片（高清图片及细节图）", "type": "attachment",
+     "required": False, "max_files": 9},
+    {"id": "notes", "label": "特别说明", "type": "text", "required": False, "multiline": True},
+    {"id": "attachments", "label": "附件", "type": "attachment", "required": False},
+]
+
+
+def fallback_entry_fields() -> list[dict]:
+    """静态模板里由 CRM 提交表单填写的那些格（id 已换成前端识别的名字）。"""
+    return native_entry_fields({"fields": SALES_TEMPLATE_FIELDS})
+
+
 NATIVE_FIELDS = {
     "title": "product_name",
     "inquiry_no": "product_reference",
@@ -48,6 +76,14 @@ CRM_IDENTITY_FIELDS = {"applicant_name", "department", "quote_owner"}
 
 def uses_native_inquiry() -> bool:
     return not settings.oa_inquiry_template_id.strip() and settings.oa_inquiry_template_code.strip() == NATIVE_INQUIRY_CODE
+
+
+def saved_quote_owner(inquiry) -> str | None:
+    draft = (getattr(inquiry, "extra", None) or {}).get("oa_draft")
+    if isinstance(draft, dict) and "quote_owner_user_id" in draft:
+        selected = draft["quote_owner_user_id"]
+        return selected if isinstance(selected, str) else None
+    return inquiry.oa_quote_user_id
 
 
 def native_quoters(template):
@@ -134,6 +170,45 @@ async def _department_name(session: AsyncSession, user) -> str:
     return dept.name if dept is not None else ""
 
 
+async def customer_contact_text(session: AsyncSession, inquiry, *, customer=None) -> str:
+    """OA「客户名称、联系人、联系方式」一格：CRM 已有的客户名/联系人/电话直接拼好。"""
+    from app.modules.customer.model import Contact, Customer
+
+    if customer is None and getattr(inquiry, "customer_id", None):
+        customer = await session.get(Customer, inquiry.customer_id)
+    if customer is not None and getattr(customer, "deleted_at", None):
+        customer = None
+    contact = None
+    if getattr(inquiry, "contact_id", None):
+        contact = await session.get(Contact, inquiry.contact_id)
+    if contact is None and customer is not None and getattr(customer, "id", None):
+        # 需求没指定联系人时，用该客户的主联系人补「客户名称、联系人、联系方式」。
+        result = await session.execute(select(Contact).where(
+            Contact.customer_id == customer.id,
+            Contact.is_primary.is_(True),
+            Contact.deleted_at.is_(None),
+        ).limit(1))
+        contact = result.scalars().first()
+    if contact is not None and getattr(contact, "deleted_at", None):
+        contact = None
+    parts = [getattr(customer, "name", "") or ""]
+    if contact is not None:
+        parts += [contact.name or "", contact.mobile or contact.phone or ""]
+    return "、".join(part for part in parts if part)
+
+
+async def submission_prefill(session: AsyncSession, inquiry) -> dict[str, str]:
+    """提交 OA 前的预填值：CRM 库里已有的字段不用再手打一遍（仍可在表单里改）。"""
+    if inquiry is None:
+        return {}
+    values = {
+        "customer_contact": await customer_contact_text(session, inquiry),
+        "product_reference": getattr(inquiry, "inquiry_no", None) or getattr(inquiry, "title", "") or "",
+        "special_note": getattr(inquiry, "remark", None) or "",
+    }
+    return {key: value for key, value in values.items() if value}
+
+
 async def _attachments(session: AsyncSession, user, inquiry: CustomInquiry, file_ids: list[int], *, images: bool = False, max_count: int = 30, uploads=None) -> list[dict]:
     if not file_ids and not images:
         return []
@@ -165,7 +240,7 @@ async def _attachments(session: AsyncSession, user, inquiry: CustomInquiry, file
         if not path.is_file() or path.stat().st_size != record.size:
             raise AppError(ErrorCode.PARAM_ERROR, f"附件「{record.file_name}」缺失或不完整，请重新上传", 422)
         uploaded.append(await upload(
-            user.dingtalk_userid, record.file_name, path if uploads is not None else path.read_bytes(), record.mime_type
+            client.applicant_identity(user), record.file_name, path if uploads is not None else path.read_bytes(), record.mime_type
         ))
     return uploaded
 
@@ -183,8 +258,9 @@ async def start_inquiry_approval(session: AsyncSession, current_user, inquiry: C
     if not client.configured():
         raise AppError(ErrorCode.PARAM_ERROR, "还没配置自研 OA 对接，请联系管理员", 422)
     user = await session.get(User, current_user.id)
-    if user is None or not user.dingtalk_userid:
-        raise AppError(ErrorCode.PARAM_ERROR, "请先绑定本人钉钉账号，OA 才能按你名义发起", 422)
+    applicant = client.applicant_identity(user)
+    if not applicant:
+        raise AppError(ErrorCode.PARAM_ERROR, "请联系管理员为当前账号绑定同序人员后再提交", 422)
     template_id = _template_id()
     native = uses_native_inquiry()
     approver = "" if native else settings.oa_inquiry_approver_dingtalk_id.strip()
@@ -220,7 +296,7 @@ async def start_inquiry_approval(session: AsyncSession, current_user, inquiry: C
         row = OaInstance(
             customer_id=inquiry.customer_id, inquiry_id=inquiry.id, inquiry_version=int(inquiry.version or 1),
             oa_type=OA_TYPE, provider=PROVIDER, idempotency_key=external_ref, submit_round=round_no,
-            process_code=template_id, originator_user_id=user.dingtalk_userid,
+            process_code=template_id, originator_user_id=str(applicant),
             status="submitting", attempt_count=1, created_by=current_user.id,
             created_at=datetime.now(UTC), last_attempt_at=datetime.now(UTC),
         )
@@ -229,7 +305,6 @@ async def start_inquiry_approval(session: AsyncSession, current_user, inquiry: C
     uploads = ApprovalUploads()
     extra = {str(k): str(v) for k, v in (getattr(payload, "extra_fields", None) or {}).items()}
     customer = await session.get(Customer, inquiry.customer_id) if inquiry.customer_id else None
-    customer_name = customer.name if customer is not None else ""
     reply = (extra.get("reply_date") or "").strip()
     fields = {
         "title": inquiry.title,
@@ -242,7 +317,9 @@ async def start_inquiry_approval(session: AsyncSession, current_user, inquiry: C
         "quote_scope": extra.get("quote_scope", ""),
         "reply_date": reply[:10] if reply else "",
         "provide_sample": extra.get("provide_sample", ""),
-        "customer_contact": extra.get("customer_contact") or customer_name,
+        "customer_contact": extra.get("customer_contact") or await customer_contact_text(
+            session, inquiry, customer=customer
+        ),
         "product_model": extra.get("product_model", ""),
         "delivery_date": extra.get("delivery_date", ""),
         "special_note": extra.get("special_note", ""),
@@ -256,6 +333,8 @@ async def start_inquiry_approval(session: AsyncSession, current_user, inquiry: C
     quoter = getattr(payload, "quote_owner_user_id", None)
     if native:
         from uuid import UUID
+        if quoter is None:
+            quoter = saved_quote_owner(inquiry)
         try:
             quoter = str(UUID(quoter or ""))
         except ValueError as exc:
@@ -264,7 +343,7 @@ async def start_inquiry_approval(session: AsyncSession, current_user, inquiry: C
     missing = [label for key, label in required if not str(fields.get(key) or "").strip()]
     if missing:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "请补齐：" + "、".join(missing), 422)
-    identity = await native_submission_identity(user.dingtalk_userid, quoter) if native else None
+    identity = await native_submission_identity(applicant, quoter) if native else None
     selected_files = list(getattr(payload, "attachment_file_ids", []) or [])
     image_ids = [str(item["id"]) for item in await _attachments(
         session, user, inquiry, [], images=True, max_count=min(9 if native else 30, 30-len(set(selected_files))), uploads=uploads)]
@@ -277,7 +356,7 @@ async def start_inquiry_approval(session: AsyncSession, current_user, inquiry: C
         fields["attachments"] = file_ids
     payload_data = {
         "external_ref": external_ref,
-        "applicant_dingtalk_user_id": user.dingtalk_userid,
+        **client.applicant_fields(applicant),
         ("template_id" if settings.oa_inquiry_template_id.strip() else "template_code"): template_id,
         "title": inquiry.title,
         "reason": f"CRM 定制询价 {inquiry.inquiry_no or inquiry.id}",
@@ -285,7 +364,7 @@ async def start_inquiry_approval(session: AsyncSession, current_user, inquiry: C
         "fields": fields,
         "attachment_ids": attachment_ids,
     }
-    if approver:
+    if approver and isinstance(applicant, str):
         payload_data["approver_dingtalk_user_id"] = approver
     inquiry, row, summary = await send_prepared_approval(session, inquiry, row, payload_data, uploads)
 

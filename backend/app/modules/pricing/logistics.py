@@ -56,6 +56,8 @@ def serialize_quote(quote: LogisticsQuote) -> dict:
         "opportunity_id": quote.opportunity_id,
         "sku_id": quote.sku_id,
         "quantity": _f(quote.quantity),
+        "quantity_exact": format(quote.quantity, "f") if quote.quantity is not None else None,
+        "quantity_unit": (quote.raw_data or {}).get("quantity_unit"),
         "origin": quote.origin,
         "destination": quote.destination,
         "shipping_method": quote.shipping_method,
@@ -64,6 +66,7 @@ def serialize_quote(quote: LogisticsQuote) -> dict:
         "volume": _f(quote.volume),
         "currency": quote.currency,
         "amount": _f(quote.amount),
+        "amount_exact": format(quote.amount, "f"),
         "unit_price": _f(quote.unit_price),
         "eta_days": quote.eta_days,
         "provider": quote.provider,
@@ -394,6 +397,7 @@ def quote_rate(
         "origin_region": rate.origin_region,
         "destination_region": rate.destination_region,
         "amount": float(amount),
+        "amount_exact": format(amount, "f"),
         "currency": "CNY",
         "by_weight_amount": float(by_weight),
         "by_volume_amount": float(by_volume),
@@ -418,6 +422,7 @@ async def prepare(
     shipping_method: str | None = None,
     volume_override: Decimal | None = None,
     weight_override: Decimal | None = None,
+    enforce_quantity_unit: bool = True,
 ) -> dict:
     """试算前的公共准备：校验 SKU、算计费重、匹配费率、出方案列表。
 
@@ -434,6 +439,16 @@ async def prepare(
     # 试算与多方案对比都走这里，所以一处就够。
     if quantity <= 0:
         raise AppError(ErrorCode.PARAM_ERROR, "数量必须大于 0", 422)
+    quantity_unit = (sku.unit or "").strip() or None
+    if enforce_quantity_unit:
+        if quantity > Decimal("9999999999999.999"):
+            raise AppError(ErrorCode.PARAM_ERROR, "数量过大，整数部分最多填写 13 位", 422)
+        if quantity_unit == "件" and quantity != quantity.to_integral_value():
+            raise AppError(ErrorCode.PARAM_ERROR, "按件计量的商品，数量必须填写正整数", 422)
+        stored_quantity = quantity.quantize(Decimal("0.001"))
+        if quantity != stored_quantity:
+            raise AppError(ErrorCode.PARAM_ERROR, "数量最多保留三位小数", 422)
+        quantity = stored_quantity
     if weight_override is not None and weight_override <= 0:
         raise AppError(ErrorCode.PARAM_ERROR, "单件重量必须大于 0", 422)
     if volume_override is not None and volume_override <= 0:
@@ -461,7 +476,7 @@ async def prepare(
         )
         for rate in rates
     ]
-    options.sort(key=lambda option: option["amount"])
+    options.sort(key=lambda option: Decimal(option["amount_exact"]))
 
     return {
         "sku": {
@@ -469,10 +484,11 @@ async def prepare(
             "sku_code": sku.sku_code,
             "name": sku.name,
             "specification": sku.specification,
-            "unit": sku.unit,
+            "unit": quantity_unit,
             "package_type": sku.package_type,
         },
         "quantity": _f(quantity),
+        "quantity_exact": format(quantity, "f"),
         "origin": origin,
         "destination": destination,
         "shipping_method": shipping_method,
@@ -561,7 +577,7 @@ async def save_quote(
         customer_id=customer_id,
         opportunity_id=opportunity_id,
         sku_id=prepared["sku"]["id"],
-        quantity=Decimal(str(prepared["quantity"] or 0)),
+        quantity=Decimal(prepared["quantity_exact"]),
         origin=prepared["origin"],
         destination=prepared["destination"],
         shipping_method=option["shipping_method"],
@@ -569,7 +585,7 @@ async def save_quote(
         actual_weight=Decimal(str(measures["actual_weight"])),
         volume=Decimal(str(measures["volume"])),
         currency=option["currency"],
-        amount=Decimal(str(option["amount"])),
+        amount=Decimal(option["amount_exact"]),
         unit_price=(
             Decimal(str(option["unit_price_per_kg"]))
             if option.get("unit_price_per_kg") is not None
@@ -578,6 +594,7 @@ async def save_quote(
         eta_days=option.get("eta_days"),
         provider=option.get("provider"),
         raw_data={
+            "quantity_unit": prepared["sku"]["unit"],
             "option": option,
             "measures": {k: _f(v) if isinstance(v, Decimal) else v for k, v in measures.items()},
             "warnings": prepared["warnings"],

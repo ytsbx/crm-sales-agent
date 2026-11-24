@@ -76,6 +76,7 @@ export const AUDIT_TYPE_LABEL: Record<string, string> = {
   opportunity: '商机',
   opportunity_stage: '商机阶段',
   order: '订单',
+  order_draft: '订单草稿',
   order_milestone: '跟单节点',
   payment: '回款',
   price_permission: '价格权限',
@@ -166,7 +167,7 @@ export const AUDIT_FIELD_LABEL_BY_TYPE: Record<string, Record<string, string>> =
   sku: { name: 'SKU 名称', status: 'SKU 状态' },
   product_insight: { title: '洞察标题', status: '洞察状态', source: '洞察来源' },
   case: { title: '案例标题', status: '案例状态' },
-  contract: { title: '合同名称', status: '合同状态' },
+  contract: { title: '合同名称', status: '合同状态', reuse_reason: '回签文件复用说明' },
   biz_doc: { title: '单据标题', status: '单据状态' },
   tag: { name: '标签名称', status: '标签状态' },
   role: { name: '角色名称', status: '角色状态' },
@@ -217,7 +218,10 @@ export const AUDIT_FIELD_LABEL_BY_TYPE: Record<string, Record<string, string>> =
  */
 const FIELD_LABEL_PATCH: Record<string, string> = {
   channel: '发送渠道',
+  item_name: '品名',
+  next_action: '下一步动作',
   receiver: '收件人',
+  remark: '备注',
 }
 
 export function auditFieldLabel(

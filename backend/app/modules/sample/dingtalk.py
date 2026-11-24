@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PositiveInt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -65,11 +65,6 @@ def _is_image(filename:str,mime:str)->bool:
     return filename.lower().rsplit('.',1)[-1] in ('png','jpg','jpeg','gif','bmp','webp','tif','tiff')
 
 
-def ensure_local_review(sample):
-    if metadata(sample):
-        raise AppError(ErrorCode.STATUS_NOT_ALLOWED,'此单使用外部审批流程，请在对应审批系统处理，CRM只同步查看',409)
-
-
 def ensure_editable(sample):
     if metadata(sample).get('submitted'):
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED,'这张打样申请已经关联或提交审批，不能在CRM修改、删除或重批；请先在对应审批系统处理原单',409)
@@ -85,6 +80,10 @@ async def template(session, *, for_display=False, self_oa_only=False):
     # 自研 OA 已配置时，CRM 动态表单直接返回 OA 字段；下面 submit 走 OA 分支。
     if self_oa_available():
         return {'configured': True, 'enabled': True, 'provider': 'self_oa', 'fields': oa_sample.oa_template_fields()}, None
+    if settings.dingtalk_push_off:
+        return {'configured': False, 'enabled': False, 'provider': 'self_oa',
+                'fields': oa_sample.oa_template_fields(),
+                'template_error': '尚未配置同序 OA 打样审批，可先保存草稿'}, None
     if self_oa_only:
         return {'configured': False, 'enabled': False, 'fields': []}, None
     from app.modules.settings.service import get_setting
@@ -95,24 +94,50 @@ async def template(session, *, for_display=False, self_oa_only=False):
     try:
         client = get_client()
         schema = await (client.get_display_process_schema(code) if for_display else client.get_process_schema(code))
+        fields = _legacy_template_fields(schema)
     except (DingTalkError,httpx.HTTPError) as error:
         raise AppError(ErrorCode.EXTERNAL_ERROR,'无法读取钉钉打样模板，可稍后重试，未发出审批',502) from error
-    content = schema.get('schemaContent') or {}
-    if isinstance(content,str):content=json.loads(content)
-    fields=[]
-    for item in content.get('items',[]):
-        props=item.get('props') or {};label=props.get('label');kind=item.get('componentName')
-        if label not in INPUT_LABELS | SYSTEM_LABELS:continue
-        options=[]
-        for option in props.get('options') or []:
-            if isinstance(option,str) and option.startswith('{'):option=json.loads(option)
-            value=option.get('value') if isinstance(option,dict) else option
-            if value is not None:options.append(str(value))
-        fields.append({'id':props['id'],'label':label,'type':kind,'required':bool(props.get('required')),
-                       'options':options,'format':props.get('format'),'system':label in SYSTEM_LABELS})
+    except ValueError as error:
+        raise AppError(ErrorCode.EXTERNAL_ERROR, '钉钉打样模板格式异常，请联系管理员核对模板，未发出审批', 502) from error
     if not INPUT_LABELS.issubset({f['label'] for f in fields}):
         raise AppError(ErrorCode.PARAM_ERROR,'钉钉打样模板已变化，请管理员核对字段',422)
     return {'configured':True,'enabled':True,'fields':fields},code
+
+
+def _legacy_template_fields(schema: dict) -> list[dict]:
+    if not isinstance(schema, dict):
+        raise ValueError('Invalid template response')
+    content = schema.get('schemaContent') or {}
+    if isinstance(content, str):
+        content = json.loads(content)
+    items = content.get('items', []) if isinstance(content, dict) else None
+    if not isinstance(items, list):
+        raise ValueError('Invalid template items')
+    fields = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError('Invalid template item')
+        props = item.get('props') or {}
+        if not isinstance(props, dict):
+            raise ValueError('Invalid template field properties')
+        label = props.get('label')
+        if not isinstance(label, str) or label not in INPUT_LABELS | SYSTEM_LABELS:
+            continue
+        field_id = props.get('id')
+        raw_options = props.get('options') or []
+        if not isinstance(field_id, str) or not field_id.strip() or not isinstance(raw_options, list):
+            raise ValueError('Invalid template field ID or options')
+        options = []
+        for option in raw_options:
+            if isinstance(option, str) and option.startswith('{'):
+                option = json.loads(option)
+            value = option.get('value') if isinstance(option, dict) else option
+            if value is not None:
+                options.append(str(value))
+        fields.append({'id': field_id, 'label': label, 'type': item.get('componentName'),
+                       'required': bool(props.get('required')), 'options': options,
+                       'format': props.get('format'), 'system': label in SYSTEM_LABELS})
+    return fields
 
 
 async def inquiry_candidates(session,user,sample):
@@ -129,7 +154,9 @@ async def inquiry_candidates(session,user,sample):
         if inquiry.customer_id not in (None,sample.customer_id):continue
         rows=(await session.scalars(select(OaInstance).where(OaInstance.inquiry_id==inquiry_id,
                  OaInstance.inquiry_version==inquiry.version,OaInstance.oa_type=='inquiry',
-                 OaInstance.instance_id.is_not(None),OaInstance.status.in_(['pending','approved','rejected','cancelled'])).order_by(OaInstance.id.desc()))).all()
+                 OaInstance.instance_id.is_not(None),
+                 OaInstance.provider == 'self_oa' if settings.dingtalk_push_off else True,
+                 OaInstance.status.in_(['pending','approved','rejected','cancelled'])).order_by(OaInstance.id.desc()))).all()
         for row in rows:result.append({'id':row.id,'label':f'{inquiry.title} · 第{row.submit_round}轮 · {oa.serialize(row)["status_label"]}'})
     return result
 
@@ -177,6 +204,8 @@ class Draft(BaseModel):
     mode: Literal['standalone','inquiry']
     source_oa_id: int | None = Field(default=None,gt=0)
     fields: dict[str,str] = Field(default_factory=dict,max_length=30)
+    #: 同序「样品明细明细表」是上传附件，不再由 CRM 样品明细自动生成 Excel。
+    sample_detail_file_ids: list[PositiveInt] = Field(default_factory=list, max_length=10)
     resubmit: bool = False
 
 
@@ -192,7 +221,18 @@ async def detail(sample_id:int,user:CurrentUser=Depends(require_permission('samp
             options = await oa_sample.native_form(await session.get(User, user.id))
         else:
             options,_=await template(session,for_display=True,self_oa_only=self_oa_only)
-    except AppError as error:options={'configured':False,'enabled':False,'fields':[],'template_error':error.message}
+    except AppError as error:
+        # 同序读不到也不能把整个表单清空：按同序打样的字段继续展示，
+        # 用户可以先把资料存草稿，等 OA 恢复后再提交。
+        from app.modules.user.model import User
+        from app.modules.oa.inquiry import _department_name
+        account = await session.get(User, user.id)
+        options={'configured':False,'enabled':False,'native_form': True,
+                 'fields': oa_sample.oa_template_fields() if self_oa_available() else [],
+                 'prefill': {'applicant_name': getattr(account, 'name', '') or '',
+                             'department': await _department_name(session, account)
+                             if getattr(account, 'department_id', None) else ''},
+                 'template_error':error.message}
     records=[]
     if meta.get('source_oa_id') and meta.get('submitted'):
         # 关联记录必须仍通过原询价的数据范围，不能用 sample:view 绕过 quote:view。
@@ -209,8 +249,11 @@ async def detail(sample_id:int,user:CurrentUser=Depends(require_permission('samp
     # 用户会以为没存上、再填一遍（主人这一轮报的就是这类"看不见"）。
     _PREFILL = ('product_name','material_spec','product_size','printing','accessories',
                 'packaging','craft_requirement','sample_purpose','urgency','sample_situation','sample_fee',
-                'deliver_date','sample_maker')
-    _prefill = {'_' + key: str(getattr(sample, key) or '') for key in _PREFILL}
+                'deliver_date','sample_maker','estimated_hours')
+    _prefill = {}
+    for key in _PREFILL:
+        value = getattr(sample, key)
+        _prefill['_' + key] = str(value) if value is not None else ''
     # 「要求完成日期」是**模板自带的控件**（id 由模板给），它的值落在
     # `sample.target_completion_date` 这一列上（`save()` 里落的）。
     # 不把列值按控件 id 填回去，重开弹窗那一格就是空的 —— 而 Excel 的
@@ -218,15 +261,23 @@ async def detail(sample_id:int,user:CurrentUser=Depends(require_permission('samp
     _due_field = next((f for f in (options.get('fields') or []) if f.get('label') == '要求完成日期'), None)
     if _due_field is not None and sample.target_completion_date:
         _prefill[_due_field['id']] = sample.target_completion_date.isoformat()
-    if options.get('native_form'):
+    draft_fields = {**_prefill, **(meta.get('fields') or {})}
+    if options.get('provider') == 'self_oa':
+        # 历史钉钉单存的是「外协厂」，同序模板的选项是「外协厂打样」。
+        # 直接回填旧值会让下拉显示一个模板里不存在的选项，提交时被同序拒绝；
+        # 这里按模板选项把旧值带成同序写法（不改库，用户保存样品时再落新值）。
+        _maker = next((f for f in (options.get('fields') or []) if f.get('id') == 'maker_unit'), None)
         for field_id, value in {
             'sample_type': sample.sample_type, 'product_category': sample.product_category,
             'maker_unit': sample.maker_unit, 'sample_note': sample.sample_purpose or sample.remark,
-            'score': sample.estimated_hours * 10 if sample.estimated_hours is not None else None,
+            'score': sample.estimated_hours * 10 if sample.estimated_hours is not None else sample.craft_points,
         }.items():
             if value is not None:
-                _prefill[field_id] = str(value)
-    elif options.get('provider') == 'self_oa':
+                draft_fields.setdefault(field_id, str(value))
+        if (draft_fields.get('maker_unit') == '外协厂' and not meta.get('submitted')
+                and '外协厂打样' in ((_maker or {}).get('options') or [])):
+            draft_fields['maker_unit'] = '外协厂打样'
+    if options.get('provider') == 'self_oa' and not options.get('native_form'):
         from app.modules.user.model import User
         from app.modules.oa.inquiry import _department_name
         account = await session.get(User, user.id)
@@ -235,7 +286,16 @@ async def detail(sample_id:int,user:CurrentUser=Depends(require_permission('samp
             'department': await _department_name(session, account) if getattr(account, 'department_id', None) else '',
         }
     candidates=[] if self_oa_only else await inquiry_candidates(session,user,sample)
-    return ok({**options,'item_count':item_count,'draft':{**meta,'fields':{**_prefill,**(meta.get('fields') or {})}},'candidates':candidates,'records':records})
+    from app.modules.file.model import BusinessFile, FileRecord
+    detail_files = (await session.execute(
+        select(FileRecord, BusinessFile.category).join(
+            BusinessFile, BusinessFile.file_id == FileRecord.id
+        ).where(BusinessFile.business_type == 'sample', BusinessFile.business_id == sample.id,
+                BusinessFile.category == 'sample_details').order_by(FileRecord.id)
+    )).all()
+    return ok({**options,'item_count':item_count,'draft':{**meta,'fields':draft_fields},
+               'detail_files':[{'id':row[0].id,'file_name':row[0].file_name} for row in detail_files],
+               'candidates':candidates,'records':records})
 
 
 async def save(session,user,sample,payload,options=None):
@@ -248,10 +308,10 @@ async def save(session,user,sample,payload,options=None):
             raise AppError(ErrorCode.STATUS_NOT_ALLOWED,'只有已驳回或已撤回的独立打样审批可以修改后重提',409)
     else:ensure_editable(sample)
     if sample.status not in ('pending','rejected') or sample.made_at:
-        raise AppError(ErrorCode.STATUS_NOT_ALLOWED,'只有尚未进入制作的待审或驳回申请能配置钉钉流程',409)
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED,'只有尚未进入制作的待审或驳回申请能配置审批流程',409)
     if payload.mode=='inquiry' and payload.source_oa_id is not None:
         if payload.source_oa_id not in {r['id'] for r in await inquiry_candidates(session,user,sample)}:
-            raise AppError(ErrorCode.PARAM_ERROR,'请选择这张样品真实来源询价的钉钉审批，不能关联其他客户或其他来源',422)
+            raise AppError(ErrorCode.PARAM_ERROR,'请选择这张样品真实来源询价的同序 OA 审批，不能关联其他客户或其他来源',422)
     draft=payload.model_dump()
     if self_oa_only:
         draft['requires_self_oa']=True
@@ -284,6 +344,19 @@ async def save(session,user,sample,payload,options=None):
         # 本意就是"保存草稿不碰模板/不连库"）。我第一版在那里取了模板，四个测试立刻红。
         # 所以模板由**调用方**传进来 —— 两个路由本来就已经取过它了。
         _fields = (options or {}).get('fields') or []
+        # 同序原生表单的「打样类型 / 产品大类 / 制作单位 / 积分」也要落列：
+        # 下载/导出《打样申请单》Excel 读的是这些列，只存在草稿 metadata 里的话，
+        # 保存草稿后立刻下载会看到打样类型、打样部门空着。
+        if any(f.get('id') == 'sample_type' for f in _fields):
+            for _name in ('sample_type', 'product_category', 'maker_unit'):
+                if _name in payload.fields:
+                    setattr(sample, _name, payload.fields.get(_name) or None)
+            _score = payload.fields.get('score')
+            if _score not in (None, ''):
+                try:
+                    sample.estimated_hours = Decimal(str(_score)) / 10
+                except InvalidOperation as error:
+                    raise AppError(ErrorCode.PARAM_ERROR, '本次打样积分格式无效', 422) from error
         _due_field = next((f for f in _fields if f.get('label') == '要求完成日期'), None)
         if _due_field is not None:
             _due = payload.fields.get(_due_field['id'])
@@ -335,8 +408,8 @@ async def submit(sample_id:int,payload:Draft,request:Request,user:CurrentUser=De
     sample=await service.get_visible_or_404(session,user,sample_id,for_update=True,allow_external_flow=True)
     meta=metadata(sample)
     self_oa_enabled = self_oa_available()
-    if meta.get('requires_self_oa') and not self_oa_enabled:
-        raise AppError(ErrorCode.STATUS_NOT_ALLOWED,'同序 OA 打样模板未配置，此修订版可保存草稿，暂不能提交审批',409)
+    if (meta.get('requires_self_oa') or (settings.dingtalk_push_off and payload.mode == 'standalone')) and not self_oa_enabled:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED,'尚未配置同序 OA 打样审批，暂不能提交审批，可先保存草稿',409)
     previous=await oa.get_by_business_key(session,inquiry_id=sample.id,inquiry_version=int(sample.version or 1),oa_type='sample') if payload.mode=='standalone' or self_oa_enabled else None
     if previous is not None and getattr(previous, 'provider', None) == 'self_oa' and previous.status in ('submitting','needs_review'):
         from app.modules.oa.service import review_stuck_submission
@@ -389,9 +462,12 @@ async def submit(sample_id:int,payload:Draft,request:Request,user:CurrentUser=De
         await write_audit(session,operator_id=user.id,action='update',business_type='sample',business_id=sample.id,
                          after={'linked_inquiry_oa':payload.source_oa_id},ip=client_ip(request))
         await session.commit()
-        return ok(None,'已关联原询价审批；打样步骤请在原钉钉单继续处理，本次没有新发审批')
+        return ok(None,'已关联原询价审批；打样步骤请在原同序 OA 单继续处理，本次没有新发审批')
     if self_oa_enabled:
-        row,message=await oa_sample.start_sample_approval(session,user,sample,payload.fields)
+        row,message=await oa_sample.start_sample_approval(
+            session,user,sample,payload.fields,
+            sample_detail_file_ids=payload.sample_detail_file_ids,
+        )
         await write_audit(session,operator_id=user.id,action='update',business_type='sample',business_id=sample.id,
                          after={'oa_provider':'self_oa','oa_status':row.status,'instance_id':row.instance_id},ip=client_ip(request))
         await session.commit()

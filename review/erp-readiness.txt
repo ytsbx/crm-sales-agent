@@ -1,0 +1,43 @@
+StubAdapter
+{
+  "configured": false,
+  "missing": [
+    "ERP_BASE_URL",
+    "ERP_APP_KEY",
+    "ERP_APP_SECRET"
+  ],
+  "capabilities": {
+    "read": {
+      "key": "read",
+      "label": "只读查询（订单/发货状态）",
+      "verified": false,
+      "enabled": false,
+      "evidence": null,
+      "detail": "尚未按真实接口合同验收"
+    },
+    "write": {
+      "key": "write",
+      "label": "写入（建单/推单）",
+      "verified": false,
+      "enabled": false,
+      "evidence": null,
+      "detail": "尚未按真实接口合同验收"
+    },
+    "collect": {
+      "key": "collect",
+      "label": "只读采集（订单/发货/售后分页增量）",
+      "verified": false,
+      "enabled": false,
+      "evidence": null,
+      "detail": "真实字段名、分页参数与店铺授权尚未按官方资料核实"
+    }
+  },
+  "collection": {
+    "object_types": [
+      "order",
+      "shipment",
+      "aftersale"
+    ],
+    "verified": false
+  }
+}

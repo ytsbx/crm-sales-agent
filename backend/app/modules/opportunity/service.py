@@ -200,6 +200,7 @@ def serialize_opportunity(
         "stage_name": stage.name if stage else None,
         "stage_code": stage.code if stage else None,
         "expected_amount": _number(opportunity.expected_amount),
+        "expected_amount_exact": str(opportunity.expected_amount) if opportunity.expected_amount is not None else None,
         "currency": opportunity.currency,
         "expected_close_date": opportunity.expected_close_date,
         "owner_id": opportunity.owner_id,
@@ -250,10 +251,11 @@ def build_opportunity_stmt(
 ) -> Select:
     stmt = select(Opportunity).where(Opportunity.deleted_at.is_(None))
     if keyword:
-        like = f"%{keyword.strip()}%"
-        title_matches = Opportunity.title.ilike(like)
+        _kw = keyword.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = f"%{_kw}%"
+        title_matches = Opportunity.title.ilike(like, escape="\\")
         if search_customer_name:
-            customer_matches = select(Customer.id).where(Customer.name.ilike(like))
+            customer_matches = select(Customer.id).where(Customer.name.ilike(like, escape="\\"))
             stmt = stmt.where(or_(title_matches, Opportunity.customer_id.in_(customer_matches)))
         else:
             stmt = stmt.where(title_matches)

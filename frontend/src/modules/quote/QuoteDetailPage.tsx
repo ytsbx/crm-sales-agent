@@ -172,11 +172,15 @@ export default function QuoteDetailPage() {
   const { can } = usePermissions()
   const canManage = can('quote:manage')
   const [paymentTermsDraft, setPaymentTermsDraft] = useState<{ versionId: number; text: string } | null>(null)
+  const [flashPaymentTerms, setFlashPaymentTerms] = useState(false)
   const savePaymentTerms = useMutation({
     mutationFn: ({ versionId, text }: { versionId: number; text: string }) =>
       updateQuoteVersion(versionId, { payment_terms: text }),
     onSuccess: (_, { versionId }) => {
       setPaymentTermsDraft(null)
+      // 改完这一行会重绘成新文案，亮一下让"改的是这里"有落点
+      setFlashPaymentTerms(true)
+      window.setTimeout(() => setFlashPaymentTerms(false), 1500)
       void queryClient.invalidateQueries({ queryKey: ['quote-version', versionId] })
       void queryClient.invalidateQueries({ queryKey: ['quote-versions', quoteId] })
       Toast.success('付款条件已保存')
@@ -1124,7 +1128,7 @@ export default function QuoteDetailPage() {
             </span>
             <span>负责人：{quote.owner_name ?? '-'}</span>
             <span>有效期至：{quote.valid_until ?? '-'}</span>
-            <span className="quote-payment-terms">
+            <span className={`quote-payment-terms${flashPaymentTerms ? ' flash-updated' : ''}`}>
               <span>付款条件：{version.payment_terms || '未填写'}</span>
               {canManage && editable && (
                 <button type="button" className="quote-payment-terms-edit" aria-label="修改付款条件"
@@ -2524,7 +2528,7 @@ export default function QuoteDetailPage() {
                     </span>
                   )}
                 </div>
-                {row.latest && canManage && (
+                {row.latest?.provider === 'self_oa' && canManage && (
                   <span className="oa-inquiry-action">
                     {<AutoOaSync
                       row={row.latest}

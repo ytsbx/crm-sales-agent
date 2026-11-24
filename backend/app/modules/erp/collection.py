@@ -84,9 +84,11 @@ from app.modules.integration.vocab import (
     MATCH_CONFLICT,
     MATCH_MATCHED,
     MATCH_PENDING,
+    OBJECT_AFTERSALE,
     OBJECT_AFTERSALE_ITEM,
     OBJECT_ORDER,
     OBJECT_ORDER_ITEM,
+    OBJECT_SHIPMENT,
     OBJECT_SHIPMENT_ITEM,
     PRIMARY_OBJECT_TYPES,
     SOURCE_UNVERIFIED,
@@ -114,6 +116,7 @@ ERROR_MESSAGE_MAX = 2000
 #: 硬塞进 "order"：采集是**按店铺/时间窗**的动作，没有单个订单归属，
 #: 塞成订单日志会让"按订单查同步记录"多出一堆看不懂的行。
 BUSINESS_TYPE_COLLECT = "external_collect"
+BUSINESS_TYPE_COLLECT_REJECTED = "external_collect_rejected"
 
 #: 采集日志的状态（与 `erp/service.py` 同一套取值，前端筛选口径一致）。
 LOG_STATUS_SUCCESS = "success"
@@ -907,7 +910,10 @@ async def _ensure_mapping(
     mapping.external_code = record.external_code or mapping.external_code
     # 明细行优先用 `order_key`（它才是"这行属于哪张订单"），退回父单键：
     # 拆单时父单是订单、合单时父单是发货单而订单只能从行上读出来。
-    mapping.parent_key = record.order_key or record.parent_key or mapping.parent_key
+    if object_type == OBJECT_ORDER:
+        mapping.parent_key = None
+    else:
+        mapping.parent_key = record.order_key or record.parent_key or mapping.parent_key
     if mapping.match_status != MATCH_MATCHED:
         internal_id, basis, note, status = await resolve_mapping(session, mapping)
         mapping.internal_id = internal_id
@@ -941,7 +947,7 @@ async def _write_collect_log(
     """
     counters = {
         key: (summary or {}).get(key)
-        for key in ("batch_id", "pages", "inserted", "updated", "duplicates", "pending_mappings")
+        for key in ("batch_id", "pages", "inserted", "updated", "duplicates", "pending_mappings", "rejected_foreign_currency")
     }
     session.add(
         IntegrationLog(
@@ -966,6 +972,40 @@ async def _write_collect_log(
         )
     )
     await session.flush()
+
+
+def _record_currency_rejection(
+    session: AsyncSession, *, raw: dict, object_type: str, currency: str,
+    summary: dict, position: int, provider: str, page_no: int, observed_at: datetime,
+) -> None:
+    occurred_at = _as_datetime(raw.get("occurred_at"))
+    external_id = _text(raw.get("external_id"))
+    external_code = _text(raw.get("external_code"))
+    identifier = external_id or external_code or _text(raw.get("order_key")) or _text(raw.get("parent_key"))
+    session.add(IntegrationLog(
+        integration_type="erp",
+        direction="inbound",
+        provider=provider,
+        business_type=BUSINESS_TYPE_COLLECT_REJECTED,
+        status="skipped",
+        request_data={
+            "system_type": summary["system_type"], "shop_id": summary["shop_id"],
+            "batch_id": summary["batch_id"], "page_no": page_no, "position": position,
+        },
+        response_data={
+            "object_type": object_type,
+            "external_id": external_id,
+            "external_code": external_code,
+            "processing_status": "foreign_currency_rejected",
+            "order_key": _text(raw.get("order_key")) or _text(raw.get("parent_key")),
+            "occurred_at": occurred_at.isoformat() if occurred_at else None,
+            "observed_at": observed_at.isoformat(),
+            "currency": currency,
+        },
+        error_message=_clip(
+            f"ERP 单据 {identifier or '未提供单号'} 的币种为 {currency}，非人民币，已拒绝采集。"
+        ),
+    ))
 
 
 async def collect_once(
@@ -1021,6 +1061,7 @@ async def collect_once(
         "inserted": 0,
         "updated": 0,
         "duplicates": 0,
+        "rejected_foreign_currency": 0,
         "pending_mappings": 0,
         "operator_id": operator_id,
         "source": await get_source_state(
@@ -1050,6 +1091,7 @@ async def collect_once(
                 session, cursor_id, lease_token, lease_seconds=lease_seconds
             )
             items = list(getattr(page, "items", None) or [])
+            rejected_on_page = 0
             for position, raw in enumerate(items, start=1):
                 # 一页里可以顺带带回与它相关的事实（订单页带明细行、明细行带 SKU/客户身份）。
                 # 为什么允许：拆单/合单的归属信息就在明细行上，强制分两次请求会让
@@ -1066,6 +1108,16 @@ async def collect_once(
                         f"{item_object_type}（已定义：{'、'.join(MAPPED_OBJECT_TYPES)}）",
                         422,
                     )
+                if isinstance(raw, dict):
+                    currency = (_text(raw.get("currency")) or CNY).upper()
+                    if currency != CNY:
+                        _record_currency_rejection(
+                            session, raw=raw, object_type=item_object_type, currency=currency,
+                            summary=summary, position=position, provider=getattr(adapter, "label", system_type),
+                            page_no=start_page_no + summary["pages"], observed_at=moment,
+                        )
+                        rejected_on_page += 1
+                        continue
                 item = normalize_item(
                     raw, object_type=item_object_type, position=position
                 )
@@ -1099,15 +1151,16 @@ async def collect_once(
             if water:
                 cursor.watermark = water
             cursor.page_no = start_page_no + summary["pages"]
-            cursor.records_collected = (cursor.records_collected or 0) + len(items)
+            cursor.records_collected = (cursor.records_collected or 0) + len(items) - rejected_on_page
             if next_token:
                 cursor.page_token = next_token
                 cursor_token = cursor.page_token
-                await session.commit()
-                continue
-            cursor.page_token = None
+            else:
+                cursor.page_token = None
             await session.commit()
-            break
+            summary["rejected_foreign_currency"] += rejected_on_page
+            if not next_token:
+                break
 
         cursor = await _lock_owned_cursor(
             session, cursor_id, lease_token, lease_seconds=lease_seconds
@@ -1134,6 +1187,8 @@ async def collect_once(
         summary["message"] = (
             f"采集完成：{summary['pages']} 页，新增 {summary['inserted']} 条，"
             f"更新 {summary['updated']} 条，重复（内容未变）{summary['duplicates']} 条"
+            + (f"；拒收 {summary['rejected_foreign_currency']} 条非人民币记录，详情见 ERP 同步日志"
+               if summary["rejected_foreign_currency"] else "")
             + ("；达到本轮页数上限，断点已保留，可继续采集" if summary["reached_page_limit"] else "")
         )
         return summary
@@ -1453,7 +1508,8 @@ async def replay_pending_mappings(
     system_type: str | None = None,
     shop_id: str | None = None,
     object_type: str | None = None,
-    limit: int = 500,
+    parent_order_key: str | None = None,
+    limit: int | None = 500,
     now: datetime | None = None,
 ) -> dict:
     """重放待匹配行：本地对象补齐后，用**已有**的外部事实重新匹配，不必重拉。
@@ -1465,10 +1521,21 @@ async def replay_pending_mappings(
     stmt = select(ExternalObjectMapping).where(
         ExternalObjectMapping.match_status.in_((MATCH_PENDING, MATCH_CONFLICT))
     )
-    if system_type:
-        stmt = stmt.where(ExternalObjectMapping.system_type == system_type)
-    if shop_id:
-        stmt = stmt.where(ExternalObjectMapping.shop_id == shop_id)
+    if parent_order_key is not None:
+        stmt = stmt.where(
+            ExternalObjectMapping.system_type == system_type,
+            ExternalObjectMapping.shop_id == shop_id,
+            ExternalObjectMapping.parent_key == parent_order_key,
+            ExternalObjectMapping.object_type.in_((
+                OBJECT_ORDER_ITEM, OBJECT_SHIPMENT, OBJECT_SHIPMENT_ITEM,
+                OBJECT_AFTERSALE, OBJECT_AFTERSALE_ITEM,
+            )),
+        )
+    else:
+        if system_type:
+            stmt = stmt.where(ExternalObjectMapping.system_type == system_type)
+        if shop_id:
+            stmt = stmt.where(ExternalObjectMapping.shop_id == shop_id)
     if object_type:
         stmt = stmt.where(ExternalObjectMapping.object_type == object_type)
     rows = (
@@ -1507,18 +1574,23 @@ async def assign_mapping(
     moment = now or _now()
     mapping.internal_id = int(internal_id)
     mapping.match_status = MATCH_MATCHED
+    if mapping.object_type == OBJECT_ORDER:
+        mapping.parent_key = None
     mapping.match_basis = "manual"
     mapping.match_note = note or f"人工指定本地对象编号 {internal_id}"
     mapping.matched_at = moment
     mapping.matched_by = operator_id
     await session.flush()
-    # 父单匹配上了，它的明细行通常立刻能跟上：顺手重放一次，省一轮人工操作。
-    replayed = await replay_pending_mappings(
-        session,
-        system_type=mapping.system_type,
-        shop_id=mapping.shop_id,
-        now=moment,
-    )
+    replayed = {"checked": 0, "matched": 0, "still_pending": 0}
+    if mapping.object_type == OBJECT_ORDER:
+        replayed = await replay_pending_mappings(
+            session,
+            system_type=mapping.system_type,
+            shop_id=mapping.shop_id,
+            parent_order_key=mapping.external_id,
+            limit=None,
+            now=moment,
+        )
     return {"mapping": serialize_mapping(mapping), "replayed": replayed}
 
 

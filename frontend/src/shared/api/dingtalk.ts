@@ -106,11 +106,6 @@ export function syncOaInstance(oaId: number) {
   return api.post<OaApprovalInstance>(`/oa-instances/${oaId}/sync`, {})
 }
 
-/** 手动拉一次审批状态（与定时任务同一个函数，验收时不用等）。 */
-export function syncOaApprovals() {
-  return api.post<{ checked: number; changed: number; disabled?: boolean; message?: string }>('/dingtalk/oa-sync')
-}
-
 /** 将钉钉通讯录成员与 CRM 现有账号匹配，用于钉钉扫码登录。 */
 export function syncDingTalkUsers() {
   return api.post<DingTalkSyncResult>('/dingtalk/sync-users')
@@ -120,8 +115,83 @@ export function syncDingTalkUsers() {
 export interface DingTalkUnmatched {
   name: string
   mobile: string
+  /** 同序身份；管理员可以直接用它建 CRM 账号 */
+  dingtalk_userid?: string
+  /** 同序里的部门名称 */
+  department?: string
   reason: 'no_account' | 'ambiguous_mobile' | 'ambiguous_name'
   reason_label: string
+}
+
+/** 通讯录里还没绑定 CRM 的同序人员，给「新建用户」选身份用。 */
+export interface DingTalkMember {
+  userid: string
+  name: string
+  department: string
+}
+
+export function listDingTalkMembers() {
+  return api.get<DingTalkMember[]>('/dingtalk/members')
+}
+
+export interface OaMember {
+  id: string
+  name: string
+  department: string
+  employee_number: string
+  crm_user_id: number | null
+}
+
+export function listOaMembers() {
+  return api.get<OaMember[]>('/oa/members')
+}
+
+export function setOaBinding(userId: number, oaUserId: string | null) {
+  return api.patch<{ id: number; oa_user_id: string | null }>(`/users/${userId}/oa-binding`, {
+    oa_user_id: oaUserId,
+  })
+}
+
+export function provisionOaUser(payload: {
+  oa_user_id: string
+  username: string
+  password: string
+  role_ids: number[]
+}) {
+  return api.post<{ id: number; oa_user_id: string }>('/oa/users', payload)
+}
+
+export interface DepartmentAlignResult {
+  source: 'oa' | 'dingtalk'
+  matched: number
+  changes: {
+    id: number
+    name: string
+    username: string
+    current_department: string
+    dingtalk_department: string
+  }[]
+}
+
+/** 按同序（OA 不可用时回退钉钉）目录覆盖已有账号的部门。 */
+export function alignDingTalkDepartments() {
+  return api.post<DepartmentAlignResult>('/dingtalk/align-departments')
+}
+
+/** 用同序身份建 CRM 账号：姓名/部门取通讯录，登录名/密码/角色由管理员定。 */
+export function provisionDingTalkUser(payload: {
+  dingtalk_userid: string
+  username: string
+  password: string
+  role_ids: number[]
+}) {
+  return api.post<{
+    id: number
+    name: string
+    username: string
+    department_id: number
+    department: string
+  }>('/dingtalk/provision-user', payload)
 }
 
 export interface DingTalkSyncResult {
@@ -140,6 +210,9 @@ export interface DingTalkSyncResult {
   unmatched: DingTalkUnmatched[]
   /** CRM 中尚未绑定钉钉的在用账号 */
   unbound_crm: { id: number; name: string; username: string }[]
+  /** 本次按同序部门补建的 CRM 部门数（只建真实用到的，不导入整棵树） */
+  /** 本次给空白部门补上同序部门的账号数 */
+  /** 已有部门与同序不一致、但没有自动改的账号 */
 }
 
 
@@ -153,6 +226,8 @@ export interface InquirySubmissionOptions {
    * 返回时两个键一定都在（部门可能为空串）。
    */
   prefill?: { applicant_name: string; department: string }
+  /** CRM 库里已有、可直接带入 OA 表单的值（键是下面 fields 的 id）。 */
+  prefill_fields?: Record<string, string>
   configured: boolean
   enabled: boolean
   quote_owner_required: boolean

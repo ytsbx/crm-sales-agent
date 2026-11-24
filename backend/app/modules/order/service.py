@@ -231,6 +231,7 @@ async def create_order_from_quote(
         )
 
     ensure_current_version(quote, version)
+    currency = await ensure_currency_allowed(session, version.currency, label="报价币种")
     customer = await session.get(Customer, quote.customer_id)
     if customer is None or customer.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "报价关联客户不存在或已删除，不能正式下单", 404)
@@ -302,7 +303,7 @@ async def create_order_from_quote(
         discount_amount=version.discount_amount,
         #: 口径随单冻结：历史订单为 NULL（当时是旧口径）。
         pricing_basis=version.pricing_basis,
-        currency=version.currency,
+        currency=currency,
         status="pending",
         delivery_date=effective_delivery,
         payment_terms=version.payment_terms,
@@ -374,7 +375,7 @@ async def create_order_from_quote(
                 plan_name="全款",
                 due_date=default_due,
                 amount=total_amount,
-                currency=version.currency,
+                currency=currency,
                 status="pending",
                 remark="转单自动生成，可在订单详情调整或拆分",
                 created_at=datetime.now(UTC),
@@ -400,7 +401,7 @@ async def create_order_from_quote(
                                else f"第 {index + 1} 期"),
                     due_date=(due_dates[index] if index < len(due_dates) else default_due),
                     amount=amounts[index],
-                    currency=version.currency,
+                    currency=currency,
                     status="pending",
                     remark="转单时按收款方式生成，可在订单详情调整",
                     created_at=datetime.now(UTC),
@@ -1035,22 +1036,12 @@ async def ship_shipment_batch(
     if not batch_items:
         raise AppError(ErrorCode.PARAM_ERROR, "批次没有明细，先补计划量")
 
-    overview = await order_shipments(session, order)
-    shipped_before = {
-        row["order_item_id"]: Decimal(row["shipped_exact"]) for row in overview["items"]
-    }
-    ordered = {
-        row["order_item_id"]: Decimal(row["ordered_exact"]) for row in overview["items"]
-    }
     ship_inputs = (
         {row.order_item_id: _d(row.shipped_qty) for row in payload.items}
         if payload.items is not None
         else None
     )
-    # 第九批 §9.7：报上来的明细必须**属于本批次**。
-    # 原来循环遍历的是本批自己的明细、用 `ship_inputs.get(id, 计划量)` 取值 ——
-    # 传一个不属于本批的明细号时它匹配不到，就被**静默丢弃**，本批明细反而按
-    # 计划量全发（"给错误明细登记发 1 件"，结果把正确明细的计划 10 件全发出去）。
+    # 明确提供实发明细时必须覆盖整个批次，避免漏传一行就被记成按计划发货。
     if ship_inputs is not None:
         unknown = sorted(set(ship_inputs) - {row.order_item_id for row in batch_items})
         if unknown:
@@ -1059,13 +1050,29 @@ async def ship_shipment_batch(
                 f"明细 {unknown[0]} 不属于本批次，请刷新页面后重新选择",
                 422,
             )
+        missing = next((row for row in batch_items if row.order_item_id not in ship_inputs), None)
+        if missing is not None:
+            label = missing.sku_snapshot or f"订单明细 {missing.order_item_id}"
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                f"「{label}」缺少实发数量。请填齐本批实发数量，未发货请填 0",
+                422,
+            )
+
+    overview = await order_shipments(session, order)
+    shipped_before = {
+        row["order_item_id"]: Decimal(row["shipped_exact"]) for row in overview["items"]
+    }
+    ordered = {
+        row["order_item_id"]: Decimal(row["ordered_exact"]) for row in overview["items"]
+    }
 
     # **先把整批算完并校验，再落数量**（第九批 §9.7）：原来是边算边写，
     # 中途报错时前面的明细已经改过 `shipped_qty`，留下一半的脏数量。
     resolved: dict[int, Decimal] = {}
     for row in batch_items:
         qty = (
-            ship_inputs.get(row.order_item_id, _d(row.planned_qty))
+            ship_inputs[row.order_item_id]
             if ship_inputs is not None
             else _d(row.planned_qty)
         )

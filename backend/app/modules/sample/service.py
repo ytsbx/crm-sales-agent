@@ -256,13 +256,14 @@ def build_list_stmt(
         stmt = stmt.where(SampleRequest.owner_id == owner_id)
     if keyword:
         # 样品单没有单号字段（ER §13 未定义），所以关键词只搜客户名与商机标题
-        like = f"%{keyword.strip()}%"
+        _kw = keyword.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = f"%{_kw}%"
         stmt = stmt.where(
             SampleRequest.customer_id.in_(
-                select(Customer.id).where(Customer.name.ilike(like))
+                select(Customer.id).where(Customer.name.ilike(like, escape="\\"))
             )
             | SampleRequest.opportunity_id.in_(
-                select(Opportunity.id).where(Opportunity.title.ilike(like))
+                select(Opportunity.id).where(Opportunity.title.ilike(like, escape="\\"))
             )
         )
     return stmt

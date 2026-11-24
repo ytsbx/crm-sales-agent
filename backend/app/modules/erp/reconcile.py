@@ -52,13 +52,19 @@ from app.core.timebase import business_day_start
 from app.core.errors import AppError, ErrorCode
 from app.core.trade_mode import CNY, reject_foreign_currency
 from app.modules.erp.adapter import get_adapter
-from app.modules.erp.collection import LINE_MAPPING_HASH_PREFIX, LINE_MAPPING_KEY_LIMIT, line_mapping_key
+from app.modules.erp.collection import (
+    BUSINESS_TYPE_COLLECT_REJECTED,
+    LINE_MAPPING_HASH_PREFIX,
+    LINE_MAPPING_KEY_LIMIT,
+    line_mapping_key,
+)
 from app.modules.integration.model import (
     ExternalObjectMapping,
     ExternalRecord,
     ExternalSyncWatermark,
     FinancialAdjustment,
     IntegrationDiff,
+    IntegrationLog,
     ReconciliationRun,
 )
 from app.modules.integration.vocab import (
@@ -693,6 +699,36 @@ async def _find_local_order(
     return None
 
 
+async def _foreign_order_rejections(
+    session: AsyncSession, *, system: str, shop: str, start: datetime, end: datetime,
+) -> dict[tuple[str, str], datetime]:
+    """取本期已知拒收的订单键，避免把拒收解释为外部系统没有该单。"""
+    request, response = IntegrationLog.request_data, IntegrationLog.response_data
+    stmt = select(
+        request["shop_id"].as_string(),
+        response["external_id"].as_string(),
+        response["occurred_at"].as_string(),
+        response["observed_at"].as_string(),
+    ).where(
+        IntegrationLog.integration_type == "erp",
+        IntegrationLog.business_type == BUSINESS_TYPE_COLLECT_REJECTED,
+        request["system_type"].as_string() == system,
+        response["object_type"].as_string() == OBJECT_ORDER,
+        response["external_id"].as_string().is_not(None),
+    )
+    if shop != ALL_SHOPS:
+        stmt = stmt.where(request["shop_id"].as_string() == shop)
+    latest: dict[tuple[str, str], datetime] = {}
+    for shop_id, external_id, occurred_at, observed_at in (await session.execute(stmt)).all():
+        if occurred_at and not start <= datetime.fromisoformat(occurred_at) < end:
+            continue
+        observed = datetime.fromisoformat(observed_at)
+        key = (shop_id, external_id)
+        if key not in latest or observed > latest[key]:
+            latest[key] = observed
+    return latest
+
+
 async def run_reconciliation(
     session: AsyncSession,
     *,
@@ -809,7 +845,21 @@ async def run_reconciliation(
     facts = await load_period_facts(
         session, system_type=system, shop_id=shop, start=start, end=end
     )
-    counts["external_orders"] = len(facts["orders"])
+    rejections = await _foreign_order_rejections(session, system=system, shop=shop, start=start, end=end)
+    excluded: set[tuple[str, str]] = set()
+    comparable_orders = []
+    for order in facts["orders"]:
+        key = (order.shop_id, order.external_id)
+        rejected_at = rejections.get(key)
+        seen_at = order.last_seen_at
+        if seen_at and seen_at.tzinfo is None:
+            seen_at = seen_at.replace(tzinfo=UTC)
+        if rejected_at is not None and (seen_at is None or rejected_at >= seen_at):
+            excluded.add(key)
+        else:
+            comparable_orders.append(order)
+    facts["orders"] = comparable_orders
+    counts["external_orders"] = len(comparable_orders)
     counts["skipped_no_time"] = facts["missing_time_orders"]
     aggregates = build_order_aggregates(facts)
 
@@ -1111,6 +1161,10 @@ async def run_reconciliation(
             created = created.replace(tzinfo=UTC)
         if not start <= created < end:
             continue
+        key = (mapping.shop_id, mapping.external_id)
+        if key in rejections:
+            excluded.add(key)
+            continue
         counts["missing_external"] += 1
         values = {"order_no": local.order_no, "external_id": mapping.external_id}
         _, outcome = await _upsert_diff(
@@ -1400,6 +1454,7 @@ async def run_reconciliation(
 
     run.status = "finished"
     run.finished_at = _now()
+    counts["orders_excluded_for_currency"] = len(excluded)
     run.counters = counts
     await session.commit()
     return {
@@ -1412,7 +1467,9 @@ async def run_reconciliation(
             f"本地匹配 {counts['local_matched']} 张，"
             f"新增差异 {counts['diffs_created']} 条、更新 {counts['diffs_updated']} 条、"
             f"自动结案 {counts['diffs_auto_closed']} 条。"
-            "外部售后事实只进待核定队列，不会自动冲减本地回款"
+            + (f"{len(excluded)} 张订单因非人民币记录被排除，详情见 ERP 同步日志。"
+               if excluded else "")
+            + "外部售后事实只进待核定队列，不会自动冲减本地回款"
         ),
     }
 

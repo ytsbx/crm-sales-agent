@@ -38,19 +38,19 @@ import { getOpportunity, listOpportunities } from '../../shared/api/opportunity'
 import { listSkusForPricing } from '../../shared/api/pricing'
 import {
   addSampleItem,
-  approveSample,
   confirmSample,
   createSample,
   deleteSample,
   feedbackSample,
   getSample,
   listSamples,
+  listSampleTransferOptions,
   madeSample,
-  resubmitSample,
   restoreSample,
   reviseSample,
   shipSample,
   signSample,
+  transferSample,
   type BasisFile,
   type SampleItem,
   type SampleRequestRow,
@@ -276,17 +276,18 @@ function sampleNextStep(row: SampleRequestRow) {
       : '原版记录已锁定，可查看制作与寄送记录。如需继续办理，请联系负责人。' }
   }
   if (row.status === 'pending') {
-    if (!oa) return { hint: '等待负责审批的同事处理。审批通过后才能登记制作完成。' }
-    return oa.submitted
+    return oa?.submitted
       ? { hint: '打开同序 OA 进度确认当前审批阶段。审批通过后，再登记制作完成。', action: 'oa', label: '查看 OA 进度' }
-      : { hint: oa.requires_self_oa
+      : { hint: oa?.requires_self_oa
           ? '这个修订版需要单独审批。补齐本版打样资料后，提交同序 OA。'
           : '草稿还未送审。补齐资料后，单独发起审批，或选择本单的原询价审批继续办理。',
         action: 'oa', label: '填写或提交 OA 申请' }
   }
-  if (row.status === 'rejected') return oa
-    ? { hint: '先查看同序 OA 的处理意见，再按页面提供的操作修改或重提。', action: 'oa', label: '查看 OA 审批意见' }
-    : { hint: '先核对驳回原因，再修改申请资料或重新提交。', action: 'work', label: '查看处理操作' }
+  if (row.status === 'rejected') return {
+    hint: '先查看同序 OA 的处理意见，再按页面提供的操作修改或重提。',
+    action: 'oa',
+    label: '查看 OA 审批意见',
+  }
   if (row.status === 'approved') return row.made_at
     ? { hint: '样品寄出后，填写承运商、快递单号及运费，登记寄样。', action: 'work', label: '去登记寄样' }
     : { hint: '等车间完成实物制作后，登记制作完成并选取实际使用的图纸或确认件。', action: 'work', label: '去登记制作' }
@@ -320,7 +321,7 @@ export default function SampleListPage() {
     queryKey: ['opportunity', createOpportunityId],
     queryFn: () => getOpportunity(createOpportunityId!), enabled: Boolean(createOpportunityId) && canManage,
   })
-  const [oaTarget, setOaTarget] = useState<number | null>(null)
+  const [oaTarget, setOaTarget] = useState<SampleRequestRow | null>(null)
   const [createVisible, setCreateVisible] = useState(false)
   const [form, setForm] = useState<{
     opportunity_id?: number
@@ -350,7 +351,9 @@ export default function SampleListPage() {
 
   const routeId = Number(params.id)
   const detailId = Number.isInteger(routeId) && routeId > 0 ? routeId : null
-  const [rejectReason, setRejectReason] = useState('')
+  const [transferVisible, setTransferVisible] = useState(false)
+  const [transferKeyword, setTransferKeyword] = useState('')
+  const [transferOwner, setTransferOwner] = useState<{ id: number; name: string } | null>(null)
   const [shipForm, setShipForm] = useState({ carrier: '', tracking_no: '', shipping_fee: '' })
   const [feedback, setFeedback] = useState('')
   const [newItem, setNewItem] = useState<ItemDraft>({ quantity: '1' })
@@ -398,7 +401,7 @@ export default function SampleListPage() {
   })
 
   useEffect(() => {
-    setRejectReason('')
+    setTransferVisible(false)
     setShipForm({ carrier: '', tracking_no: '', shipping_fee: '' })
     setFeedback('')
     setNewItem({ quantity: '1' })
@@ -476,7 +479,7 @@ export default function SampleListPage() {
     },
     onSuccess: (created) => {
       Toast.success('打样草稿已创建，请选择同序 OA 流程并补充申请资料')
-      setOaTarget(created.id)
+      setOaTarget(created)
       setCreateVisible(false)
       setForm({ remark: '', items: [{ quantity: '1' }] })
       void refresh()
@@ -484,26 +487,20 @@ export default function SampleListPage() {
     onError,
   })
 
-  const approveMutation = useMutation({
-    mutationFn: (approved: boolean) =>
-      approveSample(detailId!, approved, approved ? undefined : rejectReason),
-    onSuccess: (_data, approved) => {
-      Toast.success(approved ? '样品已批准' : '样品已拒绝')
-      setRejectReason('')
-      void refresh()
-    },
-    onError,
+  const transferOptions = useQuery({
+    queryKey: ['sample-transfer-options', detailId, transferKeyword],
+    queryFn: () => listSampleTransferOptions(detailId!, transferKeyword),
+    enabled: transferVisible && detailId !== null,
   })
-
-  // 已驳回原样重提：和「改资料自动回待审批」是两条路，这条一个字都不改，
-  // 专门给"认为驳回理由不成立"的跟单用
-  const resubmitMutation = useMutation({
-    mutationFn: () => resubmitSample(detailId!),
+  const transferMutation = useMutation({
+    mutationFn: ({ sampleId, ownerId }: { sampleId: number; ownerId: number }) =>
+      transferSample(sampleId, ownerId),
     onSuccess: () => {
-      Toast.success('已重新提交，等待审批')
+      Toast.success('打样单已转交')
+      setTransferVisible(false)
+      closeDetail()
       void refresh()
     },
-    onError,
   })
 
   const shipMutation = useMutation({
@@ -881,7 +878,7 @@ export default function SampleListPage() {
       title: (
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
           操作
-          <Tooltip content="只有待审批（且没提交过钉钉 OA）、已驳回的打样单能删；已批准 / 已寄出的连审批留痕，不能删">
+          <Tooltip content="只有待审批（且没提交过审批）、已驳回的打样单能删；已批准 / 已寄出的连审批留痕，不能删">
             <IconHelpCircle style={{ fontSize: 13, color: 'var(--crm-text-3)', cursor: 'help' }} />
           </Tooltip>
         </span>
@@ -941,14 +938,21 @@ export default function SampleListPage() {
 
   useEffect(() => {
     if (detail && searchParams.get('oa') === '1') {
-      setOaTarget(detail.id)
+      setOaTarget(detail)
       setSearchParams((current) => { const next = new URLSearchParams(current); next.delete('oa'); return next }, { replace: true })
     }
   }, [detail, searchParams, setSearchParams])
 
   return (
     <div className="page-container">
-      {oaTarget != null && <SampleDingTalkModal key={oaTarget} sampleId={oaTarget} onClose={() => { setOaTarget(null); void refresh() }} />}
+      {oaTarget && (
+        <SampleDingTalkModal
+          key={oaTarget.id}
+          sampleId={oaTarget.id}
+          customerName={oaTarget.customer_name || (oaTarget.customer_id ? '客户名称暂不可显示' : '未关联客户')}
+          onClose={() => { setOaTarget(null); void refresh() }}
+        />
+      )}
       <ConfirmRequiredModal
         visible={sampleGate !== null}
         message={sampleGate?.message ?? ''}
@@ -1145,6 +1149,37 @@ export default function SampleListPage() {
       </Modal>
 
       {/* 详情与流转 */}
+      <Modal
+        title="转交打样单"
+        visible={transferVisible}
+        onCancel={() => { if (!transferMutation.isPending) setTransferVisible(false) }}
+        onOk={() => {
+          if (detailId !== null && transferOwner) {
+            transferMutation.mutate({ sampleId: detailId, ownerId: transferOwner.id })
+          }
+        }}
+        okText="确认转交"
+        okButtonProps={{ disabled: !transferOwner, loading: transferMutation.isPending }}
+      >
+        <p className="workflow-guide">接手人可查看和跟进这张打样单，客户归属和同序审批照常。</p>
+        <Select
+          aria-label="接手人"
+          placeholder="输入姓名查找接手人"
+          filter
+          remote
+          onSearch={setTransferKeyword}
+          value={transferOwner?.id}
+          onChange={value => setTransferOwner(transferOptions.data?.find(row => row.id === value) ?? null)}
+          optionList={(transferOptions.data ?? []).filter(row => row.id !== detail?.owner_id)
+            .map(row => ({ value: row.id, label: row.name }))}
+          loading={transferOptions.isFetching}
+          disabled={transferMutation.isPending}
+          style={{ width: '100%' }}
+        />
+        {transferOptions.isError && <p role="alert">{transferOptions.error.message}</p>}
+        {transferMutation.isError && <p role="alert">{transferMutation.error.message}</p>}
+      </Modal>
+
       <SideSheet
         title={detail ? `样品申请编号 ${detail.id}` : '样品申请'}
         visible={detailId !== null}
@@ -1187,7 +1222,7 @@ export default function SampleListPage() {
               {detail.superseded_by && <Button size="small" type="primary" theme="outline"
                 onClick={() => navigate(`/samples/${detail.superseded_by}`)}>打开下一版</Button>}
               {canUpdateSample && nextStep.action && <Button size="small" onClick={() => {
-                if (nextStep.action === 'oa') setOaTarget(detail.id)
+                if (nextStep.action === 'oa') setOaTarget(detail)
                 else {
                   const section = (nextStep.action === 'confirm' ? customerConfirmRef : workActionsRef).current
                   section?.scrollIntoView({ block: 'start' })
@@ -1197,7 +1232,15 @@ export default function SampleListPage() {
             </div>}
 
             <div style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>
-              <div>负责人：{detail.owner_name ?? '-'}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span>负责人：{detail.owner_name ?? '-'}</span>
+                {canUpdateSample && <Button size="small" theme="outline" onClick={() => {
+                  setTransferKeyword('')
+                  setTransferOwner(null)
+                  transferMutation.reset()
+                  setTransferVisible(true)
+                }}>转交打样单</Button>}
+              </div>
               <div>申请时间：{fmt(detail.requested_at)}</div>
               {detail.approved_at && <div>审批时间：{fmt(detail.approved_at)}</div>}
               {detail.shipped_at && <div>寄样时间：{fmt(detail.shipped_at)}</div>}
@@ -1364,56 +1407,11 @@ export default function SampleListPage() {
             {canManage && nextStep?.action !== 'oa' && (
               <div style={{ display: 'flex' }}>
                 <Button theme="borderless" size="small" style={{ alignSelf: 'flex-start' }}
-                  onClick={() => setOaTarget(detail.id)}>查看同序 OA 记录</Button>
+                  onClick={() => setOaTarget(detail)}>查看同序 OA 记录</Button>
               </div>
             )}
-            {/* 动作区不再整块挂在「同序 OA 已提交」上：approve/reject 那一组
-                自己带 `!dingtalk_oa` 判据，但这之后的制作 / 寄样 / 签收是**业务事实登记**，
-                跟审批走哪条通道无关。原来 OA 提交过的单子获批后整块消失，
-                详情里只剩「查看进度」—— 下一步没入口。 */}
             {canManage && (
               <div ref={workActionsRef} tabIndex={-1} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                {/* 待审批时是「批准 / 拒绝」；已驳回时给两条纠错的路 ——
-                    主管改判（上次驳错了）、跟单原样重提（认为驳回理由不成立）。
-                    这两条是不同角色在办事，缺哪条都会卡住那一半人。 */}
-                {canUpdateSample && (detail.status === 'pending' || detail.status === 'rejected') && !((detail.source_context as unknown as Record<string, unknown> | null)?.dingtalk_oa) && (
-                  <>
-                    {detail.status === 'pending' && (
-                      <Input
-                        placeholder="拒绝原因（拒绝时必填）"
-                        value={rejectReason}
-                        onChange={setRejectReason}
-                      />
-                    )}
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      <Popconfirm
-                        title={detail.status === 'rejected' ? '确认改判为批准？' : '确认批准这张打样申请？'}
-                        onConfirm={() => approveMutation.mutate(true)}
-                      >
-                        <Button theme="outline" type="primary" loading={approveMutation.isPending}>
-                          {detail.status === 'rejected' ? '改判为批准' : '批准'}
-                        </Button>
-                      </Popconfirm>
-                      {detail.status === 'pending' && (
-                        <Popconfirm title="确认拒绝这张打样申请？" onConfirm={() => approveMutation.mutate(false)}>
-                          <Button type="danger" loading={approveMutation.isPending}>拒绝</Button>
-                        </Popconfirm>
-                      )}
-                      {detail.status === 'rejected' && (
-                        <Popconfirm title="确认重新提交这张打样申请？" onConfirm={() => resubmitMutation.mutate()}>
-                          <Button loading={resubmitMutation.isPending}>重新提交审批</Button>
-                        </Popconfirm>
-                      )}
-                    </div>
-                    {detail.status === 'rejected' && (
-                      <div style={{ color: 'var(--crm-text-3)', fontSize: 12, lineHeight: 1.6 }}>
-                        「改判为批准」是主管纠正误驳回；「重新提交审批」是跟单认为驳回理由不成立、
-                        一个字不改原样再报一次。改了资料会自动回到「待审批」，不必点这两个。
-                      </div>
-                    )}
-                  </>
-                )}
-
                 {/* 已批准后的下一步按**业务顺序**给，不同时摆出来：
                     先「登记制作完成」（车间做完这一笔事实），登记过之后才轮到「登记寄样」。
                     原来寄样按钮和制作登记一起出现，可以跳过制作直接寄样，
@@ -1522,7 +1520,9 @@ export default function SampleListPage() {
                               detail.sample_fee != null ? String(detail.sample_fee) : '',
                             sample_type: detail.sample_type ?? '',
                             product_category: detail.product_category ?? '',
-                            maker_unit: detail.maker_unit ?? '',
+                            // 历史钉钉单写的是「外协厂」，同序模板是「外协厂打样」；
+                            // 打开编辑时按同序写法显示，保存后库里也换成新值。
+                            maker_unit: detail.maker_unit === '外协厂' ? '外协厂打样' : detail.maker_unit ?? '',
                             sample_purpose: detail.sample_purpose ?? '',
                             urgency: detail.urgency ?? '',
                             sample_situation: detail.sample_situation ?? '',
@@ -1618,7 +1618,8 @@ export default function SampleListPage() {
                           optionList={[
                             { value: '义乌打样部', label: '义乌打样部' },
                             { value: '山东生产部', label: '山东生产部' },
-                            { value: '外协厂', label: '外协厂' },
+                            // 必须与同序 OA 模板选项逐字一致（OA 里是「外协厂打样」）。
+                            { value: '外协厂打样', label: '外协厂打样' },
                           ]}
                         />
                       </div>

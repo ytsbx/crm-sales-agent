@@ -594,8 +594,10 @@ export interface SalesTargetRow {
   assess_actual?: number
   assess_basis?: string
   assess_basis_label?: string
-  /** true = 这一期已结账，数字是存档值，不会因为后来的退货变小 */
+  /** 整行实绩来自存档。 */
   actual_frozen?: boolean
+  period_frozen?: boolean
+  live_actual_metrics?: ('sales' | 'received' | 'shipped' | 'new_customer' | 'repeat_net')[]
   /** 差额与达成率（场景17）：文档要求"显示确认口径下的实际、差额和来源" */
   sales_variance: number
   /** null = 零基期（没设目标），**不给百分比**——文档明确要求零基期不产生错误增长率 */
@@ -696,6 +698,7 @@ export interface DrilldownResult {
   /** snapshot = 读的结账存档（不会变）；live = 实时算的 */
   source: 'snapshot' | 'live'
   actual_frozen: boolean
+  archive_missing_metric?: boolean
   metric_basis_version?: string
   sources?: string
   computed_at?: string

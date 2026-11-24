@@ -12,18 +12,20 @@ from app.core.patch_schema import CreateModel
 # ---------------------------------------------------------------- 申请单选项
 #
 # 这三组选项**照抄钉钉模板**（2026-10-15 从实物文件与批注读出），不要自造：
-#   · 样品制作单位的下拉里是「义乌打样部 / 山东生产部 / 外协厂」
+#   · 样品制作单位：同序 OA 模板是「义乌打样部 / 山东生产部 / 外协厂打样」。
+#     历史钉钉模板写的是「外协厂」，存量行仍允许原样保存，避免编辑其他字段时
+#     被驳回；界面只提供同序的三个选项，重新保存时会把旧值带成「外协厂打样」。
 #     （G3 批注补了选择规则：常规款有模具的优先山东生产部或外协厂，
 #       完全新的设计产品走义乌打样部 —— 那是**业务判断**，不在这里硬编码）
 #   · 紧急程度不只是个标记，批注写明它是**交期宽限**：
 #       普通 = 可晚 3~5 天；急 = 可晚 1~3 天；紧急 = **不允许晚**
 #   · 打样目的四项各有明确定义（C4 批注）
 #
-# 用 Literal 而不是自由字符串：钉钉那边是下拉，写错一个字的后果是
-# **导出的 Excel 和钉钉单据对不上**，而人眼很难发现"外协厂打样"和"外协厂"的差别。
+# 用 Literal 而不是自由字符串：同序那边是下拉，写错一个字的后果是
+# **导出的 Excel 和同序单据对不上**，而人眼很难发现"外协厂打样"和"外协厂"的差别。
 SAMPLE_TYPE_OPTIONS = ("设计研发内部打样", "销售客户打样")
 PRODUCT_CATEGORY_OPTIONS = ("高频类产品", "车缝类产品")
-MAKER_UNIT_OPTIONS = ("义乌打样部", "山东生产部", "外协厂")
+MAKER_UNIT_OPTIONS = ("义乌打样部", "山东生产部", "外协厂打样", "外协厂")
 SAMPLE_PURPOSE_OPTIONS = (
     "客审确认样",
     "报价核算样",
@@ -55,7 +57,7 @@ class SampleItemInput(BaseModel):
 
     sku_id: int | None = None
     inquiry_id: int | None = None
-    item_name: str | None = None
+    item_name: str | None = Field(default=None, max_length=200)
     # 与「从来源创建」的 SampleSourceItem.quantity 保持**同一套约束**：
     # 旧入口此前不校验，0 / 负数都能落库，两个入口口径不一致。
     quantity: Decimal = Field(default=Decimal(1), gt=0, max_digits=16, decimal_places=3)
@@ -216,6 +218,10 @@ class SampleUpdate(CreateModel):
     sample_maker: str | None = Field(default=None, max_length=64)
 
 
+class SampleTransfer(BaseModel):
+    owner_id: int = Field(gt=0)
+
+
 class SampleMade(BaseModel):
     """登记制作完成（CRM 管不到车间，这里只记录事实，不当流程闸门）。"""
 
@@ -266,7 +272,7 @@ class SampleConfirm(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     accepted: bool
-    remark: str | None = None
+    remark: str | None = Field(default=None, max_length=255)
     confirmed_at: datetime | None = None
 
 
@@ -274,14 +280,14 @@ class SampleApprove(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     approved: bool = True
-    reject_reason: str | None = None
+    reject_reason: str | None = Field(default=None, max_length=255)
 
 
 class SampleShip(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    carrier: str | None = None
-    tracking_no: str | None = None
+    carrier: str | None = Field(default=None, max_length=64)
+    tracking_no: str | None = Field(default=None, max_length=64)
     # 运费：**非负 + 2 位小数**，与 `sample_fee` 同一套约束（审查 C3-03）。
     #
     # 改之前这一项毫无约束，实测提交 `-99` 会 200 并落库 `-99.00`；

@@ -6,10 +6,12 @@
 
 from datetime import UTC, datetime
 import json
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field, PositiveInt
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -151,6 +153,8 @@ async def start_inquiry_approval(
         )
         await session.commit()
         return ok(svc.serialize(row), message)
+    if app_settings.dingtalk_push_off:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "尚未配置同序 OA 询价审批，可先保存草稿", 422)
     cfg = await settings_service.get_setting(session, "dingtalk_oa")
     process_code = (cfg or {}).get("process_code") or ""
     if not process_code:
@@ -239,7 +243,7 @@ async def start_inquiry_approval(
     # 销售在 CRM 里选好的那位直接带过去
     quote_component = (cfg or {}).get("quote_owner_component")
     if quote_component:
-        quote_owner = payload.quote_owner_user_id or inquiry.oa_quote_user_id
+        quote_owner = payload.quote_owner_user_id or oa_inquiry.saved_quote_owner(inquiry)
         if payload.quote_owner_user_id:
             allowed_owners = {str(item.get("user_id")) for item in (cfg or {}).get("quote_owners", []) if isinstance(item, dict) and item.get("user_id")}
             if quote_owner not in allowed_owners:
@@ -526,6 +530,8 @@ async def resolve_oa_instance(
     # ⚠️ 各分支调用的都是**该模块自己的**可见性判据，不是新写一套：
     # 少一处就等于给这些单据开了个跨人越权的后门。
     await ensure_oa_type_scope(session, user, row)
+    if app_settings.dingtalk_push_off and getattr(row, "provider", "dingtalk") != "self_oa":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "历史审批仅供查看，新审批请使用同序 OA", 409)
 
     if getattr(row, "provider", None) == "self_oa" and payload.action == "resend":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "请先到同序 OA 核对原发起结果", 409)
@@ -687,7 +693,7 @@ async def sync_oa_instance(
         await session.commit()
         return ok(oa_service.serialize(row), '已查询 OA 最新记录')
     if app_settings.dingtalk_push_off:
-        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, '钉钉连接当前已关闭，请联系管理员', 422)
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, '历史审批仅供查看，新审批请使用同序 OA', 422)
     if not row.instance_id:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, '尚无钉钉审批单，请先核对提交状态', 422)
     # 同一条审批短时间重复点击复用快照；行锁串行化并发请求。
@@ -744,7 +750,7 @@ async def withdraw_oa_instance(
         await session.commit()
         return ok(svc.serialize(row), "已撤回 OA 审批")
     if app_settings.dingtalk_push_off:
-        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "钉钉推送已关闭，无法发送撤回请求", 422)
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "历史审批仅供查看，新审批请使用同序 OA", 422)
     account = await session.get(User, user.id)
     bound_id = account.dingtalk_userid if account else None
 
@@ -798,36 +804,6 @@ async def list_inquiry_approvals(
     return ok([svc.serialize(row) for row in rows])
 
 
-@router.get("/dingtalk/oa-health")
-async def oa_health(
-    _: CurrentUser = Depends(require_permission("settings:manage")),
-):
-    from app.core.scheduler import scheduler
-    from app.modules.dingtalk.oa_stream import oa_stream
-
-    return ok({
-        "submission_enabled": not app_settings.dingtalk_push_off
-        and bool(app_settings.dingtalk_app_key and app_settings.dingtalk_app_secret),
-        "sync_running": scheduler.running and scheduler.get_job("oa_sync") is not None,
-        "sync_interval_minutes": app_settings.scheduler_oa_sync_minutes,
-        "stream_connected": oa_stream.connected,
-        "last_event_at": oa_stream.last_event_at,
-    })
-
-
-@router.post("/dingtalk/oa-sync")
-async def trigger_oa_sync(
-    request: Request,
-    user: CurrentUser = Depends(require_permission("settings:manage")),
-    session: AsyncSession = Depends(get_db),
-):
-    """立刻拉一次审批状态（与定时任务同一个函数，验收时不用等）。"""
-    # 这里不需要 Query 装饰器：它是函数参数，不是请求参数
-    result = await svc.sync_pending_instances(session, limit=50)
-    await session.commit()
-    return ok(result, result.get("message") or f"已检查 {result['checked']} 条，状态变更 {result['changed']} 条")
-
-
 @router.post("/dingtalk/sync-users")
 async def sync_dingtalk_users(
     request: Request,
@@ -843,7 +819,7 @@ async def sync_dingtalk_users(
     钉钉里有人、CRM 里没账号的，只列出来让管理员去建。
     已绑好的不会被改绑 —— 改绑等于换掉一个人的登录身份。
 
-    权限与 `/dingtalk/oa-sync` 一致（`settings:manage`）：这是管理员动作，
+    需要 `settings:manage` 权限：这是管理员动作，
     而且界面就挂在系统设置里。
     """
     result = await svc.sync_users(session)
@@ -873,6 +849,238 @@ async def sync_dingtalk_users(
     )
 
 
+@router.post("/dingtalk/align-departments")
+async def align_departments(
+    request: Request,
+    user: CurrentUser = Depends(require_permission("settings:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """按同序目录覆盖已有账号的部门；返回逐人变更，管理员在界面核对。"""
+    result = await svc.align_departments(session)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="dingtalk_align_departments",
+        business_type="integration",
+        after={"source": result["source"], "matched": result["matched"],
+               "changed": len(result["changes"])},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(result, "按同序部门对齐："
+                      f"匹配 {result['matched']} 人，变更 {len(result['changes'])} 人")
+
+
+class ProvisionDingTalkUser(BaseModel):
+    """从同序身份建 CRM 账号：姓名/部门取通讯录，登录名/密码/角色由管理员定。"""
+
+    dingtalk_userid: str = Field(min_length=1, max_length=128)
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=6, max_length=72)
+    role_ids: list[int] = Field(default_factory=list)
+
+
+async def _oa_directory():
+    """读取本企业的同序人员和部门目录。"""
+    try:
+        data = await oa_client.list_directory()
+    except oa_client.OaError as exc:
+        raise AppError(ErrorCode.EXTERNAL_ERROR, "无法读取同序人员目录，请检查同序 OA 连接后重试", 502) from exc
+    departments = {str(row["id"]): row for row in (data.get("departments") or [])}
+    return list(data.get("users") or []), departments
+
+
+class OaUserBinding(BaseModel):
+    oa_user_id: UUID | None
+
+
+class OaUserCreate(BaseModel):
+    oa_user_id: UUID
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=6, max_length=72)
+    role_ids: list[int] = Field(default_factory=list)
+
+
+async def _require_oa_account_admin(user: CurrentUser = Depends(require_permission("user:manage"))) -> CurrentUser:
+    if "admin" not in user.roles:
+        raise AppError(ErrorCode.FORBIDDEN, "只有系统管理员可以维护同序账号绑定", 403)
+    return user
+
+
+def _oa_member(members: list[dict], identity: str) -> dict:
+    member = next((row for row in members if str(row.get("id") or "") == identity), None)
+    if member is None:
+        raise AppError(ErrorCode.PARAM_ERROR, "同序目录里没有这位在职人员，请刷新后再选择", 422)
+    return member
+
+
+async def _save_oa_binding(session: AsyncSession, account, identity: str | None) -> None:
+    from app.modules.user.model import User
+
+    if identity and (await session.execute(select(User.id).where(
+        User.oa_user_id == identity, User.id != account.id
+    ))).first() is not None:
+        raise AppError(ErrorCode.DUPLICATE, "这位同序人员已经绑定了另一个 CRM 账号", 409)
+    try:
+        async with session.begin_nested():
+            account.oa_user_id = identity
+            await session.flush()
+    except IntegrityError as exc:
+        raise AppError(ErrorCode.DUPLICATE, "这位同序人员已经绑定了另一个 CRM 账号", 409) from exc
+
+
+@router.get("/oa/members")
+async def list_oa_members(
+    user: CurrentUser = Depends(_require_oa_account_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    from app.modules.user.model import User
+
+    members, _ = await _oa_directory()
+    bound = dict((await session.execute(select(User.oa_user_id, User.id).where(
+        User.oa_user_id.is_not(None)
+    ))).all())
+    rows = [{
+        "id": str(row["id"]), "name": str(row.get("name") or ""),
+        "department": str(row.get("department_name") or ""),
+        "employee_number": str(row.get("employee_number") or ""),
+        "crm_user_id": bound.get(str(row["id"])),
+    } for row in members if row.get("id")]
+    return ok(sorted(rows, key=lambda row: (row["department"], row["name"], row["id"])))
+
+
+@router.patch("/users/{user_id}/oa-binding")
+async def set_oa_binding(
+    user_id: int, payload: OaUserBinding, request: Request,
+    user: CurrentUser = Depends(_require_oa_account_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    from app.modules.user import service as users
+    from app.modules.user.model import User
+
+    identity = str(payload.oa_user_id) if payload.oa_user_id else None
+    if identity:
+        members, _ = await _oa_directory()
+        _oa_member(members, identity)
+    await users.lock_user_row(session, user_id)
+    account = await session.get(User, user_id, populate_existing=True)
+    if account is None:
+        raise AppError(ErrorCode.NOT_FOUND, "CRM 账号不存在", 404)
+    old = account.oa_user_id
+    await _save_oa_binding(session, account, identity)
+    await write_audit(
+        session, operator_id=user.id, action="oa_account_binding", business_type="user",
+        business_id=user_id, before={"oa_user_id": old}, after={"oa_user_id": identity},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok({"id": user_id, "oa_user_id": identity}, "同序人员绑定已保存")
+
+
+@router.post("/oa/users")
+async def provision_oa_user(
+    payload: OaUserCreate, request: Request,
+    user: CurrentUser = Depends(_require_oa_account_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    from app.modules.user import service as users
+
+    members, departments = await _oa_directory()
+    identity = str(payload.oa_user_id)
+    member = _oa_member(members, identity)
+    department_id = str(member.get("department_id") or "")
+    department = None
+    if department_id:
+        department, _ = await svc.ensure_oa_department(session, departments, department_id)
+    account = await users.create_user(session, {
+        "name": str(member.get("name") or "").strip() or payload.username,
+        "username": payload.username, "password": payload.password,
+        "department_id": department.id if department else None, "role_ids": payload.role_ids,
+    })
+    await _save_oa_binding(session, account, identity)
+    await write_audit(
+        session, operator_id=user.id, action="oa_provision_user", business_type="user",
+        business_id=account.id, after={"oa_user_id": identity, "department_id": account.department_id,
+                                      "role_ids": payload.role_ids},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok({"id": account.id, "oa_user_id": identity}, "已按同序人员创建 CRM 账号")
+
+
+@router.get("/dingtalk/members")
+async def list_dingtalk_members(
+    user: CurrentUser = Depends(require_permission("settings:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """给「新建用户」用的同序人员列表，只列尚未绑定 CRM 的人员。"""
+    from app.modules.user.model import User
+
+    users, _departments = await _oa_directory()
+    bound = {
+        str(value) for value in (await session.execute(
+            select(User.dingtalk_userid).where(User.dingtalk_userid.isnot(None))
+        )).scalars().all() if value
+    }
+    rows = [{
+        "userid": row["dingtalk_user_id"],
+        "name": str(row.get("name") or ""),
+        "department": str(row.get("department_name") or ""),
+    } for row in users
+        if row.get("dingtalk_user_id") and str(row["dingtalk_user_id"]) not in bound]
+    rows.sort(key=lambda row: (row["department"], row["name"]))
+    return ok(rows)
+
+
+@router.post("/dingtalk/provision-user")
+async def provision_dingtalk_user(
+    payload: ProvisionDingTalkUser,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("settings:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """用同序身份建 CRM 账号：自动带姓名和所在部门，角色由管理员选。"""
+    from app.modules.user import service as user_service
+    from app.modules.user.model import User
+
+    if (await session.execute(
+        select(User.id).where(User.dingtalk_userid == payload.dingtalk_userid)
+    )).first() is not None:
+        raise AppError(ErrorCode.DUPLICATE, "这个同序身份已经绑定过 CRM 账号", 409)
+
+    users, departments = await _oa_directory()
+    target = next((row for row in users
+                   if str(row.get("dingtalk_user_id") or "") == payload.dingtalk_userid), None)
+    if target is None:
+        raise AppError(ErrorCode.PARAM_ERROR, "同序目录里找不到这个身份，请刷新后重试", 422)
+    department, _created = await svc.ensure_oa_department(
+        session, departments, str(target.get("department_id") or ""))
+    name = str(target.get("name") or "").strip()
+    created = await user_service.create_user(session, {
+        "name": name or payload.username,
+        "username": payload.username,
+        "password": payload.password,
+        "department_id": department.id,
+        "dingtalk_userid": payload.dingtalk_userid,
+        "role_ids": payload.role_ids,
+    })
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="dingtalk_provision_user",
+        business_type="user",
+        business_id=created.id,
+        after={"dingtalk_userid": payload.dingtalk_userid, "department_id": department.id,
+               "role_ids": payload.role_ids},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok({
+        "id": created.id, "name": created.name, "username": created.username,
+        "department_id": department.id, "department": department.name,
+    }, "已按同序身份创建 CRM 账号")
+
+
 @router.get("/inquiries/{inquiry_id}/oa-submission")
 async def inquiry_submission_options(
     inquiry_id: int,
@@ -882,7 +1090,10 @@ async def inquiry_submission_options(
     """仅准备CRM提交界面，不创建审批、不上传钉钉、不触发通知。"""
     from app.modules.inquiry.service import get_visible_or_404
     inquiry = await get_visible_or_404(session, user, inquiry_id)
-    return await _submission_options(session, inquiry.oa_quote_user_id, applicant=user)
+    selected_quote_owner = inquiry.oa_quote_user_id
+    if app_settings.oa_inquiry_template_id or app_settings.oa_inquiry_template_code:
+        selected_quote_owner = oa_inquiry.saved_quote_owner(inquiry)
+    return await _submission_options(session, selected_quote_owner, applicant=user, inquiry=inquiry)
 
 
 @router.get("/inquiries/oa-submission-options")
@@ -894,35 +1105,66 @@ async def new_inquiry_submission_options(
     return await _submission_options(session, applicant=user)
 
 
-async def _submission_options(session, selected_quote_owner=None, *, applicant=None):
+async def _fallback_submission_options(session, applicant, inquiry, message):
+    """同序不可用时也要把销售段的字段完整展示出来，不能只剩 CRM 那几格。
+
+    字段顺序照同序《产品询价申请》；提报人/部门先用 CRM 账号资料顶上，
+    等 OA 恢复后提交时再以同序身份为准。
+    """
+    from app.modules.oa.inquiry import _department_name
+    from app.modules.user.model import User
+
+    account = await session.get(User, applicant.id) if applicant is not None else None
+    department = (await _department_name(session, account)
+                  if getattr(account, 'department_id', None) else '')
+    return {
+        "prefill": {"applicant_name": getattr(account, 'name', '') or '', "department": department},
+        "prefill_fields": await oa_inquiry.submission_prefill(session, inquiry),
+        "configured": False, "enabled": False, "provider": "self_oa",
+        "quote_owner_required": True, "quote_owners": [], "selected_quote_owner": None,
+        "image_required": False, "file_business_type": "inquiry",
+        "fields": oa_inquiry.fallback_entry_fields(),
+        "template_fields": oa_inquiry.SALES_TEMPLATE_FIELDS,
+        "message": message,
+    }
+
+
+async def _submission_options(session, selected_quote_owner=None, *, applicant=None, inquiry=None):
     if not app_settings.oa_inquiry_submission_enabled:
-        return ok({"configured": False, "enabled": False, "provider": "self_oa", "fields": [],
-                   "message": "询价审批暂未启用，可先保存需求和内部报价草稿"})
+        return ok(await _fallback_submission_options(
+            session, applicant, inquiry, "询价审批暂未启用，可先保存需求和内部报价草稿"))
     if app_settings.oa_inquiry_template_id or app_settings.oa_inquiry_template_code:
-        unavailable = {"configured": False, "enabled": False, "provider": "self_oa", "fields": [],
-                       "quote_owners": [], "message": "当前账号无法发起同序询价，可先保存草稿"}
         if not oa_client.configured() or not oa_inquiry.uses_native_inquiry():
-            return ok(unavailable)
+            return ok(await _fallback_submission_options(
+                session, applicant, inquiry, "同序 OA 对接还没完成，可先保存草稿；请联系管理员"))
         from app.modules.user.model import User
         account = await session.get(User, applicant.id) if applicant is not None else None
-        if not getattr(account, 'dingtalk_userid', None):
-            return ok(unavailable)
+        identity = oa_client.applicant_identity(account)
+        if not identity:
+            return ok(await _fallback_submission_options(
+                session, applicant, inquiry,
+                "当前账号还没绑定同序 OA 登录身份，可先保存草稿；请联系管理员绑定后再提交"))
         try:
-            templates = await oa_client.list_templates(account.dingtalk_userid)
+            templates = await oa_client.list_templates(identity)
         except oa_client.OaError as exc:
             if exc.code in {'applicant_not_found', 'applicant_unmapped'}:
-                return ok(unavailable)
+                return ok(await _fallback_submission_options(
+                    session, applicant, inquiry,
+                    "同序 OA 里找不到当前账号或所属部门，可先保存草稿；请联系管理员补齐"))
             raise AppError(ErrorCode.EXTERNAL_ERROR, '无法读取同序询价模板，请稍后重试；仍可保存草稿', 502) from exc
         template = max((t for t in templates if t['code'] == oa_inquiry.NATIVE_INQUIRY_CODE),
                        key=lambda t: t['version'], default=None)
         if not template:
-            return ok(unavailable)
+            return ok(await _fallback_submission_options(
+                session, applicant, inquiry, "当前账号没有可用的同序产品询价模板，可先保存草稿；请联系管理员"))
         identity = template.get('applicant') or {}
         quote_owners = [{'user_id': p['id'], 'name': p['name']} for p in oa_inquiry.native_quoters(template)]
+        enabled = bool(quote_owners and identity.get("id") and identity.get("department_id"))
         return ok({
             "prefill": {"applicant_name": identity.get("name", ""), "department": identity.get("department_name", "")},
+            "prefill_fields": await oa_inquiry.submission_prefill(session, inquiry),
             "configured": True,
-            "enabled": bool(quote_owners and identity.get("id") and identity.get("department_id")),
+            "enabled": enabled,
             "provider": "self_oa",
             "quote_owner_required": True,
             "quote_owners": quote_owners,
@@ -931,11 +1173,28 @@ async def _submission_options(session, selected_quote_owner=None, *, applicant=N
             "file_business_type": "inquiry",
             "fields": oa_inquiry.native_entry_fields(template),
             "template_fields": template["fields"],
+            "message": "" if enabled else "同序模板缺少可选的对接报价员或申请人部门，请联系管理员",
         })
+    if app_settings.dingtalk_push_off:
+        return ok(await _fallback_submission_options(
+            session, applicant, inquiry, "尚未配置同序 OA 询价审批，可先保存草稿"))
     from app.modules.settings.service import get_setting
     cfg = await get_setting(session, "dingtalk_oa") or {}
     owners = [{"user_id": str(item["user_id"]), "name": str(item.get("name") or "报价员")}
               for item in cfg.get("quote_owners", []) if isinstance(item, dict) and item.get("user_id")]
+    fields = await _submission_fields(cfg)
+    prefill = await oa_inquiry.submission_prefill(session, inquiry)
+    # 老钉钉模板的控件 id 由模板决定；按 OA 的中文标签把 CRM 已有资料填进去。
+    labels = {
+        "customer_contact": "客户名称、联系人、联系方式",
+        "special_note": "特别说明",
+    }
+    by_label = {field["label"]: field["id"] for field in fields}
+    prefill_fields = {
+        by_label[labels[key]]: value
+        for key, value in prefill.items()
+        if key in labels and labels[key] in by_label
+    }
     return ok({
         "configured": bool(cfg.get("process_code")),
         "enabled": not app_settings.dingtalk_push_off,
@@ -944,5 +1203,6 @@ async def _submission_options(session, selected_quote_owner=None, *, applicant=N
         "selected_quote_owner": selected_quote_owner,
         "image_required": bool(cfg.get("image_component")),
         "file_business_type": cfg.get("inquiry_file_business_type") or "inquiry",
-        "fields": await _submission_fields(cfg),
+        "fields": fields,
+        "prefill_fields": prefill_fields,
     })

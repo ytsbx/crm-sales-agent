@@ -1,0 +1,220 @@
+
+> frontend@0.0.0 build
+> tsc -b && vite build
+
+vite v8.3.0 building client environment for production...
+transforming...
+✓ 3752 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                  1.29 kB │ gzip:   0.53 kB
+dist/assets/empty-zIgf3u9W.css                   0.87 kB │ gzip:   0.31 kB
+dist/assets/PoolRecyclePage-BNdlIbig.css         1.14 kB │ gzip:   0.46 kB
+dist/assets/DuplicateCasePage-7_iQWrNi.css       1.59 kB │ gzip:   0.53 kB
+dist/assets/banner-CKDlAiML.css                  1.95 kB │ gzip:   0.42 kB
+dist/assets/SettingsPage-Cd70QEv3.css            1.99 kB │ gzip:   0.67 kB
+dist/assets/autoComplete-CNKS6ijw.css            2.12 kB │ gzip:   0.72 kB
+dist/assets/sideSheet-D7t3KjF7.css               5.29 kB │ gzip:   1.07 kB
+dist/assets/QuoteDetailPage-B6te6xZj.css         7.00 kB │ gzip:   1.52 kB
+dist/assets/switch-DRvx9TM3.css                  7.61 kB │ gzip:   1.20 kB
+dist/assets/LoginPage-im7rqzZA.css               7.89 kB │ gzip:   2.27 kB
+dist/assets/checkbox-01exSO2B.css                9.16 kB │ gzip:   1.37 kB
+dist/assets/textarea-js6_tOtw.css                9.33 kB │ gzip:   1.61 kB
+dist/assets/KnowledgePage-CfIHPW8A.css          17.18 kB │ gzip:   2.82 kB
+dist/assets/DocumentsPage-BeYBLz25.css          20.56 kB │ gzip:   2.79 kB
+dist/assets/pagination-CtyUhzTr.css             23.43 kB │ gzip:   3.25 kB
+dist/assets/tabs-D2qu0Ihn.css                   24.29 kB │ gzip:   2.62 kB
+dist/assets/table-C43SuRsR.css                  29.29 kB │ gzip:   3.74 kB
+dist/assets/permissions-dHyUrdyL.css            31.19 kB │ gzip:   2.93 kB
+dist/assets/tag-C3AkXO4f.css                    48.10 kB │ gzip:   5.89 kB
+dist/assets/chunk-OB3PAWPO-DE9_6awz.css         52.86 kB │ gzip:   8.35 kB
+dist/assets/index-AezJTwJP.css                 788.26 kB │ gzip:  97.74 kB
+dist/assets/emptyText-BQ_yn7Zx.js                0.03 kB │ gzip:   0.05 kB
+dist/assets/isPromise-pngGmYYz.js                0.10 kB │ gzip:   0.09 kB
+dist/assets/download-feedback-BMABj5xf.js        0.17 kB │ gzip:   0.18 kB
+dist/assets/customer-level-Doci0cns.js           0.19 kB │ gzip:   0.15 kB
+dist/assets/sku-label-DxIkj2td.js                0.21 kB │ gzip:   0.21 kB
+dist/assets/calendar-day-BtoAwzUe.js             0.25 kB │ gzip:   0.20 kB
+dist/assets/auth-token-C-WZqo0m.js               0.27 kB │ gzip:   0.19 kB
+dist/assets/followup-E99sKKRH.js                 0.27 kB │ gzip:   0.17 kB
+dist/assets/otherOption-DW0Q4VmM.js              0.30 kB │ gzip:   0.24 kB
+dist/assets/useTabLabel-CSM6RRIC.js              0.31 kB │ gzip:   0.24 kB
+dist/assets/PageLoading-CU1TYSZJ.js              0.37 kB │ gzip:   0.28 kB
+dist/assets/requestKey-HUbUhDJJ.js               0.41 kB │ gzip:   0.28 kB
+dist/assets/inquiry-F5MzWjWk.js                  0.57 kB │ gzip:   0.23 kB
+dist/assets/IconHistogram-CrZkldfK.js            0.60 kB │ gzip:   0.38 kB
+dist/assets/PageHeader-BnKloJSF.js               0.65 kB │ gzip:   0.35 kB
+dist/assets/IconRefresh-2ook17ix.js              0.67 kB │ gzip:   0.44 kB
+dist/assets/StatusDot-CahSftbT.js                0.71 kB │ gzip:   0.49 kB
+dist/assets/file-CGrOSSkb.js                     0.71 kB │ gzip:   0.36 kB
+dist/assets/IconEditStroked-BmPPbMu9.js          0.74 kB │ gzip:   0.48 kB
+dist/assets/GuardedButton-DaxiR4tV.js            0.76 kB │ gzip:   0.49 kB
+dist/assets/FormLabel-CueqzgeF.js                0.76 kB │ gzip:   0.44 kB
+dist/assets/system-CtzFlNLR.js                   0.77 kB │ gzip:   0.27 kB
+dist/assets/optionMatch-BFtFnEkc.js              0.78 kB │ gzip:   0.46 kB
+dist/assets/download-contract-D-Cqx4Mb.js        0.80 kB │ gzip:   0.33 kB
+dist/assets/bizdoc-DbDCC_zy.js                   0.81 kB │ gzip:   0.44 kB
+dist/assets/task-BKKOOoZo.js                     0.83 kB │ gzip:   0.34 kB
+dist/assets/DetailHeader-BRccYW6N.js             0.84 kB │ gzip:   0.40 kB
+dist/assets/opportunity-DlvWnDue.js              0.85 kB │ gzip:   0.29 kB
+dist/assets/SectionCard-Brcuocdw.js              0.87 kB │ gzip:   0.47 kB
+dist/assets/EmptyState-DKDOM5gA.js               0.96 kB │ gzip:   0.54 kB
+dist/assets/HelpTip-t3Tf9yIk.js                  1.04 kB │ gzip:   0.61 kB
+dist/assets/dingtalk-JKIQ-Q63.js                 1.07 kB │ gzip:   0.58 kB
+dist/assets/useInfiniteQuery-CHp2Rwlp.js         1.14 kB │ gzip:   0.48 kB
+dist/assets/BlockedHint-IUucfQ7c.js              1.20 kB │ gzip:   0.68 kB
+dist/assets/IconAIEditLevel1-B2bmUPAd.js         1.21 kB │ gzip:   0.70 kB
+dist/assets/settings-ByIFvRJQ.js                 1.25 kB │ gzip:   0.46 kB
+dist/assets/product-CZJMaugI.js                  1.26 kB │ gzip:   0.41 kB
+dist/assets/KpiStrip-C84NdehM.js                 1.30 kB │ gzip:   0.62 kB
+dist/assets/MaskedContact-B--ckdGS.js            1.30 kB │ gzip:   0.74 kB
+dist/assets/sample-Dyw3no3T.js                   1.35 kB │ gzip:   0.46 kB
+dist/assets/money-C3rbGzR4.js                    1.40 kB │ gzip:   0.65 kB
+dist/assets/PaymentVoucherControl-EHFOkSXM.js    1.58 kB │ gzip:   0.88 kB
+dist/assets/OaFormSnapshot-tquEVZ2j.js           1.59 kB │ gzip:   0.85 kB
+dist/assets/pricing-BwT9EBYF.js                  1.65 kB │ gzip:   0.47 kB
+dist/assets/UserSearchSelect-CpZNnc5s.js         1.80 kB │ gzip:   1.05 kB
+dist/assets/ConfirmRequiredModal-BPBhkYSv.js     1.81 kB │ gzip:   0.89 kB
+dist/assets/RecordSearchSelect-DaHypkQR.js       1.93 kB │ gzip:   1.13 kB
+dist/assets/customer-6Gb0sDg6.js                 1.99 kB │ gzip:   0.61 kB
+dist/assets/quote-BZBadO0o.js                    2.05 kB │ gzip:   0.59 kB
+dist/assets/number-input-CuzBMluV.js             2.08 kB │ gzip:   1.14 kB
+dist/assets/Timeline-CTgKp5Sm.js                 2.19 kB │ gzip:   1.11 kB
+dist/assets/NotePromptModal-IKa7RqqW.js          2.26 kB │ gzip:   1.14 kB
+dist/assets/empty-W6Zd1Imi.js                    2.27 kB │ gzip:   1.09 kB
+dist/assets/TermHelp-D4LYobbF.js                 2.59 kB │ gzip:   1.56 kB
+dist/assets/ResolveOaActions-7H9nZD18.js         2.64 kB │ gzip:   1.42 kB
+dist/assets/ContractDocsPanel-CAfu1psk.js        2.78 kB │ gzip:   1.41 kB
+dist/assets/SyncOaButton-C2bfyK2h.js             2.90 kB │ gzip:   1.66 kB
+dist/assets/banner-BKs0KdYO.js                   2.97 kB │ gzip:   1.24 kB
+dist/assets/order-7kir8sFF.js                    3.13 kB │ gzip:   0.89 kB
+dist/assets/_baseDifference-Cigksmy5.js          3.47 kB │ gzip:   1.46 kB
+dist/assets/AgentInsight-BK0U21Xl.js             3.51 kB │ gzip:   1.84 kB
+dist/assets/checkbox-CPDEkTmG.js                 3.67 kB │ gzip:   1.43 kB
+dist/assets/BizDocPanel-jAB-2c95.js              3.82 kB │ gzip:   2.00 kB
+dist/assets/radio-_ybyImya.js                    4.44 kB │ gzip:   1.74 kB
+dist/assets/switch-Bq1QMYM6.js                   4.83 kB │ gzip:   1.81 kB
+dist/assets/DecisionMakerCard-CGl0ulBi.js        5.08 kB │ gzip:   2.08 kB
+dist/assets/FollowUpModal-Ve6Kqtdh.js            5.37 kB │ gzip:   2.32 kB
+dist/assets/CsvImportButtons-DIGuN4Nv.js         6.03 kB │ gzip:   2.64 kB
+dist/assets/ProductListPage-DCgzQFqy.js          6.52 kB │ gzip:   2.89 kB
+dist/assets/SampleFromSourceModal-DbWYcxDb.js    6.54 kB │ gzip:   2.92 kB
+dist/assets/AttachmentPanel-BPhla_Gw.js          7.11 kB │ gzip:   3.52 kB
+dist/assets/QuoteListPage-pTWrRqzO.js            7.44 kB │ gzip:   3.39 kB
+dist/assets/sideSheet-B8KG3v9R.js                9.31 kB │ gzip:   3.06 kB
+dist/assets/checkbox-C_CM4OkL.js                 9.55 kB │ gzip:   3.14 kB
+dist/assets/ReceivablePlanPicker-hSjWto_q.js     9.57 kB │ gzip:   4.15 kB
+dist/assets/DuplicateCasePage-BiWQm6UY.js       10.04 kB │ gzip:   4.04 kB
+dist/assets/LoginPage-CmjeVtDv.js               12.44 kB │ gzip:   4.14 kB
+dist/assets/OrderDraftsPage-BEX-GUXf.js         12.83 kB │ gzip:   5.28 kB
+dist/assets/AgentPage-Dj-jltj_.js               13.19 kB │ gzip:   5.30 kB
+dist/assets/PricingPage-SC67aepx.js             14.30 kB │ gzip:   5.53 kB
+dist/assets/PoolRecyclePage-BKWI2OJa.js         14.53 kB │ gzip:   5.65 kB
+dist/assets/LogisticsPage-C1otwL4y.js           14.65 kB │ gzip:   5.30 kB
+dist/assets/TaskListPage-Nf7_vx2B.js            14.83 kB │ gzip:   5.77 kB
+dist/assets/autoComplete-CNeyDh51.js            16.59 kB │ gzip:   5.21 kB
+dist/assets/textarea-DTA8nfnw.js                16.94 kB │ gzip:   5.08 kB
+dist/assets/OpportunityListPage-BSHFIfB_.js     16.94 kB │ gzip:   6.08 kB
+dist/assets/ProductInsightsPage-DwOidRAs.js     18.04 kB │ gzip:   6.39 kB
+dist/assets/OrderListPage-Ce0xBftt.js           18.29 kB │ gzip:   6.12 kB
+dist/assets/RecycleBinPage-5EwiAJvp.js          20.96 kB │ gzip:   6.37 kB
+dist/assets/tabs-COhSCSfw.js                    21.60 kB │ gzip:   6.42 kB
+dist/assets/WorkbenchPage-Ds4chUpf.js           22.02 kB │ gzip:   7.08 kB
+dist/assets/audit-labels-BCf5la2J.js            22.27 kB │ gzip:   8.94 kB
+dist/assets/LeadListPage-Dw2QFdh0.js            23.68 kB │ gzip:   8.27 kB
+dist/assets/permissions-CEeWdI-a.js             25.10 kB │ gzip:   7.85 kB
+dist/assets/CasesPage-7wDZwMBQ.js               26.59 kB │ gzip:   8.85 kB
+dist/assets/ApprovalPage-Dvgo5S7N.js            28.44 kB │ gzip:   9.63 kB
+dist/assets/CustomerListPage-oIIuP5-M.js        29.44 kB │ gzip:   9.80 kB
+dist/assets/ProductDetailPage-B-HgtOt8.js       35.26 kB │ gzip:  11.16 kB
+dist/assets/OpportunityDetailPage-BVrLBd_k.js   35.36 kB │ gzip:  10.67 kB
+dist/assets/CustomerDetailPage-BqiLmxfM.js      39.33 kB │ gzip:  12.63 kB
+dist/assets/WeComPage-DoVHHaOV.js               39.36 kB │ gzip:  12.30 kB
+dist/assets/client-kDSO0MG-.js                  39.38 kB │ gzip:  12.95 kB
+dist/assets/AnalyticsPage-mXxMnHMM.js           45.44 kB │ gzip:  14.42 kB
+dist/assets/PriceCenterPage-D0Vrsp9G.js         49.31 kB │ gzip:  14.56 kB
+dist/assets/axios-blwvYGGR.js                   50.66 kB │ gzip:  19.00 kB
+dist/assets/SampleListPage-vbh4xOuX.js          57.51 kB │ gzip:  18.25 kB
+dist/assets/OrderDetailPage-C-38a-Wf.js         66.06 kB │ gzip:  19.79 kB
+dist/assets/SettingsPage-BR8dKiLp.js           105.31 kB │ gzip:  32.21 kB
+dist/assets/QuoteDetailPage-zABFIGrt.js        106.09 kB │ gzip:  31.45 kB
+dist/assets/pagination-DqTxzMFU.js             108.33 kB │ gzip:  29.70 kB
+dist/assets/tag-5iYsClp3.js                    113.28 kB │ gzip:  35.28 kB
+dist/assets/KnowledgePage-DW8-zcUN.js          113.42 kB │ gzip:  33.59 kB
+dist/assets/DocumentsPage-BbcSv4qF.js          145.36 kB │ gzip:  44.98 kB
+dist/assets/table-D95_T7O-.js                  160.01 kB │ gzip:  43.05 kB
+dist/assets/chunk-OB3PAWPO-CPZjqS1k.js         160.58 kB │ gzip:  51.22 kB
+dist/assets/index-DqaxMk6K.js                  557.73 kB │ gzip: 156.82 kB
+dist/assets/options-B16vY-0P.js                579.41 kB │ gzip: 197.19 kB
+
+[plugin builtin:vite-reporter] 
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[33m[EVAL] [0mUse of direct `eval` function is strongly discouraged as it poses security risks and may cause issues with minification.
+       [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m node_modules/.pnpm/lottie-web@5.13.0/node_modules/lottie-web/build/player/lottie.js:14422:33 [38;5;246m][0m
+       [38;5;246m│[0m
+ [38;5;246m14422 │[0m [38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249mv[0m[38;5;249ma[0m[38;5;249mr[0m[38;5;249m [0m[38;5;249me[0m[38;5;249mx[0m[38;5;249mp[0m[38;5;249mr[0m[38;5;249me[0m[38;5;249ms[0m[38;5;249ms[0m[38;5;249mi[0m[38;5;249mo[0m[38;5;249mn[0m[38;5;249m_[0m[38;5;249mf[0m[38;5;249mu[0m[38;5;249mn[0m[38;5;249mc[0m[38;5;249mt[0m[38;5;249mi[0m[38;5;249mo[0m[38;5;249mn[0m[38;5;249m [0m[38;5;249m=[0m[38;5;249m [0meval[38;5;249m([0m[38;5;249m'[0m[38;5;249m[[0m[38;5;249mf[0m[38;5;249mu[0m[38;5;249mn[0m[38;5;249mc[0m[38;5;249mt[0m[38;5;249mi[0m[38;5;249mo[0m[38;5;249mn[0m[38;5;249m [0m[38;5;249m_[0m[38;5;249me[0m[38;5;249mx[0m[38;5;249mp[0m[38;5;249mr[0m[38;5;249me[0m[38;5;249ms[0m[38;5;249ms[0m[38;5;249mi[0m[38;5;249mo[0m[38;5;249mn[0m[38;5;249m_[0m[38;5;249mf[0m[38;5;249mu[0m[38;5;249mn[0m[38;5;249mc[0m[38;5;249mt[0m[38;5;249mi[0m[38;5;249mo[0m[38;5;249mn[0m[38;5;249m([0m[38;5;249m)[0m[38;5;249m{[0m[38;5;249m'[0m[38;5;249m [0m[38;5;249m+[0m[38;5;249m [0m[38;5;249mv[0m[38;5;249ma[0m[38;5;249ml[0m[38;5;249m [0m[38;5;249m+[0m[38;5;249m [0m[38;5;249m'[0m[38;5;249m;[0m[38;5;249ms[0m[38;5;249mc[0m[38;5;249mo[0m[38;5;249mp[0m[38;5;249me[0m[38;5;249md[0m[38;5;249m_[0m[38;5;249mb[0m[38;5;249mm[0m[38;5;249m_[0m[38;5;249mr[0m[38;5;249mt[0m[38;5;249m=[0m[38;5;249m$[0m[38;5;249mb[0m[38;5;249mm[0m[38;5;249m_[0m[38;5;249mr[0m[38;5;249mt[0m[38;5;249m}[0m[38;5;249m][0m[38;5;249m'[0m[38;5;249m)[0m[38;5;249m[[0m[38;5;249m0[0m[38;5;249m][0m[38;5;249m;[0m[38;5;249m [0m[38;5;249m/[0m[38;5;249m/[0m[38;5;249m [0m[38;5;249me[0m[38;5;249ms[0m[38;5;249ml[0m[38;5;249mi[0m[38;5;249mn[0m[38;5;249mt[0m[38;5;249m-[0m[38;5;249md[0m[38;5;249mi[0m[38;5;249ms[0m[38;5;249ma[0m[38;5;249mb[0m[38;5;249ml[0m[38;5;249me[0m[38;5;249m-[0m[38;5;249ml[0m[38;5;249mi[0m[38;5;249mn[0m[38;5;249me[0m[38;5;249m [0m[38;5;249mn[0m[38;5;249mo[0m[38;5;249m-[0m[38;5;249me[0m[38;5;249mv[0m[38;5;249ma[0m[38;5;249ml[0m
+ [38;5;240m      │[0m                                 ──┬─  
+ [38;5;240m      │[0m                                   ╰─── Use of direct `eval` here.
+ [38;5;240m      │[0m 
+ [38;5;240m      │[0m [38;5;115mHelp[0m: Consider using indirect eval. For more information, check the documentation: https://rolldown.rs/guide/troubleshooting#avoiding-direct-eval
+[38;5;246m───────╯[0m
+
+[33m[MODULE_LEVEL_DIRECTIVE] [0mThe semantics of the module level directive "" in "node_modules/.pnpm/@mdx-js+mdx@3.1.1/node_modules/@mdx-js/mdx/lib/util/resolve-evaluate-options.js" may not be preserved when bundling.
+    [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m node_modules/.pnpm/@mdx-js+mdx@3.1.1/node_modules/@mdx-js/mdx/lib/util/resolve-evaluate-options.js:48:1 [38;5;246m][0m
+    [38;5;246m│[0m
+ [38;5;246m48 │[0m ''
+ [38;5;240m   │[0m ─┬  
+ [38;5;240m   │[0m  ╰── module level directive may not be preserved
+ [38;5;240m   │[0m 
+ [38;5;240m   │[0m [38;5;115mHelp[0m: For more information, see https://rolldown.rs/in-depth/directives#other-directives
+[38;5;246m────╯[0m
+
+[33m[MODULE_LEVEL_DIRECTIVE] [0mThe semantics of the module level directive "" in "node_modules/.pnpm/@mdx-js+mdx@3.1.1/node_modules/@mdx-js/mdx/lib/util/estree-util-is-declaration.js" may not be preserved when bundling.
+    [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m node_modules/.pnpm/@mdx-js+mdx@3.1.1/node_modules/@mdx-js/mdx/lib/util/estree-util-is-declaration.js:11:1 [38;5;246m][0m
+    [38;5;246m│[0m
+ [38;5;246m11 │[0m ''
+ [38;5;240m   │[0m ─┬  
+ [38;5;240m   │[0m  ╰── module level directive may not be preserved
+ [38;5;240m   │[0m 
+ [38;5;240m   │[0m [38;5;115mHelp[0m: For more information, see https://rolldown.rs/in-depth/directives#other-directives
+[38;5;246m────╯[0m
+
+[33m[MODULE_LEVEL_DIRECTIVE] [0mThe semantics of the module level directive "" in "node_modules/.pnpm/@mdx-js+mdx@3.1.1/node_modules/@mdx-js/mdx/lib/util/estree-util-create.js" may not be preserved when bundling.
+   [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m node_modules/.pnpm/@mdx-js+mdx@3.1.1/node_modules/@mdx-js/mdx/lib/util/estree-util-create.js:6:1 [38;5;246m][0m
+   [38;5;246m│[0m
+ [38;5;246m6 │[0m ''
+ [38;5;240m  │[0m ─┬  
+ [38;5;240m  │[0m  ╰── module level directive may not be preserved
+ [38;5;240m  │[0m 
+ [38;5;240m  │[0m [38;5;115mHelp[0m: For more information, see https://rolldown.rs/in-depth/directives#other-directives
+[38;5;246m───╯[0m
+
+[33m[MODULE_LEVEL_DIRECTIVE] [0mThe semantics of the module level directive "" in "node_modules/.pnpm/hast-util-to-estree@3.1.3/node_modules/hast-util-to-estree/lib/handlers/comment.js" may not be preserved when bundling.
+    [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m node_modules/.pnpm/hast-util-to-estree@3.1.3/node_modules/hast-util-to-estree/lib/handlers/comment.js:12:1 [38;5;246m][0m
+    [38;5;246m│[0m
+ [38;5;246m12 │[0m ''
+ [38;5;240m   │[0m ─┬  
+ [38;5;240m   │[0m  ╰── module level directive may not be preserved
+ [38;5;240m   │[0m 
+ [38;5;240m   │[0m [38;5;115mHelp[0m: For more information, see https://rolldown.rs/in-depth/directives#other-directives
+[38;5;246m────╯[0m
+
+[33m[MODULE_LEVEL_DIRECTIVE] [0mThe semantics of the module level directive "" in "node_modules/.pnpm/hast-util-to-estree@3.1.3/node_modules/hast-util-to-estree/lib/handlers/text.js" may not be preserved when bundling.
+   [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m node_modules/.pnpm/hast-util-to-estree@3.1.3/node_modules/hast-util-to-estree/lib/handlers/text.js:9:1 [38;5;246m][0m
+   [38;5;246m│[0m
+ [38;5;246m9 │[0m ''
+ [38;5;240m  │[0m ─┬  
+ [38;5;240m  │[0m  ╰── module level directive may not be preserved
+ [38;5;240m  │[0m 
+ [38;5;240m  │[0m [38;5;115mHelp[0m: For more information, see https://rolldown.rs/in-depth/directives#other-directives
+[38;5;246m───╯[0m
+
+✓ built in 421ms
+npm notice
+npm notice New major version of npm available! 10.9.8 -> 12.2.3
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.3
+npm notice To update run: npm install -g npm@12.2.3
+npm notice

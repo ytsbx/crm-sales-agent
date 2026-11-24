@@ -4,6 +4,7 @@
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -171,9 +172,8 @@ async def upsert_setting(
       改成一起重算，免得库里同时跑着两套天数。重算了几条一并记进审计。
     """
     merge_fields = payload.key in ("hard_floor", "export", "dedup_scoring", "notification_retry")
-    stmt = select(SystemSetting).where(SystemSetting.key == payload.key)
-    if merge_fields:
-        stmt = stmt.with_for_update()
+    # B23-05：所有 key 都对配置行加锁，串行化"读-改-写"，防并发丢更新（含 approval_levels）。
+    stmt = select(SystemSetting).where(SystemSetting.key == payload.key).with_for_update()
     row = (await session.execute(stmt)).scalar_one_or_none()
     before_value = row.value if row is not None else None
     await svc.validate_setting_value(session, payload.key, payload.value)
@@ -382,7 +382,7 @@ class BatchCandidateDecision(CandidateDecision):
     统一成"全部走请求体"一个形状：参数在哪一栏不用猜，`note` 也才有地方放。
     """
 
-    candidate_ids: list[int]
+    candidate_ids: list[int] = Field(min_length=1, max_length=200)
 
 
 @router.post("/public-pool/recycle-candidates/{candidate_id}/decide")
@@ -687,7 +687,11 @@ async def create_numbering_rule(
     preview = await _rule_with_current(session, row)
     validate_rule_length(row, preview["current_no"])
     session.add(row)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError:
+        # B23-05：并发同 code 撞唯一键 → 409，不让它变 500
+        raise AppError(ErrorCode.DUPLICATE, f"编号规则 {payload.code} 已存在", 409)
     await write_audit(
         session,
         operator_id=user.id,
@@ -715,7 +719,12 @@ async def update_numbering_rule(
     改规则只影响之后新生成的号 —— 这是刻意的：
     改一条规则就把历史单号一起改掉，对账时会灾难性。
     """
-    row = await session.get(NumberingRule, rule_id)
+    # B23-05：锁内读-改-写，防并发改同一规则丢更新
+    row = (
+        await session.execute(
+            select(NumberingRule).where(NumberingRule.id == rule_id).with_for_update()
+        )
+    ).scalar_one_or_none()
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, "编号规则不存在", 404)
 
@@ -816,7 +825,10 @@ async def create_dictionary(
         )
     row = DictionaryItem(**payload.model_dump())
     session.add(row)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError:
+        raise AppError(ErrorCode.DUPLICATE, f"{payload.type} 下已有编码 {payload.code}", 409)
     await write_audit(
         session,
         operator_id=user.id,
@@ -906,7 +918,10 @@ async def create_customer_level(
         remark=payload.remark,
     )
     session.add(row)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError:
+        raise AppError(ErrorCode.DUPLICATE, f"客户等级 {payload.code} 已存在", 409)
     await write_audit(
         session,
         operator_id=user.id,

@@ -189,7 +189,7 @@ async def _ensure_mapping_target_scope(
 
     if order is None:
         raise AppError(ErrorCode.NOT_FOUND, f"订单/订单明细编号 {internal_id} 不存在", 404)
-    if mapping.parent_key:
+    if object_type != OBJECT_ORDER and mapping.parent_key:
         parent = (
             await session.execute(
                 select(ExternalObjectMapping).where(
@@ -348,7 +348,7 @@ async def reconcile_order(
 @router.get("/integrations/erp/orders/{order_id}/status")
 async def order_status(
     order_id: int,
-    user: CurrentUser = Depends(require_permission("order:view")),
+    user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
     """拉取履约状态并回写（写入 order_status_history，source=ERP）。"""
@@ -475,6 +475,7 @@ async def collection_run(
             "inserted": result.get("inserted"),
             "updated": result.get("updated"),
             "duplicates": result.get("duplicates"),
+            "rejected_foreign_currency": result.get("rejected_foreign_currency", 0),
         },
         source="INTEGRATION",
         ip=client_ip(request),

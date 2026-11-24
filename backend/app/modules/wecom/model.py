@@ -15,7 +15,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, String, Text, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, String, Text, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base import Base, IdMixin, JSONType
@@ -133,7 +133,17 @@ class WeComSyncJob(Base, IdMixin):
     """同步任务流水（API §10 的 sync-jobs / transfer 都读这张表）。"""
 
     __tablename__ = "wecom_sync_jobs"
-    __table_args__ = (Index("ix_wecom_sync_jobs_type", "job_type", "status"),)
+    __table_args__ = (
+        Index("ix_wecom_sync_jobs_type", "job_type", "status"),
+        # 与迁移 d1e4f7a9c2b6 一致：非空事件指纹唯一，防并发回调重复落任务。
+        Index(
+            "uq_wecom_sync_event_fingerprint",
+            "event_fingerprint",
+            unique=True,
+            postgresql_where=text("event_fingerprint IS NOT NULL"),
+            sqlite_where=text("event_fingerprint IS NOT NULL"),
+        ),
+    )
 
     job_type: Mapped[str] = mapped_column(String(32))
     status: Mapped[str] = mapped_column(String(16), default="running")

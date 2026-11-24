@@ -1,6 +1,6 @@
 """案例接口请求体。"""
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.core.patch_schema import PatchModel
 
 
@@ -22,7 +22,7 @@ class CaseEvidenceItem(BaseModel):
 
 class CaseCreate(BaseModel):
     title: str = Field(min_length=1, max_length=200)
-    customer_id: int | None = None
+    customer_id: int | None = Field(default=None, gt=0, le=2**63 - 1)
     customer_label: str | None = Field(None, max_length=128)
     industry: str | None = Field(None, max_length=64)
     product_line: str | None = Field(None, max_length=64)
@@ -42,12 +42,19 @@ class CaseCreate(BaseModel):
     #: 证据单据列表（多条）。传了就以它为准，旧的四列自动同步成每类的第一条。
     evidences: list[CaseEvidenceItem] = Field(default_factory=list)
 
+    @field_validator("title")
+    @classmethod
+    def title_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("案例标题不能为空")
+        return value
+
 
 class CaseUpdate(PatchModel):
     """作者在 draft/rejected 状态下修改；字段全可选，传了才改。"""
 
     title: str | None = Field(None, max_length=200)
-    customer_id: int | None = None
+    customer_id: int | None = Field(default=None, gt=0, le=2**63 - 1)
     customer_label: str | None = Field(None, max_length=128)
     industry: str | None = Field(None, max_length=64)
     product_line: str | None = Field(None, max_length=64)

@@ -498,7 +498,7 @@ async def dispatch_pending(
     """
     from app.core.config import settings as app_settings
     from app.core.database import SessionLocal
-    from app.modules.wecom.client import WeComError, WeComNotConfigured, get_client
+    from app.modules.wecom.client import WeComError, WeComNotConfigured, get_client, safe_error_text
 
     if only_ids is not None and not only_ids:
         return {"attempted": 0, "sent": 0, "skipped": 0, "failed": 0}
@@ -590,10 +590,10 @@ async def dispatch_pending(
                     description=(row.content or row.title)[:120],
                 )
             except (WeComNotConfigured, WeComError) as error:
-                _mark_failed(row, str(error), policy, now)
+                _mark_failed(row, safe_error_text(error), policy, now)
                 failed += 1
             except Exception as error:  # 网络等其它异常同样要落痕
-                _mark_failed(row, f"{type(error).__name__}: {error}", policy, now)
+                _mark_failed(row, safe_error_text(error), policy, now)
                 failed += 1
             else:
                 row.wecom_status = "sent"
@@ -647,7 +647,7 @@ async def send_digest(
     """
     from app.core.config import settings as app_settings
     from app.core.database import SessionLocal
-    from app.modules.wecom.client import WeComError, WeComNotConfigured, get_client
+    from app.modules.wecom.client import WeComError, WeComNotConfigured, get_client, safe_error_text
 
     async with SessionLocal() as own:
         policy = await retry_policy(own)
@@ -730,12 +730,12 @@ async def send_digest(
                 )
             except (WeComNotConfigured, WeComError) as error:
                 for row in batch:
-                    _mark_failed(row, str(error), policy, now)
+                    _mark_failed(row, safe_error_text(error), policy, now)
                     row.digest_at = now
                 failed += len(batch)
             except Exception as error:  # 网络等其它异常同样要落痕
                 for row in batch:
-                    _mark_failed(row, f"{type(error).__name__}: {error}", policy, now)
+                    _mark_failed(row, safe_error_text(error), policy, now)
                     row.digest_at = now
                 failed += len(batch)
             else:

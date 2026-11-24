@@ -127,6 +127,7 @@ export default function TaskListPage() {
     enabled: handoverVisible,
   })
 
+  const [flashTaskId, setFlashTaskId] = useState<number | null>(null)
   const createMutation = useMutation({
     mutationFn: () =>
       createTask({
@@ -134,8 +135,13 @@ export default function TaskListPage() {
         due_at: form.due_at ? form.due_at.toISOString() : null,
         priority: form.priority,
       }),
-    onSuccess: () => {
+    onSuccess: (created) => {
       Toast.success('任务已创建')
+      // 新建的任务通常排到列表里，亮一下这一行，省得用户逐条找
+      if (created?.id) {
+        setFlashTaskId(created.id)
+        window.setTimeout(() => setFlashTaskId((cur) => (cur === created.id ? null : cur)), 1500)
+      }
       setCreateVisible(false)
       setForm({ title: '', priority: 'normal', due_at: null })
       void refresh()
@@ -524,6 +530,7 @@ export default function TaskListPage() {
         </div>
 
         <Table<Task>
+          rowClassName={(row?: Task) => (row && row.id === flashTaskId ? 'flash-updated' : '')}
           key={handover ? 'handover' : 'tasks'}
           className="tasks-table"
           columns={handover ? columns.filter(({ title }) => title !== '操作' && title !== '负责人')

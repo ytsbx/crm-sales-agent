@@ -9,7 +9,7 @@
 import math
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Awaitable, Callable
 
 from sqlalchemy import and_, func, or_, select
@@ -180,7 +180,16 @@ def validate_tool_arguments(spec: ToolSpec, raw: object) -> dict:
 
 
 def _money(value) -> float | None:
-    return None if value is None else round(float(value), 2)
+    if value is None:
+        return None
+    return float(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def _measure(value) -> float | None:
+    """重量/体积等非金额度量：保留 4 位小数，不用金额的 2 位。"""
+    if value is None:
+        return None
+    return float(Decimal(str(value)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP))
 
 
 async def _may_see_full_contact(ctx: ToolContext, customer: Customer) -> bool:
@@ -474,7 +483,7 @@ async def get_customer_overview(ctx: ToolContext, customer_id: int) -> dict:
     # ⚠️ 这个字段仍然是**参考口径**（未取消订单的整单金额 − 已确认回款），
     # 不等于正式应收：正式应收以应收计划为准。口径混用正是 §8.4 点名的风险，
     # 所以把差别写进 `receivable_note` 一起交给模型。
-    if ctx.user.has("payment:view"):
+    if ctx.user.has("payment:view") and ctx.user.has("order:view"):
         # 按币种分别累加"未取消订单的整单金额"与"已确认回款"，**不跨币种相加**
         order_total: dict[str, Decimal] = {}
         for order in orders:
@@ -514,6 +523,8 @@ async def get_customer_overview(ctx: ToolContext, customer_id: int) -> dict:
             "待回款为「未取消订单的整单金额 − 已确认回款」的参考值，不等于正式应收；"
             "正式应收以应收计划为准（可让「查应收与回款」按计划口径再看一次）"
         )
+    elif ctx.user.has("payment:view"):
+        unavailable.append("待回款参考金额（需要 order:view，可以使用「查应收与回款」查看正式应收）")
     else:
         unavailable.append("应收与回款（需要 payment:view）")
 
@@ -1468,7 +1479,7 @@ async def get_product(ctx: ToolContext, product_id: int) -> dict:
                 "specification": sku.specification,
                 "color": sku.color,
                 "material": sku.material,
-                "weight": _money(sku.weight),
+                "weight": float(sku.weight) if sku.weight is not None else None,
                 "carton_qty": sku.carton_qty,
                 "moq": sku.moq,
                 "unit": sku.unit,
@@ -1551,12 +1562,22 @@ async def calculate_logistics(
     destination: str | None = None,
     shipping_method: str | None = None,
 ) -> dict:
+    from pydantic import ValidationError
+
     from app.modules.pricing import logistics as logistics_service
+    from app.modules.pricing.logistics_schema import LogisticsCalculateRequest
+
+    try:
+        payload = LogisticsCalculateRequest(sku_id=sku_id, quantity=quantity)
+    except ValidationError as exc:
+        field = exc.errors()[0]["loc"][0]
+        message = "数量必须是有效数字" if field == "quantity" else "SKU 编号必须是整数"
+        raise AppError(ErrorCode.PARAM_ERROR, message, 422) from exc
 
     prepared = await logistics_service.prepare(
         ctx.session,
-        sku_id=sku_id,
-        quantity=quantity,
+        sku_id=payload.sku_id,
+        quantity=payload.quantity,
         origin=origin,
         destination=destination,
         shipping_method=shipping_method,
@@ -1566,9 +1587,9 @@ async def calculate_logistics(
         "sku": prepared["sku"]["sku_code"],
         "quantity": prepared["quantity"],
         "measures": {
-            "actual_weight": _money(prepared["measures"]["actual_weight"]),
-            "volume": _money(prepared["measures"]["volume"]),
-            "chargeable_weight": _money(prepared["measures"]["chargeable_weight"]),
+            "actual_weight": _measure(prepared["measures"]["actual_weight"]),
+            "volume": _measure(prepared["measures"]["volume"]),
+            "chargeable_weight": _measure(prepared["measures"]["chargeable_weight"]),
             "chargeable_basis": prepared["measures"]["chargeable_basis"],
         },
         "options": options[:5],
@@ -1626,7 +1647,7 @@ async def get_order(ctx: ToolContext, order_id: int) -> dict:
                 # 订单明细用的是 sku_snapshot（快照字符串），不是 quote_items 的 sku_code_snapshot
                 "sku": item.sku_snapshot,
                 "specification": item.specification,
-                "quantity": _money(item.quantity),
+                "quantity": float(item.quantity),
                 "unit_price": _money(item.unit_price),
                 "amount": _money(item.amount),
             }

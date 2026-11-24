@@ -720,7 +720,8 @@ async def refresh_status(
 ) -> dict:
     """拉回履约状态并写状态历史（source=ERP）。"""
     adapter = get_adapter()
-    if not order.erp_order_id:
+    external_id = order.erp_order_id
+    if not external_id:
         raise AppError(
             ErrorCode.PARAM_ERROR, "该订单还没推送到 ERP/MES，无法拉取履约状态", 422
         )
@@ -731,14 +732,14 @@ async def refresh_status(
         direction="inbound",
         business_type="order",
         business_id=order.id,
-        request_data={"erp_order_id": order.erp_order_id},
+        request_data={"erp_order_id": external_id},
         status="pending",
     )
     session.add(log)
     await session.flush()
 
     try:
-        result = await adapter.fetch_order_status(order.erp_order_id)
+        result = await adapter.fetch_order_status(external_id)
     except ErpNotConfigured:
         log.status = LOG_STATUS_SKIPPED
         log.error_message = "ERP/MES 未配置，未实际拉取"
@@ -799,7 +800,11 @@ async def refresh_status(
     blocked_reason: str | None = None
     # 对方返回了不认识的状态：不改 CRM 状态，但日志里留 raw_status，
     # 否则"为什么状态没变"要靠猜。
-    if new_status and new_status in VALID_STATUS and new_status != order.status:
+    if order.erp_order_id != external_id:
+        blocked_reason = "刷新期间 ERP 单号已变更，请重新刷新订单状态"
+        log.error_message = blocked_reason
+        result = {}
+    elif new_status and new_status in VALID_STATUS and new_status != order.status:
         # 必须走订单状态服务，**不能直接赋值**（§4.1.8）。
         # 原来这里是 `order.status = new_status`：ERP 能把已取消的订单"复活"成已发货，
         # 也能在还有未发量时把整单标成完成——§3.5 刚立的闸门被这条后门绕过去。

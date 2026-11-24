@@ -211,3 +211,28 @@ async def test_stale_customer_contacts_follow_the_same_owner_scope(case):
     result = await stale_customers(session, user)
     assert {row["id"] for row in result["items"]} == allowed == {1}
     assert result["items"][0]["contact_phone"] == "18800001111"
+
+
+@pytest.mark.anyio
+async def test_price_permission_writes_share_one_role_and_reject_legacy_duplicates(case):
+    from app.modules.pricing import router
+    from app.modules.pricing.schema import PricePermissionCreate, PricePermissionUpdate
+
+    raw, session = case
+    raw.add(Role(id=88, name="测试角色", code="test-price-role"))
+    raw.commit()
+    actor = make_user(1, permissions={"price:manage"})
+    await router.create_price_permission(PricePermissionCreate(role_id=88), REQ, actor, session)
+    with pytest.raises(AppError, match="已有价格权限"):
+        await router.create_price_permission(PricePermissionCreate(role_id=88), REQ, actor, session)
+    await router.upsert_price_permission(88, PricePermissionUpdate(minimum_margin="0.20"), REQ, actor, session)
+    await router.patch_price_permission(88, PricePermissionUpdate(can_approve=True), REQ, actor, session)
+    current = raw.query(PricePermission).filter_by(role_id=88).one()
+    assert current.minimum_margin == D("0.20") and current.can_approve
+
+    raw.add(PricePermission(role_id=88, minimum_margin=D("0.30"), can_approve=False))
+    raw.commit()
+    with pytest.raises(AppError) as error:
+        await router.upsert_price_permission(88, PricePermissionUpdate(), REQ, actor, session)
+    assert error.value.http_status == 409
+    assert raw.query(PricePermission).filter_by(role_id=88).count() == 2

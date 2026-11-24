@@ -29,12 +29,19 @@ from app.modules.file.access import (
     visible_object,
 )
 from app.modules.file import access, service, storage
-from app.modules.file.model import BusinessFile, FileRecord
+from app.modules.file.model import CONTRACT_PENDING_SIGNATURE, BusinessFile, FileRecord
 from app.modules.user.model import User
 
 logger = logging.getLogger("crm.file")
 
 router = APIRouter(tags=["File"])
+
+
+def _attachment_category(business_type: str | None, category: str | None) -> str | None:
+    # 兼容已发布的回签弹窗。上传完成时文件还没有正式登记。
+    if business_type == "contract" and category == "signed":
+        return CONTRACT_PENDING_SIGNATURE
+    return category
 
 @router.get("/public/inquiry-images/{file_id}")
 async def public_inquiry_image(file_id: int, expires: int, sig: str, session: AsyncSession = Depends(get_db)):
@@ -129,6 +136,7 @@ async def upload_file(
                 422,
             )
 
+    category = _attachment_category(business_type, category)
     object_key, size, checksum = await storage.save_upload(file)
     record = FileRecord(
         storage_provider=settings.storage_provider,
@@ -509,6 +517,8 @@ async def delete_file(
     ).scalars().first()
     if record is None:
         raise AppError(ErrorCode.NOT_FOUND, "文件不存在", 404)
+    if not await can_access_file(session, user, file_id):
+        raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该文件不在你的可见范围内", 403)
     links = (
         await session.execute(select(BusinessFile).where(BusinessFile.file_id == file_id))
     ).scalars().all()
@@ -739,6 +749,7 @@ async def attach_file(
                 f"（category={SUPPLEMENT_CATEGORY}）",
                 422,
             )
+    category = _attachment_category(business_type, category)
     link = BusinessFile(
         business_type=business_type,
         business_id=business_id,

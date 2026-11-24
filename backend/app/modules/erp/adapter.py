@@ -542,18 +542,15 @@ class JushuitanAdapter(ErpAdapter):
         # 没有 code 字段时默认成 0 = 成功，等于"对方只要返回 200 就算受理"，
         # 这是"没有可靠凭据也标已同步"的源头之一（§8.11）。
         raw_code = data.get("code")
-        if raw_code is None:
-            raise ErpError(
-                "响应缺少 code 字段，无法确认对方是否受理",
-                api=path,
-                error_class=ERR_CLASS_UNCLASSIFIED,
-            )
         try:
+            if type(raw_code) is not int and not isinstance(raw_code, str):
+                raise ValueError
             code = int(raw_code)
-        except (TypeError, ValueError) as error:
-            raise ErpError(
-                f"响应 code 不是整数：{raw_code!r}", api=path, error_class=ERR_CLASS_UNCLASSIFIED
-            ) from error
+        except ValueError:
+            reason = "响应缺少 code 字段" if raw_code is None else "响应 code 不是整数"
+            if capability == "write":
+                raise ErpResultUnknown(f"{reason}，无法确认对方是否受理", api=path) from None
+            raise ErpError(reason, api=path, error_class=ERR_CLASS_UNCLASSIFIED) from None
         if code != 0:
             message = str(data.get("msg") or data.get("message") or data)
             raise ErpError(
@@ -608,17 +605,23 @@ class JushuitanAdapter(ErpAdapter):
             )
         if not orders:
             return {"status": None, "shipped_at": None, "raw": data}
-        first = orders[0]
-        if not isinstance(first, dict):
+        requested_id = str(external_id).strip()
+        matching_orders = [
+            row for row in orders
+            if isinstance(row, dict) and row.get("o_id") is not None
+            and str(row["o_id"]).strip() == requested_id
+        ]
+        if len(matching_orders) != 1:
             raise ErpResultUnknown(
-                "响应 data.orders 第一项不是对象，无法读取订单状态",
+                "ERP 返回的数据无法确认所查询订单，本次未更新订单状态",
                 api="/open/orders/query",
             )
-        raw_status = str(first.get("status") or "")
+        matched = matching_orders[0]
+        raw_status = str(matched.get("status") or "")
         return {
             "status": self.STATUS_MAP.get(raw_status),
             "raw_status": raw_status,
-            "shipped_at": first.get("send_date"),
+            "shipped_at": matched.get("send_date"),
             "raw": data,
         }
 

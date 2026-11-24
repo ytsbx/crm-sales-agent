@@ -16,12 +16,15 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from unittest.mock import patch
 
+import pytest
+from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session
 
 from app.modules.bizdoc import service as bizdoc
 from app.modules.bizdoc.model import BizDocTemplate
+from app.modules.bizdoc.router import TemplateCreate
 from app.modules.customer.model import Contact, Customer
 from app.modules.product.model import Product, Sku
 from app.modules.quote.model import Quote, QuoteCharge, QuoteItem, QuoteVersion
@@ -29,6 +32,13 @@ from app.modules.user.model import User
 
 _BIGINT_REGISTERED = False
 _JSONB_REGISTERED = False
+
+
+def test_business_document_template_remark_has_a_storage_limit():
+    assert TemplateCreate(doc_type="sample", name="示例", remark="字" * 255).remark == "字" * 255
+    with pytest.raises(ValidationError) as captured:
+        TemplateCreate(doc_type="sample", name="示例", remark="字" * 256)
+    assert captured.value.errors()[0]["loc"] == ("remark",)
 
 
 def _sqlite_compat() -> None:

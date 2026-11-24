@@ -50,7 +50,7 @@ async def list_users(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     # 用户确认复用完整员工列表：分配客户/线索的角色可读，用户管理写接口仍单独授权。
-    _: CurrentUser = Depends(require_permission("user:manage", "customer:assign", "lead:assign")),
+    user: CurrentUser = Depends(require_permission("user:manage", "customer:assign", "lead:assign")),
     session: AsyncSession = Depends(get_db),
 ):
     stmt = svc.base_user_query()
@@ -66,12 +66,15 @@ async def list_users(
     dept_map = await svc.department_names(session, [u.department_id for u in rows])
     role_map = await svc.roles_of_users(session, [u.id for u in rows])
     items = [
-        svc.serialize_user(
-            user,
-            department_name=dept_map.get(user.department_id) if user.department_id else None,
-            roles=role_map.get(user.id, []),
-        )
-        for user in rows
+        {
+            **svc.serialize_user(
+                row,
+                department_name=dept_map.get(row.department_id) if row.department_id else None,
+                roles=role_map.get(row.id, []),
+            ),
+            **({"oa_user_id": row.oa_user_id} if "admin" in user.roles else {}),
+        }
+        for row in rows
     ]
     return ok(page_data(items, total, page, page_size))
 

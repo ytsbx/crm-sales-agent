@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import AuditLog, write_audit
 from app.core.errors import AppError, ErrorCode
 from app.core.timebase import today_business
+from app.core.trade_mode import reject_foreign_currency
 from app.modules.file.model import FileRecord
 from app.modules.order.model import SalesOrder
 from app.modules.payment.model import (
@@ -818,6 +819,31 @@ async def assert_order_visible(session: AsyncSession, user, order_id: int) -> No
 
     order = await session.get(SalesOrder, order_id)
     await ensure_in_scope(session, user, owner_id=order.owner_id if order else None, label="订单")
+
+
+async def assert_receivable_amount_fits(
+    session: AsyncSession, order: SalesOrder, amount: Decimal, *, replacing: ReceivablePlan | None = None,
+) -> None:
+    """新增或调高应收前，由调用方在订单行锁内校验有效应收合计。"""
+    reject_foreign_currency(order.currency, replacing.currency if replacing is not None else None, label="订单应收")
+    stmt = select(ReceivablePlan.currency, func.sum(ReceivablePlan.amount)).where(
+        ReceivablePlan.order_id == order.id,
+        ReceivablePlan.status != "cancelled",
+    ).group_by(ReceivablePlan.currency)
+    if replacing is not None:
+        stmt = stmt.where(ReceivablePlan.id != replacing.id)
+    rows = (await session.execute(stmt)).all()
+    reject_foreign_currency(*(currency for currency, _ in rows), label="订单应收")
+    planned = sum((Decimal(total) for _, total in rows), ZERO)
+    limit = Decimal(order.total_amount)
+    if planned + amount > limit:
+        available = max(limit - planned, ZERO)
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"保存后应收合计 ¥{planned + amount:,.2f} 将超过订单总额 ¥{limit:,.2f}。"
+            f"本期最多可填 ¥{available:,.2f}，请核对各期金额。",
+            422,
+        )
 
 
 def split_amounts(total: Decimal, ratios: list[Decimal]) -> list[Decimal]:

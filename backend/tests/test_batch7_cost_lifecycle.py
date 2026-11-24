@@ -12,7 +12,7 @@ from app.core.errors import AppError
 from app.core.audit import AuditLog
 from app.modules.quote import service as svc, router
 from app.modules.quote.model import Quote, QuoteVersion, QuoteItem, QuoteCharge
-from app.modules.quote.schema import QuoteClone, QuoteItemUpdate
+from app.modules.quote.schema import QuoteClone, QuoteItemUpdate, QuoteUpdate
 from app.modules.pricing.model import ProductCost, PriceRule, CustomerPriceRule, PricePermission
 from app.modules.product.model import Product, Sku, SkuFieldAuthority, SkuMasterVersion
 from app.modules.settings.model import SystemSetting, NumberingRule, NumberSequence
@@ -20,7 +20,7 @@ from app.modules.approval import rules_engine
 from app.modules.approval.model import ApprovalDefinition, ApprovalInstance, ApprovalRecord, ApprovalRule
 from app.modules.customer.model import Customer
 from app.modules.opportunity.model import Opportunity
-from app.modules.user.model import Role
+from app.modules.user.model import Permission, Role, User, user_roles, role_permissions
 
 NOW = datetime.now(UTC)
 REQUEST = Request({"type": "http", "headers": [], "client": ("127.0.0.1", 1)})
@@ -67,6 +67,22 @@ async def submit(session, quote, version):
     return await svc.submit_for_approval(session, quote=quote, version=version,
                                         applicant_id=1, user_roles=USER.roles)
 
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("amount,expected", [("99999999999999.98", "manager"), ("99999999999999.99", "director")])
+async def test_approval_tier_compares_exact_cents(case, amount, expected):
+    raw, session, quote, version = case
+    item = await build(raw, session, version, cost="complete")
+    item.minimum_price_snapshot = D(120)
+    version.total_amount = D(amount)
+    raw.add(SystemSetting(key="approval_levels", value={"levels": [
+        {"node": "manager", "max_amount": "99999999999999.98"},
+        {"node": "director", "max_amount": " "},
+    ]}))
+    raw.flush()
+    instance, needs = await submit(session, quote, version)
+    assert needs and instance.current_node == expected
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("cost,amount,required", [
     ("partial", "0", True), ("partial", "10", True),
@@ -84,6 +100,47 @@ async def test_cost_states_submit(case, cost, amount, required):
     instance, needs = await submit(session, quote, version)
     assert needs is required
     assert version.approval_status == ("pending" if required else "approved")
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["clone", "update"])
+@pytest.mark.parametrize("owner_id,status", [(0, 404), (999, 404), (2, 422), (3, 200), (4, 403), (5, 403)])
+async def test_quote_assignment_checks_recipient_customer_access(case, operation, owner_id, status):
+    raw, session, quote, _ = case
+    for table in (Permission.__table__, user_roles, role_permissions):
+        table.create(raw.get_bind(), checkfirst=True)
+    raw.add_all([
+        User(id=2, name="停用用户", username="inactive", password_hash="x", status="inactive"),
+        User(id=3, name="在职用户", username="active", password_hash="x", status="active"),
+        User(id=4, name="范围外用户", username="outside", password_hash="x"),
+        User(id=5, name="无客户查看权", username="no_view", password_hash="x"),
+        Role(id=1, code="viewer_all", name="全公司客户查看", data_scope="all"),
+        Role(id=2, code="viewer_self", name="本人客户查看", data_scope="self"),
+        Role(id=3, code="other_role", name="其他角色", data_scope="all"),
+        Permission(id=1, code="customer:view", name="查看客户"),
+    ])
+    raw.flush()
+    raw.execute(user_roles.insert(), [{"user_id": i + 2, "role_id": i} for i in (1, 2, 3)])
+    raw.execute(role_permissions.insert(), [{"role_id": i, "permission_id": 1} for i in (1, 2)])
+    raw.commit()
+
+    async def save():
+        if operation == "clone":
+            await router.clone_quote(quote.id, QuoteClone(owner_id=owner_id, copy_items=False), REQUEST, USER, session)
+        else:
+            await router.update_quote(quote.id, QuoteUpdate(owner_id=owner_id), REQUEST, USER, session)
+
+    if status != 200:
+        with pytest.raises(AppError) as error:
+            await save()
+        assert error.value.http_status == status
+        assert raw.query(Quote).count() == 1
+        assert quote.owner_id == 1
+        return
+
+    await save()
+    saved = raw.query(Quote).filter(Quote.id != quote.id).one() if operation == "clone" else quote
+    assert saved.owner_id == owner_id
+
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("operation", ["version", "clone"])

@@ -41,6 +41,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import zlib
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime
@@ -51,6 +52,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.errors import AppError, ErrorCode
 from app.core.timebase import today_business
+
+logger = logging.getLogger(__name__)
 
 #: 行结果分类。预览快照与正式执行用同一套码，才能逐行比对"结论变没变"。
 OUTCOME_CREATED = "created"
@@ -311,6 +314,14 @@ class ImportReport:
         self.disputed.append(item)
         return item
 
+    def write_failed_row(self, row: int, name: str, error: Exception) -> None:
+        if isinstance(error, AppError) and error.http_status < 500:
+            reason = error.message
+        else:
+            logger.warning("导入写入失败：模块=%s 行号=%s 异常类型=%s", self.module, row, type(error).__name__)
+            reason = "该行保存失败，请重试；仍失败时请联系管理员并提供行号。"
+        self.failed_row(row, name, reason)
+
     def failed_row(self, row: int, name: str, reason: str | list[str]) -> dict:
         """记一行失败。同一行再次调用是**追加原因**，不会变成第二条失败。"""
         problems = [reason] if isinstance(reason, str) else [r for r in reason if r]
@@ -471,7 +482,14 @@ def read_preview_token(
     if not hmac.compare_digest(_sign(compressed).encode("ascii"), signature.encode("utf-8")):
         raise AppError(ErrorCode.PARAM_ERROR, "预览快照已失效，请重新预览", 422)
     try:
-        data = json.loads(zlib.decompress(compressed).decode("utf-8"))
+        # B23-09：解压上限，防超大压缩 token 耗尽内存/CPU（zip bomb）
+        if len(compressed) > 2 * 1024 * 1024:
+            raise ValueError("preview token too large")
+        dec = zlib.decompressobj()
+        raw = dec.decompress(compressed, 8 * 1024 * 1024)
+        if not dec.eof:
+            raise ValueError("preview token exceeds decompress limit")
+        data = json.loads(raw.decode("utf-8"))
     except Exception as exc:  # noqa: BLE001
         raise AppError(ErrorCode.PARAM_ERROR, "预览快照无法解析，请重新预览", 422) from exc
     if data.get("m") != module:
@@ -684,10 +702,11 @@ async def finalize(
     try:
         await session.commit()
     except Exception as exc:  # noqa: BLE001 —— 提交失败不能返回成功统计
+        logger.warning("导入提交结果未确认：模块=%s 异常类型=%s", module, type(exc).__name__)
         await session.rollback()
         raise AppError(
             ErrorCode.SYSTEM_ERROR,
-            f"导入提交失败，本次没有任何数据写入（{str(exc)[:120]}），请重试或联系管理员",
+            "暂时无法确认导入是否完成，请先核对导入记录，再决定是否重试。",
             500,
         ) from exc
 

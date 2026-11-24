@@ -12,9 +12,8 @@ from starlette.requests import Request
 
 from app.core import database, scheduler
 from app.core.base import Base
-from app.core.config import settings
+from app.core.config import Settings, settings
 from app.core.csvio import csv_bytes
-from app.core.deps import get_current_user
 from app.core.errors import AppError
 from app.main import app, lifespan
 from app.modules.dingtalk.oa_stream import oa_stream
@@ -78,11 +77,18 @@ async def test_lead_conversion_rate_respects_scope_without_returning_duration(db
     assert "average_conversion_days" not in empty
 
 
+def test_legacy_push_environment_cannot_enable_dingtalk_approval(monkeypatch):
+    monkeypatch.setenv("DINGTALK_PUSH_OFF", "0")
+    monkeypatch.setenv("DINGTALK_LOGIN_OFF", "0")
+    config = Settings(_env_file=None, dingtalk_app_key="test-key", dingtalk_app_secret="test-secret")
+    assert config.dingtalk_push_off is True
+    assert config.dingtalk_login_ready is True
+
+
 @pytest.mark.anyio
-@pytest.mark.parametrize("failure_point", ["start", "stop"])
-async def test_lifespan_cleans_other_services_when_stream_fails(monkeypatch, failure_point):
-    start_stream = Mock(side_effect=RuntimeError("stream failed") if failure_point == "start" else None)
-    stop_stream = AsyncMock(side_effect=RuntimeError("stream failed") if failure_point == "stop" else None)
+async def test_lifespan_does_not_start_legacy_stream(monkeypatch):
+    start_stream = Mock()
+    stop_stream = AsyncMock()
     stop_scheduler = Mock()
     reset_adapters = AsyncMock()
     reset_client = AsyncMock()
@@ -93,18 +99,16 @@ async def test_lifespan_cleans_other_services_when_stream_fails(monkeypatch, fai
     monkeypatch.setattr(adapter, "reset_adapters", reset_adapters)
     monkeypatch.setattr(client, "reset_client", reset_client)
 
-    with pytest.raises(RuntimeError, match="stream failed"):
-        async with lifespan(app):
-            assert failure_point == "stop"
-
-    stop_stream.assert_awaited_once()
+    async with lifespan(app):
+        start_stream.assert_not_called()
+    stop_stream.assert_not_awaited()
     stop_scheduler.assert_called_once()
     reset_adapters.assert_awaited_once()
     reset_client.assert_awaited_once()
 
 
 @pytest.mark.anyio
-async def test_oa_health_uses_existing_settings_permission(monkeypatch):
+async def test_legacy_approval_routes_are_unavailable(monkeypatch):
     class HealthSession:
         async def __aenter__(self):
             return SimpleNamespace(execute=AsyncMock(), rollback=AsyncMock())
@@ -113,24 +117,20 @@ async def test_oa_health_uses_existing_settings_permission(monkeypatch):
             pass
 
     monkeypatch.setattr(database, "SessionLocal", HealthSession)
-    url = f"{settings.api_prefix}/dingtalk/oa-health"
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as http:
         assert (await http.get("/health")).json()["data"] == {
             "status": "up", "app": settings.app_name, "database": "ok",
         }
-        assert (await http.get(url)).status_code == 401
-        allowed = False
-        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
-            roles=[], has=lambda code: allowed and code == "settings:manage",
-        )
-        try:
-            assert (await http.get(url)).status_code == 403
-            allowed = True
-            response = await http.get(url)
-            assert response.status_code == 200
-            assert "last_event_at" in response.json()["data"]
-        finally:
-            app.dependency_overrides.pop(get_current_user)
+        for method, path in (
+            ("GET", "/dingtalk/oa-health"),
+            ("POST", "/dingtalk/oa-sync"),
+            ("GET", "/contract-documents/1/approval-entry"),
+            ("POST", "/contract-documents/1/approval-auto-link"),
+            ("POST", "/contract-documents/1/approval-link"),
+            ("POST", "/contract-documents/1/approval-sync"),
+            ("POST", "/contract-documents/1/dingtalk-oa"),
+        ):
+            assert (await http.request(method, f"{settings.api_prefix}{path}")).status_code == 404
 
 
 @pytest.mark.anyio

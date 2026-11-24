@@ -123,11 +123,9 @@ async def run_milestone_overdue_job() -> None:
 
 
 async def run_notification_retry_job() -> None:
-    """每 N 分钟：把到期该重试的企微投递失败通知再发一次（文档 §六）。
+    """每 N 分钟：补发待投递的即时企微通知，并按策略重试到期的失败通知。
 
-    只捞"failed 且未超上限且已到退避时间"的行——pending 由业务动作实时投递，
-    skipped（没绑企微）不自动重试。到上限的行停着等设置页的人工补投，
-    这里不碰，避免把确定性失败打成长期噪声。
+    日报级待投递通知由日报任务处理。已跳过或重试到达上限的行走人工补投。
     """
     from app.modules.notification import service as notification_service
 

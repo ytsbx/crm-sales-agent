@@ -115,7 +115,7 @@ async def contact_timeline(
     user: CurrentUser = Depends(require_permission("customer:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    """联系人时间线。联系人自己没有负责人，跟着所属客户走范围。"""
+    """联系人时间线。挂客户的跟客户走范围；没挂客户的认自身负责人（B22-P2）。"""
     from app.modules.contact_util import can_view_full_contact
 
     contact = await session.get(Contact, contact_id)
@@ -130,6 +130,11 @@ async def contact_timeline(
             session, user, owner_id=customer.owner_id, label="客户", allow_unowned=True
         )
         owner_id = customer.owner_id
+    else:
+        # B22-P2（用户已确认补）：没挂客户的联系人不再跳过范围检查，
+        # 认它自己的负责人（添加人）；连负责人都没有的默认拒绝，不再人人可读。
+        await ensure_in_scope(session, user, owner_id=contact.owner_id, label="联系人")
+        owner_id = contact.owner_id
     show_full = await can_view_full_contact(
         session, user, customer_id=contact.customer_id, owner_id=owner_id
     )

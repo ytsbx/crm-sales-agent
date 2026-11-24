@@ -321,7 +321,19 @@ async def basis_for(
     else:
         snapshot = await session.get(BasisSnapshot, year)
         if snapshot is None:
-            snapshot = await _freeze_basis(year, operator_id=operator_id)
+            # B18-P1：GET 只读不写——未冻结时返回实时计算值，冻结走显式 POST refreeze
+            veteran_ids, first_deal_month, first_deal_detail = await _build_basis(session, year)
+            return (
+                veteran_ids,
+                first_deal_month,
+                first_deal_detail,
+                {
+                    "frozen": False,
+                    "frozen_at": None,
+                    "version": BASIS_VERSION,
+                    "note": "尚未冻结，当前为实时计算值；管理员可通过「重新冻结」操作存档",
+                },
+            )
     return (
         [int(x) for x in (snapshot.veteran_customer_ids or [])],
         {int(k): v for k, v in (snapshot.first_deal_month or {}).items()},

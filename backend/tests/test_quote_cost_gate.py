@@ -5,11 +5,66 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from pydantic import ValidationError
+
 from app.core.errors import AppError
+from app.modules.customer.model import Contact, Customer
 from test_batch7_cost_lifecycle import case, build, submit, USER, REQUEST, NOW  # noqa: F401
 from app.modules.quote import service as quotes, router as quote_router, lifecycle
+from app.modules.quote.schema import QuoteUpdate, QuoteVersionUpdate
 from app.modules.pricing import service as pricing
 from app.modules.pricing.model import ProductCost
+
+
+@pytest.mark.parametrize("schema", [QuoteUpdate, QuoteVersionUpdate])
+@pytest.mark.parametrize("value", [None, "", "  "])
+def test_quote_edit_rejects_clearing_validity(schema, value):
+    with pytest.raises(ValidationError, match="请填写报价有效期") as error:
+        schema.model_validate({"valid_until": value})
+    assert error.value.errors()[0]["loc"] == ("valid_until",)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("original", [None, date(2027, 1, 1)])
+async def test_quote_validity_is_preserved_when_omitted_and_synced_when_edited(case, original):
+    raw, session, quote, version = case
+    quote.valid_until = version.valid_until_snapshot = original
+    raw.commit()
+
+    await quote_router.update_quote(quote.id, QuoteUpdate(contact_id=None), REQUEST, USER, session)
+    await quote_router.update_version(version.id, QuoteVersionUpdate(remark="更新备注"), REQUEST, USER, session)
+    assert quote.valid_until == version.valid_until_snapshot == original
+
+    first_date = date(2027, 2, 1)
+    await quote_router.update_quote(quote.id, QuoteUpdate(valid_until=first_date), REQUEST, USER, session)
+    assert quote.valid_until == version.valid_until_snapshot == first_date
+
+    next_date = date(2027, 3, 1)
+    await quote_router.update_version(version.id, QuoteVersionUpdate(valid_until=next_date), REQUEST, USER, session)
+    assert quote.valid_until == version.valid_until_snapshot == next_date
+
+
+@pytest.mark.anyio
+async def test_editing_quote_contact_requires_the_same_customer(case):
+    raw, session, quote, _ = case
+    raw.add(Customer(id=2, name="另一客户"))
+    raw.add_all([
+        Contact(id=1, customer_id=quote.customer_id, name="本客户联系人"),
+        Contact(id=2, customer_id=2, name="另一客户联系人"),
+    ])
+    quote.contact_id = 1
+    raw.commit()
+
+    for contact_id, status in ((2, 422), (999, 404)):
+        with pytest.raises(AppError) as error:
+            await quote_router.update_quote(quote.id, QuoteUpdate(contact_id=contact_id), REQUEST, USER, session)
+        assert error.value.http_status == status
+        assert quote.contact_id == 1
+
+    await quote_router.update_quote(quote.id, QuoteUpdate(contact_id=None), REQUEST, USER, session)
+    assert quote.contact_id is None
+    await quote_router.update_quote(quote.id, QuoteUpdate(contact_id=1), REQUEST, USER, session)
+    assert quote.contact_id == 1
 
 
 @pytest.mark.anyio
@@ -578,3 +633,34 @@ async def test_refresh_locked_version_preserves_item(case, status, entry):
         else:
             await quote_router.cost_refresh(version.id, REQUEST, USER, session)
     assert (item.quoted_price, item.cost_snapshot, item.price_source, version.total_amount) == before
+
+
+@pytest.mark.anyio
+async def test_accepted_historical_foreign_quote_cannot_create_order(case):
+    from app.modules.order import service as orders
+    from app.modules.order.model import SalesOrder
+
+    raw, session, quote, version = case
+    await build(raw, session, version, cost="complete")
+    quote.status = "accepted"
+    version.approval_status = "approved"
+    version.accepted_at = version.sent_at = NOW
+    version.currency = "USD"
+    with pytest.raises(AppError, match="人民币"):
+        await orders.create_order_from_quote(session, version=version, user_id=USER.id, delivery_date=NOW.date())
+    assert raw.query(SalesOrder).count() == 0
+
+
+@pytest.mark.anyio
+async def test_accepted_quote_keeps_freight_and_sent_status_frozen(case):
+    _, _, _, version = case
+    version.approval_status = "approved"
+    version.accepted_at = version.sent_at = NOW
+    freight = {"charge_type": "logistics"}
+    for before, after in [(None, freight), (freight, freight), (freight, None)]:
+        with pytest.raises(AppError, match="新建报价版本"):
+            await quotes.ensure_charge_change_allowed(version, before=before, after=after)
+        assert version.sent_at == NOW
+    version.accepted_at = None
+    await quotes.ensure_charge_change_allowed(version, before=freight, after=freight)
+    assert version.sent_at is None

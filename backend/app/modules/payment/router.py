@@ -113,6 +113,28 @@ async def get_receivable(
 async def _create_plan(session, order_id, payload, request, user):
     order = await get_order_or_404(session, order_id)
     await svc.assert_order_visible(session, user, order_id)
+    request_key = idempotency.request_key_from(request, payload.request_key)
+    reservation = None
+    if request_key:
+        fingerprint = payload.model_dump(exclude={"request_key"})
+        fingerprint.update(order_id=order_id, amount=format(payload.amount, ".2f"))
+        reservation = await idempotency.reserve(
+            session, user_id=user.id, action="receivable:create", request_key=request_key,
+            payload=fingerprint, result_type="receivable_plan",
+        )
+        if reservation.should_replay:
+            await _assert_replay_belongs_to_order(session, order_id=order_id, plan_id=reservation.replay_id)
+            return ok(reservation.replay_payload, "这期应收此前已创建，已返回原记录")
+    try:
+        return await _save_manual_plan(session, order, payload, request, user, reservation)
+    except Exception:
+        if reservation is not None:
+            await session.rollback()
+        raise
+
+
+async def _save_manual_plan(session, order, payload, request, user, reservation):
+    order_id = order.id
     # 与"按比例生成"共用同一把订单行锁（锁序见 svc.lock_order）：否则生成那边
     # "查无计划"的窗口里还能挤进一个手工节点，两边判断都不算错、结果却混着两套。
     if await svc.lock_order(session, order_id) is None:
@@ -125,6 +147,7 @@ async def _create_plan(session, order_id, payload, request, user):
     # `lock_order` 现在带 `populate_existing`，会**就地把同一个实例刷新成最新值**，
     # 所以这里重查一次 `order` 拿到的是锁内的事实。
     await svc.assert_order_can_add_receivable(order)
+    await svc.assert_receivable_amount_fits(session, order, payload.amount)
     plan = ReceivablePlan(
         order_id=order_id,
         plan_name=payload.plan_name,
@@ -145,17 +168,20 @@ async def _create_plan(session, order_id, payload, request, user):
     from app.modules.order import milestones as milestones_svc
 
     await milestones_svc.sync_payment_milestones(session, order_id, operator_id=user.id)
+    body = await svc.serialize_plan(session, plan)
     await write_audit(
         session,
         operator_id=user.id,
         action="create",
         business_type="receivable_plan",
         business_id=plan.id,
-        after=await svc.serialize_plan(session, plan),
+        after=body,
         ip=client_ip(request),
     )
+    if reservation is not None:
+        await idempotency.complete(session, reservation, result_payload=body, result_id=plan.id)
     await session.commit()
-    return ok(await svc.serialize_plan(session, plan), "应收节点已创建")
+    return ok(body, "应收节点已创建")
 
 
 @router.post("/orders/{order_id}/receivables")
@@ -420,13 +446,16 @@ async def update_receivable(
     before = await svc.serialize_plan(session, plan)
     changes = payload.model_dump(exclude_unset=True)
     amount = changes.get("amount")
-    amount_changed = amount is not None and Decimal(str(amount)) != plan.amount
+    amount_changed = amount is not None and amount != plan.amount
+    if amount_changed and amount > plan.amount and plan.status != "cancelled":
+        order = await get_order_or_404(session, plan.order_id)
+        await svc.assert_receivable_amount_fits(session, order, amount, replacing=plan)
     if changes.get("plan_name") is not None:
         plan.plan_name = changes["plan_name"]
     if changes.get("due_date") is not None:
         plan.due_date = changes["due_date"]
     if amount_changed:
-        plan.amount = Decimal(str(amount))
+        plan.amount = amount
     if "remark" in changes:
         plan.remark = changes["remark"]
     # ⚠️ 应收金额变了要**重新平衡分配**（第十批实测发现的缺口）。

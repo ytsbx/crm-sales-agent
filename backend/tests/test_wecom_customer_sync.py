@@ -12,7 +12,7 @@ from app.modules.user.model import User
 from app.modules.wecom.client import ExternalContactBatch, WeComClient, WeComError
 from app.modules.wecom import service
 from app.modules.wecom.model import WeComExternalContact, WeComFollowRelationship, WeComSyncJob, WeComUser
-from conftest import SyncSessionAsAsync, make_engine
+from conftest import SyncSessionAsAsync, make_engine, make_user
 
 
 @pytest.mark.anyio
@@ -33,12 +33,17 @@ async def test_customer_candidates_do_not_use_the_following_employees_mobile():
         ])
         raw.flush()
         session = SyncSessionAsAsync(raw)
-        assert (await service.unbound_candidates(session, 8))["candidates"] == []
+        viewer = make_user(7, permissions=("customer:view",))
+        assert (await service.unbound_candidates(session, 8, user=viewer))["candidates"] == []
         raw.add(Customer(id=2, name="乙方包装公司"))
+        raw.add(Customer(id=3, name="乙方包装公司", owner_id=99))
         raw.flush()
-        matches = (await service.unbound_candidates(session, 8))["candidates"]
+        matches = (await service.unbound_candidates(session, 8, user=viewer))["candidates"]
         assert [match["id"] for match in matches] == [2]
         assert all("手机号一致" not in str(reason) for reason in matches[0]["reasons"])
+        viewer.data_scope = "all"
+        matches = (await service.unbound_candidates(session, 8, user=viewer))["candidates"]
+        assert {match["id"] for match in matches} == {2, 3}
     engine.dispose()
 
 

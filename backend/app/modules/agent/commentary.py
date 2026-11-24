@@ -27,7 +27,7 @@ import json
 import logging
 from collections.abc import Sequence
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from app.core.config import settings
 from app.modules.agent.runtime import _close_client, model_error_message
@@ -105,7 +105,7 @@ def _compact(value: object, depth: int = 0) -> object:
     if isinstance(value, (str, int, float, bool)):
         return value
     if isinstance(value, Decimal):
-        return float(value)
+        return float(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
     if isinstance(value, datetime):
         return value.isoformat(sep=" ", timespec="minutes")
     if isinstance(value, date):

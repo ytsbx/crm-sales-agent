@@ -390,7 +390,9 @@ async def can_access_file(
         ):
             return True
 
-    docs = (await session.execute(select(BizDoc).where(BizDoc.file_id == file_id))).scalars().all()
+    docs = (await session.execute(
+        select(BizDoc).where(BizDoc.file_id == file_id).execution_options(populate_existing=True)
+    )).scalars().all()
     if docs:
         from app.modules.bizdoc.router import _ensure_doc_access
 

@@ -103,6 +103,7 @@ export interface LogisticsOption {
   origin_region?: string | null
   destination_region?: string | null
   amount: number
+  amount_exact?: string
   currency: string
   by_weight_amount: number
   by_volume_amount: number
@@ -119,6 +120,7 @@ export interface LogisticsOption {
 export interface LogisticsCalculateResult {
   sku: { id: number; sku_code: string; name?: string | null; specification?: string | null; unit?: string | null; package_type?: string | null }
   quantity: number
+  quantity_exact?: string
   origin?: string | null
   destination?: string | null
   shipping_method?: string | null
@@ -147,6 +149,8 @@ export interface LogisticsQuoteRow {
   opportunity_id?: number | null
   sku_id?: number | null
   quantity?: number | null
+  quantity_exact?: string | null
+  quantity_unit?: string | null
   origin?: string | null
   destination?: string | null
   shipping_method: string
@@ -155,6 +159,7 @@ export interface LogisticsQuoteRow {
   volume: number
   currency: string
   amount: number
+  amount_exact?: string
   unit_price?: number | null
   eta_days?: number | null
   provider?: string | null

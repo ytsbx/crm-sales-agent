@@ -4,9 +4,9 @@ from app.core.patch_schema import CreateModel, PatchModel
 
 
 class SettingInput(BaseModel):
-    key: str
+    key: str = Field(min_length=1, max_length=64)
     value: dict | None = None
-    description: str | None = None
+    description: str | None = Field(default=None, max_length=255)
 
 
 class PublicPoolRuleInput(CreateModel):
@@ -104,21 +104,21 @@ class DictionaryItemCreate(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    type: str
-    code: str
-    label: str
+    type: str = Field(min_length=1, max_length=32)
+    code: str = Field(min_length=1, max_length=64)
+    label: str = Field(min_length=1, max_length=128)
     sort_no: int = 0
     enabled: bool = True
-    remark: str | None = None
+    remark: str | None = Field(default=None, max_length=255)
 
 
 class DictionaryItemUpdate(PatchModel):
     model_config = ConfigDict(extra="ignore")
 
-    label: str | None = None
+    label: str | None = Field(default=None, min_length=1, max_length=128)
     sort_no: int | None = None
     enabled: bool | None = None
-    remark: str | None = None
+    remark: str | None = Field(default=None, max_length=255)
 
 
 class CustomerLevelCreate(BaseModel):
@@ -130,20 +130,20 @@ class CustomerLevelCreate(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    code: str
-    name: str
+    code: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=128)
     sort_no: int = 0
     enabled: bool = True
-    remark: str | None = None
+    remark: str | None = Field(default=None, max_length=255)
 
 
 class CustomerLevelUpdate(PatchModel):
     model_config = ConfigDict(extra="ignore")
 
-    name: str | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=128)
     sort_no: int | None = None
     enabled: bool | None = None
-    remark: str | None = None
+    remark: str | None = Field(default=None, max_length=255)
 
 
 class UnratedRulesInput(BaseModel):

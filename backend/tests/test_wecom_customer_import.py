@@ -2,6 +2,7 @@
 from types import SimpleNamespace as Obj
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import select, func, text
 from sqlalchemy.orm import Session
 
@@ -15,6 +16,16 @@ from app.modules.wecom.model import WeComExternalContact as External, WeComFollo
 from app.modules.wecom.schema import CreateCustomerRequest
 from app.modules.wecom.service import create_customer_from_contact
 from conftest import make_engine, SyncSessionAsAsync
+
+
+@pytest.mark.parametrize("field", ["name", "short_name", "region", "address", "level", "source"])
+def test_manual_wecom_customer_respects_customer_column_length(field):
+    limit = Customer.__table__.c[field].type.length
+    data = {"name": "客户", field: "字" * limit}
+    assert getattr(CreateCustomerRequest(**data), field) == "字" * limit
+    data[field] += "字"
+    with pytest.raises(ValidationError, match=str(limit)):
+        CreateCustomerRequest(**data)
 
 
 def row(i=1, *, name='客户甲', full='', short=''):

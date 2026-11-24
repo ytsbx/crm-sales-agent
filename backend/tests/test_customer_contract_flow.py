@@ -212,10 +212,49 @@ async def test_pending_or_rejected_approval_cannot_archive(sql_session,monkeypat
 
 
 @pytest.mark.anyio
+async def test_contract_upload_and_attach_leave_files_unconfirmed(sql_session, monkeypatch):
+    from starlette.datastructures import UploadFile
+    from starlette.requests import Request
+    from io import BytesIO
+    from sqlalchemy import select
+    from app.modules.contract import service
+    from app.modules.contract.model import ContractDocument
+    from app.modules.file import router as files
+    from app.modules.file.model import BusinessFile
+
+    doc = ContractDocument(id=31, doc_no="CT-031", doc_type="contract", title="合同",
+                           customer_id=9, content_snapshot="", status="draft", created_at=datetime.now(UTC))
+    sql_session.add(doc)
+    await sql_session.flush()
+    monkeypatch.setattr(files, "visible_object", AsyncMock(return_value=True))
+    monkeypatch.setattr(files, "can_access_file", AsyncMock(return_value=True))
+    monkeypatch.setattr(files.storage, "save_upload", AsyncMock(return_value=("file", 3, None)))
+    monkeypatch.setattr(files, "write_audit", AsyncMock())
+    request = Request({"type": "http", "headers": []})
+    user = Obj(id=1, name="隔离测试用户")
+    result = await files.upload_file(
+        request, UploadFile(BytesIO(b"pdf"), filename="回签.pdf"),
+        "contract", doc.id, "signed", user=user, session=sql_session,
+    )
+    file_id = result["data"]["id"]
+    assert await service.list_signed_files(sql_session, doc.id) == []
+    await files.attach_file("contract", doc.id, request, file_id, "signed", user, sql_session)
+    links = (await sql_session.execute(
+        select(BusinessFile).where(BusinessFile.file_id == file_id)
+    )).scalars().all()
+    assert all(link.category == "pending_signature" for link in links)
+    assert doc.status == "draft"
+    # 兼容旧数据：草稿曾被误贴签署标签时，详情仍不能当作正式回签展示。
+    links[0].category = "signed"
+    await sql_session.flush()
+    assert await service.list_signed_files(sql_session, doc.id) == []
+
+
+@pytest.mark.anyio
 async def test_approved_contract_archive_completes_real_return_task(sql_session,monkeypatch,tmp_path):
     from app.modules.contract import service
     from app.modules.contract.model import ContractDocument
-    from app.modules.file.model import FileRecord
+    from app.modules.file.model import BusinessFile, FileRecord
     from app.modules.task.model import Task
     monkeypatch.setattr(service,'_ensure_signable_source',AsyncMock())
     monkeypatch.setattr(flow.oa,'get_by_business_key',AsyncMock(return_value=Obj(status='approved')))
@@ -225,12 +264,17 @@ async def test_approved_contract_archive_completes_real_return_task(sql_session,
     path=tmp_path/'signed.pdf';path.write_bytes(b'%PDF-signed')
     monkeypatch.setattr(flow,'absolute_path',lambda _:path)
     signed=FileRecord(id=99,storage_provider='local',object_key='signed',file_name='签回.pdf',size=path.stat().st_size,uploaded_by=1)
+    staged=BusinessFile(business_type="contract", business_id=31, file_id=99, category="pending_signature")
+    other = FileRecord(id=100, storage_provider="local", object_key="other", file_name="误标.pdf", size=1, uploaded_by=1)
+    historical = BusinessFile(business_type="contract", business_id=31, file_id=100, category="signed")
     task=Task(id=21,title='回签',owner_id=1,status='pending',source='system',task_type='contract_signed_upload',source_business_type='contract',source_business_id=31,source_key='contract:signed-upload:31')
-    for row in (doc,signed,task):sql_session.add(row)
+    for row in (doc,signed,task,staged,other,historical):sql_session.add(row)
     await sql_session.flush()
     await service.sign_document(sql_session,doc,file_id=99,note=None)
     assert doc.status=='signed'
     assert task.status=='done'
+    assert staged.category == "signed"
+    assert [row["file_id"] for row in await service.list_signed_files(sql_session, doc.id)] == [99]
 
 
 @pytest.mark.parametrize('value',[None,'',[],"[]",'not-an-attachment','[{}]'])
@@ -238,6 +282,41 @@ def test_association_rejects_empty_or_malformed_attachments(value):
     data=instance()
     data['formComponentValues'][2]['value']=value
     with pytest.raises(AppError):check(data)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("separate_upload", [False, True])
+async def test_reusing_a_signed_contract_file_requires_a_reason(sql_session, monkeypatch, separate_upload):
+    from app.core.errors import ErrorCode
+    from app.modules.contract import service
+    from app.modules.contract.model import ContractDocument
+    from app.modules.file.model import BusinessFile, FileRecord
+
+    monkeypatch.setattr(service, "_ensure_signable_source", AsyncMock())
+    now = datetime.now(UTC)
+    first = ContractDocument(id=1, doc_no="CT-A", doc_type="contract", title="合同甲",
+                             customer_id=1, content_snapshot="", status="signed", created_at=now)
+    second = ContractDocument(id=2, doc_no="CT-B", doc_type="contract", title="合同乙",
+                              customer_id=2, content_snapshot="", status="draft", created_at=now)
+    file_ids = [10, 11] if separate_upload else [10]
+    for file_id in file_ids:
+        sql_session.add(FileRecord(id=file_id, storage_provider="local", object_key=str(file_id),
+                                  file_name="合扫.pdf", size=10, checksum="a" * 64, uploaded_by=1))
+    sql_session.add(first)
+    sql_session.add(second)
+    sql_session.add(BusinessFile(business_type="contract", business_id=1, file_id=10, category="signed"))
+    await sql_session.flush()
+
+    for reason in (None, "  "):
+        with pytest.raises(AppError, match="请核对是否选错") as caught:
+            await service.sign_document(sql_session, second, file_id=file_ids[-1], note=None, reuse_reason=reason)
+        assert caught.value.code == ErrorCode.CONFIRM_REQUIRED
+        assert second.status == "draft"
+
+    await service.sign_document(sql_session, second, file_id=file_ids[-1], note=None,
+                                reuse_reason=" 两份合同合扫在一份 PDF ")
+    assert second.status == "signed"
+    assert second.filled_data["_signed_file_reuse_reason"] == "两份合同合扫在一份 PDF"
 
 
 def test_pasted_approval_link_is_parsed_without_executing_it():

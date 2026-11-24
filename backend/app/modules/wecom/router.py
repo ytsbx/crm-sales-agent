@@ -104,8 +104,8 @@ def _translate(error: Exception) -> AppError:
     if isinstance(error, httpx.RequestError):
         return AppError(ErrorCode.WECOM_SYNC_FAILED, "连接企业微信失败，请检查网络后重试", 502)
     if isinstance(error, (WeComError, WeComResponseError)):
-        return AppError(ErrorCode.WECOM_SYNC_FAILED, str(error), 502)
-    return AppError(ErrorCode.WECOM_SYNC_FAILED, f"企业微信同步失败：{error}", 502)
+        return AppError(ErrorCode.WECOM_SYNC_FAILED, wecom_client.safe_error_text(error), 502)
+    return AppError(ErrorCode.WECOM_SYNC_FAILED, wecom_client.safe_error_text(error), 502)
 
 
 async def _run_sync(
@@ -250,11 +250,12 @@ async def list_unbound_contacts(
 @router.get("/integrations/wecom/unbound-contacts/{contact_id}/candidates")
 async def unbound_candidates(
     contact_id: int,
-    _: CurrentUser = Depends(require_permission("wecom:view")),
+    user: CurrentUser = Depends(require_permission("wecom:view")),
     session: AsyncSession = Depends(get_db),
 ):
     """候选客户匹配（PRD §8.3 的第 2 步）。"""
-    return ok(await svc.unbound_candidates(session, contact_id))
+    ensure_permission(user, "customer:view")
+    return ok(await svc.unbound_candidates(session, contact_id, user=user))
 
 
 @router.post("/integrations/wecom/unbound-contacts/{contact_id}/bind-customer")
@@ -266,6 +267,7 @@ async def bind_customer(
     session: AsyncSession = Depends(get_db),
 ):
     """关联已有客户（PRD §8.3 的第 3 步之一）。"""
+    ensure_permission(user, "customer:update")
     result = await svc.bind_customer(
         session,
         user=user,
@@ -295,6 +297,7 @@ async def create_customer(
     session: AsyncSession = Depends(get_db),
 ):
     """创建新客户（PRD §8.3 的第 3 步之二）。"""
+    ensure_permission(user, "customer:create")
     if not payload.name.strip():
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "客户名称必填", 422)
     result = await svc.create_customer_from_contact(

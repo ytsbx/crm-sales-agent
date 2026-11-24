@@ -23,17 +23,20 @@ def stats_db(db_session):
     return db_session
 
 
-def version(db, number, *, formal=True, sku_id=1, profits=('80',), quote_id=1):
+def version(db, number, *, formal=True, sku_id=1, profits=('80',), quote_id=1, creator=101):
     if db.get(Quote, quote_id) is None:
-        db.add(Quote(id=quote_id, quote_no=f'Q-{quote_id}', customer_id=1, owner_id=101))
+        db.add(Quote(id=quote_id, quote_no=f'Q-{quote_id}', customer_id=1, owner_id=101,
+                     status='sent' if formal else 'draft', created_by=creator))
         db.flush()
     row = QuoteVersion(quote_id=quote_id, version_no=number, created_at=datetime.now(UTC),
-                       submitted_at=datetime.now(UTC) if formal else None)
+                       submitted_at=datetime.now(UTC) if formal else None, created_by=creator,
+                       approval_status='approved' if formal else 'not_submitted')
     db.add(row)
     db.flush()
     for profit in profits:
         db.add(QuoteItem(quote_version_id=row.id, sku_id=sku_id, quantity=1,
-                         quoted_price=100, profit_snapshot=Decimal(profit)))
+                         quoted_price=100, profit_snapshot=Decimal(profit),
+                         sku_name_snapshot=f'草稿商品 {quote_id}-{number}' if sku_id is None else None))
     db.flush()
 
 
@@ -69,6 +72,17 @@ async def test_latest_formal_sums_all_lines_and_separate_quotes(stats_db):
 async def test_custom_quote_without_sku_does_not_crash_statistics(stats_db):
     version(stats_db, 1, sku_id=None)
     assert isinstance(await read_stats(stats_db), list)
+
+
+@pytest.mark.anyio
+async def test_product_stats_respect_quote_and_version_draft_privacy(stats_db):
+    version(stats_db, 1)
+    version(stats_db, 2, formal=False, sku_id=None, creator=102)
+    version(stats_db, 3, formal=False, sku_id=None)
+    version(stats_db, 1, formal=False, sku_id=None, quote_id=2, creator=102)
+    stats = await read_stats(stats_db)
+    assert len(stats) == 2
+    assert sum(row['quote_quantity'] for row in stats) == 2
 
 
 @pytest.mark.anyio

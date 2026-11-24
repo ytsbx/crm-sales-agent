@@ -102,11 +102,7 @@ async def frozen_map(
 
 
 async def is_frozen(session: AsyncSession, period: str) -> bool:
-    """这一期结过账没有。下钻据此决定"读存档"还是"实时算"。
-
-    判据取**期间**而不是"这个指标有没有条目"：某一期结了账但那个月确实没有回款时，
-    条目为空是**正确答案**，不能因此回落到实时算——那会把结账之后新发生的回款补进来。
-    """
+    """检查该期间是否已有存档，供重算入口判断。"""
     row = (
         await session.execute(
             select(ActualSnapshot.period).where(ActualSnapshot.period == period).limit(1)

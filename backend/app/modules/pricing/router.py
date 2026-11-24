@@ -949,6 +949,24 @@ async def list_price_permissions(
     )
 
 
+async def _lock_role_price_permission(
+    session: AsyncSession, role_id: int
+) -> tuple[Role, PricePermission | None]:
+    # 锁角色行，因为首次配置时还没有价格权限行可锁。
+    role = await session.get(Role, role_id, with_for_update=True)
+    if role is None:
+        raise AppError(ErrorCode.NOT_FOUND, "角色不存在", 404)
+    permissions = (await session.execute(
+        select(PricePermission)
+        .where(PricePermission.role_id == role_id)
+        .limit(2)
+        .execution_options(populate_existing=True)
+    )).scalars().all()
+    if len(permissions) > 1:
+        raise AppError(ErrorCode.DUPLICATE, f"角色「{role.name}」已有多条价格权限，请联系管理员核对", 409)
+    return role, permissions[0] if permissions else None
+
+
 @router.put("/price-permissions/{role_id}")
 async def upsert_price_permission(
     role_id: int,
@@ -957,14 +975,7 @@ async def upsert_price_permission(
     user: CurrentUser = Depends(require_permission("price:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    role = await session.get(Role, role_id)
-    if role is None:
-        raise AppError(ErrorCode.NOT_FOUND, "角色不存在", 404)
-    permission = (
-        await session.execute(
-            select(PricePermission).where(PricePermission.role_id == role_id)
-        )
-    ).scalar_one_or_none()
+    role, permission = await _lock_role_price_permission(session, role_id)
     if permission is None:
         permission = PricePermission(role_id=role_id, status="active")
         session.add(permission)
@@ -2149,14 +2160,7 @@ async def create_price_permission(
     一个角色只有一条价格权限，所以"新增"遇到已存在的就直接拒绝，
     让调用方改用 PUT 更新 —— 否则两次 POST 会悄悄覆盖前一次的配置。
     """
-    role = await session.get(Role, payload.role_id)
-    if role is None:
-        raise AppError(ErrorCode.NOT_FOUND, "角色不存在", 404)
-    existing = (
-        await session.execute(
-            select(PricePermission).where(PricePermission.role_id == payload.role_id)
-        )
-    ).scalar_one_or_none()
+    role, existing = await _lock_role_price_permission(session, payload.role_id)
     if existing is not None:
         raise AppError(
             ErrorCode.DUPLICATE,
@@ -2200,19 +2204,14 @@ async def patch_price_permission(
     只改传入的字段；与 PUT 的区别是 PUT 会把没传的字段也重置为默认值，
     PATCH 不会 —— 这正是两个方法并存的意义，所以这里单独实现而不是转发给 PUT。
     """
-    permission = (
-        await session.execute(
-            select(PricePermission).where(PricePermission.role_id == role_id)
-        )
-    ).scalar_one_or_none()
+    role, permission = await _lock_role_price_permission(session, role_id)
     if permission is None:
         raise AppError(
             ErrorCode.NOT_FOUND,
             f"角色 {role_id} 还没有价格权限，请先用 POST /price-permissions 创建",
             404,
         )
-    role = await session.get(Role, role_id)
-    before = svc.serialize_permission(permission, role.name if role else None)
+    before = svc.serialize_permission(permission, role.name)
     data = payload.model_dump(exclude_unset=True, exclude_none=True)
     for field, value in data.items():
         setattr(permission, field, value)
@@ -2224,10 +2223,10 @@ async def patch_price_permission(
         business_type="price_permission",
         business_id=permission.id,
         before=before,
-        after=svc.serialize_permission(permission, role.name if role else None),
+        after=svc.serialize_permission(permission, role.name),
         ip=client_ip(request),
     )
     await session.commit()
     return ok(
-        svc.serialize_permission(permission, role.name if role else None), "已保存"
+        svc.serialize_permission(permission, role.name), "已保存"
     )

@@ -14,6 +14,7 @@ def request():return Request({'type':'http','headers':[],'client':('127.0.0.1',1
 
 @pytest.fixture
 def setup(monkeypatch):
+    monkeypatch.setattr(routes.settings, "dingtalk_push_off", False)
     sample=SampleRequest(id=7,customer_id=2,owner_id=1,status='pending',version=1,source_context={},made_at=None)
     account=Obj(status='active',dingtalk_userid='ding-1')
     session=Obj(get=AsyncMock(return_value=account),flush=AsyncMock(),commit=AsyncMock(),
@@ -48,6 +49,36 @@ async def test_draft_does_not_send(setup):
     create.assert_not_awaited();client.get_user_dept_ids.assert_not_awaited()
 
 @pytest.mark.anyio
+async def test_native_draft_persists_fields_used_by_the_excel(setup, monkeypatch):
+    """保存草稿后马上下载《打样申请单》，打样类型/部门/积分不能还是空的。"""
+    from decimal import Decimal
+
+    sample, session, user, *_ = setup
+    monkeypatch.setattr(routes, 'template', AsyncMock(return_value=(
+        {'configured': True, 'enabled': True, 'native_form': True, 'fields': [
+            {'id': 'sample_type', 'label': '打样类型', 'type': 'DDSelectField',
+             'required': True, 'system': False, 'options': []},
+            {'id': 'product_category', 'label': '打样产品大类', 'type': 'DDSelectField',
+             'required': True, 'system': False, 'options': []},
+            {'id': 'maker_unit', 'label': '样品制作单位', 'type': 'DDSelectField',
+             'required': True, 'system': False, 'options': []},
+            {'id': 'target_date', 'label': '要求完成日期', 'type': 'DDDateField',
+             'required': True, 'system': False, 'options': []},
+            {'id': 'score', 'label': '本次打样积分', 'type': 'NumberField',
+             'required': True, 'system': False, 'options': []},
+        ]}, None)))
+    await routes.save_draft(7, routes.Draft(mode='standalone', fields={
+        'sample_type': '销售客户打样', 'product_category': '高频类产品',
+        'maker_unit': '义乌打样部', 'score': '10',
+    }), request(), user, session)
+    assert sample.sample_type == '销售客户打样'
+    assert sample.product_category == '高频类产品'
+    assert sample.maker_unit == '义乌打样部'
+    assert sample.estimated_hours == Decimal('1.00')
+    assert sample.estimated_hours * 10 == Decimal('10')
+
+
+@pytest.mark.anyio
 async def test_linked_inquiry_sends_nothing_and_cannot_switch_modes(setup):
     sample,session,user,client,create=setup
     await routes.submit(7,routes.Draft(mode='inquiry',source_oa_id=8),request(),user,session)
@@ -64,6 +95,27 @@ async def test_bad_source_cannot_link(setup,source):
     sample,session,user,client,create=setup
     with pytest.raises(AppError):await routes.submit(7,routes.Draft(mode='inquiry',source_oa_id=source),request(),user,session)
     create.assert_not_awaited()
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('schema', [
+    {'schemaContent': '{invalid'},
+    {'schemaContent': '[]'},
+    {'schemaContent': {'items': [{'props': {'label': '打样类型'}}]}},
+    {'schemaContent': {'items': [{'props': {'id': 'sample-type', 'label': '打样类型', 'options': ['{invalid']}}]}},
+])
+async def test_malformed_legacy_template_returns_readable_error(schema, monkeypatch):
+    from app.modules.settings import service as settings_service
+
+    monkeypatch.setattr(routes, 'self_oa_available', lambda: False)
+    monkeypatch.setattr(routes.settings, 'dingtalk_push_off', False)
+    monkeypatch.setattr(settings_service, 'get_setting', AsyncMock(return_value={'process_code': 'PROC-SAMPLE'}))
+    client = Obj(get_process_schema=AsyncMock(return_value=schema))
+    monkeypatch.setattr(routes, 'get_client', lambda: client)
+
+    with pytest.raises(AppError, match='钉钉打样模板格式异常') as error:
+        await routes.template(Obj())
+    assert error.value.http_status == 502
+
 
 @pytest.mark.anyio
 async def test_disabled_template_does_not_send(setup,monkeypatch):
@@ -121,14 +173,12 @@ async def test_standalone_uses_true_template_identity_and_excel(setup,monkeypatc
     assert routes.metadata(sample)['submitted']
 
 @pytest.mark.parametrize('submitted',[False,True])
-def test_local_review_and_mutation_guards(submitted):
+def test_approval_submission_locks_crm_edits(submitted):
     sample=Obj(source_context={'dingtalk_oa':{'mode':'standalone','submitted':submitted}})
-    with pytest.raises(AppError):routes.ensure_local_review(sample)
     if submitted:
         with pytest.raises(AppError):routes.ensure_editable(sample)
     else:routes.ensure_editable(sample)
     routes.ensure_editable(Obj(source_context=None))
-    routes.ensure_local_review(Obj(source_context=None))
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('ended_status',['rejected','withdrawn'])

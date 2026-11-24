@@ -1,0 +1,108 @@
+### review/repro/f01_frontend/check_f01.mjs
+           试算金额/利润/数量都是 number，没有定点/十进制
+CONFIRMED F01-14 详情加载失败统一伪装成“不存在或无权查看”
+           early return 只看 !detail，不看 isError；没有重试入口
+
+14/14 confirmed
+### review/repro/f02_frontend/check_f02.mjs
+           后端对 cancelled plan 直接 422；订单取消又要求无已确认回款，正常路径无法同时存在
+CONFIRMED  F02-P2 复购开新商机无幂等键，重试可多建
+           每次 POST 都新建 Opportunity，无键/无按订单去重
+
+14 confirmed, 1 refuted, 0 missing
+### review/repro/f03_frontend/check_f03.mjs
+           深链 Number 回填；verdict 直接输出 quoted_price；PricingResult/verdict 均无 exact
+REFUTED    F03-P1 bizdoc 生成键可选导致重复出文档
+           全仓唯一调用点 BizDocPanel 每次都传稳定 key；可选参数只是 API 设计，不是现网缺陷
+
+10 confirmed, 1 refuted, 0 missing
+### review/repro/f04_frontend/check_f04.mjs
+           模板按钮直接 fire；导出 catch 不分 403/422/5xx
+LATENT     F04-P1 客户子资源金额 number 且无 exact
+           类型/后端仍 float 无 exact；但三个封装全仓无页面调用，当前不构成缺陷
+
+14 confirmed, 1 refuted, 1 latent, 0 missing
+### review/repro/f05_frontend/check_f05.mjs
+           后端 quote_id 存在、quote_version_id 为空时按“整份报价”放行；UI 说登记前必须补版本，需业务定口径
+REFUTED    F05-P2 CustomerApproval / ContractOaForm 是否废弃
+           ContractOaForm 已在 DocumentsPage:1175 接线；只有 CustomerApproval 仍无调用点，原“两个都未接线”不成立
+
+19 confirmed, 1 pending, 1 refuted, 1 missing
+### review/repro/f06_frontend/check_f06.mjs
+           创建接口直接 POST，无 request_key
+CONFIRMED  F06-19 金额 0 被显示成 -
+           详情预计金额/明细目标价/看板统计都用 ?. 的 truthy 判断，0 元走 "-" 或"未填金额"
+
+19 confirmed, 0 missing
+### review/repro/f07_frontend/check_f07.mjs
+           保存只带 expected_updated_at/唯一键，无 request_key；409 时无法确认上次是否已保存
+CONFIRMED  F07-16 OA 打样费用自由文本，无格式校验
+           Input 直接写 fields._sample_fee，无负数/2 位小数/16 位前端校验，等提交后后端 Decimal 拦
+
+16 confirmed, 0 missing
+### review/repro/f08_frontend/check_f08.mjs
+           team_summary 对 data_scope=self 直接返回、不带 members；myRow 永远 undefined；“我的待办”显示 - / 逾期 0 项，即使 tasks 查询有数据
+PENDING    F08-06 待确认：商机卡片未按 opportunity:view 收门，后端 summary 只要求 customer:view
+           卡片无条件渲染；后端 summary 只要 customer:view 就返回 open_opportunity_count/amount。是否存在“有客户权、无商机权”的角色未核实，故待确认
+
+6 confirmed/pending, 0 missing
+### review/repro/f09_frontend/check_f09.mjs
+           只过滤当前部门自身，未过滤后代；后端 _assert_no_cycle 才拒绝，界面承诺与实现不一致
+CONFIRMED  F09-10 公海天数非法值不回填
+           defaultValue 非受控；校验失败只 Toast + return，输入框仍显示 0/-1/1.5
+
+10 confirmed, 0 missing
+### review/repro/f10_frontend/check_f10.mjs
+           没有 total；最后一页正好 20 条时仍允许下一页，翻出空页显示“没有待确认客户”
+PENDING    F10-10 恢复客户新负责人可跨部门（待业务确认）
+           前端只按 active 拉人；后端只校验存在/在职。是否允许跨部门由业务口径决定，待确认
+
+10 confirmed/pending, 0 missing
+### review/repro/f11_frontend/check_f11.mjs
+           前端 TextArea 无 maxCount；后端 CaseReview.note max_length=255，提交才 422
+CONFIRMED  F11-22 漏项：洞察编辑无版本冲突校验
+           前端整份 payload 更新；InsightUpdate 无 expected；后端行锁只串行，B 基于旧值提交会把 A 的修改盖回去
+
+22 confirmed/pending, 0 missing
+### review/repro/f12_frontend/check_f12.mjs
+           exact 字符串再 map(Number)；当前只被 ops 测试调用，生产未检索到，属未来误用风险
+CONFIRMED  F12-14 漏项：SKU 图片上传无幂等，响应丢失补传出重复图
+           上传成功但响应丢失会落 failed；用户按提示补传会再挂一张，图片列表出现重复
+
+14 confirmed, 0 missing
+### review/repro/f13_frontend/check_f13.mjs
+           后端 contact_masked=true 时返回星号；组件没传 masked，按钮只判 truthy，遮罩号码仍会拼 tel:/mailto:
+PENDING    F13-T01 通知 payment/approval 跳转映射（待确认）
+           前端把 payment/approval 当订单/报价 id；后端 record_and_notify 有 order_id 时优先 order，审批通知用 quote、回款通知用 order，未找到实际 payment/approval 通知来源，仍只能待确认
+
+16 confirmed/pending, 0 missing
+### review/repro/f14_frontend/check_f14.mjs
+                 确认动作可按 tool_name 执行 update_opportunity_next_action / request_quote_approval / create_followup / 建报价；当前只失效 agent-session/customers/tasks/followups，商机详情与列表、审批列表、时间线、通知都可能保持旧值
+CONFIRMED        F14-09-RUNTIME dateStyle 传给 toLocaleTimeString 必抛 TypeError
+                 Node 实测 Invalid option : dateStyle；浏览器 Intl 同规范，确认会抛
+
+14 confirmed/pending, 0 missing
+### review/repro/f15_frontend/check_f15a.mjs
+           当前 CSS 共 46 处 :has()；不支持的浏览器会整条丢弃，单卡拉伸、空表隐藏滚动条等降级为旧表现
+CONFIRMED  F15A-T01 toast 固定 top:84px 会压住页签栏
+           静态最低高度：顶栏 56 + 页签条 34 = 90px，toast 从 84px 开始，至少压住页签下沿 6px；原报告“待确认”可落为 P3
+
+CSS 当前 8500 行（审查报告写 8487 行，当前 +13 行）；5 confirmed, 0 missing
+### review/repro/f15_frontend/check_f15b.mjs
+           320 宽去掉卡片左右内边距约 280px，404px 流程条必溢出；四列固定部分 72+96+96+36 gap=300px，同样顶出容器
+CONFIRMED  F15B-05 危险链接红色只认 3 个内联字符串白名单
+           表格链接统一蓝 !important；只有内联 style 原文含 crm-error/#f53f3f/#ff4d4f 才恢复红。换 class、换红色变量或新增危险动作忘记写内联色，就回到普通蓝
+
+5 confirmed, 0 missing
+### review/repro/f08_frontend/run.mjs
+      实际：晚上好，张三 销售一部 · 业务员 这里是您今天的工作概览 · 2026-11-23 星期一 新建线索 今天要做什么先看要处理的数，再看下面的走势和安排 我的待办 - 逾期 0 项 待跟进客户 2 30 天无有效跟进或业务进展 进行中商机 4 估算货值 ¥1,000 待我审批 0 需要你处理 本月订单金额 ¥5,000 订单签约额 · 货款 ¥4,500 + 运费 ¥300 本月回款金额 ¥2,000 按到账日 ¥2,000 应收未结 ¥3,000 业务走势查看有权限的业务数据 各阶段在谈商机分布 查看分析 暂无商机数据 订单与回款趋势 暂无数据 近 6 个月订单合计：¥0 已确认回款：¥0 
+FAIL  F08-04: 有 onClick 的 KPI 卡可被键盘聚焦/触发（role=button 或原生 button）
+      实际：<div class="kpi-grid"><div class="kpi-card tone-default" style="cursor:pointer"><div class="kpi-label crm-help-label">我的待办</div><div class="kpi-value">3</div><div style="margin-top:var(--crm-space-3)"><span class="chip">逾期 1 项</span></div></div><div class="kpi-card tone-default" style="cursor:pointer"><div class="kpi-label crm-help-label">进行中商机</div><div class="kpi-value">4</div></div></div>
+
+结果：6 个断言失败（这些断言代表“修复后应有的行为”）
+### review/repro/f08_frontend/run_charts.mjs
+    at ModuleJob._link (node:internal/modules/esm/module_job:182:49) {
+  code: 'ERR_MODULE_NOT_FOUND'
+}
+
+Node.js v22.23.2

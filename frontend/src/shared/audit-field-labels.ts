@@ -35,6 +35,7 @@ export const AUDIT_FIELD_LABEL: Record<string, string> = {
   business_type: '业务类型',
   calculation: '计算口径',
   cancelled_at: '取消时间',
+  carrier: '物流公司',
   carton_qty: '装箱数量',
   carton_volume: '装箱体积',
   category: '分类',
@@ -89,6 +90,7 @@ export const AUDIT_FIELD_LABEL: Record<string, string> = {
   department_id: '所属部门',
   description: '需求描述',
   description_cn: '说明',
+  destination: '目的地',
   direction: '方向',
   discount_amount: '折扣金额',
   doc_no: '单据编号',
@@ -140,7 +142,6 @@ export const AUDIT_FIELD_LABEL: Record<string, string> = {
   is_primary: '是否主联系人',
   is_win: '是否赢单',
   item_count: '明细条数',
-  item_name: '品名',
   key: '键',
   key_actions: '关键动作',
   knowledge: '产品知识',
@@ -170,13 +171,13 @@ export const AUDIT_FIELD_LABEL: Record<string, string> = {
   mobile: '手机',
   moq: '起订量',
   name_cn: '名称',
-  next_action: '下一步动作',
   next_followup_at: '下次跟进时间',
   next_task_id: '生成的任务',
   node: '节点',
   note: '说明',
   oa_quote_user_id: '钉钉报价人',
   oa_quote_user_name: '钉钉报价人',
+  oa_user_id: '同序人员编号',
   objection_handling: '异议处理',
   opportunity_id: '商机',
   opportunity_item_id: '商机需求',
@@ -193,6 +194,7 @@ export const AUDIT_FIELD_LABEL: Record<string, string> = {
   owner_name: '负责人',
   package_cost: '包装成本',
   package_cost_snapshot: '包装成本快照',
+  package_requirement: '包装要求',
   package_type: '包装方式',
   parent_id: '父单据',
   payment_method: '收款方式',
@@ -236,7 +238,6 @@ export const AUDIT_FIELD_LABEL: Record<string, string> = {
   recommended_price_snapshot: '建议价快照',
   region: '地区',
   reject_reason: '驳回原因',
-  remark: '备注',
   remark_cn: '备注',
   renderer_version: '渲染器版本',
   reopen_at: '重新打开时间',
@@ -314,6 +315,7 @@ export const AUDIT_FIELD_LABEL: Record<string, string> = {
   title_cn: '标题',
   total_amount: '订单总额',
   total_cost: '总成本',
+  tracking_no: '运单号',
   trade_terms: '贸易条款',
   transit_days: '运输天数',
   trigger_type: '触发方式',
@@ -342,7 +344,7 @@ export const AUDIT_FIELD_LABEL: Record<string, string> = {
 }
 
 /** 同名但中文含义随对象而变的字段：**只能**由调用方按对象类型定名。 */
-export const AUDIT_AMBIGUOUS_FIELDS: readonly string[] = ['code', 'content', 'label', 'level', 'name', 'source', 'status', 'template_id', 'title', 'type']
+export const AUDIT_AMBIGUOUS_FIELDS: readonly string[] = ['code', 'content', 'item_name', 'label', 'level', 'name', 'next_action', 'remark', 'source', 'status', 'template_id', 'title', 'type']
 
 export const AUDIT_TYPE_FIELDS: Record<string, readonly string[]> = {
   biz_doc: ['doc_no', 'doc_type', 'title', 'version', 'parent_id', 'status', 'owner_id', 'customer_id', 'contact_id', 'sample_request_id', 'order_id', 'order_draft_id', 'inquiry_id', 'quote_id', 'source_type', 'source_id', 'source_no', 'source_version', 'source_key', 'template_id', 'template_version', 'input_snapshot', 'content_sha256', 'file_id', 'file_sha256', 'file_size', 'renderer_version', 'void_reason', 'created_by', 'created_at', 'id'],
@@ -354,7 +356,7 @@ export const AUDIT_TYPE_FIELDS: Record<string, readonly string[]> = {
   custom_inquiry: ['inquiry_no', 'title', 'description', 'version', 'root_id', 'revision_note', 'superseded_at', 'converted_sku_id', 'customer_id', 'contact_id', 'opportunity_id', 'quantity', 'target_price', 'status', 'remark', 'extra', 'oa_quote_user_id', 'oa_quote_user_name', 'origin', 'source_insight_id', 'created_by', 'created_at', 'updated_at', 'deleted_at', 'id'],
   customer: ['name', 'short_name', 'customer_type', 'country', 'region', 'address', 'domain', 'tax_no', 'source', 'level', 'status', 'pool_status', 'owner_id', 'created_by', 'remark', 'last_followup_at', 'last_contact_unknown', 'last_progress_at', 'next_followup_at', 'deleted_at', 'id', 'created_at', 'updated_at'],
   customer_price_rule: ['customer_id', 'sku_id', 'min_qty', 'max_qty', 'agreed_price', 'minimum_price', 'currency', 'effective_from', 'effective_to', 'status', 'remark', 'id'],
-  department: ['parent_id', 'name', 'wecom_department_id', 'status', 'id', 'created_at', 'updated_at'],
+  department: ['parent_id', 'name', 'wecom_department_id', 'dingtalk_department_id', 'oa_department_id', 'status', 'id', 'created_at', 'updated_at'],
   file: ['storage_provider', 'object_key', 'file_name', 'mime_type', 'size', 'checksum', 'uploaded_by', 'created_at', 'id'],
   followup: ['customer_id', 'contact_id', 'lead_id', 'opportunity_id', 'quote_id', 'order_id', 'sample_id', 'owner_id', 'followup_type', 'content', 'customer_feedback', 'next_action', 'planned_at', 'exemption_reason', 'next_task_id', 'request_key', 'request_hash', 'created_at', 'id'],
   lead: ['name', 'company_name', 'contact_name', 'mobile', 'email', 'source', 'source_detail', 'country', 'region', 'status', 'owner_id', 'created_by', 'converted_customer_id', 'converted_contact_id', 'converted_opportunity_id', 'invalid_reason', 'remark', 'last_followup_at', 'deleted_at', 'id', 'created_at', 'updated_at'],
@@ -381,5 +383,5 @@ export const AUDIT_TYPE_FIELDS: Record<string, readonly string[]> = {
   sku_identity_source: ['sku_id', 'system_type', 'shop_id', 'external_code', 'external_name', 'match_status', 'match_basis', 'superseded_by_code', 'source_payload', 'source_updated_at', 'first_seen_at', 'last_seen_at', 'note', 'id', 'created_at', 'updated_at'],
   tag: ['name', 'type', 'status', 'sort_no', 'id', 'created_at', 'updated_at'],
   task: ['title', 'task_type', 'customer_id', 'contact_id', 'lead_id', 'opportunity_id', 'quote_id', 'order_id', 'owner_id', 'priority', 'status', 'due_at', 'source', 'source_rule_id', 'source_business_type', 'source_business_id', 'source_key', 'completed_at', 'completion_note', 'id', 'created_at', 'updated_at'],
-  user: ['name', 'username', 'password_hash', 'initial_password_pending', 'mobile', 'email', 'department_id', 'wecom_userid', 'dingtalk_userid', 'status', 'id', 'created_at', 'updated_at'],
+  user: ['name', 'username', 'password_hash', 'initial_password_pending', 'mobile', 'email', 'department_id', 'wecom_userid', 'dingtalk_userid', 'oa_user_id', 'status', 'id', 'created_at', 'updated_at'],
 }

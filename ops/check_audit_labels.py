@@ -27,6 +27,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
@@ -49,6 +50,14 @@ GENERATED_TS = REPO / 'frontend' / 'src' / 'shared' / 'audit-field-labels.ts'
 
 #: 扫这些目录里所有 `business_type=` / `action=`（写审计的地方）
 BACKEND_APP = BACKEND / 'app'
+
+
+def keyword_values(value: ast.expr):
+    if isinstance(value, ast.IfExp):
+        yield from keyword_values(value.body)
+        yield from keyword_values(value.orelse)
+    else:
+        yield value
 
 
 def backend_values(field: str) -> set[str]:
@@ -81,10 +90,6 @@ def backend_values(field: str) -> set[str]:
     # （`customer:create` 出现在 `require_permission("customer:create")` 里）。
     # 所以带冒号的那种**只认 `write_audit(...)` 调用实参里的**，
     # 否则会把权限码当成动作，报一堆假问题（我第一版就报了 7 个，其中 1 个是权限码）。
-    literal = re.compile(rf'{field}="([a-z_]+)"')
-    namespaced = re.compile(rf'{field}="([a-z_]+:[a-z_]+)"')
-    audit_call = re.compile(r'write_audit\s*\((?:[^()]|\([^()]*\))*\)', re.S)
-    identifier = re.compile(rf'{field}=([A-Za-z_][A-Za-z0-9_]*)\s*[,)]')
     #: 标识符 → 它可能取到的字符串值（全仓收集 `NAME = "value"` / `NAME: str = "value"`）
     constants: dict[str, set[str]] = {}
     sources: list[str] = []
@@ -104,11 +109,29 @@ def backend_values(field: str) -> set[str]:
         ):
             constants.setdefault(name, set()).add(value)
     for text in sources:
-        found |= set(literal.findall(text))
-        # 命名空间式动作码：只在 write_audit(...) 的实参里认
-        for call in audit_call.findall(text):
-            found |= set(namespaced.findall(call))
-        for name in identifier.findall(text):
+        keywords = (
+            (call.func, value)
+            for call in ast.walk(ast.parse(text))
+            if isinstance(call, ast.Call)
+            for kw in call.keywords
+            if kw.arg == field
+            for value in keyword_values(kw.value)
+        )
+        for func, value in keywords:
+            call_name = func.id if isinstance(func, ast.Name) else (
+                func.attr if isinstance(func, ast.Attribute) else None
+            )
+            # 采集运行记录由集成日志接口读取，不进入审计页。
+            if call_name == 'IntegrationLog':
+                continue
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                pattern = r'[a-z_]+(?::[a-z_]+)?' if call_name == 'write_audit' else r'[a-z_]+'
+                if re.fullmatch(pattern, value.value):
+                    found.add(value.value)
+                continue
+            if not isinstance(value, ast.Name):
+                continue
+            name = value.id
             if name in constants:
                 # 常量已解析：值进了 `found`，**不要再进 unresolved** ——
                 # 我上一版无条件 add(name)，于是已经解析成功的

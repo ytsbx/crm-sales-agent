@@ -37,3 +37,28 @@ def test_repeated_sku_rows_match_by_original_line_id():
     assert len(result)==1 and result[0]['before']=='10' and result[0]['after']=='5'
     legacy=_diff_lines(rows,rows,('sku_id','inquiry_id'))
     assert all(d['field']=='来源匹配' for d in legacy)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("price_fields, expected", [
+    ({}, Decimal("12.3456")),
+    ({"unit_price": None}, None),
+    ({"unit_price": "0"}, Decimal("0")),
+])
+async def test_update_draft_distinguishes_omitted_price_from_explicit_values(monkeypatch, price_fields, expected):
+    from unittest.mock import AsyncMock
+    from app.modules.order import drafts
+    from app.modules.order.schema import OrderDraftUpdate
+
+    draft = SimpleNamespace(id=1, status="draft", revision=1)
+    item = SimpleNamespace(source_snapshot={"source_item_id": 1}, unit_price=Decimal("12.3456"))
+    monkeypatch.setattr(drafts, "get_visible", AsyncMock(return_value=draft))
+    monkeypatch.setattr(drafts, "items", AsyncMock(return_value=[item]))
+    monkeypatch.setattr(drafts, "detail", AsyncMock(return_value={}))
+    monkeypatch.setattr(drafts, "write_audit", AsyncMock())
+    payload = OrderDraftUpdate(
+        revision=1, items=[{"source_item_id": 1, "quantity": "2", **price_fields}],
+    )
+    await drafts.update(SimpleNamespace(flush=AsyncMock()), SimpleNamespace(id=1), draft.id, payload)
+    assert (item.quantity, item.unit_price) == (Decimal("2"), expected)
+    assert draft.revision == 2

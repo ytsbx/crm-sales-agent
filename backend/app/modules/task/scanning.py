@@ -1,6 +1,10 @@
 """定时与手动扫描共用的事务锁，避免查询去重后并发创建两份待办。"""
+import logging
+
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger(__name__)
 
 
 async def lock_task_scan(session: AsyncSession) -> None:
@@ -9,6 +13,8 @@ async def lock_task_scan(session: AsyncSession) -> None:
     try:
         dialect = session.get_bind().dialect.name
     except Exception:  # noqa: BLE001
+        # B22-12：探测失败不能静默——PG 上跳过锁可能重复建待办，留日志便于排查
+        logger.warning("task-scan 方言探测失败，跳过 advisory lock", exc_info=True)
         dialect = ""
     if dialect == "postgresql":
         await session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended('crm:task-scan', 0))"))

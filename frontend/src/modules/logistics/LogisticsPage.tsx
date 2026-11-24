@@ -11,6 +11,7 @@ import {
   listLogisticsRoutes,
   listSkusForPricing,
   type LogisticsOption,
+  type LogisticsQuoteRow,
   type LogisticsRouteRow,
 } from '../../shared/api/pricing'
 import PageHeader from '../../shared/components/PageHeader'
@@ -20,6 +21,7 @@ import { usePermissions } from '../../shared/hooks/permissions'
 import SectionCard from '../../shared/components/SectionCard'
 import { optionMatcher } from '../../shared/components/optionMatch'
 import { parseOptionalNumber } from '../../shared/number-input'
+import { formatMoney } from '../../shared/components/money'
 
 /**
  * 物流试算（PRD §14 / 03-API §19）。
@@ -47,8 +49,14 @@ function SummaryRow({ label, value, tone }: { label: string; value: string; tone
   )
 }
 
-function money(value?: number | null) {
-  return value === null || value === undefined ? '-' : `¥${value.toFixed(2)}`
+function money(value?: number | string | null) {
+  return formatMoney(typeof value === 'number' ? value.toFixed(2) : value, 'CNY')
+}
+
+function historyQuantity(row: LogisticsQuoteRow) {
+  const value = row.quantity_exact?.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '')
+    ?? row.quantity?.toLocaleString('zh-CN')
+  return value == null ? '—' : [value, row.quantity_unit].filter(Boolean).join(' ')
 }
 
 export default function LogisticsPage() {
@@ -70,7 +78,7 @@ export default function LogisticsPage() {
   }
 
   const [skuId, setSkuId] = useState<number | undefined>(paramNumber('sku_id'))
-  const [quantity, setQuantity] = useState(String(paramNumber('quantity') ?? 1000))
+  const [quantity, setQuantity] = useState(searchParams.get('quantity') || '1000')
   const [origin, setOrigin] = useState(searchParams.get('origin') ?? '')
   const [destination, setDestination] = useState(searchParams.get('destination') ?? '')
   const [shippingMethod, setShippingMethod] = useState<string | undefined>(
@@ -101,18 +109,27 @@ export default function LogisticsPage() {
     enabled: activeKey === 'calc',
   })
 
-  const quantityNumber = Number(quantity)
+  const quantityText = quantity.trim()
+  const quantityNumber = Number(quantityText)
+  const quantityUnit = skusQuery.data?.find(sku => sku.id === skuId)?.unit?.trim()
+  const quantityError = !/^\d*(\.\d+)?$/.test(quantityText) || !Number.isFinite(quantityNumber) || quantityNumber <= 0
+    ? '请填写大于 0 的数量。'
+    : quantityUnit === '件' && /\.\d*[1-9]/.test(quantityText)
+      ? '按件计量，请填写正整数。'
+      : !/^\d*(\.\d{0,3}0*)?$/.test(quantityText)
+        ? '数量最多保留三位小数。'
+        : null
   const weightNumber = parseOptionalNumber(weightOverride)
   const volumeNumber = parseOptionalNumber(volumeOverride)
   const weightInvalid = weightNumber !== null && (!Number.isFinite(weightNumber) || weightNumber <= 0)
   const volumeInvalid = volumeNumber !== null && (!Number.isFinite(volumeNumber) || volumeNumber <= 0)
-  const productReady = Boolean(skuId) && Number.isFinite(quantityNumber) && quantityNumber > 0
+  const productReady = Boolean(skuId) && !quantityError
   const canCalc = productReady && !weightInvalid && !volumeInvalid
 
   const payload = useMemo(
     () => ({
       sku_id: skuId,
-      quantity: Number.isFinite(quantityNumber) && quantityNumber > 0 ? quantityNumber : 1,
+      quantity: quantityText,
       origin: origin.trim() || null,
       destination: destination.trim() || null,
       shipping_method: shippingMethod ?? null,
@@ -120,7 +137,7 @@ export default function LogisticsPage() {
       weight_override: weightInvalid ? null : weightNumber,
       volume_override: volumeInvalid ? null : volumeNumber,
     }),
-    [skuId, quantityNumber, origin, destination, shippingMethod, packageType, weightNumber, volumeNumber, weightInvalid, volumeInvalid],
+    [skuId, quantityText, origin, destination, shippingMethod, packageType, weightNumber, volumeNumber, weightInvalid, volumeInvalid],
   )
 
   const calculation = useMutation({
@@ -139,7 +156,7 @@ export default function LogisticsPage() {
         ...calculation.variables,
         save: true,
         selected_rate_id: option.rate_id,
-        expected_amount: option.amount,
+        expected_amount: option.amount_exact ?? option.amount,
       })
       if (!saved.quoted_id) throw new Error('方案没有保存，请重新试算')
     },
@@ -181,7 +198,9 @@ export default function LogisticsPage() {
       title: '费用',
       dataIndex: 'amount',
       width: 130,
-      render: (value: number) => <span style={{ fontWeight: 600 }}>{money(value)}</span>,
+      render: (value: number, record: LogisticsOption) => (
+        <span style={{ fontWeight: 600 }}>{money(record.amount_exact ?? value)}</span>
+      ),
     },
     {
       title: (
@@ -258,7 +277,7 @@ export default function LogisticsPage() {
       title: '数量',
       dataIndex: 'quantity',
       width: 90,
-      render: (value: number | null) => (value === null ? '-' : value.toLocaleString('zh-CN')),
+      render: (_: unknown, record: LogisticsQuoteRow) => historyQuantity(record),
     },
     {
       title: '计费重 (kg)',
@@ -266,7 +285,10 @@ export default function LogisticsPage() {
       width: 120,
       render: (value: number) => value.toLocaleString('zh-CN'),
     },
-    { title: '运费', dataIndex: 'amount', width: 110, render: (value: number) => money(value) },
+    {
+      title: '运费', dataIndex: 'amount', width: 110,
+      render: (value: number, record: LogisticsQuoteRow) => money(record.amount_exact ?? value),
+    },
     {
       title: '创建时间',
       dataIndex: 'created_at',
@@ -349,8 +371,12 @@ export default function LogisticsPage() {
                   </div>
 
                   <div>
-                    <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>数量</div>
-                    <Input value={quantity} onChange={setQuantity} placeholder="1000" />
+                    <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>
+                      {quantityUnit ? `数量（${quantityUnit}）` : '数量'}
+                    </div>
+                    <Input value={quantity} onChange={setQuantity} placeholder="1000"
+                      validateStatus={skuId && quantityError ? 'error' : 'default'} />
+                    {skuId && quantityError && <div className="detail-hint">{quantityError}</div>}
                   </div>
                 </div>
 
@@ -422,8 +448,8 @@ export default function LogisticsPage() {
                 >
                   试算
                 </Button>
-                {!productReady && (
-                  <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>请先选择 SKU 并填写大于 0 的数量</div>
+                {!skuId && (
+                  <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>请先选择 SKU</div>
                 )}
               </div>
             </SectionCard>
@@ -498,17 +524,17 @@ export default function LogisticsPage() {
                           }}
                           onClick={() => {
                             if (row.sku_id) setSkuId(row.sku_id)
-                            if (row.quantity) setQuantity(String(row.quantity))
+                            if (row.quantity != null) setQuantity(row.quantity_exact ?? String(row.quantity))
                             setOrigin(row.origin ?? '')
                             setDestination(row.destination ?? '')
                             if (row.shipping_method) setShippingMethod(row.shipping_method)
                           }}
                         >
                           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {`${row.origin || '—'} → ${row.destination || '—'} · ${row.quantity ?? '-'} 件`}
+                            {`${row.origin || '—'} → ${row.destination || '—'} · ${historyQuantity(row)}`}
                           </span>
                           <span style={{ flexShrink: 0, color: 'var(--crm-text-3)' }}>
-                            {`¥${row.amount.toLocaleString('zh-CN')} · ${row.eta_days != null ? `${row.eta_days} 天` : row.shipping_method}`}
+                            {`${money(row.amount_exact ?? row.amount)} · ${row.eta_days != null ? `${row.eta_days} 天` : row.shipping_method}`}
                           </span>
                         </div>
                       ))}

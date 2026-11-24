@@ -290,7 +290,7 @@ def render_biz_doc_pdf(data: dict[str, Any]) -> bytes:
     flow.append(
         Paragraph(
             f"内容校验值（SHA-256，按本文的快照与模板版本计算）："
-            f"{_text(data.get('content_sha256'))}",
+            f"{_esc(data.get('content_sha256'))}",
             style["footer"],
         )
     )
@@ -309,7 +309,7 @@ def render_biz_doc_pdf(data: dict[str, Any]) -> bytes:
             Paragraph(
                 "未留存项（生成时未记录，待核实）："
                 + "；".join(
-                    f"{_text(gap.get('label'))}（{_text(gap.get('display'))}）"
+                    f"{_esc(gap.get('label'))}（{_esc(gap.get('display'))}）"
                     for gap in gaps[:8]
                 ),
                 style["footer"],

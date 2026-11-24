@@ -19,7 +19,7 @@ def validate_plan(next_action, planned_at, exemption_reason):
 
 class FollowUpCreate(CreateModel):
     content: str = Field(min_length=1)
-    followup_type: str = "电话"
+    followup_type: str = Field(default="电话", min_length=1, max_length=32)
     customer_id: int | None = None
     contact_id: int | None = None
     lead_id: int | None = None
@@ -61,7 +61,7 @@ class FollowUpUpdate(PatchModel):
     model_config = ConfigDict(extra="ignore")
 
     content: str | None = Field(default=None, min_length=1)
-    followup_type: str | None = None
+    followup_type: str | None = Field(default=None, min_length=1, max_length=32)
     customer_feedback: str | None = None
     next_action: str | None = Field(default=None, max_length=200)
     task_due_at: datetime | None = None

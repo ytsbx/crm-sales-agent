@@ -588,8 +588,8 @@ async def attach_product_file(
     product_id: int,
     request: Request,
     file_id: int = Query(..., description="先调 POST /files/upload 拿到的文件 id"),
-    category: str | None = None,
-    remark: str | None = None,
+    category: str | None = Query(None, max_length=32),
+    remark: str | None = Query(None, max_length=255),
     user: CurrentUser = Depends(require_permission("product:manage")),
     session: AsyncSession = Depends(get_db),
 ):

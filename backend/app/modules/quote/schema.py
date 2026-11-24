@@ -1,10 +1,19 @@
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Annotated
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 from app.core.patch_schema import PatchModel
 
+
+def _require_valid_until(value: object) -> object:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        raise ValueError("请填写报价有效期，不能清空")
+    return value
+
+
+QuoteValidityEdit = Annotated[date | None, BeforeValidator(_require_valid_until)]
 
 
 class QuoteCreate(BaseModel):
@@ -33,7 +42,7 @@ class QuoteVersionUpdate(BaseModel):
     payment_terms: str | None = Field(default=None, max_length=128)
     delivery_terms: str | None = None
     remark: str | None = None
-    valid_until: date | None = None
+    valid_until: QuoteValidityEdit = None
 
 
 class QuoteItemInput(PatchModel):
@@ -159,7 +168,7 @@ class QuoteUpdate(BaseModel):
 
     contact_id: int | None = None
     owner_id: int | None = None
-    valid_until: date | None = None
+    valid_until: QuoteValidityEdit = None
 
 
 class QuoteClone(BaseModel):

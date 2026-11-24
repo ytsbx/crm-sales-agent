@@ -53,6 +53,7 @@ from app.modules.quote.schema import (
     SubmitApprovalRequest,
 )
 from app.modules.user.model import User
+from app.modules.user.service import get_user_roles_and_permissions, resolve_data_scope
 from app.core.timebase import to_business
 
 logger = logging.getLogger(__name__)
@@ -87,7 +88,7 @@ async def _ensure_inquiry_visible(
     from app.modules.inquiry import service as inquiry_service
 
     inquiry = await inquiry_service.get_visible_or_404(session, user, inquiry_id)
-    await inquiry_service.lock_quote_source(session, inquiry, quote_id=quote_id)
+    await inquiry_service.lock_quote_source(session, inquiry, quote_id=quote_id, viewer_id=user.id)
 
 
 async def _ensure_opportunity_item_same_customer(
@@ -384,6 +385,26 @@ async def list_versions(
 # --------------------------------------------- 03-API §20 补齐的报价单级接口
 
 
+async def _require_quote_recipient(session: AsyncSession, owner_id: int, customer_id: int) -> None:
+    owner = await session.get(User, owner_id)
+    if owner is None:
+        raise AppError(ErrorCode.NOT_FOUND, f"负责人 id={owner_id} 不存在", 404)
+    if owner.status != "active":
+        raise AppError(ErrorCode.PARAM_ERROR, f"负责人「{owner.name}」已停用", 422)
+    roles, permissions = await get_user_roles_and_permissions(session, owner.id)
+    recipient = CurrentUser(owner, permissions, [role.code for role in roles], resolve_data_scope(roles))
+    message = "接手人目前无权查看该客户。请选择可查看该客户的同事，或通过「转交客户」交接。"
+    if "admin" not in recipient.roles and not recipient.has("customer:view"):
+        raise AppError(ErrorCode.FORBIDDEN, message, 403)
+    customer = await customer_service.get_customer_or_404(session, customer_id)
+    try:
+        await customer_service.assert_customer_visible(session, recipient, customer)
+    except AppError as error:
+        if error.code != ErrorCode.DATA_SCOPE_DENIED:
+            raise
+        raise AppError(ErrorCode.DATA_SCOPE_DENIED, message, 403) from error
+
+
 @router.patch("/quotes/{quote_id}")
 async def update_quote(
     quote_id: int,
@@ -401,12 +422,11 @@ async def update_quote(
     quote = await svc.get_visible_quote(session, user, quote_id, for_update=True)
     before = svc.serialize_quote(quote)
     data = payload.model_dump(exclude_unset=True)
-    if data.get("owner_id") is not None:
-        owner = await session.get(User, data["owner_id"])
-        if owner is None:
-            raise AppError(ErrorCode.NOT_FOUND, f"负责人 id={data['owner_id']} 不存在", 404)
-        if owner.status != "active":
-            raise AppError(ErrorCode.PARAM_ERROR, f"负责人「{owner.name}」已停用", 422)
+    if data.get("contact_id") is not None:
+        await svc.require_quote_customer_contact(session, quote.customer_id, data["contact_id"])
+    owner_id = data.get("owner_id")
+    if owner_id is not None and owner_id != quote.owner_id:
+        await _require_quote_recipient(session, owner_id, quote.customer_id)
     if "valid_until" in data:
         # §8.7：有效期是**对客字段**，主单与当前版本的快照必须一起动 ——
         # 否则主单显示 12-01、对客文件还是 11-01，而发送与过期判断又在用主单，
@@ -631,6 +651,8 @@ async def clone_quote(
     版本状态重置为未提交、不带发送记录。审批通过/已发送是上一单的事实。
     """
     source = await svc.get_visible_quote(session, user, quote_id)
+    target_customer_id = payload.customer_id or source.customer_id
+    target_owner_id = payload.owner_id if payload.owner_id is not None else source.owner_id
     if payload.customer_id is not None:
         if await session.get(Customer, payload.customer_id) is None:
             raise AppError(ErrorCode.NOT_FOUND, f"客户 id={payload.customer_id} 不存在", 404)
@@ -674,7 +696,6 @@ async def clone_quote(
     target_opportunity = await opportunity_service.get_visible_opportunity(
         session, user, final_opportunity_id
     )
-    target_customer_id = payload.customer_id or source.customer_id
     if target_opportunity.customer_id != target_customer_id:
         raise AppError(
             ErrorCode.PARAM_ERROR,
@@ -682,6 +703,10 @@ async def clone_quote(
             f"与本次报价的客户 id={target_customer_id} 不一致，请确认后再复制",
             422,
         )
+    if target_owner_id is not None and (payload.owner_id is not None or target_customer_id != source.customer_id):
+        if target_customer_id != source.customer_id:
+            await customer_service.get_visible_customer(session, user, target_customer_id)
+        await _require_quote_recipient(session, target_owner_id, target_customer_id)
     # §8.14：主数据未确认只提示、不阻断
     unconfirmed_master: set[str] = set()
     created = await svc.create_quote(
@@ -703,7 +728,7 @@ async def clone_quote(
     new_quote.opportunity_id = (
         payload.opportunity_id if payload.opportunity_id is not None else source.opportunity_id
     )
-    new_quote.owner_id = payload.owner_id if payload.owner_id is not None else source.owner_id
+    new_quote.owner_id = target_owner_id
 
     copied_items = 0
     if payload.copy_items and source.current_version_id:

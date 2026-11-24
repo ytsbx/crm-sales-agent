@@ -39,7 +39,9 @@ from app.modules.payment import service as payment_service
 from app.modules.payment.model import PaymentRecord, ReceivablePlan
 from app.modules.payment.router import (
     confirm_payment,
+    create_order_receivable,
     create_payment,
+    create_receivable,
     delete_receivable,
     generate_receivables,
     router as payment_router,
@@ -50,6 +52,7 @@ from app.modules.payment.schema import (
     PaymentAction,
     PaymentCreate,
     PaymentUpdate,
+    ReceivableCreate,
     ReceivableGenerate,
     ReceivableUpdate,
 )
@@ -227,6 +230,104 @@ def create_payload(plan, **overrides) -> PaymentCreate:
 
 
 # ------------------------------------------------------ 1. 请求键：一行 vs 两行
+
+
+@pytest.mark.anyio
+async def test_manual_receivable_retries_across_both_routes_create_one_plan(pay_db, pay):
+    order = make_order(pay_db, total="100")
+    other = make_order(pay_db, total="200")
+    pay_db.commit()
+    form = {"plan_name": "定金", "due_date": DAY, "amount": "30.00"}
+    request = make_request("manual-plan-retry")
+    first = await create_order_receivable(order.id, ReceivableCreate(**form), request, operator(), pay)
+    replay = await create_receivable(
+        ReceivableCreate(order_id=order.id, **{**form, "amount": "30"}), request, operator(), pay
+    )
+    assert replay["data"]["id"] == first["data"]["id"]
+    assert pay_db.query(ReceivablePlan).count() == 1
+    assert pay_db.query(AuditLog).filter_by(action="create", business_type="receivable_plan").count() == 1
+
+    with pytest.raises(AppError, match="内容不一致"):
+        await create_order_receivable(other.id, ReceivableCreate(**form), request, operator(), pay)
+    with pytest.raises(AppError, match="内容不一致"):
+        revised = ReceivableCreate(**{**form, "amount": "31"})
+        await create_order_receivable(order.id, revised, request, operator(), pay)
+
+    order.owner_id = 42
+    pay_db.commit()
+    with pytest.raises(AppError, match="数据范围"):
+        restricted = make_user(101, permissions={"payment:manage"}, data_scope="self")
+        await create_order_receivable(order.id, ReceivableCreate(**form), request, restricted, pay)
+
+    second = await create_order_receivable(
+        order.id, ReceivableCreate(request_key="another-plan", **form), make_request(), operator(), pay
+    )
+    assert second["data"]["id"] != first["data"]["id"]
+    await create_order_receivable(order.id, ReceivableCreate(**form), make_request(), operator(), pay)
+    assert pay_db.query(ReceivablePlan).count() == 3
+
+
+@pytest.mark.anyio
+async def test_failed_manual_receivable_save_rolls_back_plan_and_key(pay_db, pay, monkeypatch):
+    from app.modules.order import milestones
+
+    order_id = make_order(pay_db).id
+    pay_db.commit()
+    # SQLite needs an explicit outer transaction before the reservation savepoint.
+    pay_db.connection().exec_driver_sql("BEGIN")
+    form = ReceivableCreate(plan_name="定金", due_date=DAY, amount=30, request_key="retry-after-error")
+
+    async def fail_sync(*args, **kwargs):
+        raise RuntimeError("测试：跟单同步中断")
+
+    with monkeypatch.context() as fault:
+        fault.setattr(milestones, "sync_payment_milestones", fail_sync)
+        with pytest.raises(RuntimeError, match="跟单同步中断"):
+            await create_order_receivable(order_id, form, make_request(), operator(), pay)
+
+    assert pay_db.query(ReceivablePlan).count() == 0
+    assert pay_db.query(RequestKey).count() == 0
+    await create_order_receivable(order_id, form, make_request(), operator(), pay)
+    assert pay_db.query(ReceivablePlan).count() == 1
+
+
+@pytest.mark.anyio
+async def test_manual_receivable_limit_on_create_and_increase(pay_db, pay):
+    order = make_order(pay_db, total="100")
+    existing = make_plan(pay_db, order, amount="75")
+    cancelled = make_plan(pay_db, order, amount="50", name="已取消")
+    cancelled.status = "cancelled"
+    pay_db.commit()
+    request = make_request()
+    payload = ReceivableCreate(order_id=order.id, plan_name="尾款", due_date=DAY, amount="25.01")
+    with pytest.raises(AppError, match="本期最多可填 ¥25.00") as caught:
+        await create_receivable(payload, request, operator(), pay)
+    assert caught.value.http_status == 422
+    assert pay_db.query(ReceivablePlan).count() == 2
+    order_locks = lock_indexes(pay.statements, "sales_orders")
+    sum_queries = indexes(pay.statements, "sum(receivable_plans.amount)")
+    assert order_locks and sum_queries and order_locks[-1] < sum_queries[-1]
+
+    await create_order_receivable(order.id, payload.model_copy(update={"amount": Decimal("25")}), request, operator(), pay)
+    with pytest.raises(AppError, match="本期最多可填 ¥75.00"):
+        await update_receivable(existing.id, ReceivableUpdate(amount="75.01", remark="不应保存"),
+                                request, operator(), pay)
+    assert existing.amount == Decimal("75") and existing.remark is None
+
+
+@pytest.mark.anyio
+async def test_legacy_receivable_overage_can_be_reduced_and_rescheduled(pay_db, pay):
+    order = make_order(pay_db, total="100")
+    plan = make_plan(pay_db, order, amount="80")
+    make_plan(pay_db, order, amount="50", name="尾款")
+    pay_db.commit()
+    request = make_request()
+    with pytest.raises(AppError, match="超过订单总额"):
+        await update_receivable(plan.id, ReceivableUpdate(amount="81"), request, operator(), pay)
+    await update_receivable(plan.id, ReceivableUpdate(due_date=date(2026, 12, 20)), request, operator(), pay)
+    await update_receivable(plan.id, ReceivableUpdate(amount="70"), request, operator(), pay)
+    assert plan.due_date == date(2026, 12, 20)
+    assert sum(row.amount for row in pay_db.query(ReceivablePlan)) == Decimal("120")
 
 
 @pytest.mark.anyio

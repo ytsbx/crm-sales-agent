@@ -58,10 +58,11 @@ SOURCE_IDS = {"applicant": "applicant_name", "production_unit": "maker_unit", "d
 
 
 async def native_form(account):
-    if account is None or not account.dingtalk_userid:
+    applicant = client.applicant_identity(account)
+    if not applicant:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "请先对应同序 OA 申请人员", 422)
     try:
-        rows = await client.list_templates(account.dingtalk_userid)
+        rows = await client.list_templates(applicant)
     except (client.OaError, client.OaUnknownOutcome) as exc:
         raise AppError(ErrorCode.EXTERNAL_ERROR, "暂时无法读取同序打样模板，请重试", 502) from exc
     selected = _template_id()
@@ -114,6 +115,38 @@ async def _department_name(session: AsyncSession, user) -> str:
         return ""
     dept = await session.get(Department, user.department_id)
     return dept.name if dept is not None else ""
+
+
+async def _selected_detail_files(session: AsyncSession, user, sample: SampleRequest,
+                                 file_ids: list[int], *, uploads=None) -> list[dict]:
+    """上传经办人自己填好并选择的《样品明细明细表》，不再由 CRM 生成 Excel。"""
+    ids = list(dict.fromkeys(int(item) for item in file_ids))
+    if not ids:
+        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "请上传样品明细明细表", 422)
+    rows = (await session.execute(
+        select(FileRecord).join(BusinessFile, BusinessFile.file_id == FileRecord.id).where(
+            BusinessFile.business_type == "sample", BusinessFile.business_id == sample.id,
+            FileRecord.id.in_(ids),
+        )
+    )).scalars().unique().all()
+    by_id = {row.id: row for row in rows}
+    if set(by_id) != set(ids):
+        raise AppError(ErrorCode.PARAM_ERROR, "所选样品明细表不属于当前打样单，请重新选择", 422)
+    upload = uploads.stage if uploads is not None else client.upload_file
+    attachments = []
+    for file_id in ids:
+        row = by_id[file_id]
+        path = absolute_path(row.object_key)
+        if not path.is_file() or path.stat().st_size != row.size:
+            raise AppError(ErrorCode.PARAM_ERROR, f"样品明细表「{row.file_name}」缺失或不完整，请重新上传", 422)
+        try:
+            attachments.append(await upload(
+                client.applicant_identity(user), row.file_name,
+                path if uploads is not None else path.read_bytes(), row.mime_type,
+            ))
+        except (client.OaError, OSError) as exc:
+            raise AppError(ErrorCode.EXTERNAL_ERROR, f"样品明细表未能上传到 OA，尚未发起审批：{exc}", 502) from exc
+    return attachments
 
 
 async def _attachments(session: AsyncSession, user, sample: SampleRequest, payload_fields: dict, *, uploads=None) -> list[dict]:
@@ -186,27 +219,31 @@ async def _attachments(session: AsyncSession, user, sample: SampleRequest, paylo
     upload = uploads.stage if uploads is not None else client.upload_file
     try:
         attachments = [await upload(
-            user.dingtalk_userid, TEMPLATE_FILENAME, content,
+            client.applicant_identity(user), TEMPLATE_FILENAME, content,
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )]
         for filename, path in prepared:
-            attachments.append(await upload(user.dingtalk_userid, filename, path if uploads is not None else path.read_bytes()))
+            attachments.append(await upload(client.applicant_identity(user), filename, path if uploads is not None else path.read_bytes()))
     except (client.OaError, OSError) as exc:
         raise AppError(ErrorCode.EXTERNAL_ERROR, f"打样资料未能上传到 OA，尚未发起审批：{exc}", 502) from exc
     return attachments
 
 
-async def start_sample_approval(session: AsyncSession, current_user, sample: SampleRequest, payload_fields: dict) -> tuple[OaInstance, str]:
+async def start_sample_approval(
+    session: AsyncSession, current_user, sample: SampleRequest, payload_fields: dict,
+    *, sample_detail_file_ids: list[int] | None = None,
+) -> tuple[OaInstance, str]:
     from app.modules.sample.dingtalk import collect_template_values
     from app.modules.user.model import User
 
     if not client.configured():
         raise AppError(ErrorCode.PARAM_ERROR, "还没配置自研 OA 对接，请联系管理员", 422)
     user = await session.get(User, current_user.id)
-    if user is None or not user.dingtalk_userid:
-        raise AppError(ErrorCode.PARAM_ERROR, "请先绑定本人钉钉账号，OA 才能按你名义发起", 422)
+    identity = client.applicant_identity(user)
+    if not identity:
+        raise AppError(ErrorCode.PARAM_ERROR, "请联系管理员为当前账号绑定同序人员后再提交", 422)
     template_id = _template_id()
-    approvers = _approvers()
+    approvers = _approvers() if isinstance(identity, str) else []
 
     latest = await latest_sample_row(session, sample.id, for_update=True)
     if await review_stuck_submission(session, latest):
@@ -218,12 +255,17 @@ async def start_sample_approval(session: AsyncSession, current_user, sample: Sam
     if latest is not None and latest.status == "approved":
         return latest, "这张打样单的 OA 审批已经通过"
 
-    department = await _department_name(session, user)
-    for label, value in (("申请人员", user.name), ("归属部门", department)):
+    native = settings.oa_sample_template_code.strip() == SOURCE_CODE
+    native_options = await native_form(user) if native else None
+    # 归属部门以同序申请人资料为准：同序里每位申请人都有完整部门，
+    # CRM 的部门表可能没有对应项，不能因此挡住提交。
+    prefill = (native_options or {}).get("prefill") or {}
+    applicant_name = prefill.get("applicant_name") or user.name
+    department = prefill.get("department") or await _department_name(session, user)
+    for label, value in (("申请人员", applicant_name), ("归属部门", department)):
         if not (value or "").strip():
             raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, f"请补齐申请人的{label}后再提交", 422)
-    field_metadata = ((await native_form(user))["fields"]
-                      if settings.oa_sample_template_code.strip() == SOURCE_CODE else oa_template_fields())
+    field_metadata = (native_options["fields"] if native_options else oa_template_fields())
     fields, _ = collect_template_values(field_metadata, {
         "sample_type": _field(payload_fields, "sample_type", sample.sample_type),
         "product_category": _field(payload_fields, "product_category", sample.product_category),
@@ -232,28 +274,32 @@ async def start_sample_approval(session: AsyncSession, current_user, sample: Sam
         "score": _field(payload_fields, "score"),
         "sample_note": _field(payload_fields, "sample_note", sample.sample_purpose or sample.remark),
     })
-    fields.update(applicant_name=user.name, department=department)
+    fields.update(applicant_name=applicant_name, department=department)
 
     round_no = (latest.submit_round + 1) if latest is not None else 1
     external_ref = client.approval_external_ref("sample", sample.id, round_no)
     row = OaInstance(
         customer_id=sample.customer_id, inquiry_id=sample.id, inquiry_version=int(sample.version or 1),
         oa_type=OA_TYPE, provider=PROVIDER, idempotency_key=external_ref, submit_round=round_no,
-        process_code=template_id, originator_user_id=user.dingtalk_userid,
+        process_code=template_id, originator_user_id=str(identity),
         status="submitting", attempt_count=1, created_by=current_user.id,
         created_at=datetime.now(UTC), last_attempt_at=datetime.now(UTC),
     )
     session.add(row)
     await session.flush()
     uploads = ApprovalUploads()
-    attachments = await _attachments(session, user, sample, {**payload_fields, **fields}, uploads=uploads)
+    if native:
+        attachments = await _selected_detail_files(
+            session, user, sample, sample_detail_file_ids or [], uploads=uploads)
+    else:
+        attachments = await _attachments(session, user, sample, {**payload_fields, **fields}, uploads=uploads)
     attachment_ids = [str(item["id"]) for item in attachments]
     if not attachment_ids:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "打样申请表未上传成功，请重试", 422)
     fields["sample_items"] = attachment_ids
     payload = {
         "external_ref": external_ref,
-        "applicant_dingtalk_user_id": user.dingtalk_userid,
+        **client.applicant_fields(identity),
         ("template_id" if settings.oa_sample_template_id.strip() else "template_code"): template_id,
         "title": f"打样申请 · {sample.id}",
         "reason": f"CRM 打样申请 {sample.id}",

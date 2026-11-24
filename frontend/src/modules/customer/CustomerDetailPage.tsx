@@ -190,8 +190,9 @@ export default function CustomerDetailPage() {
   })
   const mergePreview = mergePreviewQuery.data
   /** 还有冲突没给口径 → 不允许提交 */
-  const unresolvedConflicts = (mergePreview?.blocking ?? []).filter(
-    (key) => !mergeResolutions[key],
+  const unresolvedConflicts = (mergePreview?.conflicts ?? []).filter(
+    (conflict) => mergePreview?.blocking.includes(conflict.key) &&
+      !conflict.options.some((option) => option.value === mergeResolutions[conflict.key]),
   )
 
   const customerQuery = useQuery({
@@ -1053,7 +1054,7 @@ export default function CustomerDetailPage() {
                   dataIndex: 'expected_amount',
                   width: 130,
                   render: (value: number | null, record: Opportunity) =>
-                    formatMoney(value, record.currency),
+                    formatMoney(record.expected_amount_exact ?? value, record.currency),
                 },
                 { title: '预计成交日', dataIndex: 'expected_close_date', width: 130, render: (v: string | null) => v ?? '-' },
                 { title: '负责人', dataIndex: 'owner_name', width: 100, render: (v: string | null) => v ?? '-' },
@@ -1710,7 +1711,7 @@ export default function CustomerDetailPage() {
         onOk={() => mergeMutation.mutate()}
         confirmLoading={mergeMutation.isPending}
         okText="确认合并"
-        okButtonProps={{ disabled: !mergeTarget || unresolvedConflicts.length > 0 }}
+        okButtonProps={{ disabled: !mergeTarget || !mergePreviewQuery.isSuccess || unresolvedConflicts.length > 0 }}
         width={680}
       >
         <div
@@ -1839,7 +1840,7 @@ export default function CustomerDetailPage() {
                         >
                           {conflict.detail}
                         </div>
-                        <Select
+                        {conflict.options.length > 0 && <Select
                           value={mergeResolutions[conflict.key]}
                           placeholder="请选择处理方式"
                           onChange={(value) =>
@@ -1853,7 +1854,7 @@ export default function CustomerDetailPage() {
                             label: option.label,
                           }))}
                           style={{ width: '100%' }}
-                        />
+                        />}
                       </div>
                     ))}
                   </div>

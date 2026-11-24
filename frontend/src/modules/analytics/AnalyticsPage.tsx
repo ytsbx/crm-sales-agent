@@ -272,16 +272,22 @@ const TARGET_SCOPES = [
   { value: 'all', label: '全部对象' },
 ] as const
 
-function TargetProgress({ label, actual, target, achievement }: {
+function LiveActualNote({ show }: { show?: boolean }) {
+  return show ? <small style={{ display: 'block', color: 'var(--crm-text-3)', fontSize: 11 }}>按当前数据计算</small> : null
+}
+
+function TargetProgress({ label, actual, target, achievement, live }: {
   label: string
   actual: string
   target: string
   achievement: number | null
+  live?: boolean
 }) {
   return (
     <div className="analytics-target-progress">
       <span>{label}</span>
       <strong>{actual}</strong>
+      <LiveActualNote show={live} />
       <small>{achievement == null ? '未设目标' : `目标 ${target} · 已完成 ${Math.round(achievement * 100)}%`}</small>
     </div>
   )
@@ -1380,14 +1386,14 @@ export default function AnalyticsPage() {
                   <article key={targetRowKey(row)} className="analytics-target-row">
                     <div className="analytics-target-person">
                       <strong>{row.user_name}</strong>
-                      <span>{Number(row.period.slice(5))} 月{row.actual_frozen && ' · 已存档'}</span>
+                      <span>{Number(row.period.slice(5))} 月{row.actual_frozen ? ' · 已存档' : row.period_frozen ? ' · 部分存档' : ''}</span>
                     </div>
                     <TargetProgress label="确认回款" actual={formatWholeCny(row.received_actual_exact ?? row.assess_actual ?? row.received_actual)}
-                      target={formatWholeCny(row.sales_target_exact ?? row.sales_target)} achievement={row.sales_achievement} />
+                      target={formatWholeCny(row.sales_target_exact ?? row.sales_target)} achievement={row.sales_achievement} live={row.live_actual_metrics?.includes('received')} />
                     <TargetProgress label="新客户首单" actual={`${row.new_customer_actual} 家`}
-                      target={`${row.new_customer_target} 家`} achievement={row.new_customer_achievement} />
+                      target={`${row.new_customer_target} 家`} achievement={row.new_customer_achievement} live={row.live_actual_metrics?.includes('new_customer')} />
                     <TargetProgress label="老客户订单净额" actual={formatWholeCny(row.repeat_customer_actual_exact ?? row.repeat_customer_actual)}
-                      target={formatWholeCny(row.repeat_customer_target_exact ?? row.repeat_customer_target)} achievement={row.repeat_customer_achievement} />
+                      target={formatWholeCny(row.repeat_customer_target_exact ?? row.repeat_customer_target)} achievement={row.repeat_customer_achievement} live={row.live_actual_metrics?.includes('repeat_net')} />
                     <div className="analytics-target-row-actions">
                       <Button size="small" theme="borderless" onClick={() => openDrilldown(row, 'received')}>查看明细</Button>
                       {canSetTarget && <Button size="small" theme="borderless" onClick={() => openTargetModal(row)}>
@@ -1413,22 +1419,20 @@ export default function AnalyticsPage() {
                 render: (v: string, r: SalesTargetRow) => (
                   <span>
                     {v.slice(5)} 月
-                    {r.actual_frozen && (
-                      // 存档 / 实时必须一眼分得清：存档值不会因为后来的退货变小，
-                      // 两者对不上时先看这个标记再怀疑数据（§4.1.5）
-                      <span
-                        style={{ marginLeft: 6, fontSize: 11, color: 'var(--crm-text-3)' }}
-                        title="这一期已结账：数字是结账当天抄下来的存档值，不会因为后来的退货、改单变小"
-                      >
-                        已结账
-                      </span>
+                    {(r.period_frozen ?? r.actual_frozen) && (
+                      <small style={{ display: 'block', color: 'var(--crm-text-3)', fontSize: 11 }}>
+                        {r.actual_frozen ? '已存档' : '部分存档'}
+                      </small>
                     )}
                   </span>
                 ),
               },
               { title: '对象', dataIndex: 'user_name', width: 120 },
               { title: '新客目标', dataIndex: 'new_customer_target', width: 100 },
-              { title: '新客实际', dataIndex: 'new_customer_actual', width: 100 },
+              { title: '新客实际', dataIndex: 'new_customer_actual', width: 100,
+                render: (v: number, r: SalesTargetRow) => <>
+                  {v}<LiveActualNote show={r.live_actual_metrics?.includes('new_customer')} />
+                </> },
               {
                 // R09：新建客户档案数（过程指标）。
                 // 放在「新客实际」旁边而不是替换它——两个是不同口径：
@@ -1485,6 +1489,7 @@ export default function AnalyticsPage() {
                     <a style={{ marginLeft: 6, fontSize: 12 }} onClick={() => openDrilldown(r, 'received')}>
                       明细
                     </a>
+                    <LiveActualNote show={r.live_actual_metrics?.includes('received')} />
                   </span>
                 ),
               },
@@ -1493,14 +1498,20 @@ export default function AnalyticsPage() {
                 title: '签单额',
                 dataIndex: 'sales_actual',
                 width: 120,
-                render: (v: number | undefined, r: SalesTargetRow) => formatWholeCny(r.sales_actual_exact ?? v),
+                render: (v: number | undefined, r: SalesTargetRow) => <>
+                  {formatWholeCny(r.sales_actual_exact ?? v)}
+                  <LiveActualNote show={r.live_actual_metrics?.includes('sales')} />
+                </>,
               },
               {
                 // 展示口径：发货额（按实际发货批次分摊，§4.1.4）
                 title: '发货额',
                 dataIndex: 'shipped_actual',
                 width: 120,
-                render: (v: number | undefined, r: SalesTargetRow) => formatWholeCny(r.shipped_actual_exact ?? v),
+                render: (v: number | undefined, r: SalesTargetRow) => <>
+                  {formatWholeCny(r.shipped_actual_exact ?? v)}
+                  <LiveActualNote show={r.live_actual_metrics?.includes('shipped')} />
+                </>,
               },
               {
                 title: '达成率',
@@ -1526,7 +1537,10 @@ export default function AnalyticsPage() {
                 title: '复购实际',
                 dataIndex: 'repeat_customer_actual',
                 width: 130,
-                render: (v: number | undefined, r: SalesTargetRow) => formatWholeCny(r.repeat_customer_actual_exact ?? v),
+                render: (v: number | undefined, r: SalesTargetRow) => <>
+                  {formatWholeCny(r.repeat_customer_actual_exact ?? v)}
+                  <LiveActualNote show={r.live_actual_metrics?.includes('repeat_net')} />
+                </>,
               },
               {
                 title: '复购差额',
@@ -1562,7 +1576,7 @@ export default function AnalyticsPage() {
                           <Button size="small" theme="borderless" onClick={() => openTargetModal(r)}>
                             {r.target_id ? '修改目标' : '设置本月目标'}
                           </Button>
-                          {r.actual_frozen && (
+                          {(r.period_frozen ?? r.actual_frozen) && (
                             // 只有已结账的期间才谈得上"重算"：没结过账本来就在实时算
                             <Button size="small" theme="borderless"
                               onClick={() => openFreezeModal('refreeze', r.period)}
@@ -1680,7 +1694,7 @@ export default function AnalyticsPage() {
           <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
             {drilldownQuery.data?.source === 'snapshot'
               ? '读的是结账存档（不会因为后来的退货变小）'
-              : '实时统计'}
+              : drilldownQuery.data?.archive_missing_metric ? '本项未存档，按当前数据计算' : '实时统计'}
           </span>
         </div>
         <Table

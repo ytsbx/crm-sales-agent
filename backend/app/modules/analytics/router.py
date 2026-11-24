@@ -62,10 +62,10 @@ class TimingReport(BaseModel):
 
     operation: str
     duration_ms: int
-    business_type: str | None = None
-    business_id: int | None = None
-    typed_fields: int = 0
-    rework_count: int = 0
+    business_type: str | None = Field(default=None, max_length=32)
+    business_id: int | None = Field(default=None, ge=-(2**63), le=2**63 - 1)
+    typed_fields: int = Field(default=0, le=2**31 - 1)
+    rework_count: int = Field(default=0, le=2**31 - 1)
 
 
 @router.post("/usage/timings")
@@ -121,7 +121,7 @@ class SalesTargetUpsert(BaseModel):
 
 @router.get("/sales-targets")
 async def list_sales_targets(
-    year: int = Query(...),
+    year: int = Query(..., ge=targets_svc.MIN_REPORT_YEAR, le=targets_svc.MAX_REPORT_YEAR),
     user: CurrentUser = Depends(require_permission("customer:view")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -131,7 +131,7 @@ async def list_sales_targets(
 
 @router.get("/sales-targets/bases")
 async def sales_target_bases(
-    year: int = Query(...),
+    year: int = Query(..., ge=targets_svc.MIN_REPORT_YEAR, le=targets_svc.MAX_REPORT_YEAR),
     user: CurrentUser = Depends(require_permission("customer:view")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -149,7 +149,7 @@ async def sales_target_bases(
 @router.post("/sales-targets/bases/refreeze")
 async def refreeze_sales_target_bases(
     request: Request,
-    year: int = Query(...),
+    year: int = Query(..., ge=targets_svc.MIN_REPORT_YEAR, le=targets_svc.MAX_REPORT_YEAR),
     user: CurrentUser = Depends(require_permission("settings:manage")),
     session: AsyncSession = Depends(get_db),
 ):

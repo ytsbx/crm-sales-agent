@@ -26,6 +26,7 @@ class ReceivableCreate(BaseModel):
     # 不让数据库静默舍入。
     amount: Decimal = Field(gt=0, max_digits=16, decimal_places=2)
     remark: str | None = Field(default=None, max_length=255)
+    request_key: str | None = Field(default=None, max_length=idempotency.MAX_KEY_LENGTH)
 
 
 class ReceivableUpdate(PatchModel):

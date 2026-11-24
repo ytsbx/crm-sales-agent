@@ -28,6 +28,21 @@ from app.modules.sample.application_form import (
     _total_quantity,
     render_application_form,
 )
+from app.modules.sample.schema import SampleApprove, SampleConfirm, SampleItemInput, SampleShip
+
+
+@pytest.mark.parametrize(("schema", "field", "limit", "required"), [
+    (SampleItemInput, "item_name", 200, {}),
+    (SampleConfirm, "remark", 255, {"accepted": True}),
+    (SampleApprove, "reject_reason", 255, {"approved": False}),
+    (SampleShip, "carrier", 64, {}),
+    (SampleShip, "tracking_no", 64, {}),
+])
+def test_sample_request_text_fits_its_storage_column(schema, field, limit, required):
+    assert getattr(schema(**required, **{field: "字" * limit}), field) == "字" * limit
+    with pytest.raises(ValidationError) as caught:
+        schema(**required, **{field: "字" * (limit + 1)})
+    assert caught.value.errors()[0]["loc"] == (field,)
 
 
 def _sample(**over):
@@ -257,14 +272,15 @@ def test_template_is_readable_despite_wps_styles():
     assert len(workbook["打样申请单"].merged_cells.ranges) == 26
 
 
-def test_schema_rejects_values_outside_the_dingtalk_options():
-    """选项**照抄钉钉下拉**。写错一个字的后果是导出单子与钉钉单据对不上，
+def test_schema_rejects_values_outside_the_oa_options():
+    """选项**照抄同序下拉**。写错一个字的后果是导出单子与同序单据对不上，
     而"外协厂打样"和"外协厂"人眼很难发现。"""
     from app.modules.sample.schema import SampleUpdate
 
-    SampleUpdate(maker_unit="外协厂")  # 合法
+    SampleUpdate(maker_unit="外协厂打样")  # 同序 OA 的写法
+    SampleUpdate(maker_unit="外协厂")  # 历史钉钉单的写法，存量编辑仍放行
     with pytest.raises(ValidationError):
-        SampleUpdate(maker_unit="外协厂打样")  # 差一个字 → 拒
+        SampleUpdate(maker_unit="外协")  # 少一个字 → 拒
     with pytest.raises(ValidationError):
         SampleUpdate(urgency="非常紧急")
     with pytest.raises(ValidationError):

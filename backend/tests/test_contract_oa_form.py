@@ -68,12 +68,35 @@ def test_complete_contract_payload_keeps_identity_and_extra_fields(monkeypatch):
     monkeypatch.setattr(form.service, '_load_contract_file', AsyncMock(return_value=(record,b'%PDF')))
     monkeypatch.setattr(form.service, '_contract_amount', AsyncMock(return_value=None))
     monkeypatch.setattr(form.client, 'upload_file', AsyncMock(return_value={'id':'oa-file'}))
-    monkeypatch.setattr(form, 'active_template', AsyncMock(return_value={'fields':[
-        {'id':'contract_sign_mode','type':'choice'}, {'id':'contract_sign_note','type':'text'}]}))
+    monkeypatch.setattr(form, 'active_template', AsyncMock(return_value={
+        'fields': [{'id':'contract_sign_mode','type':'choice'}, {'id':'contract_sign_note','type':'text'},
+                   {'id':'applicant_name','type':'text'}, {'id':'department','type':'text'}],
+        'applicant': {'department_name': '同序销售部'},
+    }))
     payload = asyncio.run(form.service._build_payload(session,doc,user,'ref',our_company='我方',counterparty_name='对方',
         extra_fields={'contract_sign_mode':'电子签署','contract_sign_note':'核对签署要求'}))
     assert payload['fields']['applicant_name']=='提报同事'
-    assert 'department' in payload['fields']
+    # 归属部门取同序申请人资料：CRM 这边 department_id 为空也不影响。
+    assert payload['fields']['department']=='同序销售部'
     assert payload['fields']['contract_sign_mode']=='电子签署'
     assert payload['fields']['contract_sign_note']=='核对签署要求'
     assert payload['fields']['contract_files']==['oa-file']
+
+
+def test_saved_upload_fields_are_sent_even_without_extra_argument(monkeypatch):
+    """上传时选的文件分类等 `_oa_fields`，发起审批时即使前端没重传也要带上。"""
+    user = SimpleNamespace(id=1, name='提报同事', department_id=None, dingtalk_userid='bound')
+    doc = SimpleNamespace(id=2, customer_id=3, filled_data={'_oa_fields': {'contract_sign_mode': '电子签署'}},
+                          title='合同名称', doc_no='CT-2', doc_type='contract', content_snapshot='条款',
+                          effective_date=None, expiry_date=None)
+    record = SimpleNamespace(file_name='contract.pdf', mime_type='application/pdf')
+    session = SimpleNamespace(get=AsyncMock(return_value=SimpleNamespace(deleted_at=None)))
+    monkeypatch.setattr(form.service, '_template_config', lambda: ('template', ''))
+    monkeypatch.setattr(form.service, '_load_contract_file', AsyncMock(return_value=(record, b'%PDF')))
+    monkeypatch.setattr(form.service, '_contract_amount', AsyncMock(return_value=None))
+    monkeypatch.setattr(form.client, 'upload_file', AsyncMock(return_value={'id': 'oa-file'}))
+    monkeypatch.setattr(form, 'active_template', AsyncMock(return_value={'fields': [
+        {'id': 'contract_sign_mode', 'type': 'choice'}]}))
+    payload = asyncio.run(form.service._build_payload(
+        session, doc, user, 'ref', our_company='我方', counterparty_name='对方'))
+    assert payload['fields']['contract_sign_mode'] == '电子签署'

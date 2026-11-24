@@ -3,12 +3,14 @@ import { formatBeijingDate, formatBeijingTime } from '../../shared/beijing-time'
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { ApprovalHistory, ContractBasis } from './CustomerApproval'
+import ContractOaForm from './ContractOaForm'
 import { approvalProgress, formatApprovalEventTime } from '../knowledge/approval-progress'
-import { api } from '../../shared/api/client'
+import { ApiError } from '../../shared/api/client'
 import { templateFieldLabel } from './template-fields'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Button,
+  Cascader,
   DatePicker,
   Dropdown,
   Input,
@@ -35,10 +37,11 @@ import { downloadContractDoc } from '../../shared/download-contract'
 import {
   uploadContractDocument,
   getContractDocument,
+  getContractOaFieldOptions,
   listContractDocuments,
   signContractDocument,
   startContractOaApproval,
-  withdrawContractDingTalkApproval,
+  withdrawContractOaApproval,
   voidContractDocument,
   deleteContractDocument,
   type ContractDocument,
@@ -46,14 +49,9 @@ import {
   type ContractSignedFile,
 } from '../../shared/api/contract'
 import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
-import {
-  AdoptOaInstanceModal,
-  ResolveOaActions,
-} from '../../shared/components/ResolveOaActions'
 import { newRequestKey } from '../../shared/api/requestKey'
 import AutoOaSync from '../../shared/components/AutoOaSync'
 import SyncOaButton from '../../shared/components/SyncOaButton'
-import { oaSyncErrorMessage, type OaApprovalInstance } from '../../shared/api/dingtalk'
 
 const STATUS_TONE: Record<string, 'green' | 'grey' | 'red'> = {
   signed: 'green',
@@ -61,12 +59,35 @@ const STATUS_TONE: Record<string, 'green' | 'grey' | 'red'> = {
   void: 'red',
 }
 
+/** 同序的「文件分类」是级联选择：「合同 / 销售合同」拆成二级。 */
+function categoryTree(options: string[]) {
+  const roots: { value: string; label: string; children?: { value: string; label: string }[] }[] = []
+  for (const option of options) {
+    const [group, name] = option.split(' / ')
+    if (!name) {
+      roots.push({ value: group, label: group })
+      continue
+    }
+    let parent = roots.find((root) => root.value === group)
+    if (!parent) {
+      parent = { value: group, label: group, children: [] }
+      roots.push(parent)
+    }
+    parent.children?.push({ value: name, label: name })
+  }
+  return roots
+}
+
 function contractStage(doc: ContractDocument) {
   const oaStatus = doc.dingtalk_oa_row?.status ?? doc.dingtalk_oa?.status
   const needsApproval = Boolean(doc.original_file_id || doc.dingtalk_oa || doc.dingtalk_oa_row)
-  const historical = (doc.dingtalk_oa_row?.provider ?? doc.dingtalk_oa?.provider) === 'dingtalk'
+  const provider = doc.dingtalk_oa_row?.provider ?? doc.dingtalk_oa?.provider
+  const historical = Boolean(doc.dingtalk_oa_row || doc.dingtalk_oa) && provider !== 'self_oa'
   if (doc.status === 'signed') return { action: 'read', hint: '回签已归档，可在「签署原件」查看双方签好的合同。' }
   if (doc.status !== 'draft') return { action: 'read', hint: '可在详情核对合同和已归档的文件。' }
+  if (historical && oaStatus !== 'approved') {
+    return { action: 'review', hint: '这份合同的历史审批仅供查看。' }
+  }
   if (oaStatus === 'pending' || oaStatus === 'submitting') {
     return { action: 'review', hint: '等待同序 OA 审批。通过后，再把双方签好的合同登记回签。' }
   }
@@ -74,14 +95,10 @@ function contractStage(doc: ContractDocument) {
     return { action: 'review', hint: '请按合同编号到同序 OA 核对上次是否发起成功，确认结果后再处理。' }
   }
   if (oaStatus === 'rejected') {
-    return { action: historical ? 'review' : 'start', hint: historical
-      ? '历史审批已驳回，可查看处理意见。'
-      : '先查看同序 OA 的驳回意见，按意见处理合同后再发起审批。' }
+    return { action: 'start', hint: '先查看同序 OA 的驳回意见，按意见处理合同后再发起审批。' }
   }
   if (needsApproval && oaStatus !== 'approved') {
-    return { action: historical ? 'review' : 'start', hint: historical
-      ? '请查看这份合同的历史审批进度。'
-      : '核对合同原件和双方主体后，发起同序 OA 审批。' }
+    return { action: 'start', hint: '核对合同原件和双方主体后，发起同序 OA 审批。' }
   }
   if (doc.original_file_id && doc.doc_type !== 'monthly' && !doc.order_id && !doc.quote_id) {
     return { action: 'basis', hint: '先补上正式订单或已发出的报价，再登记回签。' }
@@ -138,6 +155,8 @@ export default function DocumentsPage() {
   const [ourCompany, setOurCompany] = useState('')
   const [counterparty, setCounterparty] = useState('')
   const [contractOrigin, setContractOrigin] = useState<'company' | 'customer' | undefined>()
+  // 同序合同模板的「文件分类」：上传时就填，发起审批时原样带回同序。
+  const [fileCategory, setFileCategory] = useState('')
   const [uploadForm, setUploadForm] = useState({
     customer_id: undefined as number | undefined,
     // 正式依据（业务口径：条款可以先备，但登记签署前必须挂上订单或已发出的报价）
@@ -186,6 +205,13 @@ export default function DocumentsPage() {
     queryFn: () => listQuoteVersions(uploadForm.quote_id!),
     enabled: Boolean(uploadForm.quote_id) && uploadVisible,
   })
+  const contractOaFieldsQuery = useQuery({
+    queryKey: ['contract-oa-field-options'],
+    queryFn: getContractOaFieldOptions,
+    enabled: uploadVisible,
+    staleTime: 60_000,
+  })
+  const fileCategoryField = contractOaFieldsQuery.data?.fields.find((field) => field.id === 'file_category')
   const genOrders = genOrdersQuery.data?.items ?? []
   const genQuotes = genQuotesQuery.data?.items ?? []
   const genVersions = genVersionsQuery.data ?? []
@@ -219,6 +245,7 @@ export default function DocumentsPage() {
         quote_version_id: uploadForm.quote_version_id ?? null,
         expiry_date: uploadForm.expiry_date || null,
         effective_date: uploadForm.effective_date || null,
+        extra_fields: fileCategory ? { file_category: fileCategory } : undefined,
         request_key: uploadRequestKey || undefined,
       })
     },
@@ -231,8 +258,8 @@ export default function DocumentsPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
-  const withdrawDingtalkMutation = useMutation({
-    mutationFn: (docId: number) => withdrawContractDingTalkApproval(docId),
+  const withdrawOaMutation = useMutation({
+    mutationFn: (docId: number) => withdrawContractOaApproval(docId),
     onSuccess: () => {
       Toast.success('已撤回 OA 合同审批')
       refresh()
@@ -241,11 +268,15 @@ export default function DocumentsPage() {
   })
 
   const [oaStartTarget, setOaStartTarget] = useState<ContractDocument | null>(null)
+  // 同序 OA 模板字段的当前值（打开弹窗时由 ContractOaForm 按后端默认值初始化）。
+  const [oaFields, setOaFields] = useState<Record<string, unknown>>({})
+  const [oaFormBusy, setOaFormBusy] = useState(true)
   const startOaMutation = useMutation({
-    mutationFn: (vars: { id: number; our_company: string; counterparty_name: string }) =>
+    mutationFn: (vars: { id: number; our_company: string; counterparty_name: string; extra_fields: Record<string, unknown> }) =>
       startContractOaApproval(vars.id, {
         our_company: vars.our_company,
         counterparty_name: vars.counterparty_name,
+        extra_fields: vars.extra_fields,
       }),
     onSuccess: (row, { id }) => {
       if (row.status === 'approved') Toast.success('审批已通过，收到双方签署件后可登记回签。')
@@ -260,7 +291,16 @@ export default function DocumentsPage() {
   })
 
   const openOaStart = (record: ContractDocument) => {
+    setOaFields({})
+    setOaFormBusy(true)
     setOaStartTarget(record)
+  }
+
+  const closeOaStart = () => {
+    if (startOaMutation.isPending) return
+    setOaStartTarget(null)
+    setOaFields({})
+    setOaFormBusy(true)
   }
 
   const submitOaStart = () => {
@@ -272,7 +312,12 @@ export default function DocumentsPage() {
       Toast.warning('这份合同上传时没有填写主体，请重新上传或联系管理员补齐')
       return
     }
-    startOaMutation.mutate({ id: oaStartTarget.id, our_company: our, counterparty_name: other })
+    startOaMutation.mutate({
+      id: oaStartTarget.id,
+      our_company: our,
+      counterparty_name: other,
+      extra_fields: oaFields,
+    })
   }
 
   const openUploadModal = () => {
@@ -284,6 +329,7 @@ export default function DocumentsPage() {
     setOurCompany('')
     setCounterparty('')
     setContractOrigin(undefined)
+    setFileCategory('')
     setUploadForm({ customer_id: undefined, order_id: undefined, quote_id: undefined,
       quote_version_id: undefined, expiry_date: '', effective_date: '' })
     setUploadRequestKey(newRequestKey())
@@ -295,6 +341,13 @@ export default function DocumentsPage() {
   const [signTarget, setSignTarget] = useState<ContractDocument | null>(null)
   const [signFileId, setSignFileId] = useState<number | null>(null)
   const [signUploading, setSignUploading] = useState(false)
+  const [signReuseWarning, setSignReuseWarning] = useState('')
+  const [signReuseReason, setSignReuseReason] = useState('')
+  const selectSignFile = (id: number | null) => {
+    setSignFileId(id)
+    setSignReuseWarning('')
+    setSignReuseReason('')
+  }
   const signFileInput = useRef<HTMLInputElement>(null)
   /** 合同原文件的隐藏输入框：可见触发器是按钮，不再露出浏览器原生控件 */
   const originalFileInput = useRef<HTMLInputElement>(null)
@@ -305,13 +358,13 @@ export default function DocumentsPage() {
   const openSignModal = (doc: ContractDocument) => {
     // 换合同必须把上一份选的文件清掉，否则可能把 A 的扫描件登记到 B 上
     signTargetIdRef.current = doc.id
-    setSignFileId(null)
+    selectSignFile(null)
     setSignTarget(doc)
   }
 
   const closeSignModal = () => {
     signTargetIdRef.current = null
-    setSignFileId(null)
+    selectSignFile(null)
     setSignUploading(false)
     setSignTarget(null)
     if (signFileInput.current) signFileInput.current.value = ''
@@ -341,7 +394,7 @@ export default function DocumentsPage() {
         Toast.info('文件已上传，但你已切换到别的合同，这次没有替你选中它')
         return
       }
-      setSignFileId(row.id)
+      selectSignFile(row.id)
       Toast.success('签署件已上传，可直接确认签署')
       void queryClient.invalidateQueries({ queryKey: ['contract-doc-files', startedFor] })
     } catch (error) {
@@ -352,13 +405,22 @@ export default function DocumentsPage() {
   }
 
   const signMutation = useMutation({
-    mutationFn: () => signContractDocument(signTarget!.id, { file_id: signFileId! }),
+    mutationFn: () => signContractDocument(signTarget!.id, {
+      file_id: signFileId!,
+      reuse_reason: signReuseWarning ? signReuseReason.trim() : undefined,
+    }),
     onSuccess: () => {
       Toast.success('回签已归档，可在合同详情的「签署原件」查看。')
       closeSignModal()
       refresh()
     },
-    onError: (error: Error) => Toast.error(error.message),
+    onError: (error: Error) => {
+      if (error instanceof ApiError && error.code === 42206) {
+        setSignReuseWarning(error.message)
+        return
+      }
+      Toast.error(error.message)
+    },
   })
 
   // 详情弹窗：抬头快照 + 依据（订单 / 报价版本）+ 关系链（基于谁、被哪几份补充）+
@@ -377,9 +439,6 @@ export default function DocumentsPage() {
     }).catch((error: Error) => { if (active) Toast.error(error.message) })
     return () => { active = false }
   }, [requestedContract])
-  // 认领弹窗（"结果待人工核对"时的三个出口之一）
-  const [adoptTarget, setAdoptTarget] = useState<OaApprovalInstance | null>(null)
-  const [adoptKey, setAdoptKey] = useState<string | null>(null)
   const detailQuery = useQuery({
     queryKey: ['contract-detail', detailTarget?.id],
     queryFn: () => getContractDocument(detailTarget!.id),
@@ -394,7 +453,7 @@ export default function DocumentsPage() {
   const oaHistory = approvalProvider === 'self_oa'
     ? approvalProgress(detail?.dingtalk_oa_row?.result ?? approvalSnapshot?.result)
     : []
-  const oaLabel = approvalProvider === 'dingtalk' ? '历史' : '同序 OA'
+  const oaLabel = approvalProvider === 'self_oa' ? '同序 OA' : '历史'
   const signedFiles: ContractSignedFile[] = detail?.signed_files ?? []
   const amendments: ContractAmendment[] = detail?.amendments ?? []
 
@@ -440,6 +499,7 @@ export default function DocumentsPage() {
     // 上传中确认键也是灰的：这时说「请先选择或上传签署件」是句假话（文件正在传），要分开说
     { ok: !signUploading, reason: '签署件正在上传，等上传完成后再确认签署。' },
     { ok: Boolean(signFileId) || signUploading, reason: '请先选择或上传要登记的签署件。' },
+    { ok: !signReuseWarning || Boolean(signReuseReason.trim()), reason: '请先填写复用这份文件的说明。' },
   ]
   const signBlockedReasons = blockedReasons(signBlocked)
   // ① 看得见（弹窗底部常驻）+ ② 点得动。确认键在弹窗 footer（portal）里，外面包一层收不到点击，
@@ -699,7 +759,7 @@ export default function DocumentsPage() {
                   }
 
                   if (canManage && record.status === 'draft') {
-                    if (oaPending) {
+                    if (oaPending && (record.dingtalk_oa_row?.provider ?? record.dingtalk_oa?.provider) === 'self_oa') {
                       more.push({
                         key: 'withdraw-oa',
                         label: '撤回 OA 审批',
@@ -707,12 +767,12 @@ export default function DocumentsPage() {
                           Modal.confirm({
                             title: '撤回 OA 合同审批？',
                             content: '撤回只对仍在审批中的 OA 流程生效，已完成的审批不能撤回。',
-                            onOk: () => withdrawDingtalkMutation.mutate(record.id),
+                            onOk: () => withdrawOaMutation.mutate(record.id),
                           }),
                       })
                     } else if ((record.dingtalk_oa_row?.provider ?? record.dingtalk_oa?.provider) === 'dingtalk') {
                       // 只读的历史同序 OA 审批：给一行说明，不占主位
-                      more.push({ key: 'oa-readonly', label: '历史同序 OA 审批（只读，不能重提）' })
+                      more.push({ key: 'oa-readonly', label: '历史审批（只读）' })
                     }
                   }
 
@@ -881,6 +941,27 @@ export default function DocumentsPage() {
           <div>
             <div style={{ marginBottom: 4 }}>合同名称<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
             <Input value={contractTitle} onChange={setContractTitle} placeholder="填写合同名称，需与同序 OA 一致" />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>文件分类</div>
+            {fileCategoryField && fileCategoryField.options.length > 0 ? (
+              <Cascader
+                style={{ width: '100%' }}
+                placeholder="按同序合同模板选择文件分类"
+                showClear
+                treeData={categoryTree(fileCategoryField.options)}
+                value={fileCategory ? fileCategory.split(' / ') : []}
+                onChange={(selected) => setFileCategory(
+                  Array.isArray(selected) ? selected.join(' / ') : (selected as string) || '',
+                )}
+              />
+            ) : (
+              <div style={{ fontSize: 12, color: 'var(--crm-text-3)', lineHeight: 1.7 }}>
+                {contractOaFieldsQuery.isPending
+                  ? '正在读取同序合同模板…'
+                  : contractOaFieldsQuery.data?.message || '同序合同模板里暂时没有可用的文件分类，可在发起审批时再补。'}
+              </div>
+            )}
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <div>
@@ -1059,11 +1140,11 @@ export default function DocumentsPage() {
         }
         style={{ maxWidth: 'calc(100vw - 32px)' }}
         visible={Boolean(signTarget)}
-        onCancel={closeSignModal}
+        onCancel={() => { if (!signMutation.isPending) closeSignModal() }}
         onOk={() => signMutation.mutate()}
         confirmLoading={signMutation.isPending}
         // 上传没结束时不许确认：这会儿 signFileId 可能是上一份的，也可能还是空的
-        okButtonProps={{ disabled: !signFileId || signUploading }}
+        okButtonProps={{ disabled: !signFileId || signUploading || Boolean(signReuseWarning && !signReuseReason.trim()) }}
         okText="确认归档"
         cancelText="取消"
       >
@@ -1076,7 +1157,7 @@ export default function DocumentsPage() {
               它内部就是"禁用态 pointerEvents:none + 外层接点击"，页面不用再手写。 */}
             <GuardedButton
               loading={signUploading}
-              disabled={!canUploadSignFile}
+              disabled={!canUploadSignFile || signMutation.isPending}
               blockedReasons={canUploadSignFile ? [] : [noFileManageReason]}
               action="上传"
               onClick={() => signFileInput.current?.click()}
@@ -1103,12 +1184,23 @@ export default function DocumentsPage() {
             <Select
               placeholder="或从已上传的文件里选"
               value={signFileId ?? undefined}
-              onChange={(value) => setSignFileId(value as number)}
+              onChange={(value) => selectSignFile(value as number)}
+              disabled={signMutation.isPending || signUploading}
               optionList={signFiles.map((row) => ({
                 value: row.id,
                 label: row.file_name,
               }))}
             />
+          )}
+          {signReuseWarning && (
+            <div style={{ display: 'grid', gap: 8, border: '1px solid var(--crm-border)', borderRadius: 8, padding: 12 }}>
+              <div role="alert">{signReuseWarning}</div>
+              <label htmlFor="sign-file-reuse-reason">回签文件复用说明</label>
+              <TextArea id="sign-file-reuse-reason" aria-label="回签文件复用说明"
+                placeholder="例如：两份合同已签字盖章，扫描在同一个 PDF 里"
+                maxCount={255} value={signReuseReason} onChange={setSignReuseReason}
+                disabled={signMutation.isPending} />
+            </div>
           )}
           {/* 弹窗底部（页脚正上方）：确认键灰着的时候，原因必须在同一屏里看得见 ——
               上面那个「从已上传的文件里选」下拉在没有文件时根本不渲染，用户可能一眼看不到任何出路。
@@ -1128,23 +1220,42 @@ export default function DocumentsPage() {
       </Modal>
 
       <Modal
-        width={520}
+        width={900}
         title={`发起同序 OA 合同审批：${oaStartTarget?.doc_no ?? ''}`}
         style={{ maxWidth: 'calc(100vw - 32px)' }}
+        bodyStyle={{ maxHeight: '70vh', overflowY: 'auto' }}
         visible={Boolean(oaStartTarget)}
-        onCancel={() => setOaStartTarget(null)}
+        onCancel={closeOaStart}
         onOk={submitOaStart}
         confirmLoading={startOaMutation.isPending}
+        maskClosable={!startOaMutation.isPending}
         okText="提交 OA 审批"
-        okButtonProps={{ disabled: !oaStartTarget?.our_company?.trim() || !oaStartTarget?.counterparty_name?.trim() }}
+        okButtonProps={{
+          disabled: oaFormBusy || !oaStartTarget?.our_company?.trim() || !oaStartTarget?.counterparty_name?.trim(),
+        }}
         cancelText="取消"
       >
         <div style={{ display: 'grid', gap: 10 }}>
-          <p className="workflow-guide">提交后由同序 OA 审批。可回合同详情看进度，通过后再登记回签。</p>
+          <div className="inline-note" style={{ margin: 0, overflowWrap: 'anywhere' }}>
+            CRM 关联客户 <strong>{oaStartTarget?.customer_name || '客户名称暂不可显示'}</strong>
+          </div>
+          <p className="workflow-guide">
+            表单按同序 OA 合同模板显示：CRM 里已有的合同名称、编号、主体、金额和期限已自动带入；
+            带 * 的是同序必填项，其余由经办人按同序的填法补齐。
+          </p>
           <div>我方主体：{oaStartTarget?.our_company || '未填写'}</div>
-          <div>对方主体：{oaStartTarget?.counterparty_name || '未填写'}</div>
+          <div>对方签约主体：{oaStartTarget?.counterparty_name || '未填写'}</div>
           {(!oaStartTarget?.our_company?.trim() || !oaStartTarget?.counterparty_name?.trim()) &&
             <p className="workflow-guide">这份合同缺少签约主体。请联系管理员补齐信息后再提交。</p>}
+          {oaStartTarget && (
+            <ContractOaForm
+              key={oaStartTarget.id}
+              docId={oaStartTarget.id}
+              values={oaFields}
+              onChange={setOaFields}
+              onBusy={setOaFormBusy}
+            />
+          )}
         </div>
       </Modal>
 
@@ -1288,21 +1399,13 @@ export default function DocumentsPage() {
                   row={detail.dingtalk_oa_row}
                   invalidateKeys={[['contract-detail', detail.id], ['contract-documents']]}
                 />
-                {canManage && detail.dingtalk_oa_row?.instance_id && <SyncOaButton oaId={detail.dingtalk_oa_row.id} invalidateKeys={[[ 'contract-detail',detail.id ],['contract-documents']]}/>}
+                {canManage && detail.dingtalk_oa_row?.provider === 'self_oa' && detail.dingtalk_oa_row.instance_id && <SyncOaButton oaId={detail.dingtalk_oa_row.id} invalidateKeys={[[ 'contract-detail',detail.id ],['contract-documents']]}/>}
                 <div style={DETAIL_VALUE}>
                   {detail.dingtalk_oa_row?.status_label || '审批进度'}
                   {approvalSnapshot?.synced_at
                     ? ` · 最近同步 ${formatBeijingTime(approvalSnapshot.synced_at)}`
                     : ''}
                 </div>
-                {approvalSnapshot?.instance_id && !detail.dingtalk_oa_row?.instance_id && canManage && <Button size="small" onClick={async () => {
-                  try {
-                    await api.post(`/contract-documents/${detail.id}/approval-sync`, {})
-                    void queryClient.invalidateQueries({ queryKey: ['contract-detail', detail.id] })
-                    refresh()
-                    Toast.success('审批进度已同步')
-                  } catch (e) { Toast.error(oaSyncErrorMessage(e)) }
-                }}>刷新{oaLabel}进度</Button>}
                 {approvalProvider !== 'self_oa' && approvalSnapshot?.result && <ApprovalHistory result={approvalSnapshot.result} />}
                 {approvalProvider === 'self_oa' && (oaHistory.length > 0 ? (
                   <ul className="contract-oa-history" aria-label="同序 OA 审批记录">
@@ -1319,19 +1422,6 @@ export default function DocumentsPage() {
                 ) : (detail.dingtalk_oa_row?.status ?? approvalSnapshot?.status) === 'rejected' && (
                   <p className="workflow-guide">CRM 还没有收到处理意见，可到同序 OA 查看。</p>
                 ))}
-                {approvalProvider !== 'self_oa' && detail.dingtalk_oa_row && (
-                  <div style={{ marginTop: 8, display: 'flex', gap: 12 }}>
-                    <ResolveOaActions
-                      row={detail.dingtalk_oa_row}
-                      invalidateKeys={[['contract-detail', detailTarget?.id]]}
-                      onAdopt={(target) => {
-                        setAdoptTarget(target)
-                        setAdoptKey(newRequestKey())
-                      }}
-                      onDone={() => void detailQuery.refetch()}
-                    />
-                  </div>
-                )}
               </div>
             )}
             {Object.keys(detail.missing_fields ?? {}).length > 0 && (
@@ -1347,15 +1437,6 @@ export default function DocumentsPage() {
           </div>
         )}
       </Modal>
-      <AdoptOaInstanceModal
-        target={adoptTarget}
-        requestKey={adoptKey}
-        invalidateKeys={[['contract-detail', detailTarget?.id], ['contract-documents', docPage]]}
-        onClose={() => {
-          setAdoptTarget(null)
-          setAdoptKey(null)
-        }}
-      />
     </div>
   )
 }

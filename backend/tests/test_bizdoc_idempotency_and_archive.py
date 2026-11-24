@@ -922,3 +922,13 @@ def test_default_template_seeding_is_idempotent(isolated_file_root):
         assert first == len(bizdoc.DOC_TYPE_LABEL)
 
     run_case(_case)
+
+
+def test_pdf_footer_handles_plain_text_with_angle_brackets():
+    from app.modules.bizdoc.pdf import render_biz_doc_pdf
+
+    rendered = render_biz_doc_pdf({
+        "title": "页脚回归",
+        "frozen": {"gaps": [{"label": "规格 <b>", "display": "A & B"}]},
+    })
+    assert rendered.startswith(b"%PDF")

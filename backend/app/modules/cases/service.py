@@ -753,7 +753,9 @@ async def list_cases(
             await session.execute(
                 select(SalesCase.id, SalesCase.revision_of_id).where(
                     SalesCase.revision_of_id.in_(row_ids),
-                    SalesCase.deleted_at.is_(None), draft_scope(SalesCase, user.id),
+                    SalesCase.deleted_at.is_(None),
+                    SalesCase.status == "published",
+                    draft_scope(SalesCase, user.id),
                 )
             )
         ).all():
@@ -839,7 +841,13 @@ async def get_case_detail(session: AsyncSession, *, case: SalesCase, user) -> di
     child_id = (
         await session.execute(
             select(SalesCase.id)
-            .where(SalesCase.revision_of_id == case.id, SalesCase.deleted_at.is_(None), draft_scope(SalesCase, user.id))
+            .where(
+                SalesCase.revision_of_id == case.id,
+                SalesCase.deleted_at.is_(None),
+                SalesCase.status == "published",
+                draft_scope(SalesCase, user.id),
+            )
+            .order_by(SalesCase.id.desc())
             .limit(1)
         )
     ).scalar_one_or_none()
@@ -875,7 +883,7 @@ async def submit_case(session: AsyncSession, *, case: SalesCase, user) -> None:
     ensure_case_draft_access(case, user)
     if case.status not in ("draft", "rejected"):
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, f"当前状态（{CASE_STATUS_LABEL.get(case.status, case.status)}）不能提交审核")
-    if not case.title or not (case.lessons or case.key_actions):
+    if not (case.title or "").strip() or not (case.lessons or case.key_actions):
         raise AppError(ErrorCode.PARAM_ERROR, "提交前至少填写「标题」和「关键动作/可复用做法」")
     case.status = "pending_review"
     await session.flush()
@@ -1026,7 +1034,7 @@ async def revise_case(session: AsyncSession, *, case: SalesCase, user) -> SalesC
     }
     revision = SalesCase(
         title=case.title,
-        author_id=case.author_id,
+        author_id=user.id,  # 修订稿归开稿人（主管代开时归主管，不再复制原作者）
         status="draft",
         version=(case.version or 1) + 1,
         revision_of_id=case.id,

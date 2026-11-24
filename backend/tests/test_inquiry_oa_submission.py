@@ -90,10 +90,12 @@ async def test_missing_or_forged_quoter_never_submits(setup,owner):
 async def test_closed_gate_does_not_lookup_identity_or_send(setup,monkeypatch):
     inquiry,cfg,session,user,client,create=setup
     monkeypatch.setattr(routes.app_settings,'dingtalk_push_off',True)
-    await routes.start_inquiry_approval(7,routes.StartApproval(quote_owner_user_id='ding-quoter'),request(),user,session)
+    with pytest.raises(AppError, match="尚未配置同序 OA 询价审批"):
+        await routes.start_inquiry_approval(7,routes.StartApproval(quote_owner_user_id='ding-quoter'),request(),user,session)
     client.search_user_id_by_name.assert_not_awaited()
     session.get.assert_not_awaited()
-    assert create.await_args.kwargs['originator_user_id']==''
+    create.assert_not_awaited()
+
 
 
 @pytest.mark.anyio
@@ -223,6 +225,12 @@ async def test_oa_config_switches_options_and_start(setup, monkeypatch):
     assert data["provider"] == "self_oa" and data["enabled"]
     assert data["quote_owner_required"]
     assert [p["name"] for p in data["quote_owners"]] == ["宋桂香", "子木"]
+    assert data["selected_quote_owner"] is None
+    inquiry.extra = {"oa_draft": {"quote_owner_user_id": "b"}}
+    data = (await routes.inquiry_submission_options(7, user=user, session=session))["data"]
+    assert data["selected_quote_owner"] == "b"
+    inquiry.extra["oa_draft"]["quote_owner_user_id"] = None
+    data = (await routes.inquiry_submission_options(7, user=user, session=session))["data"]
     assert data["selected_quote_owner"] is None
     assert data["fields"] == [{"id":"quote_scope","type":"TextField","label":"原模板报价范围",
                                "required":False,"options":[]}]

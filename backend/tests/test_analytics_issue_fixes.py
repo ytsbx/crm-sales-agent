@@ -1,4 +1,23 @@
+import pytest
+from pydantic import ValidationError
+
+from app.modules.analytics.router import TimingReport
 from app.modules.approval.rules_engine import strip_approval_summary
+
+
+@pytest.mark.parametrize("field,valid,invalid", [
+    ("business_type", "甲" * 32, "甲" * 33),
+    ("business_id", 2**63 - 1, 2**63),
+    ("business_id", -(2**63), -(2**63) - 1),
+    ("typed_fields", 2**31 - 1, 2**31),
+    ("rework_count", 2**31 - 1, 2**31),
+])
+def test_timing_input_fits_storage(field, valid, invalid):
+    payload = {"operation": "sample_create", "duration_ms": 300}
+    assert getattr(TimingReport(**payload, **{field: valid}), field) == valid
+    with pytest.raises(ValidationError) as error:
+        TimingReport(**payload, **{field: invalid})
+    assert error.value.errors()[0]["loc"] == (field,)
 
 
 def test_approval_summary_hides_margin_inside_reason_text():

@@ -93,8 +93,9 @@ async def create(session, user, payload):
     available = {i['source_item_id']: i for i in data['items']}
     if any(i.source_item_id not in available for i in payload.items):
         raise AppError(ErrorCode.PARAM_ERROR, '所选明细不属于该来源版本', 422)
+    currency = await ensure_currency_allowed(session, data['currency'], label='订单草稿币种')
     draft = OrderDraft(customer_id=data['customer_id'], opportunity_id=data['opportunity_id'], owner_id=data['owner_id'],
-        source_context=data['source'], currency=data['currency'], payment_terms=payload.payment_terms if payload.payment_terms is not None else data['payment_terms'],
+        source_context=data['source'], currency=currency, payment_terms=payload.payment_terms if payload.payment_terms is not None else data['payment_terms'],
         delivery_date=payload.delivery_date, remark=payload.remark, request_key=key, request_hash=digest, created_by=user.id)
     session.add(draft)
     await session.flush()
@@ -121,7 +122,9 @@ async def update(session, user, draft_id, payload):
     before = await detail(session, draft)
     for selected in payload.items:
         item = existing[selected.source_item_id]
-        item.quantity, item.unit_price = selected.quantity, selected.unit_price
+        item.quantity = selected.quantity
+        if 'unit_price' in selected.model_fields_set:
+            item.unit_price = selected.unit_price
         item.specification, item.remark = selected.specification, selected.remark
     for key, item in existing.items():
         if key not in ids:

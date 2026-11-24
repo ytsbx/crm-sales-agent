@@ -65,14 +65,15 @@ def build_lead_stmt(
     if not include_deleted:
         stmt = stmt.where(Lead.deleted_at.is_(None))
     if keyword:
-        like = f"%{keyword.strip()}%"
+        _kw = keyword.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = f"%{_kw}%"
         stmt = stmt.where(
             or_(
-                Lead.name.ilike(like),
-                Lead.company_name.ilike(like),
-                Lead.contact_name.ilike(like),
-                Lead.mobile.ilike(like),
-                Lead.email.ilike(like),
+                Lead.name.ilike(like, escape="\\"),
+                Lead.company_name.ilike(like, escape="\\"),
+                Lead.contact_name.ilike(like, escape="\\"),
+                Lead.mobile.ilike(like, escape="\\"),
+                Lead.email.ilike(like, escape="\\"),
             )
         )
     if status:

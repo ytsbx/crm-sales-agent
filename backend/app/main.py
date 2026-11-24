@@ -1,5 +1,6 @@
 """FastAPI 入口。"""
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -72,23 +73,17 @@ async def lifespan(_: FastAPI):
     from app.core.scheduler import start_scheduler, stop_scheduler
     from app.modules.erp.adapter import reset_adapters
     from app.modules.wecom.client import reset_client
-    from app.modules.dingtalk.oa_stream import oa_stream
-
     try:
         start_scheduler()
-        oa_stream.start()
         yield
     finally:
         try:
-            await oa_stream.stop()
+            stop_scheduler()
         finally:
             try:
-                stop_scheduler()
+                await reset_adapters()
             finally:
-                try:
-                    await reset_adapters()
-                finally:
-                    await reset_client()
+                await reset_client()
 
 
 app = FastAPI(
@@ -99,9 +94,18 @@ app = FastAPI(
     redoc_url=None,
 )
 
+# B24-01：allow_credentials=True 时来源不能用 *（CORS 规范禁止，浏览器也会拒）。
+# 配了 * 属于误配：忽略它并告警，提示配置明确来源，避免"看似放开实则全拒"。
+_cors_origins = settings.cors_origin_list
+if "*" in _cors_origins:
+    logging.getLogger(__name__).warning(
+        "CORS 配置含 * 且启用 allow_credentials，不符合规范；已忽略 *，请配置明确来源"
+    )
+    _cors_origins = [o for o in _cors_origins if o != "*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origin_list,
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -182,9 +186,12 @@ async def health() -> dict:
     db_ok = True
     try:
         async with SessionLocal() as session:
-            await session.execute(text("SELECT 1"))
+            # B24-02：显式超时，慢 DB 不拖住探活
+            await asyncio.wait_for(session.execute(text("SELECT 1")), timeout=5)
     except Exception:
         db_ok = False
+        # B24-02：留日志，运维能看到 DB 故障原因
+        logging.getLogger(__name__).warning("health 数据库检查失败", exc_info=True)
     return ok(
         {
             "status": "up" if db_ok else "degraded",

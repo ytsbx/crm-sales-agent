@@ -12,6 +12,7 @@ export interface Opportunity {
   stage_name?: string | null
   stage_code?: string | null
   expected_amount?: number | null
+  expected_amount_exact?: string | null
   currency: string
   expected_close_date?: string | null
   owner_id?: number | null

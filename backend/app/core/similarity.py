@@ -9,6 +9,8 @@
 
 from typing import Any
 
+import re
+
 CUSTOMER_SCORE_FALLBACKS = {
     "threshold": 50,
     "weight_name_exact": 60,
@@ -55,7 +57,7 @@ def normalize_name(name: str | None) -> str:
     实现：从**结尾**按"最长优先"反复削（`NAME_SUFFIXES` 已是长→短排列），
     且削到只剩 1 个字符就停（避免"厂"这类名字被削成空串）。
     """
-    text = (name or "").strip().replace(" ", "").replace("　", "")
+    text = re.sub(r"\s+", "", (name or "").strip())
     changed = True
     while changed and len(text) > 1:
         changed = False

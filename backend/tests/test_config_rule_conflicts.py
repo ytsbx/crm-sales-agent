@@ -12,13 +12,14 @@ from app.modules.pricing import router as pricing
 from app.modules.pricing.model import LogisticsRate
 from app.modules.settings import router as settings
 from app.modules.settings.model import PublicPoolRule, SystemSetting, TaskRule
+from app.modules.user.model import Role
 from tests.conftest import SyncSessionAsAsync, make_engine
 
 
 @pytest.fixture
 def db():
     engine = make_engine()
-    for model in (AuditLog, LogisticsRate, PublicPoolRule, SystemSetting, TaskRule):
+    for model in (AuditLog, LogisticsRate, PublicPoolRule, Role, SystemSetting, TaskRule):
         model.__table__.create(engine, checkfirst=True)
     with Session(engine) as raw:
         yield raw, (Request({"type": "http", "headers": []}), SimpleNamespace(id=1), SyncSessionAsAsync(raw))
@@ -36,6 +37,29 @@ async def test_approval_amount_ranges_must_increase(db, second_cap):
         await settings.upsert_setting(payload, *args)
     payload.value["levels"][1]["max_amount"] = 501
     await settings.upsert_setting(payload, *args)
+
+
+@pytest.mark.anyio
+async def test_approval_levels_validate_roles_and_amount_at_save(db):
+    raw, args = db
+    raw.add(Role(code="reviewer", name="报价审核"))
+    raw.commit()
+    value = {"levels": [
+        {"max_amount": "99999999999999.98", "role_codes": ["reviewer"]},
+        {"max_amount": "99999999999999.99", "role_codes": []},
+        {"max_amount": None},
+    ]}
+    payload = settings.SettingInput(key="approval_levels", value=value)
+    await settings.upsert_setting(payload, *args)
+    for change, message in [
+        ({"max_amount": "9" * 310}, "金额上限超过报价金额"),
+        ({"role_codes": ["missing_role"]}, "审批角色.*不存在"),
+        ({"role_codes": [123]}, "必须是一组角色码"),
+    ]:
+        invalid = {"levels": [{**value["levels"][0], **change}, *value["levels"][1:]]}
+        with pytest.raises(AppError, match=message):
+            await settings.upsert_setting(settings.SettingInput(key=payload.key, value=invalid), *args)
+    assert raw.query(SystemSetting).filter_by(key=payload.key).one().value == value
 
 
 @pytest.mark.anyio

@@ -500,6 +500,8 @@ async def create_task(
         raise AppError(ErrorCode.NOT_FOUND, f"负责人 id={data['owner_id']} 不存在", 404)
     if task_owner.status != "active":
         raise AppError(ErrorCode.PARAM_ERROR, f"负责人「{task_owner.name}」已停用", 422)
+    # B22-05（用户已确认限）：创建时指定的负责人也须在操作者数据范围内
+    await ensure_in_scope(session, user, owner_id=data["owner_id"], label="负责人")
 
     # 关联对象：存在性 → **数据范围** → **是否同一客户**（第九批 §9.2）。
     #
@@ -642,6 +644,7 @@ async def update_task(
                     f"任务已{_final_label(task)}，不能改负责人（谁完成的已经落定）",
                 )
             reassigned_to = await _active_owner(session, new_owner_id)
+            await ensure_in_scope(session, user, owner_id=new_owner_id, label="负责人")
 
     # ⚠️ **`expected_updated_at` 是协议字段，不是业务字段**，绝不能进这个循环
     # （第五批审查 P2，2026-10-12）：它是客户端回传的**版本号**，写进库里就是
@@ -808,6 +811,8 @@ async def assign_task(
     task = await _visible_task(session, user, task_id, for_update=True)
     _ensure_not_final(task, "改派")
     target = await _active_owner(session, payload.owner_id)
+    # B22-05（用户已确认限）：改派目标必须在操作者数据范围内
+    await ensure_in_scope(session, user, owner_id=payload.owner_id, label="负责人")
 
     before_owner = task.owner_id
     # ⚠️ 守卫必须**先于**内存赋值：`_visible_task` 里的语句会触发 SQLAlchemy
@@ -895,6 +900,8 @@ async def batch_handover_tasks(
         content=f"已指派 {len(tasks)} 条待办，请在任务中心查看。",
     )
     await session.commit()
+    # B22-06：业务落库后投递，否则通知行停 pending、接收人收不到企微/即时通知
+    await notification_service.dispatch_after_commit(session)
     return ok({"task_ids": ids}, f"已交接 {len(ids)} 条待办")
 
 
@@ -1024,6 +1031,7 @@ async def transfer_task(
     # 不看是否停用。这里与 `/assign` 收在同一套约束里。
     _ensure_not_final(task, "转交")
     target = await _active_owner(session, payload.owner_id)
+    await ensure_in_scope(session, user, owner_id=payload.owner_id, label="负责人")
     before_owner = task.owner_id
     # 守卫先于内存赋值（同上：避免 autoflush 抢先把新值写进库）
     await _guard_task_field(

@@ -377,6 +377,8 @@ export default function CustomerListPage() {
       }),
   })
 
+  /* 刚创建成功、需要在列表里闪一下的客户 id（1.5 秒后清空） */
+  const [flashCustomerId, setFlashCustomerId] = useState<number | null>(null)
   const createMutation = useMutation({
     // 请求幂等键跟着"这一次填表"走：弱网/超时后用户再点一次提交，
     // 带的是同一把键，服务端只会建一条（第八批 8.15）。
@@ -384,6 +386,9 @@ export default function CustomerListPage() {
       createCustomer({ ...payload, request_key: createRequestKeyRef.current || undefined }),
     onSuccess: (customer) => {
       Toast.success(`客户「${customer.name}」已创建`)
+      // 关窗后把列表里刚建的那一行亮一下，免得用户回头找不到新建的是哪条
+      setFlashCustomerId(customer.id)
+      window.setTimeout(() => setFlashCustomerId((cur) => (cur === customer.id ? null : cur)), 1500)
       setModalVisible(false)
       setForm(EMPTY_FORM)
       setOtherSource('')
@@ -820,6 +825,7 @@ export default function CustomerListPage() {
         )}
 
         <Table<Customer>
+          rowClassName={(row?: Customer) => (row && row.id === flashCustomerId ? 'flash-updated' : '')}
           className="table-center customers-table"
           columns={columns}
           dataSource={query.data?.items ?? []}

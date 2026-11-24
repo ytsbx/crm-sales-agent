@@ -417,6 +417,16 @@ export default function KnowledgePage() {
   const selectedAllowedQuoteOwner = submissionOptions.data?.quote_owners?.some((person) => person.user_id === requestedQuoteOwner)
     ? requestedQuoteOwner ?? undefined
     : undefined
+  // OA 模板里 CRM 本来就有的资料（客户名称/联系人/电话、产品名称或编号、备注）直接带入，
+  // 只补空白格：已保存的草稿和用户手填的值优先，不被覆盖。
+  useEffect(() => {
+    const prefill = submissionOptions.data?.prefill_fields
+    if (!prefill) return
+    setSubmitFields((current) => {
+      const missing = Object.entries(prefill).filter(([key, value]) => value && !current[key]?.trim())
+      return missing.length ? { ...current, ...Object.fromEntries(missing) } : current
+    })
+  }, [submissionOptions.data, submitTarget?.id, editing?.id])
   const submissionFiles = useQuery({
     queryKey: ['business-files', submissionOptions.data?.file_business_type || 'inquiry', submitTarget?.id ?? editing?.id],
     queryFn: () => listBusinessFiles(submissionOptions.data?.file_business_type || 'inquiry', (submitTarget?.id ?? editing?.id)!),
@@ -756,8 +766,12 @@ export default function KnowledgePage() {
         optionList={submissionOptions.data.quote_owners.map((item) => ({ value: item.user_id, label: item.name }))}
       />
     </div>}
-    {submissionOptions.data?.fields.filter(field => !only || field.id === only).map((field) => <div key={field.id}>
-      <FormLabel required={field.required}>{field.label}</FormLabel>
+    {submissionOptions.data?.fields.filter((field) => only
+      ? field.id === only
+      : !editVisible || field.id !== 'customer_contact').map((field) => <div key={field.id}>
+      <FormLabel required={field.required}>
+        {field.id === 'customer_contact' ? '同序审批用的客户名称、联系人、联系方式' : field.label}
+      </FormLabel>
       {field.type === 'DDAttachment' ? (
         <section style={{ display: 'grid', gap: 18, padding: 18, border: '1px solid var(--crm-border)', borderRadius: 10, background: 'var(--crm-surface-low)', minWidth: 0 }}>
           <div style={{ color: 'var(--crm-text-3)', fontSize: 12, lineHeight: 1.7 }}>
@@ -816,6 +830,12 @@ export default function KnowledgePage() {
           onChange={(value) => setSubmitFields((current) => ({ ...current, [field.id]: value }))} />
       )}
       {field.help_text && <small>{field.help_text}</small>}
+      {field.id === 'customer_contact' && (
+        <div style={{ marginTop: 4, fontSize: 12, color: 'var(--crm-text-3)' }}>
+          这里填写的真实名称只用于本次审批。询价仍关联到所选的 CRM 客户。
+          要修改档案名称，请到客户中心打开该客户，点「编辑客户」。
+        </div>
+      )}
     </div>)}
   </>
 
@@ -861,6 +881,8 @@ export default function KnowledgePage() {
       customer: 'customer_contact', specification: 'product_model', delivery_time: 'delivery_date', notes: 'special_note',
     }
     switch (key) {
+      case 'customer':
+        return editable ? null : <div key={key}>{renderSubmissionFields(target, 'customer_contact')}</div>
       case 'instructions':
         return <div key={key}>{label}<div style={{ color: 'var(--crm-text-3)', whiteSpace: 'pre-line' }}>{field.hint}</div></div>
       case 'reporter':
@@ -900,7 +922,6 @@ export default function KnowledgePage() {
       const missing = options.fields.find((field) => field.required && (field.type === 'DDAttachment'
         ? !submitAttachments.length && !pendingAttachments.length : !submitFields[field.id]?.trim()))
       if (missing) { Toast.warning(`请填写${missing.label}`); return }
-      if (!form.customer_id && !form.opportunity_id) { Toast.warning('提交前请先关联客户或商机'); return }
       if (!form.description.trim() || !form.quantity.trim()) { Toast.warning('提交同序 OA 时还需要填写材质及工艺要求、预估订购数量'); return }
       if (options.image_required && !pendingPhotos.length && !(submissionFiles.data ?? []).some((file) => file.category !== 'oa_attachment' && file.mime_type?.startsWith('image/'))) {
         Toast.warning('提交前请选择产品参考照片'); return
@@ -933,12 +954,12 @@ export default function KnowledgePage() {
       )}
       {submissionOptions.data && !submissionOptions.data.configured && (
         <div className="inline-note" role="status">
-          同序 OA 询价模板尚未配置，可先保存需求和内部报价草稿；正式对外报价仍需通过核价及报价复核。
+          {submissionOptions.data.message || '同序 OA 询价模板尚未配置，可先保存需求和内部报价草稿'}；正式对外报价仍需通过核价及报价复核。
         </div>
       )}
       {submissionOptions.data && submissionOptions.data.configured && !submissionOptions.data.enabled && (
         <div className="inline-note" role="status">
-          询价审批暂未启用，可先保存需求和内部报价草稿；正式对外报价仍需通过核价及报价复核。
+          {submissionOptions.data.message || '询价审批暂未启用，可先保存需求和内部报价草稿'}；正式对外报价仍需通过核价及报价复核。
         </div>
       )}
 
@@ -1038,12 +1059,20 @@ export default function KnowledgePage() {
         }}
       >
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 12 }}>
+          {submitTarget && <div className="inline-note" style={{ margin: 0, overflowWrap: 'anywhere' }}>
+            {submitTarget.customer_id
+              ? <>CRM 关联客户 <strong>{submitTarget.customer_name || '客户名称暂不可显示'}</strong></>
+              : '尚未关联 CRM 客户。审批只挂在这条询价上，填写同序表单里的客户名称不会自动关联 CRM 客户档案。'}
+          </div>}
+          {nativeFields && submissionOptions.data?.message && (
+            <div className="inline-note" role="status">{submissionOptions.data.message}</div>
+          )}
           {nativeFields ? renderNativeFields(submitTarget, false) : <>
             <ApplicantIdentity prefill={submissionOptions.data?.prefill} />
             <div>提交后按同序 OA 模板流转，可在 CRM 查看审批进度。</div>
             <div><strong>{submitTarget?.title}</strong>（第 {submitTarget?.version ?? 1} 版）</div>
             <div style={{ whiteSpace: 'pre-wrap' }}>{submitTarget?.description || '尚未填写需求描述'}</div>
-            <div>数量：{submitTarget?.quantity ?? '未填写'}；客户：{submitTarget?.customer_name || '未关联'}</div>
+            <div>数量：{submitTarget?.quantity ?? '未填写'}</div>
             {submissionOptions.isError && <div style={{ color: 'var(--crm-error)' }}>{submissionOptions.error.message}</div>}
             {submissionOptions.data && !submissionOptions.data.configured && <div>尚未配置同序 OA 询价模板，请联系管理员。</div>}
             {submissionOptions.data && !submissionOptions.data.enabled && <div>同序 OA 询价提交暂未开启，请联系管理员。</div>}
@@ -1074,6 +1103,9 @@ export default function KnowledgePage() {
         bodyStyle={{ maxHeight: '65vh', overflowY: 'auto' }}
       >
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 12 }}>
+          {nativeFields && submissionOptions.data?.message && (
+            <div className="inline-note" role="status">{submissionOptions.data.message}</div>
+          )}
           {nativeFields ? renderNativeFields(editing, true) : <>
             <ApplicantIdentity prefill={submissionOptions.data?.prefill} />
             {renderEditPhotos()}
@@ -1096,7 +1128,7 @@ export default function KnowledgePage() {
           </>}
           {nativeFields && <div style={{ borderTop: '1px solid var(--crm-border)', paddingTop: 12, fontWeight: 600 }}>CRM 关联资料</div>}
           <div>
-            <div style={{ marginBottom: 4 }}>客户（用于关联 CRM）</div>
+            <div style={{ marginBottom: 4 }}>CRM 关联客户（可选）</div>
             <RecordSearchSelect
               key={`inquiry-customer-${editVisible}`}
               scope="inquiry-customer"
@@ -1107,10 +1139,24 @@ export default function KnowledgePage() {
               list={listCustomers}
               lookup={getCustomer}
               labelOf={(customer) => customer.name}
-              onChange={(customer) => setForm({ ...form, customer_id: customer?.id ?? null, opportunity_id: null })}
+              onChange={(customer) => {
+                setForm({ ...form, customer_id: customer?.id ?? null, opportunity_id: null })
+                // 同序模板要「客户名称、联系人、联系方式」；选了客户先把名称带进去，
+                // 联系人和电话仍可在同序表单里补。老钉钉控件 id 不是这个键，不做。
+                if (nativeFields && customer?.name) {
+                  setSubmitFields((current) => current.customer_contact?.trim()
+                    ? current : { ...current, customer_contact: customer.name })
+                }
+              }}
               style={{ width: '100%' }}
             />
+            {!form.customer_id && !form.opportunity_id && (
+              <div className="inline-note" style={{ margin: '8px 0 0' }}>
+                可以先送审。审批只挂在这条询价上，填写同序表单里的客户名称不会自动关联 CRM 客户档案。
+              </div>
+            )}
           </div>
+          {renderSubmissionFields(editing, 'customer_contact')}
           <div>
             <div style={{ marginBottom: 4 }}>关联商机（本次采购需求）</div>
             {/* 客户没选时这个框是灰的（判据没动）。灰着的时候外面包一层接点击：
@@ -1315,7 +1361,7 @@ export default function KnowledgePage() {
                 const actions = row.allowed_actions ?? []
                 const isLatest = (row.submit_round ?? 1) === latestApprovalRound
                 const buttons: ReactNode[] = []
-                if (row.instance_id && can('quote:manage')) {
+                if (row.provider === 'self_oa' && row.instance_id && can('quote:manage')) {
                   buttons.push(<SyncOaButton key="sync" oaId={row.id} invalidateKeys={[[ 'inquiry-approvals', approvalTarget?.id ]]} />)
                 }
                 if (actions.includes('resolve_adopt')) {
@@ -1402,7 +1448,7 @@ export default function KnowledgePage() {
                     </Popconfirm>,
                   )
                 }
-                if (isLatest && row.status === 'pending' && row.instance_id && row.oa_type === 'inquiry') {
+                if (isLatest && row.provider === 'self_oa' && row.status === 'pending' && row.instance_id && row.oa_type === 'inquiry') {
                   buttons.push(
                     <Popconfirm
                       key="withdraw"

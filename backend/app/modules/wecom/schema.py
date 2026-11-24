@@ -1,5 +1,7 @@
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.core.patch_schema import CreateModel
+
 
 class BindCustomerRequest(BaseModel):
     """把待归一联系人关联到已有客户。"""
@@ -8,7 +10,7 @@ class BindCustomerRequest(BaseModel):
     is_primary: bool | None = None
 
 
-class CreateCustomerRequest(BaseModel):
+class CreateCustomerRequest(CreateModel):
     """给待归一联系人建新客户。名称必填，其余走客户模块同一套字段。"""
 
     name: str

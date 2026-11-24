@@ -221,7 +221,8 @@ async def generate_inquiry_no(session: AsyncSession) -> str:
 
 
 async def lock_quote_source(
-    session: AsyncSession, inquiry: CustomInquiry, *, quote_id: int | None = None
+    session: AsyncSession, inquiry: CustomInquiry, *, quote_id: int | None = None,
+    viewer_id: int | None = None,
 ) -> CustomInquiry:
     root_id = inquiry.root_id or inquiry.id
     root = (await session.execute(select(CustomInquiry).where(CustomInquiry.id == root_id)
@@ -233,7 +234,7 @@ async def lock_quote_source(
                    .with_for_update().execution_options(populate_existing=True))).scalar_one()
     if inquiry.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "定制询价已删除", 404)
-    links = (await linked_quotes_for(session, [inquiry.id])).get(inquiry.id, [])
+    links = (await linked_quotes_for(session, [inquiry.id], viewer_id=viewer_id)).get(inquiry.id, [])
     if quote_id is not None and any(link["id"] == quote_id for link in links):
         return root
     if inquiry.status == "archived":
@@ -278,7 +279,7 @@ async def create_quote_from_inquiry(
 
     # 同一修订链同时转报价，只能创建一条归属商机；链级关联对所有版本一致。
     root_id = inquiry.root_id or inquiry.id
-    root = await lock_quote_source(session, inquiry)
+    root = await lock_quote_source(session, inquiry, viewer_id=getattr(user, "id", None))
     chain = (await session.execute(not_deleted(select(CustomInquiry)).where(
         (CustomInquiry.id == root_id) | (CustomInquiry.root_id == root_id)
     ).execution_options(populate_existing=True))).scalars().all()

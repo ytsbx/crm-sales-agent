@@ -145,7 +145,7 @@ async def assign_public_customer(
     # 公海客户人人可见，**私有客户必须在操作者范围内** ——
     # 此前这里用 get_customer_or_404（只判存在），本人范围的业务员
     # 拿 id 就能把别人名下的私有客户改给自己。
-    customer = await customer_service.get_visible_customer(session, user, customer_id)
+    customer = await customer_service.get_visible_customer(session, user, customer_id, for_update=True)
     if payload.owner_id is None and customer.owner_id is not None:
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,

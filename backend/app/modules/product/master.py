@@ -229,6 +229,17 @@ def local_value(sku: Sku, field: str) -> Any:
     return _json_value(getattr(sku, field, None))
 
 
+def _ensure_sku_text_fits(field: str, value: Any) -> None:
+    if not isinstance(value, str):
+        return
+    from app.core.patch_schema import FIELD_LABELS
+
+    limit = Sku.__table__.columns[field].type.length
+    if len(value) > limit:
+        label = FIELD_LABELS.get(f"SkuUpdate.{field}", FIELD_LABELS.get(field, field))
+        raise AppError(ErrorCode.PARAM_ERROR, f"来源的{label}最长可保存 {limit} 个字符，请核对后再核定", 422)
+
+
 def _diff_conflict_type(field: str) -> str:
     if field in UNIT_FIELDS:
         return DIFF_UNIT_CONFLICT
@@ -1558,6 +1569,7 @@ async def confirm_sku_diff(
                     422,
                 )
             incoming = normalize_field_value(diff.field_name, diff.incoming_value)
+            _ensure_sku_text_fits(diff.field_name, incoming)
             row, _changed = await _confirm_field(
                 session,
                 sku=sku,
@@ -1579,6 +1591,7 @@ async def confirm_sku_diff(
             new_code = _text(diff.incoming_value)
             if not new_code:
                 raise AppError(ErrorCode.PARAM_ERROR, "差异里没有新编码，无法改码", 422)
+            _ensure_sku_text_fits("sku_code", new_code)
             clash = (
                 await session.execute(
                     select(Sku).where(Sku.sku_code == new_code, Sku.id != sku.id)

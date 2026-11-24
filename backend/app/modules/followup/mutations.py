@@ -76,8 +76,10 @@ async def create_manual_followup(session: AsyncSession, user: CurrentUser, paylo
     # 相同用户/请求键串行化，回滚后可以重新提交；唯一约束为最终兜底。
     fingerprint = hashlib.sha256(payload.model_dump_json(exclude={"request_key", "create_task"}).encode()).hexdigest()
     if payload.request_key:
-        await session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-                              {"key": f"followup:{user.id}:{payload.request_key}"})
+        bind = getattr(session, "get_bind", lambda: None)()
+        if bind is not None and bind.dialect.name == "postgresql":
+            await session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                                  {"key": f"followup:{user.id}:{payload.request_key}"})
         existing = (await session.execute(select(FollowUp).where(
             FollowUp.owner_id == user.id, FollowUp.request_key == payload.request_key))).scalar_one_or_none()
         if existing:

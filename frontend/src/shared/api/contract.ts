@@ -142,29 +142,40 @@ export function uploadContractDocument(payload: {
   contract_number_rule_fix?: string | null
   expiry_date?: string | null
   effective_date?: string | null
+  extra_fields?: Record<string, string>
   request_key?: string
 }) {
   return api.post<ContractDocument>('/contract-documents', { ...payload, source_type: 'customer_drafted' })
 }
 
-export function autoLinkContractDingTalkApproval(docId: number) {
-  return api.post<Record<string, unknown>>(`/contract-documents/${docId}/approval-auto-link`, {})
+/** 上传合同弹窗用：同序合同模板字段定义（不需要合同 id）。 */
+export interface ContractOaFieldOption {
+  id: string
+  label: string
+  type: string
+  required: boolean
+  options: string[]
+  presentation?: string | null
+  multiline?: boolean | null
+  help_text?: string | null
 }
 
-export function startContractDingTalkApproval(docId: number) {
-  return api.post<Record<string, unknown>>(`/contract-documents/${docId}/dingtalk-oa`, {})
+export function getContractOaFieldOptions() {
+  return api.get<{ fields: ContractOaFieldOption[]; message?: string }>(
+    '/contract-documents/oa-field-options',
+  )
 }
 
 /** 发起自研 OA 合同审批（2026-11-13 起新入口；审批在 OA 完成）。 */
 export function startContractOaApproval(
   docId: number,
-  payload: { our_company: string; counterparty_name: string },
+  payload: { our_company: string; counterparty_name: string; extra_fields?: Record<string, unknown> },
 ) {
   return api.post<OaApprovalInstance>(`/contract-documents/${docId}/oa-approval`, payload)
 }
 
-export function withdrawContractDingTalkApproval(docId: number) {
-  return api.post<Record<string, unknown>>(`/contract-documents/${docId}/dingtalk-oa-withdraw`, {})
+export function withdrawContractOaApproval(docId: number) {
+  return api.post<Record<string, unknown>>(`/contract-documents/${docId}/oa-withdraw`, {})
 }
 
 export function getContractDocument(docId: number) {
@@ -183,7 +194,7 @@ export function downloadContractDocument(doc: { id: number; doc_no: string }) {
   return api.download(`/contract-documents/${doc.id}/download`)
 }
 
-export function signContractDocument(docId: number, payload: { file_id: number; note?: string | null }) {
+export function signContractDocument(docId: number, payload: { file_id: number; note?: string | null; reuse_reason?: string }) {
   return api.post<ContractDocument>(`/contract-documents/${docId}/sign`, payload)
 }
 

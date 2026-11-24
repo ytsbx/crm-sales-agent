@@ -440,7 +440,7 @@ async def import_customers(
                     {"row": index, "id": customer_id, "name": customer_name}
                 )
         except Exception as exc:  # 单行失败不影响其它行
-            report.failed_row(index, name, f"写入失败：{str(exc)[:160]}")
+            report.write_failed_row(index, name, exc)
 
     return await finalize(
         session,

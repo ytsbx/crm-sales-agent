@@ -2,13 +2,18 @@
 
 import asyncio
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import update
+from starlette.requests import Request
 
 from conftest import SyncSessionAsAsync, make_user
 from app.core.base import Base
+from app.core.errors import AppError
 from app.modules.bizdoc.model import BizDoc, BizDocTemplate
 from app.modules.file.access import can_access_file
+from app.modules.file import router as file_router
 from app.modules.file.model import BusinessFile, FileRecord
 from app.modules.customer.model import Customer
 from app.modules.user.model import Department, User
@@ -27,6 +32,28 @@ def archive(db_session):
     db_session.add_all([file, doc])
     db_session.commit()
     return SyncSessionAsAsync(db_session), doc
+
+
+@pytest.mark.anyio
+async def test_delete_rechecks_file_access_after_lock(archive, monkeypatch):
+    session, doc = archive
+    actor = make_user(101, permissions=["quote:view", "file:manage"])
+    execute = session.execute
+
+    async def transfer_before_lock(stmt, *args, **kwargs):
+        if "FOR UPDATE" in str(stmt):
+            await execute(update(BizDoc).where(BizDoc.id == doc.id).values(owner_id=102),
+                          execution_options={"synchronize_session": False})
+        return await execute(stmt, *args, **kwargs)
+
+    monkeypatch.setattr(session, "execute", transfer_before_lock)
+    usage = AsyncMock(side_effect=AssertionError("已失去权限，不应继续删除"))
+    monkeypatch.setattr(file_router.service, "inspect_file_usage", usage)
+    with pytest.raises(AppError) as error:
+        await file_router.delete_file(1, Request({"type": "http", "headers": []}), actor, session)
+    assert error.value.http_status == 403
+    usage.assert_not_awaited()
+    assert await session.get(FileRecord, 1) is not None
 
 
 @pytest.mark.parametrize("doc_type,permission", [

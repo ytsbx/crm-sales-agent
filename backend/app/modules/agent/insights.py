@@ -18,7 +18,7 @@
 """
 
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import false, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,7 +38,9 @@ ZERO = Decimal(0)
 
 
 def _f(value) -> float | None:
-    return None if value is None else round(float(value), 2)
+    if value is None:
+        return None
+    return float(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
 async def _opportunity_items(session: AsyncSession, opportunity_id: int):
@@ -352,7 +354,7 @@ async def customer_summary(session: AsyncSession, user, *, customer_id: int) -> 
     open_tasks_rows = await _visible_open_tasks(
         session, user, customer_id=customer_id, limit=10
     )
-    open_tasks: list[Task] = open_tasks_rows or []
+    open_tasks = open_tasks_rows  # None＝无 task:view，[]＝有权限但无可见待办
 
     insights: list[str] = []
     if days_since_followup is None:
@@ -362,7 +364,7 @@ async def customer_summary(session: AsyncSession, user, *, customer_id: int) -> 
     elif days_since_followup >= 14:
         insights.append(f"{days_since_followup} 天没跟进了，可以安排一次回访")
 
-    overdue_tasks = [row for row in open_tasks if _is_overdue(row.due_at, today)]
+    overdue_tasks = [row for row in open_tasks if _is_overdue(row.due_at, today)] if open_tasks is not None else []
     if overdue_tasks:
         insights.append(f"有 {len(overdue_tasks)} 个任务已逾期")
 
@@ -460,7 +462,7 @@ async def followup_suggestion(
         last_followup_at = customer.last_followup_at
         # 只算**自己范围内**的待办（§9.1 复审）：原来这里不按负责人过滤，
         # 于是"14 天没跟进"的建议里会混进别人负责的逾期任务。
-        open_tasks = await _visible_open_tasks(session, user, customer_id=customer_id) or []
+        open_tasks = await _visible_open_tasks(session, user, customer_id=customer_id)
         # ⚠️ 必须判权限 + 按数据范围收窄（与上面那行任务计数同一口径）：
         # 原来这里是裸 count，公海客户的商机条数会漏给范围外的人。
         open_opportunities = (
@@ -472,13 +474,13 @@ async def followup_suggestion(
 
         lead = await lead_service.get_visible_lead(session, user, lead_id)
         last_followup_at = lead.last_followup_at
-        open_tasks = await _visible_open_tasks(session, user, lead_id=lead_id) or []
+        open_tasks = await _visible_open_tasks(session, user, lead_id=lead_id)
         target = {"type": "lead", "id": lead.id, "name": lead.name}
 
     days_since = None
     if last_followup_at:
         days_since = (datetime.now(UTC) - last_followup_at).days
-    overdue_tasks = [t for t in open_tasks if _is_overdue(t.due_at, today)]
+    overdue_tasks = [t for t in open_tasks if _is_overdue(t.due_at, today)] if open_tasks is not None else []
 
     suggestions: list[dict] = []
     if days_since is None:
@@ -526,10 +528,11 @@ async def followup_suggestion(
             }
         )
     if not suggestions:
+        reason = "近期跟进正常" if open_tasks is None else "近期跟进正常，没有逾期任务"
         suggestions.append(
             {
                 "action": "维持常规跟进",
-                "reason": "近期跟进正常，没有逾期任务",
+                "reason": reason,
                 "priority": "low",
             }
         )
@@ -538,8 +541,8 @@ async def followup_suggestion(
         "target": target,
         "last_followup_at": last_followup_at,
         "days_since_followup": days_since,
-        "open_task_count": len(open_tasks),
-        "overdue_task_count": len(overdue_tasks),
+        "open_task_count": len(open_tasks) if open_tasks is not None else None,
+        "overdue_task_count": len(overdue_tasks) if open_tasks is not None else None,
         "suggestions": suggestions,
         "as_of": today,
     }
@@ -582,8 +585,8 @@ async def opportunity_analysis(session: AsyncSession, user, *, opportunity_id: i
     # 同 §9.1：只算自己范围内的待办，否则商机分析会泄露别人负责的任务数
     open_tasks = (
         await _visible_open_tasks(session, user, opportunity_id=opportunity_id)
-    ) or []
-    overdue_tasks = [t for t in open_tasks if _is_overdue(t.due_at, today)]
+    )
+    overdue_tasks = [t for t in open_tasks if _is_overdue(t.due_at, today)] if open_tasks is not None else []
 
     items = await _opportunity_items(session, opportunity_id)
 
@@ -620,8 +623,8 @@ async def opportunity_analysis(session: AsyncSession, user, *, opportunity_id: i
         "stage_entered_at": stage_entered_at,
         "stage_history_count": len(history),
         "item_count": len(items),
-        "open_task_count": len(open_tasks),
-        "overdue_task_count": len(overdue_tasks),
+        "open_task_count": len(open_tasks) if open_tasks is not None else None,
+        "overdue_task_count": len(overdue_tasks) if open_tasks is not None else None,
         "level": level,
         "level_label": {
             "normal": "正常推进",
@@ -733,7 +736,8 @@ async def quote_draft(
     from app.modules.pricing import service as pricing_service
 
     opportunity = await opp_service.get_visible_opportunity(session, user, opportunity_id)
-    resolved_customer = customer_id or opportunity.customer_id
+    # 客户永远跟商机走，忽略外部传入的 customer_id（B16-03：防止用别人的专属价）。
+    resolved_customer = opportunity.customer_id
     if resolved_customer:
         from app.modules.customer import service as customer_service
 

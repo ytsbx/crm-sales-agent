@@ -47,7 +47,7 @@ class TemplateCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     body: str = ""
     enabled: bool = True
-    remark: str | None = None
+    remark: str | None = Field(default=None, max_length=255)
 
 
 class TemplatePreview(BaseModel):

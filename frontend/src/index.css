@@ -2651,6 +2651,19 @@ table:not(.semi-table) td {
   border-radius: var(--crm-radius-sm) !important;
 }
 
+/* 可搜索的 Select（filter/remote）会在触发器里再渲染一个 Input。
+   那个 Input 自己带一层描边，聚焦时和 Select 外框叠在一起就成了「框套框」
+   （2026-11-23 主人截图）。这里只清 Select 内部的那一层，不影响普通输入框。 */
+.semi-select .semi-input-wrapper,
+.semi-select .semi-input-wrapper:hover,
+.semi-select .semi-input-wrapper-focus,
+.semi-modal .semi-select .semi-input-wrapper {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+
 .semi-tag {
   border-radius: var(--crm-radius-sm);
   font-size: 12px;
@@ -8484,4 +8497,118 @@ table:not(.semi-table) td.cell-right {
   color: var(--crm-error);
   font-size: 12px;
   overflow-wrap: anywhere;
+}
+
+/* ============================================================
+   浮层与子页面的出场动效（2026-11-23）
+   ------------------------------------------------------------
+   只解决「浮层是啪一下出现」这个问题：位移不超过 8px、
+   时长 140–240ms、播完即停，不做任何循环动画。
+   系统开「减少动效」时由上面的全局兜底统一压到 0.01ms。
+   ============================================================ */
+@keyframes crm-pop-in {
+  from { opacity: 0; transform: translateY(-3px) scale(.985); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes crm-sheet-in {
+  from { opacity: 0; transform: translateX(18px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes crm-toast-in {
+  from { opacity: 0; transform: translateY(-8px) scale(.985); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes crm-soft-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* 问号气泡、下拉菜单、选择器面板：从锚点附近轻轻长出来，
+   不再是「啪」地出现一整个框。 */
+.semi-popover,
+.semi-dropdown-menu,
+.semi-select-option-list {
+  animation: crm-pop-in 160ms cubic-bezier(.22, 1, .36, 1) both;
+  transform-origin: center top;
+}
+
+/* 右滑抽屉（审计日志、AI 助手）：从右侧滑入，和「划出来」的预期一致 */
+.semi-sidesheet-inner {
+  animation: crm-sheet-in 220ms cubic-bezier(.22, 1, .36, 1) both;
+}
+
+/* 站内提示：从页签栏下方落下来，而不是凭空盖在标题上 */
+.semi-toast-content {
+  animation: crm-toast-in 200ms cubic-bezier(.22, 1, .36, 1) both;
+}
+
+/* 空状态、骨架屏：淡入，避免「空无一物」突然占满一屏 */
+.semi-empty {
+  animation: crm-soft-fade-in 240ms var(--crm-ease) both;
+}
+
+/* ---- 操作反馈：只补「有动作但没过渡」的两处（2026-11-23）----
+   按钮：悬停换色原本是瞬变，和旁边的卡片过渡对不上；
+        这里统一 140ms 的颜色/边框/阴影过渡，点击下沉仍由上面的 :active 负责。
+   表格行：悬停底色也是瞬变，扫读时一行行闪；改成 150ms 淡入，
+        行内 2px 主色指示条跟着一起过渡，不额外加位移。 */
+.semi-button {
+  transition:
+    background-color 140ms var(--crm-ease),
+    border-color 140ms var(--crm-ease),
+    color 140ms var(--crm-ease),
+    box-shadow 160ms var(--crm-ease),
+    transform 80ms var(--crm-ease);
+}
+.semi-table-tbody > .semi-table-row > .semi-table-row-cell {
+  transition:
+    background-color 150ms var(--crm-ease),
+    box-shadow 150ms var(--crm-ease);
+}
+
+/* ---- 点击反馈：把「按下去」这一层补齐（2026-11-23）----
+   现状：悬停有过渡（卡片上抬、行底色渐变），但按下这一瞬间没有任何变化，
+   点完只能靠页面跳转或 Toast 才知道点到了。
+   这里只补按下态，不加位移超过 2px 的动画，也不做涟漪。 */
+.kpi-card:active {
+  /* 上抬 2px 的悬停态按下时收回到 1px 并极轻微内收：
+     "按到了"这件事靠手感传达，不靠闪光 */
+  transform: translateY(-1px) scale(.995);
+  box-shadow: var(--crm-shadow);
+}
+
+/* 整行可点的表格：按下时底色比悬停再深一档，松手即恢复 */
+.semi-table-tbody > .semi-table-row:active > .semi-table-row-cell {
+  background: #e6eeff;
+  transition: background-color 60ms linear;
+}
+
+/* 侧栏与页签按钮：按下内收 1px，方向跟随各自的悬停方向 */
+.nav-link:active,
+.sidebar-link:active {
+  transform: translateY(0.5px);
+}
+
+/* ---- 操作完成后的「结果确认」：刚保存/新建的那一条短暂亮一下（2026-11-23）----
+   为什么不是按钮变「已保存 ✓」：这几处的保存都在弹窗里，成功后弹窗立刻关闭，
+   按钮根本没机会露出新文案；把关窗延迟 1 秒又会拖慢每一次操作。
+   改成把确认感放在结果上：关窗后，列表里刚建的那一行（或刚改的那块内容）
+   用主色底轻轻亮 1.4 秒再褪掉 —— 用户不需要看 Toast 去找"到底存没存上"。 */
+@keyframes crm-flash-bg {
+  0%   { background-color: var(--crm-primary-soft); }
+  100% { background-color: transparent; }
+}
+.semi-table-row.flash-updated > .semi-table-row-cell {
+  animation: crm-flash-bg 1.4s var(--crm-ease) both;
+}
+.flash-updated {
+  border-radius: 6px;
+  animation: crm-flash-bg 1.4s var(--crm-ease) both;
+}
+
+/* 付款条件高亮：给 span 补内边距，让高亮块有呼吸感（负 margin 抵消，不改布局） */
+.quote-payment-terms {
+  padding: 2px 7px;
+  margin: -2px -7px;
+  border-radius: 6px;
 }

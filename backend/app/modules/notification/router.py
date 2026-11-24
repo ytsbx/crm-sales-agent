@@ -1,5 +1,6 @@
 """通知接口（03-API §32 通知 + §33 通知设置）。"""
 
+import re
 from datetime import UTC, date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -23,6 +24,19 @@ from app.modules.notification.model import (
 from app.modules.notification.schema import NotificationSettingUpdate
 
 router = APIRouter(tags=["Notification"])
+
+# 读侧兜底：历史通知的 wecom_error 可能含修复前落入的 URL/凭据原文。
+# 新数据已由 safe_error_text 在写入侧脱敏，这里对所有回显/审计出口再过一遍。
+_SENSITIVE_RE = re.compile(
+    r"https?://\S+|access_token=[^&\s,;)\]]+|corpsecret=[^&\s,;)\]]+",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_error(text: str | None) -> str | None:
+    if not text:
+        return text
+    return _SENSITIVE_RE.sub("[已脱敏]", text)
 
 
 #: 这些原因说明"卡住的是环境配置"，人工再补投多少次都是同一结果。
@@ -71,7 +85,7 @@ def serialize(row: Notification) -> dict:
             if row.wecom_status
             else None
         ),
-        "wecom_error": row.wecom_error,
+        "wecom_error": _sanitize_error(row.wecom_error),
         "wecom_sent_at": row.wecom_sent_at,
         # 投递重试（文档 §六）：试过几次、下次什么时候再试都要能看见——
         # 只给一个 failed，运营不知道该等它自己好还是该点补投
@@ -251,7 +265,7 @@ async def redispatch_notification(
         after={
             "wecom_status": row.wecom_status,
             "wecom_attempts": row.wecom_attempts,
-            "wecom_error": row.wecom_error,
+            "wecom_error": _sanitize_error(row.wecom_error),
         },
         ip=client_ip(request),
     )
@@ -260,13 +274,13 @@ async def redispatch_notification(
     if row.wecom_status == "sent":
         message = "已补投"
     else:
-        message = f"仍未能投出：{row.wecom_error or '未知原因'}"
+        message = f"仍未能投出：{_sanitize_error(row.wecom_error) or '未知原因'}"
     return ok(
         {
             "id": row.id,
             "wecom_status": row.wecom_status,
             "wecom_status_label": WECOM_STATUS_LABEL.get(row.wecom_status or "", None),
-            "wecom_error": row.wecom_error,
+            "wecom_error": _sanitize_error(row.wecom_error),
             **result,
         },
         message,

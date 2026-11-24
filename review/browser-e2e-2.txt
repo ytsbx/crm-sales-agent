@@ -1,0 +1,82 @@
+✓ 接口登录成功：系统管理员（admin）
+✓ 主数据确认：库 crm_review_smoke_20261123：已补 0 条字段确认（13 个字段 × 未删除的 SKU，已有的不动），并落整版快照 6 版
+✓ 用例数据：客户 #3 商机 #1 产品 #3 报价 #1 订单 #2
+✓ 前端已就绪（依赖预构建完成）
+—— 预热：无断言过一遍全部页面（触发懒编译/依赖再优化）——
+✓ 预热完成
+✓ /workbench → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/01-workbench.png
+  页面主内容：晚上好，系统管理员 销售部 · 管理员 这里是您今天的工作概览 · 2026-11-23 星期一 新建线索 今天要做什么 先看要处理的数，再看下面的走势和安排 我的待办 0 逾期 0 项 待跟进客户 ? 0 30 天无有效跟进或业务进展 进行中商机 1 估算货值 ¥86,000 待我审批 0 需要你处理 本月订单金额 
+✓ /analytics → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/02-analytics.png
+  页面主内容：数据分析 经营概览 商机与报价 客户与线索 回款与应收 发货与交期 明细报表 销售目标 统计范围：全公司 ? 已成交商机 0 个 尚未到账 ¥3,801 逾期应收 ¥0 超期未发首批 0 单 2026 年业绩走势 签单看建单月，发货看实际发货月，回款看财务确认月。 查看各月金额
+✓ /leads → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/03-leads.png
+  页面主内容：线索中心 还在了解情况时，点「跟进」记录进展。确认对方是哪家客户后，再点「转客户」。 状态 只看线索池 查询 新建线索 线索名称 公司 联系人 手机 来源 · 地区 状态 负责人 操作 杭州电商仓周转箱需求 杭州云仓供应链管理有限公司 赵敏 137＊＊＊＊0002 企业微信 · 浙江 已分配 张三 跟进 分配 转客户 
+✓ /customers → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/04-customers.png
+  页面主内容：客户中心 客户、联系人与归属都在这里统一管理 客户列表 回收复核 客户等级 全部客户 查询 下载模板 导出 批量导入 新建客户 客户阶段分布 了解1 报价0 打样0 首单2 返单0 稳定复购0 由订单 / 打样 / 正式报价事实自动推导，无需人工维护 客户名称 等级 ? 阶段 ? 当前商机 近12月项目 ? 历史有效订
+✓ /duplicate-cases → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/04b-duplicate-cases.png
+  页面主内容：撞单裁定 核对疑似重复的客户档案，决定两条档案分别或由同一位同事跟进。 撞单记录（0 条） 待裁定 没有待裁定的撞单 新建、导入或手动检查时发现疑似重复的档案，会列在这里。
+✓ /customers/3 → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/05-customer-detail.png
+  页面主内容：上海云汐日用百货有限公司 C 级 私海 负责人：李四 地区：上海 来源：官网 联系人：0 编辑客户 记录跟进 问 Agent 更多 概览 联系人 商机 跟进 报价 订单 文件 日志 客户名称 上海云汐日用百货有限公司 客户简称 云汐日用 客户类型 企业 国家 / 地区 中国 / 上海 详细地址 上海市松江区新桥镇新中路
+✓ /customers/3?tab=files → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/05b-customer-files.png
+  页面主内容：上海云汐日用百货有限公司 C 级 私海 负责人：李四 地区：上海 来源：官网 联系人：0 编辑客户 记录跟进 问 Agent 更多 概览 联系人 商机 跟进 报价 订单 文件 日志 合同、图纸、回款凭证都可以放在这里，单个文件不超过 20 MB 上传附件 还没有附件 —— 点右上角「上传附件」添加
+✓ /opportunities → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/06-opportunities.png
+  页面主内容：客户项目 客户需求逐条录入，后续核价与报价都以需求明细为输入 新询盘 0 ¥0 需求确认 0 ¥0 产品推荐 0 ¥0 核价 0 ¥0 已报价 1 ¥86,000 阶段 进行中 查询 表格 看板 新建商机 商机名称 客户 阶段 金额 / 需求 ? 成交日 / 风险 ? 负责人 宏远包装周转箱年度采购 宁波宏远包装制品有
+✓ /opportunities/1 → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/07-opportunity-detail.png
+  页面主内容：宏远包装周转箱年度采购 已报价 中风险 记录跟进 去核价 推进阶段 新建任务 确认成交并建单 标记失单 客户：宁波宏远包装制品有限公司 负责人：张三 预计金额：¥86,000.00 预计成交：- 需求条数：2 概览 需求商品 关联单据 跟进 任务 文件 时间线 下一步 这笔商机已有报价。打开「关联单据」查看报价状态，点
+✓ /products → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/08-products.png
+  页面主内容：产品中心 产品与 SKU 分开维护：产品是资料，SKU 才是可报价的最小单位 查询 导入 / 导出 ▾ 新建产品 产品名称 产品线 分类 品牌 SKU 数 状态 创建时间 PE 缠绕膜 包装耗材 缠绕膜 自有品牌 1 在售 2026-11-23 13:29 中空板包装箱 包装材料 包装箱 自有品牌 2 在售 2026-
+✓ /products/3 → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/09-product-detail.png
+  页面主内容：PE 缠绕膜 包装耗材 缠绕膜 品牌：自有品牌 SKU 数：1 创建时间：2026-11-23 13:29 编辑资料 删除产品 示例数据：按卷报价，整托出货。 SKU 列表 新建 SKU 名称 / 编码 图片 规格 / 尺寸 起订量 包装 / 箱装 状态 主数据 成本状态 ? 操作 PE 缠绕膜 CR-500-3 + 
+✓ /prices → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/10-price-center.png
+  页面主内容：价格中心 核价引擎的全部依据都在这一页：成本、标准价与最低保护价、客户特殊价、各角色的让价权限、运费费率 核价试算 客户查价 成本 价格规则 客户特殊价 价格权限 运费费率 核价历史 选择客户 选择 SKU 查价 选好客户和产品后才能查价。 查一次价，会看到这些 适用单价 客户专属价、等级价、通用指导价里，系统自动取用
+✓ /pricing?sku_id=1&customer_id=3&quantity=3000&quoted_price=25 → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/11-pricing.png
+  页面主内容：核价 填客户、产品、数量，系统按价格中心的成本和价格规则算出建议价与最低允许价 选择产品和数量 产品* 塑料周转箱 · 600×400×300mm（编码：ZX-6040-B） 数量* 客户选填 上海云汐日用百货有限公司（C 级） 拟报价（元／件）选填 填写后可查看该价格的利润和审批要求。 单件运费估算（元） 仅供参考，
+✓ /quotes → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/12-quotes.png
+  页面主内容：报价中心 从商机生成报价，拟报价默认取系统适用价（客户目标价仅作参考）；整单优惠后超出权限必须审批 报价状态 查询 新建报价 报价单号 客户 / 商机 报价总额 报价状态 审批 有效期 负责人 Q202611230001 第 1 版 宁波宏远包装制品有限公司 宏远包装周转箱年度采购 ¥2,901.00 已接受 已通过 
+✓ /quotes/1 → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/13-quote-detail.png
+  页面主内容：Q202611230001 已接受 V1 客户：宁波宏远包装制品有限公司 商机：宏远包装周转箱年度采购 负责人：张三 有效期至：2026-12-23 付款条件：款到发货 报价总额 ¥2,901.00 毛利率 ? 30.34% 明细 1 条 删除报价 转销售订单 新建版本 下载 PDF 版本： V1 审批通过 已发送 2
+✓ /approvals → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/14-approvals.png
+  页面主内容：审批中心 业务员报价低于自己的价格权限时，必须经审批才能对外发送；审批只看超出权限的部分 待我审批 我已提交 已通过 已拒绝 规则配置 报价单号 客户 申请人 报价总额 状态 ? 操作 暂无待你处理的审批 先点「看报价」核对当前版本，再决定通过、拒绝或转交。 共 0 条
+✓ /orders → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/15-orders.png
+  页面主内容：订单中心 成交报价转成订单后，履约由 ERP/MES 负责、回款由财务确认；CRM 只保留关键节点 订单草稿 销售订单 应收计划 回款记录 履约状态 查询 手工建单 订单号 客户 订单金额 已回款 待回款 履约状态 ? 交期 负责人 SO202611230002 上海云汐日用百货有限公司 ¥1,000.00 ¥100.
+✓ /orders/2 → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/16-order-detail.png
+  页面主内容：SO202611230002 已发货 未推送 ERP/MES 人工更新履约状态 更多操作 ▾ 客户：上海云汐日用百货有限公司 负责人：系统管理员 客户要求发货日：2026-12-08 计划发货日：2026-12-08 付款条件：- 来源报价：手工建单（无报价单） 当前还未接入 ERP/MES。请联系管理员确认接入状态。
+✓ /order-drafts → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/16b-order-drafts.png
+  页面主内容：订单草稿 提前准备资料，不进入生产、应收或成交统计 返回订单中心 草稿 来源报价 状态 明细数 操作 暂无数据 共 0 条
+✓ /receivables → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/16c-receivables.png
+  页面主内容：回款中心 按应收计划看每笔订单该收多少、已收多少、逾期多少；回款由财务确认 销售订单 应收计划 回款记录 应收计划列的是约定要收的款。客户实际打款后，到订单详情的「应收计划」找到对应期登记。 订单号 节点 应收日期 应收金额 已收 未收 状态 SO202611230002 UI 时间线应收 2026-12-08 ¥1,
+✓ /documents → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/16d-documents.png
+  页面主内容：文档管理 我方合同、客户合同均上传原文件；审批在同序 OA 办理，CRM 同步进度并跟催回签归档 上传合同 合同编号 标题 客户 状态 依据 / 来源 ? 签署时间 操作 还没有合同，点击「上传合同」添加原文件 共 0 条
+✓ /tasks → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/17-tasks.png
+  页面主内容：销售任务 任务记录的是「接下来要做什么」，跟进记录的是「已经发生了什么」 待办交接 只看我的 待处理 只看逾期 先勾选任务才能批量完成。 批量完成 新建任务 任务 关联 优先级 ? 截止时间 状态 负责人 操作 没有待处理的任务 「待处理」只看还没开始的任务。处理中和待处理的任务都可以在「未完成」里查看。 查看全部未完
+✓ /settings → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/18-settings.png
+  页面主内容：系统设置 个人 我的 组织与权限 用户 角色与数据范围 部门 业务配置 客户标签 数据字典 业务规则 系统 通知 审计日志 用户 维护员工账号，分配部门和角色。 查询 全部状态 全部部门 同步钉钉账号 按同序对齐部门 新建用户 姓名 部门 角色 状态 操作 系统管理员 admin 销售部 管理员 启用 编辑 停用 张三
+✓ /settings?tab=rules → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/19-settings-rules.png
+  页面主内容：系统设置 个人 我的 组织与权限 用户 角色与数据范围 部门 业务配置 客户标签 数据字典 业务规则 系统 通知 审计日志 业务规则 在这里设置公海回收、待办提醒、报价和其他业务规则。 未分级客户 公海回收 自动任务 公司与单据 报价与定价 客户与商机 导出与物流 公海回收规则 客户超过设定天数没有跟进记录，就会被提名
+✓ /settings?tab=tags → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/23-settings-tags.png
+  页面主内容：系统设置 个人 我的 组织与权限 用户 角色与数据范围 部门 业务配置 客户标签 数据字典 业务规则 系统 通知 审计日志 客户标签 维护客户详情中可选的标签。 标签名称* 自定义 新建标签 创建后可在客户详情里选择这个标签 标签名 分组 状态 操作 还没有标签 标签是受控字典：客户详情里只能从这里建好的标签中选，建好
+✓ /settings?tab=notifications → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/31-settings-notifications.png
+  页面主内容：系统设置 个人 我的 组织与权限 用户 角色与数据范围 部门 业务配置 客户标签 数据字典 业务规则 系统 通知 审计日志 通知 设置通知渠道和发送方式，查看企微送达情况。 通知设置 保存设置 站内通知 在 CRM 顶部铃铛查看 企业微信通知 发给已绑定企微的成员 企微提醒 提醒类型 发到企微 发送方式 审批提醒 逐条
+✓ /settings?tab=roles → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/24-settings-roles.png
+  页面主内容：系统设置 个人 我的 组织与权限 用户 角色与数据范围 部门 业务配置 客户标签 数据字典 业务规则 系统 通知 审计日志 角色与数据范围 设置各岗位能做什么、能查看哪些数据。 新建角色 角色 状态 数据范围 权限数 说明 操作 管理员 admin 启用 全部 49 拥有全部权限 编辑 删除 销售主管 sales_ma
+✓ /settings?tab=departments → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/25-settings-departments.png
+  页面主内容：系统设置 个人 我的 组织与权限 用户 角色与数据范围 部门 业务配置 客户标签 数据字典 业务规则 系统 通知 审计日志 部门 维护部门及上下级关系。 新建部门 部门名称 上级部门 状态 操作 销售部 顶级 启用 编辑 删除
+✓ /agent → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/20-agent.png
+  页面主内容：新对话 能做什么 · 20 项能力 → AI 开始新对话 直接描述你想查询或处理的业务，也可以试试下面的问题。 宏远包装这个客户现在什么情况？ 我手上最该先跟的商机是哪个？ 帮我算一下 ZX-6040-B 报 3000 件、客户宏远包装的建议价和最低价 这个月还有多少应收没回来？ 发送 会直接读系统里的客户、商机、报价
+✓ /inquiries → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/32-inquiries.png
+  页面主内容：定制需求 客户想做的规格在现有产品里找不到时，可以先在这里记录需求，再准备询价和报价。 当前账号还没绑定同序 OA 登录身份，可先保存草稿；请联系管理员绑定后再提交；正式对外报价仍需通过核价及报价复核。 待评估 0 开发中 0 已转商机 0 已归档 0 状态 搜索 记录定制询价 产品名称 客户 数量 目标价 状态 记录
+✓ /cases → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/32b-cases.png
+  页面主内容：案例库 审核通过的案例才能拿去培训；编写中与待审核的只有相关人能看见 新建案例 查看待审核 状态 客户类型 阶段 含历史版本 标题 客户 状态 阶段 作者 行业 / 产品线 操作 还没有案例 可以把一次有效的做法整理成案例，提交审核后供团队学习。 新建案例
+✓ /insights → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/32c-insights.png
+  页面主内容：新品洞察 市场来源 → 产品方向 → 评审 → 转需求；价格为内部假设，不构成正式指导价 记录新品洞察 查看待评审 状态 产品方向 ? 来源 目标客户 价格假设 负责人 状态 ? 操作 还没有新品洞察 记录值得评估的产品方向。评审通过后，可以转成定制需求。 记录新品洞察
+✓ /recycle-bin → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/32d-recycle-bin.png
+  页面主内容：回收站 这里放的是删掉的东西，能捡回来；被合并掉的客户只做查看 线索 产品 客户 合同 样品 共 0 条 · 只列自己有权查看的删除记录 线索名称 公司 联系人 手机 负责人 原状态 删除时间 删除人 操作 回收站里没有线索 被删除的线索会落在这里，随时能取回；客户类只读、不能恢复。
+✓ /samples → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/22-samples.png
+  页面主内容：样品管理 样品申请、寄样、签收与反馈；样品进展会回写到商机的下一步动作 新建样品申请 全部状态 客户 / 商机 状态 ? 样品明细 快递 负责人 申请时间 操作 上海云汐日用百货有限公司 未关联商机 已批准 ZX-6040-B ×1 编码 ZX-6040-B - 系统管理员 2026-11-23 13:39 详情 显示
+✓ /samples/1 → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/22b-sample-detail.png
+  页面主内容：样品管理 样品申请、寄样、签收与反馈；样品进展会回写到商机的下一步动作 新建样品申请 全部状态 客户 / 商机 状态 ? 样品明细 快递 负责人 申请时间 操作 上海云汐日用百货有限公司 未关联商机 已批准 ZX-6040-B ×1 编码 ZX-6040-B - 系统管理员 2026-11-23 13:39 详情 显示
+✓ /wecom → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/30-wecom.png
+  页面主内容：企业微信 将企微联系人整理到客户中心 更新企微数据 ▾ 离职交接 先同步企微成员 同步后可把企微跟进员工与 CRM 账号对应起来，导入时才能按原跟进员工分配。 同步成员 企微成员 0 含未建 CRM 账号的成员 外部联系人 0 企微侧同步到的总数 跟进关系 0 企微员工与联系人的关系 待确认联系人 0 建档或关联前待核
+✓ /logistics?sku_id=1&quantity=3000&destination=%E5%8D%8E%E4%B8%9C → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots-2/21-logistics.png
+  页面主内容：物流试算 按起运地、目的地、运输方式试算运费与时效，计费重取实际重量与体积重的较大者 试算 试算历史 线路速查 试算条件 ① 运什么、多少件 SKU 塑料周转箱 · 600×400×300mm（编码：ZX-6040-B） 数量 ② 从哪到哪 起运地 目的地 运输方式 全部运输方式 可选设置：包装方式 / 单件重量 / 
+✗ 收尾清扫失败（本轮可能留下站内通知）：拒绝执行：库名 'crm_review_smoke_20261123' 不是一次性隔离库（须以 crm_iso/crm_check/crm_test 开头，或以 _test 结尾）
+✗ 冒烟测试失败：POST /samples/2/made: 打样审批尚未通过，不能执行此正式动作。请先在同序 OA 完成审批，并在 CRM 同步最新结果

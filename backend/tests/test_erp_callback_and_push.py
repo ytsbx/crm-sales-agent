@@ -19,6 +19,7 @@
 """
 
 import asyncio
+from unittest.mock import AsyncMock
 from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
@@ -27,9 +28,53 @@ import pytest
 
 from app.modules.erp import adapter as adapter_module
 from app.modules.erp import service as svc
-from app.modules.erp.adapter import ErpError, JushuitanAdapter
+from app.modules.erp.adapter import ErpError, ErpResultUnknown, JushuitanAdapter
 from app.modules.integration.model import ExternalMapping, IntegrationLog
 from app.modules.order.model import OrderStatusHistory, SalesOrder
+
+
+@pytest.mark.parametrize("orders,expected", [
+    ([{"o_id": 99, "status": "Finished"}, {"o_id": 7, "status": "Sent"}], "shipped"),
+    ([{"o_id": "99", "status": "Finished"}], "unverified"),
+    ([{"status": "Sent"}], "unverified"),
+    ([{"o_id": 7, "status": "Sent"}, {"o_id": "7", "status": "Finished"}], "unverified"),
+    ([], None),
+])
+def test_query_status_reads_only_the_requested_erp_order(monkeypatch, orders, expected):
+    adapter = JushuitanAdapter()
+    monkeypatch.setattr(adapter, "_call", AsyncMock(return_value={"data": {"orders": orders}}))
+    if expected == "unverified":
+        with pytest.raises(ErpResultUnknown, match="无法确认所查询订单"):
+            asyncio.run(adapter.fetch_order_status("7"))
+    else:
+        assert asyncio.run(adapter.fetch_order_status("7"))["status"] == expected
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("rebind", [False, True])
+async def test_status_refresh_keeps_result_bound_to_queried_order(monkeypatch, rebind):
+    from app.modules.order import service as order_service
+
+    order = SalesOrder(id=21, order_no="SO-21", customer_id=1, status="pending", erp_order_id="old")
+    session = FakeSession(orders=[order])
+    change = AsyncMock()
+    monkeypatch.setattr(order_service, "change_status", change)
+
+    async def fetch(external_id):
+        assert external_id == "old"
+        if rebind:
+            order.erp_order_id = "new"
+        return {"status": "shipped", "raw_status": "Sent"}
+
+    monkeypatch.setattr(svc, "get_adapter", lambda: SimpleNamespace(label="ERP", fetch_order_status=fetch))
+    result = await svc.refresh_status(session, order=order, operator_id=1)
+
+    assert result["changed"] is not rebind
+    assert change.await_count == (0 if rebind else 1)
+    if rebind:
+        assert order.status == "pending"
+        assert "ERP 单号已变更" in result["blocked_reason"]
+        assert session.logs[-1].request_data == {"erp_order_id": "old"}
 
 # ---------------------------------------------------------------- 替身
 
@@ -718,3 +763,18 @@ def test_readiness_fault_from_systemic_auth_failure(monkeypatch):
     assert result["state"] == "fault"
     assert "sign error" in result["fault_reason"]
     assert result["scope"]["limited"] is False
+
+
+@pytest.mark.parametrize("payload", [
+    {"data": {}},
+    {"code": None},
+    {"code": False},
+    {"code": 0.5},
+    {"code": "invalid"},
+])
+def test_write_with_no_reliable_result_code_stays_unknown(monkeypatch, payload):
+    _configure(monkeypatch)
+    _verify(monkeypatch, "write")
+    adapter = JushuitanAdapter(http=_FakeHttp(payload))
+    with pytest.raises(adapter_module.ErpResultUnknown, match="code"):
+        asyncio.run(adapter.push_order({"so_id": "SO-UNKNOWN"}))

@@ -177,7 +177,7 @@ async def import_products(
         except RowSkipped as skipped:
             report.skipped_row(index, name, str(skipped))
         except Exception as exc:
-            report.failed_row(index, name, f"写入失败：{str(exc)[:160]}")
+            report.write_failed_row(index, name, exc)
 
     return await finalize(
         session,
@@ -419,7 +419,7 @@ async def import_skus(
             else:
                 report.failed_row(index, code or product_name, str(exc))
         except Exception as exc:  # 单行失败不影响其它行
-            report.failed_row(index, code or product_name, f"写入失败：{str(exc)[:160]}")
+            report.write_failed_row(index, code or product_name, exc)
 
     return await finalize(
         session,

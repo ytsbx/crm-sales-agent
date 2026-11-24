@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session
 from conftest import SyncSessionAsAsync, make_engine, make_user
 from app.core.deps import CurrentUser
 from app.modules.customer.model import Customer
+from app.modules.followup.model import FollowUp
+from app.modules.followup.service import record_progress_event
 from app.modules.lead.model import Lead
 from app.modules.notification.model import BusinessEvent, Notification
 from app.modules.notification.router import (
@@ -17,6 +19,35 @@ from app.modules.notification.router import (
     mark_all_read,
     unread_count,
 )
+
+
+@pytest.mark.anyio
+async def test_concurrent_event_replay_preserves_the_callers_transaction():
+    engine = make_engine()
+    BusinessEvent.__table__.create(engine)
+    FollowUp.__table__.create(engine, checkfirst=True)
+    with Session(engine) as db:
+        db.add(BusinessEvent(event_key="order:create:9", created_at=datetime.now(UTC)))
+        db.commit()
+
+        class StaleEventRead(SyncSessionAsAsync):
+            async def execute(self, statement, *args, **kwargs):
+                if statement.is_select and "business_events.event_key" in str(statement):
+                    return SimpleNamespace(scalar_one_or_none=lambda: None)
+                return await super().execute(statement, *args, **kwargs)
+
+        db.add(Customer(id=90, name="本次事务创建的客户"))
+        recorded = await record_progress_event(
+            StaleEventRead(db), customer_id=90, operator_id=None,
+            title="创建订单", content="创建订单", event_key="order:create:9",
+        )
+        assert recorded is False
+        db.commit()
+    with Session(engine) as db:
+        assert db.get(Customer, 90) is not None
+        assert db.query(BusinessEvent).count() == 1
+        assert db.query(FollowUp).count() == 0
+    engine.dispose()
 
 
 @pytest.mark.anyio

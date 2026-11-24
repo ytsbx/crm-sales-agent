@@ -355,6 +355,8 @@ async def delete_followup(
                 default=None,
             )
             customer.last_contact_unknown = customer.last_followup_at is None
+            # B19-02：删除跟进后也要刷新下次跟进时间，否则提醒仍指向已删计划
+            await customer_service.refresh_next_followup_at(session, customer.id)
     await write_audit(
         session,
         operator_id=user.id,

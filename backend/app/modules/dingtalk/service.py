@@ -74,7 +74,7 @@ from app.modules.dingtalk.model import (
     OaInstance,
     allowed_actions,
 )
-from app.modules.user.model import User, Role, user_roles
+from app.modules.user.model import Department, User, Role, user_roles
 
 #: 停在 `submitting` / 核定占用超过这个时长，就认为那次尝试已经死了
 #: （进程被杀、机器重启、调用方再也没回来），允许重新发起或重新占用。
@@ -1269,7 +1269,7 @@ def serialize(row: OaInstance) -> dict:
         if not auto_sync:
             sync_notice = '同序 OA 未开启自动同步，记录可能滞后，可点击「立即同步」。'
     elif app_settings.dingtalk_push_off:
-        sync_notice = '钉钉连接当前已关闭，审批记录不会自动更新，请联系管理员确认。'
+        sync_notice = '历史审批记录仅供查看。'
     elif not auto_sync:
         sync_notice = '当前服务未开启审批自动同步，记录可能滞后，请联系管理员确认。'
     return {
@@ -1297,7 +1297,8 @@ def serialize(row: OaInstance) -> dict:
         "resolved_action": row.resolved_action,
         "allowed_actions": [
             action for action in allowed_actions(row.status, row.resolve_state)
-            if provider != "self_oa" or action != "resolve_resend"
+            if (provider == "self_oa" and action != "resolve_resend")
+            or (provider != "self_oa" and not app_settings.dingtalk_push_off)
         ],
         "synced_at": row.synced_at.isoformat() if row.synced_at else None,
         "created_at": row.created_at.isoformat() if row.created_at else None,
@@ -1351,14 +1352,15 @@ def _norm_name(value: Any) -> str:
     return str(value or "").strip()
 
 
-async def fetch_all_members(api: Any) -> list[dict[str, Any]]:
-    """拉全公司成员：从根部门（id=1）广度优先走完部门树，再按 userid 去重。
+async def fetch_directory(api: Any) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    """一次走完部门树，返回（去重后的成员, 部门编号 -> {name,parent_id}）。
 
     为什么要自己走树：钉钉**没有**"全公司成员"这一个接口，只有"某部门的直属成员"，
     而一个人可以同时挂在多个部门下 —— 不去重的话他会以多个身份出现，
     匹配阶段自己和自己撞（第一次绑上了，第二次又把它判成"已占用"）。
     """
     members: dict[str, dict[str, Any]] = {}
+    departments: dict[str, dict[str, Any]] = {}
     # deque 避免在大型部门树上反复 pop(0) 造成 O(n²) 扫描。
     pending: deque[int] = deque([1])
     seen: set[int] = set()
@@ -1375,6 +1377,11 @@ async def fetch_all_members(api: Any) -> list[dict[str, Any]]:
                 # 少 dept_id 的节点没法继续往下走，跳过；
                 # 不为一个坏节点中断整棵树（否则全公司的人都拉不到）
                 continue
+            departments[str(sub_id)] = {
+                "id": str(sub_id),
+                "name": str(sub.get("name") or "").strip(),
+                "parent_id": str(sub.get("parent_id") or ""),
+            }
             if sub_id not in seen:
                 pending.append(sub_id)
 
@@ -1400,7 +1407,118 @@ async def fetch_all_members(api: Any) -> list[dict[str, Any]]:
             if next_cursor == cursor:
                 break
             cursor = next_cursor
-    return list(members.values())
+    return list(members.values()), departments
+
+
+async def fetch_all_members(api: Any) -> list[dict[str, Any]]:
+    members, _departments = await fetch_directory(api)
+    return members
+
+
+def _member_department(member: dict[str, Any], departments: dict[str, dict[str, Any]]) -> tuple[str, str]:
+    ids = member.get("dept_id_list") or []
+    for dept_id in ids:
+        row = departments.get(str(dept_id))
+        if row and row["name"]:
+            return str(dept_id), row["name"]
+    return "", ""
+
+
+async def ensure_dingtalk_department(
+    session: AsyncSession, departments: dict[str, dict[str, Any]], dept_id: str,
+) -> tuple[Department, bool]:
+    """按同序部门编号取/建 CRM 部门，**只处理真实用到的那一个**。
+
+    不导入整套组织树（主人 2026-11-23：不是所有部门都会用 CRM）。同名部门
+    优先复用已经存在的顶级部门；同名且无法确定时才新建，避免把两个「财务部」
+    并错。返回（部门行, 是否本次新建）。
+    """
+    if not dept_id:
+        raise AppError(ErrorCode.PARAM_ERROR, "同序身份缺少部门", 422)
+    dt = departments.get(str(dept_id)) or {}
+    name = (dt.get("name") or "").strip()
+    if not name:
+        raise AppError(ErrorCode.PARAM_ERROR, "同序身份缺少部门", 422)
+    existing = (await session.execute(
+        select(Department).where(Department.dingtalk_department_id == str(dept_id))
+    )).scalars().first()
+    if existing is not None:
+        return existing, False
+
+    same_name = list((await session.execute(
+        select(Department).where(
+            Department.name == name,
+            Department.status == "active",
+            # 已经映射到**另一个**同序部门的同名部门不能拿来复用，
+            # 否则两个「财务部」会互相抢同一个 dingtalk_department_id。
+            or_(Department.dingtalk_department_id.is_(None),
+                Department.dingtalk_department_id == str(dept_id)),
+        )
+    )).scalars().all())
+    if same_name:
+        top = [row for row in same_name if row.parent_id is None]
+        chosen = top[0] if len(top) == 1 else (same_name[0] if len(same_name) == 1 else None)
+        if chosen is not None:
+            chosen.dingtalk_department_id = str(dept_id)
+            await session.flush()
+            return chosen, False
+
+    # 父部门只有在 CRM 里已经有同序编号映射时才挂上；否则建成顶级，
+    # 避免为了一个用户把整条上级链都导入。
+    parent_dt = dt.get("parent_id") or ""
+    parent = None
+    if parent_dt:
+        parent = (await session.execute(
+            select(Department).where(Department.dingtalk_department_id == parent_dt)
+        )).scalars().first()
+    row = Department(name=name, parent_id=parent.id if parent else None,
+                     dingtalk_department_id=str(dept_id), status="active")
+    session.add(row)
+    await session.flush()
+    return row, True
+
+
+async def ensure_oa_department(
+    session: AsyncSession, departments: dict[str, dict[str, Any]], dept_id: str,
+) -> tuple[Department, bool]:
+    """按同序部门 UUID 取/建 CRM 部门；规则与钉钉目录一致，编号分开存。"""
+    if not dept_id:
+        raise AppError(ErrorCode.PARAM_ERROR, "同序身份缺少部门", 422)
+    dt = departments.get(str(dept_id)) or {}
+    name = (dt.get("name") or "").strip()
+    if not name:
+        raise AppError(ErrorCode.PARAM_ERROR, "同序身份缺少部门", 422)
+    existing = (await session.execute(
+        select(Department).where(Department.oa_department_id == str(dept_id))
+    )).scalars().first()
+    if existing is not None:
+        return existing, False
+    same_name = list((await session.execute(
+        select(Department).where(
+            Department.name == name,
+            Department.status == "active",
+            or_(Department.oa_department_id.is_(None),
+                Department.oa_department_id == str(dept_id)),
+        )
+    )).scalars().all())
+    if same_name:
+        top = [row for row in same_name if row.parent_id is None]
+        chosen = top[0] if len(top) == 1 else (same_name[0] if len(same_name) == 1 else None)
+        if chosen is not None:
+            chosen.oa_department_id = str(dept_id)
+            await session.flush()
+            return chosen, False
+    parent_dt = str(dt.get("parent_id") or "")
+    parent = None
+    if parent_dt:
+        parent = (await session.execute(
+            select(Department).where(Department.oa_department_id == parent_dt)
+        )).scalars().first()
+    row = Department(name=name, parent_id=parent.id if parent else None,
+                     oa_department_id=str(dept_id), status="active")
+    session.add(row)
+    await session.flush()
+    return row, True
 
 
 async def sync_users(session: AsyncSession) -> dict:
@@ -1409,8 +1527,7 @@ async def sync_users(session: AsyncSession) -> dict:
     判据顺序见本段开头三条纪律。返回里把"对不上的"和"还没绑的"分开列出来：
     前者要管理员去处理，后者只是提示"这个人还进不来"。
     """
-    # 登录和审批都需要真实人员绑定；只开任一项都能同步，但不因此开启另一项。
-    if app_settings.dingtalk_login_off and app_settings.dingtalk_push_off:
+    if app_settings.dingtalk_login_off:
         return {
             "disabled": True,
             "message": DINGTALK_LOGIN_DISABLED_MESSAGE,
@@ -1423,7 +1540,7 @@ async def sync_users(session: AsyncSession) -> dict:
 
     api = get_client()
     try:
-        members = await fetch_all_members(api)
+        members, directory_departments = await fetch_directory(api)
     except DingTalkDisabled as exc:
         # 走到这里说明闸是在**取通讯录的过程中**才关掉的（比如刚被人关掉）。
         # 用异常自己那句话：它认得清是哪把闸，别硬套审批总闸的文案。
@@ -1499,6 +1616,7 @@ async def sync_users(session: AsyncSession) -> dict:
         name = _norm_name(member.get("name"))
         mobile = _norm_mobile(member.get("mobile"))
         display_mobile = str(member.get("mobile") or "")
+        department = _member_department(member, directory_departments)[1]
 
         candidates = free_by_mobile.get(mobile, []) if mobile else []
         if len(candidates) == 1:
@@ -1509,6 +1627,8 @@ async def sync_users(session: AsyncSession) -> dict:
                 {
                     "name": name,
                     "mobile": display_mobile,
+                    "dingtalk_userid": dingtalk_userid,
+                    "department": department,
                     "reason": "ambiguous_mobile",
                     "reason_label": BIND_REASON_LABEL["ambiguous_mobile"],
                 }
@@ -1524,6 +1644,8 @@ async def sync_users(session: AsyncSession) -> dict:
                 {
                     "name": name,
                     "mobile": display_mobile,
+                    "dingtalk_userid": dingtalk_userid,
+                    "department": department,
                     "reason": "ambiguous_name",
                     "reason_label": BIND_REASON_LABEL["ambiguous_name"],
                 }
@@ -1534,6 +1656,8 @@ async def sync_users(session: AsyncSession) -> dict:
             {
                 "name": name,
                 "mobile": display_mobile,
+                "dingtalk_userid": dingtalk_userid,
+                "department": department,
                 "reason": "no_account",
                 "reason_label": BIND_REASON_LABEL["no_account"],
             }
@@ -1557,6 +1681,57 @@ async def sync_users(session: AsyncSession) -> dict:
         "unmatched": unmatched,
         "unbound_crm": unbound_crm,
     }
+
+
+async def align_departments(session: AsyncSession) -> dict:
+    """按同序目录把**已有账号**的部门也改成同序部门（不只是空白的）。
+
+    管理员显式操作：只动 `users.department_id`，不改角色/数据范围逻辑；
+    返回逐人变更，供界面核对。
+    """
+    from app.modules.oa import client as oa_client
+
+    users = list((await session.execute(
+        select(User).where(User.status == "active")
+    )).scalars().all())
+    department_names = {
+        row.id: row.name for row in (await session.execute(select(Department))).scalars().all()
+    }
+    changes: list[dict[str, Any]] = []
+    matched = 0
+
+    def _apply(row: User, dept: Department) -> None:
+        nonlocal matched
+        matched += 1
+        if row.department_id == dept.id:
+            return
+        changes.append({
+            "id": row.id, "name": row.name, "username": row.username,
+            "current_department": department_names.get(row.department_id, ""),
+            "dingtalk_department": dept.name,
+        })
+        row.department_id = dept.id
+
+    try:
+        data = await oa_client.list_directory()
+    except oa_client.OaError as exc:
+        raise AppError(ErrorCode.EXTERNAL_ERROR, "无法读取同序人员目录，请检查同序 OA 连接后重试", 502) from exc
+    departments = {str(row["id"]): row for row in (data.get("departments") or [])}
+    by_identity = {
+        str(row["dingtalk_user_id"]): row
+        for row in (data.get("users") or []) if row.get("dingtalk_user_id")
+    }
+    by_oa_id = {str(row["id"]): row for row in (data.get("users") or []) if row.get("id")}
+    for row in users:
+        oa_user_id = getattr(row, "oa_user_id", None)
+        target = by_oa_id.get(oa_user_id) if oa_user_id else by_identity.get(str(row.dingtalk_userid or ""))
+        if target is None:
+            continue
+        dept, _created = await ensure_oa_department(
+            session, departments, str(target.get("department_id") or ""))
+        _apply(row, dept)
+    await session.flush()
+    return {"source": "oa", "matched": matched, "changes": changes}
 
 
 # ---- 扫码登录 -------------------------------------------------------------

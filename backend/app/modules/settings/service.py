@@ -45,7 +45,7 @@ from app.modules.settings.model import (
 from app.modules.task.model import HANDOVER_SOURCE, Task
 from app.modules.task.scanning import lock_task_scan
 from app.modules.followup.model import FollowUp
-from app.modules.user.model import User
+from app.modules.user.model import Role, User
 
 # ---------------------------------------------------------------- 可配置参数
 #
@@ -408,7 +408,7 @@ def _strict_int(raw: object, label: str, low: int, high: int, *, allow_zero: boo
     return number
 
 
-def _strict_amount(raw: object, label: str) -> None:
+def _strict_amount(raw: object, label: str) -> Decimal:
     """金额门槛的严格校验：非负、最多两位小数。**只核对，不改值**。
 
     为什么不能直接 `float(raw)` 了事：那样「1e5」也能过（=100000）、
@@ -433,6 +433,11 @@ def _strict_amount(raw: object, label: str) -> None:
             f"收到的是：{raw!r}",
             422,
         )
+    amount = Decimal(text)
+    # 与报价总额的 Numeric(16, 2) 取值范围一致。
+    if amount > Decimal("99999999999999.99"):
+        raise AppError(ErrorCode.PARAM_ERROR, f"{label}超过报价金额可填写的范围，请核对金额", 422)
+    return amount
 
 
 async def validate_setting_value(
@@ -475,19 +480,25 @@ async def validate_setting_value(
                 422,
             )
         previous_cap: Decimal | None = None
+        configured_roles: dict[str, int] = {}
         for index, item in enumerate(levels, start=1):
             if not isinstance(item, dict):
                 raise AppError(
                     ErrorCode.PARAM_ERROR, f"第 {index} 档不是一条有效配置", 422
                 )
             role_codes = item.get("role_codes")
-            if role_codes is not None and not isinstance(role_codes, list):
+            if role_codes is not None and (
+                not isinstance(role_codes, list)
+                or any(not isinstance(code, str) or not code.strip() for code in role_codes)
+            ):
                 raise AppError(
                     ErrorCode.PARAM_ERROR,
                     f"第 {index} 档的「可审批角色」必须是一组角色码，"
                     f"收到的不是：{role_codes!r}",
                     422,
                 )
+            for role_code in role_codes or []:
+                configured_roles.setdefault(role_code, index)
             raw = item.get("max_amount")
             if raw is None or (isinstance(raw, str) and not raw.strip()):
                 # 留空 = 不限。它只能出现在最后一档：中间留空之后，后面那些档
@@ -500,12 +511,20 @@ async def validate_setting_value(
                         422,
                     )
                 continue
-            _strict_amount(raw, f"第 {index} 档的金额上限")
-            cap = Decimal(str(raw).strip())
+            cap = _strict_amount(raw, f"第 {index} 档的金额上限")
             if previous_cap is not None and cap <= previous_cap:
                 raise AppError(ErrorCode.PARAM_ERROR,
                                f"第 {index} 档金额上限必须大于上一档，否则这一档不会被使用。", 422)
             previous_cap = cap
+        if configured_roles:
+            existing_roles = set(await session.scalars(select(Role.code).where(Role.code.in_(configured_roles))))
+            for role_code, index in configured_roles.items():
+                if role_code not in existing_roles:
+                    raise AppError(
+                        ErrorCode.PARAM_ERROR,
+                        f"第 {index} 档的审批角色「{role_code}」不存在，请重新选择",
+                        422,
+                    )
 
 
 async def recompute_open_candidates(
@@ -791,15 +810,6 @@ async def protection_detail(
         add(cid, _protection_reason("在途打样", f"打样单编号 {sample_id}（{label}）"))
 
     return out
-
-
-async def _protected_customer_ids(session: AsyncSession) -> set[int]:
-    """履约保护名单（文档 §11.2/场景21）：这些客户暂不回收。
-
-    口径见 `protection_detail` —— 这里只是取它的键集合，
-    **判据只写一处**，避免"定时扫描"和"人工释放"两处各判一套（返工单 6.4 第 6 条）。
-    """
-    return set((await protection_detail(session)).keys())
 
 
 async def recycle_reviewer_ids(
@@ -1218,6 +1228,10 @@ async def run_public_pool_recycle(
         },
     )
     await session.commit()
+    # B23-02：预告通知落库后立即投递，否则停在 pending 收不到（同 B22-06 口径）
+    from app.modules.notification.service import dispatch_after_commit
+
+    await dispatch_after_commit(session)
     return {
         #: 本轮**提名**（预告）了多少个 —— 注意不是"回收了多少"
         "nominated_count": len(nominated),
@@ -1614,7 +1628,7 @@ async def decide_candidate(
     # **执行前重新检查**：预告发出之后有没有新的履约事项 / 新的跟进
     if customer.last_contact_unknown and customer.last_progress_at is None:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "最近联系时间待核实，请先补核后再决定是否回收", 422)
-    reasons = (await protection_detail(session)).get(customer.id, [])
+    reasons = (await protection_detail(session, customer_id=customer.id)).get(customer.id, [])
     latest = _last_active_at(customer)
     if latest is not None and latest.tzinfo is None:
         latest = latest.replace(tzinfo=UTC)
@@ -1807,7 +1821,7 @@ async def assert_no_protection(
     判据与定时扫描、回收执行**完全共用** `protection_detail`，
     不在这里另判一套 —— 两处各判一套必然漂移。
     """
-    reasons = (await protection_detail(session)).get(customer_id, [])
+    reasons = (await protection_detail(session, customer_id=customer_id)).get(customer_id, [])
     if not reasons:
         return []
     if allow_exception and (reason or "").strip():
@@ -2010,15 +2024,13 @@ async def run_auto_tasks(
                     )
                 )
             ).scalars().all()
-            # 派生缓存不能让既有未来任务失效；扫描时从真实未完任务批量校准。
-            next_due = dict((await session.execute(
-                select(Task.customer_id, func.min(Task.due_at)).where(
-                    Task.customer_id.in_([row.id for row in rows]), Task.task_type == "followup",
-                    Task.status.in_(("pending", "doing")), Task.due_at.is_not(None),
-                ).group_by(Task.customer_id)
-            )).all()) if rows else {}
+            # B23-06：派生缓存校准改为锁内重算（refresh_next_followup_at 先锁客户行），
+            # 避免无锁批量写把用户刚设的未来跟进时间擦成旧值/空。
+            from app.modules.customer.service import refresh_next_followup_at
+
             for customer in rows:
-                customer.next_followup_at = next_due.get(customer.id)
+                await refresh_next_followup_at(session, customer.id)
+                await session.refresh(customer)
                 # 同一活跃时钟口径：业务进展（报价/打样/下单/回款）也算"有联系"
                 last = _last_active_at(customer)
                 if last is None:

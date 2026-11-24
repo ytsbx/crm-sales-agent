@@ -1,7 +1,6 @@
 """跨模块复用的联系人工具与客户查重。"""
 
 import re
-from collections.abc import Iterable
 
 from sqlalchemy import case, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -212,18 +211,6 @@ async def lock_customer_row(session: AsyncSession, customer_id: int | None) -> N
     )
 
 
-async def lock_customers_in_order(
-    session: AsyncSession, customer_ids: Iterable[int | None]
-) -> None:
-    """按 id 升序锁住这几个客户行（**全项目统一的锁序**）。
-
-    改绑联系人会同时碰到两个客户（原来的、目标）。两个方向相反的改绑并发跑时，
-    各自只锁"目标客户"就会互相等对方的行锁、甚至绕成环。按 id 升序取锁就没有这个环。
-    """
-    for cid in sorted({int(c) for c in customer_ids if c is not None}):
-        await lock_customer_row(session, cid)
-
-
 async def take_primary_slot(
     session: AsyncSession, customer_id: int | None, *, exclude: int | None = None
 ) -> None:
@@ -350,12 +337,13 @@ async def find_duplicate_customers(
     conditions = []
     exact = []
     if company_name:
-        conditions.append(Customer.name.ilike(f"%{company_name.strip()}%"))
-        conditions.append(Customer.short_name.ilike(f"%{company_name.strip()}%"))
+        _cn = company_name.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        conditions.append(Customer.name.ilike(f"%{_cn}%", escape="\\"))
+        conditions.append(Customer.short_name.ilike(f"%{_cn}%", escape="\\"))
         # 名称相似但不相含的（例如只差后缀），用前几个字再捞一轮候选
-        head = company_name.strip()[:4]
+        head = _cn[:4]
         if len(head) >= 2:
-            conditions.append(Customer.name.ilike(f"%{head}%"))
+            conditions.append(Customer.name.ilike(f"%{head}%", escape="\\"))
     if mobile:
         contact_customer_ids = select(Contact.customer_id).where(
             Contact.mobile == mobile, Contact.deleted_at.is_(None)

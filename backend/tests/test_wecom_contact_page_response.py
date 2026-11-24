@@ -47,3 +47,14 @@ async def test_malformed_customer_page_rejected(isolated_config, payload):
 ])
 async def test_both_page_shapes_and_empty_pages_preserved(isolated_config, payload):
     assert await read_page(payload) == payload
+
+
+@pytest.mark.anyio
+async def test_wecom_transport_failure_uses_only_status_for_user_facing_error():
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(503)),
+        base_url="https://mock.invalid",
+    ) as http:
+        with pytest.raises(client.WeComResponseError) as caught:
+            await client.WeComClient(http=http)._call("department/list")
+    assert str(caught.value) == "企业微信接口 department/list 返回 HTTP 503，请稍后重试"

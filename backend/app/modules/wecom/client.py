@@ -23,6 +23,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import time
 from typing import Any
 
@@ -42,10 +44,10 @@ class WeComError(RuntimeError):
 
 
 class WeComResponseError(RuntimeError):
-    """外部响应无法解析；不等同于企微明确返回的业务拒绝。"""
+    """请求传输失败或响应无法解析；不等同于企微明确返回的业务拒绝。"""
 
-    def __init__(self, api: str) -> None:
-        super().__init__(f"企业微信接口 {api} 响应格式异常，请稍后重试")
+    def __init__(self, api: str, reason: str = "响应格式异常") -> None:
+        super().__init__(f"企业微信接口 {api} {reason}，请稍后重试")
 
 
 class WeComNotConfigured(RuntimeError):
@@ -56,9 +58,33 @@ class WeComNotConfigured(RuntimeError):
         super().__init__(f"企业微信还没配置：缺少 {missing}，请先在后端 .env 里补齐")
 
 
+def safe_error_text(error: Exception) -> str:
+    """把企微调用异常转成可安全落库/回显的短文案。
+
+    只保留错误码和接口名；丢弃 errmsg（外部不可信文本，可能含凭据或 URL）
+    和未知异常的原始字符串。运维排查靠 errcode + 服务端日志，不靠数据库里
+    存一段可能带 access_token 的外部响应。
+    """
+    if isinstance(error, WeComNotConfigured):
+        return str(error)
+    if isinstance(error, WeComResponseError):
+        return str(error)
+    if isinstance(error, WeComError):
+        return f"企业微信接口 {error.api} 返回错误码 {error.errcode}"
+    if isinstance(error, httpx.HTTPStatusError):
+        return f"企业微信服务返回 HTTP {error.response.status_code}，请稍后重试"
+    if isinstance(error, httpx.TimeoutException):
+        return "连接企业微信超时，请稍后重试"
+    if isinstance(error, httpx.RequestError):
+        return "连接企业微信失败，请检查网络后重试"
+    return f"企业微信调用异常（{type(error).__name__}），请稍后重试"
+
+
 # 企微 access_token 有效期 7200 秒，提前 5 分钟过期，避免边界上用到失效 token
 _TOKEN_TTL = 7200 - 300
 _token_cache: dict[str, tuple[str, float]] = {}
+# 同一份企业凭据的并发请求共用一把锁，避免缓存未命中时重复向上游取 token。
+_token_locks: dict[str, asyncio.Lock] = {}
 
 
 class ExternalContactBatch(list[dict[str, Any]]):
@@ -95,13 +121,20 @@ class WeComClient:
         if access_token:
             query["access_token"] = access_token
         client = await self._client()
-        response = await client.request(
-            "POST" if json_body is not None else "GET",
-            f"/cgi-bin/{api}",
-            params=query,
-            json=json_body,
-        )
-        response.raise_for_status()
+        try:
+            response = await client.request(
+                "POST" if json_body is not None else "GET",
+                f"/cgi-bin/{api}",
+                params=query,
+                json=json_body,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as error:
+            raise WeComResponseError(api, f"返回 HTTP {error.response.status_code}") from None
+        except httpx.TimeoutException:
+            raise WeComResponseError(api, "连接超时") from None
+        except httpx.RequestError:
+            raise WeComResponseError(api, "连接失败") from None
         try:
             payload = response.json()
         except ValueError as error:
@@ -135,6 +168,7 @@ class WeComClient:
         """
         if not settings.wecom_corp_id:
             raise WeComNotConfigured("WECOM_CORP_ID")
+        corp_id = settings.wecom_corp_id
         secret = (
             settings.wecom_external_contact_secret if external else settings.wecom_contact_secret
         )
@@ -144,20 +178,33 @@ class WeComClient:
         if not secret:
             raise WeComNotConfigured(field)
 
-        cache_key = f"{settings.wecom_corp_id}:{'ext' if external else 'contact'}"
+        # 缓存身份同时包含 corp、用途和 secret 摘要。运行中轮换密钥后使用新缓存项，
+        # 不会继续返回旧 secret 取得的 token；摘要避免在缓存键里保存密钥原文。
+        secret_fingerprint = hashlib.sha256(secret.encode("utf-8")).hexdigest()
+        cache_key = (
+            f"{corp_id}:{'ext' if external else 'contact'}:"
+            f"{secret_fingerprint}"
+        )
         cached = _token_cache.get(cache_key)
         if cached and cached[1] > time.time():
             return cached[0]
 
-        payload = await self._call(
-            "gettoken",
-            params={"corpid": settings.wecom_corp_id, "corpsecret": secret},
-        )
-        token = payload.get("access_token")
-        if not isinstance(token, str) or not token.strip():
-            raise WeComResponseError("gettoken")
-        _token_cache[cache_key] = (token, time.time() + _TOKEN_TTL)
-        return token
+        # 字典读取和 setdefault 之间没有 await，同一事件循环内只会有一把有效锁。
+        # 不同 corp / 用途 / 密钥互不阻塞；锁内再次读缓存，让等待者复用首个结果。
+        lock = _token_locks.setdefault(cache_key, asyncio.Lock())
+        async with lock:
+            cached = _token_cache.get(cache_key)
+            if cached and cached[1] > time.time():
+                return cached[0]
+            payload = await self._call(
+                "gettoken",
+                params={"corpid": corp_id, "corpsecret": secret},
+            )
+            token = payload.get("access_token")
+            if not isinstance(token, str) or not token.strip():
+                raise WeComResponseError("gettoken")
+            _token_cache[cache_key] = (token, time.time() + _TOKEN_TTL)
+            return token
 
     # ---- 通讯录（PRD §8.1）------------------------------------------------
 
@@ -347,7 +394,7 @@ class WeComClient:
             except WeComError as error:
                 # 84061（成员未开通客户联系）等单个成员的配置问题：跳过该成员
                 # 继续同步其他人，不让一个人把整轮同步炸掉
-                member_errors.append(f"{userid}: {error.errcode} {error.errmsg}"[:120])
+                member_errors.append(f"{userid}: {error.errcode}"[:120])
                 last_error = error
         if not results and member_errors:
             # 一个成员都没拉到时把失败原因抛出去，让同步任务如实记录"为什么是 0"

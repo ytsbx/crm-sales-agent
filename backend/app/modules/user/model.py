@@ -25,6 +25,11 @@ class Department(Base, IdMixin, TimestampMixin):
     parent_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     name: Mapped[str] = mapped_column(String(128))
     wecom_department_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: 同序/钉钉通讯录的部门编号。按需同步：只有真有 CRM 用户的部门才落库，
+    #: 不导入整套组织树；用来避免同名部门（如两处「财务部」）被并错。
+    dingtalk_department_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
+    #: 同序 OA 自己的部门编号（UUID），与钉钉编号分开存，避免两套编号混用。
+    oa_department_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
     status: Mapped[str] = mapped_column(String(32), default="active")
 
 
@@ -50,6 +55,7 @@ class User(Base, IdMixin, TimestampMixin):
     #: 长度给 128：钉钉 userid 官方口径"最长 64 字符"，但手机号格式的 userid
     #: 会带上企业后缀，实际见过更长的（与 wecom_users.wecom_userid 取同一长度）。
     dingtalk_userid: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    oa_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True, unique=True)
     status: Mapped[str] = mapped_column(String(32), default="active")
 
 

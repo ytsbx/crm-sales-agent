@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.draft_visibility import private_draft
 from app.core.errors import AppError, ErrorCode
@@ -347,7 +348,7 @@ async def sync_follow_relations(session: AsyncSession, *, user: CurrentUser) -> 
         except Exception as error:  # 单条失败不影响整批
             fail += 1
             contacts_failed.add(contact.id)
-            errors.append(f"{contact.external_userid}: {str(error)[:80]}")
+            errors.append(f"{contact.external_userid}: {wecom_client.safe_error_text(error)[:80]}")
             continue
         for item in follow_users:
             wecom_userid = str(item.get("userid") or "")
@@ -557,20 +558,17 @@ async def unbound_contacts(
     ], int(total)
 
 
-async def unbound_candidates(session: AsyncSession, contact_id: int) -> dict:
+async def unbound_candidates(session: AsyncSession, contact_id: int, *, user: CurrentUser) -> dict:
     """按外部联系人的企业名或姓名推荐候选客户，供人工核定。"""
     row = await session.get(WeComExternalContact, contact_id)
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, "企业微信联系人不存在", 404)
 
-    # 这里**故意不做数据范围过滤**（不传 owner_ids）：企微外部联系人归一是系统级
-    # 匹配动作，要判断"这个新联系人是不是已经存在的某家客户"，只在全库范围内比才有意义；
-    # 过滤成某个人的范围会让同一条外部联系人被不同人重复建档。
-    # 结果本身不直接对业务员开放：它进"待归一"，由有 wecom:manage 的人确认。
     matches = await find_duplicate_customers(
         session,
         company_name=row.corp_name or row.name,
         mobile=None,
+        owner_ids=await scoped_owner_ids(session, user),
     )
     return {
         "contact": {
@@ -594,6 +592,8 @@ async def bind_customer(
     is_primary: bool | None = None,
 ) -> dict:
     """把企微外部联系人关联到已有客户：建一条 CRM Contact 并回填关联。"""
+    # 客户合并也会改企微关联，两条路径都按客户在前的顺序加锁。
+    customer = await customer_service.get_visible_customer(session, user, customer_id, for_update=True)
     row = (await session.execute(
         select(WeComExternalContact).where(WeComExternalContact.id == contact_id)
         .with_for_update().execution_options(populate_existing=True)
@@ -603,7 +603,6 @@ async def bind_customer(
     if row.crm_contact_id:
         raise AppError(ErrorCode.PARAM_ERROR, "这条联系人已经归一过了", 422)
 
-    customer = await customer_service.get_customer_or_404(session, customer_id)
     contact = await create_contact_for_customer(
         session,
         customer_id=customer.id,
@@ -881,6 +880,11 @@ async def collect_transfer_scope(
         local_warnings.append(
             f"「{handover.name}」还没有绑定企业微信账号，"
             "无法列出企微客户关系（企微侧的客户不会随本次交接转移，请先绑定再交接）"
+        )
+    if not takeover.wecom_userid:
+        local_warnings.append(
+            f"接管人「{takeover.name}」还没有绑定企业微信账号，"
+            "企微客户关系将无法转接（CRM 侧交接不受影响，企微项会标为跳过）"
         )
     for relation in (
         await session.execute(
@@ -1220,17 +1224,23 @@ async def transfer_relations(
             # 这条关系交给谁 —— 可能是逐项指定过的别人，不一定是最初那个接管人
             relation_item = items[("wecom_relation", relation_id)]
             relation_owner = assignees.get(relation_item.to_owner_id) or takeover
+            if not relation_owner.wecom_userid:
+                _mark_wecom(
+                    "wecom_relation", relation_id, "skipped",
+                    f"接手人「{relation_owner.name}」未绑定企微，本次不发出转接",
+                )
+                continue
             try:
                 await api.transfer_customer(
                     external_userid=contact.external_userid,
                     handover_userid=handover.wecom_userid or "",
-                    takeover_userid=relation_owner.wecom_userid or "",
+                    takeover_userid=relation_owner.wecom_userid,
                 )
             except Exception as error:
                 failed += 1
                 # 失败原因**整条存下来**（原来截断到 10 条并挤进 JSON，
                 # 存进去的那一份本身就是残的，事后想补查都查不到）
-                _mark_wecom("wecom_relation", relation_id, "failed", str(error)[:500])
+                _mark_wecom("wecom_relation", relation_id, "failed", wecom_client.safe_error_text(error)[:500])
                 continue
             relation.status = "transferred"
             moved += 1
@@ -1906,24 +1916,24 @@ async def _retry_move_crm(
         row = await _lock_business_row(session, Opportunity, item.business_id)
         if row is None or row.deleted_at is not None:
             return False
-        if row.owner_id is not None and row.owner_id != handover.id:
-            raise _conflict(f"商机「{row.title}」")
+        if row.owner_id != handover.id:
+            raise _conflict(f"商机「{row.title}」", "已被清空负责人" if row.owner_id is None else "可能已被重新分配")
         row.owner_id = owner
         return True
     if item.kind == "task":
         row = await _lock_business_row(session, Task, item.business_id)
         if row is None:
             return False
-        if row.owner_id is not None and row.owner_id != handover.id:
-            raise _conflict(f"任务「{row.title}」")
+        if row.owner_id != handover.id:
+            raise _conflict(f"任务「{row.title}」", "已被清空负责人" if row.owner_id is None else "可能已被重新分配")
         row.owner_id = owner
         return True
     if item.kind == "sample":
         row = await _lock_business_row(session, SampleRequest, item.business_id)
         if row is None:
             return False
-        if row.owner_id is not None and row.owner_id != handover.id:
-            raise _conflict(f"打样单编号 {row.id} 的跟单责任")
+        if row.owner_id != handover.id:
+            raise _conflict(f"打样单编号 {row.id} 的跟单责任", "已被清空负责人" if row.owner_id is None else "可能已被重新分配")
         row.owner_id = owner
         # 打样生成的对外单据跟着跟单责任走（与首次执行同一规则，第九批 §9.4）
         await _reassign_generated_docs(
@@ -1938,19 +1948,16 @@ async def _retry_move_crm(
         row = await _lock_business_row(session, SampleRequest, item.business_id)
         if row is None:
             return False
-        if (
-            row.production_owner_id is not None
-            and row.production_owner_id != handover.id
-        ):
-            raise _conflict(f"打样单编号 {row.id} 的生产责任")
+        if row.production_owner_id != handover.id:
+            raise _conflict(f"打样单编号 {row.id} 的生产责任", "已被清空负责人" if row.production_owner_id is None else "可能已被重新分配")
         row.production_owner_id = owner
         return True
     if item.kind == "order":
         row = await _lock_business_row(session, SalesOrder, item.business_id)
         if row is None:
             return False
-        if row.owner_id is not None and row.owner_id != handover.id:
-            raise _conflict(f"订单「{row.order_no}」")
+        if row.owner_id != handover.id:
+            raise _conflict(f"订单「{row.order_no}」", "已被清空负责人" if row.owner_id is None else "可能已被重新分配")
         row.owner_id = owner
         # 订单生成的对外单据跟着走（与首次执行同一规则，第九批 §9.4）
         await _reassign_generated_docs(
@@ -1966,8 +1973,8 @@ async def _retry_move_crm(
         row = await _lock_business_row(session, Quote, item.business_id)
         if row is None or row.deleted_at is not None:
             return False
-        if row.owner_id is not None and row.owner_id != handover.id:
-            raise _conflict(f"报价单「{row.quote_no}」")
+        if row.owner_id != handover.id:
+            raise _conflict(f"报价单「{row.quote_no}」", "已被清空负责人" if row.owner_id is None else "可能已被重新分配")
         row.owner_id = owner
         await _reassign_generated_docs(
             session,
@@ -1981,8 +1988,8 @@ async def _retry_move_crm(
         row = await _lock_business_row(session, OrderDraft, item.business_id)
         if row is None:
             return False
-        if row.owner_id is not None and row.owner_id != handover.id:
-            raise _conflict(f"订单草稿编号 {row.id}")
+        if row.owner_id != handover.id:
+            raise _conflict(f"订单草稿编号 {row.id}", "已被清空负责人" if row.owner_id is None else "可能已被重新分配")
         row.owner_id = owner
         # 关联的对外单据：**与首次执行同一条规则** —— 只改原负责人是离职人的，
         # 在职同事负责的单据保留（第六批审查第 4 条）
@@ -2063,15 +2070,19 @@ async def _retry_move_wecom(
             await _ensure_takeover_relation(session, contact=contact, owner=owner)
             return True
 
+    if not owner.wecom_userid:
+        item.wecom_status = "skipped"
+        item.wecom_error = f"接手人「{owner.name}」未绑定企微，本次不发出转接"
+        return False
     try:
         await api.transfer_customer(
             external_userid=contact.external_userid,
             handover_userid=handover.wecom_userid or "",
-            takeover_userid=owner.wecom_userid or "",
+            takeover_userid=owner.wecom_userid,
         )
     except Exception as error:
         item.wecom_status = "failed"
-        item.wecom_error = str(error)[:500]
+        item.wecom_error = wecom_client.safe_error_text(error)[:500]
         return False
     relation.status = "transferred"
     item.wecom_status = "transferred"

@@ -1151,9 +1151,11 @@ async def customer_stats(session: AsyncSession, user: CurrentUser) -> dict:
     }
 
 
-def _product_bucket(sid: int | None, nm: str | None) -> object:
-    """产品统计的分组键：有 SKU 按 SKU 归并，无 SKU 的定制项按快照名单独成行。"""
-    return sid if sid is not None else f"n:{nm or '定制项'}"
+def _product_bucket(sid: int | None, nm: str | None, spec: str | None = None) -> object:
+    """产品统计的分组键：有 SKU 按 SKU 归并，无 SKU 的定制项按名称+规格单独成行。"""
+    if sid is not None:
+        return sid
+    return f"n:{nm or '定制项'}|{spec or ''}"
 
 
 async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 10) -> list[dict]:
@@ -1239,7 +1241,13 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
                 )
                 .join(QuoteVersion, QuoteVersion.id == QuoteItem.quote_version_id)
                 .join(Quote, Quote.id == QuoteVersion.quote_id)
-                .where(Quote.deleted_at.is_(None)),
+                .where(
+                    Quote.deleted_at.is_(None),
+                    draft_scope(Quote, user.id),
+                    or_(~private_draft(QuoteVersion), func.coalesce(
+                        QuoteVersion.created_by, Quote.created_by, Quote.owner_id,
+                    ) == user.id),
+                ),
                 user,
                 Quote.owner_id,
                 session,
@@ -1258,7 +1266,7 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
     name_fallback: dict[object, tuple] = {}
     for row in quote_rows:
         sku_id, quote_id, version_id, version_no, formal, quantity, q_name, q_spec, profit = row
-        bid = _product_bucket(sku_id, q_name)
+        bid = _product_bucket(sku_id, q_name, q_spec)
         if sku_id is None and (q_name or q_spec):
             name_fallback.setdefault(bid, (q_name, q_spec))
         if formal:
@@ -1268,7 +1276,7 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
 
     for row in quote_rows:
         sku_id, quote_id, version_id, version_no, formal, quantity, q_name, q_spec, profit = row
-        bid = _product_bucket(sku_id, q_name)
+        bid = _product_bucket(sku_id, q_name, q_spec)
         acc = quoted.setdefault(
             bid,
             {
@@ -1517,7 +1525,10 @@ async def receivable_stats(session: AsyncSession, user: CurrentUser) -> dict:
         "allocated_amount": _f(allocated),
         "unallocated_amount": _f(unallocated),
         "unsettled_plan_amount": _f(sum(balances.values(), ZERO)),
-        "unreceived_amount": _f(plan_amount - sum((t["received_amount"] for t in cash.values()), ZERO)),
+        # B17-P1（用户已确认）：待回款按节点扣已确认、单节点不为负，与 unsettled 同口径。
+        # 旧"总计划-总实收"在预收/超收时为负，且 A 节点超收会抵掉 B 节点欠款；
+        # 预收/超收改由 unallocated_amount 单独体现，欠账最多为 0。
+        "unreceived_amount": _f(sum(balances.values(), ZERO)),
         "overdue_count": sum(_plan_overdue(p, balances.get(p.id, ZERO), today) for p in plans),
         "by_status": [
             {"name": PLAN_LABEL.get(k, k), "value": v} for k, v in by_status.items()

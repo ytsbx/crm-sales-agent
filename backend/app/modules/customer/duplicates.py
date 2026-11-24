@@ -21,6 +21,7 @@ from app.modules.customer.model import (
 from app.modules.user.model import ROLE_ACTIVE, Role, user_roles
 
 DECISIONS = tuple(DECISION_LABEL)
+MERGED_DECISION = "merged"
 IMPORTED_ADMIN_OWNER_MESSAGE = (
     "新导入的客户目前由管理员负责。请选「指定同一位负责人」，未完成待办会随档案转交。"
 )
@@ -71,6 +72,9 @@ async def is_disputed(session: AsyncSession, customer_id: int) -> bool:
 
 
 def serialize_case(case: CustomerDuplicateCase, names: dict[int, str]) -> dict:
+    decision_label = (
+        "客户档案已合并" if case.decision == MERGED_DECISION else DECISION_LABEL.get(case.decision or "")
+    )
     return {
         "id": case.id,
         "customer_id": case.customer_id,
@@ -82,7 +86,7 @@ def serialize_case(case: CustomerDuplicateCase, names: dict[int, str]) -> dict:
         "source": case.source,
         "status": case.status,
         "decision": case.decision,
-        "decision_label": DECISION_LABEL.get(case.decision or "", None),
+        "decision_label": decision_label,
         "resolved_owner_id": case.resolved_owner_id,
         "resolved_by": case.resolved_by,
         "resolved_at": case.resolved_at.isoformat() if case.resolved_at else None,
@@ -113,10 +117,21 @@ async def open_cases_for_customer(
         tax_no=customer.tax_no,
         domain=customer.domain,
     )
+    candidate_ids = {match["id"] for match in matches if match.get("id") is not None}
+    if not candidate_ids - {customer.id}:
+        return []
+    # 等待合并完成后复查档案是否仍在用，再创建撞单。
+    active_ids = set(await session.scalars(
+        select(Customer.id)
+        .where(Customer.id.in_(candidate_ids | {customer.id}), Customer.deleted_at.is_(None))
+        .order_by(Customer.id).with_for_update(read=True, key_share=True)
+    ))
+    if customer.id not in active_ids:
+        return []
     opened: list[CustomerDuplicateCase] = []
     for match in matches:
         candidate_id = match.get("id")
-        if candidate_id is None or candidate_id == customer.id:
+        if candidate_id not in active_ids or candidate_id == customer.id:
             continue
         existing = (
             await session.execute(
@@ -291,16 +306,19 @@ async def resolve_case(
       **待办一条都没跟着走** —— 新负责人看不到该做的动作，老负责人还在被
       一个已经不属于他的客户提醒（返工单 6.5）。两处各写一遍必然漂移。
     """
-    # **加行锁**后再判状态：两个人同时点"裁定"时，后到的会等前面提交完再读，
-    # 读到的就是 `resolved`，于是被下面这条挡下 —— 只有一个能成功。
-    # 不加锁的话两个请求都会通过 `status != pending` 检查，各改一遍归属。
-    #
-    # ⚠️ `populate_existing=True` 不能省：本项目 session 是
-    # `expire_on_commit=False`，SQLAlchemy 默认**不会用结果覆盖已加载对象的属性**。
-    # 路由那边已经 `session.get()` 过一次这个案件，所以光加锁读到的是库里那一行、
-    # 但拿回来的是**内存里的旧对象**（status 还是 pending）——
-    # 并发裁定会两个都成功（实测：不加这句时两个请求都返回 200）。
-    # 这个坑本项目文档里记过一次（identity map 挡读），这里是它在"锁"场景的翻版。
+    from app.modules.customer import service as customer_service
+
+    if case.status != "pending":
+        raise AppError(ErrorCode.PARAM_ERROR, "该撞单已裁定过", 422)
+    if decision not in DECISIONS:
+        raise AppError(ErrorCode.PARAM_ERROR, f"裁定类型不合法：{decision}", 422)
+
+    # 与合并同序：按编号锁客户、复查范围，然后锁撞单并重读状态。
+    locked_customers = {}
+    for cid in sorted({case.customer_id, case.candidate_id}):
+        locked_customers[cid] = await customer_service.get_visible_customer(
+            session, actor, cid, for_update=True
+        )
     locked = (
         await session.execute(
             select(CustomerDuplicateCase)
@@ -315,20 +333,6 @@ async def resolve_case(
 
     if case.status != "pending":
         raise AppError(ErrorCode.PARAM_ERROR, "该撞单已裁定过", 422)
-    if decision not in DECISIONS:
-        raise AppError(ErrorCode.PARAM_ERROR, f"裁定类型不合法：{decision}", 422)
-
-    # 路由层的可见性检查与这里的撞单锁之间存在并发窗口：客户可能在等待
-    # 撞单锁时被转给别人。最终写入前必须在客户行锁内重新取数并校验，
-    # 否则原本有权限的操作者仍可能改动已经超出其范围的客户。
-    # 按 ID 固定顺序加锁，避免两个交叉撞单案件互相反向等待。
-    from app.modules.customer import service as customer_service
-
-    locked_customers = {}
-    for cid in sorted({case.customer_id, case.candidate_id}):
-        locked_customers[cid] = await customer_service.get_visible_customer(
-            session, actor, cid, for_update=True
-        )
 
     # 裁定**前**两条客户的归属：与下面的 `resolved_owner_id`（裁定后）配成一对，
     # 事后回看才答得出"这次裁定把谁从谁手里改到了谁名下"。

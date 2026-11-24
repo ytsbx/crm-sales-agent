@@ -258,7 +258,7 @@ async def import_leads(
         except RowSkipped as skipped:
             report.skipped_row(index, name, str(skipped))
         except Exception as exc:  # 单行失败不影响其它行
-            report.failed_row(index, name, f"写入失败：{str(exc)[:160]}")
+            report.write_failed_row(index, name, exc)
 
     return await finalize(
         session,

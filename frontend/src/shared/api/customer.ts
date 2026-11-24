@@ -61,6 +61,7 @@ export interface CustomerOpportunity {
   stage_name: string | null
   status: string
   expected_amount: number | null
+  expected_amount_exact?: string | null
   expected_close_date: string | null
   owner_id: number | null
   owner_name: string | null
@@ -77,6 +78,7 @@ export interface CustomerQuote {
   current_version_id: number | null
   current_version_no: number | null
   current_version_amount: number | null
+  current_version_amount_exact?: string | null
   approval_status: string | null
   created_at: string
 }

@@ -278,7 +278,7 @@ async def test_self_oa_query_failure_returns_safe_business_error_without_committ
 @pytest.mark.parametrize('provider,auto_sync,expected', [
     ('self_oa', True, None),
     ('self_oa', False, '同序 OA'),
-    ('dingtalk', True, '钉钉连接当前已关闭'),
+    ('dingtalk', True, '历史审批记录仅供查看'),
 ])
 def test_sync_notice_uses_the_record_provider(monkeypatch, provider, auto_sync, expected):
     monkeypatch.setattr(settings, 'dingtalk_push_off', True)
@@ -289,3 +289,26 @@ def test_sync_notice_uses_the_record_provider(monkeypatch, provider, auto_sync, 
         assert notice is None
     else:
         assert expected in notice
+
+
+@pytest.mark.anyio
+async def test_retired_approval_remains_read_only(monkeypatch):
+    monkeypatch.setattr(settings, 'dingtalk_push_off', True)
+    row = OaInstance(id=7, oa_type='inquiry', provider='dingtalk',
+                     status='pending', instance_id='historical-instance')
+    session = Obj(get=AsyncMock(return_value=row), commit=AsyncMock())
+    monkeypatch.setattr(router, 'ensure_oa_type_scope', AsyncMock())
+    monkeypatch.setattr(service, 'lock_oa_business_then_instance', AsyncMock(return_value=row))
+    sync = AsyncMock()
+    monkeypatch.setattr(service, 'sync_pending_instances', sync)
+
+    with pytest.raises(AppError, match='历史审批仅供查看'):
+        await router.sync_oa_instance(7, Obj(), session)
+    with pytest.raises(AppError, match='历史审批仅供查看'):
+        await router.withdraw_oa_instance(7, Obj(), Obj(), session)
+    with pytest.raises(AppError, match='历史审批仅供查看'):
+        await router.resolve_oa_instance(7, router.ResolveOa(action='abandon'), Obj(), Obj(), session)
+    sync.assert_not_awaited()
+    session.commit.assert_not_awaited()
+    assert row.status == 'pending'
+    assert service.serialize(row)['allowed_actions'] == []

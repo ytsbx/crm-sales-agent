@@ -144,16 +144,12 @@ def is_foreign(*currencies: str | None) -> bool:
 #: 这里列的每个函数体里必须真的出现 `ensure_currency_allowed`，漏一处回归就报红。
 #: ⚠️ 将来新增"能选币种"的入口，**同时改这里和套件**，别只改代码。
 #:
-#: 为什么是这三处（2026-10-08 逐个入口确认过，不是按同类推的）：
-#: - `create_quote`：报价版本币种的唯一入口，接口建单、复制报价、小助手工具都过它；
-#: - `create_order`：手工建订单（`POST /orders`）直接收 `currency`；
-#: - `drafts.update`：订单草稿页那个输入框，界面上唯一还能改币种的地方。
-#: 不在这里的：订单/应收/回款各自的"继承"路径、成本导入（自己有更严的闸）、
-#: 商机（币种不由调用方给，走列默认值）。
+#: 报价、手工订单和订单草稿写入时校验人民币；从历史报价转正式订单时
+#: 再校验锁定版本的币种，避免旧数据绕过新建入口。
 CURRENCY_GATE_SITES: dict[str, tuple[str, ...]] = {
     "app/modules/quote/service.py": ("create_quote",),
-    "app/modules/order/service.py": ("create_order",),
-    "app/modules/order/drafts.py": ("update",),
+    "app/modules/order/service.py": ("create_order", "create_order_from_quote"),
+    "app/modules/order/drafts.py": ("create", "update"),
 }
 
 

@@ -225,6 +225,11 @@ async def create_user(session: AsyncSession, data: dict) -> User:
     await lock_usernames(session)
     if (await session.execute(select(User.id).where(func.lower(User.username) == username.lower()))).first() is not None:
         raise AppError(ErrorCode.DUPLICATE, f"登录名「{username}」已被占用", 409)
+    dingtalk_userid = (data.get("dingtalk_userid") or "").strip() or None
+    if dingtalk_userid and (await session.execute(
+        select(User.id).where(User.dingtalk_userid == dingtalk_userid)
+    )).first() is not None:
+        raise AppError(ErrorCode.DUPLICATE, "这个同序身份已经绑定过 CRM 账号", 409)
     await _validate_department(session, data.get("department_id"))
     roles = await _validate_roles(session, data.get("role_ids") or [])
 
@@ -236,6 +241,7 @@ async def create_user(session: AsyncSession, data: dict) -> User:
         email=data.get("email"),
         department_id=data.get("department_id"),
         wecom_userid=data.get("wecom_userid"),
+        dingtalk_userid=dingtalk_userid,
         status="active",
     )
     session.add(user)

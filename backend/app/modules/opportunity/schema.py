@@ -7,7 +7,7 @@ from app.modules.order.schema import ReceivablePlanIn
 
 
 
-class OpportunityCreate(BaseModel):
+class OpportunityCreate(CreateModel):
     customer_id: int
     title: str = Field(min_length=1, max_length=200)
     primary_contact_id: int | None = None
@@ -67,7 +67,7 @@ class OpportunityConfirmWin(BaseModel):
     receivable_plan: ReceivablePlanIn | None = None
 
 
-class OpportunityItemCreate(BaseModel):
+class OpportunityItemCreate(CreateModel):
     sku_id: int
     # 数值的取值范围与小数位要**跟库列对齐**（第 12.5 条那半句）：数量是
     # `Numeric(16,3)`、目标价是 `Numeric(16,4)`，写法照抄订单明细
@@ -112,7 +112,8 @@ class OpportunityItemUpdate(PatchModel):
 class OpportunityAssign(BaseModel):
     """变更商机负责人（03-API §11）。"""
 
-    owner_id: int | None = None
+    # B20-03（用户已确认拒空）：必须指定在职负责人，null 会让商机变无主、非 all 范围全 403
+    owner_id: int = Field(gt=0)
     remark: str | None = None
 
 

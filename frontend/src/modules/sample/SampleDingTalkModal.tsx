@@ -4,8 +4,11 @@ import SyncOaButton from '../../shared/components/SyncOaButton'
 import type { ReactNode } from 'react'
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, DatePicker, Input, Modal, Select, Table, TextArea, Toast } from '@douyinfe/semi-ui'
+import { Button, DatePicker, Input, Modal, Select, Table, TextArea, Toast, Upload } from '@douyinfe/semi-ui'
+import type { FileItem } from '@douyinfe/semi-ui/lib/es/upload/interface'
 import { api } from '../../shared/api/client'
+import { exportSampleApplicationForm, exportSampleApplicationTemplate } from '../../shared/api/sample'
+import { uploadFile } from '../../shared/api/file'
 import { type OaApprovalInstance, withdrawOaInstance } from '../../shared/api/dingtalk'
 import { newRequestKey } from '../../shared/api/requestKey'
 import { AdoptOaInstanceModal, ResolveOaActions } from '../../shared/components/ResolveOaActions'
@@ -13,7 +16,7 @@ import { approvalProgress, formatApprovalTime, formatApprovalEventTime } from '.
 import AttachmentPanel from '../common/AttachmentPanel'
 import FormLabel from '../../shared/components/FormLabel'
 
-interface Draft { mode: 'standalone' | 'inquiry'; source_oa_id?: number | null; fields: Record<string,string>; submitted?: boolean; resubmit?: boolean }
+interface Draft { mode: 'standalone' | 'inquiry'; source_oa_id?: number | null; fields: Record<string,string>; sample_detail_file_ids?: number[]; submitted?: boolean; resubmit?: boolean }
 interface Options {
   configured: boolean; enabled: boolean
   item_count: number
@@ -21,6 +24,7 @@ interface Options {
   template_error?: string
   prefill?: { applicant_name: string; department: string }
   fields: Array<{id:string;label:string;type:string;required:boolean;system:boolean;options:string[];format?:string;hint?:string;help_text?:string}>
+  detail_files?: Array<{ id: number; file_name: string }>
   draft: Partial<Draft> & { requires_self_oa?: boolean }; candidates: Array<{id:number;label:string}>; records: OaApprovalInstance[]
 }
 const time = formatApprovalTime
@@ -33,12 +37,17 @@ const time = formatApprovalTime
  * 统一走这个件之后：标签与控件成对、两列等宽、纵向间距一致。
  */
 function Field({label,children,span,required,hint}:{label:string;children:ReactNode;span?:boolean;required?:boolean;hint?:string}) {
-  return <div style={span?{gridColumn:'1 / -1'}:undefined}>
-    <FormLabel required={required} hint={hint} style={{fontSize:13,color:'var(--crm-text-2)'}}>{label}</FormLabel>
+  return <div style={{...span?{gridColumn:'1 / -1'}:{}, display:'flex', flexDirection:'column'}}>
+    {/* 说明放在控件下面：同序的长说明（如样品制作单位）原来塞在标签行里，
+        会把右列的控件往下顶，和左列的控件对不齐。 */}
+    <FormLabel required={required} style={{fontSize:13,color:'var(--crm-text-2)'}}>{label}</FormLabel>
     {children}
+    {hint && <div style={{marginTop:5,fontSize:12,lineHeight:1.65,color:'var(--crm-text-3)'}}>{hint}</div>}
   </div>
 }
-export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;onClose:()=>void}) {
+export default function SampleDingTalkModal({sampleId,customerName,onClose}:{
+  sampleId:number;customerName:string;onClose:()=>void
+}) {
   const client=useQueryClient()
   const query=useQuery({queryKey:['sample-dingtalk',sampleId],queryFn:()=>api.get<Options>(`/samples/${sampleId}/dingtalk`),refetchInterval:5000,refetchOnWindowFocus:true})
   const [edited,setEdited]=useState<Draft | null>(null)
@@ -49,7 +58,17 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
   // 页面上根本没有积分输入框（积分是工时算出来的），用户照着提示找不到东西。
   const [hoursMissing,setHoursMissing]=useState(false)
   const [adoptKey,setAdoptKey]=useState<string | null>(null)
-  const draft=edited ?? {mode:query.data?.draft.mode ?? 'standalone',source_oa_id:query.data?.draft.source_oa_id,fields:query.data?.draft.fields ?? {}, resubmit:query.data?.draft.resubmit ?? false}
+  // 同序的「样品明细明细表」是附件：经办人自己填好上传，不再从 CRM 明细生成。
+  const [detailFiles,setDetailFiles]=useState<FileItem[]>([])
+  const [selectedDetailFileIds,setSelectedDetailFileIds]=useState<number[]>([])
+  const draft=edited ?? {mode:query.data?.draft.mode ?? 'standalone',source_oa_id:query.data?.draft.source_oa_id,fields:query.data?.draft.fields ?? {}, sample_detail_file_ids:query.data?.draft.sample_detail_file_ids ?? [], resubmit:query.data?.draft.resubmit ?? false}
+  useEffect(() => {
+    const saved = query.data?.draft?.sample_detail_file_ids
+    const existing = query.data?.detail_files ?? []
+    const available = new Set(existing.map((file) => file.id))
+    if (saved?.length) setSelectedDetailFileIds(saved.filter((id) => available.has(id)))
+    else if (existing.length) setSelectedDetailFileIds(existing.map((file) => file.id))
+  }, [query.data?.detail_files, query.data?.draft?.sample_detail_file_ids])
   const submitted=Boolean(query.data?.draft.submitted) && !edited?.resubmit
   const requiresSelfOa = query.data?.draft.requires_self_oa
   const approval = query.data?.records[0]
@@ -114,9 +133,22 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
         }
         setHoursMissing(false)
       }
+      // 同序的样品明细表是附件：先把手选的文件传到 CRM，再把文件 id 交给提交接口。
+      const detailIds=[...selectedDetailFileIds]
+      if(draft.mode==='standalone'){
+        if(detailIds.length+detailFiles.length>10)throw new Error('样品明细表最多 10 个文件')
+        for(const file of detailFiles){
+          if(!file.fileInstance)throw new Error(`文件「${file.name}」内容已失效，请重新选择`)
+          const uploaded=await uploadFile(file.fileInstance,{businessType:'sample',businessId:sampleId,category:'sample_details'})
+          detailIds.push(uploaded.id)
+        }
+        if(detailFiles.length){setDetailFiles([]);setSelectedDetailFileIds(detailIds)}
+        if(send&&!detailIds.length)throw new Error('请上传样品明细明细表（同序审批要求附件）')
+      }
+      const payload={...draft, sample_detail_file_ids: detailIds}
       if(send&&draft.mode==='inquiry'&&!draft.source_oa_id)throw new Error('请选择原询价审批单')
-      if(send)return api.post<OaApprovalInstance|null>(`/samples/${sampleId}/dingtalk-submit`,draft)
-      return api.put<null>(`/samples/${sampleId}/dingtalk-draft`,draft)
+      if(send)return api.post<OaApprovalInstance|null>(`/samples/${sampleId}/dingtalk-submit`,payload)
+      return api.put<null>(`/samples/${sampleId}/dingtalk-draft`,payload)
     },
     onSuccess:(result,send)=>{
       if(!send)Toast.success('草稿已保存。填齐资料后，可从样品详情回来提交。')
@@ -138,7 +170,7 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
     footer={<div style={{display:'flex',flexWrap:'wrap',justifyContent:'flex-end',gap:10}}>
       <Button disabled={mutate.isPending} onClick={onClose}>关闭</Button>
       {submitted && query.data?.records[0]?.allowed_actions?.includes('resubmit') && <Button disabled={mutate.isPending} onClick={()=>setEdited({...draft,resubmit:true})}>修改后重新提交</Button>}
-      {submitted && draft.mode==='standalone' && query.data?.records[0]?.status==='pending' && query.data.records[0].instance_id &&
+      {submitted && draft.mode==='standalone' && query.data?.records[0]?.provider==='self_oa' && query.data.records[0].status==='pending' && query.data.records[0].instance_id &&
         <Button type="danger" disabled={mutate.isPending||withdraw.isPending} onClick={()=>Modal.confirm({title:'撤回同序 OA 打样审批？',content:'只对仍在审批中的同序 OA 流程生效。',onOk:()=>withdraw.mutate(query.data!.records[0].id)})}>撤回同序 OA 审批</Button>}
       {!submitted&&<Button disabled={!query.data} loading={mutate.isPending} onClick={()=>mutate.mutate(false)}>保存草稿</Button>}
       {(!submitted||query.data?.records[0]?.allowed_actions?.includes('retry'))&&<Button theme="solid"
@@ -153,8 +185,11 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
       <Button size="small" onClick={()=>void query.refetch()}>重新读取审批资料</Button>
     </div>}
     <div style={{display:'grid',gridTemplateColumns:'minmax(0,1fr)',gap:12}}>
+      <div className="inline-note" style={{margin:0,overflowWrap:'anywhere'}}>
+        CRM 关联客户 <strong>{customerName}</strong>
+      </div>
       {query.data && <p className="workflow-guide">{nextStep}</p>}
-      {query.data && draft.mode==='standalone' && query.data.item_count===0 && (
+      {query.data && draft.mode==='standalone' && query.data.item_count===0 && !query.data.native_form && (
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,
           padding:'10px 12px',border:'1px solid var(--crm-warning-border)',
           background:'var(--crm-warning-bg)',color:'var(--crm-text-2)'}}>
@@ -199,12 +234,30 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
         {/* 模板控件：**两列网格**，字段名在上、控件在下（与下面那组同一套排法）。 */}
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px 12px'}}>
           {query.data?.fields.filter(f=>query.data?.native_form || (!f.system && f.label!=='本次打样积分')).map(field=>
-            <Field key={field.id} span={!['DDSelectField','DDDateField','NumberField'].includes(field.type)}
+            <Field key={field.id} span={!(['DDSelectField','DDDateField','NumberField'].includes(field.type) || ['applicant_name','department'].includes(field.id))}
               label={field.label} required={field.required} hint={field.help_text}>
               {field.type==='description' ? <p style={{whiteSpace:'pre-line'}}>{field.hint}</p>
               :field.type==='serial' ? <Input readOnly placeholder={submitted ? "编号可在同序查看" : "由同序自动编号"}/>
               :field.id==='applicant_name' || field.id==='department' ? <Input readOnly value={query.data?.prefill?.[field.id] ?? ''}/>
-              :field.id==='sample_items' ? <div>提交时随单上传 CRM 打样明细 Excel（当前 {query.data?.item_count ?? 0} 条）</div>
+              :field.id==='sample_items' ? <div style={{display:'grid',gap:8}}>
+                {(query.data?.detail_files?.length ?? 0) > 0 && <Select multiple style={{width:'100%'}}
+                  placeholder="选择已上传的样品明细表"
+                  value={selectedDetailFileIds} disabled={submitted||mutate.isPending}
+                  optionList={(query.data?.detail_files ?? []).map(file=>({value:file.id,label:file.file_name}))}
+                  onChange={value=>setSelectedDetailFileIds(value as number[])}/>}
+                {!submitted && <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+                  <Upload action="" uploadTrigger="custom" multiple fileList={detailFiles}
+                    disabled={mutate.isPending}
+                    onChange={({fileList})=>setDetailFiles(fileList)}>
+                    <Button disabled={mutate.isPending}>选择样品明细表</Button>
+                  </Upload>
+                  <Button size="small" theme="borderless" onClick={()=>exportSampleApplicationTemplate()}>下载模板</Button>
+                  <span style={{fontSize:12,color:'var(--crm-text-3)'}}>
+                    先下载空白模板填好，再在这里上传；不再从 CRM 样品明细自动生成 Excel。
+                  </span>
+                </div>}
+                {submitted && <div>已提交的资料已冻结，请在同序 OA 查看本轮附件。</div>}
+              </div>
               :field.type==='DDSelectField'?<Select style={{width:'100%'}} placeholder='请选择' value={draft.fields[field.id]||undefined} disabled={submitted||mutate.isPending}
                 optionList={field.options.map(value=>({value,label:value}))} onChange={value=>setEdited({...draft,fields:{...draft.fields,[field.id]:value as string}})}/>
               :field.type==='DDDateField'?<DatePicker type='date' format='yyyy-MM-dd' style={{width:'100%'}} value={draft.fields[field.id]||undefined} disabled={submitted||mutate.isPending}
@@ -213,10 +266,18 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
               :<TextArea rows={3} value={draft.fields[field.id]||''} disabled={submitted||mutate.isPending} onChange={value=>setEdited({...draft,fields:{...draft.fields,[field.id]:value}})}/>}
             </Field>)}
         </div>
-        {/* 打样申请单上**该由业务员填的格**，一次排齐：两列网格、字段名在上。 */}
-        <details open={!query.data?.native_form}>
-        <summary>打样明细 Excel 补充资料</summary>
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px 12px',margin:'8px 0'}}>
+        {!query.data?.native_form && (<>
+        {/* 同序原生模板没有这些“Excel 补充资料”格：样品明细表改为上传，
+            这些字段只服务于旧的钉钉/CRM 导出申请表，不再在原生同序表单里追问。 */}
+        <div style={{borderTop:'1px solid var(--crm-border)', paddingTop:14, marginTop:4, display:'grid', gap:10}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,flexWrap:'wrap'}}>
+          <div style={{fontWeight:600}}>打样申请单补充资料（CRM 导出用）</div>
+          <Button size="small" onClick={()=>exportSampleApplicationForm(sampleId)}>下载 CRM 打样申请单</Button>
+        </div>
+        <div style={{fontSize:12,lineHeight:1.7,color:'var(--crm-text-3)'}}>
+          这些内容只用于 CRM 导出/打印《打样申请单》，不再随同序审批上传；同序审批要的《样品明细明细表》请在上方「样品明细明细表」处上传。
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px 12px'}}>
           {([['sample_purpose','打样目的',['客审确认样','报价核算样','定制改款样','送检上架样']],
              ['urgency','紧急程度',['普通','急','紧急']],
              ['sample_situation','样品情况',['首次设计新品','设计更改','客户首次要求','客户更改','其他']]] as const).map(([key,label,options])=>
@@ -271,16 +332,17 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
           accept=".png,.jpg,.jpeg,.gif,.bmp,.webp,.tif,.tiff" uploadLabel="上传产品图片"
           hint="最多4张，仅放入Excel的四个产品图片框，不会作为独立附件传到同序 OA。单个文件不超过20 MB"/>}
         {submitted && <div>已提交的资料已冻结，请在同序 OA 查看本轮附件。</div>}
-        </details>
+        </div>
+        </>)}
       </>}
-      <div style={{fontWeight:600}}>同序 OA 审批过程与结果</div>
+      <div style={{fontWeight:600}}>审批过程与结果</div>
       {query.data?.records.map(row=><div key={row.id} style={{border:'1px solid var(--crm-border)',padding:12}}>
-        <div>第{row.submit_round??1}轮 · {row.status_label} · 最近同步：{time(row.synced_at)}</div>
+        <div>{row.provider === 'self_oa' ? '同序 OA' : '历史审批'} · 第{row.submit_round??1}轮 · {row.status_label} · 最近同步：{time(row.synced_at)}</div>
         {/* 打开这个弹窗就先向同序 OA 对一次（仍在审批中再每 10 秒对一次）。
             原来只靠 5 秒轮询 CRM 快照 + 手动「立即同步」，OA 批完了这边还挂着"待审"，
             用户以为卡住了。AutoOaSync 自己会判 provider/instance/status，非自建 OA 不触发。 */}
         <AutoOaSync row={row} invalidateKeys={[['sample-dingtalk',sampleId],['samples'],['sample-detail',sampleId]]} />
-        {row.instance_id&&<SyncOaButton oaId={row.id} invalidateKeys={[[ 'sample-dingtalk',sampleId ],['samples'],['sample-detail',sampleId]]}/>}
+        {row.provider==='self_oa'&&row.instance_id&&<SyncOaButton oaId={row.id} invalidateKeys={[[ 'sample-dingtalk',sampleId ],['samples'],['sample-detail',sampleId]]}/>}
         {row.sync_notice&&<div>{row.sync_notice}</div>}
         <OaFormSnapshot result={row.result}/>
         {row.error&&<div style={{color:'var(--crm-error)'}}>{row.error}</div>}

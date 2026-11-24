@@ -847,6 +847,7 @@ async def estimate_logistics(
             quantity=quantity,
             destination=destination_region,
             shipping_method=shipping_method,
+            enforce_quantity_unit=False,
         )
     except AppError as exc:
         return None, f"运费自动估算失败：{exc.message}"
@@ -882,7 +883,7 @@ async def estimate_logistics(
     if not chosen["above_minimum"]:
         notes.append("触发最低收费，已按数量摊入单件")
 
-    unit = (Decimal(str(chosen["amount"])) / quantity).quantize(Decimal("0.0001"))
+    unit = (Decimal(chosen["amount_exact"]) / quantity).quantize(Decimal("0.0001"))
     return unit, "；".join(notes)
 
 

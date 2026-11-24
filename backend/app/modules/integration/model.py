@@ -96,6 +96,23 @@ class ExternalMapping(Base, IdMixin):
 
 class IntegrationLog(Base, IdMixin):
     __tablename__ = "integration_logs"
+    __table_args__ = (
+        # 与迁移 a1b2c3d4e5f6 一致：成功的入站 ERP 事件按 event_key 唯一，
+        # 防止并发回调各写一条成功日志。未成功的事件允许同键重试。
+        Index(
+            "uq_integration_logs_erp_success_event",
+            "event_key",
+            unique=True,
+            postgresql_where=text(
+                "integration_type = 'erp' AND direction = 'inbound' "
+                "AND status = 'success' AND event_key IS NOT NULL"
+            ),
+            sqlite_where=text(
+                "integration_type = 'erp' AND direction = 'inbound' "
+                "AND status = 'success' AND event_key IS NOT NULL"
+            ),
+        ),
+    )
 
     integration_type: Mapped[str] = mapped_column(String(32))
     #: 厂商/适配器名（如「聚水潭」），**只用于显示**。

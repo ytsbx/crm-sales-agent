@@ -204,22 +204,18 @@ export function exportSampleApplicationForm(id: number) {
   return api.download(`/samples/${id}/application-form`)
 }
 
-
-export function approveSample(id: number, approved: boolean, rejectReason?: string) {
-  return api.post<SampleRequestRow>(`/samples/${id}/approve`, {
-    approved,
-    reject_reason: rejectReason,
-  })
+/** 下载空白的《样品明细明细表》模板，填好后再上传到同序审批。 */
+export function exportSampleApplicationTemplate() {
+  return api.download('/samples/application-form-template')
 }
 
-/**
- * 已驳回的打样单**原样**重新提交审批。
- *
- * 和「改资料」是两条路：改了东西走编辑接口（会自动回到待审批），一个字都不想改
- * 就走这里，明确表达"原样再报一次"—— 否则跟单只能去改个无关字段骗系统回待审批。
- */
-export function resubmitSample(id: number) {
-  return api.post<SampleRequestRow>(`/samples/${id}/resubmit`)
+
+export function listSampleTransferOptions(id: number, keyword: string) {
+  return api.get<{ id: number; name: string }[]>(`/samples/${id}/transfer-options`, { keyword })
+}
+
+export function transferSample(id: number, ownerId: number) {
+  return api.post<null>(`/samples/${id}/transfer`, { owner_id: ownerId })
 }
 
 export function shipSample(id: number, payload: Record<string, unknown>) {

@@ -279,7 +279,7 @@ async def import_price_rules(
         except RowRejected as rejected:
             report.failed_row(index, code, str(rejected))
         except Exception as exc:  # 单行失败不影响其它行
-            report.failed_row(index, code, f"写入失败：{str(exc)[:160]}")
+            report.write_failed_row(index, code, exc)
 
     return await finalize(
         session,
@@ -492,7 +492,7 @@ async def import_customer_prices(
         except RowRejected as rejected:
             report.failed_row(index, code, str(rejected))
         except Exception as exc:
-            report.failed_row(index, code, f"写入失败：{str(exc)[:160]}")
+            report.write_failed_row(index, code, exc)
 
     return await finalize(
         session,
@@ -744,7 +744,7 @@ async def import_costs(
         except RowRejected as rejected:
             report.failed_row(index, code, str(rejected))
         except Exception as exc:
-            report.failed_row(index, code, f"写入失败：{str(exc)[:160]}")
+            report.write_failed_row(index, code, exc)
 
     return await finalize(
         session,

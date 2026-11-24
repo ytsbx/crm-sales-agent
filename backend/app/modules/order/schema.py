@@ -5,6 +5,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 
+from app.core.idempotency import MAX_KEY_LENGTH
 from app.core.patch_schema import CreateModel, PatchModel
 from app.modules.payment.schema import FiniteReceivableRatios
 from app.modules.sample.schema import SampleSource
@@ -138,6 +139,7 @@ class OrderCreate(CreateModel):
     delivery_date: date | None = None
     payment_terms: str | None = Field(default=None, max_length=128)
     remark: str | None = None
+    request_key: str | None = Field(default=None, max_length=MAX_KEY_LENGTH)
 
 
 class OrderUpdate(BaseModel):
@@ -191,7 +193,7 @@ class ShipmentShipItem(BaseModel):
 
 
 class ShipmentBatchShip(BaseModel):
-    """登记实发。items 缺省 = 本批计划量全发；给出时逐明细覆盖。"""
+    """登记实发。items 缺省或 null 按整批计划量登记；逐行提交时必须包含本批全部明细。"""
 
     actual_ship_date: date | None = None
     logistics_company: str | None = Field(default=None, max_length=64)

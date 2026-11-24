@@ -7,7 +7,9 @@
   自动建会把"型号录错"变成一堆重复产品，比导入失败难收拾得多。
 - SKU 的 `sku_code` 全局唯一，导入时按它查重。
 """
+from app.core.errors import AppError
 from app.core.timebase import to_business
+from app.modules.product.field_rules import normalize_numeric
 
 
 PRODUCT_TEMPLATE_HEADERS = [
@@ -88,45 +90,11 @@ def sku_export_row(sku, product_name: str | None) -> list:
     ]
 
 
-def _decimal(raw: str | None):
-    """把可空数字列解析成 Decimal；空串返回 None，非法值抛 ValueError。
-
-    NaN / Infinity 必须挡掉：`Decimal("NaN")` 是合法 Decimal，
-    但写进 Numeric 列会报数据库错、参与比较又一路 False，
-    最后表现成"这个 SKU 的数据看着不对劲"，而不是"导入时告诉用户填错了"。
-    """
-    from decimal import Decimal, InvalidOperation
-
-    text = (raw or "").strip()
-    if not text:
-        return None
+def _sku_number(field: str, raw: str | None):
     try:
-        value = Decimal(text)
-    except InvalidOperation as exc:
-        raise ValueError(f"「{raw}」不是合法数字") from exc
-    if not value.is_finite():
-        raise ValueError(f"「{raw}」不是有限数字")
-    return value
-
-
-def _int(raw: str | None):
-    """整数列。**不做 `int(float(x))` 截断**。
-
-    原来 `int(float("2.9"))` = 2：装箱数、起订量这类字段被静默改小，
-    用户看到的和文件里的不一致，而且没有任何提示 —— 比直接报错难查得多。
-    """
-    from decimal import Decimal, InvalidOperation
-
-    text = (raw or "").strip()
-    if not text:
-        return None
-    try:
-        value = Decimal(text)
-    except InvalidOperation as exc:
-        raise ValueError(f"「{raw}」不是合法整数") from exc
-    if not value.is_finite() or value != value.to_integral_value():
-        raise ValueError(f"「{raw}」不是合法整数")
-    return int(value)
+        return normalize_numeric(field, raw, where="SKU 导入")
+    except AppError as exc:
+        raise ValueError(exc.message) from exc
 
 
 def _text(raw: str | None, label: str, max_length: int) -> str | None:
@@ -182,30 +150,20 @@ def sku_fields_from_row(row: dict) -> dict:
     #: 表头兼容两种写法（2026-10-10 把模板/导出改成中文「起订量」）：
     #: **已经导出去的表格里写的是 `MOQ`**，只认中文会让那些人一导入就失败。
     #: 读的时候两种都收，新的写出去用中文。
-    moq = _int(row.get("起订量") if row.get("起订量") is not None else row.get("MOQ"))
-    if moq is not None and moq < 0:
-        raise ValueError("起订量不能为负数")
-    carton_qty = _int(row.get("装箱数"))
-    if carton_qty is not None and carton_qty < 0:
-        raise ValueError("装箱数不能为负数")
-    for label, value in (("长", _decimal(row.get("长"))), ("宽", _decimal(row.get("宽"))),
-                         ("高", _decimal(row.get("高"))), ("重量", _decimal(row.get("重量"))),
-                         ("箱规体积", _decimal(row.get("箱规体积")))):
-        if value is not None and value < 0:
-            raise ValueError(f"{label}不能为负数")
+    moq = row.get("起订量") if row.get("起订量") is not None else row.get("MOQ")
     return {
         "sku_code": _text(row.get("SKU编码"), "SKU编码", 64) or "",
         "name": _text(row.get("规格名称"), "规格名称", 200),
         "specification": _text(row.get("规格"), "规格", 200),
         "color": _text(row.get("颜色"), "颜色", 64),
         "material": _text(row.get("材质"), "材质", 64),
-        "length": _decimal(row.get("长")),
-        "width": _decimal(row.get("宽")),
-        "height": _decimal(row.get("高")),
-        "weight": _decimal(row.get("重量")),
-        "carton_qty": carton_qty,
-        "carton_volume": _decimal(row.get("箱规体积")),
-        "moq": moq,
+        "length": _sku_number("length", row.get("长")),
+        "width": _sku_number("width", row.get("宽")),
+        "height": _sku_number("height", row.get("高")),
+        "weight": _sku_number("weight", row.get("重量")),
+        "carton_qty": _sku_number("carton_qty", row.get("装箱数")),
+        "carton_volume": _sku_number("carton_volume", row.get("箱规体积")),
+        "moq": _sku_number("moq", moq),
         "package_type": _text(row.get("包装方式"), "包装方式", 64),
         "unit": _text(row.get("单位"), "单位", 16) or "件",
     }

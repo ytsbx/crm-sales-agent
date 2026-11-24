@@ -127,6 +127,12 @@ async def ensure_charge_change_allowed(
     所以放行成功后**必须重新登记一次发送**（把 `sent_at` 清掉），否则台账上是
     "发过一版、内容是旧的"。前端会说明这一点。
     """
+    if version.accepted_at is not None:
+        raise AppError(
+            ErrorCode.QUOTE_VERSION_LOCKED,
+            "客户已接受这版报价。要调整费用，请新建报价版本并请客户重新确认。",
+            422,
+        )
     # ⚠️ **没锁版就直接放行**（`ensure_version_editable` 的判据，保持一处口径）：
     # 草稿态什么都能改，这道闸只管锁版之后的例外。少了这一句会把草稿也拦下 ——
     # 我第一版就漏了，实测"草稿态加折扣"被拒（消息还是"已提交审批或已发送"，
@@ -709,6 +715,17 @@ def convert_cny_to(
     return (value / rate).quantize(Decimal("0.0001")), None
 
 
+async def require_quote_customer_contact(
+    session: AsyncSession, customer_id: int, contact_id: int,
+) -> Contact:
+    contact = await session.get(Contact, contact_id)
+    if contact is None:
+        raise AppError(ErrorCode.NOT_FOUND, "所选联系人不存在，请刷新后重试", 404)
+    if contact.customer_id != customer_id:
+        raise AppError(ErrorCode.PARAM_ERROR, "所选联系人不属于这家客户，请重新选择", 422)
+    return contact
+
+
 async def create_quote(
     session: AsyncSession,
     *,
@@ -788,16 +805,7 @@ async def create_quote(
     #: 最后一起返回）。
     early_warnings: list[str] = []
     if resolved_contact_id is not None:
-        contact = await session.get(Contact, resolved_contact_id)
-        if contact is None:
-            raise AppError(
-                ErrorCode.NOT_FOUND, f"联系人 id={resolved_contact_id} 不存在", 404
-            )
-        if contact.customer_id != customer_id:
-            raise AppError(
-                ErrorCode.PARAM_ERROR,
-                f"联系人 id={resolved_contact_id} 不属于客户 id={customer_id}",
-            )
+        contact = await require_quote_customer_contact(session, customer_id, resolved_contact_id)
         # 已删除的联系人：**放行但显性提醒**（主人 2026-10-09 拍板的口径）。
         #
         # 为什么不硬拦：联系人不只由人手工选，还会从**定制需求**自动带过来
@@ -2398,11 +2406,12 @@ async def submit_for_approval(
             "请先在版本上补汇率（或新建版本重新取汇率），再提交审批。",
             422,
         )
-    total_amount_cny = (
-        float((version.total_amount or 0) * fx)
+    tier_amount = (
+        (version.total_amount or Decimal(0)) * fx
         if currency_code != "CNY"
-        else float(version.total_amount or 0)
+        else version.total_amount or Decimal(0)
     )
+    total_amount_cny = float(tier_amount)
     # 产品核价是否含运费，由**这一版的口径**决定（见 `item_unit_product_cost`）。
     # 新报价：运费代收代付，不进产品成本与利润；历史版本：沿用含运费的老口径。
     cost_includes_freight = version_logistics_in_base_cost(version)
@@ -2765,7 +2774,8 @@ async def submit_for_approval(
     else:
         for level in levels:
             max_amount = level.get("max_amount")
-            if max_amount is None or amount <= float(max_amount):
+            cap = "" if max_amount is None else str(max_amount).strip()
+            if not cap or tier_amount <= Decimal(cap):
                 node = level
                 break
     if node is None and levels:

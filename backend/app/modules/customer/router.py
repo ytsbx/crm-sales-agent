@@ -394,7 +394,7 @@ async def transfer_customer(
     user: CurrentUser = Depends(require_permission("customer:assign")),
     session: AsyncSession = Depends(get_db),
 ):
-    customer = await svc.get_visible_customer(session, user, customer_id)
+    customer = await svc.get_visible_customer(session, user, customer_id, for_update=True)
     before = svc.serialize_customer(customer)
     documents = await svc.transfer_customer(
         session, user, customer, payload.owner_id, payload.reason
@@ -442,7 +442,7 @@ async def release_to_pool(
     （第六批审查第 1 条）。这样单个转移、分配、批量转移这些同样能把负责人
     清空的入口，走的是同一道关，也不会出现两处各判一套。
     """
-    customer = await svc.get_visible_customer(session, user, customer_id)
+    customer = await svc.get_visible_customer(session, user, customer_id, for_update=True)
     reason = (payload.reason if payload else None) or None
     # 注意传的是**原始 reason**（可能为空）—— 保护校验靠它判断"到底有没有填原因"。
     # 默认文案交给 default_reason，只用于归属历史，不参与例外判断。
@@ -760,6 +760,7 @@ async def customer_quotes(
                 "current_version_id": row.current_version_id,
                 "current_version_no": version.version_no if version else None,
                 "current_version_amount": float(version.total_amount) if version else None,
+                "current_version_amount_exact": str(version.total_amount) if version else None,
                 # 币种跟着金额一起给（第九批 §9.9）：前端不能假设是人民币。
                 # 版本缺失时给 null，由前端提示"币种待核实"。
                 "currency": version.currency if version else None,
@@ -829,7 +830,7 @@ async def assign_customer(
     区别只是权限点：transfer 是"业务员之间转"，assign 是"主管分配"。
     文档两个都列了，就都留着。
     """
-    customer = await svc.get_visible_customer(session, user, customer_id)
+    customer = await svc.get_visible_customer(session, user, customer_id, for_update=True)
     before = svc.serialize_customer(customer)
     documents = await svc.transfer_customer(
         session, user, customer, payload.owner_id, payload.reason,
@@ -1143,14 +1144,13 @@ async def bind_contact_customer(
     """
     contact = await svc.get_visible_contact(session, user, contact_id)
     customer = await svc.get_visible_customer(session, user, payload.customer_id)
-    before = svc.serialize_contact(contact)
     #: 改挂（本来挂在别的客户上）与首次绑定要说不同的话 —— 见下面的返回文案
     previous_customer_id = contact.customer_id
     # 改挂统一走这一条路径：先锁两个客户、腾出目标客户的主位，**最后**才写归属。
     # 顺序反过来会在"腾位"那次查询上触发 autoflush，把"已挂新客户、还带着主标记"
     # 的这条先写下去，撞唯一索引报 500（第十批 10.4 复审）。
-    await svc.move_contact_to_customer(
-        session, contact, customer, is_primary=payload.is_primary
+    before = await svc.move_contact_to_customer(
+        session, contact, customer, user=user, is_primary=payload.is_primary
     )
     await write_audit(
         session,
@@ -1226,10 +1226,9 @@ async def change_contact_customer(
     if contact.customer_id == payload.customer_id:
         raise AppError(ErrorCode.PARAM_ERROR, "联系人已经属于该客户", 422)
     customer = await svc.get_visible_customer(session, user, payload.customer_id)
-    before = svc.serialize_contact(contact)
     # 同 bind：共用同一条改挂路径（锁客户 → 腾位 → 写归属），见 move_contact_to_customer。
-    await svc.move_contact_to_customer(
-        session, contact, customer, is_primary=payload.is_primary
+    before = await svc.move_contact_to_customer(
+        session, contact, customer, user=user, is_primary=payload.is_primary
     )
     await write_audit(
         session,

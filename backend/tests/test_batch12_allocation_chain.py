@@ -194,6 +194,9 @@ async def test_manual_intent_survives_every_sync_and_rebalance(case,amounts):
     assert totals['unsettled_plan_amount']==float(D(200)-expected)
     audit=raw.query(AuditLog).filter_by(action='update_allocations').order_by(AuditLog.id.desc()).first()
     assert audit.after_data['allocations']==actual
+    # 留出 50 元合法的应收空间，仍验证改高金额时手工分配不会被重排。
+    raw.get(SalesOrder, 1).total_amount = D(250)
+    raw.commit()
     await router.update_receivable(1,ReceivableUpdate(amount=D(150)),REQ,USER,s)
     assert await svc.serialize_allocations(s,p.id)==actual
     payment=raw.query(OrderMilestone).filter_by(node='payment').first()

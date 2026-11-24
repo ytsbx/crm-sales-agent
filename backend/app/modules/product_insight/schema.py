@@ -43,6 +43,12 @@ def _reject_unsafe_urls(values: list[str] | None) -> list[str] | None:
     """参考图里的每一条都必须是 http/https 绝对地址，否则整体拒绝并点名。"""
     if values is None:
         return None
+    # B21-12：条数与单条长度上限，防 JSON 列被大量/超长 URL 膨胀
+    if len(values) > 10:
+        raise ValueError(f"参考图最多 10 条（当前 {len(values)}）")
+    too_long = [i + 1 for i, raw in enumerate(values) if len((raw or "").strip()) > 500]
+    if too_long:
+        raise ValueError(f"参考图单条地址最长 500 字符，第 {'、'.join(map(str, too_long[:3]))} 条超长")
     bad: list[str] = []
     for raw in values:
         text = (raw or "").strip()

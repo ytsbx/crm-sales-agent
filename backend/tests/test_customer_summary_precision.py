@@ -1,5 +1,6 @@
 """客户聚合与确定性摘要不得把已有十进制金额变成浮点误差。"""
 
+from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock
 
@@ -7,10 +8,13 @@ import pytest
 
 from conftest import SyncSessionAsAsync, make_user
 from app.modules.agent import insights
-from app.modules.customer import service
+from app.modules.customer import router, service
 from app.modules.customer.model import Customer
 from app.modules.file.model import BusinessFile, FileRecord
+from app.modules.opportunity.model import Opportunity, OpportunityItem
 from app.modules.order.model import SalesOrder
+from app.modules.product.model import Product, Sku
+from app.modules.quote.model import Quote, QuoteVersion
 
 
 @pytest.fixture
@@ -57,6 +61,33 @@ async def test_recent_order_keeps_large_decimal(customer_db):
     raw.flush()
     data = await service.customer_overview(session, make_user(101, permissions=["order:view"]), 1)
     assert data["orders"][0]["total_amount_exact"] == "99999999999999.99"
+
+
+@pytest.mark.anyio
+async def test_customer_links_keep_exact_opportunity_and_quote_amounts(customer_db):
+    raw, session = customer_db
+    for model in (Product, Sku, OpportunityItem):
+        model.__table__.create(raw.bind, checkfirst=True)
+    amount = Decimal("99999999999999.99")
+    # 保留 identity map 中的 Decimal，隔离测试只核对序列化，避开 SQLite Numeric 转换。
+    opportunity = Opportunity(id=1, customer_id=1, title="商机", stage_id=1, owner_id=101,
+                              expected_amount=amount)
+    version = QuoteVersion(id=1, quote_id=1, total_amount=amount, created_at=datetime.now(UTC))
+    raw.add_all([
+        opportunity, version,
+        Quote(id=1, quote_no="ISO-Q1", customer_id=1, owner_id=101, status="sent", current_version_id=1),
+        Quote(id=2, quote_no="ISO-Q2", customer_id=1, owner_id=101, status="sent"),
+    ])
+    raw.flush()
+    user = make_user(101, permissions=["customer:view", "opportunity:view", "quote:view"])
+    opportunities = await router.customer_opportunities(1, page=1, page_size=20, user=user, session=session)
+    assert opportunities["data"]["items"][0]["expected_amount_exact"] == str(amount)
+    overview = await service.customer_overview(session, user, 1)
+    assert overview["opportunities"][0]["expected_amount_exact"] == str(amount)
+    quotes = await router.customer_quotes(1, page=1, page_size=20, user=user, session=session)
+    by_no = {row["quote_no"]: row for row in quotes["data"]["items"]}
+    assert by_no["ISO-Q1"]["current_version_amount_exact"] == str(amount)
+    assert by_no["ISO-Q2"]["current_version_amount_exact"] is None
 
 
 @pytest.mark.anyio

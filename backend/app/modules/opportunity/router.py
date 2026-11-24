@@ -1231,6 +1231,20 @@ async def delete_opportunity(
     session: AsyncSession = Depends(get_db),
 ):
     opportunity = await svc.get_visible_opportunity(session, user, opportunity_id, for_update=True)
+    # B20-02（用户已确认阻断）：名下还有未取消订单 / 有效报价时不许删，避免下游引用悬空
+    from app.modules.order.model import SalesOrder
+    from app.modules.quote.model import Quote
+    active_orders = await session.scalar(select(func.count(SalesOrder.id)).where(
+        SalesOrder.opportunity_id == opportunity.id, SalesOrder.status != "cancelled"))
+    active_quotes = await session.scalar(select(func.count(Quote.id)).where(
+        Quote.opportunity_id == opportunity.id, Quote.deleted_at.is_(None),
+        Quote.status.not_in(("expired", "declined"))))
+    if active_orders or active_quotes:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "该商机名下还有未取消的订单或有效报价，请先处理下游单据后再删除",
+            409,
+        )
     before = svc.serialize_opportunity(opportunity)
     opportunity.deleted_at = datetime.now(UTC)
     await write_audit(
@@ -1383,10 +1397,17 @@ async def copy_items(
     session: AsyncSession = Depends(get_db),
 ):
     """从另一个商机复制需求明细（同客户重复采购时最常用）。"""
-    await svc.get_visible_opportunity(session, user, opportunity_id)
-    await svc.get_visible_opportunity(session, user, source_opportunity_id)
+    target = await svc.get_visible_opportunity(session, user, opportunity_id)
+    source = await svc.get_visible_opportunity(session, user, source_opportunity_id)
     if opportunity_id == source_opportunity_id:
         raise AppError(ErrorCode.PARAM_ERROR, "不能从自己复制需求明细", 422)
+    # B20-04（用户已确认）：只允许同客户复制，防止 A 客户目标价/规格串进 B 客户商机
+    if target.customer_id != source.customer_id:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "只能从同一客户的商机复制需求明细，避免把别的客户的价格/规格带过来",
+            422,
+        )
 
     result = await svc.copy_items_from(
         session,

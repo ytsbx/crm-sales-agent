@@ -39,6 +39,7 @@
   "opportunity": "商机",
   "opportunity_stage": "商机阶段",
   "order": "订单",
+  "order_draft": "订单草稿",
   "order_milestone": "跟单节点",
   "payment": "回款",
   "price_permission": "价格权限",

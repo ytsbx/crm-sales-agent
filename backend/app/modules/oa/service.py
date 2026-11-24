@@ -259,7 +259,7 @@ async def _build_payload(
     record, data = await _load_contract_file(session, doc)
     upload = uploads.stage if uploads is not None else client.upload_file
     attachment = await upload(
-        user.dingtalk_userid,
+        client.applicant_identity(user),
         record.file_name,
         data,
         record.mime_type,
@@ -288,9 +288,19 @@ async def _build_payload(
         ] if item
     )
     from app.modules.oa.inquiry import _department_name
+    from app.modules.oa.contract_form import SOURCE_CODE, active_template
+    template = prepared_template
+    if template is None:
+        try:
+            template = await active_template(user)
+        except AppError:
+            # 读不到模板不是归属部门的问题：后面 create_approval 会给出准确报错。
+            template = None
+    applicant = (template or {}).get("applicant") or {}
     fields: dict = {
-        "applicant_name": user.name,
-        "department": await _department_name(session, user),
+        "applicant_name": applicant.get("name") or user.name,
+        # 归属部门以同序申请人资料为准，CRM 部门表缺项时不再把空值发过去。
+        "department": applicant.get("department_name") or await _department_name(session, user),
         "contract_name": doc.title,
         # 合同编号：手动模式用经办人填的（没填用 CRM 编号）；规则模式由 OA 按规则生成，不回传编号
         "contract_number": ((doc.filled_data or {}).get("_contract_number") or doc.doc_no)
@@ -308,9 +318,13 @@ async def _build_payload(
         "contract_mine_info": [{"mine_company_name": our_company}],
         "contract_opposite_info": [{"opposite_company_name": counterparty_name}],
     }
+    if template and template.get("fields") and template.get("code") != SOURCE_CODE:
+        declared_fields = {field["id"] for field in template["fields"]}
+        for key in ("applicant_name", "department"):
+            if key not in declared_fields:
+                fields.pop(key)
     # The supplied OA template has no 月结协议 option; file category is optional.
-    from app.modules.oa.contract_form import SOURCE_CODE
-    if doc.doc_type == 'monthly' and (prepared_template or {}).get('code', template_code) == SOURCE_CODE:
+    if doc.doc_type == 'monthly' and (template or {}).get('code', template_code) == SOURCE_CODE:
         fields.pop("contract_classify_cascade")
     # 钉钉模板「合同总额（元）」为必填：无金额时按 0.00 发送，避免留空被拒
     fields["contract_amount"] = f"{amount:.2f}" if amount is not None else "0.00"
@@ -324,23 +338,27 @@ async def _build_payload(
         fields["contract_period_end_date"] = doc.expiry_date.isoformat()
     payload = {
         "external_ref": external_ref,
-        "applicant_dingtalk_user_id": user.dingtalk_userid,
+        **client.applicant_fields(client.applicant_identity(user)),
         "title": doc.title,
         "reason": f"合同 {doc.doc_no} 审批",
         "amount": f"{amount:.2f}" if amount is not None else "0",
         "fields": fields,
         "attachment_ids": [attachment_id],
     }
-    if extra_fields:
+    effective_extra = {
+        **((doc.filled_data or {}).get("_oa_fields") or {}),
+        **(extra_fields or {}),
+    }
+    if effective_extra:
         from app.modules.oa.contract_form import apply_extra_fields
         await apply_extra_fields(
-            session, user, doc, payload, extra_fields, uploads=uploads, template=prepared_template,
+            session, user, doc, payload, effective_extra, uploads=uploads, template=prepared_template,
         )
     if template_id:
         payload["template_id"] = template_id
     else:
         payload["template_code"] = template_code
-    if settings.oa_contract_approver_dingtalk_id:
+    if isinstance(client.applicant_identity(user), str) and settings.oa_contract_approver_dingtalk_id:
         payload["approver_dingtalk_user_id"] = settings.oa_contract_approver_dingtalk_id
     return payload
 
@@ -360,10 +378,11 @@ async def start_contract_approval(
 
     if not client.configured():
         raise AppError(ErrorCode.PARAM_ERROR, "还没配置自研 OA 对接，请联系管理员", 422)
-    # `CurrentUser` 只带 id/权限/范围，不带钉钉编号；必须回表取本人身份。
+    # 回表读取当前账号保存的同序身份。
     user = await session.get(User, current_user.id)
-    if user is None or not user.dingtalk_userid:
-        raise AppError(ErrorCode.PARAM_ERROR, "请先绑定本人钉钉账号，OA 才能按你名义发起", 422)
+    identity = client.applicant_identity(user)
+    if not identity:
+        raise AppError(ErrorCode.PARAM_ERROR, "请联系管理员为当前账号绑定同序人员后再提交", 422)
     _template_config()
 
     latest = await latest_contract_row(session, doc.id, for_update=True)
@@ -399,7 +418,7 @@ async def start_contract_approval(
             idempotency_key=external_ref,
             submit_round=round_no,
             process_code=settings.oa_contract_template_id or settings.oa_contract_template_code,
-            originator_user_id=user.dingtalk_userid,
+            originator_user_id=str(identity),
             status="submitting",
             attempt_count=1,
             created_by=current_user.id,

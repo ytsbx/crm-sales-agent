@@ -72,9 +72,10 @@ async def list_inquiries(
     if keyword:
         # 下拉里显示的是「需求编号 · 标题」，所以编号也要能搜 —— 只搜标题时，
         # 用户照着编号找第 101 条以后的需求永远搜不到（服务端搜索 + 下拉的入口）。
+        _kw = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         stmt = stmt.where(or_(
-            CustomInquiry.title.ilike(f"%{keyword}%"),
-            CustomInquiry.inquiry_no.ilike(f"%{keyword}%"),
+            CustomInquiry.title.ilike(f"%{_kw}%", escape="\\"),
+            CustomInquiry.inquiry_no.ilike(f"%{_kw}%", escape="\\"),
         ))
     stmt = await svc.apply_scope(stmt, user, session)
     stmt = stmt.order_by(CustomInquiry.id.desc())
@@ -425,6 +426,8 @@ async def revise_inquiry(
         customer_id=old.customer_id,
         contact_id=old.contact_id,
         opportunity_id=old.opportunity_id,
+        oa_quote_user_id=old.oa_quote_user_id,
+        oa_quote_user_name=old.oa_quote_user_name,
         quantity=payload.quantity if payload.quantity is not None else old.quantity,
         target_price=(
             payload.target_price if payload.target_price is not None else old.target_price

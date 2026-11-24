@@ -37,7 +37,7 @@ class RulePayload(BaseModel):
     enabled: bool = False
     conditions: list[RuleCondition] = Field(default_factory=list, min_length=1)
     action: dict = Field(default_factory=dict)
-    description: str | None = None
+    description: str | None = Field(default=None, max_length=255)
 
 
 class RuleToggle(BaseModel):
