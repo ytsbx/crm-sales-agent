@@ -534,17 +534,34 @@ async def main():
         ])
         await s.commit()
 
+        # 未冻结时：GET 只读不写（B18-P1，bdd6efc9 产品有意变化）——
+        # 给实时计算值并如实说"尚未冻结"，不偷偷存档；冻结走显式 refreeze。
         before_freeze = await target_bases.annual_bases(s, user, past_year)
         fb = lambda key, m: next(  # noqa: E731
             x['value'] for x in before_freeze[key] if x['month'] == m
         )
-        check('过去年份会自动冻结口径基准', before_freeze['basis_frozen'], True)
-        check('冻结时记下口径版本', before_freeze['basis_version'],
+        check('未冻结的过去年份先给实时计算值（GET 只读不写，B18-P1）',
+              before_freeze['basis_frozen'], False)
+        check_true('提示语如实说明还没存档（可「重新冻结」）',
+                   '尚未冻结' in (before_freeze.get('basis_note_freeze') or ''),
+                   str(before_freeze.get('basis_note_freeze'))[:40])
+        check('实时值：老客 3 月净额含那单', fb('repeat_net', '03'), 200.0)
+        check('实时值：首次成交记在 4 月', fb('new_by_first_deal', '04'), 1)
+
+        # 走产品的显式冻结入口（与 POST /sales-targets/bases/refreeze 同一核心路径）
+        await target_bases.basis_for(s, past_year, refreeze=True, operator_id=owner_id)
+        await s.commit()
+        frozen = await target_bases.annual_bases(s, user, past_year)
+        ff = lambda key, m: next(  # noqa: E731
+            x['value'] for x in frozen[key] if x['month'] == m
+        )
+        check('重新冻结后口径基准已冻结', frozen['basis_frozen'], True)
+        check_true('冻结时间非空', bool(frozen['basis_frozen_at']),
+                   str(frozen['basis_frozen_at']))
+        check('冻结时记下口径版本', frozen['basis_version'],
               target_bases.BASIS_VERSION)
-        check_true('冻结时间非空', bool(before_freeze['basis_frozen_at']),
-                   str(before_freeze['basis_frozen_at']))
-        check('冻结时：老客 3 月净额含那单', fb('repeat_net', '03'), 200.0)
-        check('冻结时：首次成交记在 4 月', fb('new_by_first_deal', '04'), 1)
+        check('冻结后：老客 3 月净额含那单', ff('repeat_net', '03'), 200.0)
+        check('冻结后：首次成交记在 4 月', ff('new_by_first_deal', '04'), 1)
 
         # 事后改动①：取消**往年**那单 —— 现算的话客户会掉出老客池，
         # 去年整年的老客净额跟着变 0（这正是"历史指标会漂移"）
