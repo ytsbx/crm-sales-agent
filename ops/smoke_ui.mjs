@@ -1749,7 +1749,9 @@ async function main() {
         // （11 个操作平铺时链接被压成 17px 宽、"申请打样"四个字竖着一字一行）。
         // 所以要先点开下拉、再从菜单里点它 —— 直接找 <a>申请打样</a> 永远找不到，
         // CI 上就表现成"询价没有打样入口"，看着像功能没了，其实是**脚本没跟上改版**。
-        await clickByText(client, '更多', { tag: 'a' })
+        // 2026-11-24（017d20ca a11y）「更多」又从 <a> 改成了 <button type="button">，
+        // 脚本第二次没跟上 —— tag 认准 button。
+        await clickByText(client, '更多', { tag: 'button' })
         await sleep(200)
         if (await clickByText(client, '申请打样', { tag: '.semi-dropdown-item' }) !== 'clicked') {
           throw new Error('询价没有打样入口（「更多」菜单里也没有）')
@@ -1764,7 +1766,7 @@ async function main() {
         // 「历史」同样在「更多」下拉里（只有版本 > 1 的记录才有这一项，
         // 上一段刚 revise 过，所以这里应该有）。别再用 waitForText 等它出现 ——
         // 菜单没展开时未必渲染，等不到就会白等满 8 秒。
-        await clickByText(client, '更多', { tag: 'a' })
+        await clickByText(client, '更多', { tag: 'button' })
         await sleep(200)
         await clickByText(client, '历史', { tag: '.semi-dropdown-item' })
         if (!await waitForText(client, '版本历史：')) throw new Error('询价历史未打开')
