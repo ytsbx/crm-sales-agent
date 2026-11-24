@@ -5255,3 +5255,10 @@
 - 新增回归 test_sample_create_idempotency.py（同键两次只建一条）。
 - 全量 2191 项通过。
 - 其余模块（线索/询价/商机/洞察）创建幂等需**新增 request_key 列**=改 DB 结构，挂起待用户批准。
+
+### P3 用例补强·第四批（状态迁移审计补 before/after）
+
+- task：complete/cancel 补 before.status；postpone 补 before.due_at；batch_complete 补 before.task_ids。
+- lead：claim 补 before.owner_id=null；release 补 before.owner/status；discard 补 before.status/owner。
+- opportunity：change_stage 补 before.stage_id；lose 补 before.status/stage；reopen 补 before.status/stage/loss_reason。
+- 均为审计快照补全，不改业务行为；全量 2191 项通过。

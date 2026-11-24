@@ -707,6 +707,7 @@ async def complete_task(
     # 守卫执行前 SQLAlchemy 可能已把对象刷新过，两者会不一致，见守卫的说明）
     # 乐观锁：记下读到的这一版（任何写入都会抬高 updated_at，见守卫的说明）
     seen = task.updated_at
+    before_status = task.status
     await _guard_task_field(
         session, task, seen_updated_at=seen, fields={"status": "done"}, action="完成",
         expected_version=payload.expected_updated_at,
@@ -721,6 +722,8 @@ async def complete_task(
         action="complete",
         business_type="task",
         business_id=task.id,
+        before={"status": before_status},
+        after={"status": "done", "completion_note": payload.completion_note},
         ip=client_ip(request),
     )
     await session.commit()
@@ -737,6 +740,7 @@ async def cancel_task(
 ):
     task = await _visible_task(session, user, task_id, for_update=True)
     _ensure_not_final(task, "取消")
+    before_status = task.status
     await _guard_task_field(
         session, task, seen_updated_at=task.updated_at,
         fields={"status": "cancelled"}, action="取消",
@@ -750,6 +754,8 @@ async def cancel_task(
         action="cancel",
         business_type="task",
         business_id=task.id,
+        before={"status": before_status},
+        after={"status": "cancelled"},
         ip=client_ip(request),
     )
     await session.commit()
@@ -972,6 +978,7 @@ async def batch_complete_tasks(
         action="batch_complete",
         business_type="task",
         business_id=None,
+        before={"task_ids": payload.task_ids},
         after={"completed": len(completed), "skipped": len(skipped)},
         ip=client_ip(request),
     )
@@ -994,6 +1001,7 @@ async def postpone_task(
     if payload.due_at is None:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "请给出新的截止时间")
     _ensure_not_final(task, "改期")
+    before_due = task.due_at
     await _guard_task_field(
         session, task, seen_updated_at=task.updated_at,
         fields={"due_at": payload.due_at}, action="改期",
@@ -1009,6 +1017,7 @@ async def postpone_task(
         action="postpone",
         business_type="task",
         business_id=task.id,
+        before={"due_at": before_due.isoformat() if before_due else None},
         after={"due_at": str(payload.due_at)},
         ip=client_ip(request),
     )

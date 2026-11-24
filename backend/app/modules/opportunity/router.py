@@ -820,6 +820,7 @@ async def change_stage(
     if stage is None:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "请指定要推进到的阶段")
 
+    before_stage_id = opportunity.stage_id
     await svc.change_stage(
         session, opportunity, to_stage=stage, operator_id=user.id, remark=payload.remark
     )
@@ -830,6 +831,7 @@ async def change_stage(
         action="change_stage",
         business_type="opportunity",
         business_id=opportunity.id,
+        before={"stage_id": before_stage_id},
         after={"stage": stage.name, "remark": payload.remark},
         ip=client_ip(request),
     )
@@ -1155,6 +1157,7 @@ async def lose_opportunity(
             )
         )
 
+    before_status, before_stage_id = opportunity.status, opportunity.stage_id
     opportunity.status = "loss"
     opportunity.loss_reason_id = reason.id
     opportunity.loss_remark = payload.remark
@@ -1166,6 +1169,7 @@ async def lose_opportunity(
         action="lose",
         business_type="opportunity",
         business_id=opportunity.id,
+        before={"status": before_status, "stage_id": before_stage_id},
         after={"loss_reason": reason.name, "remark": payload.remark},
         ip=client_ip(request),
     )
@@ -1187,6 +1191,7 @@ async def reopen_opportunity(
     if opportunity.status != "loss":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "只有失单的商机可以重新激活")
     stage = await svc.get_first_stage(session)
+    before_stage_id, before_loss_reason = opportunity.stage_id, opportunity.loss_reason_id
     opportunity.status = "open"
     opportunity.loss_reason_id = None
     opportunity.reopen_at = None
@@ -1199,6 +1204,8 @@ async def reopen_opportunity(
         action="reopen",
         business_type="opportunity",
         business_id=opportunity.id,
+        before={"status": "loss", "stage_id": before_stage_id, "loss_reason_id": before_loss_reason},
+        after={"status": "open", "stage": stage.name},
         ip=client_ip(request),
     )
     await session.commit()

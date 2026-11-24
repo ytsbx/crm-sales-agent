@@ -254,6 +254,7 @@ async def claim_lead(
             action="claim",
             business_type="lead",
             business_id=lead.id,
+            before={"owner_id": None},
             after={"owner_id": user.id},
             ip=client_ip(request),
         )
@@ -273,6 +274,7 @@ async def release_lead(
 ):
     lead = await svc.lock_lead(session, user, lead_id)
     converted = lead.status == "converted"
+    before_owner, before_status = lead.owner_id, lead.status
     await svc.assign_lead(
         session, lead, to_user_id=None, operator_id=user.id,
         reason="解除已转化线索的负责人关联" if converted else "释放回线索池",
@@ -283,6 +285,8 @@ async def release_lead(
         action="release",
         business_type="lead",
         business_id=lead.id,
+        before={"owner_id": before_owner, "status": before_status},
+        after={"owner_id": None},
         ip=client_ip(request),
     )
     await session.commit()
@@ -300,6 +304,7 @@ async def discard_lead(
     lead = await svc.lock_lead(session, user, lead_id)
     if lead.status == "converted":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已转化的线索不能废弃", 422)
+    before_status, before_owner = lead.status, lead.owner_id
     svc.mark_discarded(lead, reason=payload.reason)
     await write_audit(
         session,
@@ -307,6 +312,7 @@ async def discard_lead(
         action="discard",
         business_type="lead",
         business_id=lead.id,
+        before={"status": before_status, "owner_id": before_owner},
         after={"reason": payload.reason, "owner_id": lead.owner_id},
         ip=client_ip(request),
     )
