@@ -423,7 +423,16 @@ async function createTimelineFixture(token, customerId, skuId) {
   const sample = await post('/samples', {
     customer_id: customerId, items: [{ sku_id: skuId, quantity: 1 }],
   })
-  await post(`/samples/${sample.id}/approve`, { approved: true })
+  // 打样审批已收口给同序 OA（bdd6efc9，本地 approve 一律 409「打样审批统一在同序 OA 办理」）。
+  // CI/冒烟没有外部 OA，而时间线夹具必须走完 made→ship→sign→confirm（状态机要求先 approved）——
+  // 按「行为变更要改夹具，不是放宽规则」直插状态（见 backend/scripts/mark_sample_approved.py），
+  // 等价旧 approve 端点的最小写入（status + approved_at）。
+  const marked = spawnSync(resolvePython(), ['scripts/mark_sample_approved.py', String(sample.id)], {
+    cwd: BACKEND_DIR, env: { ...process.env, PYTHONPATH: '.' }, encoding: 'utf8',
+  })
+  if (marked.error || marked.status !== 0) {
+    throw new Error(`标记样品已批准失败：${marked.error?.message ?? marked.stderr?.trim() ?? marked.status}`)
+  }
   await post(`/samples/${sample.id}/made`, {})
   await post(`/samples/${sample.id}/ship`, { carrier: 'UI 测试物流', tracking_no: 'UI-SAMPLE' })
   await post(`/samples/${sample.id}/sign`, {})

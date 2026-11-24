@@ -20,27 +20,16 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 def model_columns() -> dict[str, set[str]]:
     """收集所有 ORM 模型的可用属性名。"""
-    # 与 alembic/env.py 同样先 import 一次，保证所有模型都注册进 mapper
+    # 与 alembic/env.py 同样先 import 一次，保证所有模型都注册进 mapper。
+    # 2026-11-24 起改为**自动发现** app/modules/*/model.py：原来手工维护清单，
+    # 漏了 dingtalk 等 8 个模块，OaInstance 没注册 → row: OaInstance 注解被丢弃，
+    # dingtalk/service.py 里 86 处真实列被误报「注解为 User」（一直被 pyflakes 红盖着）。
+    import importlib
+
+    modules_root = pathlib.Path(__file__).resolve().parents[1] / 'app' / 'modules'
+    for model_file in sorted(modules_root.glob('*/model.py')):
+        importlib.import_module(f'app.modules.{model_file.parent.name}.model')
     import app.core.audit  # noqa: F401
-    import app.modules.agent.model  # noqa: F401
-    import app.modules.approval.model  # noqa: F401
-    import app.modules.customer.model  # noqa: F401
-    import app.modules.file.model  # noqa: F401
-    import app.modules.followup.model  # noqa: F401
-    import app.modules.integration.model  # noqa: F401
-    import app.modules.lead.model  # noqa: F401
-    import app.modules.notification.model  # noqa: F401
-    import app.modules.opportunity.model  # noqa: F401
-    import app.modules.order.model  # noqa: F401
-    import app.modules.payment.model  # noqa: F401
-    import app.modules.pricing.model  # noqa: F401
-    import app.modules.product.model  # noqa: F401
-    import app.modules.quote.model  # noqa: F401
-    import app.modules.sample.model  # noqa: F401
-    import app.modules.settings.model  # noqa: F401
-    import app.modules.task.model  # noqa: F401
-    import app.modules.user.model  # noqa: F401
-    import app.modules.wecom.model  # noqa: F401
     from app.core.base import Base
 
     result: dict[str, set[str]] = {}
@@ -98,6 +87,19 @@ def scan(models: dict[str, set[str]]) -> list[str]:
         # 判据用**函数参数的类型注解**（`request: SampleRequest`）：这是静态可得的、
         # 不猜的类型信息。局部变量（`sample = await ...`）不追 —— 追了容易误报，
         # 而参数注解已经覆盖了本项目里绝大多数"传进来的模型对象"。
+        #
+        # 赋值左侧（`doc.x = ...`）跳过：那是给实例挂动态属性（合法 Python，
+        # 如 bizdoc 的 `_archived_object_key` 事务临时记号，作者明示不做列），
+        # 真正会炸的是**读**不存在的列，读取仍照抓。
+        assigned_attrs: set[int] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                for sub in ast.walk(target):
+                    if isinstance(sub, ast.Attribute):
+                        assigned_attrs.add(id(sub))
         annotated: dict[str, str] = {}
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -120,6 +122,8 @@ def scan(models: dict[str, set[str]]) -> list[str]:
                         annotated[arg.arg] = candidate.id
         for node in ast.walk(tree):
             if not isinstance(node, ast.Attribute):
+                continue
+            if id(node) in assigned_attrs:
                 continue
             value = node.value
             if not isinstance(value, ast.Name) or value.id not in annotated:

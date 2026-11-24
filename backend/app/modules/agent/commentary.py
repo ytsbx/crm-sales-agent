@@ -23,7 +23,6 @@
 """
 
 import asyncio
-import json
 import logging
 from collections.abc import Sequence
 from datetime import date, datetime
