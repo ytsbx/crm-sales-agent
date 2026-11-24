@@ -1,7 +1,7 @@
 """应收与回款逻辑。"""
 
 from datetime import UTC, date, datetime
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -869,10 +869,11 @@ def split_amounts(total: Decimal, ratios: list[Decimal]) -> list[Decimal]:
     却漏了那道校验** —— 于是转单能生成负数额应收，后建却不行。
     两份实现必然漂移，所以合成这一处。
 
-    ⚠️ 舍入用 Python `Decimal` 的默认模式（`ROUND_HALF_EVEN`）。前端预览是
-    JavaScript 的 `Math.round`（半分向上），两者在"恰好半分"的金额上会给出
-    不同结果（`0.05` 分两期：JS 给 `0.03/0.02`，这里给 `0.02/0.03`）。
-    所以**前端不要自己算预览**，一律用后端返回的结果（见 `preview_split`）。
+    ⚠️ B03-15 决策1（主人 2026-11-24 拍板"统一四舍五入"）：舍入显式
+    `ROUND_HALF_UP`，与 core/money 及全系统结算钱同口径（原 Decimal 默认
+    `ROUND_HALF_EVEN` 与注释承诺/JS Math.round 惯例不一致，已统一）。
+    前端预览仍**不要自己算**，一律用后端返回的结果（见 `preview_split`），
+    保证预览与落库唯一来源。
     """
     if not ratios:
         raise AppError(ErrorCode.PARAM_ERROR, "至少要有一期比例", 422)
@@ -881,7 +882,7 @@ def split_amounts(total: Decimal, ratios: list[Decimal]) -> list[Decimal]:
         if index == len(ratios) - 1:
             amounts.append(total - sum(amounts, Decimal(0)))
         else:
-            amounts.append((total * ratio).quantize(Decimal("0.01")))
+            amounts.append((total * ratio).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
     if any(amount <= 0 for amount in amounts):
         raise AppError(
             ErrorCode.PARAM_ERROR,

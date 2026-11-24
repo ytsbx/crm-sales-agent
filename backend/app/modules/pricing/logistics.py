@@ -11,7 +11,7 @@
 """
 
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import Select, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -179,11 +179,11 @@ async def compute_weight_and_volume(
 
     # ⚠️ 这里才是**舍入点**：先把"单件 × 数量"算完，再按存储精度（4 位）舍。
     # 反过来（先舍单件、再乘数量）会把小体积抹成 0 —— 见 `sku_unit_volume` 的说明。
-    actual_weight = (unit_weight * quantity).quantize(Decimal("0.0001"))
-    volume = (unit_volume * quantity).quantize(Decimal("0.0001"))
+    actual_weight = (unit_weight * quantity).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+    volume = (unit_volume * quantity).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
 
     ratio = await volumetric_ratio(session)
-    volumetric_weight = (volume * ratio).quantize(Decimal("0.0001"))
+    volumetric_weight = (volume * ratio).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
     volumetric_enabled = ratio > 0
 
     if volumetric_enabled:
@@ -372,10 +372,10 @@ def quote_rate(
     费用取「重量计价」与「体积计价」的较大者：
     承运商不会两个都收，但会按对己方更有利的那个收。
     """
-    by_weight = (chargeable_weight * rate.unit_price_per_kg).quantize(Decimal("0.01"))
+    by_weight = (chargeable_weight * rate.unit_price_per_kg).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     by_volume = ZERO
     if rate.unit_price_per_volume:
-        by_volume = (volume * rate.unit_price_per_volume).quantize(Decimal("0.01"))
+        by_volume = (volume * rate.unit_price_per_volume).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
     amount = max(by_weight, by_volume)
     minimum = min_charge_override if min_charge_override is not None else rate.min_charge
@@ -449,7 +449,7 @@ async def prepare(
             raise AppError(ErrorCode.PARAM_ERROR, "数量过大，整数部分最多填写 13 位", 422)
         if quantity_unit == "件" and quantity != quantity.to_integral_value():
             raise AppError(ErrorCode.PARAM_ERROR, "按件计量的商品，数量必须填写正整数", 422)
-        stored_quantity = quantity.quantize(Decimal("0.001"))
+        stored_quantity = quantity.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
         if quantity != stored_quantity:
             raise AppError(ErrorCode.PARAM_ERROR, "数量最多保留三位小数", 422)
         quantity = stored_quantity

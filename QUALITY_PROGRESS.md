@@ -5412,4 +5412,12 @@
 - 主人纠偏"谁告诉你前端不是你的活了"，前端跟进不再推别会话。四条落地：① 往返 *_exact 消费——报价编辑种子/改价弹窗/草稿单价/打样来源单价与数量改读 *_exact、提交保持字符串；serialize_item 补六成本/底价快照+profit 的 *_exact 字符串键且脱敏同口径隐掉（test_decimal_batch2 新增 masking 用例）；订单/回款/分配/洞察既有 exact 消费复核已在位。② Q5 RulesPanel 阈值改文本输入原样字符串读写（修 InputNumber 经 JS Number 读回 16 位丢分、0 显示成空两病）。③ Q6 master 表单 toExactNumeric 原样字符串提交（修旧 toNumber 非法输入静默 null 抹数据）；展示字符串安全复核已在位。④ Q7 沙盒本单实况并列毛利率真值行；quote 成本闸门 reason 文本改 core/money.exact_decimal_text（有几位写几位）与判案真值一致防扯皮。
 - 验证：frontend tsc --noEmit 无错；隔离库全量 2260 项通过（2259+1 masking）。提交 666d7c3e、bc218ea9，只推 GitHub；另一会话未提交文件零扫入。
 - 已知预览局限记台账不扩范围：WhatIfPanel 纯预览模拟器（无写路径）JS Number 计算 16 位边界近似；订单详情成本+运费展示加总同属预览加总（≤15 位安全）。写路径一律字符串/Decimal。
-- 剩余欠账不变：收款比例舍入决策题（B03-15）、ERP 推单外部契约核实（B06-04）、两刀等解禁死代码（外币 fx、audit False 模式）；部署与 Q7 业务打招呼归主人/流程。
+- 剩余欠账不变：收款比例舍入决策题（B03-15）、ERP 推单外部契约核实（B06-04）、audit False 死模式一刀等解禁；**外币 fx 项复核后重新分类（2026-11-24 纠偏）**：非死代码——入口 ensure_currency_allowed 认 trade_mode 开关（export 放行）、历史数据与 ERP 同步刻意不拦，外币记录可存在；quote 994/2751/2811 是其读/展示出口（报价读路径不拒外币，仅 PDF 下载拒），删之≠行为不变。改法属业务决策（保留档案展示 vs 读路径显式拒绝），维持挂起。
+
+### float→Decimal 专项 B03-15 决策1 落地（分期舍入统一四舍五入，结算钱全系统一套口径）
+
+- 主人拍板"统一四舍五入"。split_amounts 显式 ROUND_HALF_UP（原 Decimal 默认半偶，与注释承诺/JS Math.round 惯例/core-money 不一致）；顺带扫全系统结算钱/量纲 quantize 默认半偶残留 24 处补 rounding=ROUND_HALF_UP：order 总额落分、quote 底价两处/版本六金额/3207/3210、logistics 重量体积三处+计费两处+存量数量、pricing 单价/退税_cny、insights 金额、reconcile 对账串。**不动类**：fx 挂起路径（quote 736、pricing 1176/1229）、magnitude/比率守卫（quote 1470/1480）、analytics 统计聚合（1752，2dp 下 noop）、targets 半偶统计。
+- 顺带技术活：payment/schema ratios `list[float]`→精确 `list[Decimal]`（字符串逐位解析、float 走 str 最短往返，16 位边界堵掉），NaN/Infinity 由 pydantic finite_number + 校验器 is_finite 双挡；math import 清除、docstring 纠偏。
+- 不变量复核：末期补差守恒锁一分不差；负数期明确拒绝不变；**已落库应收计划不动**，仅新拆账/新预览生效——口径变更（平局点各期面额翻面，如 0.05 分两期 0.02/0.03→0.03/0.02）由主人跟财务/业务打招呼。
+- 证据与测试：新增 tests/test_decimal_b03_15_split_half_up.py 5 项（平局半分向上且与 core/money 同口径、多期平局面额+守恒、任意总额守恒、负数期拒绝、比例精确入参+NaN/Inf 拒）。隔离库全量 2265 项通过（2260+5），旧断言零破坏。
+- 台账 B03-15 两行✅、§5 挂起类收敛为 ERP 推单+外币读出口两项。只推 GitHub，服务器只读未部署。

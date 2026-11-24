@@ -1,6 +1,5 @@
 """应收与回款入参。"""
 
-import math
 from datetime import date
 from decimal import Decimal
 from typing import Annotated
@@ -72,8 +71,10 @@ class PaymentAllocationUpdate(BaseModel):
         return self
 
 
-def _ratios_must_be_finite(value: list[float]) -> list[float]:
-    bad = [ratio for ratio in value if not math.isfinite(ratio)]
+def _ratios_must_be_finite(value: list[Decimal]) -> list[Decimal]:
+    # B03-15 决策1 顺带：比例换精确 Decimal（pydantic 对 float 走 str 最短往返、
+    # 对字符串逐位解析），16 位边界不再经 float 丢分；NaN/Infinity 仍显式挡掉。
+    bad = [ratio for ratio in value if not ratio.is_finite()]
     if bad:
         raise ValueError(
             f"每期比例必须是有限数（收到了 {', '.join(str(ratio) for ratio in bad)}）——"
@@ -82,7 +83,7 @@ def _ratios_must_be_finite(value: list[float]) -> list[float]:
     return value
 
 
-FiniteReceivableRatios = Annotated[list[float], AfterValidator(_ratios_must_be_finite)]
+FiniteReceivableRatios = Annotated[list[Decimal], AfterValidator(_ratios_must_be_finite)]
 
 
 class ReceivableGenerate(BaseModel):
@@ -91,12 +92,11 @@ class ReceivableGenerate(BaseModel):
     ratios: FiniteReceivableRatios
     """各期比例，例如 [0.3, 0.7]，合计必须是 1。
 
-    ⚠️ `list[float]` **放得进 NaN / Infinity**（它们是合法 JSON 里合法写出来的
-    字面值 `NaN` / `Infinity`），下面必须显式挡掉：
-      - `abs(sum([nan]) - 1) > 0.0001` → **恒为 False**（任何与 NaN 的比较都是 False），
-        于是"比例之和必须等于 1"这道校验被**绕过**；
-      - 紧接着 `Decimal(str(nan))` = `Decimal('NaN')`，`any(r <= 0 ...)` 抛
-        `decimal.InvalidOperation` → 冒成 500（C5-08，2026-10-10 修）。
+    ⚠️ B03-15 决策1 起比例为精确 `Decimal`（字符串逐位解析、float 走 str 最短往返）。
+    NaN / Infinity 仍须显式挡掉（JSON 里它们是合法字面值）：
+      - 与 NaN 的任何比较恒为 False，"比例之和必须等于 1" 会被**绕过**；
+      - 紧接着下游 `any(r <= 0 ...)` 抛 `decimal.InvalidOperation` → 冒成 500
+        （C5-08，2026-10-10 修）。校验器用 `is_finite()` 显式拒绝。
     不在这里拦，就等于把一个 500 交给"看起来完全合法"的入参。
     """
     first_due_date: date

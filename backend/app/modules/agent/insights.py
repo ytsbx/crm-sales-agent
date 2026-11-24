@@ -797,7 +797,7 @@ async def quote_draft(
                 "standard_price": result["standard_price"],
                 "minimum_price": result["minimum_price"],
                 "protection_price": result["protection_price"],
-                "amount": _f((quantity * unit_price).quantize(Decimal("0.01"))),
+                "amount": _f((quantity * unit_price).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
                 "approval_required": result["approval_required"],
             }
         )

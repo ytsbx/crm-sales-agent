@@ -372,7 +372,7 @@ async def create_order_from_quote(
     # 金额算法与 `POST /orders/{id}/receivables/generate` **同一口径**：
     # 前期四舍五入到分、**末期补差额**，所以各期之和严格等于订单总额。
     default_due = effective_delivery or (today + timedelta(days=30))
-    total_amount = version.total_amount.quantize(Decimal("0.01"))
+    total_amount = version.total_amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     if receivable_plan is None or not getattr(receivable_plan, "ratios", None):
         session.add(
             ReceivablePlan(

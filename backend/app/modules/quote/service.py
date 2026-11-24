@@ -1334,9 +1334,9 @@ async def _build_custom_item_snapshot(
     # 除法给 94.12，利润率正好 15%。所以乘法那条**不是"另一种口径"，是算错**。
     # 同一笔业务换条路径就换个数（新建 92 / 新版 94.12），根子就在这里。
     minimum_price = (
-        (basis_cost / (Decimal(1) - min_ratio)).quantize(Decimal("0.01"))
+        (basis_cost / (Decimal(1) - min_ratio)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         if min_ratio < 1
-        else basis_cost.quantize(Decimal("0.01"))
+        else basis_cost.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     )  # 人民币
     _assert_floor_in_range(minimum_price)
     # 利润必须与报价同币种：外币单要先把人民币成本折过去再减，
@@ -1661,7 +1661,7 @@ async def apply_current_basis_to_item(
         ]
     protection_price = max(protection_candidates) if protection_candidates else None
     floors = [v for v in (floor_from_margin, protection_price) if v is not None]
-    fresh_floor = max(floors).quantize(Decimal("0.01")) if floors else None
+    fresh_floor = max(floors).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if floors else None
     _assert_floor_in_range(fresh_floor)
 
     # ---- 「只紧不松」：底价不得低于这条明细**原来那一版**（2026-10-09 与主人确认）----
@@ -1958,14 +1958,14 @@ async def recalc_version(session: AsyncSession, version: QuoteVersion) -> None:
         (discount, "折扣合计"),
     ):
         _assert_money_in_range(amount, label=label)
-    version.subtotal_amount = subtotal.quantize(Decimal("0.01"))
-    version.charge_amount = charge_amount.quantize(Decimal("0.01"))
-    version.logistics_amount = logistics.quantize(Decimal("0.01"))
-    version.other_charge_amount = other_charge.quantize(Decimal("0.01"))
-    version.discount_amount = discount.quantize(Decimal("0.01"))
+    version.subtotal_amount = subtotal.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    version.charge_amount = charge_amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    version.logistics_amount = logistics.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    version.other_charge_amount = other_charge.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    version.discount_amount = discount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     # 统一定点舍入（方案 §5）：与订单侧 amount 口径一致，避免出现 3 位小数的总额
     _assert_money_in_range(subtotal + charge_amount + discount, label="订单总额")
-    version.total_amount = (subtotal + charge_amount + discount).quantize(Decimal("0.01"))
+    version.total_amount = (subtotal + charge_amount + discount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 def quote_freight_unconfirmed_reason(charges: list[QuoteCharge]) -> str | None:
@@ -3204,10 +3204,10 @@ async def version_comparison(session: AsyncSession, quote_id: int, *,
             )
         amount_delta = (
             Decimal(current["amount_total_exact"]) - Decimal(previous["amount_total_exact"])
-        ).quantize(Decimal("0.01"))
+        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         profit_delta = (
             profit_totals[current["version_id"]] - profit_totals[previous["version_id"]]
-        ).quantize(Decimal("0.01"))
+        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         diffs.append(
             {
                 "from_version_no": previous["version_no"],

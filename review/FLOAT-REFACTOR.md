@@ -54,7 +54,7 @@
 | order/drafts.py:59/61 | 草稿明细 quantity/unit_price float 出参（前端整份拷贝回提交，持久化精度链） | 进度 1347 行挂起线索 |
 | payment/service.py:52-53 | `_f` 序列化 helper | B01-02 同标准 |
 | payment/router.py:1267 | plan_allocated_amount float | — |
-| payment/schema.py:75-94 | 收款比例 `list[float]` 注解（比例本身见 Q3；HALF_EVEN 拆分口径**挂起**） | B03-15 |
+| payment/schema.py:75-94 | 收款比例 `list[float]` 注解（比例本身见 Q3；HALF_EVEN 拆分口径**挂起**） | ✅ B03-15 决策1：ratios 换精确 Decimal（字符串逐位/float 最短往返），NaN/Infinity 显式拒 |
 
 **批4 定价/物流/产品（pricing + product + master）**
 | 位置 | 内容 | 台账 |
@@ -153,7 +153,7 @@
 |---|---|---|
 | erp/service.py:172-186 | 推单报文 pay_amount/qty/price/amount float | B06-04：聚水潭实际接口数字类型/精度未核实，外部契约取舍 |
 | quote/service.py:985/2739/2799、pricing/router.py:2013、rules_engine.py:439(to_cny 外币分支) | 汇率快照/汇率表序列化 float | 外币遗留分支；CNY-only 规则下是否保留/删除待用户单独决定（进度 1310 行） |
-| payment 收款比例拆分 HALF_EVEN（B03-15） | split_amounts 默认银行家舍入 | 与 core/money HALF_UP 口径取舍，待决策；本轮只动 ratios 注解不动舍入 |
+| payment 收款比例拆分 HALF_EVEN（B03-15） | split_amounts 默认银行家舍入 | ✅ **决策1 已落地（主人 2026-11-24 拍板"统一四舍五入"）**：split_amounts 显式 ROUND_HALF_UP 与 core/money 同口径；顺带统一全系统结算钱/量纲 quantize 默认半偶残留（order 总额、quote 底价/版本六金额/3207/3210、logistics 重量体积/计费、pricing 单价/退税、insights 金额、reconcile 对账串）共 24 处补 rounding=ROUND_HALF_UP；fx 挂起路径/守卫/统计类不动。守恒锁/负数期拒绝不变；已落库计划不动，新拆账/预览生效（口径变更主人打招呼）。测试 test_decimal_b03_15_split_half_up.py 5 项。全量 2265 绿 |
 
 ## 2. 分批计划（每批：改造→定向精度回归→全量回归→回写进度→提交只推 GitHub）
 
@@ -279,8 +279,8 @@ JS Number 解析 15-16 位上限是前端既有问题，本轮后端改造不使
 
 允许保留类：① 比率/百分比输出 float（Q3：quote profit_rate/authorized_min_margin、
 targets 达成率、rules_engine 毛利率**展示值**（判断已改真值 Q7）、analytics average_discount、pricing 权限比率）；
-② 挂起三项（ERP 推单报文 erp/service:172-186 B06-04、外币 fx 遗留分支、收款比例
-HALF_EVEN B03-15 含 payment/schema ratios 注解）；③ Q4 已落地（回放改精确原文解包；
+② 挂起项（ERP 推单报文 erp/service:172-186 B06-04、外币 fx 遗留读出口——复核后非死代码、
+改法属业务决策维持挂起）；B03-15 已落地见决策行；③ Q4 已落地（回放改精确原文解包；
 audit.py json_safe 的 decimal_as_str=False 模式保留给其它审计消费方）、Q5 settings
 get_number/_strict_ratio 配置侧（≤15 位往返安全，16 位边界记台账不扩范围）；Q6 已落地见决策行；
 ④ 非金额 float（dingtalk 登录态/token 过期、notification 重试次数、bizdoc PDF 列宽、

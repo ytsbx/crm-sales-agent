@@ -39,7 +39,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, date, datetime
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Annotated, Any
 
 from pydantic import Field, TypeAdapter, ValidationError
@@ -1825,7 +1825,7 @@ def serialize_financial_adjustment(row: FinancialAdjustment | None) -> dict | No
         "amount": (
             None
             if row.amount is None
-            else format(Decimal(row.amount).quantize(Decimal("0.01")), "f")
+            else format(Decimal(row.amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP), "f")
         ),
         "currency": row.currency,
         "status": row.status,

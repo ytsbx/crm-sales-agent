@@ -11,7 +11,7 @@
 
 import hashlib
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import and_, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -892,7 +892,7 @@ async def estimate_logistics(
     if not chosen["above_minimum"]:
         notes.append("触发最低收费，已按数量摊入单件")
 
-    unit = (Decimal(chosen["amount_exact"]) / quantity).quantize(Decimal("0.0001"))
+    unit = (Decimal(chosen["amount_exact"]) / quantity).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
     return unit, "；".join(notes)
 
 
@@ -1225,7 +1225,7 @@ async def calculate_price(
     refund_rate = refund_rate or ZERO
 
     # 退税：简化按「商品成本 × 退税率」估算（生产企业免抵退更复杂，待财务给准确口径）
-    tax_refund_cny = (goods_cost * refund_rate).quantize(Decimal("0.0001")) if refund_rate else ZERO
+    tax_refund_cny = (goods_cost * refund_rate).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP) if refund_rate else ZERO
     tax_refund = tax_refund_cny if not (is_foreign and fx) else (tax_refund_cny / fx).quantize(
         Decimal("0.0001")
     )
