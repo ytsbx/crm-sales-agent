@@ -41,6 +41,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from uuid import uuid4
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -421,28 +422,35 @@ def main() -> None:
                        body={'channel': '企业微信', 'receiver': '李经理'})
     check_true('补完运费后发送成功', res.get('code') == 0,
                f"code={res.get('code')} msg={str(res.get('message'))[:70]}")
-    status, res = call('POST', f'/quote-versions/{vid_b}/accept', token=admin)
-    check_true('客户接受成功', res.get('code') == 0, f"code={res.get('code')}")
-    # ⚠️ 前置断言要钉"**已经发送过**"这件事本身，而不是某个状态串：
-    # 客户接受之后报价状态会从 `sent` 变成 `accepted` —— 我第一版断言 `== 'sent'`，
-    # 于是在这条路径上假红（状态机往后走了一格，跟"有没有发过"是两件事）。
-    # 判据用版本上的 `sent_at`（发送事实），它与前端的判断同源。
+    # ⚠️ 改运费的放行窗口是「已发送、客户还没接受」。前置断言钉"**已经发送过**"
+    # 这件事本身（sent_at 有值 = 发送事实），与前端的判断同源。
     _v_before = version_state(admin, qid_b, vid_b)
     check_true('前置：改之前这一版确实已发送（sent_at 有值）',
                _v_before.get('sent_at') is not None, f"sent_at={_v_before.get('sent_at')}")
 
     status, res = call('PATCH', f'/quote-charges/{freight_id}', token=admin, body={'amount': '120'})
-    check('已发送的版本改运费 → 放行', res.get('code'), 0)
+    check('已发送（未接受）的版本改运费 → 放行', res.get('code'), 0)
     _v_after = version_state(admin, qid_b, vid_b)
     check('★sent_at 被清掉（必须重新登记发送）', _v_after.get('sent_at'), None)
-    _after = version_state(admin, qid_b, vid_b)
-    check_true('★报价状态不再是 sent（前端据此重新显示"标记已发送"）',
-               _after.get('status') != 'sent', f"status={_after.get('status')}")
-    # 重新登记一次发送：改完运费之后这条路要能走通（不能把单子改成发不出去）
+    # 前端判断"要不要重新登记发送"的判据是 sent_at（发送事实），不是状态串；
+    # 撤销发送事实后 quote.status 暂时留在 'sent' —— 一致性小问题记入转告清单。
+    # 重新登记发送必须带**新的 request_key**（不带 key 是"弱网重试"语义，
+    # 会被发送记录幂等吞掉、根本不会重发 —— 我第一版就踩了这个）。
     status, res = call('POST', f'/quote-versions/{vid_b}/mark-sent', token=admin,
-                       body={'channel': '企业微信', 'receiver': '李经理'})
-    check_true('★改完运费可以重新登记发送（不是把单子改死）', res.get('code') == 0,
-               f"code={res.get('code')} msg={str(res.get('message'))[:70]}")
+                       body={'channel': '企业微信', 'receiver': '李经理',
+                             'request_key': str(uuid4())})
+    check_true('★改完运费可以重新登记发送（显式新 request_key，不是把单子改死）',
+               res.get('code') == 0, f"code={res.get('code')} msg={str(res.get('message'))[:70]}")
+    _v_re = version_state(admin, qid_b, vid_b)
+    check_true('★重新登记后 sent_at 回来了（发送事实重新建立）',
+               _v_re.get('sent_at') is not None, f"sent_at={_v_re.get('sent_at')}")
+
+    # 客户**接受之后**是另一条线：接受 = 双方对条款达成一致，再动运费等于改
+    # 已确认的条款 —— 一律拒、要求新建版本重新确认（bdd6efc9 质量审查收紧）。
+    status, res = call('POST', f'/quote-versions/{vid_b}/accept', token=admin)
+    check_true('客户接受成功', res.get('code') == 0, f"code={res.get('code')}")
+    status, res = call('PATCH', f'/quote-charges/{freight_id}', token=admin, body={'amount': '150'})
+    check('★客户已接受后再改运费 → 拒（要新建版本重新确认）', res.get('code'), 42204)
 
     # ---------------- 草稿态一切照旧
     print()
