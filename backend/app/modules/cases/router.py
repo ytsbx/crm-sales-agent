@@ -174,6 +174,7 @@ async def update_case(
     if payload.customer_id is not None and payload.customer_id != case.customer_id:
         await customer_service.get_visible_customer(session, user, payload.customer_id)
     changed_fields = payload.model_dump(exclude_unset=True)
+    before = svc.serialize_case(case, reveal_customer=True)  # B18-08：改前快照
     svc._apply_update(case, payload)
     # 用**改完之后的**关联值再校验一遍（§5.1.3）：换客户的同时可能把旧客户的
     # 报价/订单留在身上，或者新挂了不属于该客户的证据——两种情况都要拦住。
@@ -240,6 +241,8 @@ async def update_case(
         action="update",
         business_type="case",
         business_id=case.id,
+        before=before,
+        after=svc.serialize_case(case, reveal_customer=True),
         ip=client_ip(request),
     )
     await session.commit()
@@ -254,6 +257,7 @@ async def submit_case(
     session: AsyncSession = Depends(get_db),
 ):
     case = await svc.get_case_or_404(session, case_id)
+    before_status = case.status  # B18-08：提交前状态
     await svc.submit_case(session, case=case, user=user)
     await write_audit(
         session,
@@ -261,6 +265,8 @@ async def submit_case(
         action="submit",
         business_type="case",
         business_id=case.id,
+        before={"status": before_status},
+        after={"status": case.status},
         ip=client_ip(request),
     )
     await session.commit()
@@ -310,6 +316,7 @@ async def review_case(
     session: AsyncSession = Depends(get_db),
 ):
     case = await svc.get_case_or_404(session, case_id)
+    before_status = case.status  # B18-08：审核前状态
     await svc.review_case(session, case=case, user=user, approve=payload.approve, note=payload.note)
     await write_audit(
         session,
@@ -317,7 +324,8 @@ async def review_case(
         action="review",
         business_type="case",
         business_id=case.id,
-        after={"approve": payload.approve, "note": payload.note},
+        before={"status": before_status},
+        after={"approve": payload.approve, "note": payload.note, "status": case.status},
         ip=client_ip(request),
     )
     await session.commit()
@@ -336,6 +344,7 @@ async def delete_case(
     case = await svc._lock_case(session, case_id)
     reviewer = svc.is_reviewer(user)
     before = case.status
+    before_snap = svc.serialize_case(case, reveal_customer=True)  # B18-08：删前快照
     svc.ensure_case_draft_access(case, user)
     if draft_only and before not in ("draft", "rejected"):
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "案例状态已变化，请刷新列表后再操作", 409)
@@ -357,8 +366,8 @@ async def delete_case(
         action="update" if withdrawn else "delete",
         business_type="case",
         business_id=case.id,
-        before={"status": before} if withdrawn else None,
-        after={"status": case.status} if withdrawn else None,
+        before={"status": before} if withdrawn else before_snap,
+        after={"status": case.status} if withdrawn else {"status": case.status, "deleted": True},
         ip=client_ip(request),
     )
     await session.commit()

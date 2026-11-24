@@ -5234,3 +5234,10 @@
 - B19-08 修：OpportunityCreate/Update.title 去空白拒纯空白（null 由基类拦）。
 - 新增回归：test_task_schema_bounds.py、test_lead_opportunity_schema_bounds.py。
 - 全量 2187 项通过。
+
+### P3 用例补强·第二批（B18-08 / B18-09）
+
+- 甄别：案例 customer_id>0、创建标题非空白、各文本列长度已有；正文为 Text 不需限。
+- B18-09 修：problem_tags 加数量≤20、单项去空白≤32 字；CaseUpdate.title 拒 null/空白。
+- B18-08 修：案例 update/submit/review/delete 审计补 before/after（改前快照/状态），事后可复算。
+- 新增回归 test_case_schema_bounds.py。全量 2190 项通过。
