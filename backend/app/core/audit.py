@@ -34,21 +34,26 @@ class AuditLog(Base, IdMixin):
     )
 
 
-def json_safe(value: Any) -> Any:
+def json_safe(value: Any, *, decimal_as_str: bool = True) -> Any:
     """把审计数据转成能进 JSONB 的形状。
 
     踩过的坑：报价单的 valid_until 是 date 类型，直接塞进 JSON 列会在
     flush 时抛 "Object of type date is not JSON serializable"，
     而且报错出现在 commit 阶段，看调用栈很难一眼定位。
+
+    Decimal 默认按原值存字符串（float→Decimal 专项批1，B12-01）：转 float
+    会在 16 位边界差一分，审计留痕就对不上账；字符串可精确复算，与 bizdoc
+    快照先例一致。`decimal_as_str=False` 仅供幂等回放等「必须保持原响应
+    数字形状」的调用方使用（回放精度是独立待决策项，见 review/FLOAT-REFACTOR.md）。
     """
     if isinstance(value, dict):
-        return {key: json_safe(item) for key, item in value.items()}
+        return {key: json_safe(item, decimal_as_str=decimal_as_str) for key, item in value.items()}
     if isinstance(value, (list, tuple, set)):
-        return [json_safe(item) for item in value]
+        return [json_safe(item, decimal_as_str=decimal_as_str) for item in value]
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     if isinstance(value, Decimal):
-        return float(value)
+        return str(value) if decimal_as_str else float(value)
     return value
 
 

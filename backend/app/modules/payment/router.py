@@ -417,7 +417,8 @@ async def _generate_receivables(session, order, order_id, payload, request, user
         await idempotency.complete(
             session,
             reservation,
-            result_payload=json_safe(body),
+            # 回放体保持原响应数字形状（decimal_as_str=False），与 complete 底座一致。
+            result_payload=json_safe(body, decimal_as_str=False),
             result_id=created[0].id if created else order_id,
         )
     await session.commit()
@@ -1093,7 +1094,8 @@ async def create_payment(
             await idempotency.complete(
                 session,
                 reservation,
-                result_payload=json_safe(body),
+                # 回放体保持原响应数字形状（decimal_as_str=False），与 complete 底座一致。
+                result_payload=json_safe(body, decimal_as_str=False),
                 result_id=record.id,
             )
         await session.commit()

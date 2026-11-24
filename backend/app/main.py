@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.errors import register_exception_handlers
+from app.core.jsonio import DecimalJSONResponse
 from app.core.response import ok
 from app.modules.approval.router import router as approval_router
 from app.modules.approval.rules_router import router as approval_rules_router
@@ -92,6 +93,9 @@ app = FastAPI(
     version="1.1.0",
     docs_url="/docs" if settings.debug else None,
     redoc_url=None,
+    # float→Decimal 专项批1：金额按 Decimal 原值渲染精确 JSON 数字，
+    # 不再走默认编码器的 Decimal→float（大额会差一分）。见 core/jsonio。
+    default_response_class=DecimalJSONResponse,
 )
 
 # B24-01：allow_credentials=True 时来源不能用 *（CORS 规范禁止，浏览器也会拒）。

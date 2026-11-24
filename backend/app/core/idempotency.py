@@ -206,7 +206,10 @@ async def complete(
     if reservation.row is None:  # pragma: no cover - 防御性
         return
     reservation.row.status = "done"
-    reservation.row.result_payload = json_safe(result_payload)
+    # 回放契约是「原样返回同一份响应」：金额保持数字形状，不随审计改字符串。
+    # 大额回放经 float 的精度问题是独立待决策项（review/FLOAT-REFACTOR.md），
+    # 不在审计字符串化这一批里顺手改契约。
+    reservation.row.result_payload = json_safe(result_payload, decimal_as_str=False)
     reservation.row.result_id = result_id
     await session.flush()
 
