@@ -79,6 +79,7 @@ export const AUDIT_TYPE_LABEL: Record<string, string> = {
   order_draft: '订单草稿',
   order_milestone: '跟单节点',
   payment: '回款',
+  payment_record: '回款记录',
   price_permission: '价格权限',
   price_rule: '价格规则',
   product: '产品',
