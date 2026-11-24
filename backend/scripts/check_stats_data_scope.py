@@ -114,6 +114,11 @@ EXCEPTIONS: dict[tuple[str, str], str] = {
         "接收单个 `order_id`；调用方 `payment/router.py` 先 `get_order_or_404` + "
         "`assert_order_visible` 才调它（另一个调用方是 AI 工具，用的是已过范围的 `order` 对象）。"
     ),
+    ("app/modules/payment/service.py", "assert_receivable_amount_fits"): (
+        "**写路径的金额校验**（新增/调高应收前，锁内核对有效应收合计 ≤ 订单总额），"
+        "`func.sum` 是校验用的合计不是统计出口；可见性由调用方保证"
+        "（改期路径 `get_visible_plan` + `get_order_or_404`，新增路径在订单行锁内）。"
+    ),
     ("app/modules/order/service.py", "create_shipment_batch"): (
         "只为**单个订单**取下一个批次序号（`func.max(OrderShipmentBatch.batch_no)`）；"
         "调用方路由先 `get_visible_order`。取序号不需要范围。"
