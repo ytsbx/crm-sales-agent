@@ -49,7 +49,10 @@ async def main():
                 async def manual():
                     async with SessionLocal() as other:
                         try:
-                            await bind_customer(other,user=SimpleNamespace(id=user_id),contact_id=ext_ids[0],customer_id=customer_ids[0])
+                            # 数据范围框架上线后可见性校验要读 data_scope/department_id
+                            # （scoped_owner_ids），假用户只给 id 会在锁前就崩 AttributeError，
+                            # 任务瞬间结束，锁断言就成了假红。self + 无部门 = 业务员形状。
+                            await bind_customer(other,user=SimpleNamespace(id=user_id,department_id=None,data_scope='self'),contact_id=ext_ids[0],customer_id=customer_ids[0])
                             await other.commit();return 200
                         except AppError as exc:
                             await other.rollback();return exc.http_status

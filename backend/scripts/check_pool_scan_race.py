@@ -109,13 +109,24 @@ async def busy_catchup():
     await retire(cid);print('busy customer skipped without waiting, next scan catches up')
 async def late_candidate(approval=False):
     cid=await new_customer()
-    async with SessionLocal() as first,SessionLocal() as second,SessionLocal() as approver:
+    async with SessionLocal() as first,SessionLocal() as approver:
         initial=Gate(first,Customer,False)
         job=asyncio.create_task(settings.run_public_pool_recycle(initial,uids[2]))
         await wait_enter(initial,job)
-        created=await settings.run_public_pool_recycle(second,uids[2]);assert created['nominated_count']==1
+        # 从前这里跑**第二次扫描**造「迟到的候选」。B23-P1 起手动/定时扫描共用
+        # 防重入锁（task.scanning.lock_recycle_scan，advisory lock），暂停中的
+        # 第一个扫描不放锁，第二个扫描会无限等 —— 该交错场景结构性不可达（实测
+        # 卡死）。改为直插一行未结候选，模拟「快照之后才出现的候选」：
+        # 要验的重查（读后不重复提名）与审批锁循环判据一字不动。
+        async with SessionLocal() as maker:
+            late=Candidate(
+                customer_id=cid,owner_id=uids[0],level='B',rule_days=30,
+                status='pending',notice_at=NOW,due_at=NOW+timedelta(days=7),
+                notice_days=7,created_at=NOW,
+            )
+            maker.add(late);await maker.flush();late_id=late.id;await maker.commit()
         if approval:
-            row=await approver.get(Candidate,created['candidates'][0]['candidate_id'])
+            row=await approver.get(Candidate,late_id)
             gate=Gate(approver,Candidate,True)
             approving=asyncio.create_task(settings.decide_candidate(gate,candidate=row,decision='approve',operator_id=uids[2],allow_early=True,note='isolated lock regression'))
             await wait_enter(gate,approving)
@@ -125,20 +136,23 @@ async def late_candidate(approval=False):
         if approval:
             gate.resume.set();await asyncio.wait_for(approving,5)
             async with SessionLocal() as verify:
-                assert (await verify.get(Candidate,row.id)).status=='executed'
+                assert (await verify.get(Candidate,late_id)).status=='executed'
         async with SessionLocal() as verify:
             count=(await verify.execute(select(Candidate).where(Candidate.customer_id==cid))).scalars().all()
             assert len(count)==1
     await retire(cid);print('late open candidate rechecked; '+('candidate-first approval finishes without lock cycle' if approval else 'no duplicate notice'))
 async def held_scan():
     cid=await new_customer()
-    async with SessionLocal() as first,SessionLocal() as other,SessionLocal() as writer:
+    async with SessionLocal() as first,SessionLocal() as writer:
         gate=Gate(first,Customer,True)
         scan_pid=await first.scalar(text('select pg_backend_pid()'))
         job=asyncio.create_task(settings.run_public_pool_recycle(gate,uids[2]))
         await wait_enter(gate,job)
-        result=await asyncio.wait_for(settings.run_public_pool_recycle(other,uids[2]),5)
-        assert result['nominated_count']==0
+        # 从前这里还跑第二个扫描验「跳过锁着的客户、不空等」。B23-P1 起扫描有
+        # 防重入锁（pg_advisory_xact_lock），第二个扫描会一直等第一个放锁，
+        # 「跳过」已不可达；写者持行锁、扫描 skip_locked 跳过的那半由 busy_catchup
+        # 覆盖。这里专注另一半：转交必须真等在扫描持有的客户行锁上
+        # （pg_blocking_pids 佐证），扫描提交后才完成，不产生丢更新。
         c=await writer.get(Customer,cid)
         user=CurrentUser(await writer.get(User,uids[2]),roles=['admin'],permissions={'customer:assign'},data_scope='all')
         writer_pid=await writer.scalar(text('select pg_backend_pid()'))
@@ -157,7 +171,7 @@ async def held_scan():
         await asyncio.wait_for(transfer_job,5)
         async with SessionLocal() as verify:
             assert (await verify.get(Customer,cid)).owner_id==uids[1]
-    await retire(cid);print('second scan skips lock; transfer actually waits (pg_blocking_pids), then finishes')
+    await retire(cid);print('transfer actually waits (pg_blocking_pids) on held scan row lock, then finishes')
 async def protection_entry(mode):
     async with SessionLocal() as s:
         c=Customer(name='protection-'+mode+'-'+uuid4().hex,owner_id=uids[0],pool_status='private',level='B',last_followup_at=NOW-timedelta(days=60),last_contact_unknown=False,created_at=NOW-timedelta(days=200),updated_at=NOW)
