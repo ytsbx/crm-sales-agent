@@ -147,7 +147,7 @@ export function listOaMembers() {
 }
 
 export function setOaBinding(userId: number, oaUserId: string | null) {
-  return api.patch<{ id: number; oa_user_id: string | null }>(`/users/${userId}/oa-binding`, {
+  return api.patch<{ id: number; oa_user_id: string | null; department_synced: boolean }>(`/users/${userId}/oa-binding`, {
     oa_user_id: oaUserId,
   })
 }

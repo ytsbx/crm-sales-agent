@@ -4,6 +4,12 @@ import { Button } from '@douyinfe/semi-ui'
 import { hasPermission, matchMenu, menuLabel } from './menu'
 import { useAuthStore } from '../shared/store/auth'
 
+const DIRECT_ROUTES = [
+  { path: '/pricing', label: '核价', permission: 'product:view' },
+  { path: '/order-drafts', label: '订单草稿', permission: 'order:view' },
+  { path: '/pool-recycle', label: '公海回收', permission: 'customer:pool_review' },
+]
+
 /**
  * 路由级权限守卫：**入口留着，点进来把原因说清楚**（主人 2026-10-12 拍板选 A）。
  *
@@ -31,17 +37,20 @@ export default function RoutePermissionGuard() {
   const user = useAuthStore((state) => state.user)
   const location = useLocation()
   const menu = matchMenu(location.pathname)
+  const directRoute = DIRECT_ROUTES.find(({ path }) =>
+    location.pathname === path || location.pathname.startsWith(`${path}/`))
+  const permission = directRoute?.permission ?? menu?.permission
 
   // 没有对应菜单项的页面（详情页、工作台等）不在这里判：
   // 详情页的权限由它自己的接口决定，判错了会挡住正常流程
   // 设置页包含向全部登录用户开放的「我的」，管理页签由 SettingsPage 自行限制。
   // 菜单权限在这里仅用于区分名称，不能用它拦住个人账号入口。
-  if (!menu || menu.key === 'settings' || hasPermission(user, menu.permission)) {
+  if (menu?.key === 'settings' || hasPermission(user, permission)) {
     // 无权限路由的**子页面**（详情页等）继承这层的判定，正常放行
     return <Outlet />
   }
 
-  const label = menuLabel(menu, user)
+  const label = directRoute?.label ?? (menu ? menuLabel(menu, user) : '该页面')
   return (
     <div className="page-container">
       <div className="permission-denied">

@@ -892,7 +892,7 @@ export default function CasesPage() {
                           {item.kind_label}
                         </Tag>
                         <span style={{ flex: 1 }}>{item.label}</span>
-                        <a
+                        <button type="button" className="crm-text-action"
                           style={{ color: 'var(--crm-danger, #d45)' }}
                           onClick={() =>
                             setForm({
@@ -904,7 +904,7 @@ export default function CasesPage() {
                           }
                         >
                           移除
-                        </a>
+                        </button>
                       </div>
                       <Input
                         size="small"
@@ -1022,13 +1022,13 @@ export default function CasesPage() {
                           )}
                         </div>
                         {event.source ? (
-                          <a
+                          <button type="button" className="crm-text-action"
                             onClick={() =>
                               addEvidence(`${event.source!.type}:${event.source!.id}`)
                             }
                           >
                             设为证据
-                          </a>
+                          </button>
                         ) : (
                           <span style={{ color: 'var(--crm-text-3)', flex: '0 0 auto' }}>非单据</span>
                         )}
@@ -1126,9 +1126,9 @@ export default function CasesPage() {
                     {detail.superseded_by ? (
                       <>
                         {' '}
-                        <a onClick={() => void openDetailById(detail.superseded_by as number)}>
+                        <button type="button" className="crm-text-action" onClick={() => void openDetailById(detail.superseded_by as number)}>
                           查看当前版本
-                        </a>
+                        </button>
                       </>
                     ) : null}
                   </span>

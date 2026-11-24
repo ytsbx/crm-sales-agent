@@ -2154,7 +2154,7 @@ async def team_summary(session: AsyncSession, user: CurrentUser) -> dict:
     member_ids = [m.id for m in members]
 
     # 用同一批数据计算团队总数和停用员工小计，无负责人任务仍计入原团队口径。
-    disabled = User.status == "disabled"
+    disabled = User.status.in_(("disabled", "archived"))
     overdue = Task.due_at < now
     team_task_count, team_overdue_count, disabled_task_count, disabled_overdue_count = (
         await session.execute(

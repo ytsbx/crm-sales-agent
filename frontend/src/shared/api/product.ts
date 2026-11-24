@@ -47,7 +47,11 @@ export function createProduct(payload: ProductPayload) {
   return api.post<Product>('/products', payload)
 }
 
-export function updateProduct(id: number, payload: Partial<ProductPayload>) {
+interface EditExpectation {
+  expected_fields?: Record<string, string | null>
+}
+
+export function updateProduct(id: number, payload: Partial<ProductPayload> & EditExpectation) {
   return api.patch<Product>(`/products/${id}`, payload)
 }
 
@@ -63,7 +67,7 @@ export function createSku(productId: number, payload: SkuPayload) {
   return api.post<Sku>(`/products/${productId}/skus`, payload)
 }
 
-export function updateSku(skuId: number, payload: Partial<SkuPayload> & { status?: string }) {
+export function updateSku(skuId: number, payload: Partial<SkuPayload> & EditExpectation & { status?: string }) {
   return api.patch<Sku>(`/skus/${skuId}`, payload)
 }
 

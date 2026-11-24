@@ -422,7 +422,7 @@ export const ENUM_LABEL: Record<string, string> = {
  *  ④ 技术字段一律不展示；对象/数组不往屏幕上放；
  *  ⑤ 只有一边有值的（`空 → 1`）说成"结果"，不写成"变更"。
  *
- * 返回 `null` 表示"没什么可说的"（调用方会退回"看原始数据"）。
+ * 返回 `null` 表示没有可展示的业务变更。
  */
 export function auditChangeSummary(row: {
   business_type?: string | null
@@ -472,27 +472,4 @@ export function auditChangeSummary(row: {
     }
   }
   return parts.length ? parts.join('；') : null
-}
-
-/**
- * 这条记录有多少字段**没被翻出来**（界面据此提示"还有 N 处技术细节，可展开原始数据"）。
- *
- * 审计页是合规取证用的（仅管理员可见），所以不能因为"翻不出中文"就把信息藏了 ——
- * 摘要给人看，原始 JSON 留在可展开的地方。
- */
-export function auditHiddenFieldCount(row: {
-  business_type?: string | null
-  before_data?: unknown
-  after_data?: unknown
-}): number {
-  const type = row.business_type === 'inquiry' ? 'custom_inquiry' : row.business_type ?? null
-  const before = (row.before_data ?? {}) as Record<string, unknown>
-  const after = (row.after_data ?? {}) as Record<string, unknown>
-  let hidden = 0
-  for (const key of new Set([...Object.keys(after), ...Object.keys(before)])) {
-    if (AUDIT_TECH_FIELDS.has(key)) continue
-    if (String(before[key] ?? '') === String(after[key] ?? '')) continue
-    if (!auditFieldLabel(type, key)) hidden += 1
-  }
-  return hidden
 }

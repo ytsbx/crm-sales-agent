@@ -7,7 +7,8 @@ import { parseOptionalDecimal, parseOptionalNumber } from '../../shared/number-i
 import { formatBeijingDate } from '../../shared/beijing-time'
 import { formatMoney, formatWholeCny, toTwoDecimals } from '../../shared/components/money'
 import PageHeader from '../../shared/components/PageHeader'
-import KpiStrip from '../../shared/components/KpiStrip'
+import KpiStrip, { type KpiItem } from '../../shared/components/KpiStrip'
+import { ApiError } from '../../shared/api/client'
 import HelpTip from '../../shared/components/HelpTip'
 import EChart from '../../shared/components/charts/EChart'
 import DonutLegend from '../../shared/components/charts/DonutLegend'
@@ -74,12 +75,41 @@ function Row({ columns = 4, children }: { columns?: 1 | 2 | 3 | 4; children: Rea
   return <div className={`row-${columns}`}>{children}</div>
 }
 
-function ReportSection({ title, note, children, extra, id }: {
+interface AnalyticsRead {
+  isError: boolean
+  isPending: boolean
+  isFetching: boolean
+  error: unknown
+  refetch: () => Promise<unknown>
+}
+
+function readIssue(query?: AnalyticsRead): ReactNode {
+  if (query?.isError) {
+    if (query.error instanceof ApiError && query.error.status === 403) {
+      return <span role="status">没有权限查看这项数据</span>
+    }
+    return <span role="status">数据加载失败。 <Button size="small" theme="borderless"
+      loading={query.isFetching} onClick={() => void query.refetch()}>重试</Button></span>
+  }
+  return query?.isPending ? <span role="status">正在读取数据…</span> : null
+}
+
+function AnalyticsKpis({ items, ...props }: Omit<Parameters<typeof KpiStrip>[0], 'items'> & {
+  items: (KpiItem & { query: AnalyticsRead })[]
+}) {
+  return <KpiStrip {...props} items={items.map(({ query, ...item }) => {
+    const issue = readIssue(query)
+    return issue ? { ...item, value: '—', hint: issue } : item
+  })} />
+}
+
+function ReportSection({ title, note, children, extra, id, query }: {
   title: string
   note?: string
   children: ReactNode
   extra?: ReactNode
   id?: string
+  query?: AnalyticsRead
 }) {
   return (
     <section className="analytics-section" id={id}>
@@ -90,7 +120,7 @@ function ReportSection({ title, note, children, extra, id }: {
         </div>
         {extra}
       </div>
-      {children}
+      {readIssue(query) ?? children}
     </section>
   )
 }
@@ -144,11 +174,12 @@ function Donut({
 const centerMoney: ValueFormat = (value) =>
   Math.abs(value) >= 10_000 ? `¥${(value / 10_000).toFixed(1)}万` : asMoney(value)
 
-function StatusCounts({ title, note, data, unit }: {
+function StatusCounts({ title, note, data, unit, query }: {
   title: string
   note?: string
   data: NameValue[]
   unit: string
+  query?: AnalyticsRead
 }) {
   return (
     <section className="analytics-status-group" aria-label={title}>
@@ -156,7 +187,7 @@ function StatusCounts({ title, note, data, unit }: {
         <h3>{title}</h3>
         {note && <p>{note}</p>}
       </div>
-      {data.length ? (
+      {readIssue(query) ?? (data.length ? (
         <dl>
           {data.map(({ name, value }) => (
             <div key={name} className={value === 0 ? 'is-empty' : undefined}>
@@ -165,7 +196,7 @@ function StatusCounts({ title, note, data, unit }: {
             </div>
           ))}
         </dl>
-      ) : <NoData />}
+      ) : <NoData />)}
     </section>
   )
 }
@@ -662,12 +693,12 @@ export default function AnalyticsPage() {
 
       {view === 'overview' && <div className="analytics-view" aria-label="经营概览">
         <dl className="analytics-summary">
-          <div><dt>已成交商机</dt><dd>{opportunity ? `${opportunity.won_count} 个` : '—'}</dd></div>
-          <div><dt>尚未到账</dt><dd>{receivable ? money(receivable.unreceived_amount) : '—'}</dd></div>
-          <div><dt>逾期应收</dt><dd>{payment ? money(payment.overdue_amount) : '—'}</dd></div>
-          <div><dt>超期未发首批</dt><dd>{deliverySummary ? `${deliverySummary.risk_order_count} 单` : '—'}</dd></div>
+          <div><dt>已成交商机</dt><dd>{readIssue(opportunityQuery) ?? (opportunity ? `${opportunity.won_count} 个` : '—')}</dd></div>
+          <div><dt>尚未到账</dt><dd>{readIssue(receivableQuery) ?? (receivable ? money(receivable.unreceived_amount) : '—')}</dd></div>
+          <div><dt>逾期应收</dt><dd>{readIssue(paymentQuery) ?? (payment ? money(payment.overdue_amount) : '—')}</dd></div>
+          <div><dt>超期未发首批</dt><dd>{readIssue(deliveryQuery) ?? (deliverySummary ? `${deliverySummary.risk_order_count} 单` : '—')}</dd></div>
         </dl>
-        <ReportSection title={`${targetYear} 年业绩走势`} note="签单看建单月，发货看实际发货月，回款看财务确认月。">
+        <ReportSection title={`${targetYear} 年业绩走势`} query={basesQuery} note="签单看建单月，发货看实际发货月，回款看财务确认月。">
           {trendMonths.length === 0 ? (
             <NoData />
           ) : (
@@ -698,7 +729,7 @@ export default function AnalyticsPage() {
 
       {view === 'sales' && <div className="analytics-view" aria-label="商机与报价">
         <ReportSection title="成交与转化">
-          <KpiStrip
+          <AnalyticsKpis
             tintValues={false}
             className="kpi-grid analytics-metrics"
             items={[
@@ -707,21 +738,20 @@ export default function AnalyticsPage() {
                 // 「加一个…空一个丑啊」）。补一张"总量"当分母放在最前：
                 // 后面五个都是率，率没有基数就说不清 —— 79 单里成交 11 单，
                 // 比单看 52% 更像一句人话。凑满 8 张，两行正好铺齐。
+                query: createdTotalQuery,
                 label: '累计商机',
                 tone: 'default',
                 value: `${createdTotalQuery.data?.total ?? 0} 单`,
                 hint: '含成交与失单的全部商机',
               },
-              {
-                label: '商机成交率',
+              { query: opportunityQuery, label: '商机成交率',
                 tone: 'primary',
                 value: opportunity && opportunity.won_count + opportunity.loss_count > 0
                   ? `${(opportunity.win_rate * 100).toFixed(0)}%` : '—',
                 hint: opportunity ? `成交 ${opportunity.won_count} 个 · 失单 ${opportunity.loss_count} 个` : undefined,
                 help: '已成交商机 ÷（已成交 + 已失单）。进行中的商机不参与。',
               },
-              {
-                label: '报价接受率',
+              { query: quoteQuery, label: '报价接受率',
                 tone: 'success',
                 value: quote && quote.sent_count !== 0 ? `${(quote.accept_rate * 100).toFixed(0)}%` : '—',
                 hint: quote?.sent_count == null ? undefined : `已接受 ${quote.accepted_count} / 已发出 ${quote.sent_count} 张`,
@@ -729,14 +759,14 @@ export default function AnalyticsPage() {
               },
               {
                 // 让价为负 = 整体报得比建议价还高，写成「-0.20%」像算错了 —— 按符号切「让价 / 加价」。
+                query: quoteQuery,
                 label: (quote?.average_discount ?? 0) >= 0 ? '平均让价幅度' : '平均加价幅度',
                 tone: 'warning',
                 value: `${Math.abs((quote?.average_discount ?? 0) * 100).toFixed(2)}%`,
                 help: '让价 =（建议价 − 实际报价）÷ 建议价，按报价明细逐行平均。它反映实际让了多少，不是折扣权限。',
                 hint: `平均版本数 ${quote?.average_versions ?? 0}`,
               },
-              {
-                label: '低价审批比例',
+              { query: pricingQuery, label: '低价审批比例',
                 tone: 'warning',
                 // 同页下方「低价审批率」是按报价明细行算的（3/44），这张卡原来用报价版本口径
                 // （12/36），两个数打架。统一按明细行 —— help 文案本来就写的"报价明细占比"。
@@ -745,22 +775,19 @@ export default function AnalyticsPage() {
                 hint: `需审批 ${pricing?.approval_required_count ?? 0} 行 / 明细 ${pricing?.item_count ?? 0} 行`,
               },
 
-              {
-                label: '线索转化率',
+              { query: leadQuery, label: '线索转化率',
                 tone: 'primary',
                 value: lead?.total ? `${(lead.conversion_rate * 100).toFixed(0)}%` : '—',
                 hint: lead ? `已转客户 ${lead.converted_count} / 线索 ${lead.total} 条` : undefined,
                 help: '已转成客户的线索 ÷ 统计范围内的全部线索，含线索池中未分配的线索。',
               },
-              {
-                label: '近期活跃 / 长期未跟进',
+              { query: customerQuery, label: '近期活跃 / 长期未跟进',
                 tone: 'success',
                 value: `${customer?.active_count ?? 0} / ${customer?.dormant_count ?? 0}`,
                 help: `以最近一次跟进或业务进展为准，两者都没有时看建档日。最近 ${customer?.active_days ?? 30} 天算活跃；其余客户超过 ${customer?.dormant_days ?? 30} 天算长期未跟进。复购按当前范围内的在册客户统计，一家客户有两张及以上未取消订单即算一次。`,
                 hint: `复购客户 ${customer?.repeat_customer_count ?? 0} 家`,
               },
-              {
-                label: '平均成交周期',
+              { query: opportunityQuery, label: '平均成交周期',
                 tone: 'default',
                 value: cycle?.average_days != null ? `${cycle.average_days} 天` : '-',
                 hint: cycle?.won_with_history
@@ -771,14 +798,13 @@ export default function AnalyticsPage() {
           />
         </ReportSection>
       <ReportSection title="商机与关联订单" note="前两项数商机，最后一项数订单。一条商机可能关联多张订单。">
-        <KpiStrip
+        <AnalyticsKpis
           tintValues={false}
           className="kpi-grid analytics-metrics"
           items={[
-            { label: '累计商机', value: createdTotalQuery.data ? `${createdTotalQuery.data.total} 个` : '—' },
-            { label: '已成交商机', value: opportunity ? `${opportunity.won_count} 个` : '—' },
-            {
-              label: '关联商机的订单',
+            { query: createdTotalQuery, label: '累计商机', value: createdTotalQuery.data ? `${createdTotalQuery.data.total} 个` : '—' },
+            { query: opportunityQuery, label: '已成交商机', value: opportunity ? `${opportunity.won_count} 个` : '—' },
+            { query: ordersAllQuery, label: '关联商机的订单',
               value: orderCountWithOpportunity === null ? '—' : `${orderCountWithOpportunity} 张`,
               hint: orders && orders.total > orders.items.length ? '订单列表未取全，无法统计全部关联订单' : undefined,
             },
@@ -794,22 +820,22 @@ export default function AnalyticsPage() {
         {showStageDetail && (
           <>
             <p className="deal-steps-note">各阶段显示曾经到达过的商机数。同一商机可能经过多个阶段，也可能跳过阶段。</p>
-            <OpportunityStageChart stages={opportunity?.stage_conversion ?? []} />
+            {readIssue(opportunityQuery) ?? <OpportunityStageChart stages={opportunity?.stage_conversion ?? []} />}
           </>
         )}
       </ReportSection>
         <div className="analytics-sales-breakdown">
-          <ReportSection title="进行中商机" note="按业务阶段顺序">
+          <ReportSection title="进行中商机" query={opportunityQuery} note="按业务阶段顺序">
             <ReportRows rows={(opportunity?.funnel ?? []).map((row) => ({
               label: row.stage_name, value: asCount('个')(row.count),
             }))} />
           </ReportSection>
-          <ReportSection title="失单原因">
+          <ReportSection title="失单原因" query={lossQuery}>
             <ReportRows rows={(lossQuery.data ?? []).map((row) => ({
               label: row.name, value: asCount('单')(row.value),
             }))} />
           </ReportSection>
-          <ReportSection title="平均报价" note="按客户等级">
+          <ReportSection title="平均报价" query={pricingQuery} note="按客户等级">
             <ReportRows rows={(pricing?.average_quoted_price_by_level ?? []).map((row) => ({
               label: row.level.endsWith('级') ? row.level : `${row.level} 级`,
               detail: `${row.item_count} 条明细`,
@@ -834,7 +860,7 @@ export default function AnalyticsPage() {
 
       {view === 'customers' && <div className="analytics-view" aria-label="客户与线索">
         <div className="analytics-status-summary">
-          <StatusCounts title="线索状态" data={lead?.by_status ?? []} unit="条" />
+          <StatusCounts title="线索状态" query={leadQuery} data={lead?.by_status ?? []} unit="条" />
           {(lead?.invalid_reasons.length ?? 0) > 0 && (
             <StatusCounts
               title="线索废弃原因"
@@ -845,13 +871,13 @@ export default function AnalyticsPage() {
           )}
         </div>
         <Row columns={2}>
-          <ReportSection title="客户来源分布">
+          <ReportSection title="客户来源分布" query={customerQuery}>
             <Donut data={customer?.by_source ?? []} format={asCount('家')} centerLabel="家客户" />
           </ReportSection>
-          <ReportSection title="线索来源分布">
+          <ReportSection title="线索来源分布" query={leadQuery}>
             <Donut data={lead?.by_source ?? []} format={asCount('条')} centerLabel="条线索" />
           </ReportSection>
-          <ReportSection title="客户等级分布">
+          <ReportSection title="客户等级分布" query={customerQuery}>
             <Donut data={customer?.by_level ?? []} format={asCount('家')} centerLabel="家客户" />
           </ReportSection>
         </Row>
@@ -859,26 +885,23 @@ export default function AnalyticsPage() {
 
       {view === 'payments' && <div className="analytics-view" aria-label="回款与应收">
         <ReportSection title="应收和到账金额" extra={can('payment:view') && <Link to="/receivables">打开回款中心</Link>}>
-          <KpiStrip
+          <AnalyticsKpis
             tintValues={false}
             className="kpi-grid analytics-metrics"
             items={[
-              {
-                label: '应收合计',
+              { query: receivableQuery, label: '应收合计',
                 tone: 'primary',
                 value: money(receivable?.plan_amount),
                 hint: `实际到账 ${money(receivable?.received_amount)} · 已分配 ${money(receivable?.allocated_amount)}`,
                 help: '有效应收计划上的金额合计，按订单当前负责人统计。',
               },
-              {
-                label: '尚未到账',
+              { query: receivableQuery, label: '尚未到账',
                 tone: 'warning',
                 value: money(receivable?.unreceived_amount),
                 hint: `逾期 ${receivable?.overdue_count ?? 0} 期`,
                 help: '应收合计减去财务已确认的到账金额，包含尚未到期的款。',
               },
-              {
-                label: '已到账待分配',
+              { query: receivableQuery, label: '已到账待分配',
                 tone: 'success',
                 value: money(receivable?.unallocated_amount),
                 help: '客户已经付款、但还没分配到具体应收期的钱。分配之后，才会冲减对应账期的应收。',
@@ -890,8 +913,7 @@ export default function AnalyticsPage() {
                   ? `应收期未结 ${money(receivable?.unsettled_plan_amount)}`
                   : '没有已到账未分配的钱',
               },
-              {
-                label: '逾期应收',
+              { query: paymentQuery, label: '逾期应收',
                 tone: 'error',
                 value: money(payment?.overdue_amount),
                 help: '已经过了应收日期、仍然没有结清的金额，按每期应收统计。',
@@ -901,10 +923,10 @@ export default function AnalyticsPage() {
           />
         </ReportSection>
         <div className="analytics-status-summary">
-          <StatusCounts title="各期应收状态" data={receivable?.by_status ?? []} unit="期" />
-          <StatusCounts title="应收逾期了多久" note="只统计未结清的应收" data={payment?.aging ?? []} unit="期" />
+          <StatusCounts title="各期应收状态" query={receivableQuery} data={receivable?.by_status ?? []} unit="期" />
+          <StatusCounts title="应收逾期了多久" query={paymentQuery} note="只统计未结清的应收" data={payment?.aging ?? []} unit="期" />
         </div>
-        <ReportSection title="回款方式分布" note="按金额">
+        <ReportSection title="回款方式分布" query={paymentQuery} note="按金额">
           <Donut
             data={(payment?.by_payment_method ?? []).map((row) => ({
               name: row.name,
@@ -921,7 +943,7 @@ export default function AnalyticsPage() {
       </div>}
 
       {view === 'delivery' && <div className="analytics-view" aria-label="发货与交期">
-        <ReportSection title="首批发货与交期风险" extra={
+        <ReportSection title="首批发货与交期风险" query={deliveryQuery} extra={
           <Button size="small" theme="borderless" onClick={() => selectView('reports', 'risk-order')}>查看超期订单</Button>
         }>
           <KpiStrip
@@ -959,7 +981,7 @@ export default function AnalyticsPage() {
           />
         </ReportSection>
         <Row columns={2}>
-        <ReportSection title="交期趋势" note="柱子是发货单数，折线是首批准时发货率。">
+        <ReportSection title="交期趋势" query={deliveryQuery} note="柱子是发货单数，折线是首批准时发货率。">
           {deliveryTrend.length === 0 ? (
             <NoData />
           ) : (
@@ -987,7 +1009,7 @@ export default function AnalyticsPage() {
             />
           )}
         </ReportSection>
-        <ReportSection title="哪些履约环节超期" note="只计已过计划日、仍未完成的环节">
+        <ReportSection title="哪些履约环节超期" query={deliveryQuery} note="只计已过计划日、仍未完成的环节">
           {(delivery?.overdue_nodes ?? []).length === 0 ? (
             <NoData />
           ) : (
@@ -1074,7 +1096,7 @@ export default function AnalyticsPage() {
           )}
           {report && 'limited' in report && <span className="an-card-note">搜索范围为当前报表列出的记录。</span>}
         </div>
-        {activeReport === 'delivery' && <ReportSection id="detail-delivery" title="首批发货情况（按负责人）">
+        {activeReport === 'delivery' && <ReportSection id="detail-delivery" title="首批发货情况（按负责人）" query={deliveryQuery}>
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 10, lineHeight: 1.7 }}>
             统计近 {deliverySummary?.window_months ?? 12} 个月的首批发货。首批在计划发货日当天或之前发出，就算准时。
             客户约的是到货日期时，计划发货日按到货日期减运输天数算。另有 {deliverySummary?.undated_delivered_count ?? 0} 单缺少可核对的计划发货日。
@@ -1127,7 +1149,7 @@ export default function AnalyticsPage() {
           />
         </ReportSection>}
 
-        {activeReport === 'risk-order' && <ReportSection id="detail-risk-order" title="已过发货日、首批未发的订单">
+        {activeReport === 'risk-order' && <ReportSection id="detail-risk-order" title="已过发货日、首批未发的订单" query={deliveryQuery}>
           <Table<DeliveryRiskOrder>
             columns={[
               { title: '订单号', dataIndex: 'order_no', width: 170 },
@@ -1163,7 +1185,7 @@ export default function AnalyticsPage() {
           />
         </ReportSection>}
 
-        {activeReport === 'product' && <ReportSection id="detail-product" title="产品表现（询盘 / 报价 / 成交 / 失单 / 利润）">
+        {activeReport === 'product' && <ReportSection id="detail-product" title="产品表现（询盘 / 报价 / 成交 / 失单 / 利润）" query={productQuery}>
           <Table<ProductStat>
             // 10 列在 1180px 内排得下（2026-11-21 巡检：原来 12 列，右侧「成交数量/失单/毛利」
             // 被容器直接切掉，页面看不到）。同族指标并成一列用「/」隔开：
@@ -1215,6 +1237,7 @@ export default function AnalyticsPage() {
                       title: '报价预估毛利',
                       dataIndex: 'quote_estimated_profit',
                       width: 118,
+                      className: 'cell-money',
                       render: (v: number | null) =>
                         v === null || v === undefined
                           ? '-'
@@ -1244,7 +1267,7 @@ export default function AnalyticsPage() {
           />
         </ReportSection>}
 
-        {activeReport === 'sales' && <ReportSection id="detail-sales" title="业务员表现">
+        {activeReport === 'sales' && <ReportSection id="detail-sales" title="业务员表现" query={salesQuery}>
           <Table<SalesUserStat>
             columns={[
               { title: '姓名', dataIndex: 'name', width: 120 },
@@ -1256,11 +1279,13 @@ export default function AnalyticsPage() {
                 title: '订单金额',
                 dataIndex: 'order_amount',
                 width: 150,
+                className: 'cell-money',
                 render: (v: number, r: SalesUserStat) => formatWholeCny(r.order_amount_exact ?? v),
               },
               {
                 title: '回款额（按订单负责人）',
                 dataIndex: 'received_amount',
+                className: 'cell-money',
                 render: (v: number, r: SalesUserStat) => formatWholeCny(r.received_amount_exact ?? v),
               },
             ]}
@@ -1284,7 +1309,7 @@ export default function AnalyticsPage() {
         </ReportSection>}
 
         {/* 场景17：三个销售额口径必须分开看，否则"回款没到但签了单"会被当成已完成 */}
-        {activeReport === 'basis' && <ReportSection id="detail-basis" title="每月签单、发货与回款">
+        {activeReport === 'basis' && <ReportSection id="detail-basis" title="每月签单、发货与回款" query={basesQuery}>
           {(() => {
             const b = basesQuery.data
             if (!b) return <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>暂无数据</div>
@@ -1318,24 +1343,28 @@ export default function AnalyticsPage() {
                     {
                       title: '签单',
                       width: 130,
+                      className: 'cell-money',
                       render: (_: unknown, r: { month: string }) =>
                         formatWholeCny(exact(b.signed, r.month)),
                     },
                     {
                       title: '发货',
                       width: 130,
+                      className: 'cell-money',
                       render: (_: unknown, r: { month: string }) =>
                         formatWholeCny(exact(b.shipped, r.month)),
                     },
                     {
                       title: '回款',
                       width: 130,
+                      className: 'cell-money',
                       render: (_: unknown, r: { month: string }) =>
                         formatWholeCny(exact(b.received, r.month)),
                     },
                     {
                       title: '老客净额',
                       width: 130,
+                      className: 'cell-money',
                       render: (_: unknown, r: { month: string }) =>
                         formatWholeCny(exact(b.repeat_net, r.month)),
                     },
@@ -1377,10 +1406,9 @@ export default function AnalyticsPage() {
             {showTargetDetails && canSetTarget && <Button onClick={() => openFreezeModal('freeze')}>保存月度实绩快照</Button>}
             {can('task:view') && <Link to="/tasks">销售任务</Link>}
           </div>
-          {!showTargetDetails && (
-            targetsQuery.isPending ? <p role="status">正在读取月度目标…</p>
-              : targetsQuery.isError ? <Button onClick={() => void targetsQuery.refetch()}>读取失败，重试</Button>
-              : targetRows.length === 0 ? <p className="workflow-guide">{targetEmpty}</p>
+          {readIssue(targetsQuery)}
+          {!showTargetDetails && targetsQuery.isSuccess && (
+            targetRows.length === 0 ? <p className="workflow-guide">{targetEmpty}</p>
               : <div className="analytics-target-list">
                 {targetRows.map((row) => (
                   <article key={targetRowKey(row)} className="analytics-target-row">
@@ -1404,7 +1432,7 @@ export default function AnalyticsPage() {
                 ))}
               </div>
           )}
-          {showTargetDetails && <>
+          {showTargetDetails && targetsQuery.isSuccess && <>
           {/* 包一层横向滚动容器：Semi 自带的 scroll 只让表体可滚，
               表头按 2060px 撑出去的部分仍会把整页顶出 5px——1440 实拍见过
               页面级横向滚动条。让溢出发生在容器里，页面本身不横滚。 */}
@@ -1474,6 +1502,7 @@ export default function AnalyticsPage() {
                 title: '销售目标',
                 dataIndex: 'sales_target',
                 width: 130,
+                className: 'cell-money',
                 render: (v: number, r: SalesTargetRow) => formatWholeCny(r.sales_target_exact ?? v),
               },
               {
@@ -1483,12 +1512,13 @@ export default function AnalyticsPage() {
                 title: '实际·确认回款',
                 dataIndex: 'assess_actual',
                 width: 160,
+                className: 'cell-money',
                 render: (v: number | undefined, r: SalesTargetRow) => (
                   <span>
                     {formatWholeCny(r.received_actual_exact ?? v)}
-                    <a style={{ marginLeft: 6, fontSize: 12 }} onClick={() => openDrilldown(r, 'received')}>
+                    <button type="button" className="crm-text-action" style={{ marginLeft: 6, fontSize: 12 }} onClick={() => openDrilldown(r, 'received')}>
                       明细
-                    </a>
+                    </button>
                     <LiveActualNote show={r.live_actual_metrics?.includes('received')} />
                   </span>
                 ),
@@ -1498,6 +1528,7 @@ export default function AnalyticsPage() {
                 title: '签单额',
                 dataIndex: 'sales_actual',
                 width: 120,
+                className: 'cell-money',
                 render: (v: number | undefined, r: SalesTargetRow) => <>
                   {formatWholeCny(r.sales_actual_exact ?? v)}
                   <LiveActualNote show={r.live_actual_metrics?.includes('sales')} />
@@ -1508,6 +1539,7 @@ export default function AnalyticsPage() {
                 title: '发货额',
                 dataIndex: 'shipped_actual',
                 width: 120,
+                className: 'cell-money',
                 render: (v: number | undefined, r: SalesTargetRow) => <>
                   {formatWholeCny(r.shipped_actual_exact ?? v)}
                   <LiveActualNote show={r.live_actual_metrics?.includes('shipped')} />
@@ -1531,12 +1563,14 @@ export default function AnalyticsPage() {
                 title: '复购目标',
                 dataIndex: 'repeat_customer_target',
                 width: 130,
+                className: 'cell-money',
                 render: (v: number, r: SalesTargetRow) => (v ? formatWholeCny(r.repeat_customer_target_exact ?? v) : '-'),
               },
               {
                 title: '复购实际',
                 dataIndex: 'repeat_customer_actual',
                 width: 130,
+                className: 'cell-money',
                 render: (v: number | undefined, r: SalesTargetRow) => <>
                   {formatWholeCny(r.repeat_customer_actual_exact ?? v)}
                   <LiveActualNote show={r.live_actual_metrics?.includes('repeat_net')} />
@@ -1546,6 +1580,7 @@ export default function AnalyticsPage() {
                 title: '复购差额',
                 dataIndex: 'repeat_customer_variance',
                 width: 130,
+                className: 'cell-money',
                 render: (v: number, r: SalesTargetRow) =>
                   r.repeat_customer_target ? (
                     <span style={{ color: v >= 0 ? 'var(--crm-primary)' : 'var(--crm-error)' }}>
@@ -1560,6 +1595,7 @@ export default function AnalyticsPage() {
                 title: '差额',
                 dataIndex: 'sales_variance',
                 width: 130,
+                className: 'cell-money',
                 render: (v: number, r: SalesTargetRow) => (
                   <span style={{ color: v >= 0 ? 'var(--crm-primary)' : 'var(--crm-error)' }}>
                     {v >= 0 ? '+' : ''}{formatWholeCny(r.sales_variance_exact ?? v).replace('¥-', '-¥')}
@@ -1687,17 +1723,17 @@ export default function AnalyticsPage() {
             ]}
             style={{ width: 220 }}
           />
-          <span style={{ fontSize: 13 }}>
+          {!readIssue(drilldownQuery) && <span style={{ fontSize: 13 }}>
             合计 ¥{Math.round(drilldownQuery.data?.total ?? 0).toLocaleString('zh-CN')} ·{' '}
             {drilldownQuery.data?.count ?? 0} 条
-          </span>
-          <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+          </span>}
+          {!readIssue(drilldownQuery) && <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
             {drilldownQuery.data?.source === 'snapshot'
               ? '读的是结账存档（不会因为后来的退货变小）'
               : drilldownQuery.data?.archive_missing_metric ? '本项未存档，按当前数据计算' : '实时统计'}
-          </span>
+          </span>}
         </div>
-        <Table
+        {readIssue(drilldownQuery) ?? <Table
           columns={[
             {
               title: '单据',
@@ -1714,6 +1750,7 @@ export default function AnalyticsPage() {
               title: '金额',
               dataIndex: 'amount',
               width: 130,
+              className: 'cell-right',
               // 下钻出来的是**具体单据**的金额，不是概览统计，按单据口径两位小数。
               render: (v?: number) => formatMoney(toTwoDecimals(v ?? 0), 'CNY'),
             },
@@ -1734,8 +1771,8 @@ export default function AnalyticsPage() {
           pagination={false}
           scroll={{ y: 360 }}
           empty="这一期该指标没有明细"
-        />
-        {drilldownQuery.data?.truncated && (
+        />}
+        {!drilldownQuery.isError && drilldownQuery.data?.truncated && (
           <div style={{ marginTop: 8, fontSize: 12, color: 'var(--crm-caution)' }}>
             明细超过 200 条，只显示前 200 条；合计数是全部。
           </div>
@@ -1756,8 +1793,10 @@ export default function AnalyticsPage() {
           <p className="workflow-guide">选月份和统计对象，再填要考核的数字。保存的是目标值，表里的实际完成数由订单和确认回款统计。</p>
           <div>
             <div style={{ marginBottom: 4 }}>全公司或个人</div>
+            {targetModal.visible && readIssue(usersQuery)}
             <Select
               value={targetForm.user_id ?? 0}
+              loading={usersQuery.isFetching}
               onChange={(value) =>
                 // 选人就清掉部门：两者互斥（后端按"人 + 部门"两个条件找同一行，
                 // 两个都带谁都匹配不上）
@@ -1778,8 +1817,10 @@ export default function AnalyticsPage() {
           </div>
           <div>
             <div style={{ marginBottom: 4 }}>部门（设部门目标时选）</div>
+            {targetModal.visible && readIssue(departmentsQuery)}
             <Select
               value={targetForm.department_id ?? 0}
+              loading={departmentsQuery.isFetching}
               onChange={(value) =>
                 setTargetForm({
                   ...targetForm,

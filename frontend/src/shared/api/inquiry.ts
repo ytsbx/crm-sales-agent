@@ -19,7 +19,9 @@ export interface CustomInquiryRow {
   contact_id?: number | null
   opportunity_id?: number | null
   quantity?: number | null
+  quantity_exact?: string | null
   target_price?: number | null
+  target_price_exact?: string | null
   status: string
   status_label: string
   remark?: string | null
@@ -53,8 +55,8 @@ export interface CustomInquiryPayload {
   description?: string | null
   customer_id?: number | null
   opportunity_id?: number | null
-  quantity?: number | null
-  target_price?: number | null
+  quantity?: number | string | null
+  target_price?: number | string | null
   remark?: string | null
   status?: string
 }
@@ -99,8 +101,8 @@ export function reviseCustomInquiry(
     revision_note?: string | null
     title?: string
     description?: string | null
-    quantity?: number | null
-    target_price?: number | null
+    quantity?: number | string | null
+    target_price?: number | string | null
     remark?: string | null
   },
 ) {
@@ -120,9 +122,9 @@ export function customInquiryHistory(id: number) {
 export function createQuoteFromInquiry(
   id: number,
   payload: {
-    unit_cost: number
-    quoted_price: number
-    quantity?: number | null
+    unit_cost: number | string
+    quoted_price: number | string
+    quantity?: number | string | null
     item_name?: string | null
     valid_until?: string | null
   },

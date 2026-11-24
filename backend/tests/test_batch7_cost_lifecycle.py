@@ -19,7 +19,10 @@ from app.modules.settings.model import SystemSetting, NumberingRule, NumberSeque
 from app.modules.approval import rules_engine
 from app.modules.approval.model import ApprovalDefinition, ApprovalInstance, ApprovalRecord, ApprovalRule
 from app.modules.customer.model import Customer
-from app.modules.opportunity.model import Opportunity
+from app.modules.opportunity.model import Opportunity, OpportunityItem
+from app.modules.order import service as order_service
+from app.modules.order.model import SalesOrder, SalesOrderItem, OrderStatusHistory
+from app.modules.payment.model import ReceivablePlan
 from app.modules.user.model import Permission, Role, User, user_roles, role_permissions
 
 NOW = datetime.now(UTC)
@@ -66,6 +69,69 @@ async def build(raw, session, version, *, cost="partial", amount="10"):
 async def submit(session, quote, version):
     return await svc.submit_for_approval(session, quote=quote, version=version,
                                         applicant_id=1, user_roles=USER.roles)
+
+
+@pytest.mark.anyio
+async def test_quote_allows_one_active_order_across_versions(case, monkeypatch):
+    raw, session, quote, version = case
+    for model in (OpportunityItem, SalesOrderItem, OrderStatusHistory):
+        model.__table__.create(raw.get_bind(), checkfirst=True)
+    monkeypatch.setattr(order_service, "generate_order_no", AsyncMock(side_effect=["SO-FIRST", "SO-NEW"]))
+    monkeypatch.setattr("app.modules.followup.service.record_and_notify", AsyncMock())
+    await build(raw, session, version, cost="complete")
+    quote.status = "accepted"
+    version.approval_status = "approved"
+    version.sent_at = version.accepted_at = NOW
+    raw.commit()
+
+    actor = make_user(1, permissions=("order:view", "order:manage"), data_scope="all")
+    first = await order_service.create_order_from_quote(session, version=version, user_id=1, user=actor)
+    raw.commit()
+    detail = (await router.get_version(version.id, USER, session))["data"]
+    assert detail["has_active_order"] is True and detail["active_order"] is None
+    detail = (await router.get_version(version.id, actor, session))["data"]
+    assert detail["active_order"] == {"id": first.id, "order_no": "SO-FIRST"}
+    with pytest.raises(AppError, match="已生成有效订单"):
+        await svc.create_version(session, quote=quote, user=USER)
+
+    # A previously created version may still exist when the guard is rolled out.
+    previous = QuoteVersion(quote_id=quote.id, version_no=2, currency="CNY", approval_status="approved",
+                            created_at=NOW, sent_at=NOW, accepted_at=NOW)
+    raw.add(previous)
+    raw.flush()
+    quote.current_version_id = previous.id
+    with pytest.raises(AppError, match="SO-FIRST"):
+        await order_service.create_order_from_quote(session, version=previous, user_id=1, user=actor)
+    with pytest.raises(AppError, match="SO-FIRST"):
+        await order_service.create_order(session, user_id=1, user=actor, customer_id=1, items=[], quote_id=quote.id)
+    assert raw.query(SalesOrder).count() == raw.query(ReceivablePlan).count() == 1
+
+    # Simulate the committed result of the existing cancellation workflow.
+    first.status = "cancelled"
+    raw.query(ReceivablePlan).one().status = "cancelled"
+    quote.current_version_id = version.id
+    raw.flush()
+    detail = (await router.get_version(version.id, actor, session))["data"]
+    assert detail["has_active_order"] is False and detail["version_order_cancelled"] is True
+    with pytest.raises(AppError, match="请新建报价版本"):
+        await order_service.create_order_from_quote(session, version=version, user_id=1, user=actor)
+    with pytest.raises(AppError, match="请在报价中新建版本"):
+        await order_service.create_order(session, user_id=1, user=actor, customer_id=1, items=[], quote_id=quote.id)
+
+    replacement = await svc.create_version(session, quote=quote, user=USER, source_version_id=version.id)
+    assert quote.status == "draft"
+    with pytest.raises(AppError, match="未通过审批"):
+        await order_service.create_order_from_quote(session, version=replacement, user_id=1, user=actor)
+    replacement.approval_status = "approved"
+    replacement.sent_at = NOW
+    with pytest.raises(AppError, match="客户已接受"):
+        await order_service.create_order_from_quote(session, version=replacement, user_id=1, user=actor)
+    replacement.accepted_at = NOW
+    quote.status = "accepted"
+    second = await order_service.create_order_from_quote(session, version=replacement, user_id=1, user=actor)
+    assert second.order_no == "SO-NEW"
+    assert (await order_service.active_order_for_quote(session, quote.id)).id == second.id
+    assert raw.query(ReceivablePlan).filter_by(status="pending").count() == 1
 
 
 @pytest.mark.anyio

@@ -335,7 +335,7 @@ async def list_tasks(
         subject = case((queued, Task.source_business_id), else_=Task.owner_id)
         stmt = stmt.where(
             Task.status.in_(("pending", "doing")),
-            or_(queued, Task.owner_id.in_(select(User.id).where(User.status == "disabled"))),
+            or_(queued, Task.owner_id.in_(select(User.id).where(User.status.in_(("disabled", "archived"))))),
         )
         owner_ids = await scoped_owner_ids(session, user)
         if owner_ids is not None:
@@ -889,7 +889,7 @@ async def batch_handover_tasks(
         ):
             raise AppError(ErrorCode.DATA_SCOPE_DENIED, "部分待办不属于你的部门", 403)
         if task.customer_id != parents.get(task.id) or (
-            task.owner_id is not None and (previous is None or previous.status != "disabled")
+            task.owner_id is not None and (previous is None or previous.status not in ("disabled", "archived"))
         ):
             raise AppError(ErrorCode.VERSION_CONFLICT, "待办已改派或账号已恢复，请刷新交接清单", 409)
         task.owner_id = target.id

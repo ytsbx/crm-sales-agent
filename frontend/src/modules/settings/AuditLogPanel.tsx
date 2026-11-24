@@ -5,10 +5,13 @@ import { Button, DatePicker, Input, Radio, RadioGroup, Select, SideSheet, Table,
 
 import { listAuditLogs, type AuditLogRow } from '../../shared/api/analytics'
 import { listUsers } from '../../shared/api/system'
+import { emptyTextNode } from '../../shared/components/EmptyState'
 import {
   auditActionLabel,
   auditChangeSummary,
-  auditHiddenFieldCount,
+  auditFieldLabel,
+  auditFieldValue,
+  AUDIT_TECH_FIELDS,
   auditTypeLabel,
   ENUM_LABEL,
 } from '../../shared/audit-labels'
@@ -165,7 +168,7 @@ function actionLabel(action: string | null | undefined): string {
  * 「变更内容」这一列只有 280px，一行放得下约 20 个汉字，两行 40 个字。
  * 超出的部分直接截掉 —— 不是偷懒，是因为这页的表格是 table-layout:auto，
  * CSS 的省略号管不了"这一列最小要多宽"，长句会把整张表撑出容器。
- * 原文一点没丢：`title` 悬停看全文，右侧「明细」展开完整快照。
+ * `title` 悬停显示摘要，右侧「明细」列出可展示的业务变更。
  */
 const SUMMARY_MAX_CHARS = 40
 function truncateSummary(summary: string): string {
@@ -190,6 +193,20 @@ export interface AuditLogPanelProps {
 const LOGIN_ACTIONS = 'login,logout,refresh'
 
 type AuditView = 'all' | 'biz' | 'login'
+
+function auditDetailFields(record: AuditLogRow) {
+  const type = record.business_type === 'inquiry' ? 'custom_inquiry' : record.business_type
+  const before = (record.before_data ?? {}) as Record<string, unknown>
+  const after = (record.after_data ?? {}) as Record<string, unknown>
+  return [...new Set([...Object.keys(before), ...Object.keys(after)])].flatMap((key) => {
+    if (AUDIT_TECH_FIELDS.has(key) || key.endsWith('_id')) return []
+    const label = auditFieldLabel(type, key)
+    const previous = auditFieldValue(key, before[key])
+    const current = auditFieldValue(key, after[key])
+    if (!label || !previous || !current || previous === current) return []
+    return [{ key, label, previous, current }]
+  })
+}
 
 export default function AuditLogPanel({ active }: AuditLogPanelProps) {
   const [view, setView] = useState<AuditView>('all')
@@ -255,12 +272,11 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
         end: range?.[1] ? new Date(range[1].setHours(23, 59, 59, 999)).toISOString() : undefined,
       }),
     enabled: active,
-    // 翻页时保留上一页的内容，避免表格闪成空白
-    placeholderData: (prev) => prev,
   })
 
-  const rows = query.data?.items ?? []
-  const total = query.data?.total ?? 0
+  const rows = query.isError ? [] : query.data?.items ?? []
+  const total = query.isError ? 0 : query.data?.total ?? 0
+  const detailFields = detail ? auditDetailFields(detail) : []
   const operatorOptions = (usersQuery.data?.items ?? []).map((u: { id: number; name?: string | null; username?: string }) => ({
     value: u.id,
     label: u.name || u.username,
@@ -411,7 +427,7 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
         // 622px、整表反而撑到 1255（容器只有 923）。写 '100%' 之后各列按比例摊到
         // 容器里，不会再出现"表体 928 / 容器 923"这种 5px 的横向滚动。
         scroll={{ x: '100%' }}
-        empty="没有符合条件的记录"
+        empty={emptyTextNode(query, '没有符合条件的记录')}
         pagination={{
           currentPage: page,
           pageSize,
@@ -521,9 +537,6 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
             ),
           },
           {
-            // 变更内容：摘要给人看，**原文不能丢** —— 这一页是合规取证用的。
-            // 翻不出来的字段不硬凑英文名，而是给一个"看原始数据"的入口。
-            //
             // 必须写死宽度：这一列原来不写 `width`、靠自适应吃剩余空间，
             // 内容短的时候没事，一旦摘要变长（「报价状态 草稿；币种 人民币；…」），
             // 列宽就跟着内容一起长，**整张表被撑出卡片右边界**。
@@ -533,7 +546,6 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
             width: 270,
             render: (_: unknown, record: AuditLogRow) => {
               const summary = auditChangeSummary(record)
-              const hidden = auditHiddenFieldCount(record)
               const raw = record.after_data ?? record.before_data
               return (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
@@ -541,15 +553,15 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
                       「客户接受」「中标」这类记录的快照里只有 `version_id`、`order_id`
                       这种内部外键，翻译不出中文，但它们并不是"没改东西"。
                       写「无变更」再接一个「还有 1 项」，就是当场自相矛盾。
-                      真要看原文，右边的「明细」按钮一直在。 */}
+                      右侧「明细」展示业务字段的前后值。 */}
                   {/* 摘要可能很长（「报价状态 草稿；币种 人民币；负责人 2；…」），
                       单行省略、把「明细」按钮固定在右边 —— 否则内容一长，
-                      按钮就被挤出可见区，等于没有入口看原文。 */}
+                      按钮就被挤出可见区。 */}
                   {/* 摘要按列宽物理截断（约两行 40 字），不用 CSS 省略号兜：
                       表格是 table-layout:auto，CSS 的 overflow/ellipsis 管不住
                       "这一列最少要多宽"，长句照样把表撑到 1399px（真翻过车，
                       body 得横向拖才能看全）。截断后列宽就真的落在 280 里了；
-                      完整摘要挂 title，原文在「明细」里。 */}
+                      完整摘要挂 title。 */}
                   <span
                     style={{
                       flex: 1,
@@ -572,9 +584,6 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
                   >
                     {summary ? truncateSummary(summary) : '-'}
                   </span>
-                  {/* 「还有 N 项」只在**已经有一句摘要**时才挂；
-                      没有摘要的时候它只制造矛盾，不提供信息。 */}
-                  {summary && hidden > 0 && <Tag size="small" color="grey">{`还有 ${hidden} 项`}</Tag>}
                   {raw && (
                     <Button size="small" theme="borderless" onClick={() => setDetail(record)}>
                       明细
@@ -587,8 +596,6 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
         ]}
       />
 
-      {/* 原始数据：只在点「明细」时展开，平时不占屏幕 —— 审计页一屏 50 条，
-          每条都摊开 JSON 就没法看了 */}
       <SideSheet
         title="变更明细"
         visible={detail !== null}
@@ -604,40 +611,26 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
                 objectLabel(detail) ? ` ${objectLabel(detail)}` : ''
               } · ${actionLabel(detail.action)}`}
             </Typography.Text>
-            {detail.ip && (
-              <Typography.Text type="tertiary">{`来源 IP：${detail.ip}`}</Typography.Text>
-            )}
-            {detail.before_data && (
-              <div>
-                <div style={{ fontWeight: 600, marginBottom: 4 }}>改之前</div>
-                <pre style={preStyle}>{JSON.stringify(detail.before_data, null, 2)}</pre>
-              </div>
-            )}
-            {detail.after_data && (
-              <div>
-                <div style={{ fontWeight: 600, marginBottom: 4 }}>改之后</div>
-                <pre style={preStyle}>{JSON.stringify(detail.after_data, null, 2)}</pre>
-              </div>
-            )}
-            {!detail.before_data && !detail.after_data && (
-              <Typography.Text type="tertiary">这条记录没有留存字段快照。</Typography.Text>
+            {detailFields.length ? (
+              <Table
+                columns={[
+                  { title: '变更项', dataIndex: 'label' },
+                  { title: '改之前', dataIndex: 'previous' },
+                  { title: '改之后', dataIndex: 'current' },
+                ]}
+                className="audit-change-table"
+                dataSource={detailFields}
+                rowKey="key"
+                pagination={false}
+              />
+            ) : (
+              <Typography.Text type="tertiary">
+                {auditChangeSummary(detail) ?? '这条记录没有可展示的业务字段变更。'}
+              </Typography.Text>
             )}
           </div>
         )}
       </SideSheet>
     </>
   )
-}
-
-const preStyle: React.CSSProperties = {
-  margin: 0,
-  padding: 12,
-  background: 'var(--crm-fill-0)',
-  borderRadius: 6,
-  fontSize: 12,
-  lineHeight: 1.6,
-  maxHeight: 320,
-  overflow: 'auto',
-  whiteSpace: 'pre-wrap',
-  wordBreak: 'break-all',
 }

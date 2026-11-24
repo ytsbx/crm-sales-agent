@@ -448,12 +448,13 @@ export function PricingTool({ embedded = false }: { embedded?: boolean }) {
                   width: 120,
                   // 后端 2026-11-17 起同时给浮点与十进制字符串：浮点可能带
                   // 1.2344999 这种尾数，优先读 quoted_price_exact。
+                  className: 'cell-money',
                   render: (_: unknown, record: PricingScenario) =>
                     record.quoted_price_exact != null || record.quoted_price != null
                       ? formatUnitPrice(record.quoted_price_exact ?? record.quoted_price, 'CNY')
                       : '-',
                 },
-                { title: '利润', dataIndex: 'profit', width: 110, render: (v: number | null) => money(v) },
+                { title: '利润', dataIndex: 'profit', width: 110, className: 'cell-money', render: (v: number | null) => money(v) },
                 {
                   title: '利润率',
                   dataIndex: 'profit_rate',
@@ -466,6 +467,7 @@ export function PricingTool({ embedded = false }: { embedded?: boolean }) {
                   width: 130,
                   // 原来 `¥${v.toLocaleString()}`：数量 3、单价 1.2345 显示成「¥3.7」，
                   // 既没有两位小数也没有千分位。金额读 amount_exact（后端逐行到分）。
+                  className: 'cell-money',
                   render: (_: unknown, record: PricingScenario) => {
                     const exact = record.amount_exact ?? record.amount
                     return exact == null ? '-' : formatMoney(toTwoDecimals(exact), 'CNY')

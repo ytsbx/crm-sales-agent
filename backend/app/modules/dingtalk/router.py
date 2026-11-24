@@ -959,22 +959,30 @@ async def set_oa_binding(
     from app.modules.user.model import User
 
     identity = str(payload.oa_user_id) if payload.oa_user_id else None
+    member = None
+    departments = {}
     if identity:
-        members, _ = await _oa_directory()
-        _oa_member(members, identity)
+        members, departments = await _oa_directory()
+        member = _oa_member(members, identity)
     await users.lock_user_row(session, user_id)
     account = await session.get(User, user_id, populate_existing=True)
     if account is None:
         raise AppError(ErrorCode.NOT_FOUND, "CRM 账号不存在", 404)
     old = account.oa_user_id
+    old_department_id = account.department_id
     await _save_oa_binding(session, account, identity)
+    oa_department_id = str(member.get("department_id") or "") if member else ""
+    if oa_department_id:
+        department, _ = await svc.ensure_oa_department(session, departments, oa_department_id)
+        account.department_id = department.id
     await write_audit(
         session, operator_id=user.id, action="oa_account_binding", business_type="user",
-        business_id=user_id, before={"oa_user_id": old}, after={"oa_user_id": identity},
+        business_id=user_id, before={"oa_user_id": old, "department_id": old_department_id},
+        after={"oa_user_id": identity, "department_id": account.department_id},
         ip=client_ip(request),
     )
     await session.commit()
-    return ok({"id": user_id, "oa_user_id": identity}, "同序人员绑定已保存")
+    return ok({"id": user_id, "oa_user_id": identity, "department_synced": bool(oa_department_id)}, "同序人员绑定已保存")
 
 
 @router.post("/oa/users")

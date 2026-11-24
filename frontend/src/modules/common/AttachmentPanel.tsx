@@ -313,14 +313,14 @@ export default function AttachmentPanel({
             title: '文件名',
             dataIndex: 'file_name',
             render: (name: string, record: FileRow) => (
-              <a
+              <button type="button" className="crm-text-action"
                 style={{ color: 'var(--crm-primary)' }}
                 onClick={() =>
                   record.previewable ? void openPreview(record) : void showDownloadResult(downloadFile(record.id, name))
                 }
               >
                 {name}
-              </a>
+              </button>
             ),
           },
           {
@@ -361,18 +361,18 @@ export default function AttachmentPanel({
             render: (_: unknown, record: FileRow) => (
               <div style={{ display: 'flex', gap: 10 }}>
                 {record.previewable && (
-                  <a style={{ color: 'var(--crm-primary)' }} onClick={() => void openPreview(record)}>
+                  <button type="button" className="crm-text-action" style={{ color: 'var(--crm-primary)' }} onClick={() => void openPreview(record)}>
                     预览
-                  </a>
+                  </button>
                 )}
-                <a
+                <button type="button" className="crm-text-action"
                   style={{ color: 'var(--crm-primary)' }}
                   onClick={() => void showDownloadResult(downloadFile(record.id, record.file_name))}
                 >
                   下载
-                </a>
+                </button>
                 {can('file:manage') && (
-                  <a
+                  <button type="button" className="crm-text-action"
                     style={{ color: 'var(--crm-primary)' }}
                     onClick={() => {
                       setRenameValue(record.file_name)
@@ -380,7 +380,7 @@ export default function AttachmentPanel({
                     }}
                   >
                     改名
-                  </a>
+                  </button>
                 )}
                 {can('file:manage') && (
                   <Popconfirm
@@ -390,7 +390,7 @@ export default function AttachmentPanel({
                     description="如果它是合同原件、或还被别处引用着，系统会拒绝并说明原因。"
                     onConfirm={() => deleteMutation.mutate(record.id)}
                   >
-                    <a style={{ color: 'var(--crm-error)' }}>删除</a>
+                    <button type="button" className="crm-text-action" style={{ color: 'var(--crm-error)' }}>删除</button>
                   </Popconfirm>
                 )}
               </div>

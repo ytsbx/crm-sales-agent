@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { parseOptionalNumber } from '../../shared/number-input'
+import { parseOptionalDecimal } from '../../shared/number-input'
 import { calendarDay } from '../../shared/calendar-day'
 import PageHeader from '../../shared/components/PageHeader'
 import HelpTip from '../../shared/components/HelpTip'
@@ -102,7 +102,7 @@ export default function OpportunityListPage() {
         title: form.title,
         // 同类：字母会被静默变成 null（= 清空金额）
         expected_amount: (() => {
-          const v = parseOptionalNumber(form.expected_amount)
+          const v = parseOptionalDecimal(form.expected_amount)
           if (typeof v === 'number' && Number.isNaN(v)) {
             throw new Error('预计金额只能填数字')
           }
@@ -140,7 +140,7 @@ export default function OpportunityListPage() {
       dataIndex: 'title',
       width: compact ? 150 : undefined,
       render: (text: string, record: Opportunity) => (
-        <a
+        <button type="button" className="crm-text-action"
           title={text}
           style={{
             color: 'var(--crm-primary)',
@@ -152,7 +152,7 @@ export default function OpportunityListPage() {
           onClick={() => navigate(`/opportunities/${record.id}`)}
         >
           {text}
-        </a>
+        </button>
       ),
     },
     {
@@ -198,9 +198,10 @@ export default function OpportunityListPage() {
         </span>
       ),
       width: compact ? 120 : 260,
+      className: 'cell-money',
       render: (_: unknown, record: Opportunity) => {
         const amount = record.expected_amount
-          ? formatMoney(toTwoDecimals(record.expected_amount), 'CNY')
+          ? formatMoney(toTwoDecimals(record.expected_amount_exact ?? record.expected_amount), 'CNY')
           : null
         const items = record.item_count ? `${record.item_count} 条需求` : null
         if (compact) {

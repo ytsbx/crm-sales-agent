@@ -459,13 +459,13 @@ export default function CustomerListPage() {
       width: compact ? 215 : 210,
       render: (text: string, record: Customer) => (
         <div>
-          <a
+          <button type="button" className="crm-text-action"
             style={{ color: 'var(--crm-primary)', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
             onClick={() => navigate(`/customers/${record.id}`)}
             title={text}
           >
             {text}
-          </a>
+          </button>
           <div
             title={[record.region, record.source, activityLabel(record.activity_status), compact ? `负责人 ${record.owner_name ?? '公海'}` : ''].filter(Boolean).join(' · ')}
             style={{ marginTop: 2, color: 'var(--crm-text-3)', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}

@@ -27,10 +27,15 @@ export interface PriceRuleRow {
   sku_name?: string | null
   customer_level?: string | null
   min_qty: number
+  min_qty_exact?: string | null
   max_qty?: number | null
+  max_qty_exact?: string | null
   standard_price?: number | null
+  standard_price_exact?: string | null
   guide_price?: number | null
+  guide_price_exact?: string | null
   minimum_price?: number | null
+  minimum_price_exact?: string | null
   target_margin?: number | null
   status: string
   effective_from?: string | null
@@ -48,9 +53,13 @@ export interface CustomerPriceRow {
   /** SKU 名称：列表接口现在会返回 */
   sku_name?: string | null
   min_qty: number
+  min_qty_exact?: string | null
   max_qty?: number | null
+  max_qty_exact?: string | null
   agreed_price: number
+  agreed_price_exact?: string | null
   minimum_price?: number | null
+  minimum_price_exact?: string | null
   /** 后端一直有返回（`serialize_customer_price`），此前类型漏了 —— 编辑弹窗要回填 */
   effective_from?: string | null
   effective_to?: string | null
@@ -502,6 +511,7 @@ export interface PriceLookupResult {
   source: 'customer_specific' | 'level' | 'general' | null
   source_label: string | null
   unit_price: number | null
+  unit_price_exact?: string | null
   standard_price?: number | null
   minimum_price?: number | null
   currency: string

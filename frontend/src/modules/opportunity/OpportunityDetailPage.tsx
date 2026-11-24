@@ -42,7 +42,7 @@ import DetailHeader from '../../shared/components/DetailHeader'
 import HelpTip from '../../shared/components/HelpTip'
 import { calendarDay } from '../../shared/calendar-day'
 import GuardedButton from '../../shared/components/GuardedButton'
-import { parseOptionalDecimal } from '../../shared/number-input'
+import { optionalQuantityText, parseOptionalDecimal } from '../../shared/number-input'
 import ReceivablePlanPicker, {
   defaultPlanRows,
   planBlockedReasons,
@@ -280,7 +280,7 @@ export default function OpportunityDetailPage() {
       if (Number.isNaN(targetPrice)) throw new Error('客户目标价只能填数字，留空表示暂未确定')
       return createItem(opportunityId, {
         sku_id: itemForm.sku_id,
-        quantity: itemForm.quantity ? Number(itemForm.quantity) : 1,
+        quantity: optionalQuantityText(itemForm.quantity) ?? 1,
         target_price: targetPrice,
         specification: itemForm.specification || null,
         color: itemForm.color || null,
@@ -398,6 +398,7 @@ export default function OpportunityDetailPage() {
       ),
       dataIndex: 'target_price',
       width: 110,
+      className: 'cell-money',
       render: (v: number | null) => (v ? `¥${v}` : '-'),
     },
     { title: '交期', dataIndex: 'delivery_date', width: 120, render: (v: string | null) => v ?? '-' },
@@ -409,7 +410,7 @@ export default function OpportunityDetailPage() {
       render: (_: unknown, record: OpportunityItem) =>
         canManage ? (
           <Popconfirm title="删除这条需求？" onConfirm={() => deleteItemMutation.mutate(record.id)}>
-            <a style={{ color: 'var(--crm-error)' }}>删除</a>
+            <button type="button" className="crm-text-action" style={{ color: 'var(--crm-error)' }}>删除</button>
           </Popconfirm>
         ) : (
           '-'
@@ -467,7 +468,7 @@ export default function OpportunityDetailPage() {
             content="完成后任务会从未完成列表中移除。"
             onConfirm={() => completeTaskMutation.mutate(record.id)}
           >
-            <a style={{ color: 'var(--crm-primary)' }}>完成</a>
+            <button type="button" className="crm-text-action" style={{ color: 'var(--crm-primary)' }}>完成</button>
           </Popconfirm>
         ) : (
           '-'
@@ -532,8 +533,8 @@ export default function OpportunityDetailPage() {
             <span>负责人：{opportunity.owner_name ?? '-'}</span>
             <span>
               预计金额：
-              {opportunity.expected_amount
-                ? formatMoney(toTwoDecimals(opportunity.expected_amount), 'CNY')
+              {opportunity.expected_amount != null
+                ? formatMoney(toTwoDecimals(opportunity.expected_amount_exact ?? opportunity.expected_amount), 'CNY')
                 : '-'}
             </span>
             <span>预计成交：{opportunity.expected_close_date ?? '-'}</span>
@@ -637,7 +638,7 @@ export default function OpportunityDetailPage() {
                   <DetailField label="当前阶段" value={opportunity.stage_name} />
                   <DetailField
                     label="预计金额"
-                    value={opportunity.expected_amount ? formatMoney(toTwoDecimals(opportunity.expected_amount), 'CNY') : '-'}
+                    value={formatMoney(toTwoDecimals(opportunity.expected_amount_exact ?? opportunity.expected_amount), 'CNY')}
                   />
                   <DetailField label="预计成交日期" value={opportunity.expected_close_date ?? '-'} />
                   <DetailField label="竞争对手" value={opportunity.competitor ?? '-'} />

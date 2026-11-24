@@ -105,6 +105,7 @@ export default function OrderDraftsPage() {
       confirmOrderDraft(id, revision, versionId),
     onSuccess: data => {
       void client.invalidateQueries({ queryKey: ['orders'] })
+      void client.invalidateQueries({ queryKey: ['quote-version'] })
       void client.invalidateQueries({ queryKey: ['order-drafts'] })
       void client.invalidateQueries({ queryKey: ['order-draft', draftId] })
       navigate(`/orders/${data.order_id}`)
@@ -208,7 +209,7 @@ export default function OrderDraftsPage() {
             本次数量：<Input style={{ width: 130 }} aria-label="草稿数量" inputMode="decimal" value={String(row.quantity)} disabled={!editable} onChange={v => patch(index, { quantity: v })} />
           </span>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap' }}>
-            单价：<Input style={{ width: 130 }} aria-label="草稿单价" inputMode="decimal" value={row.unit_price_exact ?? (row.unit_price == null ? '' : String(row.unit_price))} placeholder="未核价" disabled={!editable} onChange={v => patch(index, { unit_price: v === '' ? null : v })} />
+            单价：<Input style={{ width: 130 }} aria-label="草稿单价" inputMode="decimal" value={String(row.unit_price ?? '')} placeholder="未核价" disabled={!editable} onChange={v => patch(index, { unit_price: v === '' ? null : v })} />
           </span>
         </div>
         {/* 只读时也是 TextArea，默认给的是多行大框：一行「1200×800×5mm」被塞进
@@ -330,7 +331,7 @@ export default function OrderDraftsPage() {
         >
           生成草稿需求单
         </GuardedButton>}
-      {(docs.data ?? []).map(doc => <p key={doc.id}>{doc.doc_no} V{doc.version} · <a onClick={() => void showDownloadResult(downloadBizDoc(doc))}>下载 PDF</a></p>)}
+      {(docs.data ?? []).map(doc => <p key={doc.id}>{doc.doc_no} V{doc.version} · <button type="button" className="crm-text-action" onClick={() => void showDownloadResult(downloadBizDoc(doc))}>下载 PDF</button></p>)}
     </SectionCard>
   </div>
 }

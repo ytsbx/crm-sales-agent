@@ -1,7 +1,7 @@
 import { showDownloadResult } from '../../shared/download-feedback'
 import { requiredQuantityText } from '../../shared/number-input'
 import { IconEditStroked, IconExport, IconFile, IconMail } from '@douyinfe/semi-icons'
-import { formatMoney, formatUnitPrice } from '../../shared/components/money'
+import { formatMoney, formatUnitPrice, toTwoDecimals } from '../../shared/components/money'
 import { skuLabel } from '../../shared/sku-label'
 import { formatBeijingDate, formatBeijingTime } from '../../shared/beijing-time'
 import { useTabLabel } from '../../shared/hooks/useTabLabel'
@@ -125,7 +125,7 @@ const CHARGE_TYPES = [
  * "明确确认零运费"，于是一条"还没填金额"的费用会以 0 元落库、还被当成已确认，
  * 正式发送也放行。所以空输入必须显式拦住。
  */
-function parseChargeAmount(raw: string, isDiscount: boolean): number {
+function parseChargeAmount(raw: string, isDiscount: boolean): string {
   if (!raw) {
     throw new Error(
       isDiscount
@@ -133,14 +133,10 @@ function parseChargeAmount(raw: string, isDiscount: boolean): number {
         : '请填写金额；确属零运费也要显式填 0，不能留空当作已确认',
     )
   }
-  const amount = Number(raw)
-  if (!Number.isFinite(amount) || amount < 0) {
-    throw new Error('金额必须是不小于 0 的有效数字')
-  }
   if (!/^\d+(\.\d{1,2})?$/.test(raw)) {
-    throw new Error('金额最多两位小数')
+    throw new Error('金额必须是非负数字，最多两位小数')
   }
-  return amount
+  return raw
 }
 
 /**
@@ -214,7 +210,8 @@ export default function QuoteDetailPage() {
    * 两处算法不一致（一处过滤、一处不过滤）就又会失效不到。
    */
   const allVersionIds = (versionsQuery.data ?? []).map((item) => item.id)
-  const versionId = requestedVersionId ?? allVersionIds[0]
+  const versionId = requestedVersionId !== null && allVersionIds.includes(requestedVersionId)
+    ? requestedVersionId : allVersionIds[0]
 
   const detailQuery = useQuery({
     queryKey: ['quote-version', versionId],
@@ -401,6 +398,7 @@ export default function QuoteDetailPage() {
       convertToOrder(versionId!, { receivable_plan: toPlanPayload(planMode, planRows) }, confirm),
     onSuccess: (data) => {
       setConvertVisible(false)
+      void queryClient.invalidateQueries({ queryKey: ['quote-version'] })
       Toast.success(`已生成订单 ${data.order_no}，可在订单详情查看应收计划。`)
       navigate(`/orders/${data.order_id}`)
     },
@@ -428,6 +426,7 @@ export default function QuoteDetailPage() {
   }
 
   const detail = detailQuery.data
+  const hasActiveOrder = detail?.has_active_order ?? (detail?.quote?.status === 'converted')
   const version = detail?.version
   const quote = detail?.quote
   /**
@@ -761,10 +760,11 @@ export default function QuoteDetailPage() {
    * 一点保存就被"金额最多两位小数"拦下（看着像校验坏了）。
    */
   const openChargeEditor = (record: QuoteChargeRow) => {
+    const amount = record.amount_exact ?? String(record.amount)
     setEditCharge(record)
     setEditChargeForm({
       description: record.description ?? '',
-      amount: String(record.is_discount ? Math.abs(record.amount) : record.amount),
+      amount: record.is_discount ? amount.replace(/^-/, '') : amount,
     })
   }
 
@@ -835,17 +835,7 @@ export default function QuoteDetailPage() {
     pricing_basis: version.pricing_basis,
     pricing_basis_label: version.pricing_basis_label,
   }
-  /**
-   * 本页统一的金额写法：`¥14,286.00`。
-   * 原来这张汇总卡里"产品货款"用 toLocaleString（¥14,286，没有小数）、
-   * "运费"用 toFixed(2)（¥30.00）、"应付合计"用 formatMoney（带小数但不带千分位），
-   * 同一张卡三种写法并排，看着就廉价（2026-11-16 统一）。
-   */
-  const cny = (v: number | string) => {
-    const n = Number(v)
-    if (!Number.isFinite(n)) return '-'
-    return `¥${n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-  }
+  const cny = (value: number | string) => formatMoney(toTwoDecimals(value), 'CNY')
 
   /** 运费未确认的人话原因（后端给）；有值就要一直显示 */
   const freightUnconfirmed = detail.freight_unconfirmed_reason ?? null
@@ -860,7 +850,7 @@ export default function QuoteDetailPage() {
     sentAt: version?.sent_at,
     acceptedAt: version?.accepted_at,
     declinedAt: version?.declined_at,
-    converted: quote?.status === 'converted',
+    converted: hasActiveOrder,
   })
   // 有没有"必须处理完才能往下走"的项（主数据/费用）——决定标签用橙色还是蓝色
   const quoteTodosBlocked = quoteTodoList.some(
@@ -947,6 +937,7 @@ export default function QuoteDetailPage() {
       // 只剩 699px 可用。110 宽 + 表头允许折两行：口径不丢，列也不再被裁。
       width: 105,
       onHeaderCell: () => ({ style: { whiteSpace: 'normal', lineHeight: 1.35 } }),
+      className: 'cell-money',
       render: (value: number, record: QuoteItemRow) => {
         // 方案 §4.1"显示价格来源"：拟报价的依据（客户专属价/等级价/通用指导价/手工）
         const sourceLabel =
@@ -1033,7 +1024,7 @@ export default function QuoteDetailPage() {
         return (
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10, whiteSpace: 'nowrap' }}>
             {canManage && editable && (
-              <a
+              <button type="button" className="crm-text-action"
                 style={{ color: 'var(--crm-primary)' }}
                 onClick={() => {
                   setPriceTarget(record)
@@ -1041,11 +1032,11 @@ export default function QuoteDetailPage() {
                 }}
               >
                 改价
-              </a>
+              </button>
             )}
-            <a style={{ color: 'var(--crm-text-2)' }} onClick={toggle}>
+            <button type="button" className="crm-text-action" style={{ color: 'var(--crm-text-2)' }} onClick={toggle}>
               {open ? '收起' : '展开'}
-            </a>
+            </button>
           </span>
         )
       },
@@ -1101,7 +1092,9 @@ export default function QuoteDetailPage() {
         )}
         tags={
           <>
-            <Tag color={STATUS_TONE[quote.status] ?? 'grey'}>{quote.status_label}</Tag>
+            <Tag color={STATUS_TONE[hasActiveOrder ? 'converted' : quote.status] ?? 'grey'}>
+              {hasActiveOrder ? '已转订单' : quote.status_label}
+            </Tag>
             {/* 版本号原来是个实心蓝标签，跟主按钮抢眼、也把页头压得很重。
                 版本号是次要信息，用描边款就够了（2026-11-16）。 */}
             <Tag className="tag-plain">V{version.version_no}</Tag>
@@ -1127,6 +1120,11 @@ export default function QuoteDetailPage() {
               )}
             </span>
             <span>负责人：{quote.owner_name ?? '-'}</span>
+            {detail.active_order && (
+              <Link to={`/orders/${detail.active_order.id}`}>
+                查看订单 {detail.active_order.order_no}
+              </Link>
+            )}
             <span>有效期至：{quote.valid_until ?? '-'}</span>
             <span className={`quote-payment-terms${flashPaymentTerms ? ' flash-updated' : ''}`}>
               <span>付款条件：{version.payment_terms || '未填写'}</span>
@@ -1159,7 +1157,7 @@ export default function QuoteDetailPage() {
 
           // 每个动作的"能不能露"（判据一个字没动，仍是原来那些）
           const conditions: Record<string, boolean> = {
-            '新建版本': Boolean(canManage && !rejection),
+            '新建版本': Boolean(canManage && !rejection && !hasActiveOrder),
             '提交审批': Boolean(canManage && editable),
             '撤回审批': Boolean(canManage && isCurrentVersion && version.approval_status === 'pending'),
             '标记已发送': Boolean(
@@ -1177,7 +1175,7 @@ export default function QuoteDetailPage() {
             // 事实并没有消失。已转成订单（converted）就不再给这个入口。
             '转销售订单': Boolean(
               can('order:manage') && isCurrentVersion && version.sent_at && version.accepted_at
-              && !version.declined_at && quote.status !== 'converted',
+              && !version.declined_at && !hasActiveOrder && !detail.version_order_cancelled,
             ),
             '下载 PDF': Boolean(version),
             // ⚠️ 这里只放**原本就在这一行里**的动作。「批量录入」「添加费用」
@@ -1399,7 +1397,7 @@ export default function QuoteDetailPage() {
           // 不再笼统地写"当前版本/状态不可用"（2026-11-18 主人圈掉的就是这句）。
           const hasDrift = Boolean(driftQuery.data?.items?.some((it) => it.drift))
           const moreNotes: string[] = []
-          if (hasDrift && !editable) moreNotes.push('当前报价版本已锁定，如需改价，请新建版本')
+          if (hasDrift && !editable && !hasActiveOrder) moreNotes.push('当前报价版本已锁定，如需改价，请新建版本')
 
           // 折叠区没有可点的动作、也没有要说明的缺项时，整个「更多操作」不出现
           const hasMore = more.length > 0 || moreNotes.length > 0
@@ -1481,6 +1479,9 @@ export default function QuoteDetailPage() {
           </div>
         </div>
 
+        {isCurrentVersion && detail.version_order_cancelled && (
+          <p className="workflow-guide">此版的订单已取消。请新建报价版本，等客户重新确认后再下单。</p>
+        )}
         {rejection && (
           <div className="workflow-next quote-approval-rejection">
             <div>
@@ -1491,9 +1492,9 @@ export default function QuoteDetailPage() {
                   {[rejectionRecord.approver_name, formatBeijingTime(rejectionRecord.created_at)].filter(Boolean).join(' · ')}
                 </p>
               )}
-              {isCurrentVersion && canManage && <p className="workflow-guide">新建版本后，在新版修改并重新提交审批。</p>}
+              {isCurrentVersion && canManage && !hasActiveOrder && <p className="workflow-guide">新建版本后，在新版修改并重新提交审批。</p>}
             </div>
-            {isCurrentVersion && canManage && (
+            {isCurrentVersion && canManage && !hasActiveOrder && (
               <Button type="primary" theme="outline" loading={versionMutation.isPending}
                 onClick={() => versionMutation.mutate(false)}>新建版本</Button>
             )}
@@ -1531,7 +1532,7 @@ export default function QuoteDetailPage() {
         判据全部来自 `shared/quote-todo.ts`（单一真源），页面只负责渲染与跳转 ——
         别在这里自己判一遍，否则两处会说法不一。
       */}
-      {quoteTodoList.some((todo) => todo.key !== 'approval_rejected') && (
+      {!detail.version_order_cancelled && quoteTodoList.some((todo) => todo.key !== 'approval_rejected') && (
         <div
           style={{
             marginTop: 16,
@@ -1585,8 +1586,8 @@ export default function QuoteDetailPage() {
                 )}
                 {/* 能点的必须给去处：只说明"差什么"而不给入口，等于把问题换个地方放着 */}
                 {todo.anchor && (
-                  <a
-                    className="qt-link"
+                  <button type="button"
+                    className="crm-text-action qt-link"
                     onClick={() => {
                       document.getElementById(todo.anchor as string)?.scrollIntoView({
                         behavior: 'smooth',
@@ -1595,7 +1596,7 @@ export default function QuoteDetailPage() {
                     }}
                   >
                     去处理
-                  </a>
+                  </button>
                 )}
               </span>
             </div>
@@ -2285,11 +2286,11 @@ export default function QuoteDetailPage() {
                 render: (v: number, record: QuoteChargeRow) =>
                   record.is_logistics ? (
                     <div style={{ lineHeight: 1.35 }}>
-                      <div>{`¥${v.toFixed(2)}`}</div>
+                      <div>{cny(record.amount_exact ?? v)}</div>
                       <div style={{ fontSize: 11, color: 'var(--crm-text-3)' }}>代收代付</div>
                     </div>
                   ) : (
-                    `¥${v.toFixed(2)}`
+                    cny(record.amount_exact ?? v)
                   ),
               },
               {
@@ -2310,12 +2311,12 @@ export default function QuoteDetailPage() {
                   if (!touchable) return null
                   return (
                     <span style={{ display: 'inline-flex', gap: 10 }}>
-                      <a onClick={() => openChargeEditor(record)}>改</a>
+                      <button type="button" className="crm-text-action" onClick={() => openChargeEditor(record)}>改</button>
                       <Popconfirm
                         title="删除这条费用？"
                         onConfirm={() => deleteQuoteCharge(record.id).then(refresh)}
                       >
-                        <a style={{ color: 'var(--crm-error)' }}>删除</a>
+                        <button type="button" className="crm-text-action" style={{ color: 'var(--crm-error)' }}>删除</button>
                       </Popconfirm>
                     </span>
                   )
@@ -2373,7 +2374,7 @@ export default function QuoteDetailPage() {
             >
               <span style={{ color: 'var(--crm-text-3)' }}>费用合计</span>
               <span style={{ fontWeight: 600 }}>
-                {`¥${detail.charges.reduce((sum, charge) => sum + Number(charge.amount ?? 0), 0).toFixed(2)}`}
+                {cny(detail.summary?.net_charge_amount_exact ?? summary.charge_amount + summary.discount_amount)}
               </span>
             </div>
           )}
@@ -2389,7 +2390,7 @@ export default function QuoteDetailPage() {
             <div style={{ display: 'grid', gap: 10 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span style={{ color: 'var(--crm-text-3)' }}>产品货款</span>
-                <span>{cny(summary.goods_amount)}</span>
+                <span>{cny(detail.summary?.goods_amount_exact ?? summary.goods_amount)}</span>
               </div>
               {/* 运费从"附加费用"里**单独一行**列具体金额，不再混在一起让客户自己猜。
                   注意：下面这几行都**已经含在**应付合计里，只是拆分展示，不再相加。 */}
@@ -2398,15 +2399,15 @@ export default function QuoteDetailPage() {
                   运费（代收代付）
                   <HelpTip forLabel="运费" text="客户承担、公司代收代付的运费。按行单列给客户看，已计入下面的应付合计，不计入利润。" />
                 </span>
-                <span>{cny(summary.logistics_amount)}</span>
+                <span>{cny(detail.summary?.logistics_amount_exact ?? summary.logistics_amount)}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span style={{ color: 'var(--crm-text-3)' }}>其他费用</span>
-                <span>{cny(summary.other_charge_amount)}</span>
+                <span>{cny(detail.summary?.other_charge_amount_exact ?? summary.other_charge_amount)}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span style={{ color: 'var(--crm-text-3)' }}>优惠</span>
-                <span>{cny(summary.discount_amount)}</span>
+                <span>{cny(detail.summary?.discount_amount_exact ?? summary.discount_amount)}</span>
               </div>
             </div>
             {/* 合计贴底：marginTop:auto 吃掉多出来的高度 */}

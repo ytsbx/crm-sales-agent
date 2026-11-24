@@ -23,6 +23,8 @@ class ProductCreate(CreateModel):
 class ProductUpdate(PatchModel):
     model_config = ConfigDict(extra="ignore")
 
+    expected_fields: dict[str, str | None] | None = None
+
     name: str | None = None
     product_line: str | None = None
     category: str | None = Field(default=None, max_length=64)
@@ -68,6 +70,8 @@ class SkuCreate(CreateModel):
 
 class SkuUpdate(PatchModel):
     model_config = ConfigDict(extra="ignore")
+
+    expected_fields: dict[str, str | None] | None = None
 
     sku_code: str | None = None
     name: str | None = None

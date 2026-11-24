@@ -100,6 +100,7 @@ def serialize_shipment(shipment: SampleShipment) -> dict:
         "carrier": shipment.carrier,
         "tracking_no": shipment.tracking_no,
         "shipping_fee": _f(shipment.shipping_fee),
+        "shipping_fee_exact": format(shipment.shipping_fee, "f") if shipment.shipping_fee is not None else None,
         "shipped_at": shipment.shipped_at.isoformat() if shipment.shipped_at else None,
         "signed_at": shipment.signed_at.isoformat() if shipment.signed_at else None,
     }
@@ -179,6 +180,7 @@ def serialize_request(
         ),
         "acceptance_criteria": request.acceptance_criteria,
         "sample_fee": _f(request.sample_fee),
+        "sample_fee_exact": format(request.sample_fee, "f") if request.sample_fee is not None else None,
         "production_owner_id": request.production_owner_id,
         # 制作依据（2026-10-06）：登记制作完成时指定的那几份文件（含 sha256）。
         #

@@ -45,6 +45,7 @@ let quoteCostProblems=[]
 let costDraft=false
 let quoteItems=[]
 let exactQuote=false
+let failReceivables=false
 let financialRows=false
 let financialPlansEmpty=false
 const financialPayments=[]
@@ -137,6 +138,10 @@ const server=createServer(async (req,res)=>{
   if(analyticsExact && analyticsFixture.responses[path]) {
     res.writeHead(200,{'Content-Type':'application/json'})
     res.end(JSON.stringify(analyticsFixture.responses[path]));return
+  }
+  if(failReceivables && path==='/api/v1/analytics/receivables') {
+    res.writeHead(500,{'Content-Type':'application/json'})
+    res.end(JSON.stringify({code:50001,message:'隔离模拟读取失败',data:null}));return
   }
   if(path.startsWith('/api/')) {
     apiRequests.push({path,method:req.method})
@@ -347,21 +352,21 @@ try {
     console.log('BROWSER_TASK_HANDOVER_AND_RECEIVABLE_PLANS=true')
 
     await navigate('inquiries')
-    await clickText('a', '查看新版')
+    await clickText('a, button.crm-text-action', '查看新版')
     await waitFor(`document.querySelector('.semi-modal-content')?.innerText.includes('按此版本生成报价草稿')`)
-    await clickText('.semi-modal-content a', '按此版本生成报价草稿')
+    await clickText('.semi-modal-content :is(a, button.crm-text-action)', '按此版本生成报价草稿')
     await waitFor(`document.querySelector('.semi-modal-content')?.innerText.includes('生成报价草稿：隔离询价新版')`)
     await clickText('.semi-modal-content button', '取消')
-    await clickText('a', '修订后报价')
+    await clickText('a, button.crm-text-action', '修订后报价')
     await waitFor(`document.querySelector('.semi-modal-content')?.innerText.includes('修订：隔离归档询价')`)
     await clickText('.semi-modal-content button', '取消')
-    await clickText('a', '查看原报价')
+    await clickText('a, button.crm-text-action', '查看原报价')
     await waitFor(`location.pathname === '/quotes/121'`)
     assert.equal(apiRequests.some(r=>r.path.endsWith('/create-quote')),false)
     console.log('BROWSER_INQUIRY_LATEST_REVISION_AND_ORIGINAL_QUOTE=true')
 
     await navigate('products/201')
-    await clickText('a', '来源 / 差异')
+    await clickText('a, button.crm-text-action', '来源 / 差异')
     await waitFor(`document.querySelector('.semi-modal-content')?.innerText.includes('CRM 名称')`)
     await evaluate(`Array.from(document.querySelectorAll('.semi-modal-content .semi-select')).find(el=>el.innerText.includes('选择处理方式')).click()`)
     await clickText('.semi-select-option', '以本地为准')
@@ -432,7 +437,7 @@ try {
   console.log('BROWSER_CONFIRM_EXACTLY_ONE_REQUEST=true')
   await sleep(250)
   await evaluate(`document.querySelector('.notice-trigger').click()`)
-  const retryLink=`Array.from(document.querySelectorAll('.notice-panel a')).find(a=>a.innerText.trim()==='补投')`
+  const retryLink=`Array.from(document.querySelectorAll('.notice-panel button')).find(b=>b.innerText.trim()==='补投')`
   await waitFor(retryLink)
   await evaluate(`${retryLink}.click()`)
   await waitFor(`document.body.innerText.includes('确认补投这条通知')`)
@@ -455,9 +460,12 @@ try {
   console.log('BROWSER_NOTIFICATION_CANCEL_NO_SEND_AND_NO_NAVIGATION=true')
   console.log('BROWSER_NOTIFICATION_CONFIRM_ONCE_NO_PARENT_CLICK=true')
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/recycle-bin`})
-  const restoreLink=`Array.from(document.querySelectorAll('a')).find(a=>a.innerText.trim()==='恢复')`
+  const restoreLink=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()==='恢复')`
   await waitFor(restoreLink)
-  await evaluate(`${restoreLink}.click()`)
+  await evaluate(`${restoreLink}.focus()`)
+  assert.equal(await evaluate(`document.activeElement === ${restoreLink}`),true)
+  await send('Input.dispatchKeyEvent',{type:'keyDown',key:' ',code:'Space',windowsVirtualKeyCode:32,text:' '})
+  await send('Input.dispatchKeyEvent',{type:'keyUp',key:' ',code:'Space',windowsVirtualKeyCode:32})
   await waitFor(`document.body.innerText.includes('确认恢复这条线索')`)
   assert.equal(restored,0)
   await evaluate(`Array.from(${popup}.querySelectorAll('button')).find(b=>b.innerText.includes('取消')).click()`)
@@ -692,9 +700,11 @@ try {
   for(let i=0;wecomBindings.length===0 && i<30;i++)await sleep(100)
   assert.deepEqual(wecomBindings,[{contact_id:92,customer_id:94}])
   console.log('BROWSER_WECOM_BIND_CANCEL_NO_WRITE_CONFIRM_SECOND_CANDIDATE_ID=true')
-  await send('Page.navigate',{url:`http://127.0.0.1:${port}/quotes/121?version=131`})
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/quotes/121?version=9999`})
   const withdraw=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()==='撤回审批')`
   await waitFor(withdraw)
+  assert.ok(apiRequests.some(({path})=>path.endsWith('/quote-versions/131')))
+  assert.ok(!apiRequests.some(({path})=>path.endsWith('/quote-versions/9999')))
   await evaluate(`${withdraw}.click()`)
   await waitFor(`document.body.innerText.includes('确认撤回当前版本的报价审批')`)
   assert.equal(quoteWithdrawals.length,0)
@@ -747,10 +757,10 @@ try {
     const tabButton=`Array.from(document.querySelectorAll('[role="tab"]')).find(t=>t.innerText.trim()===${JSON.stringify(tab)})`
     await waitFor(tabButton)
     await evaluate(`${tabButton}.click()`)
-    const restore=`Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes(${JSON.stringify(name)}))?.querySelector('a:last-child')`
+    const restore=`Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes(${JSON.stringify(name)}))?.querySelector('button.crm-text-action:last-child')`
     await waitFor(restore)
     assert.equal(await evaluate(`${restore}.innerText.trim()`),'恢复')
-    if(tab==='产品') assert.equal(await evaluate(`Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes('ISO-SKU-107')).querySelectorAll('a').length`),0,'SKU whose product is deleted must have no restore action')
+    if(tab==='产品') assert.equal(await evaluate(`Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes('ISO-SKU-107')).querySelectorAll('button.crm-text-action').length`),0,'SKU whose product is deleted must have no restore action')
     if(tab==='客户') assert.equal(await evaluate(`Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes('被合并客户')).innerText.includes('恢复')`),false,'merged customer must have no restore action')
     const before=recycleRequests.length
     const container=modal?`document.querySelector('.semi-modal-confirm')`:popup
@@ -771,7 +781,7 @@ try {
     console.log(`BROWSER_RECYCLE_${endpoint}_CANCEL_NO_WRITE_CONFIRM_CORRECT_ID=true`)
   }
   await evaluate(`Array.from(document.querySelectorAll('[role="tab"]')).find(t=>t.innerText.trim()==='客户').click()`)
-  const reassignRestore=`Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes('待重新分配客户'))?.querySelector('a:last-child')`
+  const reassignRestore=`Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes('待重新分配客户'))?.querySelector('button.crm-text-action:last-child')`
   await waitFor(reassignRestore)
   const beforeReassign=recycleRequests.length
   await evaluate(`${reassignRestore}.click()`)
@@ -963,7 +973,7 @@ try {
   console.log('BROWSER_QUOTE_COST_HINT_CANCEL_NO_WRITE_EXPLICIT_REFRESH=true')
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/products/201`})
   await waitFor(`document.body.innerText.includes('成本未维护')`)
-  await evaluate(`Array.from(document.querySelectorAll('a')).find(a=>a.innerText.trim()==='去维护').click()`)
+  await evaluate(`Array.from(document.querySelectorAll('a, button.crm-text-action')).find(a=>a.innerText.trim()==='去维护').click()`)
   await waitFor(`location.pathname==='/prices' && document.body.innerText.includes('新增成本')`)
   assert.equal(await evaluate('location.search'),'?tab=costs&sku_id=1')
   assert.ok(costPageRequests.length>0,'cost shortcut loads the exact SKU costs')
@@ -1144,6 +1154,10 @@ try {
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/analytics?view=reports&report=basis`})
   const annualExactRow=`Array.from(document.querySelectorAll('tr')).find(r=>r.innerText.startsWith('${analyticsFixture.period.slice(5)}\t'))`
   await waitFor(`${annualExactRow}?.innerText.includes('¥199,999,999,999,999')`)
+  assert.equal(await evaluate(`(() => {
+    const cell = Array.from(${annualExactRow}.querySelectorAll('td')).find(td => td.innerText === '¥199,999,999,999,999')
+    return cell?.matches('.cell-money') && getComputedStyle(cell).whiteSpace === 'normal' && cell.scrollWidth <= cell.clientWidth
+  })()`),true,'large amounts in the monthly report must fit without truncation')
   console.log('BROWSER_ANALYTICS_ANNUAL_TARGET_AND_PERSONNEL_EXACT_WHOLE_YUAN=true')
 
   // 目标卡按「对象类型」分开展示（全公司 / 部门 / 个人），不再是一张混排的表。
@@ -1393,6 +1407,17 @@ try {
     console.log('PASS source '+mode+' exact quantities, default, no steppers, stable failure retry and invalid quantity hints')
   }
   }
+  analyticsExact=false
+  failReceivables=true
+  user.roles=['admin']
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/analytics?view=payments`})
+  const receivableKpi=`Array.from(document.querySelectorAll('.kpi-card')).find(card=>card.querySelector('.kpi-label')?.innerText.includes('应收合计'))`
+  await waitFor(`${receivableKpi}?.innerText.includes('数据加载失败')`)
+  assert.equal(await evaluate(`${receivableKpi}.querySelector('.kpi-value').innerText`),'—')
+  failReceivables=false
+  await evaluate(`${receivableKpi}.querySelector('.kpi-hint button, .chip button').click()`)
+  await waitFor(`${receivableKpi}?.querySelector('.kpi-value').innerText==='¥0'`)
+  console.log('BROWSER_ANALYTICS_FAILED_KPI_NEVER_REPORTS_ZERO_AND_RETRIES=true')
 } finally {
   // 先让浏览器真的退出再删档案目录：没退干净就删会撞 ENOTEMPTY（它还在往里写），
   // 2026-11-16 就因此假红过一次（断言全过、收尾炸了）。清理失败**不能算测试失败**，

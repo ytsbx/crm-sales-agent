@@ -1,5 +1,8 @@
 import { skuLabel } from '../../shared/sku-label'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { newRequestKey } from '../../shared/api/requestKey'
+import { requiredQuantityText } from '../../shared/number-input'
+import { paymentMoney } from '../../shared/payment-allocation'
 import PageHeader from '../../shared/components/PageHeader'
 import HelpTip from '../../shared/components/HelpTip'
 import { Link } from 'react-router-dom'
@@ -84,6 +87,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
   const [receivablesPage, setReceivablesPage] = useState(1)
   const [paymentsPage, setPaymentsPage] = useState(1)
   const [createVisible, setCreateVisible] = useState(false)
+  const createKey = useRef<string | null>(null)
   const [showItemIssues, setShowItemIssues] = useState(false)
   const [createForm, setCreateForm] = useState({
     customer_id: null as number | null,
@@ -151,11 +155,13 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
     if (!item.sku_id) return '未选 SKU'
     const quantity = item.quantity.trim()
     if (quantity === '') return '数量留空'
-    if (!Number.isFinite(Number(quantity)) || Number(quantity) <= 0) return '数量要大于 0'
+    try { requiredQuantityText(quantity) } catch (error) { return (error as Error).message }
     const price = item.unit_price.trim()
     // 空串必须单独拦：`Number('')` 是 0，不能靠数值判断发现"没填"
     if (price === '') return '单价留空（确属 0 元请显式填 0）'
-    if (!Number.isFinite(Number(price)) || Number(price) < 0) return '单价要是不小于 0 的数字'
+    if (!/^\d+(?:\.\d+)?$/.test(price)) return '单价要是不小于 0 的数字'
+    const [whole, fraction = ''] = price.split('.')
+    if (whole.replace(/^0+/, '').length > 12 || fraction.replace(/0+$/, '').length > 4) return '单价整数最多 12 位，小数最多 4 位'
     return null
   }
   const enteredItems = createForm.items
@@ -167,14 +173,17 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
     return issue ? [`第 ${line} 行：${issue}`] : []
   })
   // 明细合计：填了 SKU / 数量 / 单价就实时算出来，别让人猜"到底多少钱"
-  const createTotal = enteredItems.reduce((sum, { item }) => {
-    const q = Number(item.quantity)
-    const p = Number(item.unit_price)
-    return sum + (Number.isFinite(q) && Number.isFinite(p) ? q * p : 0)
-  }, 0)
+  const coefficient = (text: string, places: number) => {
+    const [whole, fraction = ''] = text.trim().replace(/^\+/, '').split('.')
+    return BigInt((whole || '0') + fraction.padEnd(places, '0').slice(0, places))
+  }
+  // Match the server: round each positive line to cents before summing.
+  const createTotal = itemIssues.length ? 0n : enteredItems.reduce((sum, { item }) =>
+    sum + (coefficient(item.quantity, 3) * coefficient(item.unit_price, 4) + 50000n) / 100000n, 0n)
   const createMutation = useMutation({
     mutationFn: createOrder,
     onSuccess: (data) => {
+      createKey.current = null
       Toast.success(`订单 ${data.order_no} 已创建。可在订单详情核对应收计划。`)
       setCreateVisible(false)
       setCreateForm({
@@ -190,6 +199,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
     onError: (error: Error) => Toast.error(error.message),
   })
   const submitCreate = () => {
+    if (createMutation.isPending) return
     if (!createForm.customer_id) {
       Toast.warning('请选择客户')
       return
@@ -199,11 +209,12 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       return
     }
     createMutation.mutate({
+      request_key: createKey.current ??= newRequestKey(),
       customer_id: createForm.customer_id,
       items: enteredItems.map(({ item }) => ({
         sku_id: item.sku_id!,
-        quantity: Number(item.quantity),
-        unit_price: Number(item.unit_price),
+        quantity: item.quantity.trim(),
+        unit_price: item.unit_price.trim(),
         specification: item.specification.trim() || undefined,
       })),
       owner_id: createForm.owner_id ?? undefined,
@@ -317,6 +328,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       ),
       dataIndex: 'status_label',
       width: compact ? 96 : 120,
+      className: 'cell-money',
       render: (value: string, record: Order) => {
         const unpaid = record.unreceived_amount_exact ?? record.unreceived_amount
         const hasUnreceived = Number(unpaid) > 0
@@ -330,7 +342,6 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
                   fontSize: 11,
                   lineHeight: 1.4,
                   color: hasUnreceived ? 'var(--crm-text-2)' : 'var(--crm-text-3)',
-                  whiteSpace: 'nowrap',
                 }}
               >
                 {hasUnreceived ? `待收款 ${formatMoney(unpaid, record.currency)}` : '已收清'}
@@ -710,7 +721,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       <Modal
         title="手工建单（线下签约 / 补录历史单）"
         visible={createVisible}
-        onCancel={() => setCreateVisible(false)}
+        onCancel={() => { if (!createMutation.isPending) setCreateVisible(false) }}
         onOk={submitCreate}
         confirmLoading={createMutation.isPending}
         okText="创建订单"
@@ -871,9 +882,9 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
             <span style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
               金额由明细自动算出，不需要手填；创建后可在订单详情里生成应收计划。
             </span>
-            {createTotal > 0 && (
+            {createTotal > 0n && (
               <span style={{ marginLeft: 'auto', fontSize: 13 }}>
-                明细合计 <strong>{formatMoney(toTwoDecimals(createTotal), 'CNY')}</strong>
+                明细合计 <strong>{formatMoney(paymentMoney(createTotal), 'CNY')}</strong>
                 <span style={{ color: 'var(--crm-text-3)', marginLeft: 6 }}>
                   {enteredItems.length} 行
                 </span>

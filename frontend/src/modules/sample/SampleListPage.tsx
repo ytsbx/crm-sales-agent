@@ -522,7 +522,7 @@ export default function SampleListPage() {
         return {
           carrier: shipForm.carrier.trim() || null,
           tracking_no: shipForm.tracking_no.trim() || null,
-          shipping_fee: fee,
+          shipping_fee: raw || '0',
         }
       })()),
     onSuccess: () => {
@@ -575,7 +575,7 @@ export default function SampleListPage() {
         purpose: prodForm.purpose || null,
         target_completion_date: prodForm.target_completion_date || null,
         acceptance_criteria: prodForm.acceptance_criteria || null,
-        sample_fee: fee,
+        sample_fee: raw || null,
         // ---- 同序 OA《打样申请单》上的格 ----
         sample_type: blankToNull(prodForm.sample_type),
         product_category: blankToNull(prodForm.product_category),
@@ -583,7 +583,7 @@ export default function SampleListPage() {
         sample_purpose: blankToNull(prodForm.sample_purpose),
         urgency: blankToNull(prodForm.urgency),
         sample_situation: blankToNull(prodForm.sample_situation),
-        estimated_hours: hours,
+        estimated_hours: rawHours || null,
         // ⚠️ `product_name` 与那 6 项「打样具体要求」**刻意不在这里发**：
         // 它们已从本页表单移除（改到「同序 OA 打样申请」弹窗里填），若在这里发 null
         // 就会**把弹窗里填好的值擦掉**。PATCH 只改传了的字段，不发就保持原值。
@@ -1329,7 +1329,7 @@ export default function SampleListPage() {
                           title: '操作',
                           width: 64,
                           render: (_: unknown, row: SampleItem) => (
-                            <a
+                            <button type="button" className="crm-text-action"
                               onClick={() =>
                                 setItemEdit({
                                   id: row.id,
@@ -1340,7 +1340,7 @@ export default function SampleListPage() {
                               }
                             >
                               改依据
-                            </a>
+                            </button>
                           ),
                         },
                       ]
@@ -1397,7 +1397,9 @@ export default function SampleListPage() {
                       title: '运费',
                       dataIndex: 'shipping_fee',
                       width: 90,
-                      render: (v: number) => `¥${v.toFixed(2)}`,
+                      className: 'cell-right',
+                      render: (v: number, shipment: { shipping_fee_exact?: string | null }) =>
+                        formatMoney(toTwoDecimals(shipment.shipping_fee_exact ?? v), 'CNY'),
                     },
                   ]}
                 />
@@ -1510,14 +1512,14 @@ export default function SampleListPage() {
                   <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
                     <div style={{ fontWeight: 600, flex: 1 }}>生产打样资料</div>
                     {canUpdateSample && !prodEditing && (
-                      <a
+                      <button type="button" className="crm-text-action"
                         onClick={() => {
                           setProdForm({
                             purpose: detail.purpose ?? '',
                             target_completion_date: detail.target_completion_date ?? '',
                             acceptance_criteria: detail.acceptance_criteria ?? '',
                             sample_fee:
-                              detail.sample_fee != null ? String(detail.sample_fee) : '',
+                              String(detail.sample_fee_exact ?? detail.sample_fee ?? ''),
                             sample_type: detail.sample_type ?? '',
                             product_category: detail.product_category ?? '',
                             // 历史钉钉单写的是「外协厂」，同序模板是「外协厂打样」；
@@ -1533,7 +1535,7 @@ export default function SampleListPage() {
                         }}
                       >
                         编辑
-                      </a>
+                      </button>
                     )}
                   </div>
 
@@ -1709,7 +1711,7 @@ export default function SampleListPage() {
                       <div>验收标准：{dash(detail.acceptance_criteria)}</div>
                       <div>
                         {/* 金额统一两位小数（2026-11-17 视觉审视 V-05）：原来 ¥120 与 ¥120.50 混排 */}
-                        打样费用：{detail.sample_fee != null ? formatMoney(toTwoDecimals(detail.sample_fee), 'CNY') : '未填'}
+                        打样费用：{detail.sample_fee != null ? formatMoney(toTwoDecimals(detail.sample_fee_exact ?? detail.sample_fee), 'CNY') : '未填'}
                       </div>
                       <div>制作完成：{dash(detail.made_at ? formatBeijingDate(detail.made_at) : null)}</div>
                       {/* 制作依据（第一批返修 §3.5）：这次照哪几份文件做的。

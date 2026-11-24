@@ -31,6 +31,7 @@ export interface SampleShipment {
   carrier?: string | null
   tracking_no?: string | null
   shipping_fee: number
+  shipping_fee_exact?: string | null
   shipped_at?: string | null
   signed_at?: string | null
 }
@@ -103,6 +104,7 @@ export interface SampleRequestRow {
   target_completion_date?: string | null
   acceptance_criteria?: string | null
   sample_fee?: number | null
+  sample_fee_exact?: string | null
   production_owner_id?: number | null
   made_at?: string | null
   /**

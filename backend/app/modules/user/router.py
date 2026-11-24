@@ -46,6 +46,7 @@ router = APIRouter(tags=["System"])
 async def list_users(
     keyword: str | None = None,
     status: str | None = None,
+    omit_archived: bool = False,
     department_id: int | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
@@ -59,6 +60,8 @@ async def list_users(
         stmt = stmt.where(User.name.ilike(like) | User.username.ilike(like))
     if status:
         stmt = stmt.where(User.status == status)
+    elif omit_archived:
+        stmt = stmt.where(User.status != "archived")
     if department_id:
         stmt = stmt.where(User.department_id == department_id)
 
@@ -206,6 +209,44 @@ async def disable_user(
     )
     await session.commit()
     return ok(svc.serialize_user(target), "账号已停用")
+
+
+@router.post("/users/{user_id}/archive")
+async def archive_user(
+    user_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("user:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    if "admin" not in user.roles:
+        raise AppError(ErrorCode.FORBIDDEN, "只有管理员可以归档员工账号", 403)
+    target = await svc.get_user_or_404(session, user_id)
+    before_status = target.status
+    await svc.set_user_status(session, target, status="archived", operator_id=user.id)
+    await write_audit(session, operator_id=user.id, action="archive", business_type="user",
+                      business_id=user_id, before={"status": before_status},
+                      after={"status": "archived"}, ip=client_ip(request))
+    await session.commit()
+    return ok(svc.serialize_user(target), "账号已离职归档")
+
+
+@router.delete("/users/{user_id}")
+async def delete_unused_user(
+    user_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("user:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    if "admin" not in user.roles:
+        raise AppError(ErrorCode.FORBIDDEN, "只有管理员可以删除空账号", 403)
+    if user_id == user.id:
+        raise AppError(ErrorCode.PARAM_ERROR, "不能删除自己的账号", 422)
+    target = await svc.get_user_or_404(session, user_id)
+    await svc.delete_unused_user(session, target)
+    await write_audit(session, operator_id=user.id, action="delete", business_type="user",
+                      business_id=user_id, before=svc.serialize_user(target), ip=client_ip(request))
+    await session.commit()
+    return ok(None, "空账号已删除")
 
 
 @router.get("/users/{user_id}/roles")

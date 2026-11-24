@@ -300,12 +300,13 @@ async def test_one_receivable_task_per_order_with_each_installment(db_session):
 
 
 @pytest.mark.anyio
-async def test_disabled_staff_tasks_wait_for_scoped_batch_handover(db_session, monkeypatch):
+@pytest.mark.parametrize("staff_status", ["disabled", "archived"])
+async def test_inactive_staff_tasks_wait_for_scoped_batch_handover(db_session, monkeypatch, staff_status):
     for model in (AuditLog, Task, TaskRule):
         model.__table__.create(db_session.get_bind(), checkfirst=True)
     monkeypatch.setattr("app.modules.task.router.notification_service.notify", AsyncMock())
     db_session.add_all([
-        User(id=5, name="停用员工", username="disabled", password_hash="x", status="disabled", department_id=1),
+        User(id=5, name="离岗员工", username="disabled", password_hash="x", status=staff_status, department_id=1),
         User(id=6, name="在职接手人", username="active", password_hash="x", department_id=1),
         User(id=7, name="其他部门员工", username="other", password_hash="x", status="disabled", department_id=2),
         Task(id=1, title="历史在办任务", owner_id=5),

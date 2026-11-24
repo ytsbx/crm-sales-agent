@@ -271,6 +271,7 @@ export default function ReceivablePlanPicker({
               {!ratioOk && ` · ${ratioSum < 100 ? '还差' : '超过'} ${difference}%`}
             </span>
           </div>
+          {rows.length > 1 && <p className="receivable-picker-guide">最后一期按剩余金额计算，确保各期金额加起来等于订单总额。</p>}
           {!hasTotal && <p className="receivable-picker-guide">各期金额会按成交报价的订单总额计算。</p>}
         </>
       )}

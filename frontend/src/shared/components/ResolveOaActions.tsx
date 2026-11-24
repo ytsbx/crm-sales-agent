@@ -69,14 +69,14 @@ export function ResolveOaActions({
   const actions = row.allowed_actions ?? []
   return (
     <>
-      {actions.includes('resolve_adopt') && <a onClick={() => onAdopt(row)}>认领</a>}
+      {actions.includes('resolve_adopt') && <button type="button" className="crm-text-action" onClick={() => onAdopt(row)}>认领</button>}
       {actions.includes('resolve_resend') && (
         <Popconfirm
           title="确认同序 OA 那边没有这张单？"
           content="重发会再向同序 OA 发起一次；若其实已经建过，就会多出一张审批单。"
           onConfirm={() => resolve.mutate({ action: 'resend', requestKey: newRequestKey() })}
         >
-          <a>重发</a>
+          <button type="button" className="crm-text-action">重发</button>
         </Popconfirm>
       )}
       {actions.includes('resolve_abandon') && (
@@ -85,7 +85,7 @@ export function ResolveOaActions({
           content="仅在本系统里作废，不会动同序 OA 那边。"
           onConfirm={() => resolve.mutate({ action: 'abandon', requestKey: newRequestKey() })}
         >
-          <a style={{ color: 'var(--crm-error)' }}>作废</a>
+          <button type="button" className="crm-text-action" style={{ color: 'var(--crm-error)' }}>作废</button>
         </Popconfirm>
       )}
     </>

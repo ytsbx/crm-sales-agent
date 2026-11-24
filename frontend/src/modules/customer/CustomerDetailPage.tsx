@@ -577,9 +577,9 @@ export default function CustomerDetailPage() {
         canEditContact ? (
           <span style={{ display: 'inline-flex', gap: 10, alignItems: 'center' }}>
             {!row.is_primary && (
-              <a onClick={() => contactPrimaryMutation.mutate(row.id)}>设为主联系人</a>
+              <button type="button" className="crm-text-action" onClick={() => contactPrimaryMutation.mutate(row.id)}>设为主联系人</button>
             )}
-            <a
+            <button type="button" className="crm-text-action"
               onClick={() => {
                 setContactEditing(row)
                 // 脱敏时不把星号塞进输入框：那几个框会显示"（无权限查看）"并锁住
@@ -599,13 +599,13 @@ export default function CustomerDetailPage() {
               }}
             >
               编辑
-            </a>
+            </button>
             <Popconfirm
               title="删除这个联系人？"
               content="删除后不再出现在列表与决策人卡片里；历史跟进记录会保留。"
               onConfirm={() => contactDeleteMutation.mutate(row.id)}
             >
-              <a style={{ color: 'var(--crm-error)' }}>删除</a>
+              <button type="button" className="crm-text-action" style={{ color: 'var(--crm-error)' }}>删除</button>
             </Popconfirm>
           </span>
         ) : null,
@@ -1053,6 +1053,7 @@ export default function CustomerDetailPage() {
                   title: '预计金额',
                   dataIndex: 'expected_amount',
                   width: 130,
+                  className: 'cell-money',
                   render: (value: number | null, record: Opportunity) =>
                     formatMoney(record.expected_amount_exact ?? value, record.currency),
                 },
@@ -1260,6 +1261,7 @@ export default function CustomerDetailPage() {
                   ),
                   dataIndex: 'received_amount',
                   width: 130,
+                  className: 'cell-money',
                   render: (v: number, record: Order) => formatMoney(record.received_amount_exact ?? v, record.currency),
                 },
                 {

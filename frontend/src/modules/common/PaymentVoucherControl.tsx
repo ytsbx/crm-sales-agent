@@ -53,15 +53,15 @@ export default function PaymentVoucherControl({ payment, onChanged }: Props) {
     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
       {payment.voucher_file_id ? (
         <>
-          <a
+          <button type="button" className="crm-text-action"
             style={{ color: 'var(--crm-primary)' }}
             onClick={() => void showDownloadResult(downloadPaymentVoucher(payment.id, filename))}
           >
             {filename}
-          </a>
+          </button>
           {canManage && (
             <Popconfirm title="删除这张待确认回款的凭证？" onConfirm={() => void remove()}>
-              <a style={{ color: 'var(--crm-error)' }}>删除</a>
+              <button type="button" className="crm-text-action" style={{ color: 'var(--crm-error)' }}>删除</button>
             </Popconfirm>
           )}
         </>

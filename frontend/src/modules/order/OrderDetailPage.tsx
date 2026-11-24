@@ -448,6 +448,7 @@ export default function OrderDetailPage() {
       setCancelVisible(false)
       refresh()
       shipmentsRefresh()
+      void queryClient.invalidateQueries({ queryKey: ['quote-version'] })
       void queryClient.invalidateQueries({ queryKey: ['order-schedule-changes', orderId] })
     },
     onError: () => {
@@ -790,7 +791,11 @@ export default function OrderDetailPage() {
   const completionBlocked = completingDelivery && remainingToShip != null && Number(remainingToShip) > 0
     ? `还有 ${shipmentQuantity(remainingToShip)} 件未发。请先登记发货，再确认完成交付。`
     : ''
-  const statusBlocked = targetStatus ? completionBlocked : '先选择要更新的履约状态。'
+  const needsShipment = targetStatus === 'shipped' || targetStatus === 'delivered'
+  const shippedAmount = shipment?.summary.shipped_exact ?? shipment?.summary.shipped
+  const shipmentBlocked = needsShipment && shippedAmount != null && Number(shippedAmount) <= 0
+    ? '请先到「发货批次」登记实际发货，再更新状态。' : ''
+  const statusBlocked = targetStatus ? completionBlocked || shipmentBlocked : '先选择要更新的履约状态。'
   const shipmentPlanBlocked = orderCancelled
     ? '订单已取消，不能再排发货批次。'
     : shipment?.summary.all_shipped
@@ -898,7 +903,7 @@ export default function OrderDetailPage() {
         // "财务驳回了那笔"时，界面显示能删、点下去必然 422。
         // 现在后端把真实判据作为 `has_payment_record` 返回，两边同一把尺子。
         const hasPayment = Boolean(record.has_payment_record)
-        const canDelete = canPayment && !hasPayment
+        const canDelete = canPayment && !hasPayment && !planCancelled
         // 点不了就得说清为什么（主人反复提过的口径）：一个都不给时不留空白，
         // 而是给出原因，别让用户对着空操作列猜。
         if (!canRegister && !canDelete) {
@@ -953,14 +958,14 @@ export default function OrderDetailPage() {
                   content="删除后这期应收消失、订单应收合计随之变小，「收款」跟单节点会按剩余应收自动同步。已经收过款的节点不能删。"
                   onConfirm={() => deleteReceivableMutation.mutate(record.id)}
                 >
-                  <a style={{ color: 'var(--crm-error, #ba1a1a)' }}>删除</a>
+                  <button type="button" className="crm-text-action" style={{ color: 'var(--crm-error, #ba1a1a)' }}>删除</button>
                 </Popconfirm>
               )}
             </div>
             {hasPayment && !canDelete && (
               <span style={{ fontSize: 11, color: 'var(--crm-text-3)', lineHeight: 1.5 }}>
                 该期已有回款，不能删除；
-                <a
+                <button type="button" className="crm-text-action"
                   style={{ marginLeft: 2 }}
                   onClick={() => {
                     setActiveKey('payments')
@@ -969,7 +974,7 @@ export default function OrderDetailPage() {
                   }}
                 >
                   去「回款记录」调整分配
-                </a>
+                </button>
               </span>
             )}
           </div>
@@ -1428,7 +1433,7 @@ export default function OrderDetailPage() {
                    重新分：节点给到 150，凭证 190→160，其余各收 10~20。 */
                 { title: '应收节点', dataIndex: 'plan_name', width: narrowScreen ? 130 : 150 },
                 { title: '收款日期', dataIndex: 'received_date', width: narrowScreen ? 112 : 114 },
-                { title: '整笔到账', dataIndex: 'received_amount', width: narrowScreen ? 112 : 114, render: (v: number, r: Payment) => formatMoney(r.received_amount_exact ?? v, r.currency ?? order.currency) },
+                { title: '整笔到账', dataIndex: 'received_amount', width: narrowScreen ? 112 : 114, className: 'cell-money', render: (v: number, r: Payment) => formatMoney(r.received_amount_exact ?? v, r.currency ?? order.currency) },
                 /* 108：¥94,500.00 是这里最长的一档金额，100 宽会被截成「¥94,500.…」 */
                 { title: '已分配', dataIndex: 'allocated_amount', width: 108, className: 'cell-right col-hide-narrow', render: (v: number, r: Payment) => r.status === 'confirmed' ? formatMoney(r.allocated_amount_exact ?? v, r.currency ?? order.currency) : '-' },
                 { title: '待分配', dataIndex: 'unallocated_amount', width: 108, className: 'cell-right col-hide-narrow', render: (v: number, r: Payment) => r.status === 'confirmed' ? formatMoney(r.unallocated_amount_exact ?? v, r.currency ?? order.currency) : '-' },
@@ -1486,12 +1491,12 @@ export default function OrderDetailPage() {
                         // 只有已确认的回款才谈得上"这笔钱分到哪几期"。
                         // 列表上把**实际分配**也带出来（超收时与登记的期不同），
                         // 所以入口旁边直接写出"分了 N 期"，不用点开才知道。
-                        <a onClick={() => setAllocationPayment(record)}>
+                        <button type="button" className="crm-text-action" onClick={() => setAllocationPayment(record)}>
                           调整分配
                           {(record.allocations?.length ?? 0) > 1
                             ? `（${record.allocations!.length} 期）`
                             : ''}
-                        </a>
+                        </button>
                       )}
                       {record.status !== 'pending' && record.status !== 'confirmed' && '-'}
                     </div>
@@ -1586,7 +1591,7 @@ export default function OrderDetailPage() {
                               content="不会改动任何计划日期，之后可以重新发起。"
                               onConfirm={() => cancelScheduleMutation.mutate(row.id)}
                             >
-                              <a style={{ marginLeft: 8, color: 'var(--crm-text-3)' }}>作废</a>
+                              <button type="button" className="crm-text-action" style={{ marginLeft: 8, color: 'var(--crm-text-3)' }}>作废</button>
                             </Popconfirm>
                           </>
                         )}
@@ -1678,7 +1683,7 @@ export default function OrderDetailPage() {
                           title: '操作',
                           width: 80,
                           render: (_: unknown, record: OrderMilestoneRow) => (
-                            <a onClick={() => openMilestoneEdit(record)}>登记</a>
+                            <button type="button" className="crm-text-action" onClick={() => openMilestoneEdit(record)}>登记</button>
                           ),
                         },
                       ]
@@ -1806,14 +1811,14 @@ export default function OrderDetailPage() {
                           render: (_: unknown, record: ShipmentBatchRow) =>
                             record.status === 'planned' ? (
                               <span style={{ display: 'inline-flex', gap: 12 }}>
-                                <a onClick={() => openShipment(record)}>登记发货</a>
+                                <button type="button" className="crm-text-action" onClick={() => openShipment(record)}>登记发货</button>
                                 <Popconfirm
                                   title={`取消第 ${record.batch_no} 批发货安排？`}
                                   content="这一批会从发货列表移出，计划数量可以重新安排发货。"
                                   disabled={cancelShipmentMutation.isPending}
                                   onConfirm={() => cancelShipmentMutation.mutate(record.id)}
                                 >
-                                  <a style={{ color: 'var(--crm-error)' }}>取消批次</a>
+                                  <button type="button" className="crm-text-action" style={{ color: 'var(--crm-error)' }}>取消批次</button>
                                 </Popconfirm>
                               </span>
                             ) : (

@@ -1588,6 +1588,8 @@ async def sync_users(session: AsyncSession) -> dict:
         if row.dingtalk_userid:
             bound[str(row.dingtalk_userid)] = row
             continue
+        if row.status == "archived":
+            continue
         mobile = _norm_mobile(row.mobile)
         if mobile:
             free_by_mobile.setdefault(mobile, []).append(row)

@@ -520,6 +520,9 @@ async def delete_receivable(
     所以删完要在**同一个事务**里同步跟单节点（第三批审查 P1，2026-10-12）。
     """
     plan = await svc.get_visible_plan(session, user, plan_id, for_update=True)
+    order = await session.get(SalesOrder, plan.order_id)
+    if plan.status == "cancelled" or (order is not None and order.status == "cancelled"):
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已取消的应收计划须保留历史，不能删除", 422)
     paid = (
         await session.execute(
             select(PaymentRecord.id).where(PaymentRecord.receivable_plan_id == plan_id)

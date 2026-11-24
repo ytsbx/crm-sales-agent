@@ -81,6 +81,16 @@ export function requiredQuantityText(raw: string, label = '数量', allowZero = 
   return text
 }
 
+export function optionalQuantityText(raw: string, label = '数量', allowZero = false): string | null {
+  return raw.trim() ? requiredQuantityText(raw, label, allowZero) : null
+}
+
+export function requiredDecimalOrThrow(raw: unknown, label: string): number | string {
+  const value = parseOptionalDecimal(raw)
+  if (value === null || Number.isNaN(value)) throw new Error(`${label}必须填数字`)
+  return value
+}
+
 /**
  * 必填数字：空串或坏输入都**抛错并点名**（不给"静默变 0"的机会）。
  *
@@ -128,7 +138,7 @@ export const NUMBER_FIELD_LABEL: Record<string, string> = {
 
 /** 从"已解析的值"里挑出坏字段（`NaN`）。返回字段名列表，空 = 全 OK。 */
 export function firstInvalidNumberField(
-  values: Record<string, number | null>,
+  values: Record<string, number | string | null>,
 ): string[] {
   return Object.entries(values)
     .filter(([, v]) => typeof v === 'number' && Number.isNaN(v))
@@ -137,7 +147,7 @@ export function firstInvalidNumberField(
 
 /** 给一句人话的错误信息（点名第一个坏字段）。全 OK 时返回空串。 */
 export function invalidNumberMessage(
-  values: Record<string, number | null>,
+  values: Record<string, number | string | null>,
   hint = '只能填数字',
 ): string {
   const bad = firstInvalidNumberField(values)

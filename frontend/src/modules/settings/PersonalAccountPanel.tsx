@@ -56,7 +56,7 @@ export default function PersonalAccountPanel() {
       mutation.mutate({ username: name, current_password: currentPassword, ...(password ? { new_password: password } : {}) })
     }}>
       {user?.initial_password_pending && (
-        <Banner type="info" description={<>你的登录名：<strong style={{ overflowWrap: 'anywhere' }}>{user?.username ?? '-'}</strong>，初始密码：<strong>123456</strong>。可在下方自行修改。</>} />
+        <Banner type="info" description="首次使用账号密码时，请尽快修改初始密码。如需获取或重置密码，请联系管理员。" />
       )}
       <div className="settings-account-fields">
         <div>

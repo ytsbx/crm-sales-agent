@@ -197,24 +197,20 @@ a {
   text-decoration: none;
 }
 
-/* 项目里表格「操作」列的那些链接（下载 / 删除 / 编辑 / 作废…）都是
-   「<a> + onClick」的写法，全项目 70 余处，一个都没写 href。
-   浏览器对这种没有链接地址的 <a> 不给手型光标，鼠标移上去是文本光标
-   （那条 I 字线），看着像要去选字，容易让人以为这一列点不了。
-   在这里统一补上手型 —— 比到 70 个地方各加一遍 cursor 更省事，也不会漏。 */
-a:not([href]) {
-  cursor: pointer;
-  /* 同一条理由，再补一样东西：**颜色**。
-     这 70 余处里有一小半没写颜色，于是跟着正文继承 —— 和普通文字一模一样，
-     「编辑 / 修订 / 转报价 / 详情 / 下载」全都看着像读不了的死字
-     （2026-10-07 主人截图指出：只有「删除」是红的能认出来，其余分不清）。
-     这里给个默认值：**能点的就是主色**。
-
-     为什么敢设默认值：已经手写了颜色的那些（删除红、通过绿、作废灰…）用的是
-     行内样式，优先级高于本规则，照旧不受影响 —— 「删改类」不会被染成"安全的蓝"。
-     导航（`<Link>` 渲染出来带 href）和页签（`div`）不在 `:not([href])` 范围内，
-     已核对全项目没有 Breadcrumb / Typography.Link 之类的组件会渲染裸 `<a>`。 */
+.crm-text-action {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 0;
   color: var(--crm-primary);
+  font: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+.crm-text-action:focus-visible {
+  outline: 2px solid var(--crm-primary);
+  outline-offset: -1px;
+  border-radius: 3px;
 }
 
 /* ============================================================
@@ -2492,7 +2488,7 @@ button.notice-item-main:hover .notice-item-action {
 /* 表格正文单元格统一用箭头光标。
    Semi 没给 td 设 cursor，于是继承浏览器的 auto —— 鼠标落在文字上就变成
    文本输入那条 I 字线（主人 2026-11-16：「鼠标样式变成一条横线了」），
-   看着像要去选字。可点的链接另行覆盖成手型（见上方 a:not([href])）。 */
+   看着像要去选字。可点的操作由自身样式显示手型。 */
 .semi-table-tbody td,
 .semi-table-header th {
   cursor: default;
@@ -7277,7 +7273,6 @@ table:not(.semi-table) td.cell-right {
   background: #eceff2;
 }
 .semi-modal .semi-input-wrapper-focus,
-.semi-modal .semi-input-wrapper-error,
 .semi-modal .semi-input-textarea-wrapper-focus,
 .semi-modal .semi-select-focus,
 .semi-modal .semi-select-open,
@@ -7286,6 +7281,15 @@ table:not(.semi-table) td.cell-right {
   border-color: var(--crm-primary) !important;
   box-shadow: 0 0 0 3px rgba(47, 109, 246, .12);
 }
+.semi-modal .semi-input-wrapper.semi-input-wrapper-error {
+  background: var(--semi-color-danger-light-default) !important;
+  border-color: var(--semi-color-danger) !important;
+  box-shadow: none;
+}
+.semi-modal .semi-input-wrapper-error.semi-input-wrapper-focus {
+  box-shadow: 0 0 0 3px var(--semi-color-danger-light-default);
+}
+
 /* 输入框里的实际 input 要透明，否则灰底被它盖住 */
 .semi-modal .semi-input,
 .semi-modal .semi-select-selection,
@@ -7746,19 +7750,19 @@ table:not(.semi-table) td.cell-right {
    二稿：能跳转的仍是主色，但**去掉粗体**（一稿前的"蓝字海"主要怪 600 字重），
    再压到 13px 的常规字重；不能跳转的普通文本保持深色。于是：
    蓝 = 可点，黑 = 纯信息；悬停才出现下划线。 */
-.semi-table-tbody .semi-table-row-cell a {
+.semi-table-tbody .semi-table-row-cell :is(a, .crm-text-action) {
   color: #2c62d9 !important;
   font-weight: 400;
   text-decoration: none;
   transition: color .14s ease;
 }
-.semi-table-tbody .semi-table-row-cell a:hover {
+.semi-table-tbody .semi-table-row-cell :is(a, .crm-text-action):hover {
   color: #1f4fc4 !important;
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 /* 名称列的两个字副标题（如"华东复购 · 待补核"）保持灰，别被链接色带跑 */
-.semi-table-tbody .semi-table-row-cell a span {
+.semi-table-tbody .semi-table-row-cell :is(a, .crm-text-action) span {
   color: inherit;
 }
 
@@ -8112,6 +8116,12 @@ table:not(.semi-table) td.cell-right {
 .semi-table-tbody .semi-table-row-cell {
   color: #4e5969;
 }
+/* 长金额允许换行，沿用各列的对齐方式。 */
+.semi-table-tbody .semi-table-row-cell:is(.cell-right, .cell-money),
+table:not(.semi-table) td.cell-right {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .semi-table-tbody .semi-table-row-cell.cell-right {
   color: #1d2129;
 }
@@ -8156,14 +8166,14 @@ table:not(.semi-table) td.cell-right {
    整张表里 20 多个红字删除全成了普通蓝链接 —— 主人一眼看不出哪个会删数据。
    这里只给显式标了危险色的链接开一条口子（属性选择器认 inline style 原文），
    其余链接不受影响。 */
-.semi-table-tbody .semi-table-row-cell a[style*="crm-error"],
-.semi-table-tbody .semi-table-row-cell a[style*="#f53f3f"],
-.semi-table-tbody .semi-table-row-cell a[style*="#ff4d4f"] {
+.semi-table-tbody .semi-table-row-cell :is(a, .crm-text-action)[style*="crm-error"],
+.semi-table-tbody .semi-table-row-cell :is(a, .crm-text-action)[style*="#f53f3f"],
+.semi-table-tbody .semi-table-row-cell :is(a, .crm-text-action)[style*="#ff4d4f"] {
   color: var(--crm-error) !important;
 }
-.semi-table-tbody .semi-table-row-cell a[style*="crm-error"]:hover,
-.semi-table-tbody .semi-table-row-cell a[style*="#f53f3f"]:hover,
-.semi-table-tbody .semi-table-row-cell a[style*="#ff4d4f"]:hover {
+.semi-table-tbody .semi-table-row-cell :is(a, .crm-text-action)[style*="crm-error"]:hover,
+.semi-table-tbody .semi-table-row-cell :is(a, .crm-text-action)[style*="#f53f3f"]:hover,
+.semi-table-tbody .semi-table-row-cell :is(a, .crm-text-action)[style*="#ff4d4f"]:hover {
   color: var(--crm-error) !important;
   text-decoration: underline;
 }
@@ -8611,4 +8621,14 @@ table:not(.semi-table) td.cell-right {
   padding: 2px 7px;
   margin: -2px -7px;
   border-radius: 6px;
+}
+
+.audit-change-table .semi-table-tbody .semi-table-row-cell {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.quote-summary-total .qst-amount {
+  overflow-wrap: anywhere;
+  white-space: normal;
 }

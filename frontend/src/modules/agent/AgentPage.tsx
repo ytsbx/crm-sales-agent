@@ -232,12 +232,17 @@ export default function AgentPage() {
 
   const confirmMutation = useMutation({
     mutationFn: (actionId: number) => confirmAgentAction(actionId),
-    onSuccess: () => {
+    onSuccess: ({ action }) => {
       Toast.success('动作已执行')
       void queryClient.invalidateQueries({ queryKey: ['agent-session', sessionId] })
       void queryClient.invalidateQueries({ queryKey: ['customers'] })
       void queryClient.invalidateQueries({ queryKey: ['tasks'] })
       void queryClient.invalidateQueries({ queryKey: ['followups'] })
+      if (['create_quote_draft', 'create_quote_version'].includes(action?.tool_name)) {
+        const keys = ['quotes', 'quote-versions', 'quote-version', 'quote-version-comparison',
+          'customer-quotes', 'opportunity-quote-count', 'opportunity', 'opportunities', 'timeline']
+        for (const key of keys) void queryClient.invalidateQueries({ queryKey: [key] })
+      }
     },
     onError: (error: Error) => Toast.error(error.message),
   })
@@ -513,7 +518,13 @@ export default function AgentPage() {
               </Button>
             </div>
           )}
-          {messages.length === 0 && (!sessionId || !detailQuery.isPending) && (
+          {sessionId && detailQuery.isError && (
+            <div role="alert" className="agent-empty">
+              <p>会话加载失败，请重试。</p>
+              <Button loading={detailQuery.isFetching} onClick={() => void detailQuery.refetch()}>重新加载会话</Button>
+            </div>
+          )}
+          {messages.length === 0 && (!sessionId || detailQuery.isSuccess) && (
             <div className="agent-empty">
               {/* 这页通体白卡 + 灰块，进来第一眼分不出「这是个助手」还是「一张空表」。
                   加一枚小小的品牌标识，给这页一个能认的身份。 */}

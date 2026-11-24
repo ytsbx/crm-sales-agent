@@ -298,17 +298,17 @@ export default function RulesPanel() {
       width: 124,
       render: (_: unknown, row: ApprovalRuleRow) => (
         <div style={{ display: 'flex', gap: 4, fontSize: 12, justifyContent: 'center', whiteSpace: 'nowrap' }}>
-          <a style={{ color: 'var(--crm-primary)' }} onClick={() => toEdit(row)}>
+          <button type="button" className="crm-text-action" style={{ color: 'var(--crm-primary)' }} onClick={() => toEdit(row)}>
             编辑
-          </a>
-          <a style={{ color: 'var(--crm-success)' }} onClick={() => publishMutation.mutate({ id: row.id, confirm: false })}>
+          </button>
+          <button type="button" className="crm-text-action" style={{ color: 'var(--crm-success)' }} onClick={() => publishMutation.mutate({ id: row.id, confirm: false })}>
             发布
-          </a>
-          <a style={{ color: 'var(--crm-text-2)' }} onClick={() => setVersionTarget(row)}>
+          </button>
+          <button type="button" className="crm-text-action" style={{ color: 'var(--crm-text-2)' }} onClick={() => setVersionTarget(row)}>
             版本
-          </a>
+          </button>
           <Popconfirm title="删除这条规则？" onConfirm={() => deleteMutation.mutate(row.id)}>
-            <a style={{ color: 'var(--crm-error)' }}>删除</a>
+            <button type="button" className="crm-text-action" style={{ color: 'var(--crm-error)' }}>删除</button>
           </Popconfirm>
         </div>
       ),
@@ -562,7 +562,7 @@ export default function RulesPanel() {
                           style={{ flex: 1 }}
                         />
                       )}
-                      <a
+                      <button type="button" className="crm-text-action"
                         style={{ color: 'var(--crm-error)', flexShrink: 0 }}
                         onClick={() =>
                           setEditing({
@@ -572,18 +572,18 @@ export default function RulesPanel() {
                         }
                       >
                         删除
-                      </a>
+                      </button>
                     </div>
                   )
                 })}
               </div>
               <div style={{ marginTop: 8 }}>
-                <a style={{ color: 'var(--crm-primary)', fontSize: 13 }} onClick={() => setEditing({
+                <button type="button" className="crm-text-action" style={{ color: 'var(--crm-primary)', fontSize: 13 }} onClick={() => setEditing({
                   ...editing,
                   conditions: [...editing.conditions, { field: fields[0]?.field ?? 'gross_margin', op: 'gte', value: 0 }],
                 })}>
                   + 加一个条件
-                </a>
+                </button>
               </div>
               {editing.conditions.some((c) => fieldMeta(c.field)) && (
                 <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>

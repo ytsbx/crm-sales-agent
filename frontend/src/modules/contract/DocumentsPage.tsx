@@ -387,7 +387,7 @@ export default function DocumentsPage() {
       const row = await uploadFile(file, {
         businessType: 'contract',
         businessId: startedFor,
-        category: 'signed',
+        category: 'pending_signature',
       })
       // 上传期间用户可能已经关了弹窗、或切到别的合同：那份文件不能算在当前这份头上
       if (signTargetIdRef.current !== startedFor) {
@@ -810,16 +810,16 @@ export default function DocumentsPage() {
 
                   return (
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap', fontSize: 13, paddingRight: 2 }}>
-                      <a onClick={() => setDetailTarget(record)}>详情</a>
+                      <button type="button" className="crm-text-action" onClick={() => setDetailTarget(record)}>详情</button>
                       {/* 收敛后只剩三样：详情（看）、一个主操作（做）、更多（长尾）。
                           原来「下载」和阶段动作并排都是蓝的，看不出这行该干什么。 */}
-                      <a
+                      <button type="button" className="crm-text-action"
                         title={stageAction ? hint : '下载合同原件'}
                         style={{ color: 'var(--crm-primary)', fontWeight: 600 }}
                         onClick={primaryAction.onClick}
                       >
                         {primaryAction.label}
-                      </a>
+                      </button>
                       {more.length > 0 && (
                         <Dropdown
                           trigger="click"
@@ -840,7 +840,7 @@ export default function DocumentsPage() {
                             </Dropdown.Menu>
                           }
                         >
-                          <a style={{ color: 'var(--crm-text-2)' }}>更多</a>
+                          <button type="button" className="crm-text-action" style={{ color: 'var(--crm-text-2)' }}>更多</button>
                         </Dropdown>
                       )}
                     </span>
@@ -1023,7 +1023,7 @@ export default function DocumentsPage() {
                 {originalFile ? originalFile.name : '尚未选择文件（支持 .pdf / .doc / .docx）'}
               </span>
               {originalFile && (
-                <a
+                <button type="button" className="crm-text-action"
                   onClick={() => {
                     setOriginalFile(null)
                     setOriginalFileId(null)
@@ -1031,7 +1031,7 @@ export default function DocumentsPage() {
                   }}
                 >
                   清除
-                </a>
+                </button>
               )}
             </div>
             <input
@@ -1372,7 +1372,7 @@ export default function DocumentsPage() {
                 signedFiles.map((row) => (
                   <div key={row.file_id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     {can('file:view') ? (
-                      <a onClick={() => void showDownloadResult(downloadFile(row.file_id, row.file_name))}>{row.file_name}</a>
+                      <button type="button" className="crm-text-action" onClick={() => void showDownloadResult(downloadFile(row.file_id, row.file_name))}>{row.file_name}</button>
                     ) : (
                       <span>{row.file_name}</span>
                     )}

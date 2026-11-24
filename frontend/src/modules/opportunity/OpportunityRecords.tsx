@@ -164,7 +164,7 @@ export default function OpportunityRecords({ opportunityId, customerId, title }:
         empty={emptyText(orders, '暂无关联订单')} pagination={pagination('orders', orders.data?.total ?? 0)} columns={[
           { title: '订单单号', render: (_: unknown, row: Order) => <Link to={`/orders/${row.id}`}>{row.order_no}</Link> },
           { title: '状态', dataIndex: 'status_label' },
-          { title: '金额', render: (_: unknown, row: Order) => formatMoney(toTwoDecimals(row.total_amount), 'CNY') },
+          { title: '金额', className: 'cell-money', render: (_: unknown, row: Order) => formatMoney(toTwoDecimals(row.total_amount), 'CNY') },
         ]} />
     </div>}
     <Modal

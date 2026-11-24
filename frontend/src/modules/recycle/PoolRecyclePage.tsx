@@ -230,7 +230,7 @@ export function PoolRecyclePanel() {
   const pagination = {
     currentPage: candidatePage,
     pageSize: candidatePageSize,
-    total: candidatesQuery.data?.total ?? 0,
+    total: candidatesQuery.isError ? 0 : candidatesQuery.data?.total ?? 0,
     onPageChange: setCandidatePage,
     showSizeChanger: true,
     pageSizeOpts: [10, 20, 50, 100],
@@ -335,7 +335,7 @@ export function PoolRecyclePanel() {
               )}
             </div>
           )}
-          {isReviewQueue && compactLayout && !selectedCandidateIds.length && Boolean(candidatesQuery.data?.items.length) && (
+          {isReviewQueue && compactLayout && !selectedCandidateIds.length && (!candidatesQuery.isError && Boolean(candidatesQuery.data?.items.length)) && (
             <p className="recycle-batch-hint">勾选客户后可批量处理。</p>
           )}
           {isReviewQueue && (!compactLayout || selectedCandidateIds.length > 0) && (
@@ -408,7 +408,7 @@ export function PoolRecyclePanel() {
           )}
           {compactLayout ? (
             candidatesQuery.isPending ? <div role="status">正在读取回收记录…</div>
-              : !candidatesQuery.data?.items.length ? empty
+              : (candidatesQuery.isError || !candidatesQuery.data?.items.length) ? empty
                 : <>
                   <ul className="recycle-mobile-list">
                     {candidatesQuery.data.items.map((row) => (
@@ -444,7 +444,7 @@ export function PoolRecyclePanel() {
             rowKey="id"
             className="recycle-cand-table"
             loading={candidatesQuery.isLoading}
-            dataSource={candidatesQuery.data?.items ?? []}
+            dataSource={candidatesQuery.isError ? [] : candidatesQuery.data?.items ?? []}
             pagination={pagination}
             rowSelection={
               candidateStatus === 'pending' || candidateStatus === 'deferred'

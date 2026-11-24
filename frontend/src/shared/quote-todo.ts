@@ -47,7 +47,7 @@ export interface QuoteTodoInput {
   sentAt: string | null | undefined
   acceptedAt: string | null | undefined
   declinedAt: string | null | undefined
-  /** 这一版已经转成订单了没有（页面用 quote.status / order 反查，这里只收结论） */
+  /** 报价已有有效订单（页面从版本详情读取） */
   converted: boolean
 }
 
@@ -96,6 +96,16 @@ export const STAGE_ORDER: readonly QuoteStage[] = [
  * 返回**第一项就是当前该做的事**（页面突出显示它），其余是后续阶段的提示。
  */
 export function quoteTodos(input: QuoteTodoInput): QuoteTodo[] {
+  if (input.converted) {
+    return [{
+      key: 'converted',
+      stage: 'converted',
+      reason: '这张报价已有销售订单，后续请到订单页办理。',
+      source: 'detail.has_active_order',
+      anchor: null,
+      action: null,
+    }]
+  }
   const todos: QuoteTodo[] = []
   if (input.costProblems?.length) {
     todos.push({ key: 'cost_incomplete', stage: 'cost',
@@ -140,19 +150,6 @@ export function quoteTodos(input: QuoteTodoInput): QuoteTodo[] {
         stage: 'declined',
         reason: '客户已拒绝这一版；要再谈请新建一版报价，或按失单流程处理商机。',
         source: 'version.declined_at',
-        anchor: null,
-        action: null,
-      },
-    ]
-  }
-  if (input.converted) {
-    return [
-      ...todos,
-      {
-        key: 'converted',
-        stage: 'converted',
-        reason: '这一版已经转成销售订单，后续在订单页作业。',
-        source: 'quote.status / 订单反查',
         anchor: null,
         action: null,
       },

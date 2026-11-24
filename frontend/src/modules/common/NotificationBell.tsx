@@ -224,7 +224,7 @@ export default function NotificationBell() {
                   <>
                     <span onClick={(event) => event.stopPropagation()}>
                       <Popconfirm title="确认补投这条通知？" content="将尝试重新向接收人发送通知。" onConfirm={() => redispatchMutation.mutate(item.id)} disabled={redispatchMutation.isPending}>
-                        <a style={{ color: 'var(--crm-primary)' }}>{redispatchMutation.isPending ? '补投中…' : '补投'}</a>
+                        <button type="button" className="crm-text-action" style={{ color: 'var(--crm-primary)' }}>{redispatchMutation.isPending ? '补投中…' : '补投'}</button>
                       </Popconfirm>
                     </span>
                     {/* 入口**留着**（主人定的口径：不许"点了没反应也不说为什么"），

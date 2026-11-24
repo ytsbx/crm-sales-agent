@@ -19,6 +19,8 @@ import {
   Toast,
 } from '@douyinfe/semi-ui'
 
+import { ApiError } from '../../shared/api/client'
+import { auditFieldLabel } from '../../shared/audit-labels'
 import {
   confirmLocalSkuMaster,
   confirmSkuMasterDiff,
@@ -53,7 +55,7 @@ import PendingImagePicker from './PendingImagePicker'
 import { listBusinessFilesBatch, uploadFile, type FileRow } from '../../shared/api/file'
 import SectionCard from '../../shared/components/SectionCard'
 import StatusDot from '../../shared/components/StatusDot'
-import type { Sku } from '../../shared/types'
+import type { Product, Sku } from '../../shared/types'
 import FormLabel from '../../shared/components/FormLabel'
 import GuardedButton from '../../shared/components/GuardedButton'
 
@@ -135,6 +137,76 @@ const toExactNumeric = (value: string): string | null => {
   return trimmed ? trimmed : null
 }
 
+function productFormFrom(product: Product): ProductPayload {
+  return {
+    name: product.name,
+    product_line: product.product_line ?? '',
+    category: product.category ?? '',
+    brand: product.brand ?? '',
+    description: product.description ?? '',
+  }
+}
+
+function skuFormFrom(sku: Sku): SkuForm {
+  return {
+    sku_code: sku.sku_code,
+    name: sku.name ?? '',
+    specification: sku.specification ?? '',
+    color: sku.color ?? '',
+    material: sku.material ?? '',
+    length: String(sku.length ?? ''),
+    width: String(sku.width ?? ''),
+    height: String(sku.height ?? ''),
+    weight: String(sku.weight ?? ''),
+    carton_qty: String(sku.carton_qty ?? ''),
+    carton_volume: String(sku.carton_volume ?? ''),
+    moq: String(sku.moq ?? ''),
+    package_type: sku.package_type ?? '',
+    unit: sku.unit ?? '件',
+  }
+}
+
+function skuPayload(form: SkuForm): SkuPayload {
+  return {
+    sku_code: form.sku_code.trim() || undefined,
+    name: form.name.trim() || null,
+    specification: form.specification || null,
+    color: form.color || null,
+    material: form.material || null,
+    length: toExactNumeric(form.length),
+    width: toExactNumeric(form.width),
+    height: toExactNumeric(form.height),
+    weight: toExactNumeric(form.weight),
+    carton_qty: toExactNumeric(form.carton_qty),
+    carton_volume: toExactNumeric(form.carton_volume),
+    moq: toExactNumeric(form.moq),
+    package_type: form.package_type || null,
+    unit: form.unit || null,
+  }
+}
+
+function editedFields<T extends object>(form: T, original: T): (keyof T)[] {
+  return (Object.keys(form) as (keyof T)[]).filter((key) => form[key] !== original[key])
+}
+
+function patchFrom<T extends object>(keys: (keyof T)[], changes: T, original: Partial<T>) {
+  return {
+    ...Object.fromEntries(keys.map((key) => [key, changes[key]])),
+    expected_fields: Object.fromEntries(keys.map((key) => [
+      key, original[key] == null ? null : String(original[key]),
+    ])),
+  }
+}
+
+function reviewFields<T extends object>(mine: T, original: T, latest: T, kind: 'product' | 'sku') {
+  return editedFields(mine, original)
+    .filter((key) => latest[key] !== original[key])
+    .map((key) => ({
+      label: auditFieldLabel(kind, String(key)) ?? '资料',
+      latest: String(latest[key] || '空'),
+    }))
+}
+
 /** 正式报价对客要印的三个字段，与后端 `master.QUOTE_DISPLAY_FIELDS` 对齐。 */
 const QUOTE_FIELD_NAMES: readonly string[] = ['name', 'specification', 'unit']
 
@@ -167,6 +239,8 @@ export default function ProductDetailPage() {
 
   const [editVisible, setEditVisible] = useState(false)
   const [productForm, setProductForm] = useState<ProductPayload>({ name: '' })
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null)
+  const [editReview, setEditReview] = useState<{ label: string; latest: string }[] | null>(null)
   const [skuVisible, setSkuVisible] = useState(false)
   //: 正在给哪个 SKU 管图片（null = 弹窗关闭）。产品/SKU 两级都要图片，
   //: 产品那一节常驻在页面里，SKU 这一级用弹窗——SKU 可能有很多行，
@@ -223,7 +297,7 @@ export default function ProductDetailPage() {
   }
 
   const updateMutation = useMutation({
-    mutationFn: (payload: ProductPayload) => updateProduct(productId, payload),
+    mutationFn: (payload: Parameters<typeof updateProduct>[1]) => updateProduct(productId, payload),
     onSuccess: () => {
       Toast.success('产品资料已保存')
       setEditVisible(false)
@@ -233,7 +307,7 @@ export default function ProductDetailPage() {
   })
 
   const skuMutation = useMutation({
-    mutationFn: async (payload: SkuPayload) => {
+    mutationFn: async (payload: Parameters<typeof updateSku>[1]) => {
       if (editingSku) {
         // 编辑态不碰图片：SKU 已有 id，点列表里的图片格直接传，不必绕暂存
         await updateSku(editingSku.id, payload)
@@ -277,6 +351,52 @@ export default function ProductDetailPage() {
     },
     onError: (error: Error) => Toast.error(error.message),
   })
+
+  const reviewMutation = useMutation({
+    mutationFn: async (kind: 'product' | 'sku') => {
+      if (kind === 'product') return { kind, record: await getProduct(productId) } as const
+      const sku = (await listProductSkus(productId)).find(({ id }) => id === editingSku?.id)
+      if (!sku) throw new Error('这条 SKU 已移除，请关闭窗口后刷新列表。')
+      return { kind, record: sku } as const
+    },
+    onSuccess: (result) => {
+      if (result.kind === 'product' && editingProduct) {
+        const original = productFormFrom(editingProduct)
+        const latest = productFormFrom(result.record)
+        setEditReview(reviewFields(productForm, original, latest, 'product'))
+        setProductForm({ ...latest, ...Object.fromEntries(editedFields(productForm, original).map((key) => [key, productForm[key]])) })
+        setEditingProduct(result.record)
+        updateMutation.reset()
+      }
+      if (result.kind === 'sku' && editingSku) {
+        const original = skuFormFrom(editingSku)
+        const latest = skuFormFrom(result.record)
+        setEditReview(reviewFields(skuForm, original, latest, 'sku'))
+        setSkuForm({ ...latest, ...Object.fromEntries(editedFields(skuForm, original).map((key) => [key, skuForm[key]])) })
+        setEditingSku(result.record)
+        skuMutation.reset()
+      }
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+  const conflictMessage = (error: Error | null) =>
+    error instanceof ApiError && error.code === 40902 ? error.message : null
+  const productConflict = conflictMessage(updateMutation.error)
+  const skuConflict = conflictMessage(skuMutation.error)
+  const editConflictNotice = (kind: 'product' | 'sku', conflict: string | null) => conflict ? (
+    <div role="alert">
+      <p>{conflict} 你填写的内容已保留。</p>
+      <Button loading={reviewMutation.isPending}
+        onClick={() => reviewMutation.mutate(kind)}>读取同事保存的值</Button>
+    </div>
+  ) : editReview && (
+    <div role="status" className="workflow-guide">
+      <p>已读取最新资料。核对以下内容，点保存会使用你填写的值。</p>
+      {editReview.map(({ label, latest }, index) => (
+        <div key={index}>{label} · 最新值 {latest}</div>
+      ))}
+    </div>
+  )
 
   const toggleMutation = useMutation({
     mutationFn: ({ id, enable }: { id: number; enable: boolean }) =>
@@ -653,7 +773,7 @@ export default function ProductDetailPage() {
       // 再 nowrap 锁一行 —— 点开面板里「来源、待核实、差异」三块一样都在。
       width: 104,
       render: (_: unknown, record: Sku) => (
-        <a
+        <button type="button" className="crm-text-action"
           style={{ color: 'var(--crm-primary)', whiteSpace: 'nowrap' }}
           onClick={() => {
             setResolutions({})
@@ -666,7 +786,7 @@ export default function ProductDetailPage() {
           }}
         >
           来源 / 差异
-        </a>
+        </button>
       ),
     },
     {
@@ -708,39 +828,26 @@ export default function ProductDetailPage() {
           <>
             {/* 看图不要求写权限：后端对读取只要 product:view，
                 所以这里对能进产品详情页的人一律显示（写权限由弹窗内的上传/删除按钮自己判）。 */}
-            <a
+            <button type="button" className="crm-text-action"
               style={{ color: 'var(--crm-primary)', marginRight: 10 }}
               onClick={() => setImageSku(record)}
             >
               图片
-            </a>
-            <a
+            </button>
+            <button type="button" className="crm-text-action"
               style={{ color: 'var(--crm-primary)', marginRight: 10 }}
               onClick={() => {
                 setEditingSku(record)
-                setSkuForm({
-                  sku_code: record.sku_code,
-                  name: record.name ?? '',
-                  specification: record.specification ?? '',
-                  color: record.color ?? '',
-                  material: record.material ?? '',
-                  length: String(record.length ?? ''),
-                  width: String(record.width ?? ''),
-                  height: String(record.height ?? ''),
-                  weight: String(record.weight ?? ''),
-                  carton_qty: String(record.carton_qty ?? ''),
-                  carton_volume: String(record.carton_volume ?? ''),
-                  moq: String(record.moq ?? ''),
-                  package_type: record.package_type ?? '',
-                  unit: record.unit ?? '件',
-                })
+                skuMutation.reset()
+                setEditReview(null)
+                setSkuForm(skuFormFrom(record))
                 setSkuVisible(true)
               }}
             >
               编辑
-            </a>
+            </button>
             <Popconfirm title={`确认${record.status === 'active' ? '停用' : '启用'} SKU「${record.sku_code}」？`} onConfirm={() => toggleMutation.mutate({ id: record.id, enable: record.status !== 'active' })}>
-              <a style={{ color: 'var(--crm-primary)' }}>{record.status === 'active' ? '停用' : '启用'}</a>
+              <button type="button" className="crm-text-action" style={{ color: 'var(--crm-primary)' }}>{record.status === 'active' ? '停用' : '启用'}</button>
             </Popconfirm>
           </>
         ) : (
@@ -780,13 +887,10 @@ export default function ProductDetailPage() {
                 type="primary"
                 theme="outline"
                 onClick={() => {
-                  setProductForm({
-                    name: product.name,
-                    product_line: product.product_line ?? '',
-                    category: product.category ?? '',
-                    brand: product.brand ?? '',
-                    description: product.description ?? '',
-                  })
+                  updateMutation.reset()
+                  setEditReview(null)
+                  setEditingProduct(product)
+                  setProductForm(productFormFrom(product))
                   setEditVisible(true)
                 }}
               >
@@ -812,6 +916,8 @@ export default function ProductDetailPage() {
               theme="outline"
               onClick={() => {
                 setEditingSku(null)
+                skuMutation.reset()
+                setEditReview(null)
                 setSkuForm(EMPTY_SKU)
                 setPendingImages([])
                 setSkuVisible(true)
@@ -852,17 +958,22 @@ export default function ProductDetailPage() {
         width={520}
         title="编辑产品资料"
         visible={editVisible}
-        onCancel={() => setEditVisible(false)}
+        onCancel={() => { if (!reviewMutation.isPending && !updateMutation.isPending) setEditVisible(false) }}
+        okButtonProps={{ disabled: !!productConflict || reviewMutation.isPending }}
         onOk={() => {
           if (!productForm.name.trim()) {
             Toast.warning('产品名称必填')
             return
           }
-          updateMutation.mutate(productForm)
+          if (!editingProduct || productConflict || reviewMutation.isPending || updateMutation.isPending) return
+          const keys = editedFields(productForm, productFormFrom(editingProduct))
+          if (!keys.length) { Toast.info('没有需要保存的修改'); return }
+          updateMutation.mutate(patchFrom(keys, productForm, editingProduct))
         }}
         confirmLoading={updateMutation.isPending}
         okText="保存"
       >
+        {editConflictNotice('product', productConflict)}
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
             <FormLabel required>产品名称</FormLabel>
@@ -907,7 +1018,9 @@ export default function ProductDetailPage() {
         title={editingSku ? `编辑 SKU：${editingSku.sku_code}` : '新建 SKU'}
         visible={skuVisible}
         width={680}
+        okButtonProps={{ disabled: !!skuConflict || reviewMutation.isPending }}
         onCancel={() => {
+          if (reviewMutation.isPending || skuMutation.isPending) return
           setSkuVisible(false)
           setEditingSku(null)
         }}
@@ -916,28 +1029,19 @@ export default function ProductDetailPage() {
             Toast.warning('已有编码不能清空')
             return
           }
-          skuMutation.mutate({
-            sku_code: skuForm.sku_code.trim() || undefined,
-            name: skuForm.name.trim() || null,
-            specification: skuForm.specification || null,
-            color: skuForm.color || null,
-            material: skuForm.material || null,
-            length: toExactNumeric(skuForm.length),
-            width: toExactNumeric(skuForm.width),
-            height: toExactNumeric(skuForm.height),
-            weight: toExactNumeric(skuForm.weight),
-            carton_qty: toExactNumeric(skuForm.carton_qty),
-            carton_volume: toExactNumeric(skuForm.carton_volume),
-            moq: toExactNumeric(skuForm.moq),
-            package_type: skuForm.package_type || null,
-            unit: skuForm.unit || null,
-          })
+          if (skuConflict || reviewMutation.isPending || skuMutation.isPending) return
+          const payload = skuPayload(skuForm)
+          if (!editingSku) { skuMutation.mutate(payload); return }
+          const keys = editedFields(skuForm, skuFormFrom(editingSku))
+          if (!keys.length) { Toast.info('没有需要保存的修改'); return }
+          skuMutation.mutate(patchFrom<SkuPayload>(keys, payload, editingSku))
         }}
         confirmLoading={skuMutation.isPending}
         /* 编辑态写「保存修改」、新建态才写「创建」：同一个弹窗复用文案会让编辑的人
            以为自己会另建一条（2026-11-17 视觉审视 V2-08） */
         okText={editingSku ? '保存修改' : '创建'}
       >
+        {editConflictNotice('sku', skuConflict)}
         <div style={{ display: 'grid', gap: 12 }}>
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ flex: 1 }}>

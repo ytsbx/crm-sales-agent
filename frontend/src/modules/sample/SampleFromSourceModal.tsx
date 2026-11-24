@@ -150,13 +150,13 @@ export default function SampleFromSourceModal({ source, onClose, mode = 'sample'
           {/* 下单数量和草稿单价都是短数字框，竖着排白白多占一行。
               这一排包在 flex 里（后面草稿单价那块一起进这个容器）。 */}
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-          <div style={{ flex: 1, minWidth: 190 }}>{quantityFieldText}<Input id={quantityId} inputMode="decimal" value={draft.quantity_exact ?? draft.quantity}
+          <div style={{ flex: 1, minWidth: 190 }}>{quantityFieldText}<Input id={quantityId} inputMode="decimal" value={draft.quantity}
             placeholder={row.original_quantity == null ? '来源未记录，请填写' : undefined}
             aria-invalid={missing || undefined} aria-describedby={missing ? `${quantityId}-required` : undefined}
             disabled={mutation.isPending || !draft.selected} onChange={v => change(row.source_item_id, { quantity: v })} /></div>
           {/* 行内提示：数量为空时数字框就是一个空白框，只说「必填」不够 ——
               要说清为什么空（来源未记录），以及不填就走不下去。 */}
-          {mode === 'order' && <div style={{ flex: 1, minWidth: 190 }}>草稿单价<Input aria-label="草稿单价" inputMode="decimal" value={draft.unit_price_exact ?? (draft.unit_price ?? '')} placeholder="未核价" disabled={mutation.isPending || !draft.selected} onChange={v => change(row.source_item_id, { unit_price: v === '' ? null : v })} /></div>}
+          {mode === 'order' && <div style={{ flex: 1, minWidth: 190 }}>草稿单价<Input aria-label="草稿单价" inputMode="decimal" value={draft.unit_price ?? ''} placeholder="未核价" disabled={mutation.isPending || !draft.selected} onChange={v => change(row.source_item_id, { unit_price: v === '' ? null : v })} /></div>}
           </div>
           {/* 数量没填时的提示单独一行，不挤进上面并排的两个框之间 */}
           {missing && <p id={`${quantityId}-required`} className="blocked-hint" style={{ marginTop: 8 }}>

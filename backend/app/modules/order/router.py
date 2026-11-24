@@ -179,6 +179,7 @@ async def create_order(
         items=payload.items,
         opportunity_id=payload.opportunity_id,
         quote_id=payload.quote_id,
+        user=user,
         owner_id=payload.owner_id,
         currency=payload.currency,
         delivery_date=payload.delivery_date,
@@ -266,6 +267,8 @@ async def convert_to_order(
     if not confirm:
         from app.core.confirmation import confirmation_message
 
+        if quote is not None:
+            await svc.ensure_no_active_order_for_quote(session, quote.id, user=user)
         customer_name = None
         if quote is not None:
             customer = await session.get(Customer, quote.customer_id)
@@ -301,6 +304,7 @@ async def convert_to_order(
         session,
         version=version,
         user_id=user.id,
+        user=user,
         delivery_date=payload.delivery_date,
         remark=payload.remark,
         receivable_plan=payload.receivable_plan,
@@ -902,12 +906,12 @@ async def change_status(
     # 状态切换先锁整单：与"登记发货"并发时，两边都必须串行化，
     # 否则同一时刻可能既取消成功又发货成功（第一批返修 §3.5）。
     order = await svc.get_visible_order(session, user, order_id, for_update=True)
-    if payload.status == "shipped" and order.status not in ("shipped", "cancelled"):
+    if payload.status in ("shipped", "delivered") and order.status not in (payload.status, "cancelled"):
         shipments = await svc.order_shipments(session, order)
         if Decimal(shipments["summary"]["shipped_exact"]) <= 0:
             raise AppError(
                 ErrorCode.STATUS_NOT_ALLOWED,
-                "请先在「发货批次」登记实际发货数量，再将订单标为已发货。",
+                f"请先在「发货批次」登记实际发货数量，再将订单标为{ORDER_STATUS_LABEL[payload.status]}。",
                 422,
             )
     before_status = order.status

@@ -10,6 +10,7 @@ export interface SystemUser {
   mobile?: string | null
   email?: string | null
   department_id?: number | null
+  department_managed_by_oa?: boolean
   department?: string | null
   wecom_userid?: string | null
   /** 钉钉扫码登录身份。 */
@@ -76,6 +77,7 @@ export interface DepartmentTreeNode extends SystemDepartment {
 export function listUsers(query: {
   keyword?: string
   status?: string
+  omit_archived?: boolean
   department_id?: number
   page?: number
   page_size?: number
@@ -101,6 +103,14 @@ export function enableUser(id: number) {
 
 export function disableUser(id: number) {
   return api.post<SystemUser>(`/users/${id}/disable`)
+}
+
+export function archiveUser(id: number) {
+  return api.post<SystemUser>(`/users/${id}/archive`)
+}
+
+export function deleteUnusedUser(id: number) {
+  return api.delete<null>(`/users/${id}`)
 }
 
 export function getUserRoles(id: number) {

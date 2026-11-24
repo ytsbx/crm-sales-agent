@@ -152,6 +152,7 @@ function ListBlock({ rows }: { rows: unknown[] }) {
         title: labelOf(key),
         dataIndex: key,
         align: 'center' as const,
+        className: isMoneyKey(key) ? 'cell-money' : undefined,
         render: (value: unknown, row: Record<string, unknown>) => {
           const { last_unit_price_min_exact: min, last_unit_price_max_exact: max } = row
           if (key === 'last_unit_price' && typeof min === 'string' && typeof max === 'string') {

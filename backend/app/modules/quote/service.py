@@ -414,6 +414,11 @@ def amount_summary(version: QuoteVersion) -> dict:
     """
     return {
         "goods_amount": _f(version.subtotal_amount),
+        "goods_amount_exact": format(version.subtotal_amount or ZERO, "f"),
+        "logistics_amount_exact": format(version.logistics_amount or ZERO, "f"),
+        "other_charge_amount_exact": format(version.other_charge_amount or ZERO, "f"),
+        "discount_amount_exact": format(version.discount_amount or ZERO, "f"),
+        "net_charge_amount_exact": format((version.charge_amount or ZERO) + (version.discount_amount or ZERO), "f"),
         "logistics_amount": _f(version.logistics_amount),
         "other_charge_amount": _f(version.other_charge_amount),
         "charge_amount": _f(version.charge_amount),
@@ -1027,6 +1032,9 @@ async def create_version(
     同样抽到 service 供 Agent 工具复用。
     """
     quote = await get_visible_quote(session, user, quote.id, for_update=True)
+    from app.modules.order.service import ensure_no_active_order_for_quote
+
+    await ensure_no_active_order_for_quote(session, quote.id, user=user)
     latest = (
         await session.execute(
             select(QuoteVersion)

@@ -6,18 +6,20 @@ import { paymentCents } from '../../shared/payment-allocation'
 import { useState, useRef, type CSSProperties } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Table, Tag, Typography } from '@douyinfe/semi-ui'
+import { Dropdown, Table, Tag, Typography } from '@douyinfe/semi-ui'
 import {
   IconApartment, IconBell, IconBookmark, IconEditStroked, IconHistory, IconIdCard,
   IconList, IconSetting, IconUser, IconUserGroup,
 } from '@douyinfe/semi-icons'
 
 import {
+  archiveUser,
   createDepartment,
   createRole,
   createUser,
   deleteDepartment,
   deleteRole,
+  deleteUnusedUser,
   disableUser,
   enableUser,
   listDepartments,
@@ -67,7 +69,7 @@ import { usePermissions } from '../../shared/hooks/permissions'
 import type { SystemDepartment, SystemRole, SystemUser } from '../../shared/api/system'
 import AuditLogPanel from './AuditLogPanel'
 import NotificationSettingsPanel from './NotificationSettingsPanel'
-import EmptyState from '../../shared/components/EmptyState'
+import { emptyTextNode } from '../../shared/components/EmptyState'
 import FormLabel from '../../shared/components/FormLabel'
 import StatusDot from '../../shared/components/StatusDot'
 import type { TagTone } from '../../shared/types'
@@ -681,6 +683,7 @@ export default function SettingsPage() {
       listUsers({
         keyword: userKeyword || undefined,
         status: userStatus || undefined,
+        omit_archived: true,
         department_id: userDeptId,
         page: userPage,
         page_size: userPageSize,
@@ -753,7 +756,7 @@ export default function SettingsPage() {
 
   const updateTagMutation = useMutation({
     mutationFn: () =>
-      updateTag(tagEditTarget!.id, { name: tagEditTarget!.name, type: tagEditTarget!.type }),
+      updateTag(tagEditTarget!.id, { name: tagEditTarget!.name, type: tagEditTarget!.type, status: tagEditTarget!.status }),
     onSuccess: () => {
       Toast.success('标签已保存')
       setTagEditTarget(null)
@@ -780,8 +783,8 @@ export default function SettingsPage() {
   }
 
   const poolRuleMutation = useMutation({
-    mutationFn: ({ id, days, enabled }: { id: number; days: number; enabled: boolean }) =>
-      updatePublicPoolRule(id, { days, enabled }),
+    mutationFn: ({ id, ...changes }: { id: number; days?: number; enabled?: boolean }) =>
+      updatePublicPoolRule(id, changes),
     onSuccess: () => {
       Toast.success('公海规则已保存')
       refreshRules()
@@ -1025,10 +1028,13 @@ export default function SettingsPage() {
   const oaBindingMutation = useMutation({
     mutationFn: ({ userId, oaUserId }: { userId: number; oaUserId: string | null }) =>
       setOaBinding(userId, oaUserId),
-    onSuccess: () => {
-      Toast.success('同序人员绑定已保存')
+    onSuccess: (result) => {
+      if (result.department_synced) Toast.success('同序绑定和部门已同步')
+      else if (result.oa_user_id) Toast.info('已绑定同序。同序未设置部门，CRM 部门保留原值')
+      else Toast.success('已解除同序绑定')
       setOaBindingTarget(null)
       refreshUsers()
+      refreshDepts()
       void queryClient.invalidateQueries({ queryKey: ['settings-oa-members'] })
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -1049,7 +1055,7 @@ export default function SettingsPage() {
         name: userForm.name,
         mobile: userForm.mobile || null,
         email: userForm.email || null,
-        department_id: userForm.department_id ?? null,
+        ...(!userEditTarget?.department_managed_by_oa && { department_id: userForm.department_id ?? null }),
         role_ids: userForm.role_ids,
       }
       if (userEditTarget) {
@@ -1081,6 +1087,30 @@ export default function SettingsPage() {
     },
     onError: (error: Error) => Toast.error(error.message),
   })
+
+  const accountRemoval = useMutation({
+    mutationFn: async ({ id, archive }: { id: number; archive: boolean }) => {
+      if (archive) await archiveUser(id)
+      else await deleteUnusedUser(id)
+    },
+    onSuccess: (_, { archive }) => {
+      Toast.success(archive ? '账号已离职归档' : '空账号已删除')
+      resetUserPage()
+      refreshUsers()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  function confirmAccountRemoval(record: SystemUser, archive: boolean) {
+    Modal.confirm({
+      title: archive ? `离职归档「${record.name}」？` : `删除空账号「${record.name}」？`,
+      content: archive
+        ? '归档后该员工无法登录，历史记录会保留。请核对名下的客户和订单，未办事项可到「销售任务 → 待办交接」处理。'
+        : '仅从未登录、没有业务记录且没有绑定外部身份的账号可以删除。删除后无法恢复。',
+      okText: archive ? '离职归档' : '删除账号',
+      onOk: () => accountRemoval.mutateAsync({ id: record.id, archive }),
+    })
+  }
 
   const dtSyncMutation = useMutation({
     mutationFn: syncDingTalkUsers,
@@ -1121,6 +1151,7 @@ export default function SettingsPage() {
           })
         : createRole({
             code: roleForm.code,
+            status: roleForm.status,
             name: roleForm.name,
             description: roleForm.description || null,
             data_scope: roleForm.data_scope,
@@ -1275,16 +1306,18 @@ export default function SettingsPage() {
       title: '状态',
       dataIndex: 'status',
       width: 65,
-      render: (v: string) => <StatusDot label={v === 'active' ? '启用' : '停用'} tone={v === 'active' ? 'green' : 'grey'} />,
+      render: (v: string) => (
+        <StatusDot label={v === 'archived' ? '离职归档' : v === 'active' ? '启用' : '停用'} tone={v === 'active' ? 'green' : 'grey'} />
+      ),
     },
     {
       title: '操作',
       // 120 不是 100：两个无边框小按钮（编辑 / 停用）加上单元格内边距，
       // 100 时「停用」会被省略成「…」，等于把功能藏掉了
-      width: isAdmin ? 195 : 120,
+      width: isAdmin ? 230 : 120,
       // 表格比容器宽时固定在右侧：编辑/停用这两个按钮永远看得见
       fixed: 'right' as const,
-      render: (_: unknown, record: SystemUser) => (
+      render: (_: unknown, record: SystemUser) => record.status === 'archived' ? '—' : (
         <>
           <Button
             theme="borderless"
@@ -1330,6 +1363,18 @@ export default function SettingsPage() {
               {record.status === 'active' ? '停用' : '启用'}
             </Button>
           </Popconfirm>
+          {isAdmin && (
+            <Dropdown trigger="click" render={
+              <Dropdown.Menu>
+                <Dropdown.Item onClick={() => confirmAccountRemoval(record, true)}>离职归档</Dropdown.Item>
+                {record.status === 'disabled' && (
+                  <Dropdown.Item onClick={() => confirmAccountRemoval(record, false)}>删除空账号</Dropdown.Item>
+                )}
+              </Dropdown.Menu>
+            }>
+              <Button size="small" theme="borderless" type="tertiary" disabled={accountRemoval.isPending}>更多</Button>
+            </Dropdown>
+          )}
         </>
       ),
     },
@@ -1567,6 +1612,7 @@ export default function SettingsPage() {
                   optionList={[
                     { value: 'active', label: '启用' },
                     { value: 'disabled', label: '停用' },
+                    { value: 'archived', label: '离职归档' },
                   ]}
                 />
                 <Select
@@ -1615,16 +1661,13 @@ export default function SettingsPage() {
               <Table<SystemUser> className="table-center settings-list-table"
                 // 等于各列宽之和（730）。设置页左侧还有一条二级导航，
                 // 表格区只有约 660 —— 写够总宽再配 fixed 操作列，比把列压扁可读
-                scroll={{ x: isAdmin ? 805 : 730 }}
+                scroll={{ x: isAdmin ? 840 : 730 }}
                 columns={userColumns}
-                dataSource={usersQuery.data?.items ?? []}
+                dataSource={usersQuery.isError ? [] : usersQuery.data?.items ?? []}
                 loading={usersQuery.isLoading}
                 rowKey="id"
-                empty={
-                  userKeyword || userStatus || userDeptId
-                    ? '没有符合条件的用户，试试放宽筛选条件'
-                    : '还没有用户'
-                }
+                empty={emptyTextNode(usersQuery, userKeyword || userStatus || userDeptId
+                  ? '没有符合条件的用户，试试放宽筛选条件' : '还没有用户')}
                 pagination={{
                   currentPage: userPage,
                   pageSize: userPageSize,
@@ -1669,10 +1712,10 @@ export default function SettingsPage() {
               </div>
               <Table<SystemRole> className="table-center settings-list-table"
                 columns={roleColumns}
-                dataSource={filteredRoles}
+                dataSource={rolesQuery.isError ? [] : filteredRoles}
                 loading={rolesQuery.isLoading}
                 rowKey="id"
-                empty={roleKeyword ? '没有匹配的角色' : '还没有角色'}
+                empty={emptyTextNode(rolesQuery, roleKeyword ? '没有匹配的角色' : '还没有角色')}
                 pagination={false}
               />
             </>
@@ -1702,10 +1745,10 @@ export default function SettingsPage() {
               </div>
               <Table<SystemDepartment> className="table-center settings-list-table"
                 columns={deptColumns}
-                dataSource={filteredDepts}
+                dataSource={deptsQuery.isError ? [] : filteredDepts}
                 loading={deptsQuery.isLoading}
                 rowKey="id"
-                empty={deptKeyword ? '没有匹配的部门' : '还没有部门'}
+                empty={emptyTextNode(deptsQuery, deptKeyword ? '没有匹配的部门' : '还没有部门')}
                 pagination={false}
               />
             </>
@@ -1822,16 +1865,11 @@ export default function SettingsPage() {
                     ),
                   },
                 ]}
-                dataSource={tagsQuery.data ?? []}
+                dataSource={tagsQuery.isError ? [] : tagsQuery.data ?? []}
                 loading={tagsQuery.isLoading}
                 rowKey="id"
                 pagination={false}
-                empty={
-                  <EmptyState
-                    title="还没有标签"
-                    hint="标签是受控字典：客户详情里只能从这里建好的标签中选，建好就能用了。"
-                  />
-                }
+                empty={emptyTextNode(tagsQuery, '还没有标签', '创建后可在客户详情选择。')}
               />
             </>
           )}
@@ -1953,11 +1991,11 @@ export default function SettingsPage() {
                     ),
                   },
                 ]}
-                dataSource={dictionariesQuery.data ?? []}
+                dataSource={dictionariesQuery.isError ? [] : dictionariesQuery.data ?? []}
                 loading={dictionariesQuery.isLoading}
                 rowKey="id"
                 pagination={false}
-                empty="还没有数据字典项"
+                empty={emptyTextNode(dictionariesQuery, '还没有数据字典项')}
               />
             </>
           )}
@@ -2044,7 +2082,7 @@ export default function SettingsPage() {
                               return
                             }
                             if (Number.isFinite(next) && next !== days) {
-                              poolRuleMutation.mutate({ id: record.id, days: next, enabled: record.enabled })
+                              poolRuleMutation.mutate({ id: record.id, days: next })
                             }
                           }}
                         />
@@ -2058,7 +2096,7 @@ export default function SettingsPage() {
                           aria-label={`启用${customerLevelLabel(record.level)}回收规则`}
                           checked={enabled}
                           onChange={(value) =>
-                            poolRuleMutation.mutate({ id: record.id, days: record.days, enabled: value })
+                            poolRuleMutation.mutate({ id: record.id, enabled: value })
                           }
                         />
                       ),
@@ -2067,8 +2105,9 @@ export default function SettingsPage() {
                     // 1024 下它只剩 30px，把表撑出横向滚动、右侧还被裁，所以整列去掉
                     // （2026-11-18）。
                   ]}
-                  dataSource={(poolRulesQuery.data ?? []).filter((row) => row.level !== 'UNRATED')}
-                  loading={poolRulesQuery.isLoading}
+                  dataSource={(poolRulesQuery.isError ? [] : poolRulesQuery.data ?? []).filter((row) => row.level !== 'UNRATED')}
+                  loading={poolRulesQuery.isFetching}
+                  empty={emptyTextNode(poolRulesQuery, '还没有公海回收规则')}
                   rowKey="id"
                   pagination={false}
                 />
@@ -2385,11 +2424,13 @@ export default function SettingsPage() {
         onOk={() => {
           if (oaBindingTarget) oaBindingMutation.mutate({ userId: oaBindingTarget.id, oaUserId: selectedOaMember })
         }}
-        okText="保存绑定"
-        okButtonProps={{ disabled: selectedOaMember === (oaBindingTarget?.oa_user_id ?? null) }}
+        okText={selectedOaMember && selectedOaMember === oaBindingTarget?.oa_user_id ? '同步部门' : '保存绑定'}
+        okButtonProps={{ disabled: selectedOaMember
+          ? !oaMembersQuery.data?.some((member) => member.id === selectedOaMember)
+          : !oaBindingTarget?.oa_user_id }}
         confirmLoading={oaBindingMutation.isPending}
       >
-        <p>合同、打样和询价会以所选同序人员的身份提交。请核对姓名、部门和工号。</p>
+        <p>请核对姓名和工号。保存后会按同序更新该员工的 CRM 部门，并以所选人员的身份发起合同、打样和询价审批。按部门查看的数据会随归属变化。</p>
         <Select
           style={{ width: '100%' }}
           aria-label="同序人员"
@@ -2501,9 +2542,11 @@ export default function SettingsPage() {
               不会把库里已有的手机号顺手清空。 */}
           <div>
             <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>
-              部门{userForm.oa_user_id ? '（按同序身份带入）' : ''}
+              部门{userForm.oa_user_id || userEditTarget?.department_managed_by_oa ? '（以同序为准）' : ''}
             </div>
-            {userForm.oa_user_id ? (
+            {userEditTarget?.department_managed_by_oa ? (
+              <Input readOnly value={userEditTarget.department || '未设置部门'} />
+            ) : userForm.oa_user_id ? (
               <Input readOnly value={userForm.oa_department || '同序身份未设部门'} />
             ) : (
               <Select
@@ -2946,9 +2989,9 @@ function ApprovalLevelsEditor({
             />
           </label>
 
-          <a className="approval-level-del" onClick={() => removeRow(index)}>
+          <button type="button" className="crm-text-action approval-level-del" onClick={() => removeRow(index)}>
             删除
-          </a>
+          </button>
         </div>
       ))}
 

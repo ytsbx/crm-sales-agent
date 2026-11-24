@@ -688,6 +688,21 @@ async def test_delete_receivable_refuses_when_payment_exists(pay_db, pay):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("cancelled_entity", ["order", "plan"])
+async def test_cancelled_receivable_cannot_be_deleted(pay_db, pay, cancelled_entity):
+    order = make_order(pay_db)
+    plan = make_plan(pay_db, order)
+    entity = order if cancelled_entity == "order" else plan
+    entity.status = "cancelled"
+    pay_db.commit()
+
+    with pytest.raises(AppError) as exc:
+        await delete_receivable(plan.id, make_request(), operator(), pay)
+    assert exc.value.code == ErrorCode.STATUS_NOT_ALLOWED
+    assert pay_db.get(ReceivablePlan, plan.id) is not None
+
+
+@pytest.mark.anyio
 async def test_create_payment_locks_order_then_plan_before_insert(pay_db, pay):
     """登记回款：按订单→应收节点顺序取锁（防取消并发死锁）。
 

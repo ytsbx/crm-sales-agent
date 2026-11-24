@@ -215,11 +215,12 @@ export function convertToOrder(
 /** 手工建订单（API §27 POST /orders）。线下签约/补录历史单用；
  * 正常订单走 convertToOrder（报价版本转订单）。金额由后端按明细算，不用传。 */
 export function createOrder(payload: {
+  request_key?: string
   customer_id: number
   items: Array<{
     sku_id: number
-    quantity: number
-    unit_price: number
+    quantity: number | string
+    unit_price: number | string
     specification?: string
     remark?: string
   }>

@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Input, Modal, Popconfirm, Select, Table, Tag, Toast, TextArea } from '@douyinfe/semi-ui'
-import { parseOptionalNumber } from '../../shared/number-input'
+import { parseOptionalDecimal } from '../../shared/number-input'
 import { isSafeExternalUrl, safeExternalUrls } from '../../shared/safe-url'
 import { usePermissions } from '../../shared/hooks/permissions'
 import PageHeader from '../../shared/components/PageHeader'
@@ -167,7 +167,7 @@ export default function ProductInsightsPage() {
       target_customer: row.target_customer ?? '',
       direction: row.direction ?? '',
       selling_points: row.selling_points ?? '',
-      price_assumption: row.price_assumption != null ? String(row.price_assumption) : '',
+      price_assumption: String(row.price_assumption_exact ?? row.price_assumption ?? ''),
       conclusion: row.conclusion ?? '',
       images: (row.images ?? []).join('\n'),
     })
@@ -200,7 +200,7 @@ export default function ProductInsightsPage() {
         // 接口上等于「用户明确清空」—— 两者分不清，输入被静默丢掉
         // （2026-10-14 审查修）。坏输入一律拦下并点名。
         price_assumption: (() => {
-          const v = parseOptionalNumber(form.price_assumption)
+          const v = parseOptionalDecimal(form.price_assumption)
           if (typeof v === 'number' && Number.isNaN(v)) {
             throw new Error('价格假设只能填数字')
           }
@@ -292,12 +292,12 @@ export default function ProductInsightsPage() {
         customer_id: convertCustomerId ?? null,
         // 同上：字母会被静默变成 null，转需求后数量为空
         quantity: (() => {
-          const v = parseOptionalNumber(convertForm.quantity)
+          const v = parseOptionalDecimal(convertForm.quantity)
           if (typeof v === 'number' && Number.isNaN(v)) throw new Error('数量只能填数字')
           return v
         })(),
         target_price: (() => {
-          const v = parseOptionalNumber(convertForm.target_price)
+          const v = parseOptionalDecimal(convertForm.target_price)
           if (typeof v === 'number' && Number.isNaN(v)) throw new Error('目标价只能填数字')
           return v
         })(),
@@ -500,10 +500,10 @@ export default function ProductInsightsPage() {
                      改成占满整格的 flex + 居中：动作多也始终压在表头下方。 */
                   <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center' }}>
                     {editable && record.status !== 'converted' && record.status !== 'under_review' && (
-                      <a onClick={() => openEdit(record)}>编辑</a>
+                      <button type="button" className="crm-text-action" onClick={() => openEdit(record)}>编辑</button>
                     )}
                     {editable && (record.status === 'draft' || record.status === 'rejected') && (
-                      <Popconfirm title="确认提交这条新品洞察评审？" onConfirm={() => submitMutation.mutate(record.id)}><a>提交评审</a></Popconfirm>
+                      <Popconfirm title="确认提交这条新品洞察评审？" onConfirm={() => submitMutation.mutate(record.id)}><button type="button" className="crm-text-action">提交评审</button></Popconfirm>
                     )}
                     {/* 原来「通过 / 否决」是两个同字重的绿字红字，和旁边「编辑 / 转需求」
                         长得一样重（2026-11-20 巡检："一排小字看不出该点哪个"）。
@@ -530,16 +530,16 @@ export default function ProductInsightsPage() {
                       </>
                     )}
                     {editable && record.status === 'approved' && (
-                      <a onClick={() => openConvert(record)}>转需求</a>
+                      <button type="button" className="crm-text-action" onClick={() => openConvert(record)}>转需求</button>
                     )}
                     {/* 审核历史：能看见这一页的人就能看它的评审史（后端读入口同权限） */}
-                    <a
+                    <button type="button" className="crm-text-action"
                       style={{ color: 'var(--crm-text-2)' }}
                       title="审核历史"
                       onClick={() => setHistoryTarget(record)}
                     >
                       {compact ? '历史' : '审核历史'}
-                    </a>
+                    </button>
                     {record.converted_inquiry_id && (
                       <Link to={`/inquiries?inquiry_id=${record.converted_inquiry_id}`} style={{ color: 'var(--crm-text-3)' }}>
                         已转需求 #{record.converted_inquiry_id}

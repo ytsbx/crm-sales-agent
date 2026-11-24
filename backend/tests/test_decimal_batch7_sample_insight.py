@@ -27,6 +27,7 @@ def test_sample_request_fees_keep_decimal():
     assert isinstance(out["sample_fee"], D) and out["sample_fee"] == BIG
     assert isinstance(out["estimated_hours"], D)
     assert isinstance(out["craft_points"], D)
+    assert out["sample_fee_exact"] == format(BIG, "f")
     _wire_exact(out, "sample_fee", BIG)
 
 
@@ -34,6 +35,7 @@ def test_sample_shipment_fee_keeps_decimal():
     shipment = SampleShipment(id=1, sample_request_id=1, shipping_fee=BIG)
     out = sample_svc.serialize_shipment(shipment)
     assert isinstance(out["shipping_fee"], D) and out["shipping_fee"] == BIG
+    assert out["shipping_fee_exact"] == format(BIG, "f")
     _wire_exact(out, "shipping_fee", BIG)
 
 

@@ -23,9 +23,11 @@ import { PricingTool } from './PricingPage'
 import {
   NUMBER_FIELD_LABEL,
   invalidNumberMessage,
+  optionalQuantityText,
+  parseOptionalDecimal,
   parseOptionalNumber,
-  parseQuantity,
-  requiredNumberOrThrow,
+  requiredQuantityText,
+  requiredDecimalOrThrow,
 } from '../../shared/number-input'
 import { calendarDayOrToday } from '../../shared/calendar-day'
 import PriceTerm from './PriceTerm'
@@ -605,8 +607,9 @@ export default function PriceCenterPage() {
   const [lookupCustomerKeyword, setLookupCustomerKeyword] = useState('')
   const [lookupSkuId, setLookupSkuId] = useState<number | undefined>()
   const [lookupQty, setLookupQty] = useState('1')
-  const lookupQuantity = parseQuantity(lookupQty)
-  const lookupReady = Boolean(lookupCustomerId && lookupSkuId && lookupQuantity !== null && lookupQuantity > 0)
+  let lookupQuantity: string | null = null
+  try { lookupQuantity = requiredQuantityText(lookupQty) } catch { /* 表单下方会提示 */ }
+  const lookupReady = Boolean(lookupCustomerId && lookupSkuId && lookupQuantity)
   const lookupMutation = useMutation({ mutationFn: lookupPrice })
   const lastLookup = lookupMutation.variables
   const isCurrentLookup = lastLookup?.customer_id === lookupCustomerId && lastLookup?.sku_id === lookupSkuId
@@ -742,10 +745,10 @@ export default function PriceCenterPage() {
       // 后端当"没提供这个字段"，用户填的成本被静默丢掉，界面还回"已保存"。
       // 核价随后按更低的成本算：毛利虚高、本该触发的低价审批不触发。
       const costs = {
-        purchase_cost: parseOptionalNumber(costForm.purchase_cost),
-        package_cost: parseOptionalNumber(costForm.package_cost),
-        production_cost: parseOptionalNumber(costForm.production_cost),
-        processing_cost: parseOptionalNumber(costForm.processing_cost),
+        purchase_cost: parseOptionalDecimal(costForm.purchase_cost),
+        package_cost: parseOptionalDecimal(costForm.package_cost),
+        production_cost: parseOptionalDecimal(costForm.production_cost),
+        processing_cost: parseOptionalDecimal(costForm.processing_cost),
       }
       const bad = invalidNumberMessage(costs, '只能填数字（最多 2 位小数）')
       if (bad) throw new Error(bad)
@@ -787,12 +790,12 @@ export default function PriceCenterPage() {
       // 解析 + 校验放一处（R02）：数字字段填了字母必须**当场拒绝**，
       // 不能让它变成 null 提交出去（那等于把上限改成"不限"）。
       const nums = {
-        min_qty: parseQuantity(ruleForm.min_qty),
-        max_qty: parseQuantity(ruleForm.max_qty),
-        standard_price: parseOptionalNumber(ruleForm.standard_price),
-        guide_price: parseOptionalNumber(ruleForm.guide_price),
-        minimum_price: parseOptionalNumber(ruleForm.minimum_price),
-        target_margin: parseOptionalNumber(ruleForm.target_margin),
+        min_qty: optionalQuantityText(ruleForm.min_qty, '数量下限', true),
+        max_qty: optionalQuantityText(ruleForm.max_qty, '数量上限', true),
+        standard_price: parseOptionalDecimal(ruleForm.standard_price),
+        guide_price: parseOptionalDecimal(ruleForm.guide_price),
+        minimum_price: parseOptionalDecimal(ruleForm.minimum_price),
+        target_margin: parseOptionalDecimal(ruleForm.target_margin),
       }
       const bad = Object.entries(nums).find(([, v]) => Number.isNaN(v))
       if (bad) {
@@ -840,10 +843,10 @@ export default function PriceCenterPage() {
     mutationFn: () => {
       // 同一把尺子（R02）：约定价必填且必须是数字，其余数字字段填字母要当场拒绝
       const nums = {
-        min_qty: parseQuantity(customerPriceForm.min_qty),
-        max_qty: parseQuantity(customerPriceForm.max_qty),
-        agreed_price: parseOptionalNumber(customerPriceForm.agreed_price),
-        minimum_price: parseOptionalNumber(customerPriceForm.minimum_price),
+        min_qty: optionalQuantityText(customerPriceForm.min_qty, '数量下限', true),
+        max_qty: optionalQuantityText(customerPriceForm.max_qty, '数量上限', true),
+        agreed_price: parseOptionalDecimal(customerPriceForm.agreed_price),
+        minimum_price: parseOptionalDecimal(customerPriceForm.minimum_price),
       }
       const bad = Object.entries(nums).find(([, v]) => Number.isNaN(v))
       if (bad) {
@@ -878,7 +881,7 @@ export default function PriceCenterPage() {
   const permissionMutation = useMutation({
     mutationFn: () => {
       // 同上：填字母会静默变成 0% 门槛 → 审批条件被悄悄放宽
-      const margin = parseOptionalNumber(permissionForm.minimum_margin)
+      const margin = parseOptionalDecimal(permissionForm.minimum_margin)
       if (typeof margin === 'number' && Number.isNaN(margin)) {
         throw new Error('最低利润率只能填数字')
       }
@@ -914,12 +917,12 @@ export default function PriceCenterPage() {
         ? {
             sku_id: row.sku_id,
             customer_level: row.customer_level ?? '',
-            min_qty: String(row.min_qty ?? '0'),
-            max_qty: row.max_qty == null ? '' : String(row.max_qty),
+            min_qty: String(row.min_qty_exact ?? row.min_qty ?? '0'),
+            max_qty: String(row.max_qty_exact ?? row.max_qty ?? ''),
             // 价钱类字段在修改态是只读展示，这里照实填上当前值
-            standard_price: row.standard_price == null ? '' : String(row.standard_price),
-            guide_price: row.guide_price == null ? '' : String(row.guide_price),
-            minimum_price: row.minimum_price == null ? '' : String(row.minimum_price),
+            standard_price: String(row.standard_price_exact ?? row.standard_price ?? ''),
+            guide_price: String(row.guide_price_exact ?? row.guide_price ?? ''),
+            minimum_price: String(row.minimum_price_exact ?? row.minimum_price ?? ''),
             target_margin: row.target_margin == null ? '' : String(row.target_margin),
             effective_from: row.effective_from ?? '',
             effective_to: row.effective_to ?? '',
@@ -943,10 +946,10 @@ export default function PriceCenterPage() {
         ? {
             customer_id: row.customer_id,
             sku_id: row.sku_id,
-            min_qty: String(row.min_qty ?? '0'),
-            max_qty: row.max_qty == null ? '' : String(row.max_qty),
-            agreed_price: String(row.agreed_price ?? ''),
-            minimum_price: row.minimum_price == null ? '' : String(row.minimum_price),
+            min_qty: String(row.min_qty_exact ?? row.min_qty ?? '0'),
+            max_qty: String(row.max_qty_exact ?? row.max_qty ?? ''),
+            agreed_price: String(row.agreed_price_exact ?? row.agreed_price ?? ''),
+            minimum_price: String(row.minimum_price_exact ?? row.minimum_price ?? ''),
             effective_from: row.effective_from ?? '',
             effective_to: row.effective_to ?? '',
             remark: row.remark ?? '',
@@ -991,9 +994,9 @@ export default function PriceCenterPage() {
         shipping_method: rateForm.shipping_method.trim() || '陆运',
         // 公斤单价是必填：原来 Number('' || 0) = 0，清空后保存会静默建一条 0 元/kg
         // 的费率，所有走这条线路的运费都算成 0（2026-10-14 审查修）。
-        unit_price_per_kg: requiredNumberOrThrow(rateForm.unit_price_per_kg, '公斤单价'),
-        unit_price_per_volume: parseOptionalNumber(rateForm.unit_price_per_volume),
-        min_charge: requiredNumberOrThrow(rateForm.min_charge, '最低收费'),
+        unit_price_per_kg: requiredDecimalOrThrow(rateForm.unit_price_per_kg, '公斤单价'),
+        unit_price_per_volume: parseOptionalDecimal(rateForm.unit_price_per_volume),
+        min_charge: requiredDecimalOrThrow(rateForm.min_charge, '最低收费'),
         eta_days: parseOptionalNumber(rateForm.eta_days),
         eta_days_max: parseOptionalNumber(rateForm.eta_days_max),
         status: rateForm.status,
@@ -1142,7 +1145,7 @@ export default function PriceCenterPage() {
                   placeholder="数量"
                   aria-label="查价数量"
                   inputMode="decimal"
-                  aria-invalid={lookupQuantity === null || !(lookupQuantity > 0)}
+                  aria-invalid={lookupQuantity === null}
                 />
                 <GuardedButton type="primary"
                   theme="outline"
@@ -1151,7 +1154,7 @@ export default function PriceCenterPage() {
                   hintBelow
                   blockedReasons={[lookupIssue]}
                   onClick={() => {
-                    if (lookupCustomerId && lookupSkuId && lookupQuantity !== null && lookupQuantity > 0) {
+                    if (lookupCustomerId && lookupSkuId && lookupQuantity !== null) {
                       lookupMutation.mutate({ customer_id: lookupCustomerId, sku_id: lookupSkuId, quantity: lookupQuantity })
                     }
                   }}
@@ -1270,7 +1273,7 @@ export default function PriceCenterPage() {
                     <>
                       <div>
                         <span style={{ fontSize: 28, fontWeight: 700 }}>
-                          {formatUnitPrice(lookupResult.unit_price, lookupResult.currency)}
+                          {formatUnitPrice(lookupResult.unit_price_exact ?? lookupResult.unit_price, lookupResult.currency)}
                         </span>
                         <span style={{ marginLeft: 6, color: 'var(--crm-text-3)' }}>
                           ／{lookupResult.sku.unit ?? '件'} · 数量 {lookupResult.quantity}
@@ -1352,13 +1355,13 @@ export default function PriceCenterPage() {
                         try {
                           await createItem(lookupOpp.id, {
                             sku_id: lookupResult.sku.id,
-                            quantity: lookupResult.quantity,
-                            target_price: lookupResult.unit_price,
+                            quantity: lookupQty.trim(),
+                            target_price: lookupResult.unit_price_exact ?? lookupResult.unit_price,
                           })
                           void queryClient.invalidateQueries({ queryKey: ['opportunity-items', lookupOpp.id] })
                           Toast.success(
                             // toast 里同样是单价：走 formatUnitPrice，别拿金额口径去装单价
-                            `已把 ${lookupResult.sku.sku_code}（${formatUnitPrice(lookupResult.unit_price, 'CNY')}）加入商机需求`,
+                            `已把 ${lookupResult.sku.sku_code}（${formatUnitPrice(lookupResult.unit_price_exact ?? lookupResult.unit_price, 'CNY')}）加入商机需求`,
                           )
                         } catch (error) {
                           Toast.error(error instanceof Error ? error.message : '加入失败')
@@ -1391,8 +1394,8 @@ export default function PriceCenterPage() {
                         })
                         await createItem(opp.id, {
                           sku_id: lookupResult.sku.id,
-                          quantity: lookupResult.quantity,
-                          target_price: lookupResult.unit_price,
+                          quantity: lookupQty.trim(),
+                          target_price: lookupResult.unit_price_exact ?? lookupResult.unit_price,
                         })
                         setLookupOppId(opp.id)
                         void queryClient.invalidateQueries({ queryKey: ['opportunities-for-lookup', lookupResult.customer.id] })
@@ -1449,14 +1452,15 @@ export default function PriceCenterPage() {
               <Table<CostRecord>
                 columns={[
                   { title: '生效日期', dataIndex: 'effective_from', width: 130 },
-                  { title: '采购', dataIndex: 'purchase_cost', width: 100, render: money },
-                  { title: '生产', dataIndex: 'production_cost', width: 100, render: money },
-                  { title: '包装', dataIndex: 'package_cost', width: 100, render: money },
-                  { title: '加工', dataIndex: 'processing_cost', width: 100, render: money },
+                  { title: '采购', dataIndex: 'purchase_cost', width: 100, className: 'cell-money', render: money },
+                  { title: '生产', dataIndex: 'production_cost', width: 100, className: 'cell-money', render: money },
+                  { title: '包装', dataIndex: 'package_cost', width: 100, className: 'cell-money', render: money },
+                  { title: '加工', dataIndex: 'processing_cost', width: 100, className: 'cell-money', render: money },
                   {
                     title: '合计成本',
                     dataIndex: 'total_cost',
                     width: 120,
+                    className: 'cell-money',
                     render: (value: number) => <span style={{ fontWeight: 600 }}>{money(value)}</span>,
                   },
                   {
@@ -1496,7 +1500,7 @@ export default function PriceCenterPage() {
                           content="停用后当天起不再参与核价，且不能撤销；要改回来请新增一条成本。"
                           onConfirm={() => expireMutation.mutate(record.id)}
                         >
-                          <a>停用</a>
+                          <button type="button" className="crm-text-action">停用</button>
                         </Popconfirm>
                       )
                     },
@@ -1572,12 +1576,13 @@ export default function PriceCenterPage() {
                       `${record.min_qty} ~ ${record.max_qty ?? '不限'}`,
                   },
                   // 标准价/指导价/最低保护价都是**单价**：口径同订单明细，保真不截断
-                  { title: <PriceTerm term="标准价" />, dataIndex: 'standard_price', width: 100, render: (v: number) => formatUnitPrice(v, 'CNY') },
-                  { title: <PriceTerm term="指导价" />, dataIndex: 'guide_price', width: 100, render: (v: number) => formatUnitPrice(v, 'CNY') },
+                  { title: <PriceTerm term="标准价" />, dataIndex: 'standard_price', width: 100, className: 'cell-money', render: (v: number) => formatUnitPrice(v, 'CNY') },
+                  { title: <PriceTerm term="指导价" />, dataIndex: 'guide_price', width: 100, className: 'cell-money', render: (v: number) => formatUnitPrice(v, 'CNY') },
                   {
                     title: <PriceTerm term="最低保护价" />,
                     dataIndex: 'minimum_price',
                     width: 120,
+                    className: 'cell-money',
                     render: (value: number | null) => (
                       <span style={{ fontWeight: 600, color: 'var(--crm-error)' }}>{formatUnitPrice(value, 'CNY')}</span>
                     ),
@@ -1611,13 +1616,13 @@ export default function PriceCenterPage() {
                               客户等级/备注）；**价钱不在其中** —— 改价钱走
                               「停用 + 新增」，这样生效时序在单据上看得见。
                               后端也会拒绝改价并点名字段，不是只靠界面挡。 */}
-                          <a onClick={() => openRuleModal(record)}>编辑</a>
+                          <button type="button" className="crm-text-action" onClick={() => openRuleModal(record)}>编辑</button>
                           {record.status === 'active' ? (
                             <Popconfirm
                               title="停用这条价格规则？"
                               onConfirm={() => disablePriceRule(record.id).then(refreshAll)}
                             >
-                              <a style={{ color: 'var(--crm-error)' }}>停用</a>
+                              <button type="button" className="crm-text-action" style={{ color: 'var(--crm-error)' }}>停用</button>
                             </Popconfirm>
                           ) : (
                             // 恢复启用（审查建议）：停用是软操作（只把 status 改成
@@ -1631,7 +1636,7 @@ export default function PriceCenterPage() {
                                 restorePriceRule(record.id).then(refreshAll)
                               }
                             >
-                              <a>恢复启用</a>
+                              <button type="button" className="crm-text-action">恢复启用</button>
                             </Popconfirm>
                           )}
                         </span>
@@ -1728,6 +1733,7 @@ export default function PriceCenterPage() {
                     ),
                     dataIndex: 'agreed_price',
                     width: 110,
+                    className: 'cell-money',
                     render: (value: number) => <span style={{ fontWeight: 600 }}>{formatUnitPrice(value, 'CNY')}</span>,
                   },
                   {
@@ -1739,6 +1745,7 @@ export default function PriceCenterPage() {
                     ),
                     dataIndex: 'minimum_price',
                     width: 110,
+                    className: 'cell-money',
                     render: (v: number) => formatUnitPrice(v, 'CNY'),
                   },
                   { title: '备注', dataIndex: 'remark', render: (v: string | null) => v ?? '-' },
@@ -1752,12 +1759,12 @@ export default function PriceCenterPage() {
                               场景（客户谈定的价涨了两块）。后端 PATCH 一直就有，
                               只是此前没有任何页面调过它，想改只能删了重录。
                               归属（客户/SKU）不给改：那等于换一条规则。 */}
-                          <a onClick={() => openCustomerPriceModal(record)}>编辑</a>
+                          <button type="button" className="crm-text-action" onClick={() => openCustomerPriceModal(record)}>编辑</button>
                           <Popconfirm
                             title="删除这条客户特殊价？"
                             onConfirm={() => deleteCustomerPriceRule(record.id).then(refreshAll)}
                           >
-                            <a style={{ color: 'var(--crm-error)' }}>删除</a>
+                            <button type="button" className="crm-text-action" style={{ color: 'var(--crm-error)' }}>删除</button>
                           </Popconfirm>
                         </span>
                       ) : (
@@ -1828,7 +1835,7 @@ export default function PriceCenterPage() {
                   width: 80,
                   render: (_: unknown, record: PricePermissionRow) =>
                     canManage ? (
-                      <a
+                      <button type="button" className="crm-text-action"
                         style={{ color: 'var(--crm-primary)' }}
                         onClick={() => {
                           setPermissionTarget(record)
@@ -1839,7 +1846,7 @@ export default function PriceCenterPage() {
                         }}
                       >
                         调整
-                      </a>
+                      </button>
                     ) : (
                       '-'
                     ),
@@ -1888,12 +1895,14 @@ export default function PriceCenterPage() {
                     dataIndex: 'unit_price_per_kg',
                     width: 100,
                     // 费率同样是单价：保真（0.9 → ¥0.90，4.125 → ¥4.1250 不再被截成 4.13）
+                    className: 'cell-money',
                     render: (value: number) => formatUnitPrice(value, 'CNY'),
                   },
                   {
                     title: '体积单价',
                     dataIndex: 'unit_price_per_volume',
                     width: 100,
+                    className: 'cell-money',
                     render: (value: number | null) =>
                       value == null ? <span style={HINT}>-</span> : `${formatUnitPrice(value, 'CNY')}/m³`,
                   },
@@ -1901,6 +1910,7 @@ export default function PriceCenterPage() {
                     title: '最低收费',
                     dataIndex: 'min_charge',
                     width: 100,
+                    className: 'cell-money',
                     render: (value: number) => `¥${toTwoDecimals(value)}`,
                   },
                   {
@@ -1932,13 +1942,13 @@ export default function PriceCenterPage() {
                           width: 130,
                           render: (_: unknown, record: LogisticsRateRow) => (
                             <div style={{ display: 'flex', gap: 12 }}>
-                              <a onClick={() => openRateModal(record)}>修改</a>
+                              <button type="button" className="crm-text-action" onClick={() => openRateModal(record)}>修改</button>
                               <Popconfirm
                                 title={`删除费率「${record.provider}」？`}
                                 content="删掉之后核价不再用它估算运费。已发出的报价不受影响：运费当时已作为快照存进报价明细。"
                                 onConfirm={() => rateDeleteMutation.mutate(record.id)}
                               >
-                                <a style={{ color: 'var(--crm-error)' }}>删除</a>
+                                <button type="button" className="crm-text-action" style={{ color: 'var(--crm-error)' }}>删除</button>
                               </Popconfirm>
                             </div>
                           ),

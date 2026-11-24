@@ -196,6 +196,7 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
       dataIndex: 'amount_total',
       width: 120,
       align: 'right' as const,
+      className: 'cell-money',
       render: (value: number, record: VersionComparisonRow) =>
         record.amount_total_exact != null ? formatMoney(record.amount_total_exact, record.currency) : money(value),
     },
@@ -204,6 +205,7 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
       dataIndex: 'cost_total',
       width: 110,
       align: 'right' as const,
+      className: 'cell-money',
       render: (value: number) => money(value),
     },
     {
@@ -211,6 +213,7 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
       dataIndex: 'profit_total',
       width: 110,
       align: 'right' as const,
+      className: 'cell-money',
       render: (value: number) => (
         <span style={{ color: value < 0 ? 'var(--crm-error)' : 'var(--crm-text)' }}>
           {money(value)}
@@ -244,6 +247,7 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
       dataIndex: 'avg_price',
       width: 110,
       align: 'right' as const,
+      className: 'cell-money',
       render: (value: number | null) => money(value, 4),
     },
   ]
@@ -502,16 +506,19 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
                   {
                     title: '成交均价',
                     dataIndex: 'price',
+                    className: 'cell-money',
                     render: (value: number | null) => money(value, 4),
                   },
                   {
                     title: '订单金额',
                     dataIndex: 'amount',
+                    className: 'cell-money',
                     render: (value: number | null) => money(value),
                   },
                   {
                     title: '利润额',
                     dataIndex: 'profit',
+                    className: 'cell-money',
                     render: (value: number | null) => (
                       <span style={{ color: value != null && value < 0 ? 'var(--crm-error)' : undefined }}>
                         {money(value)}

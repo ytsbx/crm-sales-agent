@@ -198,18 +198,18 @@ function BoardColumn({
                     于是在卡片底部看不出"哪个是往前的"。
                     退回是反向/低频动作，降到灰色；推进是这一列唯一该做的事，
                     保留主色并加粗一点。 */}
-                <a
+                <button type="button" className="crm-text-action"
                   style={{ fontSize: 12, color: 'var(--crm-text-3)' }}
                   onClick={() => onMove(row, -1)}
                 >
                   ← 退回
-                </a>
-                <a
+                </button>
+                <button type="button" className="crm-text-action"
                   style={{ fontSize: 12, fontWeight: 500 }}
                   onClick={() => onMove(row, 1)}
                 >
                   推进 →
-                </a>
+                </button>
               </div>
             )}
           </div>

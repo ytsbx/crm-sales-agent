@@ -64,6 +64,11 @@ export interface QuoteVersion {
  * 必须共用同一份公式，两套公式迟早对不上，而这里对不上就是钱对不上。
  */
 export interface QuoteAmountSummary {
+  goods_amount_exact?: string
+  logistics_amount_exact?: string
+  other_charge_amount_exact?: string
+  discount_amount_exact?: string
+  net_charge_amount_exact?: string
   goods_amount: number
   /** 运费（代收代付）：向客户收取的金额，同时也是公司付给承运商的金额 */
   logistics_amount: number
@@ -90,9 +95,11 @@ export interface QuoteItemRow {
   quantity: number
   quantity_exact?: string
   cost_snapshot: number | null
+  cost_snapshot_exact?: string | null
   logistics_cost_snapshot: number | null
   standard_price_snapshot?: number | null
   recommended_price_snapshot?: number | null
+  recommended_price_snapshot_exact?: string | null
   minimum_price_snapshot?: number | null
   /** 价格来源快照（方案 §4.1）：customer_specific/level/general，空=手工价 */
   price_source?: string | null
@@ -148,6 +155,9 @@ export interface ApprovalRecordRow {
 export type WithMasterWarnings<T> = T & { master_warnings?: string[] }
 
 export interface QuoteVersionDetail {
+  has_active_order?: boolean
+  active_order?: { id: number; order_no: string } | null
+  version_order_cancelled?: boolean
   cost_problems?: { item_id: number; sku_id: number | null; label: string; reason: string }[]
   version: QuoteVersion
   /** 后端统一的金额汇总（货款/运费/其他费用/优惠/合计），页面直接用它 */

@@ -216,13 +216,13 @@ export default function AppLayout() {
 
         <div className="sider-version" style={{ marginTop: 'auto', padding: '16px 18px', fontSize: 11, color: 'var(--crm-text-3)' }}>
           {/* 移动端顶栏收起退出链接，登出入口放这里（桌面仍走顶栏） */}
-          <a
-            className="sider-logout"
+          <button type="button"
+            className="crm-text-action sider-logout"
             onClick={handleLogout}
             style={{ display: 'none', fontSize: 13, color: 'var(--crm-text-2)', cursor: 'pointer', marginBottom: 8 }}
           >
             退出登录
-          </a>
+          </button>
           {/* 侧栏底部原来印「Semi Design 风格 · v1.1」—— 技术栈版本信息，
               跟业务同事每天的工作无关，还稀释了整块界面的完整度（V-01）。删掉不补装饰。 */}
         </div>
@@ -274,9 +274,9 @@ export default function AppLayout() {
                 </div>
               </div>
             </Dropdown>
-            <a className="header-logout" onClick={handleLogout} style={{ fontSize: 12, color: 'var(--crm-primary)', cursor: 'pointer' }}>
+            <button type="button" className="crm-text-action header-logout" onClick={handleLogout} style={{ fontSize: 12, color: 'var(--crm-primary)', cursor: 'pointer' }}>
               退出
-            </a>
+            </button>
           </div>
         </header>
 
@@ -293,8 +293,7 @@ export default function AppLayout() {
         footer={<><Button onClick={() => setCredentialsDismissed(user?.id ?? null)}>我知道了</Button>
           <Button theme="solid" onClick={() => { setCredentialsDismissed(user?.id ?? null); navigate('/settings?tab=profile') }}>去修改账号密码</Button></>}>
         <p>登录名：<strong style={{ overflowWrap: 'anywhere' }}>{user?.username}</strong></p>
-        <p>初始密码：<strong>123456</strong></p>
-        <p>以后可使用账号密码或同序 OA 扫码登录；在「我的」里可以自行修改（点头像也能进）。</p>
+        <p>可继续用钉钉扫码登录 CRM。如需使用账号密码登录，请联系管理员并尽快修改初始密码。</p>
       </Modal>
     </div>
   )

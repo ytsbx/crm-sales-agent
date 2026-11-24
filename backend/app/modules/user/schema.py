@@ -104,6 +104,7 @@ class RoleCreate(CreateModel):
     name: str
     description: str | None = None
     data_scope: str = "self"
+    status: Literal["active", "disabled"] = "active"
     permission_codes: list[str] = []
     """按权限码授权，比传 id 直观（权限码是稳定的，id 会随重建变化）。"""
 

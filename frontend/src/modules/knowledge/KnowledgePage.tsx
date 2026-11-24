@@ -10,7 +10,6 @@ import {
   Dropdown,
   DatePicker,
   Input,
-  InputNumber,
   Modal,
   Popconfirm,
   Select,
@@ -26,7 +25,7 @@ import { listBusinessFiles, uploadFile } from '../../shared/api/file'
 import { approvalProgress, formatApprovalTime, formatApprovalEventTime } from './approval-progress'
 import AttachmentPanel from '../common/AttachmentPanel'
 import SampleFromSourceModal from '../sample/SampleFromSourceModal'
-import { parseOptionalNumber } from '../../shared/number-input'
+import { optionalQuantityText, parseOptionalDecimal, requiredDecimalOrThrow } from '../../shared/number-input'
 import { usePermissions } from '../../shared/hooks/permissions'
 import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
@@ -182,9 +181,9 @@ export default function KnowledgePage() {
   // 这里给一条"填两个数就成单"的出口
   const [quoteTarget, setQuoteTarget] = useState<CustomInquiryRow | null>(null)
   const [quoteForm, setQuoteForm] = useState({
-    unit_cost: null as number | null,
-    quoted_price: null as number | null,
-    quantity: null as number | null,
+    unit_cost: '',
+    quoted_price: '',
+    quantity: '',
   })
   const historyQuery = useQuery({
     queryKey: ['inquiry-history', historyTarget?.id],
@@ -237,9 +236,9 @@ export default function KnowledgePage() {
   const quoteMutation = useMutation({
     mutationFn: () =>
       createQuoteFromInquiry(quoteTarget!.id, {
-        unit_cost: quoteForm.unit_cost!,
-        quoted_price: quoteForm.quoted_price!,
-        quantity: quoteForm.quantity ?? undefined,
+        unit_cost: requiredDecimalOrThrow(quoteForm.unit_cost, '核价成本'),
+        quoted_price: requiredDecimalOrThrow(quoteForm.quoted_price, '报价'),
+        quantity: optionalQuantityText(quoteForm.quantity) ?? undefined,
       }),
     onSuccess: (data) => {
       setQuoteTarget(null)
@@ -333,13 +332,17 @@ export default function KnowledgePage() {
   })
 
   const reviseMutation = useMutation({
-    mutationFn: () =>
-      reviseCustomInquiry(reviseTarget!.id, {
+    mutationFn: () => {
+      const quantity = optionalQuantityText(reviseForm.quantity)
+      const targetPrice = parseOptionalDecimal(reviseForm.target_price)
+      if (Number.isNaN(targetPrice)) throw new Error('目标价只能填数字')
+      return reviseCustomInquiry(reviseTarget!.id, {
         revision_note: reviseForm.revision_note || null,
         description: reviseForm.description || null,
-        quantity: reviseForm.quantity ? Number(reviseForm.quantity) : null,
-        target_price: reviseForm.target_price ? Number(reviseForm.target_price) : null,
-      }),
+        quantity,
+        target_price: targetPrice,
+      })
+    },
     onSuccess: (row) => {
       Toast.success(`已生成 v${row.version ?? ''}，旧版保留`)
       setReviseTarget(null)
@@ -353,8 +356,8 @@ export default function KnowledgePage() {
     setReviseForm({
       revision_note: '',
       description: row.description ?? '',
-      quantity: row.quantity != null ? String(row.quantity) : '',
-      target_price: row.target_price != null ? String(row.target_price) : '',
+      quantity: String(row.quantity_exact ?? row.quantity ?? ''),
+      target_price: String(row.target_price_exact ?? row.target_price ?? ''),
     })
   }
 
@@ -394,8 +397,8 @@ export default function KnowledgePage() {
       description: row.description ?? '',
       customer_id: row.customer_id ?? undefined,
       opportunity_id: row.opportunity_id ?? undefined,
-      quantity: row.quantity != null ? String(row.quantity) : '',
-      target_price: row.target_price != null ? String(row.target_price) : '',
+      quantity: String(row.quantity_exact ?? row.quantity ?? ''),
+      target_price: String(row.target_price_exact ?? row.target_price ?? ''),
       remark: row.remark ?? '',
       status: row.status,
     })
@@ -485,9 +488,9 @@ export default function KnowledgePage() {
     }
     quoteMutation.reset()
     setQuoteForm({
-      unit_cost: null,
-      quoted_price: null,
-      quantity: row.quantity ?? null,
+      unit_cost: '',
+      quoted_price: '',
+      quantity: String(row.quantity_exact ?? row.quantity ?? ''),
     })
     setQuoteTarget(row)
   }
@@ -567,6 +570,7 @@ export default function KnowledgePage() {
       ? [{
           title: '数量 / 目标价',
           width: 74,
+          className: 'cell-money',
           render: (_: unknown, record: CustomInquiryRow) => (
             <div style={{ display: 'grid', gap: 2, justifyItems: 'center' }}>
               <span>{record.quantity ?? '-'}</span>
@@ -589,6 +593,7 @@ export default function KnowledgePage() {
             title: '目标价',
             dataIndex: 'target_price',
             width: 84,
+            className: 'cell-money',
             render: (v: number | null) => (v != null ? `¥${v}` : '-'),
           },
         ]),
@@ -694,18 +699,18 @@ export default function KnowledgePage() {
               alignItems: 'center',
             }}
           >
-            {canManage && <a onClick={() => openEdit(record)}>编辑</a>}
+            {canManage && <button type="button" className="crm-text-action" onClick={() => openEdit(record)}>编辑</button>}
             {/* 定制件没有 SKU，报价中心选不到它——这里直接转报价（场景09） */}
             {(record.linked_quotes?.length || record.is_superseded || can('quote:manage')) ? (
-              <a onClick={() => openQuote(record)} title={record.status === 'archived' && !record.linked_quotes?.length ? '已归档，先修订为新版再报价' : '生成一份报价草稿，价格需按核价复核后才对客'}>
+              <button type="button" className="crm-text-action" onClick={() => openQuote(record)} title={record.status === 'archived' && !record.linked_quotes?.length ? '已归档，先修订为新版再报价' : '生成一份报价草稿，价格需按核价复核后才对客'}>
                 {record.linked_quotes?.length ? '查看原报价'
                   : record.is_superseded ? '查看新版'
                   : record.status === 'archived' ? '修订后报价'
                   : '转报价'}
-              </a>
+              </button>
             ) : null}
             {canManage && record.source_insight_id == null && <Popconfirm title="删除这条定制询价？" onConfirm={() => deleteMutation.mutate(record.id)}>
-              <a style={{ color: 'var(--crm-error)' }}>删除</a>
+              <button type="button" className="crm-text-action" style={{ color: 'var(--crm-error)' }}>删除</button>
             </Popconfirm>}
             <Dropdown
               trigger="click"
@@ -744,7 +749,7 @@ export default function KnowledgePage() {
                 </Dropdown.Menu>
               }
             >
-              <a title="更多操作">更多</a>
+              <button type="button" className="crm-text-action" title="更多操作">更多</button>
             </Dropdown>
           </span>
         )
@@ -927,12 +932,17 @@ export default function KnowledgePage() {
         Toast.warning('提交前请选择产品参考照片'); return
       }
     }
+    const quantity = parseOptionalDecimal(form.quantity)
+    const targetPrice = parseOptionalDecimal(form.target_price)
+    if (Number.isNaN(quantity) || Number.isNaN(targetPrice)) {
+      Toast.warning(Number.isNaN(quantity) ? '数量只能填数字' : '目标价只能填数字')
+      return
+    }
     saveIntent.current = submit
     setSaveIntentState(submit)
     saveMutation.mutate({ title: form.title.trim(), description: form.description.trim() || null,
       customer_id: form.customer_id ?? null, opportunity_id: form.opportunity_id ?? null,
-      quantity: form.quantity.trim() ? parseOptionalNumber(form.quantity) : null,
-      target_price: form.target_price.trim() ? parseOptionalNumber(form.target_price) : null,
+      quantity, target_price: targetPrice,
       remark: form.remark.trim() || null, status: editing ? (form.status ?? editing.status) : undefined })
   }
 
@@ -1281,17 +1291,17 @@ export default function KnowledgePage() {
             },
             { title: '需求描述', dataIndex: 'description', render: (v: string | null) => v ?? '-' },
             { title: '数量', dataIndex: 'quantity', width: 80, render: (v: number | null) => v ?? '-' },
-            { title: '目标价', dataIndex: 'target_price', width: 90, render: (v: number | null) => v ?? '-' },
+            { title: '目标价', dataIndex: 'target_price', width: 90, className: 'cell-money', render: (v: number | null) => v ?? '-' },
             { title: '本版说明', dataIndex: 'revision_note', render: (v: string | null) => v ?? '（原始要求）' },
             { title: '操作', render: (_: unknown, row: CustomInquiryRow) => (
               <div>
                 {!row.is_deleted && (row.linked_quotes?.length || (can('quote:manage') && !row.is_superseded)) ? (
-                  <a style={{ display: 'block' }} onClick={() => { setHistoryTarget(null); openQuote(row) }}>
+                  <button type="button" className="crm-text-action" style={{ display: 'block' }} onClick={() => { setHistoryTarget(null); openQuote(row) }}>
                     {row.linked_quotes?.length ? '查看原报价' : row.status === 'archived' ? '修订后报价' : '按此版本生成报价草稿'}
-                  </a>
+                  </button>
                 ) : null}
-                {can('sample:manage') && <a onClick={() => { setHistoryTarget(null); setSampleSourceId(row.id) }}>按此版本申请打样</a>}
-                {can('order:manage') && <a style={{ display: 'block' }} onClick={() => { setHistoryTarget(null); setDraftSourceId(row.id) }}>按此版本建订单草稿</a>}
+                {can('sample:manage') && <button type="button" className="crm-text-action" onClick={() => { setHistoryTarget(null); setSampleSourceId(row.id) }}>按此版本申请打样</button>}
+                {can('order:manage') && <button type="button" className="crm-text-action" style={{ display: 'block' }} onClick={() => { setHistoryTarget(null); setDraftSourceId(row.id) }}>按此版本建订单草稿</button>}
               </div>
             ) },
             {
@@ -1366,7 +1376,7 @@ export default function KnowledgePage() {
                 }
                 if (actions.includes('resolve_adopt')) {
                   buttons.push(
-                    <a
+                    <button type="button" className="crm-text-action"
                       key="adopt"
                       onClick={() => {
                         resolveKeyRef.current = newRequestKey()
@@ -1375,7 +1385,7 @@ export default function KnowledgePage() {
                       }}
                     >
                       认领
-                    </a>,
+                    </button>,
                   )
                 }
                 if (actions.includes('resolve_resend')) {
@@ -1392,7 +1402,7 @@ export default function KnowledgePage() {
                         })
                       }
                     >
-                      <a>重发</a>
+                      <button type="button" className="crm-text-action">重发</button>
                     </Popconfirm>,
                   )
                 }
@@ -1410,7 +1420,7 @@ export default function KnowledgePage() {
                         })
                       }
                     >
-                      <a style={{ color: 'var(--crm-error)' }}>作废</a>
+                      <button type="button" className="crm-text-action" style={{ color: 'var(--crm-error)' }}>作废</button>
                     </Popconfirm>,
                   )
                 }
@@ -1427,7 +1437,7 @@ export default function KnowledgePage() {
                         startApproval(target, true)
                       }}
                     >
-                      <a>修改后重新提交</a>
+                      <button type="button" className="crm-text-action">修改后重新提交</button>
                     </Popconfirm>,
                   )
                 }
@@ -1444,7 +1454,7 @@ export default function KnowledgePage() {
                         startApproval(target, false)
                       }}
                     >
-                      <a>重新发起</a>
+                      <button type="button" className="crm-text-action">重新发起</button>
                     </Popconfirm>,
                   )
                 }
@@ -1456,7 +1466,7 @@ export default function KnowledgePage() {
                       content="只对仍在审批中的审批系统 流程生效；已完成的审批不能撤回。"
                       onConfirm={() => withdrawMutation.mutate(row.id)}
                     >
-                      <a style={{ color: 'var(--crm-error)' }}>撤回审批</a>
+                      <button type="button" className="crm-text-action" style={{ color: 'var(--crm-error)' }}>撤回审批</button>
                     </Popconfirm>,
                   )
                 }
@@ -1542,7 +1552,7 @@ export default function KnowledgePage() {
         visible={Boolean(quoteTarget)}
         onCancel={() => setQuoteTarget(null)}
         onOk={() => {
-          if (quoteForm.unit_cost == null || quoteForm.quoted_price == null) {
+          if (!quoteForm.unit_cost.trim() || !quoteForm.quoted_price.trim()) {
             Toast.warning('请填写核价成本与报价')
             return
           }
@@ -1578,31 +1588,31 @@ export default function KnowledgePage() {
             >
               核价成本（元/件，不含运费）
             </FormLabel>
-            <InputNumber
+            <Input
               style={{ width: '100%' }}
-              min={0}
-              value={quoteForm.unit_cost ?? undefined}
-              onChange={(value) => setQuoteForm({ ...quoteForm, unit_cost: (value as number) ?? null })}
+              inputMode="decimal"
+              value={quoteForm.unit_cost}
+              onChange={(value) => setQuoteForm({ ...quoteForm, unit_cost: value })}
             />
           </div>
           <div>
             <FormLabel required>报价（元/件）</FormLabel>
-            <InputNumber
+            <Input
               style={{ width: '100%' }}
-              min={0}
-              value={quoteForm.quoted_price ?? undefined}
+              inputMode="decimal"
+              value={quoteForm.quoted_price}
               onChange={(value) =>
-                setQuoteForm({ ...quoteForm, quoted_price: (value as number) ?? null })
+                setQuoteForm({ ...quoteForm, quoted_price: value })
               }
             />
           </div>
           <div>
             <div style={{ marginBottom: 4 }}>数量</div>
-            <InputNumber
+            <Input
               style={{ width: '100%' }}
-              min={0}
-              value={quoteForm.quantity ?? undefined}
-              onChange={(value) => setQuoteForm({ ...quoteForm, quantity: (value as number) ?? null })}
+              inputMode="decimal"
+              value={quoteForm.quantity}
+              onChange={(value) => setQuoteForm({ ...quoteForm, quantity: value })}
             />
             <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 2 }}>
               不填就用需求上记的数量

@@ -108,7 +108,7 @@ export default function ProductListPage() {
       dataIndex: 'name',
       width: compact ? 200 : undefined,
       render: (text: string, record: Product) => (
-        <a
+        <button type="button" className="crm-text-action"
           title={text}
           style={{
             color: 'var(--crm-primary)',
@@ -120,7 +120,7 @@ export default function ProductListPage() {
           onClick={() => navigate(`/products/${record.id}`)}
         >
           {text}
-        </a>
+        </button>
       ),
     },
     { title: '产品线', dataIndex: 'product_line', width: compact ? 100 : 140, render: (v: string | null) => v ?? '-' },

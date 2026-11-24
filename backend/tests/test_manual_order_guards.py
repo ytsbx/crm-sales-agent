@@ -140,6 +140,14 @@ async def test_manual_shipped_status_requires_actual_quantity_but_erp_can_report
     await service.change_status(session, erp_order, new_status="shipped", operator_id=None, source="ERP")
     assert erp_order.status == "shipped"
 
+    receipt = OrderStatusChange(status="delivered")
+    with pytest.raises(AppError, match="登记实际发货数量"):
+        await router.change_status(erp_order.id, receipt, request, user, session)
+    assert erp_order.status == "shipped"
+
+    await router.change_status(order.id, receipt, request, user, session)
+    assert order.status == "delivered"
+
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("items", [

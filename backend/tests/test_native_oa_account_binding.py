@@ -8,6 +8,7 @@ from app.core.audit import AuditLog
 from app.core.errors import AppError
 from app.modules.dingtalk import router
 from app.modules.oa import client
+from app.modules.user import service as users
 from app.modules.user.model import Department, Role, User, user_roles
 from conftest import SyncSessionAsAsync, make_user
 
@@ -45,7 +46,39 @@ async def test_bind_native_oa_person_without_dingtalk_and_reject_duplicate(db_se
         )
     assert db_session.query(AuditLog).filter_by(action="oa_account_binding").one().after_data == {
         "oa_user_id": OA_ID,
+        "department_id": None,
     }
+
+
+@pytest.mark.anyio
+async def test_bound_employee_department_follows_oa(db_session, monkeypatch):
+    AuditLog.__table__.create(db_session.bind)
+    db_session.add(Department(id=20, name="原部门"))
+    db_session.flush()
+    db_session.add(User(id=11, name="员工", username="staff", password_hash="test", department_id=20))
+    db_session.commit()
+    directory = {"users": [{"id": OA_ID, "name": "员工", "department_id": "oa-sales"}],
+                 "departments": [{"id": "oa-sales", "name": "销售部"}, {"id": "oa-ops", "name": "运营部"}]}
+    monkeypatch.setattr(client, "list_directory", AsyncMock(return_value=directory))
+    session = SyncSessionAsAsync(db_session)
+    admin = make_user(101, roles=("admin",))
+    payload = router.OaUserBinding(oa_user_id=OA_ID)
+
+    result = await router.set_oa_binding(11, payload, REQUEST, admin, session)
+    employee = db_session.get(User, 11)
+    assert result["data"]["department_synced"] is True
+    assert db_session.get(Department, employee.department_id).oa_department_id == "oa-sales"
+    with pytest.raises(AppError, match="部门以同序为准"):
+        await users.update_user(session, employee, {"department_id": 20})
+    director = directory["users"][0]
+    director["department_id"] = "oa-ops"
+    await router.set_oa_binding(11, payload, REQUEST, admin, session)
+    assert db_session.get(Department, employee.department_id).oa_department_id == "oa-ops"
+
+    director["department_id"] = None
+    result = await router.set_oa_binding(11, payload, REQUEST, admin, session)
+    assert result["data"]["department_synced"] is False
+    assert db_session.get(Department, employee.department_id).oa_department_id == "oa-ops"
 
 
 @pytest.mark.anyio

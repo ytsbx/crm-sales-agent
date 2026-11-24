@@ -235,7 +235,7 @@ function LeadsPanel() {
                   : undefined}
                 onConfirm={() => restoreMutation.mutate(record.id)}
               >
-                <a>恢复</a>
+                <button type="button" className="crm-text-action">恢复</button>
               </Popconfirm>
             ),
           },
@@ -366,7 +366,7 @@ function ProductsPanel() {
             width: compact ? 82 : 90,
             render: (_: unknown, record: RecycleProduct) => (
               <Popconfirm title="确认恢复产品及随产品删除的 SKU？" onConfirm={() => restoreProductMutation.mutate(record.id)}>
-                <a>恢复</a>
+                <button type="button" className="crm-text-action">恢复</button>
               </Popconfirm>
             ),
           },
@@ -434,7 +434,7 @@ function ProductsPanel() {
                 <span style={{ color: 'var(--crm-text-3)' }}>-</span>
               ) : (
                 <Popconfirm title="确认恢复这条 SKU？" onConfirm={() => restoreSkuMutation.mutate(record.id)}>
-                  <a>恢复</a>
+                  <button type="button" className="crm-text-action">恢复</button>
                 </Popconfirm>
               ),
           },
@@ -629,7 +629,7 @@ function CustomersPanel() {
    */
   const renderTarget = (ref: MergeRef) => {
     if (ref.id != null) {
-      return <a onClick={() => navigate(`/customers/${ref.id}`)}>{ref.name ?? `客户编号 ${ref.id}`}</a>
+      return <button type="button" className="crm-text-action" onClick={() => navigate(`/customers/${ref.id}`)}>{ref.name ?? `客户编号 ${ref.id}`}</button>
     }
     if (ref.name) return <span>{ref.name}</span>
     return <span style={{ color: 'var(--crm-text-3)' }}>{MERGE_STATE_TEXT[ref.state]}</span>
@@ -740,7 +740,7 @@ function CustomersPanel() {
                 return <span style={{ color: 'var(--crm-text-3)' }}>-</span>
               }
               // 原负责人已停用的那条会先弹选人框（`startRestore` 里分派）
-              return <a onClick={() => startRestore(record)}>恢复</a>
+              return <button type="button" className="crm-text-action" onClick={() => startRestore(record)}>恢复</button>
             },
           },
         ]
@@ -854,7 +854,7 @@ function SamplesPanel() {
         { title: '删除时间', dataIndex: 'deleted_at', render: fmt },
         ...(can('sample:manage') ? [{ title: '操作', render: (_: unknown, row: SampleRequestRow) => row.revision_locked
           ? <span style={HINT}>原版只读</span>
-          : <Popconfirm title="确认恢复这张样品申请？" onConfirm={() => restore.mutate(row.id)}><a>恢复</a></Popconfirm> }] : [])]}
+          : <Popconfirm title="确认恢复这张样品申请？" onConfirm={() => restore.mutate(row.id)}><button type="button" className="crm-text-action">恢复</button></Popconfirm> }] : [])]}
       pagination={((query.data?.total ?? 0) <= pager.pageSize) ? false : { currentPage: pager.page, pageSize: pager.pageSize, total: query.data?.total ?? 0, showSizeChanger: true,
         onPageChange: pager.setPage, onPageSizeChange: pager.changePageSize }} />
   </SectionCard>
@@ -877,7 +877,7 @@ function ContractsPanel() {
       { title: '合同编号', dataIndex: 'doc_no' }, { title: '合同名称', dataIndex: 'title' },
       { title: '客户', dataIndex: 'customer_name' }, { title: '原状态', dataIndex: 'status_label' },
       { title: '删除时间', dataIndex: 'deleted_at', render: fmt },
-      ...(can('order:manage') ? [{ title: '操作', render: (_: unknown, row: RecycleContract) => <Popconfirm title="确认恢复这份合同？相关自动待办可能随之恢复。" onConfirm={() => restore.mutate(row.id)}><a>恢复</a></Popconfirm> }] : []),
+      ...(can('order:manage') ? [{ title: '操作', render: (_: unknown, row: RecycleContract) => <Popconfirm title="确认恢复这份合同？相关自动待办可能随之恢复。" onConfirm={() => restore.mutate(row.id)}><button type="button" className="crm-text-action">恢复</button></Popconfirm> }] : []),
     ]} pagination={((query.data?.total ?? 0) <= pager.pageSize) ? false : { currentPage: pager.page, pageSize: pager.pageSize, total: query.data?.total ?? 0, showSizeChanger: true, onPageChange: pager.setPage, onPageSizeChange: pager.changePageSize }} /></SectionCard>
 }
 

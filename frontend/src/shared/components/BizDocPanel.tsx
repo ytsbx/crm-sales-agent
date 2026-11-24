@@ -232,15 +232,15 @@ export default function BizDocPanel({
             width: 200,
             render: (_: unknown, r: BizDocRow) => (
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                <a onClick={() => void showDownloadResult(downloadBizDoc(r))}>下载原件</a>
+                <button type="button" className="crm-text-action" onClick={() => void showDownloadResult(downloadBizDoc(r))}>下载原件</button>
                 {r.status === 'void' && (
                   // 作废件：原件上印的是生成当时的"有效"。要看到"已作废"必须走状态副本，
                   // 而且那份是**重出的**，不能和原件混为一谈。
-                  <a onClick={() => void showDownloadResult(downloadBizDoc(r, { mode: 'state' }))}>状态副本</a>
+                  <button type="button" className="crm-text-action" onClick={() => void showDownloadResult(downloadBizDoc(r, { mode: 'state' }))}>状态副本</button>
                 )}
                 {canManage && r.status === 'active' && (
                   <Popconfirm title="作废这份文件？（内容与校验值不变）" onConfirm={() => voidMutation.mutate(r.id)}>
-                    <a style={{ color: 'var(--crm-error)' }}>作废</a>
+                    <button type="button" className="crm-text-action" style={{ color: 'var(--crm-error)' }}>作废</button>
                   </Popconfirm>
                 )}
               </div>

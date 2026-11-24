@@ -9,6 +9,7 @@ export interface ProductInsightRow {
   direction: string | null
   selling_points: string | null
   price_assumption: number | null
+  price_assumption_exact?: string | null
   conclusion: string | null
   /** 参考图 URL 列表（第五批 §6.1(6)：字段一直有，四个环节都没打通） */
   images: string[] | null
@@ -110,8 +111,8 @@ export function convertProductInsight(
     customer_id?: number | null
     opportunity_id?: number | null
     contact_id?: number | null
-    quantity?: number | null
-    target_price?: number | null
+    quantity?: number | string | null
+    target_price?: number | string | null
     remark?: string | null
     request_key?: string
   } = {},

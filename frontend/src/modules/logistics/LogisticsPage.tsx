@@ -198,6 +198,7 @@ export default function LogisticsPage() {
       title: '费用',
       dataIndex: 'amount',
       width: 130,
+      className: 'cell-money',
       render: (value: number, record: LogisticsOption) => (
         <span style={{ fontWeight: 600 }}>{money(record.amount_exact ?? value)}</span>
       ),
@@ -211,6 +212,7 @@ export default function LogisticsPage() {
       ),
       dataIndex: 'pricing_basis',
       width: 150,
+      className: 'cell-money',
       render: (value: string, record: LogisticsOption) => (
         <div style={{ fontSize: 12 }}>
           <Tag size="small" color={value === '体积' ? 'orange' : 'blue'}>
@@ -237,6 +239,7 @@ export default function LogisticsPage() {
       ),
       dataIndex: 'min_charge',
       width: 110,
+      className: 'cell-money',
       render: (value: number | null, record: LogisticsOption) => (
         <span style={{ fontSize: 12 }}>
           {money(value)}
@@ -287,6 +290,7 @@ export default function LogisticsPage() {
     },
     {
       title: '运费', dataIndex: 'amount', width: 110,
+      className: 'cell-money',
       render: (value: number, record: LogisticsQuoteRow) => money(record.amount_exact ?? value),
     },
     {
@@ -433,9 +437,9 @@ export default function LogisticsPage() {
                   </>
                 )}
                 <div style={{ fontSize: 12 }}>
-                  <a onClick={() => setShowOverrides((v) => !v)}>
+                  <button type="button" className="crm-text-action" onClick={() => setShowOverrides((v) => !v)}>
                     {overridesOpen ? '收起可选设置' : '可选设置：包装方式 / 单件重量 / 单件体积'}
-                  </a>
+                  </button>
                 </div>
 
                 <Button

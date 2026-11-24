@@ -9,10 +9,11 @@
 
 from datetime import UTC, datetime
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Integer, Select, delete, func, literal, or_, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
+from app.core.base import Base
 from app.core.security import hash_password
 from app.modules.auth.session import REASON_PASSWORD_CHANGE, revoke_user_sessions
 from app.modules.user.model import (
@@ -112,6 +113,7 @@ def serialize_user(user: User, *, department_name: str | None = None, roles: lis
         "mobile": user.mobile,
         "email": user.email,
         "department_id": user.department_id,
+        "department_managed_by_oa": bool(user.oa_user_id),
         "department": department_name,
         "wecom_userid": user.wecom_userid,
         # 钉钉身份：**列表页要靠它显示「已绑定 / 未绑定」**。
@@ -253,7 +255,7 @@ async def create_user(session: AsyncSession, data: dict) -> User:
     return user
 
 
-async def lock_user_row(session: AsyncSession, user_id: int) -> None:
+async def lock_user_row(session: AsyncSession, user_id: int) -> bool:
     """锁住这个账号的行 —— **项目内取这把账号锁的唯一入口**。
 
     登录（`auth/router.login`）与改密码（`update_user`）都要经过它：两件事必须
@@ -261,12 +263,21 @@ async def lock_user_row(session: AsyncSession, user_id: int) -> None:
     与 `contact_util.take_primary_slot` 里那把客户锁同一路数：只在这一处取锁，
     谁都不许自己写 `with_for_update`。
     """
-    await session.execute(select(User.id).where(User.id == user_id).with_for_update())
+    result = await session.execute(select(User.id).where(User.id == user_id).with_for_update())
+    return result.scalar_one_or_none() is not None
 
 
 async def update_user(session: AsyncSession, user: User, data: dict) -> User:
     if "department_id" in data:
-        await _validate_department(session, data["department_id"])
+        if not await lock_user_row(session, user.id):
+            raise AppError(ErrorCode.NOT_FOUND, "用户不存在", 404)
+        await session.refresh(user)
+        if user.oa_user_id:
+            if data["department_id"] != user.department_id:
+                raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该员工的部门以同序为准，请在同序调整后同步", 422)
+            data = {key: value for key, value in data.items() if key != "department_id"}
+        else:
+            await _validate_department(session, data["department_id"])
     for field in ("name", "mobile", "email", "department_id", "wecom_userid"):
         if field in data:
             value = data[field]
@@ -302,6 +313,18 @@ async def update_user(session: AsyncSession, user: User, data: dict) -> User:
 async def set_user_status(
     session: AsyncSession, user: User, *, status: str, operator_id: int | None
 ) -> User:
+    await _lock_admin_guard(session)
+    if not await lock_user_row(session, user.id):
+        raise AppError(ErrorCode.NOT_FOUND, "用户不存在", 404)
+    await session.refresh(user)
+    if user.status == "archived" and status != "archived":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "离职归档的账号不能直接启用或停用", 422)
+    if status == "archived":
+        if user.id == operator_id:
+            raise AppError(ErrorCode.PARAM_ERROR, "不能归档自己的账号", 422)
+        if user.status == "active":
+            await _assert_not_last_admin(session, user, reason="离职归档")
+        await revoke_user_sessions(session, user.id, reason="archived")
     if status == "disabled":
         # 不允许停用自己：否则当前会话下一次请求就会 401，像"把自己踢出系统"
         if operator_id is not None and user.id == operator_id:
@@ -310,6 +333,36 @@ async def set_user_status(
     user.status = status
     await session.flush()
     return user
+
+
+async def delete_unused_user(session: AsyncSession, user: User) -> None:
+    await _lock_admin_guard(session)
+    if not await lock_user_row(session, user.id):
+        raise AppError(ErrorCode.NOT_FOUND, "用户不存在", 404)
+    await session.refresh(user)
+    if user.status != "disabled":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "请先停用账号。仅停用且从未使用的账号可以删除", 422)
+    if user.dingtalk_userid or user.oa_user_id or user.wecom_userid:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "账号已绑定外部身份，请使用离职归档", 422)
+
+    # CRM 的历史业务表很多没有外键，需同时检查负责人和经办人列。
+    user_columns = {"applicant_id", "approver_id", "author_id", "operator_id", "reviewer_id", "user_id"}
+    references = []
+    for table in Base.metadata.tables.values():
+        if table is User.__table__ or table is user_roles:
+            continue
+        columns = [column for column in table.c if isinstance(column.type, Integer) and (
+            column.name in user_columns or column.name.endswith(("_owner_id", "_user_id", "_by"))
+            or column.name == "owner_id"
+            or any(key.target_fullname == "users.id" for key in column.foreign_keys)
+        )]
+        if columns:
+            references.append(select(literal(1)).where(or_(*(column == user.id for column in columns))))
+    if references and (await session.execute(union_all(*references).limit(1))).first() is not None:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "账号有登录、业务或操作记录，请使用离职归档", 422)
+    await session.execute(delete(user_roles).where(user_roles.c.user_id == user.id))
+    await session.delete(user)
+    await session.flush()
 
 
 async def set_user_roles(
@@ -734,7 +787,7 @@ async def create_role(session: AsyncSession, data: dict) -> Role:
         name=(data.get("name") or code).strip(),
         description=data.get("description"),
         data_scope=data.get("data_scope") or "self",
-        status="active",
+        status=data.get("status", "active"),
     )
     session.add(role)
     await session.flush()

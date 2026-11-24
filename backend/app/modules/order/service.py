@@ -200,16 +200,46 @@ async def received_amount(session: AsyncSession, order_id: int) -> Decimal:
     return Decimal(total)
 
 
+async def active_order_for_quote(session: AsyncSession, quote_id: int) -> SalesOrder | None:
+    stmt = select(SalesOrder).where(
+        SalesOrder.quote_id == quote_id, SalesOrder.status != "cancelled",
+    ).order_by(SalesOrder.id).limit(1)
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def quote_order_reference(session: AsyncSession, user, order: SalesOrder) -> dict | None:
+    from app.core.data_scope import ensure_in_scope
+
+    if "admin" not in user.roles and not user.has("order:view"):
+        return None
+    try:
+        await ensure_in_scope(session, user, owner_id=order.owner_id, label="订单")
+    except AppError as error:
+        if error.code != ErrorCode.DATA_SCOPE_DENIED:
+            raise
+        return None
+    return {"id": order.id, "order_no": order.order_no}
+
+
+async def ensure_no_active_order_for_quote(session: AsyncSession, quote_id: int, *, user=None) -> None:
+    order = await active_order_for_quote(session, quote_id)
+    if order is not None:
+        reference = await quote_order_reference(session, user, order) if user is not None else None
+        number = f"（{reference['order_no']}）" if reference else ""
+        raise AppError(ErrorCode.DUPLICATE_CONVERT, f"这张报价已生成有效订单{number}，请在原订单中处理", 409)
+
+
 async def create_order_from_quote(
     session: AsyncSession,
     *,
     version: QuoteVersion,
     user_id: int,
+    user=None,
     delivery_date: date | None = None,
     remark: str | None = None,
     receivable_plan=None,
 ) -> SalesOrder:
-    """报价版本转销售订单：必须已通过审批；同一版本只能转一次（幂等）。"""
+    """已接受的报价只保留一张有效订单。取消后重新确认新版才能补单。"""
     from app.modules.quote.model import Quote
     from app.modules.quote.lifecycle import ensure_current_version
 
@@ -223,12 +253,16 @@ async def create_order_from_quote(
         raise AppError(ErrorCode.NOT_FOUND, "报价单不存在或已删除", 404)
     version = (await session.execute(select(QuoteVersion).where(QuoteVersion.id == version.id)
                .with_for_update().execution_options(populate_existing=True))).scalar_one()
+    # 持有报价行锁后检查，跨版本及不同转单入口共用同一个互斥点。
+    await ensure_no_active_order_for_quote(session, quote.id, user=user)
     existing = (
         await session.execute(
             select(SalesOrder).where(SalesOrder.quote_version_id == version.id)
         )
     ).scalar_one_or_none()
     if existing is not None:
+        if existing.status == "cancelled":
+            raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "此版本的订单已取消，请新建报价版本并让客户重新确认后再下单", 422)
         raise AppError(
             ErrorCode.DUPLICATE_CONVERT,
             f"该报价版本已经转过订单（{existing.order_no}）",
@@ -464,6 +498,7 @@ async def create_order(
     items: list,
     opportunity_id: int | None = None,
     quote_id: int | None = None,
+    user=None,
     owner_id: int | None = None,
     currency: str = "CNY",
     delivery_date: date | None = None,
@@ -481,6 +516,17 @@ async def create_order(
     # （继承），不经过这里 —— 源头在报价那一侧已经拦住了。
     currency = await ensure_currency_allowed(session, currency, label="订单币种")
 
+    if quote_id is not None:
+        from app.modules.quote.model import Quote
+
+        quote = (await session.execute(select(Quote).where(Quote.id == quote_id)
+                 .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
+        if quote is None or quote.deleted_at is not None:
+            raise AppError(ErrorCode.NOT_FOUND, "报价单不存在或已删除", 404)
+        await ensure_no_active_order_for_quote(session, quote_id, user=user)
+        if (await session.execute(select(SalesOrder.id).where(SalesOrder.quote_id == quote_id)
+                                  .limit(1))).scalar_one_or_none() is not None:
+            raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "原订单已取消，请在报价中新建版本并让客户重新确认后再下单", 422)
 
     total = Decimal(0)
     rows: list[SalesOrderItem] = []

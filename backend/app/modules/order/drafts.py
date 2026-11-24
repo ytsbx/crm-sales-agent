@@ -182,7 +182,7 @@ async def confirm(session, user, draft_id, payload):
                       i.specification or '', i.quantity, i.unit_price, i.remark or '') for i in prepared)
     if expected != actual or draft.currency != version.currency or (draft.payment_terms or '') != (version.payment_terms or ''):
         raise AppError(ErrorCode.PARAM_ERROR, '草稿明细、币种或付款条件与客户确认报价不一致；请先修订报价并取得客户确认，再核对草稿。正式订单须包含该确认版本的全部明细。', 422)
-    order = await order_service.create_order_from_quote(session, version=version, user_id=user.id,
+    order = await order_service.create_order_from_quote(session, version=version, user_id=user.id, user=user,
                                                        delivery_date=draft.delivery_date, remark=draft.remark)
     draft.status, draft.order_id = 'converted', order.id
     draft.revision += 1

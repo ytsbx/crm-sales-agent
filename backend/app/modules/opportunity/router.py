@@ -989,6 +989,7 @@ async def _confirm_win_core(
             session,
             version=version,
             user_id=user.id,
+            user=user,
             delivery_date=delivery_date,
             remark=remark,
             receivable_plan=receivable_plan,
@@ -999,7 +1000,7 @@ async def _confirm_win_core(
         already_ordered = True
         order = (
             await session.execute(
-                select(SalesOrder).where(SalesOrder.quote_version_id == version.id)
+                select(SalesOrder).where(SalesOrder.quote_version_id == version.id, SalesOrder.status != "cancelled")
             )
         ).scalars().first()
         if order is None:

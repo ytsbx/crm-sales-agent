@@ -13,6 +13,7 @@ export const SHARED_ACTION_LABELS: Record<string, string> = {
   'add_item': '新增明细',
   'amend': '修订',
   'approve': '审批通过',
+  'archive': '离职归档',
   'assign': '分配负责人',
   'assign_to_pool': '放入公海',
   'attach': '挂载附件',

@@ -8,6 +8,8 @@
 直接 422）。换个前缀比调整注册顺序更不容易被后来的人改坏。
 """
 
+from decimal import Decimal, InvalidOperation
+
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -17,6 +19,7 @@ from app.core.audit import write_audit
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
+from app.core.patch_schema import FIELD_LABELS
 from app.core.response import ok, page_data, paginate
 from app.modules.integration.model import IntegrationDiff
 from app.modules.product import master as master_svc
@@ -104,6 +107,32 @@ async def get_product(
     return ok(svc.serialize_product(product, sku_count=counts.get(product.id, 0)))
 
 
+def _check_edit_baseline(record, changes: dict, expected: dict[str, str | None] | None) -> None:
+    if expected is None:
+        return
+    if set(expected) != set(changes):
+        raise AppError(ErrorCode.PARAM_ERROR, "请重新打开编辑窗口后保存", 422)
+
+    conflicts = []
+    for field, original in expected.items():
+        current = getattr(record, field)
+        if current == changes[field]:
+            continue
+        if isinstance(current, (Decimal, int)) and original is not None:
+            try:
+                matches = current == Decimal(original)
+            except InvalidOperation:
+                matches = False
+        else:
+            matches = (str(current) if current is not None else None) == original
+        if not matches:
+            model = "SkuUpdate" if isinstance(record, Sku) else "ProductUpdate"
+            label = FIELD_LABELS.get(f"{model}.{field}") or FIELD_LABELS.get(field, "资料")
+            conflicts.append(label)
+    if conflicts:
+        raise AppError(ErrorCode.VERSION_CONFLICT, f"同事已修改「{'、'.join(conflicts)}」，请核对最新值后保存。", 409)
+
+
 @router.patch("/products/{product_id}")
 async def update_product(
     product_id: int,
@@ -117,7 +146,8 @@ async def update_product(
     if product is None or product.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "产品不存在", 404)
     before = svc.serialize_product(product)
-    changes = payload.model_dump(exclude_unset=True)
+    changes = payload.model_dump(exclude_unset=True, exclude={"expected_fields"})
+    _check_edit_baseline(product, changes, payload.expected_fields)
     for field, value in changes.items():
         setattr(product, field, value)
     await session.flush()
@@ -336,7 +366,8 @@ async def update_sku(
     sku, product = locked
     if sku.deleted_at is not None or product.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
-    data = payload.model_dump(exclude_unset=True)
+    data = payload.model_dump(exclude_unset=True, exclude={"expected_fields"})
+    _check_edit_baseline(sku, data, payload.expected_fields)
     await master_svc.require_local_editable(session, sku, data)
     if "sku_code" in data:
         await svc.ensure_sku_code_unique(session, data["sku_code"], exclude_id=sku.id)
