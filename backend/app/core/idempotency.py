@@ -33,6 +33,7 @@
 import hashlib
 import json
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from sqlalchemy import BigInteger, DateTime, Index, String, UniqueConstraint, select
 from sqlalchemy.exc import IntegrityError
@@ -67,8 +68,10 @@ class RequestKey(Base, IdMixin):
     request_hash: Mapped[str] = mapped_column(String(64))
     #: in_flight = 占位中；done = 已完成、可回放
     status: Mapped[str] = mapped_column(String(16), default="in_flight")
-    #: 成功后的响应体（原样回放，保证"同键返回同一份结果"）
-    result_payload: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    #: 成功后的响应体（原样回放，保证"同键返回同一份结果"）。
+    #: Q4 决策2 起新行存**精确 JSON 原文**（顶层字符串）；历史行是 dict（float 形状），
+    #: 回放时按顶层类型区分：str 逐字读回（parse_float=Decimal），dict 走老路。
+    result_payload: Mapped[dict | str | None] = mapped_column(JSONType, nullable=True)
     #: 成功后指向的业务对象，便于排查"这个键建了哪条数据"
     result_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     result_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
@@ -165,6 +168,17 @@ async def reserve(
     return Reservation(row=row)
 
 
+def _unpack_replay(stored: dict | str | None) -> dict | None:
+    """回放解包：新行是精确 JSON 原文（str），逐字读回 Decimal；老行 dict 原样。
+
+    业务响应体永远是 dict（ok() 信封），顶层 str 不可能是合法老快照，
+    因此靠顶层类型区分新旧，无需任何标记键，也就没有标记撞车风险。
+    """
+    if isinstance(stored, str):
+        return json.loads(stored, parse_float=Decimal)
+    return stored
+
+
 def _judge(existing: RequestKey, digest: str) -> Reservation:
     if existing.request_hash != digest:
         raise AppError(
@@ -176,7 +190,7 @@ def _judge(existing: RequestKey, digest: str) -> Reservation:
     if existing.status == "done":
         return Reservation(
             row=existing,
-            replay_payload=existing.result_payload,
+            replay_payload=_unpack_replay(existing.result_payload),
             replay_id=existing.result_id,
         )
     raise AppError(
@@ -202,14 +216,18 @@ async def complete(
     用户以为没建、重试又拿不到回放。放在底座上，所有调用方一次受保护。
     """
     from app.core.audit import json_safe
+    from app.core.jsonio import exact_json_dumps
 
     if reservation.row is None:  # pragma: no cover - 防御性
         return
     reservation.row.status = "done"
-    # 回放契约是「原样返回同一份响应」：金额保持数字形状，不随审计改字符串。
-    # 大额回放经 float 的精度问题是独立待决策项（review/FLOAT-REFACTOR.md），
-    # 不在审计字符串化这一批里顺手改契约。
-    reservation.row.result_payload = json_safe(result_payload, decimal_as_str=False)
+    # Q4 决策2（主人拍板）：快照存"精确原文"——datetime 等先归一字符串、
+    # Decimal 保留原值，再渲染成精确 JSON 文本整段存入（JSON 列允许顶层字符串）。
+    # 回放时 _unpack_replay 逐字读回，对外仍是精确数字形状，契约不变；
+    # 历史 dict 快照走老路（float 形状），不重写历史。
+    reservation.row.result_payload = exact_json_dumps(
+        json_safe(result_payload, decimal_as_str=None)
+    )
     reservation.row.result_id = result_id
     await session.flush()
 

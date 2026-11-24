@@ -34,7 +34,7 @@ class AuditLog(Base, IdMixin):
     )
 
 
-def json_safe(value: Any, *, decimal_as_str: bool = True) -> Any:
+def json_safe(value: Any, *, decimal_as_str: bool | None = True) -> Any:
     """把审计数据转成能进 JSONB 的形状。
 
     踩过的坑：报价单的 valid_until 是 date 类型，直接塞进 JSON 列会在
@@ -43,8 +43,9 @@ def json_safe(value: Any, *, decimal_as_str: bool = True) -> Any:
 
     Decimal 默认按原值存字符串（float→Decimal 专项批1，B12-01）：转 float
     会在 16 位边界差一分，审计留痕就对不上账；字符串可精确复算，与 bizdoc
-    快照先例一致。`decimal_as_str=False` 仅供幂等回放等「必须保持原响应
-    数字形状」的调用方使用（回放精度是独立待决策项，见 review/FLOAT-REFACTOR.md）。
+    快照先例一致。`decimal_as_str=False` 转 float（历史回放契约，仅遗留路径）；
+    `decimal_as_str=None` 保留 Decimal 原值，供精确渲染器 exact_json_dumps 使用
+    （Q4 决策2：幂等快照存精确原文，不再经 float）。
     """
     if isinstance(value, dict):
         return {key: json_safe(item, decimal_as_str=decimal_as_str) for key, item in value.items()}
@@ -53,6 +54,8 @@ def json_safe(value: Any, *, decimal_as_str: bool = True) -> Any:
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     if isinstance(value, Decimal):
+        if decimal_as_str is None:
+            return value
         return str(value) if decimal_as_str else float(value)
     return value
 

@@ -133,12 +133,14 @@ async def test_idempotency_replay_keeps_numeric_shape(db_session):
     await idempotency.complete(
         session, reservation, result_payload={"amount": Decimal("12.50")}, result_id=9
     )
-    assert reservation.row.result_payload["amount"] == 12.5
+    # Q4 决策2：快照存精确原文（顶层字符串），回放解包后仍是精确数字形状。
+    stored = reservation.row.result_payload
+    assert isinstance(stored, str)
     replay = await idempotency.reserve(
         session, user_id=1, action="probe:shape", request_key="k-shape", payload={"a": 1}
     )
     assert replay.should_replay is True
-    assert replay.replay_payload["amount"] == 12.5
+    assert replay.replay_payload["amount"] == Decimal("12.50")
 
 
 @pytest.mark.anyio

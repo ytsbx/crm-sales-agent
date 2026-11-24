@@ -178,10 +178,14 @@ JS Number 解析 15-16 位上限是前端既有问题，本轮后端改造不使
 - **Q2 审计/JSONB 快照**：✅ 已定：改存字符串（bizdoc 先例，历史不重写）。批1 已落地 audit；
   product/master、洞察评审快照随批4/批7。
 - **Q3 比率/百分比字段**：✅ 已定：计算/阈值比较用 Decimal，纯比率输出保留 float。
-- **Q4（批1 新发现）幂等回放精度**：待决策。回放契约须保持原响应数字形状（已用
-  `json_safe(decimal_as_str=False)` 隔离，零契约变化）；但 service Decimal 化后，大额边界
-  回放存 float 会与_live 精确值差一分。候选：回放体 Decimal 带标记存储+回放解包（不动库、
-  需防标记碰撞），或回放改 exact 字符串（契约变化）。涉及序列化取舍，按规则先问用户。
+- **Q4（批1 新发现）幂等回放精度**：✅ 已定（主人拍板走方案2，2026-11-24 落地）。
+  complete 快照改存**精确 JSON 原文**（json_safe decimal_as_str=None 保留 Decimal +
+  exact_json_dumps 整段文本，JSON 列顶层字符串）；_judge 回放按顶层类型解包：
+  str→json.loads(parse_float=Decimal) 逐字读回，历史 dict→原样 float 形状（不重写历史）。
+  业务响应恒为 dict，顶层 str 不可能是老快照，无需标记键、无撞车风险。
+  payment/router 两处改传原始 body（不再预先 json_safe(False)）。对外数字契约不变。
+  新增 test_decimal_q4_replay 2 项（16 位大金额回放逐位精确、老 dict 原样回放）；
+  旧存储断言更新为原文+解包；全量 2238 通过。
 - **Q5（批2 新发现）规则阈值配置侧精度**：待调查/待决策。审批规则条件存 JSONB，读写经
   Python float：16 位阈值在**配置写入/读取时**已失真（ctx 侧批2 已修，配置侧未修）。
   实际阈值多为整元小额、风险低；根治需 JSONB 无损读写（parse_float=Decimal 全局影响面大）

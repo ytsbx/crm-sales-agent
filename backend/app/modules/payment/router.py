@@ -11,7 +11,7 @@ from sqlalchemy import delete, func, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import idempotency
-from app.core.audit import json_safe, write_audit
+from app.core.audit import write_audit
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
@@ -417,8 +417,9 @@ async def _generate_receivables(session, order, order_id, payload, request, user
         await idempotency.complete(
             session,
             reservation,
-            # 回放体保持原响应数字形状（decimal_as_str=False），与 complete 底座一致。
-            result_payload=json_safe(body, decimal_as_str=False),
+            # Q4 决策2：原始 Decimal 响应体直接交 complete 底座存精确原文，
+            # 不再预先 json_safe(False) 过 float。
+            result_payload=body,
             result_id=created[0].id if created else order_id,
         )
     await session.commit()
@@ -1094,8 +1095,8 @@ async def create_payment(
             await idempotency.complete(
                 session,
                 reservation,
-                # 回放体保持原响应数字形状（decimal_as_str=False），与 complete 底座一致。
-                result_payload=json_safe(body, decimal_as_str=False),
+                # Q4 决策2：原始 Decimal 响应体直接交 complete 底座存精确原文。
+                result_payload=body,
                 result_id=record.id,
             )
         await session.commit()

@@ -224,16 +224,19 @@ async def test_complete_makes_the_payload_json_safe(session):
         result_id=9,
     )
     stored = reservation.row.result_payload
+    assert isinstance(stored, str)  # Q4 决策2：精确原文
     json.dumps(stored)  # JSON 列的要求：必须可直接序列化
-    assert stored["created_at"] == created_at.isoformat()
-    assert stored["amount"] == 12.5
-    assert stored["tags"][0]["at"] == created_at.isoformat()
+    back = json.loads(stored, parse_float=Decimal)
+    assert back["created_at"] == created_at.isoformat()
+    assert back["amount"] == Decimal("12.50")
+    assert back["tags"][0]["at"] == created_at.isoformat()
 
     replay = await reserve(
         session, user_id=1, action="customer:create", request_key="k-json", payload=PAYLOAD
     )
     assert replay.should_replay is True
-    json.dumps(replay.replay_payload)
+    from app.core.jsonio import exact_json_dumps
+    exact_json_dumps(replay.replay_payload)
 
 
 @pytest.mark.anyio

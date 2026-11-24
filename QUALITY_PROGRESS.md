@@ -5365,3 +5365,15 @@
 - 全量 2236 项通过（基线 2201 → +35 项专项边界回归）。八批提交链：102e5b01 → c8cac7d1 → f56a515d → 4a244ecf → eaec65db → 1c13848e → a7792001 → 本提交；全部只推 GitHub。
 - 待主人决策项汇总：Q4 幂等回放大额精度、Q5 规则阈值配置侧 JSONB 失真、Q6 master 三链耦合、毛利率半偶边界口径；挂起三项维持不碰。前端会话跟进：各往返接口 *_exact 字段消费（编辑/保存页用精确字段）。
 - 未部署、未动库、服务器只读未碰；另一会话未提交改动（含 analytics team_summary hunk）全程未纳入本专项提交。
+
+### float→Decimal 专项 · Q4 决策2 落地（2026-11-24，主人拍板）
+
+- 幂等回放快照改存"精确原文"：core/idempotency.complete 用 json_safe(decimal_as_str=None)（新增模式：保留 Decimal 原值、datetime 仍归一字符串）+ exact_json_dumps 渲染整段精确 JSON 文本存入 JSON 列（顶层字符串）；_judge 回放新增 _unpack_replay：顶层 str→json.loads(parse_float=Decimal) 逐字读回，历史 dict 行原样 float 形状回放，不重写历史。业务响应恒为 dict（ok 信封），顶层 str 不可能是合法老快照，靠类型区分新旧、无标记键无撞车风险；对外仍是精确数字形状，契约零变化。
+- payment/router 两处 complete 改传原始 Decimal body（删除预先 json_safe(False) 的 float  hop），无用 import 清理。
+- 测试：test_decimal_json_exit 回放形状用例与 test_request_idempotency JSON 安全用例的存储断言更新为"原文 str + 解包 Decimal"；新增 test_decimal_q4_replay 2 项（16 位大金额 complete→reserve 回放逐位精确含 datetime 往返、历史 dict 快照 float 原样回放）。全量 2238 项通过。
+- 提交只推 GitHub；未部署、未动库、服务器未碰。剩余待决策：Q5（推荐认边界）、Q6（推荐拆三链）、毛利率逢五规矩（推荐精确半偶）。
+
+### 金额精度专项收尾独立复核
+
+- 当前工作树全量后端 2236 项通过。八批提交存在，但精度闭环仍未完成。调用实际规则上下文和求值函数，在隔离依赖下构造售价 2000 元、成本 1559.10 元：毛利 22.045%，当前 float 后两位舍入得到 22.05%，精确半偶为 22.04%，前者命中 >=22.05% 规则。须明确业务要按未舍入值还是按既有两位舍入比较。
+- 复用实际入参模型和 JSON 渲染函数复现：阈值带小数的大额 JSON 数字 .99 读入即变 .98，重试回放转换也会让 .99 变 .98。回放结果差异未证明业务金额被重复写入或改写。价格中心客户专属价仍在提交前转 JS Number，Node 复现四位单价末位变动；前端往返未做浏览器全链验收。无业务代码、生产或数据库改动。
