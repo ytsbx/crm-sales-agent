@@ -5574,6 +5574,16 @@
 - 隔离全量 **2279 passed**；repro b01_10/b02_14/b07_10/b07_15 全过。账目：P2 仍成立 48→44（B07-15/B07-10/B13-08/B11-08 修）；部分修 4→1（B01-10/B02-14 转已修、B17-04 结案无对象，剩 B22-05 待 D 堆）；B05-01 审计缺口闭环（P1 名单内该条摘除）。
 - 测试适配仅 fixture 建表/替身返回形状兼容（.get 默认），断言未弱化；只推 GitHub。
 
+### 返工 A3 落地（2026-11-24，主人确认未上线无历史数据→阶段闸门最严拒收）
+
+- 主人事实：项目未上线、无生产历史审批数据 → "统计老行/留人工确认口"的兼容分支全部不需要，直接最严改法。
+- **B09-01 已修**：oa/business_gates.require_latest_approved 传 release_stage 时阶段小条缺失或非 approved 一律拒收，拆除"整体大章 approved 即放行"回退；require_inquiry_items_approved 报价阶段同改。不传 release_stage 的 inquiry-mode 路径语义不变（该路径本就不索取阶段）。
+- **B10-01 已修**：oa/sample._apply_sample_summary 缺 business_stages.sample 不落成 approved，保持 pending 等待带小条的同步。
+- **B13-02 已修（台账口径=第一层）**：merge_customers 税号冲突答复必须等于唯一选项 confirm，否则 422；价格冲突原有 keep_source/keep_target 值校验保留。税号国标格式校验为新增提案（第二层），待主人拍板，不在本条台账范围。
+- 测试适配：test_inquiry_quote_stage 参数用例 ('approved', None) 期望 True→False（把固化回退的断言改锁新拒收行为，方向收紧）；test_oa_sample_inquiry_flow 三处 fixture 补真实阶段快照（老审批行 result、修订同步 summary、fake_get 回包），原断言一条未删未弱。
+- 隔离全量 **2279 passed**；repro b09_01/b10_01/b13_02 全过。账目：P1 确认 9→6（B09-01/B10-01/B13-02 摘除；余 B06-04/05 挂起、B07-02/03、B11-01/02）；P2 仍成立 44→41（活账 30）；部分修仍 1（B22-05）。
+- 只推 GitHub；提交前核 status 确认五文件仅含本会话 hunk。
+
 ## 2026-11-24 前端审查二次核验（F07、F09、F12、F14、F15）
 
 - F07-01、F09-01、F14-01 成立。分析指标可在请求失败后落 ¥0，系统设置的用户、角色、部门、标签、数据字典及公海规则列表缺少对应失败提示，AI 会话详情失败进入空会话分支。销售目标、自动任务设置、AI 会话列表各有自己的失败提示。

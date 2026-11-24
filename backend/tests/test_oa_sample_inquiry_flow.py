@@ -225,6 +225,7 @@ async def test_shipped_oa_sample_revision_requires_its_own_approval(monkeypatch)
             SampleShipment(sample_request_id=1, carrier="快递", tracking_no="OLD-001", shipped_at=now),
             OaInstance(oa_type="sample", provider="self_oa", inquiry_id=1, inquiry_version=1,
                        instance_id="old-approval", idempotency_key="old-sample", status="approved",
+                       result={"business_stages": {"sample": {"status": "approved"}}},
                        submit_round=1, created_at=now),
         ])
         raw.commit()
@@ -287,7 +288,8 @@ async def test_shipped_oa_sample_revision_requires_its_own_approval(monkeypatch)
         assert raw.query(OaInstance).filter_by(inquiry_id=1).one().instance_id == "old-approval"
         with pytest.raises(AppError, match="尚未通过"):
             await require_sample_approved(session, child)
-        await oa_sample._apply_sample_summary(session, new, {"id": "new-approval", "status": "approved"})
+        await oa_sample._apply_sample_summary(session, new, {"id": "new-approval", "status": "approved",
+                                                             "business_stages": {"sample": {"status": "approved"}}})
         assert child.status == "approved"
         assert raw.get(SampleRequest, 1).status == "shipped"
         assert (await require_sample_approved(session, child)).id == new.id
@@ -378,7 +380,8 @@ def test_sample_oa_payload_uses_human_fields_and_two_approvers(monkeypatch, temp
         return {"id": str(uuid.uuid4()), "status": "pending", "external_ref": payload["external_ref"]}
 
     async def fake_get(_approval_id):
-        return {"id": "oa-sample-1", "status": "approved", "external_ref": "x"}
+        return {"id": "oa-sample-1", "status": "approved", "external_ref": "x",
+                "business_stages": {"sample": {"status": "approved"}}}
 
     async def fake_withdraw(_approval_id, _note):
         return {"id": "oa-sample-1", "status": "withdrawn", "external_ref": "x"}

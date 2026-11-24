@@ -17,7 +17,7 @@ from test_batch7_cost_lifecycle import case  # noqa: F401
     ('pending','approved',True),('approved','approved',True),('pending','pending',False),
     ('approved','rejected',False),('withdrawn','approved',False),('rejected','approved',False),
     ('submitting','approved',False),('needs_review','approved',False),
-    ('approved',None,True),('pending',None,False)])
+    ('approved',None,False),('pending',None,False)])
 def test_formal_quote_uses_pricing_phase_not_whole_request(monkeypatch,overall,milestone,allowed):
     monkeypatch.setattr(client,'configured',lambda:False)
     with Session(_engine()) as raw:

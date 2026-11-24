@@ -344,7 +344,8 @@ async def _apply_sample_summary(session, row, summary):
     sample = await session.get(SampleRequest, row.inquiry_id, with_for_update=True)
     if sample is not None and sample.deleted_at is None and int(sample.version or 1) == row.inquiry_version:
         milestone = (summary.get("business_stages") or {}).get("sample")
-        released = (new_status in {"pending", "approved"} and milestone.get("status") == "approved") if isinstance(milestone, dict) else new_status == "approved"
+        # 缺打样阶段小条不落成 approved，保持 pending 等同步（B10-01）。
+        released = new_status in {"pending", "approved"} and isinstance(milestone, dict) and milestone.get("status") == "approved"
         sample_status = "approved" if released else new_status if new_status in {"rejected", "withdrawn"} else "pending"
         if sample.status == "pending" and sample_status in {"approved", "rejected", "withdrawn"}:
             sample.status = "rejected" if sample_status == "withdrawn" else sample_status

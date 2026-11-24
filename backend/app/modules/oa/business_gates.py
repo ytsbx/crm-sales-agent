@@ -13,7 +13,12 @@ async def require_latest_approved(session, *, kind, business_id, version=None, r
     row = (await session.execute(query.order_by(OaInstance.submit_round.desc(), OaInstance.id.desc()).limit(1))).scalars().first()
     label = {'inquiry': '定制询价', 'sample': '打样', 'contract': '合同'}[kind]
     milestone = ((row.result or {}).get('business_stages') or {}).get(release_stage) if row and release_stage else None
-    allowed = (row.status in {'pending', 'approved'} and milestone.get('status') == 'approved') if isinstance(milestone, dict) else bool(row and row.status == 'approved')
+    if row and release_stage:
+        # 项目未上线、无历史审批包袱：阶段小条缺失一律拒收，
+        # 不再退回"整体大章 approved 就算本阶段通过"（B09-01）。
+        allowed = row.status in {'pending', 'approved'} and isinstance(milestone, dict) and milestone.get('status') == 'approved'
+    else:
+        allowed = bool(row and row.status == 'approved')
     if not allowed:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED,
             f'{label}审批尚未通过，不能执行此正式动作。请先在同序 OA 完成审批，并在 CRM 同步最新结果', 422)
@@ -35,8 +40,9 @@ async def require_inquiry_items_approved(session, items):
                 OaInstance.oa_type == 'inquiry', OaInstance.inquiry_id == identity
             ).order_by(OaInstance.submit_round.desc(), OaInstance.id.desc()).limit(1))).scalars().first()
             quotation = ((row.result or {}).get('business_stages') or {}).get('quotation') if row else None
-            approved = (quotation.get('status') == 'approved') if isinstance(quotation, dict) else bool(row and row.status == 'approved')
-            if not approved or row is None or row.status not in {'pending', 'approved'}:
+            # 缺报价阶段小条同样拒收，不看整体大章（B09-01）。
+            approved = bool(row) and row.status in {'pending', 'approved'} and isinstance(quotation, dict) and quotation.get('status') == 'approved'
+            if not approved:
                 raise AppError(ErrorCode.STATUS_NOT_ALLOWED,
                     '询价的核价/报价复核尚未通过，暂不能正式报价。可先保存内部草稿；请在同序完成报价阶段并在 CRM 同步结果，无需等待打样或备货结束', 422)
 

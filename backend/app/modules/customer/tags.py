@@ -698,6 +698,15 @@ async def merge_customers(
             + "。请先在「合并影响」里做出选择再提交",
             422,
         )
+    # 税号冲突的答复必须真等于唯一选项 confirm（B13-02）：
+    # 只判非空等于画个圈也算签字，而合并不可逆。
+    if any(row["key"] == "tax_no" for row in conflicts) and given.get("tax_no") != "confirm":
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "协议主体（税号）冲突的处理口径无效：只能是 confirm"
+            "（确认是同一家、继续合并）。合并不可逆，请先在「合并影响」里明确确认再提交",
+            422,
+        )
     conflicts_applied = {row["key"]: given[row["key"]] for row in conflicts}
     pending_cases = (await session.scalars(
         _pending_merge_cases(source.id, target.id).with_for_update().execution_options(populate_existing=True)
