@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from datetime import UTC, datetime
+from uuid import uuid4
 
 from sqlalchemy import text
 
@@ -41,19 +42,45 @@ async def main() -> int:
         return 2
     sample_id = int(sys.argv[1])
     # 传真的 datetime 出去：asyncpg 不接受字符串形式的时间参数（clean_test_run_leftovers 同款教训）。
+    now = datetime.now(UTC)
     async with SessionLocal() as s:
+        row = (
+            await s.execute(
+                text("SELECT version FROM sample_requests WHERE id=:id"),
+                {"id": sample_id},
+            )
+        ).first()
+        if row is None:
+            print(f"样品 {sample_id} 不存在")
+            return 1
+        # 两条一起写：样品状态（状态机入口 pending/rejected→approved）+ 一条 approved 的
+        # OA 审批记录（made/ship 的 require_sample_approved 闸门查的是 oa_instances，
+        # 光改 sample_requests.status 过不了闸 —— CI 实证踩过）。
         result = await s.execute(
             text(
                 "UPDATE sample_requests SET status='approved', approved_at=:now "
                 "WHERE id=:id AND status IN ('pending','rejected')"
             ),
-            {"id": sample_id, "now": datetime.now(UTC)},
+            {"id": sample_id, "now": now},
+        )
+        await s.execute(
+            text(
+                "INSERT INTO oa_instances "
+                "(inquiry_id, inquiry_version, oa_type, idempotency_key, submit_round, provider, status, created_at, updated_at) "
+                "VALUES (:sid, :ver, 'sample', :key, 1, 'self_oa', 'approved', :now, :now)"
+            ),
+            {
+                "sid": sample_id,
+                "ver": int(row.version or 1),
+                "key": f"smoke-mark-{sample_id}-{uuid4().hex}",
+                "now": now,
+            },
         )
         await s.commit()
         if result.rowcount != 1:
-            print(f"样品 {sample_id} 未置为已批准（不存在，或状态不是 pending/rejected）")
+            print(f"样品 {sample_id} 未置为已批准（状态不是 pending/rejected）")
             return 1
-    print(f"样品 {sample_id} 已置为已批准")
+    print(f"样品 {sample_id} 已置为已批准（含 OA 审批记录）")
     return 0
 
 

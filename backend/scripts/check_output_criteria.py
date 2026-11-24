@@ -107,6 +107,12 @@ EXCEPTIONS: dict[tuple[str, str], str] = {
         "审批要按它判定。快照字段对无 `price:manage` 者的隐藏发生在 "
         "`_COST_ONLY_ITEM_FIELDS`（序列化层）。"
     ),
+    ("app/modules/oa/inquiry.py", "customer_contact_text"): (
+        "同序 OA《询价申请单》的「客户名称、联系人、联系方式」**模板格**内容："
+        "OA 审批人要照着完整电话联系客户、核实需求，打码就废了这一格"
+        "（OA 联调已按此模板走通，见 QUALITY_PROGRESS 询价 30 单）。"
+        "这是发往公司内部审批流的表单文本，不是对外出口。"
+    ),
 }
 
 
