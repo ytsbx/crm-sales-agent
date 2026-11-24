@@ -372,6 +372,12 @@ async def refreeze_sales_actuals(
     # 与结账同一条口径：汇总与明细在**同一个一致快照**里读（第五批审查 P1）
     async with target_actuals.consistent_snapshot(session, period) as snap:
         values = await _collect_period_actuals(snap, user, period)
+        # B17-P2：重算结果为空时拒绝 replace，避免把已结账期间的旧汇总/明细清空
+        # （与普通结账的空值保护同口径）。
+        if not values:
+            raise AppError(
+                ErrorCode.NOT_FOUND, f"{period} 重算结果为空，拒绝清空已结账期间的实绩", 404
+            )
         # 明细跟着一起重出（返工单第 4 条）：只换汇总不换明细，等于把
         # "刚重算的合计"和"上一版的明细"摆在同一页上，比不重算还乱。
         items = await _collect_period_items(snap, user, period)

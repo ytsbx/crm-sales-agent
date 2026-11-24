@@ -253,6 +253,52 @@ def test_row_savepoint_drops_pending_objects_of_failed_row(db):
     assert "幽灵产品" not in names
 
 
+def test_row_savepoint_does_not_leak_modified_existing_object(db):
+    """B23-P2：失败行里改过的**既有**对象，修改不能泄漏到后续 commit。"""
+
+    async def _run():
+        db.raw.add(Product(name="原值", status="active"))
+        db.raw.commit()
+        obj = (
+            await db.session.execute(select(Product).where(Product.name == "原值"))
+        ).scalar_one()
+        try:
+            async with row_savepoint(db.session):
+                obj.name = "被改坏"
+                raise RuntimeError("这一行失败")
+        except RuntimeError:
+            pass
+        db.raw.commit()
+
+    asyncio.run(_run())
+    names = db.scalars_all(select(Product.name))
+    assert "被改坏" not in names
+    assert "原值" in names
+
+
+def test_row_savepoint_restores_existing_object_after_flush_failure(db):
+    """B23-P2：改既有对象后 flush 撞库约束，回滚后修改 likewise 不泄漏。"""
+
+    async def _run():
+        db.raw.add(Product(name="原值二", status="active"))
+        db.raw.commit()
+        obj = (
+            await db.session.execute(select(Product).where(Product.name == "原值二"))
+        ).scalar_one()
+        try:
+            async with row_savepoint(db.session):
+                obj.name = None  # 非空约束 → flush 失败
+                await db.session.flush()
+        except Exception:
+            pass
+        db.raw.commit()
+
+    asyncio.run(_run())
+    names = db.scalars_all(select(Product.name))
+    assert "原值二" in names
+    assert None not in names
+
+
 def test_row_errors_counts_one_failed_row_with_all_reasons():
     """同一行的多个问题算**一行失败**，但原因一条都不能少（7.6 统计口径）。"""
     report = ImportReport("probe", 1)

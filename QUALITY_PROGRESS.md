@@ -5196,3 +5196,11 @@
 - commit bdd6efc9（分支 acceptance-wrapup），447 文件，含 B14-B25 修复+review 台账+进度。
 - 仅推 GitHub（github remote），未推 Gitee；未部署、未写正式库。
 - 排除 agent/工具配置目录（.claude/.codex/.agent-up-memory/.mcp.json）未纳入提交。
+
+### B23-P2 甄别（证伪）/ B17-P2 落地
+
+- B23-P2：隔离复现（改既有对象后 raise / flush 撞约束）均通过——SQLAlchemy 保存点回滚会恢复
+  既有对象的修改，不泄漏到后续 commit。报告担心不成立；保留两条回归用例。
+- B17-P2 修：refreeze_sales_actuals 补空值保护（values 为空拒绝 replace），与普通结账同口径，
+  防重算结果为空时清空已结账期间旧汇总/明细。
+- 全量 2178 项通过。
