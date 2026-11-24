@@ -5190,3 +5190,9 @@
 - 全量 2176 项通过。
 
 仍待：B17-P2/B23-P1/P2 业务口径；float→Decimal 大重构；各块 P3 审计/边界/幂等专项用例。
+
+### 提交与推送（2026-11-24）
+
+- commit bdd6efc9（分支 acceptance-wrapup），447 文件，含 B14-B25 修复+review 台账+进度。
+- 仅推 GitHub（github remote），未推 Gitee；未部署、未写正式库。
+- 排除 agent/工具配置目录（.claude/.codex/.agent-up-memory/.mcp.json）未纳入提交。
