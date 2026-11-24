@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
 from app.core.config import settings
+from app.core.jsonio import exact_json_dumps
 from app.core.data_scope import scoped_owner_ids
 from app.core.timebase import now_business, to_business
 from app.core.deps import CurrentUser
@@ -473,7 +474,7 @@ async def run_turn_events(
                                 session_id=agent_session.id,
                                 role="tool",
                                 tool_name=name,
-                                content=json.dumps(result, ensure_ascii=False)[:2000],
+                                content=exact_json_dumps(result)[:2000],
                             )
                         )
                     except AppError as exc:
@@ -576,7 +577,7 @@ async def run_turn_events(
                     {
                         "role": "tool",
                         "tool_call_id": call["id"],
-                        "content": json.dumps(result, ensure_ascii=False)[:3000],
+                        "content": exact_json_dumps(result)[:3000],
                     }
                 )
             await session.commit()

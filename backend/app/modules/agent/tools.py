@@ -179,17 +179,18 @@ def validate_tool_arguments(spec: ToolSpec, raw: object) -> dict:
     return raw
 
 
-def _money(value) -> float | None:
+def _money(value) -> Decimal | None:
     if value is None:
         return None
-    return float(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+    # 批8：quantize 口径（HALF_UP 两位）不变，出口保留 Decimal，不再经 float。
+    return Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
-def _measure(value) -> float | None:
+def _measure(value) -> Decimal | None:
     """重量/体积等非金额度量：保留 4 位小数，不用金额的 2 位。"""
     if value is None:
         return None
-    return float(Decimal(str(value)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP))
+    return Decimal(str(value)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
 
 
 async def _may_see_full_contact(ctx: ToolContext, customer: Customer) -> bool:
@@ -505,17 +506,17 @@ async def get_customer_overview(ctx: ToolContext, customer_id: int) -> dict:
         # 合计数在多币种下必然错，宁可不给。
         if len(pending) <= 1:
             only_code = next(iter(pending), "CNY")
-            result["pending_receivable_amount"] = float(round(pending.get(only_code, Decimal(0)), 2))
+            result["pending_receivable_amount"] = round(pending.get(only_code, Decimal(0)), 2)
             result["pending_receivable_currency"] = only_code
         else:
             result["pending_receivable_by_currency"] = [
                 {
                     "currency": code,
-                    "order_total_amount": float(round(order_total.get(code, Decimal(0)), 2)),
-                    "received_amount": float(
-                        round(Decimal(str(by_currency.get(code, {}).get("received_amount", 0))), 2)
+                    "order_total_amount": round(order_total.get(code, Decimal(0)), 2),
+                    "received_amount": round(
+                        Decimal(str(by_currency.get(code, {}).get("received_amount", 0))), 2
                     ),
-                    "pending_amount": float(round(pending[code], 2)),
+                    "pending_amount": round(pending[code], 2),
                 }
                 for code in sorted(pending)
             ]
@@ -666,7 +667,7 @@ async def get_opportunity_detail(ctx: ToolContext, opportunity_id: int) -> dict:
                 "id": item.id,
                 "sku_code": code,
                 "specification": item.specification or spec,
-                "quantity": float(item.quantity),
+                "quantity": item.quantity,
                 "target_price": _money(item.target_price),
                 "destination": item.destination,
             }
@@ -773,6 +774,8 @@ async def list_sku_options(ctx: ToolContext, keyword: str = "") -> dict:
 async def calculate_price(
     ctx: ToolContext,
     sku_id: int,
+    # 入参注解保持 float：模型 JSON number 的入口契约（schema 手写 "number"）。
+    # 入站精度边界见台账（与 Q4 同类）；下游 PricingRequest 会归一 Decimal 再计算。
     quantity: float,
     customer_id: int | None = None,
     quoted_price: float | None = None,
@@ -977,11 +980,11 @@ async def _receivables_by_currency(
         groups[code] = {
             "currency": code,
             "plan_count": plan_count.get(code, 0),
-            "plan_amount": float(round(planned, 2)),
-            "received_amount": float(round(got, 2)),
-            "allocated_amount": float(round(allocated_by_currency.get(code, Decimal(0)), 2)),
-            "unallocated_amount": float(round(max(got - allocated_by_currency.get(code, Decimal(0)), Decimal(0)), 2)),
-            "unreceived_amount": float(round(planned - got, 2)),
+            "plan_amount": round(planned, 2),
+            "received_amount": round(got, 2),
+            "allocated_amount": round(allocated_by_currency.get(code, Decimal(0)), 2),
+            "unallocated_amount": round(max(got - allocated_by_currency.get(code, Decimal(0)), Decimal(0)), 2),
+            "unreceived_amount": round(planned - got, 2),
         }
     return groups, list(plans)
 
@@ -1067,8 +1070,8 @@ async def get_receivables_summary(ctx: ToolContext, order_id: int | None = None)
             "plan_name": plan.plan_name,
             "due_date": plan.due_date.isoformat() if plan.due_date else None,
             "currency": _currency_of(plan.currency),
-            "remaining_amount": float(
-                round(Decimal(plan.amount or 0) - received_by_plan.get(plan.id, Decimal(0)), 2)
+            "remaining_amount": round(
+                Decimal(plan.amount or 0) - received_by_plan.get(plan.id, Decimal(0)), 2
             ),
         }
         for plan in plans
@@ -1479,7 +1482,7 @@ async def get_product(ctx: ToolContext, product_id: int) -> dict:
                 "specification": sku.specification,
                 "color": sku.color,
                 "material": sku.material,
-                "weight": float(sku.weight) if sku.weight is not None else None,
+                "weight": sku.weight if sku.weight is not None else None,
                 "carton_qty": sku.carton_qty,
                 "moq": sku.moq,
                 "unit": sku.unit,
@@ -1557,6 +1560,7 @@ async def search_skus(ctx: ToolContext, keyword: str, limit: int = 15) -> dict:
 async def calculate_logistics(
     ctx: ToolContext,
     sku_id: int,
+    # 入参注解保持 float：模型 JSON number 入口契约，下游 schema 归一 Decimal。
     quantity: float,
     origin: str | None = None,
     destination: str | None = None,
@@ -1647,7 +1651,7 @@ async def get_order(ctx: ToolContext, order_id: int) -> dict:
                 # 订单明细用的是 sku_snapshot（快照字符串），不是 quote_items 的 sku_code_snapshot
                 "sku": item.sku_snapshot,
                 "specification": item.specification,
-                "quantity": float(item.quantity),
+                "quantity": item.quantity,
                 "unit_price": _money(item.unit_price),
                 "amount": _money(item.amount),
             }

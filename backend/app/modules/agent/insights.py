@@ -37,10 +37,11 @@ from app.modules.user.model import User
 ZERO = Decimal(0)
 
 
-def _f(value) -> float | None:
+def _f(value) -> Decimal | None:
     if value is None:
         return None
-    return float(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+    # 批8：HALF_UP 两位口径不变（B16-02），出口保留 Decimal 不再经 float。
+    return Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 async def _opportunity_items(session: AsyncSession, opportunity_id: int):

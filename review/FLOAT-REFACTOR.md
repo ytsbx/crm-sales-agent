@@ -228,7 +228,24 @@ JS Number 解析 15-16 位上限是前端既有问题，本轮后端改造不使
 - [x] 批7 打样/洞察（sample/service _f 透传（库刻度≤3 位，round4 无损）；insight/router
       price_assumption Decimal + exact、_content_snapshot 按 Q2 存原值字符串（只存只展示、
       无值比较链，已核实）、转需求描述 format 'f'；新增批7 边界 3 项；全量 2232 通过）
-- [ ] 批8 Agent/ERP 入站
+- [x] 批8 Agent/ERP 入站（tools _money/_measure quantize 口径不变出口 Decimal、待回款/币种分组/
+      应收 remaining/明细 quantity/SKU weight 去 float；入参 float 注解保留并注释（模型 JSON
+      number 入口契约，下游 pydantic 归一 Decimal，入站精度边界与 Q4 同类）；insights _f、
+      commentary _compact Decimal + _facts_text 改 exact_json_dumps；runtime 两处模型上下文
+      json.dumps→exact_json_dumps（否则 Decimal TypeError）；erp/collection serialize_record
+      数量/金额去 float；ERP 推单报文挂起不碰；旧 float 断言收紧；新增批8 边界 4 项；
+      全量 2236 通过）
+
+## 5. 收尾残留核对（2026-11-24，八批完成后全量 grep 复核）
+
+允许保留类：① 比率/百分比输出 float（Q3：quote profit_rate/authorized_min_margin、
+targets 达成率、rules_engine 毛利率、analytics average_discount、pricing 权限比率）；
+② 挂起三项（ERP 推单报文 erp/service:172-186 B06-04、外币 fx 遗留分支、收款比例
+HALF_EVEN B03-15 含 payment/schema ratios 注解）；③ 待决策 Q4 回放分支 audit.py:56
+（decimal_as_str=False）、Q5 settings get_number/_strict_ratio 配置侧、Q6 master:195；
+④ 非金额 float（dingtalk 登录态/token 过期、notification 重试次数、bizdoc PDF 列宽、
+相似度/百分位/停留天数等）；⑤ Agent 工具入参 float 注解（入口契约，已注释）；
+⑥ 注释与 isinstance 守卫。除此之外 app/modules+app/core 无金额 float 强转残留。
 
 备注：工作区另有离职处理会话的未提交改动（user/task/dingtalk/analytics 状态过滤、前端设置页、
 test_user_offboarding.py 及进度日志一节），本专项提交只挑本专项文件，不携带其代码改动；

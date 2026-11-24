@@ -30,6 +30,7 @@ from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 
 from app.core.config import settings
+from app.core.jsonio import exact_json_dumps
 from app.modules.agent.runtime import _close_client, model_error_message
 
 logger = logging.getLogger("crm.agent.commentary")
@@ -105,7 +106,7 @@ def _compact(value: object, depth: int = 0) -> object:
     if isinstance(value, (str, int, float, bool)):
         return value
     if isinstance(value, Decimal):
-        return float(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     if isinstance(value, datetime):
         return value.isoformat(sep=" ", timespec="minutes")
     if isinstance(value, date):
@@ -129,7 +130,7 @@ def _compact(value: object, depth: int = 0) -> object:
 
 
 def _facts_text(facts: dict) -> str:
-    text = json.dumps(_compact(facts), ensure_ascii=False, default=str)
+    text = exact_json_dumps(_compact(facts))
     if len(text) > _MAX_FACTS_CHARS:
         text = text[:_MAX_FACTS_CHARS] + " …（内容过长，已截断）"
     return text

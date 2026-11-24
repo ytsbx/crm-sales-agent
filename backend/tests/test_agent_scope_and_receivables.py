@@ -63,15 +63,15 @@ async def test_agent_order_and_product_keep_three_decimal_places(monkeypatch):
     line = SimpleNamespace(sku_snapshot="SKU-1", specification=None, quantity=Decimal("0.001"),
                            unit_price=Decimal("20.50"), amount=Decimal("0.02"))
     order = await get_order(ctx, 1)
-    assert order["items"][0]["quantity"] == 0.001
-    assert order["items"][0]["amount"] == 0.02
+    assert order["items"][0]["quantity"] == Decimal("0.001")
+    assert order["items"][0]["amount"] == Decimal("0.02")
 
     from app.modules.product.model import Product, Sku
 
     row = Product(id=1, name="测试产品")
     line = Sku(id=1, sku_code="SKU-1", weight=Decimal("1.125"))
     product = await get_product(ctx, 1)
-    assert product["skus"][0]["weight"] == 1.125
+    assert product["skus"][0]["weight"] == Decimal("1.125")
 
 
 def _ctx(session, user, action_id=None):
@@ -325,7 +325,7 @@ async def test_overview_pending_receivable_excludes_cancelled_and_is_decimal(db_
     )
     data = await get_customer_overview(_ctx(db_session, user), customer.id)
     # 取消单（SO-B）不进待回款；SO-A：0.1 - 0 = 0.1
-    assert data["pending_receivable_amount"] == 0.1
+    assert data["pending_receivable_amount"] == Decimal("0.1")
     assert data["pending_receivable_currency"] == "CNY"
     assert [o["order_no"] for o in data["orders"]] == ["SO-A", "SO-B"]
     assert "正式应收" in data["receivable_note"]

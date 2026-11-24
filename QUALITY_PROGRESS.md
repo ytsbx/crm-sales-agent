@@ -5354,3 +5354,14 @@
 - product_insight/router price_assumption 去 float 并补 exact（洞察编辑回填往返链）；_content_snapshot 评审快照 Decimal→原值字符串（Q2；核实快照只落 JSONB 与展示、不做值比较，历史 float 行不重写）；转需求描述价格假设改 format 'f'（文本更精确）。
 - 新增 test_decimal_batch7_sample_insight 3 项（申请费用/工时/积分、发货运费、洞察 exact+快照字符串可 json.dumps）。全量 2232 项通过。
 - 提交只推 GitHub；未部署、未动库、服务器未碰；另一会话未提交改动不纳入。
+
+### float→Decimal 专项 · 批8 落地 + 八批收尾（2026-11-24，本会话）
+
+- agent/tools `_money`/`_measure` quantize 口径（HALF_UP 两位/四位）不变、出口保留 Decimal；待回款单币种/多币种分组、应收计划 remaining、明细 quantity、SKU weight 去 float。**入参 float 注解保留**：tool schema 是手写 parameters dict、validate 只认 JSON number，注解只是入口提示；模型入站精度边界与 Q4 同类（下游 PricingRequest 等 pydantic 归一 Decimal），已加注释说明。
+- agent/insights `_f`、commentary `_compact` Decimal 分支保留 quantize 口径去 float；commentary `_facts_text` 与 runtime 两处模型上下文 `json.dumps(result)` 改 `exact_json_dumps`（不改则 Decimal 直接 TypeError，且模型读到的数字逐位精确）。
+- erp/collection serialize_record quantity/amount 去 float（入站记录展示出口）。ERP 推单报文（B06-04）挂起不碰。
+- 旧 float 断言收紧 3 处（agent 数量/金额/重量）。新增 test_decimal_batch8_agent_erp 4 项（_money/_measure 舍入口径+大金额线路、insights、_compact/_facts_text 精确渲染、ERP 记录 Decimal+线路）。
+- **收尾残留核对**：全量 grep 复核 app/modules+app/core，剩余 float 全部落在允许类别——比率输出（Q3）、挂起三项（ERP 推单/外币 fx/HALF_EVEN）、待决策 Q4/Q5/Q6、非金额 float、Agent 入参契约注解、注释与守卫。清单见 review/FLOAT-REFACTOR.md §5。
+- 全量 2236 项通过（基线 2201 → +35 项专项边界回归）。八批提交链：102e5b01 → c8cac7d1 → f56a515d → 4a244ecf → eaec65db → 1c13848e → a7792001 → 本提交；全部只推 GitHub。
+- 待主人决策项汇总：Q4 幂等回放大额精度、Q5 规则阈值配置侧 JSONB 失真、Q6 master 三链耦合、毛利率半偶边界口径；挂起三项维持不碰。前端会话跟进：各往返接口 *_exact 字段消费（编辑/保存页用精确字段）。
+- 未部署、未动库、服务器只读未碰；另一会话未提交改动（含 analytics team_summary hunk）全程未纳入本专项提交。
