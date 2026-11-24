@@ -492,8 +492,8 @@ async def upsert_sales_target(
             "department_id": row.department_id,
             "created": created,
             "new_customer_target": row.new_customer_target,
-            "sales_target": float(row.sales_target or 0),
-            "repeat_customer_target": float(row.repeat_customer_target or 0),
+            "sales_target": row.sales_target if row.sales_target is not None else Decimal(0),
+            "repeat_customer_target": row.repeat_customer_target if row.repeat_customer_target is not None else Decimal(0),
             # 回给前端，下次编辑时原样带回来就是乐观并发
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         },

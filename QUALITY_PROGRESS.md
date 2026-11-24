@@ -5339,3 +5339,11 @@
 - inquiry/service 序列化 quantity/target_price 去 float 并补 *_exact（询价编辑回填往返链）；inquiry/router 转报价响应 quoted_price/minimum_price 去 float 并补 *_exact。
 - 本批零旧断言破坏。新增 test_decimal_batch5_customer_opp_inquiry 3 项（商机/明细/询价 Decimal+exact+线路逐位）。全量 2226 项通过。
 - 提交只推 GitHub；未部署、未动库、服务器未碰；另一会话未提交改动不纳入。
+
+### float→Decimal 专项 · 批6 落地（2026-11-24，本会话）
+
+- analytics/service `_f` 透传（空值 Decimal(0) 与原 `value or 0` 同语义）；订单/回款趋势按月累加 dict[str,Decimal]；产品分析 profit/quantity 累加与空桶 Decimal(0)；定价分析 by_level 价格列表 Decimal、quoted_price 去 float、折扣率改 Decimal 计算后 float 输出（Q3）；quote_stats average_discount 为 SQL AVG 比率，显式 float(round(...,4)) 保 Q3 口径。
+- analytics/targets 目标快照与明细序列化 sales_target/repeat_customer_target 去 float（exact 本已在/快照补齐）；销售/复购差额去 float（round 本已 Decimal 两位）；达成率保持 Decimal 除 + float 输出（Q3，未动）；混合类型注解收敛 Decimal。target_bases 年度四桶 value 去 float（round(...,2) 本已 Decimal，float 只在出口）。target_actuals 存档明细 round(float,2)→Decimal 精确半偶两位：**边界修正**，2.675 旧 double 伪影得 2.67、精确半偶得 2.68，amount_exact 仍存原值；舍入模式（半偶）未改，只去掉 float 伪影。analytics/router 目标保存响应去 float。
+- **提交口径**：analytics/service.py 含另一会话未提交 team_summary hunk，用过滤 patch 只暂存本专项 8 个 hunk（git apply --cached），对方 hunk 原样留工作区，已核验暂存/未暂存 hunk 数。
+- 新增 test_decimal_batch6_analytics_targets 3 项（_f 总闸+线路、目标快照 Decimal+exact、存档舍入边界 2.675→2.68 与大金额线路）。全量 2229 项通过。
+- 提交只推 GitHub；未部署、未动库、服务器未碰。

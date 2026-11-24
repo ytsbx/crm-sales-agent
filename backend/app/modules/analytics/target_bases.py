@@ -520,13 +520,13 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
     return {
         "year": year,
         "months": months,
-        "signed": [{"month": m, "value": float(round(signed.get(m, Decimal(0)), 2)),
+        "signed": [{"month": m, "value": round(signed.get(m, Decimal(0)), 2),
                      "value_exact": str(round(signed.get(m, Decimal(0)), 2))} for m in months],
-        "shipped": [{"month": m, "value": float(round(shipped.get(m, Decimal(0)), 2)),
+        "shipped": [{"month": m, "value": round(shipped.get(m, Decimal(0)), 2),
                      "value_exact": str(round(shipped.get(m, Decimal(0)), 2))} for m in months],
-        "received": [{"month": m, "value": float(round(received.get(m, Decimal(0)), 2)),
+        "received": [{"month": m, "value": round(received.get(m, Decimal(0)), 2),
                      "value_exact": str(round(received.get(m, Decimal(0)), 2))} for m in months],
-        "repeat_net": [{"month": m, "value": float(round(repeat_net.get(m, Decimal(0)), 2)),
+        "repeat_net": [{"month": m, "value": round(repeat_net.get(m, Decimal(0)), 2),
                      "value_exact": str(round(repeat_net.get(m, Decimal(0)), 2))} for m in months],
         "new_by_created": [{"month": m, "value": int(new_by_created.get(m, 0))} for m in months],
         "new_by_first_deal": [

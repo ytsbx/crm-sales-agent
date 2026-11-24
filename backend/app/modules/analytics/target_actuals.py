@@ -133,7 +133,7 @@ async def frozen_items(session: AsyncSession, period: str, metric: str) -> list[
             "id": row.record_id,
             "label": row.label,
             "owner_id": row.owner_id,
-            "amount": round(float(row.amount or 0), 2),
+            "amount": round(row.amount if row.amount is not None else Decimal(0), 2),
             "amount_exact": str(row.amount if row.amount is not None else 0),
             "date": row.at_text,
         }

@@ -218,7 +218,13 @@ JS Number 解析 15-16 位上限是前端既有问题，本轮后端改造不使
       当前版本金额、opportunity/service _number 透传、opportunity/router 漏斗/看板 SUM +
       360 概览版本金额/数量 Decimal、inquiry/service 数量/目标价 + exact、inquiry/router
       转报价 quoted/minimum + exact；零旧断言破坏；新增批5 边界 3 项；全量 2226 通过）
-- [ ] 批6 分析/目标
+- [x] 批6 分析/目标（analytics/service _f 透传 + 趋势/产品累加 Decimal + 定价分析 by_level
+      Decimal、折扣率 Decimal 计算 float 输出、average_discount 显式 float（Q3）；
+      targets 目标值/差额 Decimal + target_snapshot 补 exact、达成率保持 Decimal 算 float 出；
+      target_bases 四桶去 float（round 本已 Decimal）；target_actuals 存档 round(float,2)→
+      Decimal 精确半偶（修 double 伪影边界，2.675→2.68）；router 目标保存响应去 float；
+      analytics/service.py 选择性暂存 8 hunk，另一会话 team_summary hunk 留工作区；
+      新增批6 边界 3 项；全量 2229 通过）
 - [ ] 批7 打样/洞察
 - [ ] 批8 Agent/ERP 入站
 

@@ -81,8 +81,12 @@ def _latest_customer_activity(customer: Customer):
     return settings_service._last_active_at(customer)
 
 
-def _f(value) -> float:
-    return float(value or 0)
+def _f(value) -> Decimal:
+    """序列化总闸：保留 Decimal 原值（float→Decimal 专项批6，B17-03）。
+
+    空值给 Decimal(0)（与原 `value or 0` 同语义）；JSON 出口按原值渲染精确数字。
+    """
+    return value if value is not None else Decimal(0)
 
 
 def _month_key(value) -> str | None:
@@ -602,16 +606,16 @@ async def order_payment_trend(
 
     # 在 Python 里按月累加。数据量是「近 N 个月的订单/回款条数」，
     # 比引入方言相关的日期格式化函数更划算（见模块 docstring 的例外说明）。
-    orders: dict[str, float] = {}
+    orders: dict[str, Decimal] = {}
     for created_at, amount in order_rows:
         key = _month_key(created_at)
         if key:
-            orders[key] = orders.get(key, 0.0) + _f(amount)
-    payments: dict[str, float] = {}
+            orders[key] = orders.get(key, Decimal(0)) + _f(amount)
+    payments: dict[str, Decimal] = {}
     for received_date, amount in payment_rows:
         key = _month_key(received_date)
         if key:
-            payments[key] = payments.get(key, 0.0) + _f(amount)
+            payments[key] = payments.get(key, Decimal(0)) + _f(amount)
 
     return [
         {
@@ -1069,7 +1073,7 @@ async def quote_stats(session: AsyncSession, user: CurrentUser) -> dict:
     return {
         "quote_count": len(quotes),
         "average_versions": round(total_versions / len(quotes), 2),
-        "average_discount": round(_f(average_discount), 4),
+        "average_discount": round(float(average_discount or 0), 4),
         "accept_rate": round(accepted / sent, 4) if sent else 0,
         "approval_rate": round(approval_required / total_versions, 4) if total_versions else 0,
         "accepted_count": accepted,
@@ -1282,10 +1286,10 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
             {
                 "draft_times": 0,
                 "formal_times": 0,
-                "quantity": 0.0,
+                "quantity": Decimal(0),
                 "versions": set(),
                 "formal_quotes": set(),
-                "profit": 0.0,
+                "profit": Decimal(0),
             },
         )
         acc["versions"].add(version_id)
@@ -1293,10 +1297,10 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
             acc["formal_times"] += 1
             acc["formal_quotes"].add(quote_id)
             if (version_no or 0) == latest_formal[(bid, quote_id)]:
-                acc["profit"] += float(profit or 0)
+                acc["profit"] += profit if profit is not None else Decimal(0)
         else:
             acc["draft_times"] += 1
-        acc["quantity"] += float(quantity or 0)
+        acc["quantity"] += quantity if quantity is not None else Decimal(0)
 
     # ---- 实际成交数量：来自订单事实（不是商机需求行）----
     order_rows = (
@@ -1347,8 +1351,8 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
     # 成本口径字段按权限（与查价/报价详情同判据，issue #5）
     can_see_cost = user.has("price:manage")
     empty = {
-        "draft_times": 0, "formal_times": 0, "quantity": 0.0,
-        "versions": set(), "formal_quotes": set(), "profit": 0.0,
+        "draft_times": 0, "formal_times": 0, "quantity": Decimal(0),
+        "versions": set(), "formal_quotes": set(), "profit": Decimal(0),
     }
     items = []
     for bid in sku_ids:
@@ -1378,7 +1382,7 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
                 # 成交（商机事实）与实际卖出的量（订单事实）
                 "won_times": won.get(bid, 0),
                 "lost_times": lost.get(bid, 0),
-                "order_won_quantity": order_won.get(bid, 0.0),
+                "order_won_quantity": order_won.get(bid, Decimal(0)),
                 # 报价预估毛利 —— 不是实际利润。无权限者为 None
                 "quote_estimated_profit": (
                     round(acc["profit"], 2) if can_see_cost else None
@@ -1635,16 +1639,17 @@ async def pricing_stats(session: AsyncSession, user: CurrentUser) -> dict:
     total_items = len(rows)
     discounted: list[float] = []
     need_approval = 0
-    by_level: dict[str, list[float]] = {}
+    by_level: dict[str, list[Decimal]] = {}
 
     for item, _version, level in rows:
         if item.approval_required:
             need_approval += 1
-        quoted_price = float(item.quoted_price)
+        quoted_price = item.quoted_price
         by_level.setdefault(level or "未分级", []).append(quoted_price)
         recommended = item.recommended_price_snapshot
-        if recommended and float(recommended) > 0:
-            discounted.append((float(recommended) - quoted_price) / float(recommended))
+        if recommended and recommended > 0:
+            # 折扣率是比率（Q3）：Decimal 计算、float 输出
+            discounted.append(float((recommended - quoted_price) / recommended))
 
     return {
         "item_count": total_items,

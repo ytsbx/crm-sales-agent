@@ -107,8 +107,10 @@ def target_snapshot(row: SalesTarget | None) -> dict | None:
         "user_id": row.user_id,
         "department_id": row.department_id,
         "new_customer_target": row.new_customer_target,
-        "sales_target": float(row.sales_target or 0),
-        "repeat_customer_target": float(row.repeat_customer_target or 0),
+        "sales_target": row.sales_target if row.sales_target is not None else Decimal(0),
+        "sales_target_exact": str(row.sales_target if row.sales_target is not None else Decimal(0)),
+        "repeat_customer_target": row.repeat_customer_target if row.repeat_customer_target is not None else Decimal(0),
+        "repeat_customer_target_exact": str(row.repeat_customer_target if row.repeat_customer_target is not None else Decimal(0)),
         "remark": row.remark,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
@@ -513,7 +515,7 @@ async def targets_with_actuals(
     # ---- 组装行：目标行 + 有实际但没设目标的（月，负责人）补零行 ----
     def actual_for(
         month: str, target_user_id: int | None, department_id: int | None = None
-    ) -> tuple[Decimal | float, Decimal | float, Decimal | float, int, int]:
+    ) -> tuple[Decimal, Decimal, Decimal, Decimal, int, int]:
         """某个 (月, 作用域) 的实际值：签单 / 回款（考核）/ 发货 / 新客 / 新建档。
 
         三个销售口径都算出来是为了"都能显示"，但**只有考核口径进差额**（§4.3）：
@@ -531,7 +533,7 @@ async def targets_with_actuals(
         #: 于是非管理员看到的是"公司目标 vs 我自己"（实测：张三 0、管理员 580）。
         company_row = target_user_id is None and department_id is None
 
-        def pick(source: dict, restrict_to: set[int] | None, company_source=None) -> Decimal | float:
+        def pick(source: dict, restrict_to: set[int] | None, company_source=None) -> Decimal:
             if restrict_to is not None:
                 return sum(
                     v for (m, o), v in source.items() if m == month and o in restrict_to
@@ -574,9 +576,9 @@ async def targets_with_actuals(
                 "user_id": t.user_id,
                 "department_id": t.department_id,
                 "new_customer_target": t.new_customer_target,
-                "sales_target": float(t.sales_target or 0),
+                "sales_target": t.sales_target if t.sales_target is not None else Decimal(0),
                 "sales_target_exact": str(t.sales_target or 0),
-                "repeat_customer_target": float(t.repeat_customer_target or 0),
+                "repeat_customer_target": t.repeat_customer_target if t.repeat_customer_target is not None else Decimal(0),
                 "repeat_customer_target_exact": str(t.repeat_customer_target or 0),
                 "new_customer_actual": new,
                 # 过程指标：本月**新建档**的客户数（不参与差额与达成率）。
@@ -758,7 +760,7 @@ async def targets_with_actuals(
         actual = Decimal(row["received_actual_exact"])
         variance = round(actual - target, 2)
         row["sales_variance_exact"] = str(variance)
-        row["sales_variance"] = float(variance)
+        row["sales_variance"] = variance
         row["sales_achievement"] = float(round(actual / target, 4)) if target else None
         row["achievement_note"] = (
             None if target else "未设销售目标，不计算达成率"
@@ -775,7 +777,7 @@ async def targets_with_actuals(
         repeat_actual_row = Decimal(row["repeat_customer_actual_exact"])
         repeat_variance = round(repeat_actual_row - repeat_target, 2)
         row["repeat_customer_variance_exact"] = str(repeat_variance)
-        row["repeat_customer_variance"] = float(repeat_variance)
+        row["repeat_customer_variance"] = repeat_variance
         row["repeat_customer_achievement"] = (
             float(round(repeat_actual_row / repeat_target, 4)) if repeat_target else None
         )
@@ -978,7 +980,7 @@ def _fmt_at(at) -> str | None:
 
 
 def _row(record_type: str, record_id: int, label: str | None, owner_id: int | None,
-         amount: Decimal | float, at) -> dict:
+         amount: Decimal, at) -> dict:
     return {
         "record_type": record_type,
         "id": record_id,
