@@ -62,7 +62,23 @@ const quoteVersion=id=>({id,quote_id:121,version_no:id===131?2:1,subtotal_amount
 const recycleRecord=(id,name,extra={})=>({id,name,status_label:'已删除',deleted_by_pending:true,deleted_at:new Date().toISOString(),...extra})
 const wecomContact={id:92,external_userid:'isolated-contact',name:'隔离企微联系人',corp_name:'隔离公司',normalize_status:'pending',normalize_status_label:'待确认',followers:[]}
 const sampleStatuses={61:'pending',62:'pending',63:'rejected',64:'approved',65:'shipped',66:'shipped',67:'rejected'}
-const sampleFixture=id=>({id,status:sampleStatuses[id]??'pending',status_label:'隔离样品状态',customer_name:'隔离样品客户',items:[],shipments:[],confirm_status:'pending',made_at:[64,65,66].includes(id)?'2026-11-18T08:00:00+08:00':null})
+// source_context.dingtalk_oa.submitted 决定详情页「下一步」按钮文案（sampleNextStep）：
+// 61 未送审→「填写或提交 OA 申请」，62 已送审→「查看 OA 进度」；63/67 被拒走「查看 OA 审批意见」（不读这字段）。
+const sampleFixture=id=>({id,status:sampleStatuses[id]??'pending',status_label:'隔离样品状态',customer_name:'隔离样品客户',items:[],shipments:[],confirm_status:'pending',made_at:[64,65,66].includes(id)?'2026-11-18T08:00:00+08:00':null,
+  source_context:[61,62].includes(id)?{dingtalk_oa:{submitted:id===62}}:null})
+// GET /samples/{id}/dingtalk 夹具，形状照 SampleDingTalkModal 的 Options 接口（字段空表=免必填校验，
+// detail_files 与 draft.sample_detail_file_ids 对上=附件校验能过，提交按钮才点得动）。
+// 62 已送审在审：pending+self_oa+instance_id → 弹窗出「撤回」按钮（用例不点）；无重提/重试动作 → 无提交按钮。
+// 63/67 被拒可重提：allowed_actions 含 resubmit → 弹窗出「修改后重新提交」。
+const sampleOaFixture=id=>({
+  configured:true,enabled:true,item_count:0,fields:[],
+  detail_files:[{id:77,file_name:'隔离样品明细表.xlsx'}],
+  draft:{mode:'standalone',fields:{},sample_detail_file_ids:[77],submitted:[62,63,67].includes(id)},
+  candidates:[],
+  records:id===62?[{id:862,inquiry_id:0,inquiry_version:0,oa_type:'sample',provider:'self_oa',instance_id:'ISO-OA-62',status:'pending',status_label:'审批中',submit_round:1,attempt_count:1,allowed_actions:[]}]
+    :[63,67].includes(id)?[{id:800+id,inquiry_id:0,inquiry_version:0,oa_type:'sample',provider:'self_oa',instance_id:`ISO-OA-${id}`,status:'rejected',status_label:'已拒绝',submit_round:1,attempt_count:1,allowed_actions:['resubmit']}]
+    :[],
+})
 const publicCustomer={id:9,name:'领取确认测试客户',pool_status:'public',status:'active',tags:[],owner_id:null}
 let analyticsExact=false
 const analyticsTargetWrites=[]
@@ -241,6 +257,12 @@ const server=createServer(async (req,res)=>{
     else if(/\/approvals\/\d+\/reject$/.test(path) && req.method==='POST') {approvalsRejected.push({id:Number(path.split('/').at(-2)),comment:url.searchParams.get('comment')});data=null}
     else if(path.endsWith('/samples')) data=url.searchParams.get('include_deleted')==='true'?{items:[recycleRecord(104,'隔离恢复样品',{customer_name:'隔离恢复样品客户'})],total:1}:{items:[],total:0,page:1,page_size:20}
     else if(/\/samples\/\d+$/.test(path)) data=sampleFixture(Number(path.split('/').at(-1)))
+    else if(/\/samples\/\d+\/dingtalk$/.test(path) && req.method==='GET') data=sampleOaFixture(Number(path.split('/').at(-2)))
+    else if(/\/samples\/\d+\/dingtalk-submit$/.test(path) && req.method==='POST') {
+      const id=Number(path.split('/').at(-2))
+      sampleRequests.push({id,action:'oa-submit',body})
+      data={id:800+id,inquiry_id:0,inquiry_version:0,oa_type:'sample',provider:'self_oa',instance_id:`ISO-OA-${id}`,status:'pending',status_label:'审批中',submit_round:1,attempt_count:1,allowed_actions:[]}
+    }
     else if(/\/samples\/\d+\/(approve|resubmit|ship|sign|revise)$/.test(path) && req.method==='POST') {
       const id=Number(path.split('/').at(-2)),action=path.split('/').at(-1)
       sampleRequests.push({id,action,body});data=sampleFixture(action==='revise'?id+100:id)
@@ -270,7 +292,10 @@ const port=server.address().port
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms))
 try {
   let browserStderr=''
-  browser=spawn(executable,['--headless=new','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-extensions','--remote-debugging-port=0',`--user-data-dir=${profile}`,'about:blank'],{stdio:['ignore','ignore','pipe']})
+  // --disable-gpu/--no-sandbox：Chrome 158 起（2026-11-24 本机实证）macOS 上子进程沙箱初始化
+  // 失败（aperitif: Failed to initialize sandbox）→ GPU 进程反复崩 → FATAL 自杀，
+  // CDP 全程无响应。冒烟只读 DOM+点击、页面全是自家 dist+本机 mock，不需要 GPU 也不受沙箱保护。
+  browser=spawn(executable,['--headless=new','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-extensions','--disable-gpu','--no-sandbox','--remote-debugging-port=0',`--user-data-dir=${profile}`,'about:blank'],{stdio:['ignore','ignore','pipe']})
   browser.stderr.on('data',chunk=>{browserStderr=(browserStderr+chunk.toString()).slice(-8000)})
   // CI 机器忙时 Chrome 启动能超 10 秒（2026-11-16 晚两条 browser timeout 假红），上限放宽到 60 秒
   for(let i=0;!existsSync(join(profile,'DevToolsActivePort'));i++){if(i>600)throw Error(`browser timeout (exit=${browser.exitCode}, signal=${browser.signalCode}): ${browserStderr}`);await sleep(100)}
@@ -548,19 +573,58 @@ try {
   for(let i=0;approvalsRejected.length===0 && i<30;i++)await sleep(100)
   assert.deepEqual(approvalsRejected,[{id:51,comment:'隔离回归拒绝原因'}])
   console.log('BROWSER_REJECT_SINGLE_FORM_CANCEL_NO_WRITE_CONFIRM_REASON=true')
+  // clickText 在上面 tasks 段的块作用域里，这里够不着（原用例组一直用裸 evaluate 也是这个原因）。
+  // OA 弹窗操作统一带「等按钮可用再点」，局部补一个等价 helper。
+  const clickModalButton = async label => {
+    const match = `Array.from(document.querySelectorAll('.semi-modal-content button')).find(b=>b.innerText.trim()===${JSON.stringify(label)})`
+    await waitFor(`${match} && !${match}.disabled`)
+    await evaluate(`${match}.click()`)
+  }
+  // 61/62/63/67：批准/拒绝/重提/改判四按钮已随 bdd6efc9 收进「同序 OA 打样流程」弹窗（产品有意改版，
+  // 本地 /approve /resubmit 收口成 409「打样审批统一在同序 OA 办理」）。测试跟上新载体：
+  // 开/关弹窗不写库，写库只发生在点提交，且钉正确单据 id。62 是已送审在审态（弹窗只读，无提交按钮）。
+  for(const [id,openLabel,writePath] of [
+    [61,'填写或提交 OA 申请','submit'],
+    [62,'查看 OA 进度',null],
+    [63,'查看 OA 审批意见','resubmit'],
+    [67,'查看 OA 审批意见','resubmit'],
+  ]) {
+    await send('Page.navigate',{url:`http://127.0.0.1:${port}/samples/${id}`})
+    const button=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()===${JSON.stringify(openLabel)})`
+    await waitFor(button)
+    const before=sampleRequests.length
+    await evaluate(`${button}.click()`)
+    await waitFor(`document.body.innerText.includes('同序 OA 打样流程')`)
+    assert.equal(sampleRequests.length,before,'opening the OA dialog must not write')
+    await clickModalButton('关闭')
+    await waitFor(`!document.body.innerText.includes('同序 OA 打样流程')`)
+    assert.equal(sampleRequests.length,before,'closing the OA dialog must not write')
+    if(!writePath) {
+      console.log(`BROWSER_SAMPLE_${id}_OA_OPEN_CLOSE_NO_WRITE=true`)
+      continue
+    }
+    await evaluate(`${button}.click()`)
+    await waitFor(`document.body.innerText.includes('同序 OA 打样流程')`)
+    if(writePath==='resubmit') {
+      // 「修改后重新提交」只把表单切回可编辑态（本地 state），不发请求
+      await clickModalButton('修改后重新提交')
+      assert.equal(sampleRequests.length,before,'resubmit edit state must not write')
+    }
+    await clickModalButton('提交打样到同序 OA')
+    for(let i=0;sampleRequests.length===before && i<30;i++)await sleep(100)
+    assert.equal(sampleRequests.length,before+1)
+    assert.equal(sampleRequests.at(-1).id,id)
+    assert.equal(sampleRequests.at(-1).action,'oa-submit')
+    console.log(`BROWSER_SAMPLE_${id}_OA_${writePath.toUpperCase()}_OPEN_CLOSE_NO_WRITE_CONFIRM_CORRECT_ID=true`)
+  }
   for(const [id,label,title,action] of [
-    [61,'批准','确认批准这张打样申请','approve'],
-    [62,'拒绝','确认拒绝这张打样申请','approve'],
-    [63,'重新提交审批','确认重新提交这张打样申请','resubmit'],
     [64,'登记寄样','确认登记寄样','ship'],
     [65,'登记签收','确认登记客户已签收','sign'],
     [66,'开新修订版（改车间依据）','确认开新修订版','revise'],
-    [67,'改判为批准','确认改判为批准','approve'],
   ]) {
     await send('Page.navigate',{url:`http://127.0.0.1:${port}/samples/${id}`})
     const button=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()===${JSON.stringify(label)})`
     await waitFor(button)
-    if(id===62) await evaluate(`{const input=document.querySelector('input[placeholder="拒绝原因（拒绝时必填）"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'隔离样品拒绝原因');input.dispatchEvent(new Event('input',{bubbles:true}))}`)
     const before=sampleRequests.length
     await evaluate(`${button}.click()`)
     await waitFor(`document.body.innerText.includes(${JSON.stringify(title)})`)
@@ -575,8 +639,6 @@ try {
     assert.equal(sampleRequests.length,before+1)
     assert.equal(sampleRequests.at(-1).id,id)
     assert.equal(sampleRequests.at(-1).action,action)
-    if(action==='approve') assert.equal(sampleRequests.at(-1).body.approved,id!==62)
-    if(id===62) assert.equal(sampleRequests.at(-1).body.reject_reason,'隔离样品拒绝原因')
     console.log(`BROWSER_SAMPLE_${id}_${action}_CANCEL_NO_WRITE_CONFIRM_CORRECT_ID=true`)
   }
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/wecom`})
