@@ -43,7 +43,7 @@
 | quote/router.py:2054-2065 | 手动重算接口 before/after 四金额 float（响应+审计） | B01-11 |
 | approval/router.py:96 | 审批列表/详情 total_amount float | B09-05 |
 | approval/rules_engine.py:439 | 规则上下文 total_cny float（阈值边界误命中） | B09-02 |
-| approval/rules_engine.py:495/503 | 毛利率/逐行毛利率 float 后参与阈值比较 | B09-02（比较必须 Decimal；展示见 Q3） |
+| approval/rules_engine.py:495/503 | 毛利率/逐行毛利率 float 后参与阈值比较 | ✅ Q7 决策3：判断 Decimal 真值、展示两位半偶、快照/脱敏接住精确键 |
 | approval/rules_engine.py:539 | 版本让价差额 float | B09-02 |
 
 **批3 订单/回款（order + payment + drafts）**
@@ -210,6 +210,18 @@ JS Number 解析 15-16 位上限是前端既有问题，本轮后端改造不使
   测试 test_decimal_q6_master_sync.py 5 项（精确字符串/归一同键/边界判不同/指纹跨形状稳定/文本不动）；
   test_sku_master_authority 2 处快照断言改字符串口径（incoming_value '12'、source_payload weight '5'）。
   全量 2251 绿。前端跟进：master 展示值/快照值为字符串。
+- **Q7（毛利率逢五口径）决策3 已落地（2026-11-24，主人拍板"按3做"）**：毛利率是**派生指标不是结算钱**，
+  舍入后再判等于给判决引入半格误差 → **判断用 Decimal 真值**（build_context 保留精确商，
+  evaluate_conditions 读 `_gross_margin_exact`/`_min_item_margin_exact` 真值键），阈值写 22.05% 就真指真值 22.05%，
+  取消"差不到半分送过线"的半格赠送（边界带 [阈值−0.005, 阈值) 与平局点命中反转，属生意口径变更，主人知悉并负责对业务打招呼）。
+  **展示两位半偶**（`_margin_display` quantize HALF_EVEN→float，纯长相：22.045→22.04、22.055→22.06，与项目半偶口径统一）；
+  命中明细解释文本用 `_fmt_margin_exact`（有几位写几位：22.048→"22.048%"）与判案依据一致防扯皮；
+  精确键进审批快照留痕（"_" 前缀豁免）、`strip_cost_context` 对无成本权限者一并抹掉（防新泄漏口）。
+  连带修 Q5 遗留：数值字段 actual/expected 双侧归一 Decimal（float/int/str actual 遇字符串阈值不再 TypeError 静默未命中、
+  overlap 回灌阈值选项不再 str 字典序误判；int 保留原样保住"30天"长相）。
+  测试 test_decimal_q7_margin_exact.py 8 项（边界带/平局/真线/无真值键回退/逐行毛利率/解释文本/格式化/脱敏）。全量 2259 绿。
+  前端跟进：审批详情展示精确毛利率（快照已带 `_gross_margin_exact` 字符串）。
+  注：另一会话曾提"仅把 round 改半偶"提案，被主人本决策覆盖（显示半偶保留、判断改真值）。
 
 ## 4. 执行状态
 
@@ -255,7 +267,7 @@ JS Number 解析 15-16 位上限是前端既有问题，本轮后端改造不使
 ## 5. 收尾残留核对（2026-11-24，八批完成后全量 grep 复核）
 
 允许保留类：① 比率/百分比输出 float（Q3：quote profit_rate/authorized_min_margin、
-targets 达成率、rules_engine 毛利率、analytics average_discount、pricing 权限比率）；
+targets 达成率、rules_engine 毛利率**展示值**（判断已改真值 Q7）、analytics average_discount、pricing 权限比率）；
 ② 挂起三项（ERP 推单报文 erp/service:172-186 B06-04、外币 fx 遗留分支、收款比例
 HALF_EVEN B03-15 含 payment/schema ratios 注解）；③ Q4 已落地（回放改精确原文解包；
 audit.py json_safe 的 decimal_as_str=False 模式保留给其它审计消费方）、Q5 settings

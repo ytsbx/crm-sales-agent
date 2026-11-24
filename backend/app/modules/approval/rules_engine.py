@@ -21,7 +21,7 @@ exception_route    异常加签：按金额分档走，末尾追加一个会签�
 
 import re
 from dataclasses import dataclass, field
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -93,9 +93,43 @@ class RuleDecision:
             "rule_version_no": self.version_no,
             "matched_conditions": _exact_jsonable(self.matched),
             "context": _exact_jsonable(
-                {k: v for k, v in self.context.items() if not k.startswith("_")}
+                # Q7 决策3：精确真值键虽带 "_" 前缀（不参与沙盒展示），但它是
+                # 判案依据、复核防扯皮的关键留痕，必须进快照；其余 "_" 为长相辅助仍排除。
+                {k: v for k, v in self.context.items()
+                 if not k.startswith("_") or k in ("_gross_margin_exact", "_min_item_margin_exact")}
             ),
         }
+
+
+def _margin_display(value: Decimal | None) -> float | None:
+    """Q7 决策3：毛利率**展示**两位半偶（纯长相，不参与判断）。
+
+    逢五规矩只管屏幕：22.045→22.04、22.055→22.06，与项目其它半偶口径统一。
+    判断走 `_gross_margin_exact` 真值键，不受这一刀影响。
+    """
+    if value is None:
+        return None
+    return float(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN))
+
+
+def _fmt_margin_exact(value: Decimal) -> str:
+    """命中明细里毛利率真值的可读文本：至少两位、有几位写几位（不假舍入）。
+
+    22.05→"22.05"、22.048→"22.048"。解释文本必须跟判案依据一致，
+    否则"显示 22.05 却未命中"又变成解释不清的扯皮点。
+    """
+    text = format(value.normalize(), "f")
+    if "." not in text:
+        text += ".00"
+    else:
+        head, dec = text.split(".")
+        if len(dec) < 2:
+            text = head + "." + dec.ljust(2, "0")
+    head, _, dec = text.partition(".")
+    sign = "-" if head.startswith("-") else ""
+    head = head.lstrip("-")
+    grouped = f"{int(head):,}" if head else "0"
+    return f"{sign}{grouped}.{dec}"
 
 
 def _fmt(value) -> str:
@@ -179,7 +213,10 @@ def evaluate_conditions(conditions: list[dict], ctx: dict) -> tuple[bool, list[d
         fld = cond.get("field")
         op = cond.get("op", "gte")
         expected = cond.get("value")
-        actual = ctx.get(fld)
+        # Q7 决策3：毛利率等派生比率**判断用真值键**（展示键是舍两位的长相）。
+        # 无真值键的字段（金额/账期/枚举）照旧读展示键，口径不变。
+        exact_key = f"_{fld}_exact"
+        actual = ctx[exact_key] if exact_key in ctx else ctx.get(fld)
         meta = next((f for f in CONTEXT_FIELDS if f["field"] == fld), None)
         if meta is None or actual is None:
             all_hit = False
@@ -190,12 +227,22 @@ def evaluate_conditions(conditions: list[dict], ctx: dict) -> tuple[bool, list[d
             })
             continue
         try:
-            # 金额上下文为 Decimal 时，把配置阈值归一为 Decimal：
-            # Q5 决策3 起新配置存精确字符串（逐位解析）；历史 int/float 行
-            # 走 Decimal(str(...)) 最短往返还原。避免 Decimal 与 float 比较
-            # 抛 TypeError 被下面静默判成"未命中"。
-            if isinstance(actual, Decimal) and isinstance(expected, (int, float, str)) and not isinstance(expected, bool):
-                expected = Decimal(str(expected))
+            # Q5 决策3 起阈值存精确字符串；Q7 复核发现：actual 若是 float/int/str
+            # （历史上下文、overlap 把阈值选项当 actual 回灌），与字符串阈值直接比
+            # 会 TypeError 静默判未命中、或 str>=str 字典序误判。数值字段双侧统一
+            # 归一 Decimal（逐位解析），金额/比率/账期同口径；非数字文本保持原样。
+            if (meta or {}).get("value_type") == "number":
+                # int 保留原样（int 与 Decimal 比较安全，且账期"30天"不该变"30.00天"）
+                if isinstance(actual, (float, Decimal, str)) and not isinstance(actual, bool):
+                    try:
+                        actual = Decimal(str(actual))
+                    except InvalidOperation:
+                        pass
+                if isinstance(expected, (int, float, str)) and not isinstance(expected, bool):
+                    try:
+                        expected = Decimal(str(expected))
+                    except InvalidOperation:
+                        pass
             if op == "gte":
                 hit = actual >= expected
             elif op == "lte":
@@ -259,7 +306,12 @@ def _cond_detail_pretty(detail: list[dict]) -> list[dict]:
         pretty.append({
             **d,
             "value_label": f"{OPS_LABEL.get(d['op'], d['op'])} {_fmt(d['value'])}{unit}",
-            "actual_label": f"{_fmt(d['actual'])}{unit}" if d["actual"] is not None else "无数据",
+            "actual_label": (
+                f"{_fmt_margin_exact(d['actual'])}{unit}"
+                if d["field"] in ("gross_margin", "min_item_margin")
+                and isinstance(d["actual"], Decimal)
+                else (f"{_fmt(d['actual'])}{unit}" if d["actual"] is not None else "无数据")
+            ),
         })
     return pretty
 
@@ -549,9 +601,10 @@ async def build_context(
     if any_missing_cost or revenue_for_margin <= 0:
         gross_margin = None
     else:
-        # 毛利率是**比率**不是钱（Q3）：保留既有 float + round 两位口径不变
-        # （半偶舍入边界属口径待决策，不在本批顺手改）；金额类上下文已 Decimal。
-        gross_margin = float((revenue_for_margin - total_cost) / revenue_for_margin * 100)
+        # Q7 决策3（主人拍板"按3做"）：毛利率**判断用真值**——比率是派生指标不是
+        # 结算钱，舍入后再判等于给判决引入半格误差。这里保留 Decimal 精确商
+        # （除法默认 28 位有效数字，"够多位"），展示层才舍两位（见返回 dict）。
+        gross_margin = (revenue_for_margin - total_cost) / revenue_for_margin * 100
     # 单件毛利率仍是"单件对单件"，不受上面的量纲修正影响。
     # 同样地：单价非正、成本缺失的行算不出毛利率，此时整列给 None
     # （0 会被 `lte` 类型的规则当成"毛利率 0%"而误命中）。
@@ -559,7 +612,7 @@ async def build_context(
         min_item_margin = None
     else:
         min_item_margin = min(
-            float((p - c) / p * 100) for p, c in zip(prices, unit_costs)
+            (p - c) / p * 100 for p, c in zip(prices, unit_costs)
         )
 
     customer_id = quote.customer_id
@@ -626,10 +679,13 @@ async def build_context(
         # None = 不可计算（缺成本 / 产品收入非正 / 没有明细）。**不要**把它折成 0：
         # `evaluate_conditions` 对 None 的判据是"未命中"，折成 0 就变成"毛利率 0%"，
         # 那正是本轮要修的两类误判（缺成本当 100%、负收入当 200%）的另一面。
-        "gross_margin": round(gross_margin, 2) if gross_margin is not None else None,
-        "min_item_margin": (
-            round(min_item_margin, 2) if min_item_margin is not None else None
-        ),
+        # Q7 决策3：展示两位（半偶，纯长相）+ 精确真值键（判断/留痕用）。
+        # 屏幕数与判案数在边界带可能不同（22.048 显示 22.05 但真值未到线），
+        # 精确键进快照/命中明细供复核防扯皮；前端详情页展示归前端会话跟进。
+        "gross_margin": _margin_display(gross_margin),
+        "min_item_margin": _margin_display(min_item_margin),
+        "_gross_margin_exact": gross_margin,
+        "_min_item_margin_exact": min_item_margin,
         "customer_level": (customer_row.level if customer_row else None) or "",
         "customer_has_overdue": overdue_exists is not None,
         "concession_amount": concession,
@@ -691,6 +747,10 @@ def strip_cost_context(ctx: dict, *, can_see_cost: bool) -> dict:
     for name in COST_SENSITIVE_FIELDS:
         if name in stripped:
             stripped[name] = COST_HIDDEN
+        # Q7 决策3：精确真值键同样由成本推出，无权限者一并抹掉（否则真值键成新泄漏口）。
+        exact_key = f"_{name}_exact"
+        if exact_key in stripped:
+            stripped[exact_key] = COST_HIDDEN
     # 条件命中详情里的实际值：命中成本敏感字段时把 actual 抹掉（保留规则与阈值，
     # 否则沙盒"哪条规则命中"这个用途就废了）。
     for key in list(stripped):
