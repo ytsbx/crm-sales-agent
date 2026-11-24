@@ -21,6 +21,8 @@ from decimal import Decimal
 
 import pytest
 from fastapi import FastAPI
+
+from app.core.jsonio import DecimalJSONResponse
 from httpx import ASGITransport, AsyncClient
 from starlette.requests import Request
 
@@ -600,7 +602,7 @@ async def test_generate_locks_order_before_checking_existing_plans(pay_db, pay):
 async def test_generate_three_periods_requires_each_due_date(pay_db, pay, names):
     order = make_order(pay_db, total="1000")
     pay_db.commit()
-    app = FastAPI()
+    app = FastAPI(default_response_class=DecimalJSONResponse)
     register_exception_handlers(app)
     app.include_router(payment_router)
 

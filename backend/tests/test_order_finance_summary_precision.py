@@ -31,6 +31,7 @@ def test_summary_exact_amounts_from_decimal(monkeypatch, text):
         expected.update(received_amount=amount*2,unreceived_amount=-amount,unsettled_plan_amount=Decimal(0))
         for key,value in expected.items():
             assert result[key+'_exact'] == format(value,'.2f')
-            assert result[key] == float(value)
+            # 批3：数字字段保留 Decimal 原值，与期望逐位相等（不再经 float）
+            assert result[key] == value
         assert result['plan_count'] == len(plans) and result['overdue_count'] == 0
     asyncio.run(run())

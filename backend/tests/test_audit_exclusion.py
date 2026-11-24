@@ -3,6 +3,8 @@ from datetime import UTC, datetime
 
 import pytest
 from fastapi import FastAPI
+
+from app.core.jsonio import DecimalJSONResponse
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -39,7 +41,7 @@ def client():
             session.add(AuditLog(id=identity, action=action, business_type=kind, business_id=1,
                 operator_id=2 if identity == 2 else 1, created_at=datetime(2026,11,16,12,tzinfo=UTC)))
         session.commit()
-        app = FastAPI()
+        app = FastAPI(default_response_class=DecimalJSONResponse)
         app.include_router(router)
         app.dependency_overrides[get_current_user] = lambda: make_user(1, permissions=("audit:view",))
         app.dependency_overrides[get_db] = lambda: SyncSessionAsAsync(session)

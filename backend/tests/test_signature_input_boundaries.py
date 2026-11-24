@@ -6,6 +6,8 @@ import hmac
 import httpx
 import pytest
 from fastapi import FastAPI
+
+from app.core.jsonio import DecimalJSONResponse
 from starlette.requests import Request
 
 from app.core.config import settings
@@ -39,7 +41,7 @@ async def test_public_image_bad_signature_rejected_before_database(signature):
 
 @pytest.mark.anyio
 async def test_public_image_http_rejects_unicode_signature_instead_of_500():
-    app = FastAPI()
+    app = FastAPI(default_response_class=DecimalJSONResponse)
     app.include_router(router)
     register_exception_handlers(app)
     async def no_database():

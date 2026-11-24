@@ -49,8 +49,12 @@ def ensure_payment_pending(record: PaymentRecord) -> None:
         )
 
 
-def _f(value: Decimal | None) -> float | None:
-    return None if value is None else float(value)
+def _f(value: Decimal | None) -> Decimal | None:
+    """序列化总闸：保留 Decimal 原值（float→Decimal 专项批3）。
+
+    JSON 出口（core/jsonio）按原值渲染精确数字；旧数字字段与 *_exact 同源同值。
+    """
+    return value
 
 
 def effective_allocations():
@@ -551,7 +555,7 @@ async def serialize_payment(session: AsyncSession, record: PaymentRecord) -> dic
         "allocated_amount_exact": str(allocated),
         "unallocated_amount_exact": str(max((record.received_amount or ZERO) - allocated, ZERO)) if record.status == "confirmed" else "0.00",
         "allocated_amount": _f(allocated),
-        "unallocated_amount": _f(max((record.received_amount or ZERO) - allocated, ZERO)) if record.status == "confirmed" else 0.0,
+        "unallocated_amount": _f(max((record.received_amount or ZERO) - allocated, ZERO)) if record.status == "confirmed" else ZERO,
         "allocation_mode": record.allocation_mode,
         "currency": record.currency,
         "payment_method": record.payment_method,

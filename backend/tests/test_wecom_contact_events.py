@@ -6,6 +6,8 @@ import httpx
 import pytest
 from Crypto.Cipher import AES
 from fastapi import FastAPI
+
+from app.core.jsonio import DecimalJSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -53,7 +55,7 @@ async def test_callback_queues_once_and_background_sync_retries(event_db, monkey
     monkeypatch.setattr(settings, "wecom_callback_aes_key", base64.b64encode(bytes(range(32))).decode().rstrip("="))
     monkeypatch.setattr(settings, "wecom_external_contact_secret", "isolated-contact-event-key")
     monkeypatch.setattr(service.wecom_client, "_token_cache", {})
-    app = FastAPI()
+    app = FastAPI(default_response_class=DecimalJSONResponse)
     register_exception_handlers(app)
     app.include_router(router.router)
 

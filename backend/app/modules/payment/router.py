@@ -1266,7 +1266,7 @@ async def plan_payments(
     for row in rows:
         item = await svc.serialize_payment(session, row)
         amount = sum((Decimal(a["amount_exact"]) for a in item["allocations"] if a["plan_id"] == plan_id), Decimal(0))
-        item["plan_allocated_amount"] = float(amount)
+        item["plan_allocated_amount"] = amount
         item["plan_allocated_amount_exact"] = str(amount)
         items.append(item)
     return ok(items)

@@ -33,8 +33,12 @@ from app.modules.quote.model import QuoteItem, QuoteVersion
 from app.modules.user.model import User
 
 
-def _f(value: Decimal | None) -> float | None:
-    return None if value is None else float(value)
+def _f(value: Decimal | None) -> Decimal | None:
+    """序列化总闸：保留 Decimal 原值（float→Decimal 专项批3）。
+
+    JSON 出口（core/jsonio）按原值渲染精确数字；数量/金额不再经 float 丢尾数。
+    """
+    return value
 
 
 def serialize_order(
@@ -124,6 +128,7 @@ def serialize_item(item: SalesOrderItem, sku_code: str | None = None) -> dict:
         "sku_snapshot": item.sku_snapshot,
         "specification": item.specification,
         "quantity": _f(item.quantity),
+        "quantity_exact": format(item.quantity, 'f') if item.quantity is not None else None,
         "unit_price": _f(item.unit_price),
         "unit_price_exact": str(item.unit_price) if item.unit_price is not None else None,
         "amount": _f(item.amount),

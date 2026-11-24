@@ -10,6 +10,8 @@ import pytest
 import httpx
 from fastapi import FastAPI
 
+from app.core.jsonio import DecimalJSONResponse
+
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from starlette.requests import Request
@@ -111,7 +113,7 @@ async def test_revision_without_approval_source_starts_a_tongxu_draft(monkeypatc
 
 @pytest.mark.anyio
 async def test_local_review_endpoints_no_longer_accept_approval_or_resubmission():
-    app = FastAPI()
+    app = FastAPI(default_response_class=DecimalJSONResponse)
     register_exception_handlers(app)
     app.include_router(sample_router.router)
     app.dependency_overrides[get_current_user] = lambda: make_user(101, permissions=("sample:manage",))

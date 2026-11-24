@@ -7,6 +7,8 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from app.core.jsonio import DecimalJSONResponse
+
 from app.core import config
 from app.core.audit import AuditLog
 from app.core.database import get_db
@@ -31,7 +33,7 @@ async def test_wecom_customer_actions_follow_crm_permissions_and_scope(db_sessio
     db_session.commit()
     actor = make_user(101, permissions=("wecom:view", "wecom:manage"))
     session = SyncSessionAsAsync(db_session)
-    app = FastAPI()
+    app = FastAPI(default_response_class=DecimalJSONResponse)
     register_exception_handlers(app)
     app.include_router(routes.router)
     app.dependency_overrides[get_current_user] = lambda: actor
@@ -55,7 +57,7 @@ async def test_wecom_customer_actions_follow_crm_permissions_and_scope(db_sessio
 
 @pytest.mark.anyio
 async def test_operations_require_separate_permissions_and_transfer_department(monkeypatch):
-    app = FastAPI()
+    app = FastAPI(default_response_class=DecimalJSONResponse)
     register_exception_handlers(app)
     app.include_router(routes.router)
     permissions = {"wecom:view", "wecom:manage", "wecom:transfer_preview"}

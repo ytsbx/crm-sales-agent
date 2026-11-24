@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
+
+from app.core.jsonio import DecimalJSONResponse
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
@@ -18,7 +20,7 @@ from app.modules.analytics import targets
 
 @pytest.mark.parametrize("year", [0, 1, 9999, 10000])
 def test_report_routes_reject_years_that_cannot_form_a_business_year(year):
-    app = FastAPI()
+    app = FastAPI(default_response_class=DecimalJSONResponse)
     app.include_router(router)
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(roles=["admin"])
     session = AsyncMock()

@@ -210,12 +210,13 @@ async def test_failed_second_contact_rolls_back_entire_batch(db,monkeypatch):
 async def test_http_requires_all_three_permissions(db,permissions):
     import httpx
     from fastapi import FastAPI
+    from app.core.jsonio import DecimalJSONResponse
     from app.core.database import get_db
     from app.core.deps import get_current_user
     from app.core.errors import register_exception_handlers
     from app.modules.wecom.router import router
     raw,session=db
-    app=FastAPI();register_exception_handlers(app);app.include_router(router)
+    app=FastAPI(default_response_class=DecimalJSONResponse);register_exception_handlers(app);app.include_router(router)
     async def viewer():return Obj(id=1,roles=[],has=lambda code:code in permissions)
     async def database():yield session
     app.dependency_overrides[get_current_user]=viewer
@@ -230,12 +231,13 @@ async def test_http_requires_all_three_permissions(db,permissions):
 async def test_http_preview_confirm_and_payload_rejection(db):
     import httpx
     from fastapi import FastAPI
+    from app.core.jsonio import DecimalJSONResponse
     from app.core.database import get_db
     from app.core.deps import get_current_user
     from app.core.errors import register_exception_handlers
     from app.modules.wecom.router import router
     raw,session=db
-    app=FastAPI();register_exception_handlers(app);app.include_router(router)
+    app=FastAPI(default_response_class=DecimalJSONResponse);register_exception_handlers(app);app.include_router(router)
     permissions = {'wecom:view', 'wecom:import_preview', 'customer:create', 'customer:assign'}
     async def viewer():return Obj(id=1,roles=[],has=permissions.__contains__)
     async def database():yield session

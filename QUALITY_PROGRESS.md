@@ -5315,3 +5315,11 @@
 - 新发现残余项 Q5：规则阈值配置存 JSONB 经 float 读写，16 位阈值配置侧已失真（ctx 侧已修）；实际阈值多整元小额风险低，根治需无损 JSONB 或字符串配置，待决策不擅自改。
 - 测试：test_quote_cost_gate 版本对比 before/after 旧 float 断言收紧为 Decimal 精确比较（exact 断言原样保留）；新增 test_decimal_batch2_quote_approval 4 项（序列化 Decimal+线路逐位精确、三位数量边界、阈值归一边界/静默未命中修复、trace 字符串可复算、比率口径不变）。全量 2216 项通过。
 - 提交只推 GitHub；未部署、未动库、服务器未碰。
+
+### float→Decimal 专项 · 批3 落地（2026-11-24，本会话）
+
+- order/service `_f` 总闸改 Decimal 透传（订单总额/四项组成/已收/未收、订单行数量/单价/金额、批次聚合 ordered/planned/shipped/remaining 一次收口）；serialize_item 补 `quantity_exact`（草稿本有、订单行缺，往返契约对齐）。order/router 建单响应 total_amount 去 float（该 body 进幂等 complete，回放侧 decimal_as_str=False 契约不变）。drafts 明细 quantity/unit_price 去 float（exact 本已在）。
+- payment/service `_f` 透传（计划/回款记录/分配/财务概览旧数字字段与 *_exact 同源同值）；未确认回款的 unallocated 零值 0.0→Decimal(0)。payment/router plan_allocated_amount 去 float（exact 旁路本已在）。ratios `list[float]` 注解与 HALF_EVEN 拆分口径按挂起决定不动。
+- 连带修复（批1 基础设施补漏）：11 个测试文件里本地自搭 `FastAPI()` 仍用旧 JSONResponse，全局 Decimal 编码器注册生效后跨测试污染致 json.dumps TypeError（单跑不炸、全量炸）；统一改 `FastAPI(default_response_class=DecimalJSONResponse)` 与主应用接线一致。
+- 测试断言收紧：batch12 审计 allocations 与序列化结果按 amount==amount_exact 逐字相等（比旧 float 断言更严）；order_finance_summary_precision 数字字段断言 float→Decimal 逐位相等。新增 test_decimal_batch3_order_payment 4 项（订单/订单行大金额 Decimal+线路逐位、草稿 DB 往返、财务概览大金额线路）。替身 SQLite 的 Numeric 经 float 存储属测试环境限制（生产 PG 精确），DB 往返用例改用 double 可精确表示值，大金额精度由序列化层用例保证。
+- 全量 2220 项通过。提交只推 GitHub；未部署、未动库、服务器未碰；另一会话未提交改动不纳入。

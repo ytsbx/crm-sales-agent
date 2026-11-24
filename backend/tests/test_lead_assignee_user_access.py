@@ -3,6 +3,8 @@
 import httpx
 import pytest
 from fastapi import FastAPI
+
+from app.core.jsonio import DecimalJSONResponse
 from sqlalchemy.orm import Session
 
 from conftest import SyncSessionAsAsync, make_engine, make_user
@@ -29,7 +31,7 @@ def isolated_app():
         raw.flush()
         raw.execute(user_roles.insert().values(user_id=21, role_id=1))
         raw.commit()
-        app = FastAPI()
+        app = FastAPI(default_response_class=DecimalJSONResponse)
         app.include_router(router)
         register_exception_handlers(app)
         async def session_override():

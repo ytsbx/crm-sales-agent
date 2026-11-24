@@ -193,7 +193,10 @@ async def test_manual_intent_survives_every_sync_and_rebalance(case,amounts):
     assert totals['unallocated_amount']==float(D(200)-expected) and totals['unreceived_amount']==0
     assert totals['unsettled_plan_amount']==float(D(200)-expected)
     audit=raw.query(AuditLog).filter_by(action='update_allocations').order_by(AuditLog.id.desc()).first()
-    assert audit.after_data['allocations']==actual
+    # 审计 JSONB 里金额按 Q2 存原值字符串；与序列化结果的 *_exact 逐字相等（比旧 float 断言更严）
+    assert audit.after_data['allocations'] == [
+        {**row, 'amount': row['amount_exact']} for row in actual
+    ]
     # 留出 50 元合法的应收空间，仍验证改高金额时手工分配不会被重排。
     raw.get(SalesOrder, 1).total_amount = D(250)
     raw.commit()

@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 from fastapi import FastAPI
+
+from app.core.jsonio import DecimalJSONResponse
 from starlette.requests import Request
 
 from app.core.audit import AuditLog
@@ -63,7 +65,7 @@ async def test_erp_status_sync_requires_order_management_in_scope(manual_order_d
     actor = make_user(101, permissions={"order:view"})
     refresh = AsyncMock(return_value={"changed": False})
     monkeypatch.setattr(erp_router.svc, "refresh_status", refresh)
-    app = FastAPI()
+    app = FastAPI(default_response_class=DecimalJSONResponse)
     register_exception_handlers(app)
     app.include_router(router.router)
     app.include_router(erp_router.router)

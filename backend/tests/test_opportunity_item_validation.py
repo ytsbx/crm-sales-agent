@@ -3,6 +3,8 @@
 from decimal import Decimal
 
 from fastapi import FastAPI
+
+from app.core.jsonio import DecimalJSONResponse
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 import pytest
@@ -14,7 +16,7 @@ from app.modules.opportunity.model import Opportunity, OpportunityItem
 
 def test_null_quantity_is_a_clear_parameter_error():
     assert OpportunityItem.__table__.c.quantity.nullable is False
-    app = FastAPI()
+    app = FastAPI(default_response_class=DecimalJSONResponse)
     register_exception_handlers(app)
 
     @app.patch("/item")

@@ -211,7 +211,7 @@ async def create_order(
     body = {
         "order_id": order.id,
         "order_no": order.order_no,
-        "total_amount": float(order.total_amount),
+        "total_amount": order.total_amount,
         "currency": order.currency,
     }
     if reservation is not None:

@@ -196,7 +196,12 @@ JS Number 解析 15-16 位上限是前端既有问题，本轮后端改造不使
 - [x] 批2 报价链（quote/service _f 透传 Decimal、offending/summary/审计/重算对比去 float、
       approval/router 出参、rules_engine 金额上下文 Decimal + 阈值归一 + trace 字符串化；
       比率保留 float；全量 2216 通过）
-- [ ] 批3 订单/回款
+- [x] 批3 订单/回款（order/service _f 透传 + serialize_item 补 quantity_exact、order/router 建单
+      total_amount、drafts 数量/单价、payment/service _f 透传 + unallocated 零值 Decimal、
+      payment/router plan_allocated_amount；ratios 注解与 HALF_EVEN 拆分口径挂起不动；
+      连带：11 个测试文件本地 FastAPI() 统一接 DecimalJSONResponse（与主应用同款出口，
+      修跨测试编码器注册污染）、batch12 审计断言收紧为 exact 字符串逐字相等、
+      finance precision 断言 float→Decimal；新增批3 边界 4 项；全量 2220 通过）
 - [ ] 批4 定价/物流/产品
 - [ ] 批5 客户/商机/询价
 - [ ] 批6 分析/目标
