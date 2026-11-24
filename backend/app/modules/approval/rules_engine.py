@@ -23,6 +23,8 @@ import re
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN
 
+from app.core.money import exact_decimal_text
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -116,15 +118,9 @@ def _fmt_margin_exact(value: Decimal) -> str:
     """命中明细里毛利率真值的可读文本：至少两位、有几位写几位（不假舍入）。
 
     22.05→"22.05"、22.048→"22.048"。解释文本必须跟判案依据一致，
-    否则"显示 22.05 却未命中"又变成解释不清的扯皮点。
+    否则"显示 22.05 却未命中"又变成解释不清的扯皮点。千分位分组在此叠加。
     """
-    text = format(value.normalize(), "f")
-    if "." not in text:
-        text += ".00"
-    else:
-        head, dec = text.split(".")
-        if len(dec) < 2:
-            text = head + "." + dec.ljust(2, "0")
+    text = exact_decimal_text(value)
     head, _, dec = text.partition(".")
     sign = "-" if head.startswith("-") else ""
     head = head.lstrip("-")

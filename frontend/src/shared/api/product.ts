@@ -24,13 +24,13 @@ export interface SkuPayload {
   specification?: string | null
   color?: string | null
   material?: string | null
-  length?: number | null
-  width?: number | null
-  height?: number | null
-  weight?: number | null
-  carton_qty?: number | null
-  carton_volume?: number | null
-  moq?: number | null
+  length?: number | string | null
+  width?: number | string | null
+  height?: number | string | null
+  weight?: number | string | null
+  carton_qty?: number | string | null
+  carton_volume?: number | string | null
+  moq?: number | string | null
   package_type?: string | null
   unit?: string | null
 }

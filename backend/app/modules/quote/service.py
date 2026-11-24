@@ -11,7 +11,7 @@ from app.core.audit import json_safe
 from app.core.textfit import fit_column
 from app.core.draft_visibility import ensure_draft_access, private_draft
 from app.core.errors import AppError, ErrorCode
-from app.core.money import line_amount
+from app.core.money import line_amount, exact_decimal_text
 from app.core.timebase import today_business
 from app.core.trade_mode import CNY, ensure_currency_allowed
 from app.modules.approval.model import ApprovalDefinition, ApprovalInstance, ApprovalRecord
@@ -2549,7 +2549,7 @@ async def submit_for_approval(
             item.approval_required = True
             item.approval_reason = (
                 f"报价 ¥{price_cny:.2f}（折人民币）低于最低允许价 ¥{floor:.2f}，"
-                f"利润率 {profit_rate * 100:.2f}%（授权 {min_margin * 100:.0f}%）"
+                f"利润率 {exact_decimal_text(profit_rate * 100)}%（授权 {min_margin * 100:.0f}%）"
             )
             offending.append(
                 {
@@ -2667,7 +2667,7 @@ async def submit_for_approval(
             and whole_margin < min_margin - Decimal("0.000001")
         ) or weighted_floor_hit:
             reason = (
-                f"整单有效金额 ¥{revenue_cny:.2f}（含整单优惠）利润率 {whole_margin * 100:.2f}%"
+                f"整单有效金额 ¥{revenue_cny:.2f}（含整单优惠）利润率 {exact_decimal_text(whole_margin * 100)}%"
                 f"（授权 {min_margin * 100:.0f}%）"
             )
             if weighted_floor_hit:

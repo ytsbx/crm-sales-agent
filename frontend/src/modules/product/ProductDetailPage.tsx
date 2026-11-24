@@ -128,11 +128,11 @@ const EMPTY_SKU: SkuForm = {
   unit: '件',
 }
 
-const toNumber = (value: string): number | null => {
+/** Q6 决策3：数值字段提交**原样字符串**（精确留档），不再经 JS Number 读回丢分。
+    空串→null；非法文本交后端 parse_numeric_field 明确报错（旧 toNumber 会静默变 null 抹数据）。 */
+const toExactNumeric = (value: string): string | null => {
   const trimmed = value.trim()
-  if (!trimmed) return null
-  const parsed = Number(trimmed)
-  return Number.isFinite(parsed) ? parsed : null
+  return trimmed ? trimmed : null
 }
 
 /** 正式报价对客要印的三个字段，与后端 `master.QUOTE_DISPLAY_FIELDS` 对齐。 */
@@ -922,13 +922,13 @@ export default function ProductDetailPage() {
             specification: skuForm.specification || null,
             color: skuForm.color || null,
             material: skuForm.material || null,
-            length: toNumber(skuForm.length),
-            width: toNumber(skuForm.width),
-            height: toNumber(skuForm.height),
-            weight: toNumber(skuForm.weight),
-            carton_qty: toNumber(skuForm.carton_qty),
-            carton_volume: toNumber(skuForm.carton_volume),
-            moq: toNumber(skuForm.moq),
+            length: toExactNumeric(skuForm.length),
+            width: toExactNumeric(skuForm.width),
+            height: toExactNumeric(skuForm.height),
+            weight: toExactNumeric(skuForm.weight),
+            carton_qty: toExactNumeric(skuForm.carton_qty),
+            carton_volume: toExactNumeric(skuForm.carton_volume),
+            moq: toExactNumeric(skuForm.moq),
             package_type: skuForm.package_type || null,
             unit: skuForm.unit || null,
           })

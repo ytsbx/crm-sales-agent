@@ -46,3 +46,18 @@ def format_unit_price(value) -> str:
     digits = integer.lstrip("-")
     grouped = f"{int(digits):,}" if digits.isdigit() else digits
     return f"{sign}{grouped}" + (f".{fraction}" if fraction else "")
+
+
+def exact_decimal_text(value: Decimal) -> str:
+    """Q7 决策3：解释/留痕文本与判案依据一致——**有几位写几位，至少两位，不假舍入**。
+
+    22.05→"22.05"、22.048→"22.048"、30→"30.00"。舍入只留给纯展示长相；
+    凡是要解释"为什么命中/未命中"的文本，必须写判案用的真值位数。
+    """
+    text = format(value.normalize(), "f")
+    if "." not in text:
+        return text + ".00"
+    head, dec = text.split(".")
+    if len(dec) < 2:
+        text = head + "." + dec.ljust(2, "0")
+    return text

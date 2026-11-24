@@ -533,14 +533,18 @@ export default function RulesPanel() {
                           ]}
                         />
                       ) : meta?.value_type === 'number' ? (
-                        <InputNumber
-                          value={Number(cond.value) || undefined}
+                        /* Q5 决策3：阈值按**精确字符串**读写。InputNumber 会经 JS Number
+                           读回（16 位丢分）且把 0 显示成空；改文本输入原样保留字符串，
+                           提交由后端归一为精确十进制（非法输入 422 明确报错）。 */
+                        <Input
+                          value={cond.value === null || cond.value === undefined ? '' : String(cond.value)}
                           onChange={(v) => {
                             const conditions = [...editing.conditions]
-                            conditions[index] = { ...cond, value: v ?? 0 }
+                            conditions[index] = { ...cond, value: v }
                             setEditing({ ...editing, conditions })
                           }}
                           suffix={meta.unit}
+                          placeholder="精确数字，如 22.05"
                           style={{ flex: 1 }}
                         />
                       ) : (
@@ -907,6 +911,13 @@ function SandboxPanel({ fields: _fields }: { fields: ConditionFieldMeta[] }) {
             {(result.context_fields ?? [])
               .filter((f) => result.context[f.field] !== undefined && !String(f.field).startsWith('_'))
               .map((f) => `${f.label} ${String(result.context[f.field])}${f.unit}`)
+              .concat(
+                /* Q7 决策3：边界带上显示值与判案真值可能不同（22.048 显示 22.05），
+                   真值并列展示防扯皮；快照已带精确键。 */
+                (['_gross_margin_exact', '_min_item_margin_exact'] as const)
+                  .filter((k) => result.context[k] !== undefined && result.context[k] !== null)
+                  .map((k) => `${k === '_gross_margin_exact' ? '综合毛利率' : '最低明细毛利率'}(真值) ${String(result.context[k])}%`),
+              )
               .join(' ｜ ')}
           </div>
           <div style={{ display: 'grid', gap: 8 }}>
