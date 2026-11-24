@@ -213,7 +213,20 @@ def normalize_field_value(field: str, value: Any) -> Any:
         # 空串与 None 是同一件事：**增量里的空值**，不能当成"明确要清空"。
         return None
     if field in _TEXT_FIELDS:
-        return str(value).strip() or None
+        text = str(value).strip() or None
+        # B20-06：列宽前置校验（max_length 读 Sku 列宽，与核定_apply 路径同一把尺子），
+        # 超长当场 422，不再到 flush 才 500、差异证据被截断。
+        max_length = Sku.__table__.columns[field].type.length
+        if text is not None and len(text) > max_length:
+            from app.core.patch_schema import FIELD_LABELS
+
+            label = FIELD_LABELS.get(f"SkuUpdate.{field}", FIELD_LABELS.get(field, field))
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                f"来源的{label}最长可保存 {max_length} 个字符，请核对后再核定",
+                422,
+            )
+        return text
     # 数值字段的约束**与常规 SKU 接口共用一份**（第九批问题 ④）。
     #
     # 原来这里只做类型转换：`int(Decimal("1.9"))` 静默截断成 1、`-5` 直接放行、

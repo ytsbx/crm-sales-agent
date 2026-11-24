@@ -60,7 +60,11 @@ async def public_inquiry_image(file_id: int, expires: int, sig: str, session: As
         BusinessFile.file_id == file_id, BusinessFile.business_type == "inquiry"
     ))).scalars().first()
     path = storage.absolute_path(record.object_key)
-    if linked is None or not path.is_file():
+    # B12-05：询价已软删后图片链接同步失效，不能拿着旧签名继续读已删单据的附件
+    from app.modules.inquiry.model import CustomInquiry
+
+    inquiry = await session.get(CustomInquiry, linked.business_id) if linked is not None else None
+    if linked is None or inquiry is None or inquiry.deleted_at is not None or not path.is_file():
         raise AppError(ErrorCode.NOT_FOUND, "图片不存在", 404)
     return FileResponse(path, media_type=safe_type, headers={
         "Content-Disposition": "inline", "X-Content-Type-Options": "nosniff",

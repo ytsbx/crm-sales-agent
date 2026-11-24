@@ -205,6 +205,8 @@ async def delete_session(
         AgentAction.session_id == session_id,
         AgentAction.status.in_(("proposed", *runtime.PENDING_ACTION_STATUSES, "expired")),
     ))
+    # B16-05：会话删除连执行记录一起清，与消息同口径；下面查询再滤软删会话兜历史行
+    await session.execute(delete(AgentExecution).where(AgentExecution.session_id == session_id))
     row.deleted_at = datetime.now(UTC)
     row.title = "已删除的会话"
     row.context_type = None
@@ -402,6 +404,8 @@ async def get_execution(
     agent_session = await session.get(AgentSession, row.session_id)
     if agent_session is None or agent_session.user_id != user.id:
         raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该执行记录不在你的数据范围内", 403)
+    if agent_session.deleted_at is not None:  # B16-05：已删会话视同不存在
+        raise AppError(ErrorCode.NOT_FOUND, "执行记录不存在", 404)
     return ok(
         {
             "id": row.id,
@@ -443,6 +447,8 @@ async def retry_execution(
     agent_session = await session.get(AgentSession, row.session_id)
     if agent_session is None or agent_session.user_id != user.id:
         raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该执行记录不在你的数据范围内", 403)
+    if agent_session.deleted_at is not None:  # B16-05：已删会话不允许重试其执行
+        raise AppError(ErrorCode.NOT_FOUND, "执行记录不存在", 404)
     if row.status != "failed":
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
@@ -617,6 +623,7 @@ async def list_executions(
         select(AgentExecution)
         .join(AgentSession, AgentSession.id == AgentExecution.session_id)
         .where(AgentSession.user_id == user.id)
+        .where(AgentSession.deleted_at.is_(None))  # B16-05：已删会话的执行记录不再露出
         .order_by(AgentExecution.id.desc())
     )
     rows, total = await paginate(session, stmt, page, page_size)

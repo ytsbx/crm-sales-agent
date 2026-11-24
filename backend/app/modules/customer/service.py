@@ -728,6 +728,12 @@ async def transfer_customer(
     if locked is None:
         raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
 
+    # B14-01：锁内复查操作者数据范围。路由/批量入口的可见性预检查在锁外，
+    # 并发转手后客户可能已落到操作者范围外的人手里——锁内不复查就会越范围改归属。
+    # 系统自动改派（automatic=True，离职交接/公海回收）是已授权的系统决定，不做个人范围复查。
+    if not automatic:
+        await assert_customer_visible(session, user, customer)
+
     # ---- 核验：这一项现在**还归不归那个人**（第九批复审 P1，2026-10-07）----
     #
     # `only_from_owner_id` 传进来 = "只从这个人手里改"。此前它只用来限制**待办迁移**

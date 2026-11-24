@@ -204,16 +204,14 @@ def test_taking_external_sku_text_requires_it_to_fit_the_local_field():
     session = _session()
     sku_id = _sku(session, code="A-1", name="甲件", specification="600×400")
     incoming = "字" * 201
-    _ingest(session, fields={"specification": incoming})
-    diff = _diffs(session)[0][0]
-
+    # B20-06：列宽校验前移到核定入口（normalize），超长增量当场拒收，不再落差异行
     with pytest.raises(AppError, match="规格.*200"):
-        _confirm(session, diff["id"], RESOLUTION_TAKE_EXTERNAL, note="取外部规格")
-
+        _ingest(session, fields={"specification": incoming})
     assert _get(session, Sku, sku_id).specification == "600×400"
-    row = _get(session, IntegrationDiff, diff["id"])
-    assert row.resolved_at is None
-    assert row.incoming_value == incoming
+    assert _diffs(session)[0] == []
+    # 采纳路径同一把尺子仍在（_apply 直调也拦）
+    with pytest.raises(AppError, match="规格.*200"):
+        m._ensure_sku_text_fits("specification", incoming)
 
 
 def test_null_increment_does_not_erase_manual_data_and_needs_evidence():

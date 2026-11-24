@@ -235,7 +235,7 @@ async def test_failed_agent_action_cannot_be_relabelled_as_cancelled(monkeypatch
 async def test_only_failed_agent_execution_can_retry(monkeypatch):
     from app.modules.agent import router
     row = SimpleNamespace(id=9, status='running', session_id=3)
-    owner_session = SimpleNamespace(user_id=101)
+    owner_session = SimpleNamespace(user_id=101, deleted_at=None)
     db = SimpleNamespace(get=AsyncMock(side_effect=[row, owner_session]))
     retry = AsyncMock()
     monkeypatch.setattr(router.runtime, 'retry_tool_call', retry)

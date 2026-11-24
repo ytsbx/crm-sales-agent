@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.core.errors import AppError
 from app.modules.dingtalk.service import first_image_attachment
 from app.modules.file.model import BusinessFile, FileRecord
+from app.modules.inquiry.model import CustomInquiry
 from app.modules.file.router import public_inquiry_image
 from tests.conftest import SyncSessionAsAsync
 
@@ -17,7 +18,7 @@ from tests.conftest import SyncSessionAsAsync
 def image_db(db_session, tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "file_root", str(tmp_path))
     monkeypatch.setattr(settings, "jwt_secret", "isolated-inquiry-image-test-secret")
-    for model in (FileRecord, BusinessFile):
+    for model in (FileRecord, BusinessFile, CustomInquiry):
         model.__table__.create(db_session.get_bind(), checkfirst=True)
     return db_session, tmp_path
 
@@ -30,6 +31,9 @@ def add_image(image_db, file_id, suffix, mime):
     (root / key).write_bytes(content)
     db.add(FileRecord(id=file_id, file_name=key, object_key=key, mime_type=mime))
     db.add(BusinessFile(file_id=file_id, business_type="inquiry", business_id=1))
+    # B12-05 后公共图片口要核询价本体：fixture 补一条未删除的询价，链接才有宿主
+    if db.get(CustomInquiry, 1) is None:
+        db.add(CustomInquiry(id=1, title="隔离询价", customer_id=1))
     db.flush()
 
 
@@ -91,3 +95,18 @@ async def test_signature_still_required_for_safe_images(image_db):
     with pytest.raises(AppError) as error:
         await public_inquiry_image(1, expires, "invalid", SyncSessionAsAsync(image_db[0]))
     assert error.value.http_status == 403
+
+
+@pytest.mark.anyio
+async def test_deleted_inquiry_image_link_dies(image_db):
+    """B12-05：询价软删后，即使签名未过期图片链接也同步失效。"""
+    from datetime import UTC, datetime
+
+    add_image(image_db, 1, ".png", "image/png")
+    inquiry = image_db[0].get(CustomInquiry, 1)
+    inquiry.deleted_at = datetime.now(UTC)
+    image_db[0].flush()
+    expires, sig = signed_args()
+    with pytest.raises(AppError) as error:
+        await public_inquiry_image(1, expires, sig, SyncSessionAsAsync(image_db[0]))
+    assert error.value.http_status == 404

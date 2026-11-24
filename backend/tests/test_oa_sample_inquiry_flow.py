@@ -133,7 +133,9 @@ async def test_sample_handover_grants_only_the_assigned_sample(monkeypatch, subm
     for table in (AuditLog.__table__, SampleItem.__table__, SampleShipment.__table__, Role.__table__,
                   Permission.__table__, user_roles, role_permissions):
         table.create(engine, checkfirst=True)
-    manager = make_user(101, permissions=("sample:manage", "sample:view"))
+    # B22-01 后转交目标须在操作者数据范围内；本用例考的是"交接只授权这一张单"，
+    # 操作者范围给 all 以聚焦该断言（范围拦截另有 test_decimal_rework_a1 覆盖）
+    manager = make_user(101, permissions=("sample:manage", "sample:view"), data_scope="all")
     recipient = make_user(102, permissions=("sample:manage", "sample:view", "customer:view"))
     request = Request({"type": "http", "headers": []})
     with Session(engine, expire_on_commit=False) as raw:

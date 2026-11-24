@@ -37,6 +37,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.data_scope import ensure_in_scope, scoped_owner_ids
 from app.core.audit import write_audit
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
@@ -344,14 +345,14 @@ async def create_sample(
         owner_id = (opportunity.owner_id if opportunity else None) or user.id
     # 落库前校验关联完整性（审查 C3-02）：以前"不存在的负责人"要到 flush 才炸成 500，
     # "已停用的负责人"更是直接 200 落库
-    await _assert_active_owner(session, owner_id, "负责人")
+    await _assert_active_owner(session, user, owner_id, "负责人")
     source_context = {"dingtalk_oa": {"mode": "standalone", "fields": {}}}
     if payload.owner_id is not None and owner_id != user.id:
         await _assert_sample_recipient(session, owner_id)
         source_context["handover_owner_id"] = owner_id
     await _assert_contact_belongs(session, payload.contact_id, customer_id)
     if payload.production_owner_id is not None:
-        await _assert_active_owner(session, payload.production_owner_id, "制作负责人")
+        await _assert_active_owner(session, user, payload.production_owner_id, "制作负责人")
 
     sample = SampleRequest(
         source_context=source_context,
@@ -512,12 +513,12 @@ async def update_sample(
     #   · 别人家的联系人 → 200 落库，打样通知发给别家联系人。
     # 这里把四种都变成明确的 4xx。
     if "owner_id" in data:
-        await _assert_active_owner(session, data["owner_id"], "负责人")
+        await _assert_active_owner(session, user, data["owner_id"], "负责人")
         if data["owner_id"] != sample.owner_id:
             await _assert_sample_recipient(session, data["owner_id"])
             _set_handover_owner(sample, data["owner_id"])
     if "production_owner_id" in data and data["production_owner_id"] is not None:
-        await _assert_active_owner(session, data["production_owner_id"], "制作负责人")
+        await _assert_active_owner(session, user, data["production_owner_id"], "制作负责人")
     if "contact_id" in data:
         await _assert_contact_belongs(session, data["contact_id"], sample.customer_id)
 
@@ -665,6 +666,10 @@ async def sample_transfer_options(
 ):
     await svc.get_visible_or_404(session, user, sample_id)
     stmt = select(User.id, User.name).where(User.status == "active", _sample_recipient_filter())
+    # B22-01：候选只给操作者范围内的人，与转交落库校验同口径，不展示选不了的选项
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is not None:
+        stmt = stmt.where(User.id.in_(owner_ids))
     if keyword.strip():
         stmt = stmt.where(User.name.icontains(keyword.strip(), autoescape=True))
     rows = (await session.execute(stmt.order_by(User.name, User.id).limit(50))).all()
@@ -685,7 +690,7 @@ async def transfer_sample(
     old_owner_id = sample.owner_id
     if old_owner_id == payload.owner_id:
         return ok(None, "这位同事已经是负责人")
-    await _assert_active_owner(session, payload.owner_id, "接手人")
+    await _assert_active_owner(session, user, payload.owner_id, "接手人")
     await _assert_sample_recipient(session, payload.owner_id)
     _set_handover_owner(sample, payload.owner_id)
     sample.owner_id = payload.owner_id
@@ -1419,11 +1424,15 @@ def _assert_not_before(earlier, later, early_label: str, late_label: str) -> Non
         )
 
 
-async def _assert_active_owner(session: AsyncSession, owner_id: int | None, field: str) -> None:
-    """负责人必须**存在且在岗**（审查 C3-02）。
+async def _assert_active_owner(
+    session: AsyncSession, user: CurrentUser, owner_id: int | None, field: str
+) -> None:
+    """负责人必须**存在且在岗且在我的数据范围内**（审查 C3-02 + B22-01）。
 
     实测过的后果：传不存在的 id → **500**（外键炸在 flush 时）；传已停用的人 → 200 落库，
     于是这张单挂在一个登不上系统的人名下。两者都该是明确的 4xx。
+    B22-01：只判 active 不判范围时，sample:manage 能把负责人指到范围外用户，
+    单子连同通知一起送出自己的可见边界 —— 范围校验与 task/customer 同口径。
 
     与 `task._active_owner`、`customer` 的负责人校验同一口径。
     """
@@ -1434,6 +1443,7 @@ async def _assert_active_owner(session: AsyncSession, owner_id: int | None, fiel
         raise AppError(ErrorCode.NOT_FOUND, f"{field} id={owner_id} 不存在", 404)
     if target.status != "active":
         raise AppError(ErrorCode.PARAM_ERROR, f"{field}「{target.name}」已停用", 422)
+    await ensure_in_scope(session, user, owner_id=owner_id, label=field)
 
 
 async def _assert_contact_belongs(session: AsyncSession, contact_id: int | None, customer_id: int | None) -> None:
