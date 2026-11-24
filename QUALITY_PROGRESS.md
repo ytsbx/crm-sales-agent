@@ -5216,3 +5216,21 @@
 - 修正 scheduler 过时注释。全量 2178 项通过。
 
 剩余：float→Decimal 大重构（另开专项）；各块 P3 审计/边界/幂等用例。
+
+### 同序 OA 对接提交范围核对（2026-11-24）
+
+- OA 本地的 `crm_api.py` 已读取 `applicant_oa_user_id`，建单依赖 `crm_template_fields.py` 适配合同与打样表单。OA 的 `crm-integration` 本地分支缺少该适配文件，身份接口改动与现有模板字段适配应一并核对提交。
+- CRM 的 OA 客户端对未绑定人员仍会发送旧身份参数。OA 移除旧参数后，联调账号须先绑定 OA 人员，CRM 入口应明确提示未绑定。仅核对本机源码和分支，当前待合并组合尚未重跑合同、打样、询价的提交与结果同步。
+
+- 复核本机 8791 正在运行的 OA 版本，其结果接口已返回整单状态及当前节点，未返回 `business_stages`。CRM 无该字段时，合同回签、打样制作和询价后的正式报价以最新整单审批通过为准。若将来启用前段通过后提前办理的模板，才依赖单独的阶段结果。CRM 定向隔离测试 88 项通过。建议当前联动提交选最小方案，保留字段适配，避免引入阶段结果依赖。待合并版本尚未部署或端到端复测。
+
+### P3 用例补强·第一批（B22-08 / B19-07 / B19-08）
+
+- 甄别：线索/商机/明细的**长度上限**其实已由 core/patch_schema 基类按 DB 列宽统一校验
+  （中文"最长 N 个字符"），人工再写 max_length 冗余且覆盖中文消息 → 回退冗余部分。
+- B22-08 修：task priority 改 Literal(high/normal/low)；标题去首尾空白拒纯空白；
+  TaskBatchComplete.task_ids 加 min1/max200。
+- B19-07 修：LeadUpdate.name 显式 null/空白提前拒；LeadBatchAssign/LeadBatchIds.lead_ids 加 min1/max500。
+- B19-08 修：OpportunityCreate/Update.title 去空白拒纯空白（null 由基类拦）。
+- 新增回归：test_task_schema_bounds.py、test_lead_opportunity_schema_bounds.py。
+- 全量 2187 项通过。

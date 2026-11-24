@@ -1,7 +1,7 @@
 from datetime import date
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.core.patch_schema import CreateModel, PatchModel
 from app.modules.order.schema import ReceivablePlanIn
 
@@ -23,6 +23,14 @@ class OpportunityCreate(CreateModel):
     risk_level: str | None = None
     next_action: str | None = None
 
+    @field_validator("title")
+    @classmethod
+    def _title_blank(cls, value):
+        value = value.strip()
+        if not value:
+            raise ValueError("商机标题不能为空")
+        return value
+
 
 class OpportunityUpdate(PatchModel):
     model_config = ConfigDict(extra="ignore")
@@ -37,6 +45,14 @@ class OpportunityUpdate(PatchModel):
     competitor: str | None = None
     risk_level: str | None = None
     next_action: str | None = None
+
+    @field_validator("title")
+    @classmethod
+    def _title_not_null(cls, value):
+        # B19-08：显式 title:null/空白 会写非空列 500，提前拒（不传=不改）
+        if value is None or not value.strip():
+            raise ValueError("商机标题不能为空")
+        return value.strip()
 
 
 class StageChange(BaseModel):

@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.core.patch_schema import CreateModel, PatchModel
 
 
@@ -11,6 +11,18 @@ from app.core.patch_schema import CreateModel, PatchModel
 #: `status="whatever"` 能存进去；而"完成/取消/指派"三个专门接口各有各的判定，
 #: 普通编辑却能直接写 status 与 owner_id —— 同一个动作换个入口就放行了。
 TASK_STATUSES = ("pending", "doing", "done", "cancelled")
+#: 优先级枚举（B22-08）：与 router.PRIORITY_LABEL 一致，未知值 422 不入库。
+TASK_PRIORITIES = ("high", "normal", "low")
+
+
+def _non_blank_title(value: str | None) -> str | None:
+    """B22-08：标题去首尾空白后不能为空（纯空格原来能过 min_length=1）。"""
+    if value is None:
+        return value
+    value = value.strip()
+    if not value:
+        raise ValueError("标题不能为空")
+    return value
 
 
 class TaskCreate(CreateModel):
@@ -23,8 +35,10 @@ class TaskCreate(CreateModel):
     quote_id: int | None = None
     order_id: int | None = None
     owner_id: int | None = None
-    priority: str = "normal"
+    priority: Literal["high", "normal", "low"] = "normal"
     due_at: datetime | None = None
+
+    _title = field_validator("title")(_non_blank_title)
 
 
 class TaskUpdate(PatchModel):
@@ -44,11 +58,13 @@ class TaskUpdate(PatchModel):
     expected_updated_at: datetime | None = None
 
     title: str | None = None
-    priority: str | None = None
+    priority: Literal["high", "normal", "low"] | None = None
     # 明确枚举：未知值由 pydantic 直接拒（422），不再写进库里
     status: Literal["pending", "doing", "done", "cancelled"] | None = None
     due_at: datetime | None = None
     owner_id: int | None = None
+
+    _title = field_validator("title")(_non_blank_title)
 
 
 class TaskVersioned(BaseModel):
@@ -114,6 +130,6 @@ class TaskBatchComplete(BaseModel):
     让操作的人知道哪几条没成、为什么（与线索批量分配同一口径）。
     """
 
-    task_ids: list[int]
+    task_ids: list[int] = Field(min_length=1, max_length=200)
     completion_note: str | None = None
     expected_versions: dict[int, datetime] | None = None

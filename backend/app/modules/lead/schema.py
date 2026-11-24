@@ -1,7 +1,7 @@
 from datetime import date
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.core.patch_schema import CreateModel, PatchModel
 
 
@@ -43,6 +43,14 @@ class LeadUpdate(PatchModel):
     region: str | None = None
     remark: str | None = None
 
+    @field_validator("name")
+    @classmethod
+    def _name_not_null(cls, value):
+        # B19-07：显式传 name:null/空白 会写非空列 500，提前拒（不传=不改，跳过）
+        if value is None or not value.strip():
+            raise ValueError("线索名称不能为空")
+        return value.strip()
+
 
 class LeadAssign(BaseModel):
     owner_id: int | None = None
@@ -83,7 +91,7 @@ class LeadBatchAssign(BaseModel):
     公海里的线索经常一次来几十条，逐条点分配不现实。
     """
 
-    lead_ids: list[int]
+    lead_ids: list[int] = Field(min_length=1, max_length=500)
     owner_id: int
     reason: str | None = Field(default=None, max_length=255)
 
@@ -91,4 +99,4 @@ class LeadBatchAssign(BaseModel):
 class LeadBatchIds(BaseModel):
     """按 id 批量操作（导出 / 批量废弃等复用）。"""
 
-    lead_ids: list[int]
+    lead_ids: list[int] = Field(min_length=1, max_length=500)
