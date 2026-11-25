@@ -50,6 +50,7 @@ from app.modules.quote.schema import (
     QuoteItemUpdate,
     QuoteUpdate,
     QuoteVersionUpdate,
+    QuoteVoid,
     SendRequest,
     SubmitApprovalRequest,
 )
@@ -482,6 +483,14 @@ async def delete_quote(
             ErrorCode.STATUS_NOT_ALLOWED,
             f"该报价已转成订单（id={order_id}），不能删除",
         )
+    # 2026-11-25 主人拍板：已发送/已接受/已作废只能作废保留，不能删除
+    if quote.status in ("sent", "accepted", "voided"):
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "已发送、已接受或已作废的报价不能删除（需要保留对客证据）；"
+            "如需终止，请使用「作废报价」并填写原因",
+            422,
+        )
     before = svc.serialize_quote(quote)
     quote.deleted_at = datetime.now(UTC)
     await write_audit(
@@ -495,6 +504,55 @@ async def delete_quote(
     )
     await session.commit()
     return ok(None, "报价单已删除")
+
+
+@router.post("/quotes/{quote_id}/void")
+async def void_quote(
+    quote_id: int,
+    payload: QuoteVoid,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("quote:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """作废已发送/已接受的报价（保留记录，不能删除）。
+
+    草稿等内部状态直接删除即可；已转订单的报价不能作废（订单依赖它作追溯来源）。
+    """
+    reason = (payload.reason or "").strip()
+    if not reason:
+        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "请填写作废原因", 422)
+    quote = await svc.get_visible_quote(session, user, quote_id, for_update=True)
+    if quote.status not in ("sent", "accepted"):
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "只有已发送或已接受的报价可以作废；草稿请直接删除",
+            422,
+        )
+    order_id = (
+        await session.execute(
+            select(SalesOrder.id).where(SalesOrder.quote_id == quote.id)
+        )
+    ).scalars().first()
+    if order_id is not None:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"该报价已转成订单（id={order_id}），不能作废",
+            422,
+        )
+    before = svc.serialize_quote(quote)
+    quote.status = "voided"
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="void",
+        business_type="quote",
+        business_id=quote.id,
+        before=before,
+        after={"status": "voided", "reason": reason},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(svc.serialize_quote(quote), "报价已作废（记录保留）")
 
 
 @router.get("/quotes/{quote_id}/followups")

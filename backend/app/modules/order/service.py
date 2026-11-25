@@ -16,6 +16,7 @@ from app.modules.integration.model import ExternalMapping
 from app.modules.order.model import (
     ORDER_STATUS_LABEL,
     SHIPMENT_STATUS_LABEL,
+    OrderMilestone,
     OrderShipmentBatch,
     OrderShipmentBatchItem,
     OrderStatusHistory,
@@ -1035,6 +1036,64 @@ async def create_shipment_batch(
     await milestones_svc.ensure_batch_node(
         session, order.id, batch_no, payload.planned_date, created_by=user_id
     )
+    return batch
+
+
+async def reschedule_shipment_batch(
+    session: AsyncSession,
+    order: SalesOrder,
+    batch: OrderShipmentBatch,
+    *,
+    planned_date,
+) -> OrderShipmentBatch:
+    """改「计划中」批次的计划发货日（交期变更后人工校准）。
+
+    只动**计划**，不动任何实际日期：已发货/已取消的批次拒绝（那是事实，
+    要改请走取消重建）。锁顺序与排批次/实发一致（先订单、后批次），
+    等锁后重读状态 —— 否则"看到待发、实际已发"的并发窗口里，
+    会把一个已经发出去的批次的计划日改掉。
+
+    批次节点是批次这份事实的投影：同步节点计划日，但不覆盖已登记实际日期的节点。
+    """
+    await _lock_order_row(session, order.id)
+    order = await _reload_order(session, order.id)
+    if order.status in ("cancelled", "completed"):
+        # 与交期变更同一口径（B04-05）：已完成/已取消订单的履约事实不再改写。
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "订单已完成或已取消，不能调整批次计划日；"
+            "如确实需要纠正，请先取消订单并重建（取消需填写理由）",
+            422,
+        )
+    batch = (
+        await session.execute(
+            select(OrderShipmentBatch)
+            .where(OrderShipmentBatch.id == batch.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
+    if batch.order_id != order.id:
+        raise AppError(ErrorCode.NOT_FOUND, "批次不属于该订单", 404)
+    if batch.status == "shipped":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该批次已登记发货，计划日不能再改")
+    if batch.status == "cancelled":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该批次已取消，不能再改计划日")
+
+    batch.planned_date = planned_date
+    from app.modules.order import milestones as milestones_svc
+
+    node = (
+        await session.execute(
+            select(OrderMilestone).where(
+                OrderMilestone.order_id == order.id,
+                OrderMilestone.node == milestones_svc.batch_node_key(batch.batch_no),
+            )
+        )
+    ).scalar_one_or_none()
+    if node is not None and node.actual_date is None:
+        node.planned_date = planned_date
+    await session.flush()
     return batch
 
 

@@ -43,6 +43,7 @@ import {
   listScheduleChanges,
   previewScheduleChange,
   repurchase,
+  rescheduleOrderShipment,
   shipOrderShipment,
   syncErp,
   getErpReadiness,
@@ -302,6 +303,8 @@ export default function OrderDetailPage() {
     shift_days: number | null
     nodes: { node: string; label: string; before: string | null; after: string | null }[]
     batches: { batch_id: number; batch_no: number; before: string | null; after: string | null }[]
+    /** 旧交期没有可换算的发货日时，这几批要人工改计划日（系统不猜） */
+    batches_to_confirm?: { batch_id: number; batch_no: number; planned_date: string }[]
   } | null>(null)
   const [milestoneForm, setMilestoneForm] = useState<{
     skipped: boolean
@@ -710,6 +713,12 @@ export default function OrderDetailPage() {
   })
   const invalidPlannedRow = plannedShipmentRows.find((row) => row.error)
   const [shipTarget, setShipTarget] = useState<ShipmentBatchRow | null>(null)
+  // 改「计划中」批次的计划发货日（交期变更后人工校准）
+  const [rescheduleTarget, setRescheduleTarget] = useState<ShipmentBatchRow | null>(null)
+  const [rescheduleForm, setRescheduleForm] = useState<{ date: string | null; reason: string }>({
+    date: null,
+    reason: '',
+  })
   const [shipForm, setShipForm] = useState<{ date: string | null; company: string; tracking: string; quantities: Record<number, string> }>({
     date: null,
     company: '',
@@ -796,6 +805,27 @@ export default function OrderDetailPage() {
     mutationFn: (batchId: number) => cancelOrderShipment(orderId, batchId),
     onSuccess: () => {
       Toast.success('批次已取消，计划数量可以重新安排')
+      shipmentsRefresh()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+  const rescheduleShipmentMutation = useMutation({
+    mutationFn: () => {
+      if (!rescheduleTarget) throw new Error('请选择要调整的批次')
+      if (!rescheduleForm.date) throw new Error('请选择新的计划发货日')
+      const reason = rescheduleForm.reason.trim()
+      if (!reason) throw new Error('请填写调整原因')
+      return rescheduleOrderShipment(orderId, rescheduleTarget.id, {
+        planned_date: rescheduleForm.date,
+        reason,
+      })
+    },
+    onSuccess: (result) => {
+      Toast.success(
+        `第 ${result.batch_no} 批计划发货日已改为 ${result.planned_date}`,
+      )
+      setRescheduleTarget(null)
+      setRescheduleForm({ date: null, reason: '' })
       shipmentsRefresh()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -1957,6 +1987,7 @@ export default function OrderDetailPage() {
                           return <div key={String(label)} style={{ marginTop: 6 }}><b>{String(label)}</b>
                             {snapshot.nodes.map(n => <div key={n.node}>{n.label}：{n.before ?? '未排期'} → {n.after ?? '未排期'}</div>)}
                             {snapshot.batches.map(b => <div key={b.batch_id}>第 {b.batch_no} 批：{b.before ?? '未排期'} → {b.after ?? '未排期'}</div>)}
+                            {snapshot.batches_to_confirm?.map(b => <div key={`confirm-${b.batch_id}`} style={{ color: 'var(--crm-text-3)' }}>第 {b.batch_no} 批：计划 {b.planned_date}，系统未自动调整，需人工改计划日</div>)}
                           </div>
                         })}
                       </details>
@@ -2157,11 +2188,21 @@ export default function OrderDetailPage() {
                     ? [
                         {
                           title: '操作',
-                          width: 130,
+                          width: 210,
                           render: (_: unknown, record: ShipmentBatchRow) =>
                             record.status === 'planned' ? (
                               <span style={{ display: 'inline-flex', gap: 12 }}>
                                 <button type="button" className="crm-text-action" onClick={() => openShipment(record)}>登记发货</button>
+                                <button
+                                  type="button"
+                                  className="crm-text-action"
+                                  onClick={() => {
+                                    setRescheduleTarget(record)
+                                    setRescheduleForm({ date: record.planned_date ?? null, reason: '' })
+                                  }}
+                                >
+                                  改计划日
+                                </button>
                                 <Popconfirm
                                   title={`取消第 ${record.batch_no} 批发货安排？`}
                                   content="这一批会从发货列表移出，计划数量可以重新安排发货。"
@@ -2236,6 +2277,51 @@ export default function OrderDetailPage() {
           )}
         </div>
       </SectionCard>
+
+      <Modal
+        width={520}
+        style={{ maxWidth: 'calc(100vw - 32px)' }}
+        title={rescheduleTarget ? `改第 ${rescheduleTarget.batch_no} 批计划发货日` : '改计划发货日'}
+        visible={Boolean(rescheduleTarget)}
+        onCancel={() => {
+          setRescheduleTarget(null)
+          setRescheduleForm({ date: null, reason: '' })
+        }}
+        onOk={() => rescheduleShipmentMutation.mutate()}
+        confirmLoading={rescheduleShipmentMutation.isPending}
+        okText="保存计划日"
+        cancelText="取消"
+      >
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+            只改这一批的<strong>计划</strong>发货日，不动任何已经发生的实际发货记录。
+            保存后审计会保留改前、改后和原因。
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>新的计划发货日</div>
+            <DatePicker
+              type="date"
+              format="yyyy-MM-dd"
+              style={{ width: '100%' }}
+              disabled={rescheduleShipmentMutation.isPending}
+              value={rescheduleForm.date ? new Date(rescheduleForm.date) : undefined}
+              onChange={(_, dateStr) =>
+                setRescheduleForm({ ...rescheduleForm, date: (dateStr as string) || null })
+              }
+            />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>调整原因（必填）</div>
+            <Input
+              aria-label="调整计划日原因"
+              placeholder="例如：客户改交期，批次顺延"
+              disabled={rescheduleShipmentMutation.isPending}
+              value={rescheduleForm.reason}
+              onChange={(value) => setRescheduleForm({ ...rescheduleForm, reason: value })}
+            />
+          </div>
+        </div>
+      </Modal>
 
       <Modal
         width={520}
@@ -2443,6 +2529,33 @@ export default function OrderDetailPage() {
                 {schedulePreview.batches.length} 个
                 {schedulePreview.shift_days != null && `（整体平移 ${schedulePreview.shift_days} 天）`}
               </div>
+              {(schedulePreview.batches_to_confirm?.length ?? 0) > 0 && (
+                <div
+                  style={{
+                    marginTop: 4,
+                    padding: '8px 10px',
+                    borderRadius: 6,
+                    background: 'var(--crm-warning-light, #FFF7E6)',
+                    fontSize: 12,
+                    lineHeight: 1.6,
+                  }}
+                >
+                  这单原来没有可换算的交期基准，系统<strong>不猜</strong>批次该挪几天：
+                  {schedulePreview.batches_to_confirm!.map((b) => `第 ${b.batch_no} 批（现计划 ${b.planned_date}）`).join('、')}
+                  需要人工改计划日。
+                  <button
+                    type="button"
+                    className="crm-text-action"
+                    style={{ marginLeft: 8 }}
+                    onClick={() => {
+                      setScheduleVisible(false)
+                      setActiveKey('shipments')
+                    }}
+                  >
+                    去调整
+                  </button>
+                </div>
+              )}
               {schedulePreview.nodes.length > 0 && (
                 <Table
                   size="small"

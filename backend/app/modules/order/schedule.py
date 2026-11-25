@@ -163,8 +163,16 @@ async def preview(session: AsyncSession, order: SalesOrder, new_delivery_date: d
             affected_nodes.append({"node": key, "label": label, "before": None,
                                    "after": (shift_date(new_ship, -offsets[key])).isoformat()})
     affected_batches = []
+    # 旧交期没有可换算的发货日时（delta 为 None），"这批计划日该挪几天"算不出来。
+    # 系统不猜（主人拍板）：把这些已排计划日的批次列出来，由计划员逐批改，
+    # 提示里给入口，改的时候必须填原因、写审计。
+    batches_to_confirm = []
     for batch in await _batches(session, order.id):
-        if batch.planned_date is None or delta is None:
+        if batch.planned_date is None:
+            continue
+        if delta is None:
+            batches_to_confirm.append({"batch_id": batch.id, "batch_no": batch.batch_no,
+                                       "planned_date": batch.planned_date.isoformat()})
             continue
         new_planned = shift_date(batch.planned_date, delta)
         if new_planned != batch.planned_date:
@@ -174,7 +182,8 @@ async def preview(session: AsyncSession, order: SalesOrder, new_delivery_date: d
             "old_delivery_date": before["delivery_date"], "new_delivery_date": after["delivery_date"],
             "old_shipment_date": old_ship.isoformat() if old_ship else None,
             "new_shipment_date": new_ship.isoformat(), "planning": {"before": before, "after": after},
-            "shift_days": delta, "nodes": affected_nodes, "batches": affected_batches}
+            "shift_days": delta, "nodes": affected_nodes, "batches": affected_batches,
+            "batches_to_confirm": batches_to_confirm}
 
 
 async def create_change(
@@ -199,7 +208,9 @@ async def create_change(
         )
     affected = await preview(session, order, new_delivery_date, delivery_kind=delivery_kind,
                              transit_days=transit_days, plan_offsets=plan_offsets)
-    if not affected["nodes"] and not affected["batches"] and affected["planning"]["before"] == affected["planning"]["after"]:
+    if (not affected["nodes"] and not affected["batches"]
+            and not affected["batches_to_confirm"]
+            and affected["planning"]["before"] == affected["planning"]["after"]):
         raise AppError(
             ErrorCode.PARAM_ERROR,
             "新交期不影响任何节点或批次（可能交期没变，或受影响的都已发生）",

@@ -217,4 +217,10 @@ class DeclinedRequest(BaseModel):
     reason: str | None = None
 
 
+class QuoteVoid(BaseModel):
+    """作废已发送/已接受的报价：必须说明原因，记录保留。"""
+
+    reason: str = Field(min_length=1, max_length=255)
+
+
 __all__ = ["datetime", "Field"]

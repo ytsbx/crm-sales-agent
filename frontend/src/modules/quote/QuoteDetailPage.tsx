@@ -41,6 +41,7 @@ import {
   createQuoteVersion,
   declineQuote,
   deleteQuote,
+  voidQuote,
   deleteQuoteCharge,
   downloadQuotePdf,
   getPriceDrift,
@@ -97,6 +98,7 @@ const STATUS_TONE: Record<string, TagTone> = {
   accepted: 'green',
   declined: 'red',
   approval_rejected: 'red',
+  voided: 'grey',
 }
 
 const PAYMENT_TERMS_MAX_LENGTH = 128
@@ -192,6 +194,21 @@ export default function QuoteDetailPage() {
       void queryClient.invalidateQueries({ queryKey: ['quotes'] })
       void queryClient.invalidateQueries({ queryKey: ['customer-quotes'] })
       navigate('/quotes', { replace: true })
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  const [voidVisible, setVoidVisible] = useState(false)
+  const [voidReason, setVoidReason] = useState('')
+  const voidMutation = useMutation({
+    mutationFn: () => voidQuote(quoteId, voidReason.trim()),
+    onSuccess: () => {
+      setVoidVisible(false)
+      setVoidReason('')
+      Toast.success('报价已作废（记录保留）')
+      refresh()
+      void queryClient.invalidateQueries({ queryKey: ['quotes'] })
+      void queryClient.invalidateQueries({ queryKey: ['customer-quotes'] })
     },
     onError: (error: Error) => Toast.error(error.message),
   })
@@ -1081,11 +1098,20 @@ export default function QuoteDetailPage() {
                 <span className="qhk-value">{(detail?.items ?? []).length} 条</span>
               </div>
             </div>
-            {canManage && (
+            {/* 已发送/已接受/已作废只能作废保留，不出现删除入口（后端同样拦） */}
+            {canManage && !hasActiveOrder && !['sent', 'accepted', 'voided'].includes(quote.status) && (
               // 删除是低频且不可逆的动作，红框按钮摆页头最显眼的位置会抢掉
               // 「转销售订单」的注意力。改成无边框次级按钮，仍可点、仍二次确认。
               <Button theme="borderless" type="danger" onClick={() => setDeleteVisible(true)}>
                 删除报价
+              </Button>
+            )}
+            {canManage && (quote.status === 'sent' || quote.status === 'accepted') && (
+              <Button theme="borderless" type="danger" onClick={() => {
+                setVoidReason('')
+                setVoidVisible(true)
+              }}>
+                作废报价
               </Button>
             )}
           </div>
@@ -2951,6 +2977,29 @@ export default function QuoteDetailPage() {
             value={submitReason}
             onChange={setSubmitReason}
             placeholder="申请说明（可不填），例如：客户年度大单要求让价"
+          />
+        </div>
+      </Modal>
+
+      <Modal
+        width={520}
+        title="作废报价"
+        visible={voidVisible}
+        onCancel={() => { if (!voidMutation.isPending) setVoidVisible(false) }}
+        onOk={() => voidMutation.mutate()}
+        confirmLoading={voidMutation.isPending}
+        okText="确认作废"
+        okButtonProps={{ disabled: !voidReason.trim(), type: 'danger' }}
+      >
+        <div style={{ display: 'grid', gap: 10 }}>
+          <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+            作废后报价仍保留在列表（状态“已作废”），不能再发送、改版或转订单；删除只对草稿等内部状态开放。
+          </div>
+          <TextArea
+            value={voidReason}
+            onChange={setVoidReason}
+            maxLength={255}
+            placeholder="填写作废原因（必填，例如：客户取消合作 / 价格作废重报）"
           />
         </div>
       </Modal>

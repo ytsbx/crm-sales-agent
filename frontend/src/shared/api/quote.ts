@@ -303,6 +303,11 @@ export function deleteQuote(quoteId: number) {
   return api.delete<null>(`/quotes/${quoteId}`)
 }
 
+/** 作废已发送/已接受的报价：保留记录，必须填原因；作废后不能再发送/改版/转单。 */
+export function voidQuote(quoteId: number, reason: string) {
+  return api.post<null>(`/quotes/${quoteId}/void`, { reason })
+}
+
 export function refreshQuoteCosts(versionId: number) {
   return api.post<{ refreshed: number }>(`/quote-versions/${versionId}/cost-refresh`)
 }

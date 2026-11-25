@@ -24,6 +24,7 @@ const STATUS_OPTIONS = [
   { value: 'accepted', label: '已接受' },
   { value: 'declined', label: '客户拒绝' },
   { value: 'approval_rejected', label: '审批未通过' },
+  { value: 'voided', label: '已作废' },
 ]
 
 const STATUS_TONE: Record<string, TagTone> = {
@@ -34,6 +35,7 @@ const STATUS_TONE: Record<string, TagTone> = {
   accepted: 'green',
   declined: 'red',
   approval_rejected: 'red',
+  voided: 'grey',
 }
 
 export default function QuoteListPage() {

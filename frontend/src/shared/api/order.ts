@@ -590,6 +590,18 @@ export function cancelOrderShipment(orderId: number, batchId: number) {
   return api.delete<null>(`/orders/${orderId}/shipments/${batchId}`)
 }
 
+/** 改「计划中」批次的计划发货日：必须填原因（写审计）；已发货/已取消的批次会被拒绝。 */
+export function rescheduleOrderShipment(
+  orderId: number,
+  batchId: number,
+  payload: { planned_date: string; reason: string },
+) {
+  return api.patch<{ batch_id: number; batch_no: number; planned_date: string }>(
+    `/orders/${orderId}/shipments/${batchId}`,
+    payload,
+  )
+}
+
 // ---------------------------------------------------------------- 交期变更（方案 :105）
 
 export interface DeliveryPlanningInput {
@@ -611,6 +623,11 @@ export interface ScheduleChangeAffected {
   old_shipment_date?: string | null
   nodes: { node: string; label: string; before: string | null; after: string | null }[]
   batches: { batch_id: number; batch_no: number; before: string | null; after: string | null }[]
+  /**
+   * 旧交期没有可换算的发货日时，系统不猜这批该挪几天，只点名，
+   * 由计划员到「发货批次」里逐批改计划日（PATCH /shipments/{batch_id}）。
+   */
+  batches_to_confirm?: { batch_id: number; batch_no: number; planned_date: string }[]
   applied?: ScheduleChangeAffected | null
 }
 
@@ -641,6 +658,7 @@ export function previewScheduleChange(orderId: number, payload: DeliveryPlanning
     shift_days: number | null
     nodes: ScheduleChangeAffected['nodes']
     batches: ScheduleChangeAffected['batches']
+    batches_to_confirm: NonNullable<ScheduleChangeAffected['batches_to_confirm']>
   }>(`/orders/${orderId}/schedule-changes/preview`, payload)
 }
 

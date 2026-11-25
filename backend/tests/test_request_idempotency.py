@@ -245,3 +245,56 @@ async def test_empty_key_is_refused(session):
         await reserve(
             session, user_id=1, action="customer:create", request_key="  ", payload=PAYLOAD
         )
+
+
+@pytest.mark.anyio
+async def test_stale_in_flight_is_marked_failed_after_two_minutes(session):
+    """B05-07：进程崩溃留下的占位超过 2 分钟标失败，同一把键重试给出明确结论。"""
+    from datetime import timedelta
+
+    first = await reserve(
+        session, user_id=1, action="customer:create", request_key="k-stale", payload=PAYLOAD
+    )
+    first.row.created_at = datetime.now(UTC) - timedelta(minutes=3)
+    await session.commit()
+
+    with pytest.raises(AppError) as excinfo:
+        await reserve(
+            session, user_id=1, action="customer:create", request_key="k-stale", payload=PAYLOAD
+        )
+    assert "没有正常结束" in excinfo.value.message
+    assert "刷新页面" in excinfo.value.message  # 不自动重放：结果未知必须人重新提交
+    row = session._session.execute(
+        select(RequestKey).where(RequestKey.request_key == "k-stale")
+    ).scalar_one()
+    assert row.status == "failed"
+
+
+@pytest.mark.anyio
+async def test_fresh_in_flight_still_reports_processing(session):
+    """2 分钟内的并发占位仍是"正在处理中"，不能被超时逻辑提前放行。"""
+    await reserve(
+        session, user_id=1, action="customer:create", request_key="k-fresh", payload=PAYLOAD
+    )
+    with pytest.raises(AppError) as excinfo:
+        await reserve(
+            session, user_id=1, action="customer:create", request_key="k-fresh", payload=PAYLOAD
+        )
+    assert "正在处理中" in excinfo.value.message
+
+
+@pytest.mark.anyio
+async def test_stale_placeholder_does_not_block_a_new_key(session):
+    """超时只影响那把旧键；换一把新键（刷新页面后的新表单）照常能提交。"""
+    from datetime import timedelta
+
+    stale = await reserve(
+        session, user_id=1, action="customer:create", request_key="k-old", payload=PAYLOAD
+    )
+    stale.row.created_at = datetime.now(UTC) - timedelta(minutes=5)
+    await session.commit()
+
+    fresh = await reserve(
+        session, user_id=1, action="customer:create", request_key="k-new", payload=PAYLOAD
+    )
+    assert fresh.should_replay is False

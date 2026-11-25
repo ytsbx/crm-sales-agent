@@ -32,10 +32,10 @@
 
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, DateTime, Index, String, UniqueConstraint, select
+from sqlalchemy import BigInteger, DateTime, Index, String, UniqueConstraint, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
@@ -135,6 +135,19 @@ async def reserve(
         raise AppError(ErrorCode.PARAM_ERROR, "请求动作名过长", 422)
 
     digest = payload_hash(payload)
+    # B05-07（主人定 2 分钟）：进程崩溃留下的 in_flight 占位超过时限就标失败，
+    # 让"同一个人同一动作"的后续请求不再被一个死占位永久挡住。
+    # 只改状态、不自动重放旧请求：结果未知时重放可能重复执行，必须由人重新提交。
+    await session.execute(
+        update(RequestKey)
+        .where(
+            RequestKey.user_id == user_id,
+            RequestKey.action == action,
+            RequestKey.status == "in_flight",
+            RequestKey.created_at < datetime.now(UTC) - timedelta(minutes=2),
+        )
+        .values(status="failed")
+    )
     stmt = select(RequestKey).where(
         RequestKey.user_id == user_id,
         RequestKey.action == action,
@@ -180,6 +193,13 @@ def _unpack_replay(stored: dict | str | None) -> dict | None:
 
 
 def _judge(existing: RequestKey, digest: str) -> Reservation:
+    if existing.status == "failed":
+        raise AppError(
+            ErrorCode.VERSION_CONFLICT,
+            "上次提交没有正常结束，结果未知；请刷新页面后重新提交"
+            "（不要重复使用同一个请求编号）",
+            409,
+        )
     if existing.request_hash != digest:
         raise AppError(
             ErrorCode.VERSION_CONFLICT,

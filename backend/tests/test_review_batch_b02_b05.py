@@ -247,3 +247,182 @@ async def test_shipped_order_cannot_be_restored():
             assert raw.get(SalesOrder, 1).status == "cancelled"
     finally:
         engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_sent_quote_can_be_voided_but_not_deleted():
+    """报价作废：已发送可作废保留；作废后仍不能删除。"""
+    from app.modules.quote import router as quote_router
+    from app.modules.quote.model import Quote, QuoteVersion
+    from app.modules.quote.schema import QuoteVoid
+
+    engine = _engine([User, Customer, Quote, QuoteVersion, SalesOrder, AuditLog])
+    try:
+        with Session(engine, expire_on_commit=False) as raw:
+            raw.add_all([
+                Customer(id=1, name="客户", owner_id=1),
+                Quote(id=1, quote_no="BJ-1", customer_id=1, owner_id=1,
+                      status="sent", created_at=datetime.now(UTC)),
+            ])
+            raw.commit()
+            actor = make_user(1, permissions=("quote:manage",), data_scope="all")
+            result = await quote_router.void_quote(
+                1, QuoteVoid(reason="客户取消合作"), _request(), actor, SyncSessionAsAsync(raw)
+            )
+            assert result["data"]["status"] == "voided"
+            audit = raw.query(AuditLog).filter_by(action="void", business_id=1).one()
+            assert audit.after_data["reason"] == "客户取消合作"
+            with pytest.raises(AppError) as caught:
+                await quote_router.delete_quote(1, _request(), actor, SyncSessionAsAsync(raw))
+            assert caught.value.http_status == 422
+            assert "不能删除" in caught.value.message
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_quote_void_requires_reason_and_rejects_converted():
+    """作废必须填原因；已转订单的报价不能作废。"""
+    from app.modules.quote import router as quote_router
+    from app.modules.quote.model import Quote, QuoteVersion
+    from app.modules.quote.schema import QuoteVoid
+
+    engine = _engine([User, Customer, Quote, QuoteVersion, SalesOrder, AuditLog])
+    try:
+        with Session(engine, expire_on_commit=False) as raw:
+            raw.add_all([
+                Customer(id=1, name="客户", owner_id=1),
+                Quote(id=1, quote_no="BJ-1", customer_id=1, owner_id=1,
+                      status="accepted", created_at=datetime.now(UTC)),
+                SalesOrder(id=1, order_no="SO-1", customer_id=1, owner_id=1, quote_id=1),
+            ])
+            raw.commit()
+            actor = make_user(1, permissions=("quote:manage",), data_scope="all")
+            with pytest.raises(AppError) as caught:
+                await quote_router.void_quote(
+                    1, QuoteVoid(reason="   "), _request(), actor, SyncSessionAsAsync(raw)
+                )
+            assert caught.value.http_status == 422
+            assert "作废原因" in caught.value.message
+            with pytest.raises(AppError) as caught:
+                await quote_router.void_quote(
+                    1, QuoteVoid(reason="作废"), _request(), actor, SyncSessionAsAsync(raw)
+                )
+            assert "已转成订单" in caught.value.message
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_schedule_preview_names_batches_needing_manual_adjustment():
+    """旧交期没有可换算的发货日时，系统不猜批次该挪几天，只点名交给人改。"""
+    from types import SimpleNamespace
+
+    from app.modules.order import schedule
+    from app.modules.order.model import OrderMilestone, OrderShipmentBatch
+
+    engine = _engine([OrderMilestone, OrderShipmentBatch])
+    try:
+        with Session(engine, expire_on_commit=False) as raw:
+            raw.add(OrderShipmentBatch(
+                id=1, order_id=1, batch_no=1, status="planned",
+                planned_date=date(2026, 12, 5), created_at=datetime.now(UTC),
+            ))
+            raw.commit()
+            order = SimpleNamespace(
+                id=1, order_no="SO-1", delivery_date=None, delivery_kind=None,
+                transit_days=None, plan_offsets=None,
+            )
+            result = await schedule.preview(
+                SyncSessionAsAsync(raw), order, date(2026, 12, 20),
+                delivery_kind="shipping",
+            )
+            assert result["shift_days"] is None
+            assert result["batches"] == []
+            assert result["batches_to_confirm"] == [
+                {"batch_id": 1, "batch_no": 1, "planned_date": "2026-12-05"}
+            ]
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_reschedule_planned_batch_syncs_milestone_and_audits():
+    """PATCH 批次计划日：只动计划中批次，同步跟单节点，前后版本进审计。"""
+    from app.modules.order import milestones as milestones_svc
+    from app.modules.order.model import OrderMilestone, OrderShipmentBatch
+    from app.modules.order.schema import ShipmentBatchReschedule
+
+    engine = _engine([User, Customer, SalesOrder, OrderMilestone,
+                      OrderShipmentBatch, AuditLog])
+    try:
+        with Session(engine, expire_on_commit=False) as raw:
+            raw.add_all([
+                Customer(id=1, name="客户", owner_id=1),
+                SalesOrder(id=1, order_no="SO-1", customer_id=1, owner_id=1,
+                           status="in_production"),
+                OrderShipmentBatch(id=1, order_id=1, batch_no=1, status="planned",
+                                   planned_date=date(2026, 12, 5),
+                                   created_at=datetime.now(UTC)),
+                OrderMilestone(order_id=1, node=milestones_svc.batch_node_key(1),
+                               planned_date=date(2026, 12, 5),
+                               created_at=datetime.now(UTC)),
+            ])
+            raw.commit()
+            actor = make_user(1, permissions=("order:manage",), data_scope="all")
+            result = await order_router.reschedule_shipment(
+                1, 1, ShipmentBatchReschedule(
+                    planned_date=date(2026, 12, 18), reason="客户改期"),
+                _request(), actor, SyncSessionAsAsync(raw),
+            )
+            assert result["data"]["planned_date"] == "2026-12-18"
+            assert raw.get(OrderShipmentBatch, 1).planned_date == date(2026, 12, 18)
+            node = raw.query(OrderMilestone).filter_by(order_id=1).one()
+            assert node.planned_date == date(2026, 12, 18)
+            audit = raw.query(AuditLog).filter_by(
+                action="reschedule_shipment_batch", business_id=1).one()
+            assert audit.before_data["planned_date"] == "2026-12-05"
+            assert audit.after_data["planned_date"] == "2026-12-18"
+            assert audit.after_data["reason"] == "客户改期"
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_reschedule_rejects_shipped_batch_and_blank_reason():
+    """已发货的批次是事实，不能再改计划日；原因不能只填空格。"""
+    from app.modules.order.model import OrderMilestone, OrderShipmentBatch
+    from app.modules.order.schema import ShipmentBatchReschedule
+
+    engine = _engine([User, Customer, SalesOrder, OrderMilestone,
+                      OrderShipmentBatch, AuditLog])
+    try:
+        with Session(engine, expire_on_commit=False) as raw:
+            raw.add_all([
+                Customer(id=1, name="客户", owner_id=1),
+                SalesOrder(id=1, order_no="SO-1", customer_id=1, owner_id=1,
+                           status="shipped"),
+                OrderShipmentBatch(id=1, order_id=1, batch_no=1, status="shipped",
+                                   planned_date=date(2026, 12, 5),
+                                   actual_ship_date=date(2026, 12, 6),
+                                   created_at=datetime.now(UTC)),
+            ])
+            raw.commit()
+            actor = make_user(1, permissions=("order:manage",), data_scope="all")
+            with pytest.raises(AppError) as caught:
+                await order_router.reschedule_shipment(
+                    1, 1, ShipmentBatchReschedule(
+                        planned_date=date(2026, 12, 18), reason="  "),
+                    _request(), actor, SyncSessionAsAsync(raw),
+                )
+            assert "原因" in caught.value.message
+            with pytest.raises(AppError) as caught:
+                await order_router.reschedule_shipment(
+                    1, 1, ShipmentBatchReschedule(
+                        planned_date=date(2026, 12, 18), reason="客户改期"),
+                    _request(), actor, SyncSessionAsAsync(raw),
+                )
+            assert "已登记发货" in caught.value.message
+            assert raw.get(OrderShipmentBatch, 1).planned_date == date(2026, 12, 5)
+    finally:
+        engine.dispose()

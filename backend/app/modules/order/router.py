@@ -46,6 +46,7 @@ from app.modules.order.schema import (
     ScheduleChangeConfirm,
     ScheduleChangeCreate,
     ShipmentBatchCreate,
+    ShipmentBatchReschedule,
     ShipmentBatchShip,
 )
 from app.modules.payment.model import PaymentRecord, ReceivablePlan
@@ -1481,6 +1482,51 @@ async def ship_batch(
     return ok(
         {"order_status": order.status, "summary": overview["summary"]},
         f"第 {batch.batch_no} 批已登记发货",
+    )
+
+
+@router.patch("/orders/{order_id}/shipments/{batch_id}")
+async def reschedule_shipment(
+    order_id: int,
+    batch_id: int,
+    payload: ShipmentBatchReschedule,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("order:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """改「计划中」批次的计划发货日：交期变更后由计划员人工校准。
+
+    交期变更不会替人猜批次该挪几天（预览里用 `batches_to_confirm` 点名），
+    这里就是那条"去调整"的落点。只改计划、必须填原因、前后版本进审计。
+    """
+    reason = payload.reason.strip()
+    if not reason:
+        raise AppError(ErrorCode.PARAM_ERROR, "请填写调整计划日的原因", 422)
+    order = await svc.get_visible_order(session, user, order_id, for_update=True)
+    batch = await session.get(OrderShipmentBatch, batch_id)
+    if batch is None or batch.order_id != order.id:
+        raise AppError(ErrorCode.NOT_FOUND, "发货批次不存在", 404)
+    before = batch.planned_date
+    await svc.reschedule_shipment_batch(
+        session, order, batch, planned_date=payload.planned_date
+    )
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="reschedule_shipment_batch",
+        business_type="order",
+        business_id=order.id,
+        before={"batch_id": batch.id, "batch_no": batch.batch_no,
+                "planned_date": before.isoformat() if before else None},
+        after={"batch_id": batch.id, "batch_no": batch.batch_no,
+               "planned_date": payload.planned_date.isoformat(), "reason": reason},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(
+        {"batch_id": batch.id, "batch_no": batch.batch_no,
+         "planned_date": payload.planned_date.isoformat()},
+        f"第 {batch.batch_no} 批计划发货日已改为 {payload.planned_date.isoformat()}",
     )
 
 

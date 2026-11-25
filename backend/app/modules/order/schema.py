@@ -230,6 +230,18 @@ class ShipmentBatchShip(BaseModel):
         return self
 
 
+class ShipmentBatchReschedule(BaseModel):
+    """改「计划中」批次的计划发货日。
+
+    交期变更时如果订单原先没有交期基准，系统**不猜**批次该挪几天（见
+    `schedule.preview` 的 `batches_to_confirm`），由计划员逐批改；
+    改计划日是人工判断，必须说明原因，审计留痕。
+    """
+
+    planned_date: date
+    reason: str = Field(min_length=1, max_length=255)
+
+
 class OrderDraftLine(BaseModel):
     source_item_id: int = Field(gt=0)
     quantity: Decimal = Field(gt=0, max_digits=16, decimal_places=3)
