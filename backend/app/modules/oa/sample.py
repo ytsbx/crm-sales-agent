@@ -90,11 +90,6 @@ def _template_id() -> str:
     return template_id
 
 
-def _approvers() -> list[str]:
-    raw = settings.oa_sample_approver_dingtalk_ids.strip()
-    return [item.strip() for item in raw.split(",") if item.strip()]
-
-
 async def latest_sample_row(session: AsyncSession, sample_id: int, *, for_update: bool = False) -> OaInstance | None:
     stmt = (select(OaInstance)
             .where(OaInstance.oa_type == OA_TYPE, OaInstance.inquiry_id == sample_id)
@@ -243,7 +238,6 @@ async def start_sample_approval(
     if not identity:
         raise AppError(ErrorCode.PARAM_ERROR, "请联系管理员为当前账号绑定同序人员后再提交", 422)
     template_id = _template_id()
-    approvers = _approvers() if isinstance(identity, str) else []
 
     latest = await latest_sample_row(session, sample.id, for_update=True)
     if await review_stuck_submission(session, latest):
@@ -307,9 +301,6 @@ async def start_sample_approval(
         "fields": fields,
         "attachment_ids": attachment_ids,
     }
-    if approvers:
-        payload["approver_dingtalk_user_ids"] = approvers
-        payload["approver_mode"] = settings.oa_sample_approver_mode or "any"
     sample, row, summary = await send_prepared_approval(session, sample, row, payload, uploads)
 
     row.instance_id = str(summary["id"])

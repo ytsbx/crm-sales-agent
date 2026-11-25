@@ -71,11 +71,6 @@ def test_field_fingerprint_changes_on_label_required_options_type():
         assert watch.fingerprint(BASE) != watch.fingerprint(changed)
 
 
-def test_approver_fingerprint_changes_on_approver():
-    changed = {**BASE, "routing": {"groups": {"initial": {"mode": "all", "approvers": ["u1"]}}}}
-    assert watch.approver_fingerprint(BASE) != watch.approver_fingerprint(changed)
-
-
 def test_field_change_summary_is_none_for_same_fingerprint():
     snap = watch.snapshot(BASE)
     assert watch.field_change_summary(snap, snap, set()) is None
@@ -128,24 +123,6 @@ def test_expected_field_ids_come_from_module_mappings():
     assert {"customer", "quote_scope", "quoter", "reference_images", "quantity"} <= inquiry
     contract = watch.expected_field_ids("contract")
     assert {"file_category", "our_parties", "contract_name"} <= contract
-
-
-def test_approver_change_message_only_when_crm_overrides(monkeypatch):
-    monkeypatch.setattr(app_settings, "oa_sample_approver_dingtalk_ids", "")
-    assert watch.approver_change_message("sample") == ""
-
-    monkeypatch.setattr(app_settings, "oa_sample_approver_dingtalk_ids", "u1")
-    message = watch.approver_change_message("sample")
-    assert "OA_SAMPLE_APPROVER_DINGTALK_IDS" in message
-    assert "清空" in message
-
-    monkeypatch.setattr(app_settings, "oa_inquiry_template_id", "")
-    monkeypatch.setattr(app_settings, "oa_inquiry_template_code", "key-account-product-inquiry")
-    monkeypatch.setattr(app_settings, "oa_inquiry_approver_dingtalk_id", "u1")
-    assert watch.approver_change_message("inquiry") == ""
-
-    monkeypatch.setattr(app_settings, "oa_inquiry_template_code", "another-template")
-    assert "OA_INQUIRY_APPROVER_DINGTALK_ID" in watch.approver_change_message("inquiry")
 
 
 def test_pick_template_by_code_and_latest_version():
@@ -239,33 +216,22 @@ def test_first_run_records_and_second_notifies_admin(monkeypatch):
         assert "extra" in notes[0].content
 
 
-def test_approver_change_notifies_only_when_crm_overrides(monkeypatch):
+def test_template_approver_change_does_not_notify(monkeypatch):
+    """主人口径：CRM 不配置、不推送审批人；模板换审批人自动生效，不需要提醒。"""
     engine = _engine()
     with Session(engine) as raw:
         _seed(raw)
         templates = [dict(FULL_BASE)]
         _bind_watch(monkeypatch, templates)
-        monkeypatch.setattr(app_settings, "oa_sample_approver_dingtalk_ids", "")
 
         asyncio.run(watch.check_all(SyncSessionAsAsync(raw)))
         raw.commit()
 
-        templates[0] = {
-            **FULL_BASE,
-            "routing": {"groups": {"initial": {"mode": "all", "approvers": ["u1"]}}},
-        }
-        asyncio.run(watch.check_all(SyncSessionAsAsync(raw)))
-        raw.commit()
-        assert raw.query(Notification).count() == 0
-
-        monkeypatch.setattr(app_settings, "oa_sample_approver_dingtalk_ids", "u9")
         templates[0] = {
             **FULL_BASE,
             "routing": {"groups": {"initial": {"mode": "all", "approvers": ["u2"]}}},
         }
         asyncio.run(watch.check_all(SyncSessionAsAsync(raw)))
         raw.commit()
-        notes = raw.query(Notification).all()
-        assert len(notes) == 1
-        assert notes[0].title == "OA 打样模板审批人配置有冲突"
-        assert "OA_SAMPLE_APPROVER_DINGTALK_IDS" in notes[0].content
+        assert raw.query(Notification).count() == 0
+        assert raw.query(SystemSetting).count() == 1

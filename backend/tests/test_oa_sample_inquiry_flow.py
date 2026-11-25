@@ -362,12 +362,10 @@ def test_unknown_approval_outcome_keeps_round_locked_for_review(monkeypatch, kin
 
 
 @pytest.mark.parametrize("template_routing", [False, True])
-def test_sample_oa_payload_uses_human_fields_and_two_approvers(monkeypatch, template_routing):
+def test_sample_oa_payload_uses_human_fields_and_template_routing(monkeypatch, template_routing):
     engine = _engine()
     monkeypatch.setattr(settings, "oa_sample_template_id", "" if template_routing else str(uuid.uuid4()))
     monkeypatch.setattr(settings, "oa_sample_template_code", "sample-migration")
-    monkeypatch.setattr(settings, "oa_sample_approver_dingtalk_ids", "" if template_routing else "ding-a,ding-b")
-    monkeypatch.setattr(settings, "oa_sample_approver_mode", "all")
     monkeypatch.setattr(oa_client, "configured", lambda: True)
     captured = []
 
@@ -414,11 +412,11 @@ def test_sample_oa_payload_uses_human_fields_and_two_approvers(monkeypatch, temp
         assert payload["title"] == f"打样申请 · {sample.id}"
         if template_routing:
             assert payload["template_code"] == "sample-migration"
-            assert "approver_dingtalk_user_ids" not in payload
-            assert "approver_mode" not in payload
         else:
-            assert payload["approver_dingtalk_user_ids"] == ["ding-a", "ding-b"]
-            assert payload["approver_mode"] == "all"
+            assert payload["template_id"]
+        # 审批人一律由 OA 模板决定，CRM 不点名、不推审批人字段。
+        assert "approver_dingtalk_user_ids" not in payload
+        assert "approver_mode" not in payload
         assert payload["fields"]["sample_type"] == "销售客户打样"
         assert payload["fields"]["sample_note"] == "需求"
         assert payload["fields"]["sample_items"]
@@ -521,7 +519,6 @@ def test_inquiry_oa_payload_keeps_quote_fields_for_handler(monkeypatch, tmp_path
     monkeypatch.setattr(settings, "oa_inquiry_template_code", oa_inquiry.NATIVE_INQUIRY_CODE if native else "inquiry-migration")
     monkeypatch.setattr(settings, "file_root", str(tmp_path))
     (tmp_path / "product.png").write_bytes(b"test-image")
-    monkeypatch.setattr(settings, "oa_inquiry_approver_dingtalk_id", "" if template_routing else "ding-li")
     monkeypatch.setattr(oa_client, "configured", lambda: True)
     captured = []
 
@@ -571,15 +568,15 @@ def test_inquiry_oa_payload_keeps_quote_fields_for_handler(monkeypatch, tmp_path
         assert sent["fields"]["customer" if native else "customer_contact"] == "客户A / 张三"
         if native:
             assert sent["template_code"] == oa_inquiry.NATIVE_INQUIRY_CODE
-            assert "approver_dingtalk_user_id" not in sent
             assert sent["fields"]["quoter"] == quoter
             assert sent["fields"]["reporter"] == identity["id"]
             assert sent["fields"]["report_department"] == identity["department_id"]
         elif template_routing:
             assert sent["template_code"] == "inquiry-migration"
-            assert "approver_dingtalk_user_id" not in sent
         else:
-            assert sent["approver_dingtalk_user_id"] == "ding-li"
+            assert sent["template_id"]
+        # 审批人一律由 OA 模板决定，CRM 不点名、不推审批人字段。
+        assert "approver_dingtalk_user_id" not in sent
         assert sent["fields"]["reference_images" if native else "DDPhotoField_1U7CNXCKQNS00"] == ["image-in-oa"]
         assert sent["attachment_ids"] == ["image-in-oa"]
         assert sent["fields"]["attachments"] == []

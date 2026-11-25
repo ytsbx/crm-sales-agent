@@ -4,13 +4,12 @@
 从哪来，模板新增/改名字段时没法凭空推断。这里只做变更检测，把"OA 表单变了"
 尽早告诉管理员，并点名受影响的映射，由人去改配置/映射。
 
-审批人单独处理：native 路径 CRM 不传审批人，换审批人由同序负责，不需要提醒；
-但旧/钉钉身份路径会用 OA_*_APPROVER_* 覆盖审批人，这时模板改了审批人不会生效，
-属于真实盲区，需要提醒管理员。
+审批人不在检查范围内：审批人一律由 OA 模板决定，CRM 不配置、不推送审批人
+（2026-11-25 主人口径），模板换审批人会自动生效，无需提醒。
 
-实现：字段结构和审批路线各算一个指纹存进 system_settings；字段变化时通知
-admin 并点名缺失/新增字段；审批路线变化仅在 CRM 会覆盖审批人时提醒。
-首次见到只存不报；模板回包字段为空时跳过，避免把异常回包记成"0 字段模板"。
+实现：把模板的字段结构做一次指纹存进 system_settings；下次指纹不同就通知
+admin 并点名缺失/新增字段。首次见到只存不报；模板回包字段为空时跳过，
+避免把异常回包记成"0 字段模板"。
 """
 import hashlib
 import json
@@ -52,7 +51,7 @@ def _field_signature(field: dict) -> dict:
 
 
 def normalize(template: dict) -> dict:
-    """只保留 CRM 要映射的表单字段结构；审批人单独算指纹。"""
+    """只保留 CRM 要映射的表单字段结构；审批人由 OA 模板决定，不比对。"""
     return {"fields": [_field_signature(field) for field in template.get("fields") or []]}
 
 
@@ -61,15 +60,9 @@ def fingerprint(template: dict) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def approver_fingerprint(template: dict) -> str:
-    raw = json.dumps(template.get("routing") or {}, sort_keys=True, ensure_ascii=False, default=str)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
 def snapshot(template: dict) -> dict:
     return {
         "hash": fingerprint(template),
-        "approver_hash": approver_fingerprint(template),
         "code": template.get("code") or "",
         "name": template.get("name") or "",
         "version": template.get("version"),
@@ -163,30 +156,6 @@ def field_change_summary(old: dict | None, new: dict, expected_ids: set[str]) ->
     return "。".join(parts)
 
 
-def approver_override(kind: str) -> tuple[bool, str]:
-    """CRM 当前是否会用自己的配置覆盖模板审批人。"""
-    if kind == "sample":
-        return (bool(settings.oa_sample_approver_dingtalk_ids.strip()),
-                "OA_SAMPLE_APPROVER_DINGTALK_IDS")
-    if kind == "inquiry":
-        native = (not settings.oa_inquiry_template_id.strip()
-                  and settings.oa_inquiry_template_code.strip() == "key-account-product-inquiry")
-        return (not native and bool(settings.oa_inquiry_approver_dingtalk_id.strip()),
-                "OA_INQUIRY_APPROVER_DINGTALK_ID")
-    if kind == "contract":
-        return (bool(settings.oa_contract_approver_dingtalk_id.strip()),
-                "OA_CONTRACT_APPROVER_DINGTALK_ID")
-    return False, ""
-
-
-def approver_change_message(kind: str) -> str:
-    override, env = approver_override(kind)
-    if not override:
-        return ""
-    return (f"模板审批路线/审批人有变化，但 CRM 当前会按 {env} 推送审批人"
-            "（旧/钉钉身份），实际审批人可能不变。要让模板生效，请清空该配置。")
-
-
 def pick_template(templates: list[dict], template_id: str, template_code: str) -> dict | None:
     if not template_id and not template_code:
         return None
@@ -234,33 +203,20 @@ async def check_template(session, kind: str, template: dict) -> bool:
     key = setting_key(kind, str(code))
     old = await _load_snapshot(session, key)
     new = snapshot(template)
-    field_message = field_change_summary(old, new, expected_field_ids(kind)) if old else None
-    approver_message = ""
-    if old and old.get("approver_hash") != new["approver_hash"]:
-        approver_message = approver_change_message(kind)
-        if not approver_message:
-            logger.info("OA %s 模板审批人变化，但 CRM 不覆盖，无需提醒", kind)
-
-    messages = [message for message in (field_message, approver_message) if message]
-    if messages:
+    message = field_change_summary(old, new, expected_field_ids(kind)) if old else None
+    if message:
         label = KINDS.get(kind, (kind, "", ""))[0]
-        if field_message and approver_message:
-            title = f"OA {label}模板已变更"
-        elif approver_message:
-            title = f"OA {label}模板审批人配置有冲突"
-        else:
-            title = f"OA {label}模板字段已变更"
         await notification_service.notify_roles(
             session,
             role_codes=["admin"],
             type_="system",
-            title=title,
-            content=f"{new.get('name') or code}：{'；'.join(messages)}",
+            title=f"OA {label}模板字段已变更",
+            content=f"{new.get('name') or code}：{message}",
             business_type="oa_template",
         )
 
     await _save_snapshot(session, key, new)
-    return bool(messages)
+    return bool(message)
 
 
 def _candidate_identity(value: str):

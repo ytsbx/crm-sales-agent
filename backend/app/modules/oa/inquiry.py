@@ -266,7 +266,6 @@ async def start_inquiry_approval(session: AsyncSession, current_user, inquiry: C
         raise AppError(ErrorCode.PARAM_ERROR, "请联系管理员为当前账号绑定同序人员后再提交", 422)
     template_id = _template_id()
     native = uses_native_inquiry()
-    approver = "" if native else settings.oa_inquiry_approver_dingtalk_id.strip()
 
     # Lock the business row as well: two first submissions have no approval row to lock.
     await session.get(CustomInquiry, inquiry.id, with_for_update=True, populate_existing=True)
@@ -367,8 +366,6 @@ async def start_inquiry_approval(session: AsyncSession, current_user, inquiry: C
         "fields": fields,
         "attachment_ids": attachment_ids,
     }
-    if approver and isinstance(applicant, str):
-        payload_data["approver_dingtalk_user_id"] = approver
     inquiry, row, summary = await send_prepared_approval(session, inquiry, row, payload_data, uploads)
 
     row.instance_id = str(summary["id"])

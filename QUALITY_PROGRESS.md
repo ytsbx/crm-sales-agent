@@ -5595,6 +5595,14 @@
 - 部署提醒：8009 现跑 11-23 旧进程；重启/部署本提交后按新口径运行，已批单子不再被拦。
 - 账目：B09-01/B10-01 由「已修」改记「实测撤回（前提不成立）」；B13-02 保持已修。P1 待处理 6（B07-02/03、B11-01、B11-02 按主人指示搁置、B06-04/05 挂起）；P2 仍成立 41 不变。
 
+### 返工 A4 落地（2026-11-25，主人拍板：CRM 不得点名审批人）
+
+- 口径：CRM 只能发起 OA 现有模板，审批人一律由 OA 模板决定；CRM 不配置、不推送审批人。
+- 移除三处推送：打样 `approver_dingtalk_user_ids/approver_mode`、询价 `approver_dingtalk_user_id`、合同 `approver_dingtalk_user_id`；删除 5 个配置项（`oa_sample_approver_dingtalk_ids`、`oa_sample_approver_mode`、`oa_inquiry_approver_dingtalk_id`、`oa_inquiry_approver_mode`、`oa_contract_approver_dingtalk_id`）；环境变量残留旧值不再生效。
+- template_watch 简化：审批人不再纳入指纹/提醒（模板换审批人自动生效，无盲区）；新增用例锁"模板换审批人不发通知"。
+- 测试适配：原"审批人已推送"断言改为"payload 不得出现审批人字段"（口径替换非削弱）；删除 3 条针对已移除功能的用例、新增 1 条新口径用例；隔离全量 **2296 绿**。
+- 文档：`docs/OA_QUOTATION_STAGE.md` 追加审批人口径小节。只推 GitHub。
+
 ## 2026-11-24 前端审查二次核验（F07、F09、F12、F14、F15）
 
 - F07-01、F09-01、F14-01 成立。分析指标可在请求失败后落 ¥0，系统设置的用户、角色、部门、标签、数据字典及公海规则列表缺少对应失败提示，AI 会话详情失败进入空会话分支。销售目标、自动任务设置、AI 会话列表各有自己的失败提示。

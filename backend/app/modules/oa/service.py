@@ -358,8 +358,6 @@ async def _build_payload(
         payload["template_id"] = template_id
     else:
         payload["template_code"] = template_code
-    if isinstance(client.applicant_identity(user), str) and settings.oa_contract_approver_dingtalk_id:
-        payload["approver_dingtalk_user_id"] = settings.oa_contract_approver_dingtalk_id
     return payload
 
 

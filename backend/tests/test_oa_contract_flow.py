@@ -87,7 +87,6 @@ def test_start_contract_creates_self_oa_row_and_sign_gate(tmp_path, monkeypatch,
     monkeypatch.setattr(settings, "oa_integration_secret", "secret")
     monkeypatch.setattr(settings, "oa_contract_template_id", str(uuid.uuid4()))
     monkeypatch.setattr(settings, "oa_contract_template_code", "")
-    monkeypatch.setattr(settings, "oa_contract_approver_dingtalk_id", "ding-fixed-approver")
     monkeypatch.setattr(oa_client, "configured", lambda: True)
 
     async def fake_upload(*_args, **_kwargs):
@@ -107,7 +106,7 @@ def test_start_contract_creates_self_oa_row_and_sign_gate(tmp_path, monkeypatch,
             raise oa_client.OaError("表单遭拒")
         assert payload["applicant_dingtalk_user_id"] == "ding-user-1"
         assert payload["attachment_ids"]
-        assert payload["approver_dingtalk_user_id"] == "ding-fixed-approver"
+        assert "approver_dingtalk_user_id" not in payload  # 审批人由 OA 模板决定，CRM 不点名
         return {
             "id": str(uuid.uuid4()), "status": "pending", "stage": "initial",
             "assignee_name": "田小秘", "external_ref": payload["external_ref"],
