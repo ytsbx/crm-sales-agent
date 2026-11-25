@@ -340,7 +340,6 @@ async def get_document(
     user: CurrentUser = Depends(require_permission("order:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    from app.modules.contract.pdf import render_contract_pdf
     doc = await svc.get_doc_or_404(session, doc_id)
     await _ensure_doc_in_scope(session, user, doc)
     from app.modules.customer.model import Customer
@@ -452,6 +451,7 @@ async def download_document(
 
     from fastapi import Response
 
+    from app.modules.contract.pdf import render_contract_pdf
     from app.modules.file import storage
     from app.modules.file.model import FileRecord
 
