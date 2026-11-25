@@ -947,6 +947,7 @@ export default function OrderDetailPage() {
     && Number.isFinite(Number(settleFreight))
     && Number(settleFreight) >= 0
   const refundReferenceValid = refundReference.trim().length >= 2
+    && refundReference.trim().length <= 128
   const cancelReturnReasonValid = cancelReturnReason.trim().length >= 2
   const voidReturnReasonValid = voidReturnReason.trim().length >= 2
   const remainingToShip = shipment?.summary.remaining_exact ?? shipment?.summary.remaining
@@ -3223,7 +3224,7 @@ export default function OrderDetailPage() {
             </div>
             <div>
               <FormLabel required>退款流水 / 凭证说明</FormLabel>
-              <Input value={refundReference} onChange={setRefundReference}
+              <Input value={refundReference} onChange={setRefundReference} maxLength={128}
                 placeholder="例如：银行转账 20261125001" />
             </div>
           </div>
