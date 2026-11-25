@@ -120,7 +120,6 @@ async def start_inquiry_approval(
     session: AsyncSession = Depends(get_db),
 ):
     """从 CRM 的定制需求发起钉钉询价审批（幂等；驳回后重提走 resubmit）。"""
-    from app.modules.settings import service as settings_service
     oa_inquiry.ensure_submission_enabled()
 
     # 复用 inquiry 模块的可见性检查（P1 修复）：直接 `session.get` 按 id 取会**绕过数据范围**

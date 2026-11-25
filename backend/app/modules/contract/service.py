@@ -3,10 +3,9 @@
 import asyncio
 import hashlib
 import json
+import logging
 import re
 from datetime import UTC, date, datetime, timedelta
-
-import logging
 
 from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError

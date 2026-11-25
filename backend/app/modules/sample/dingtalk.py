@@ -1,9 +1,6 @@
 """打样两条钉钉路径：独立发单 / 关联原询价；外部实例统一复用 OA 防重状态机。"""
-import json
-import httpx
 from datetime import date
 from decimal import Decimal, InvalidOperation
-from types import SimpleNamespace
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Request
