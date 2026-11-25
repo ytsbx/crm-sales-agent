@@ -72,6 +72,10 @@ export default function SampleDingTalkModal({sampleId,customerName,onClose}:{
   const submitted=Boolean(query.data?.draft.submitted) && !edited?.resubmit
   const requiresSelfOa = query.data?.draft.requires_self_oa
   const approval = query.data?.records[0]
+  // 失败/未发出 = 外部确定没建单：允许改字段后重试（B11-10，主人 2026-11-25 拍板）。
+  // 结果未知（needs_review）不在此列——那边可能已经建了单，字段保持只读，先到 OA 核对。
+  const retryable = Boolean(submitted && approval?.allowed_actions?.includes('retry'))
+  const locked = submitted && !retryable
   let nextStep = '填好这版打样资料后提交同序 OA。暂时没填完，可以先保存草稿。'
   if (draft.mode === 'inquiry') {
     nextStep = submitted
@@ -81,6 +85,7 @@ export default function SampleDingTalkModal({sampleId,customerName,onClose}:{
     if (approval?.status === 'approved') nextStep = '审批已通过。返回样品详情，在车间实际做完后登记制作完成。'
     else if (approval?.status === 'pending') nextStep = '正在等同序 OA 审批。可以关闭弹窗，之后从样品详情回来查看进度。'
     else if (approval?.status === 'rejected') nextStep = '先查看驳回意见。处理后，如有「修改后重新提交」按钮，可从这里继续办理。'
+    else if (retryable) nextStep = '上次没有发出去或被同序拒收（确定没建单）。改好上面的内容后，点「重新提交」即可。'
     else if (approval?.status === 'needs_review' || approval?.status === 'submitting') {
       nextStep = '请先在同序 OA 核对审批是否已收到，确认结果后再继续操作。'
     } else nextStep = '请先查看下方审批记录，再按当前可用的按钮处理。'
@@ -101,7 +106,7 @@ export default function SampleDingTalkModal({sampleId,customerName,onClose}:{
   const pointsFieldId = query.data?.native_form ? undefined : query.data?.fields.find((f) => f.label === '本次打样积分')?.id
   const hoursInput = draft.fields['_estimated_hours'] ?? ''
   useEffect(() => {
-    if (!pointsFieldId || submitted) return
+    if (!pointsFieldId || locked) return
     const raw = hoursInput.trim()
     const n = Number(raw)
     const next = raw && Number.isFinite(n) && n > 0 ? String(n * 10) : ''
@@ -176,7 +181,7 @@ export default function SampleDingTalkModal({sampleId,customerName,onClose}:{
       {(!submitted||query.data?.records[0]?.allowed_actions?.includes('retry'))&&<Button theme="solid"
         disabled={!query.data || mutate.isPending}
         loading={mutate.isPending} onClick={()=>mutate.mutate(true)}>
-        {submitted?'重试原申请':draft.mode==='inquiry'?'关联原询价（不发新单）':'提交打样到同序 OA'}
+        {submitted?(retryable?'重新提交':'重试原申请'):draft.mode==='inquiry'?'关联原询价（不发新单）':'提交打样到同序 OA'}
       </Button>}
     </div>}>
     {query.isLoading && <p className="workflow-guide">正在读取打样资料…</p>}
@@ -242,10 +247,10 @@ export default function SampleDingTalkModal({sampleId,customerName,onClose}:{
               :field.id==='sample_items' ? <div style={{display:'grid',gap:8}}>
                 {(query.data?.detail_files?.length ?? 0) > 0 && <Select multiple style={{width:'100%'}}
                   placeholder="选择已上传的样品明细表"
-                  value={selectedDetailFileIds} disabled={submitted||mutate.isPending}
+                  value={selectedDetailFileIds} disabled={locked||mutate.isPending}
                   optionList={(query.data?.detail_files ?? []).map(file=>({value:file.id,label:file.file_name}))}
                   onChange={value=>setSelectedDetailFileIds(value as number[])}/>}
-                {!submitted && <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+                {!locked && <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
                   <Upload action="" uploadTrigger="custom" multiple fileList={detailFiles}
                     disabled={mutate.isPending}
                     onChange={({fileList})=>setDetailFiles(fileList)}>
@@ -256,14 +261,14 @@ export default function SampleDingTalkModal({sampleId,customerName,onClose}:{
                     先下载空白三表模板填好，再在这里上传；不再从 CRM 样品明细自动生成 Excel。
                   </span>
                 </div>}
-                {submitted && <div>已提交的资料已冻结，请在同序 OA 查看本轮附件。</div>}
+                {locked && <div>已提交的资料已冻结，请在同序 OA 查看本轮附件。</div>}
               </div>
-              :field.type==='DDSelectField'?<Select style={{width:'100%'}} placeholder='请选择' value={draft.fields[field.id]||undefined} disabled={submitted||mutate.isPending}
+              :field.type==='DDSelectField'?<Select style={{width:'100%'}} placeholder='请选择' value={draft.fields[field.id]||undefined} disabled={locked||mutate.isPending}
                 optionList={field.options.map(value=>({value,label:value}))} onChange={value=>setEdited({...draft,fields:{...draft.fields,[field.id]:value as string}})}/>
-              :field.type==='DDDateField'?<DatePicker type='date' format='yyyy-MM-dd' style={{width:'100%'}} value={draft.fields[field.id]||undefined} disabled={submitted||mutate.isPending}
+              :field.type==='DDDateField'?<DatePicker type='date' format='yyyy-MM-dd' style={{width:'100%'}} value={draft.fields[field.id]||undefined} disabled={locked||mutate.isPending}
                 onChange={(_,value)=>setEdited({...draft,fields:{...draft.fields,[field.id]:(value as string)||''}})}/>
-              :field.type==='NumberField'?<Input inputMode='decimal' placeholder={field.hint} style={{width:'100%'}} value={draft.fields[field.id]||''} disabled={submitted||mutate.isPending} onChange={value=>setEdited({...draft,fields:{...draft.fields,[field.id]:value}})}/>
-              :<TextArea rows={3} value={draft.fields[field.id]||''} disabled={submitted||mutate.isPending} onChange={value=>setEdited({...draft,fields:{...draft.fields,[field.id]:value}})}/>}
+              :field.type==='NumberField'?<Input inputMode='decimal' placeholder={field.hint} style={{width:'100%'}} value={draft.fields[field.id]||''} disabled={locked||mutate.isPending} onChange={value=>setEdited({...draft,fields:{...draft.fields,[field.id]:value}})}/>
+              :<TextArea rows={3} value={draft.fields[field.id]||''} disabled={locked||mutate.isPending} onChange={value=>setEdited({...draft,fields:{...draft.fields,[field.id]:value}})}/>}
             </Field>)}
         </div>
         {!query.data?.native_form && (<>
@@ -283,7 +288,7 @@ export default function SampleDingTalkModal({sampleId,customerName,onClose}:{
              ['sample_situation','样品情况',['首次设计新品','设计更改','客户首次要求','客户更改','其他']]] as const).map(([key,label,options])=>
             <Field key={key} label={label}>
               <Select style={{width:'100%'}} placeholder="请选择" value={draft.fields['_'+key]||undefined}
-                disabled={submitted||mutate.isPending}
+                disabled={locked||mutate.isPending}
                 optionList={options.map(value=>({value,label:value}))}
                 onChange={value=>setEdited({...draft,fields:{...draft.fields,['_'+key]:value as string}})}/>
             </Field>)}
@@ -291,7 +296,7 @@ export default function SampleDingTalkModal({sampleId,customerName,onClose}:{
             const points = raw.trim() && Number.isFinite(n) ? n * 10 : null
             return <>
               <Field label="预计工时（小时）" required>
-                <Input className="sample-hours-input" style={{width:'100%'}} value={raw} disabled={submitted||mutate.isPending}
+                <Input className="sample-hours-input" style={{width:'100%'}} value={raw} disabled={locked||mutate.isPending}
                   onChange={value=>{setHoursMissing(false);setEdited({...draft,fields:{...draft.fields,['_estimated_hours']:value}})}}/>
                 {/* 这句是"照着做"的提示：告诉人填哪个、系统会替他算什么 */}
                 <div style={{marginTop:4,fontSize:12,color:hoursMissing?'var(--crm-error)':'var(--crm-text-3)'}}>
@@ -304,22 +309,22 @@ export default function SampleDingTalkModal({sampleId,customerName,onClose}:{
             </> })()}
           <Field label="打样费用（元）">
             <Input style={{width:'100%'}} placeholder="留空表示未填；免费请填 0" value={draft.fields['_sample_fee']||''}
-              disabled={submitted||mutate.isPending}
+              disabled={locked||mutate.isPending}
               onChange={value=>setEdited({...draft,fields:{...draft.fields,['_sample_fee']:value}})}/>
           </Field>
           <Field label="交样时间">
             <DatePicker type="date" format="yyyy-MM-dd" showClear style={{width:'100%'}}
               value={draft.fields['_deliver_date'] ? new Date(draft.fields['_deliver_date']) : undefined}
-              disabled={submitted||mutate.isPending}
+              disabled={locked||mutate.isPending}
               onChange={(_,value)=>setEdited({...draft,fields:{...draft.fields,['_deliver_date']:(value as string)||''}})}/>
           </Field>
           <Field label="打样人">
-            <Input style={{width:'100%'}} value={draft.fields['_sample_maker']||''} disabled={submitted||mutate.isPending}
+            <Input style={{width:'100%'}} value={draft.fields['_sample_maker']||''} disabled={locked||mutate.isPending}
               onChange={value=>setEdited({...draft,fields:{...draft.fields,['_sample_maker']:value}})}/>
           </Field>
           {([['material_spec','主要材质和规格'],['product_size','产品尺寸'],['printing','产品印刷'],['accessories','主要辅料'],['packaging','包装要求'],['craft_requirement','做法要求']] as const).map(([key,label])=>
             <Field key={key} label={label} span>
-              <TextArea rows={2} value={draft.fields['_'+key]||''} disabled={submitted||mutate.isPending}
+              <TextArea rows={2} value={draft.fields['_'+key]||''} disabled={locked||mutate.isPending}
                 onChange={value=>setEdited({...draft,fields:{...draft.fields,['_'+key]:value}})}/>
             </Field>)}
         </div>
@@ -327,11 +332,11 @@ export default function SampleDingTalkModal({sampleId,customerName,onClose}:{
             这里上传的图片会**真的印在申请表「产品图片（多方位图片）」那一格上**（最多 4 张），
             其余文件（PDF 图纸、Excel…）作为同序 OA 附件随单传上去。 */}
         <div style={{fontWeight:600}}>产品图片（多方位图片）</div>
-        {!submitted && <AttachmentPanel businessType="sample" businessId={sampleId} writePermission="sample:manage"
+        {!locked && <AttachmentPanel businessType="sample" businessId={sampleId} writePermission="sample:manage"
           category="sample_product_image" onlyCategory="sample_product_image" includeUncategorizedImages maxFiles={4}
           accept=".png,.jpg,.jpeg,.gif,.bmp,.webp,.tif,.tiff" uploadLabel="上传产品图片"
           hint="最多4张，仅放入Excel的四个产品图片框，不会作为独立附件传到同序 OA。单个文件不超过20 MB"/>}
-        {submitted && <div>已提交的资料已冻结，请在同序 OA 查看本轮附件。</div>}
+        {locked && <div>已提交的资料已冻结，请在同序 OA 查看本轮附件。</div>}
         </div>
         </>)}
       </>}

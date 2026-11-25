@@ -238,6 +238,91 @@ async def detail(sample_id:int,user:CurrentUser=Depends(require_permission('samp
                'candidates':candidates,'records':records})
 
 
+async def _apply_field_columns(sample, payload, options=None):
+    """把弹窗里用户填的字段落成正式列（《打样申请单》Excel 读这些列）。
+
+    调用方决定什么时候可以落：首次提交/保存草稿时落；失败后改内容重试时也落
+    （外部确定没建单，见 `submit`）；已经进入审批的单据不再落。
+    """
+    for _key, _column in (('sample_purpose','sample_purpose'),('urgency','urgency'),('sample_situation','sample_situation')):
+        _value = payload.fields.get('_' + _key)
+        if _value is not None:
+            setattr(sample, _column, _value or None)
+    # 「打样费用」同样落列（2026-10-16 主人：「打样费用在哪没看见」）——
+    # 它在申请表 C3 那格，以前只能去详情页的「生产打样资料」里填，
+    # 而钉钉弹窗是建完单立刻弹出来的，用户在那儿找不到它。
+    # 空串 = 明确清空（与"没传"区分：没传就不动）。
+    # 「要求完成日期」是**钉钉模板自带的控件**（不是 `_` 前缀那批），
+    # 所以以前只有提交时才带过去、**保存草稿不落库** —— 重开弹窗那一格是空的，
+    # 而 Excel 的「交样时间」正是从这一列取的（主人 2026-10-16 问「交样时间有没有」）。
+    # 这里按**控件标签**找它（id 是模板给的，不写死）。
+    # ⚠️ **不要在这里 await template(session)**（2026-10-16）：
+    # `save()` 是**纯函数式**的（`tests/test_sample_dingtalk.py` 用假 session 调它，
+    # 本意就是"保存草稿不碰模板/不连库"）。我第一版在那里取了模板，四个测试立刻红。
+    # 所以模板由**调用方**传进来 —— 两个路由本来就已经取过它了。
+    _fields = (options or {}).get('fields') or []
+    # 同序原生表单的「打样类型 / 产品大类 / 制作单位 / 积分」也要落列：
+    # 下载/导出《打样申请单》Excel 读的是这些列，只存在草稿 metadata 里的话，
+    # 保存草稿后立刻下载会看到打样类型、打样部门空着。
+    if any(f.get('id') == 'sample_type' for f in _fields):
+        for _name in ('sample_type', 'product_category', 'maker_unit'):
+            if _name in payload.fields:
+                setattr(sample, _name, payload.fields.get(_name) or None)
+        _score = payload.fields.get('score')
+        if _score not in (None, ''):
+            try:
+                sample.estimated_hours = Decimal(str(_score)) / 10
+            except InvalidOperation as error:
+                raise AppError(ErrorCode.PARAM_ERROR, '本次打样积分格式无效', 422) from error
+    _due_field = next((f for f in _fields if f.get('label') == '要求完成日期'), None)
+    if _due_field is not None:
+        _due = payload.fields.get(_due_field['id'])
+        if _due is not None:
+            _due_text = str(_due).strip()
+            if not _due_text:
+                sample.target_completion_date = None
+            else:
+                try:
+                    sample.target_completion_date = date.fromisoformat(_due_text)
+                except ValueError:
+                    raise AppError(ErrorCode.PARAM_ERROR, '要求完成日期格式不对（应为 YYYY-MM-DD）', 422)
+    # 「交样时间」（申请表 H2）与「打样人」（申请表 H3）同样落列 ——
+    # 它们与钉钉的「要求完成日期」是**两件事**（主人 2026-10-16 指出）。
+    _deliver = payload.fields.get('_deliver_date')
+    if _deliver is not None:
+        _dt = str(_deliver).strip()
+        if not _dt:
+            sample.deliver_date = None
+        else:
+            try:
+                sample.deliver_date = date.fromisoformat(_dt)
+            except ValueError:
+                raise AppError(ErrorCode.PARAM_ERROR, '交样时间格式不对（应为 YYYY-MM-DD）', 422)
+    for field, value in validated_sample_details(payload.fields).items():
+        setattr(sample, field, value)
+
+
+async def remember_retry_fields(session, sample, payload, options=None):
+    """失败/未发出后改字段重试：把这次内容更新为新的提交快照（B11-10）。
+
+    只有外部**确定没建单**（failed / not_sent / skipped）才会走到这里：
+    改了内容不会多出一张审批单，快照就该与这次真正提交的一致。
+    provider / instance_id / submitted 等外部事实保持原样；
+    结果未知（needs_review）不在此列——那边可能已经建了单，必须先核对。
+    """
+    current = metadata(sample)
+    sample.source_context = {
+        **(sample.source_context or {}),
+        META_KEY: {
+            **current,
+            'fields': dict(payload.fields),
+            'sample_detail_file_ids': list(payload.sample_detail_file_ids),
+        },
+    }
+    await _apply_field_columns(sample, payload, options)
+    await session.flush()
+
+
 async def save(session,user,sample,payload,options=None):
     self_oa_only=bool(metadata(sample).get('requires_self_oa'))
     if self_oa_only and (payload.mode != 'standalone' or payload.source_oa_id is not None):
@@ -263,66 +348,11 @@ async def save(session,user,sample,payload,options=None):
     # 这三格就永远是空的 —— 而钉钉模板里又没有这三项控件，用户**没有任何地方能填**
     # （主人 2026-10-16：「还有打样目的，紧急程度…为什么不让我填」）。
     #
-    # ⚠️ 只在**还没提交**时写：提交后那张申请表就是审批快照，不能再改
-    # （重试必须用原始资料，见 submit 里那条 409）。`save()` 的调用方在
-    # 已提交时要么被 `ensure_editable` 拦住、要么显式跳过 save，所以这里再判一次。
+    # ⚠️ 只在**还没提交**时写：提交后那张申请表就是审批快照，不能再改。
+    # 唯一的例外是「失败/未发出后改内容重试」—— 那条走 remember_retry_fields，
+    # 不进这里；save() 的调用方在已提交时要么被 ensure_editable 拦住、要么跳过。
     if not metadata(sample).get('submitted'):
-        for _key, _column in (('sample_purpose','sample_purpose'),('urgency','urgency'),('sample_situation','sample_situation')):
-            _value = payload.fields.get('_' + _key)
-            if _value is not None:
-                setattr(sample, _column, _value or None)
-        # 「打样费用」同样落列（2026-10-16 主人：「打样费用在哪没看见」）——
-        # 它在申请表 C3 那格，以前只能去详情页的「生产打样资料」里填，
-        # 而钉钉弹窗是建完单立刻弹出来的，用户在那儿找不到它。
-        # 空串 = 明确清空（与"没传"区分：没传就不动）。
-        # 「要求完成日期」是**钉钉模板自带的控件**（不是 `_` 前缀那批），
-        # 所以以前只有提交时才带过去、**保存草稿不落库** —— 重开弹窗那一格是空的，
-        # 而 Excel 的「交样时间」正是从这一列取的（主人 2026-10-16 问「交样时间有没有」）。
-        # 这里按**控件标签**找它（id 是模板给的，不写死）。
-        # ⚠️ **不要在这里 await template(session)**（2026-10-16）：
-        # `save()` 是**纯函数式**的（`tests/test_sample_dingtalk.py` 用假 session 调它，
-        # 本意就是"保存草稿不碰模板/不连库"）。我第一版在那里取了模板，四个测试立刻红。
-        # 所以模板由**调用方**传进来 —— 两个路由本来就已经取过它了。
-        _fields = (options or {}).get('fields') or []
-        # 同序原生表单的「打样类型 / 产品大类 / 制作单位 / 积分」也要落列：
-        # 下载/导出《打样申请单》Excel 读的是这些列，只存在草稿 metadata 里的话，
-        # 保存草稿后立刻下载会看到打样类型、打样部门空着。
-        if any(f.get('id') == 'sample_type' for f in _fields):
-            for _name in ('sample_type', 'product_category', 'maker_unit'):
-                if _name in payload.fields:
-                    setattr(sample, _name, payload.fields.get(_name) or None)
-            _score = payload.fields.get('score')
-            if _score not in (None, ''):
-                try:
-                    sample.estimated_hours = Decimal(str(_score)) / 10
-                except InvalidOperation as error:
-                    raise AppError(ErrorCode.PARAM_ERROR, '本次打样积分格式无效', 422) from error
-        _due_field = next((f for f in _fields if f.get('label') == '要求完成日期'), None)
-        if _due_field is not None:
-            _due = payload.fields.get(_due_field['id'])
-            if _due is not None:
-                _due_text = str(_due).strip()
-                if not _due_text:
-                    sample.target_completion_date = None
-                else:
-                    try:
-                        sample.target_completion_date = date.fromisoformat(_due_text)
-                    except ValueError:
-                        raise AppError(ErrorCode.PARAM_ERROR, '要求完成日期格式不对（应为 YYYY-MM-DD）', 422)
-        # 「交样时间」（申请表 H2）与「打样人」（申请表 H3）同样落列 ——
-        # 它们与钉钉的「要求完成日期」是**两件事**（主人 2026-10-16 指出）。
-        _deliver = payload.fields.get('_deliver_date')
-        if _deliver is not None:
-            _dt = str(_deliver).strip()
-            if not _dt:
-                sample.deliver_date = None
-            else:
-                try:
-                    sample.deliver_date = date.fromisoformat(_dt)
-                except ValueError:
-                    raise AppError(ErrorCode.PARAM_ERROR, '交样时间格式不对（应为 YYYY-MM-DD）', 422)
-        for field, value in validated_sample_details(payload.fields).items():
-            setattr(sample, field, value)
+        await _apply_field_columns(sample, payload, options)
     await session.flush()
 
 
@@ -362,39 +392,33 @@ async def submit(sample_id:int,payload:Draft,request:Request,user:CurrentUser=De
         return ok(oa.serialize(previous), "这张打样单正在发起 OA 审批，请稍后查看进度")
     open_new_round=bool(payload.resubmit and previous is not None and previous.status in ('rejected','withdrawn'))
     retry=False
+    retry_edits=''
     if meta.get('submitted'):
         if payload.mode!=meta.get('mode') or payload.source_oa_id!=meta.get('source_oa_id'):
             raise AppError(ErrorCode.STATUS_NOT_ALLOWED,'已经提交或关联，不能切换流程重复发单',409)
         retry=previous is not None and previous.status in ('failed','not_sent','skipped')
         if not retry and not open_new_round:
             return ok(oa.serialize(previous) if previous else None,'已提交或关联，请查看审批过程，不要重复发起')
-        # ⚠️ **只在"原样重发"时锁快照，不锁"驳回后重提"**（2026-10-16 修）：
-        # `retry` 是"上次没发出去（failed/not_sent/skipped）→ 原样重发"，这时必须一字不改，
-        # 否则会拿新内容去覆盖一条"已经发生过"的审批快照。
-        # 但 `open_new_round`（驳回/撤回后重新发起）**本来就该允许改** —— 主人这一轮就是
-        # 被这条误拦的：他说"我没改写啊"，而真正变的是**我们自己算出来的**「本次打样积分」
-        # （由工时 × 10 自动同步）。把"驳回后重提"也锁上，等于把这条规则和上面
-        # `open_new_round` 的判定自相矛盾。
-        # ⚠️ **只比"两边都有"的字段**（2026-10-16 第二次修，这次是真因）：
-        # 快照里存的是**用户填的那批**；而 `申请人员` / `归属部门` / `样品明细明细表`
-        # 这三项**每次提交时由后端现算**（钉钉身份、部门、现生成的 Excel 附件），
-        # **根本不在快照里**。前端"重试原申请"会把它们一起带回来，
-        # 于是 `payload.fields != meta["fields"]` 永远成立 ——
-        # 用户看到的是一句「重试必须使用已提交的原始资料，不能改写审批快照」，
-        # 而他**什么都没改**（主人 2026-10-16：「我没改写啊」）。那是个死循环。
+        # 失败/未发出 = **外部确定没建单**，允许改字段后重试（B11-10，主人 2026-11-25 拍板）。
         #
-        # 所以取交集再比：后端自己算的那几项不参与比较。
+        # 此前这里把"原样重发"锁成一字不改，理由是"别拿新内容覆盖已经发生过的审批快照"——
+        # 对"结果未知"成立，对 failed/not_sent/skipped 不成立：那三种状态外部压根没有单子。
+        # 锁住只会把人卡死：提示写着"可以修正后重试"，真改了字段却报"不能改写快照"。
+        # 现在改成：允许改，快照更新为这次真正提交的内容，差异进审计。
+        #
+        # 比较仍只取"两边都有"的字段（`snapshot_edit_detail`）：申请人员/部门/附件
+        # 由后端现算、根本不在快照里，把它们算进来会让"什么都没改"也被当成改写。
         if retry and not open_new_round:
-            _detail = snapshot_edit_detail(meta.get("fields") or {}, payload.fields)
-            if _detail:
-                raise AppError(ErrorCode.STATUS_NOT_ALLOWED,
-                               f"重试必须使用已提交的原始资料，不能改写审批快照（{_detail}）", 409)
+            retry_edits = snapshot_edit_detail(meta.get("fields") or {}, payload.fields)
     # 模板**只在独立发起时取**：`save()` 要靠它知道「要求完成日期」那个控件的 id。
     # 「沿用原询价」那条路不发新的钉钉单，不需要模板 —— 而且那条路在集成测试里
     # 用的是假 session（读设置要连库），不去取也避免把测试弄红。
     options=None
     if payload.mode=='standalone':
         options,code=await template(session)
+    if retry and not open_new_round:
+        # 快照跟着这次真正提交的内容走；外部事实（provider/instance_id）不动。
+        await remember_retry_fields(session,sample,payload,options)
     if not retry:await save(session,user,sample,payload,options)
     if payload.mode=='inquiry':
         if not payload.source_oa_id:raise AppError(ErrorCode.REQUIRED_FIELD_MISSING,'请选择原询价审批单',422)
@@ -409,7 +433,8 @@ async def submit(sample_id:int,payload:Draft,request:Request,user:CurrentUser=De
             sample_detail_file_ids=payload.sample_detail_file_ids,
         )
         await write_audit(session,operator_id=user.id,action='update',business_type='sample',business_id=sample.id,
-                         after={'oa_provider':'self_oa','oa_status':row.status,'instance_id':row.instance_id},ip=client_ip(request))
+                         after={'oa_provider':'self_oa','oa_status':row.status,'instance_id':row.instance_id,
+                                **({'retry_edits':retry_edits} if retry_edits else {})},ip=client_ip(request))
         await session.commit()
         return ok(oa.serialize(row),message)
     raise AppError(ErrorCode.STATUS_NOT_ALLOWED,

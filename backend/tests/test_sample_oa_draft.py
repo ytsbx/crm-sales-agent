@@ -141,3 +141,63 @@ async def test_submit_uses_self_oa_when_configured(setup, monkeypatch):
     )
     assert result['data']['status'] == 'pending'
     start.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_failed_retry_can_edit_fields_and_updates_snapshot(setup, monkeypatch):
+    """B11-10：外部明确拒绝（确定没建单）后，允许改字段重试并更新快照。
+
+    此前"重试"被锁成一字不改：提示说"可以修正后重试"，真改了字段却 409，
+    用户只能删单重建。现在 failed/not_sent/skipped 允许改，差异进审计。
+    """
+    from datetime import date
+
+    sample, session, user = setup
+    sample.source_context = {'dingtalk_oa': {
+        'mode': 'standalone', 'submitted': True,
+        'fields': {'sample_type': '销售客户打样', '_estimated_hours': '1'},
+    }}
+    monkeypatch.setattr(routes, 'self_oa_available', lambda: True)
+    monkeypatch.setattr(routes.oa, 'get_by_business_key', AsyncMock(
+        return_value=Obj(status='failed', provider='self_oa')))
+    start = AsyncMock(return_value=(Obj(status='failed', instance_id=None), '已重新发起'))
+    monkeypatch.setattr(routes.oa_sample, 'start_sample_approval', start)
+    audit = AsyncMock()
+    monkeypatch.setattr(routes, 'write_audit', audit)
+
+    await routes.submit(7, routes.Draft(mode='standalone', fields={
+        'sample_type': '外协厂打样',
+        '_estimated_hours': '2',
+        'DDDateField_DUE': '2026-12-01',
+    }), request(), user, session)
+
+    start.assert_awaited_once()
+    meta = routes.metadata(sample)
+    assert meta['submitted'] is True
+    assert meta['fields']['sample_type'] == '外协厂打样'
+    assert sample.target_completion_date == date(2026, 12, 1)
+    after = audit.await_args.kwargs['after']
+    assert '销售客户打样' in after['retry_edits']
+    assert '外协厂打样' in after['retry_edits']
+
+
+@pytest.mark.anyio
+async def test_needs_review_retry_still_refused(setup, monkeypatch):
+    """结果未知（可能已建单）不开放改字段重试：必须先到 OA 核对。"""
+    sample, session, user = setup
+    sample.source_context = {'dingtalk_oa': {
+        'mode': 'standalone', 'submitted': True, 'fields': {'sample_type': '销售客户打样'},
+    }}
+    monkeypatch.setattr(routes, 'self_oa_available', lambda: True)
+    monkeypatch.setattr(routes.oa, 'get_by_business_key', AsyncMock(
+        return_value=Obj(status='needs_review', provider='self_oa')))
+    from app.modules.oa import service as oa_service
+    monkeypatch.setattr(oa_service, 'review_stuck_submission', AsyncMock(return_value=False))
+    start = AsyncMock()
+    monkeypatch.setattr(routes.oa_sample, 'start_sample_approval', start)
+
+    with pytest.raises(AppError) as caught:
+        await routes.submit(7, routes.Draft(mode='standalone', fields={
+            'sample_type': '外协厂打样'}), request(), user, session)
+    assert '核对' in caught.value.message
+    start.assert_not_awaited()
