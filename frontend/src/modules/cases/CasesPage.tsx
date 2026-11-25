@@ -578,14 +578,16 @@ export default function CasesPage() {
               dataIndex: 'status_label',
               width: compact ? 100 : 108,
               render: (v: string, record: CaseRow) => (
-                <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                // 状态列统一左对齐、版本位预留固定宽度：有没有 V2，状态胶囊都从
+                // 同一 x 坐标起；V2 也不能把「编写中」往左挤（2026-11-25 实拍）。
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', minWidth: 0 }}>
                   <Tag color={STATUS_TONE[record.status] ?? 'grey'}>{v}</Tag>
-                  {(record.version ?? 1) > 1 && (
-                    // 第几版要看得见：列表里同时出现 V2 与原版时，得能分清哪个是新的
-                    <span style={{ fontSize: 11, color: 'var(--crm-text-3)' }}>
-                      V{record.version}
-                    </span>
-                  )}
+                  <span style={{
+                    flex: '0 0 22px', width: 22, fontSize: 11, lineHeight: '20px',
+                    color: 'var(--crm-text-3)', whiteSpace: 'nowrap',
+                  }}>
+                    {(record.version ?? 1) > 1 ? `V${record.version}` : null}
+                  </span>
                 </span>
               ),
             },
