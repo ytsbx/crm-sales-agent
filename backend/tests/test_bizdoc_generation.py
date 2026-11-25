@@ -691,6 +691,18 @@ def test_template_analysis_rejects_typo_and_lists_available_variables():
     assert "{{" not in preview["body"]
 
 
+def test_customer_level_not_printable_on_external_docs():
+    """2026-11-25 主人拍板：客户等级是内部评级，禁止出现在对客/对工厂单据上。"""
+    from app.modules.bizdoc import tokens as token_rules
+
+    assert "level" not in token_rules.SOURCE_FIELDS["customer"]
+    analysis = token_rules.analyze_template("客户：{{customer.name}}，等级：{{customer.level}}")
+    assert [item["token"] for item in analysis["unsupported"]] == ["customer.level"]
+    assert "不受支持" in analysis["unsupported"][0]["message"]
+    # 可用变量清单里不能再把它推荐给模板作者
+    assert not any("customer.level" in item for item in analysis["available"])
+
+
 def test_resolve_tokens_never_leaves_template_syntax():
     """§8.8 兜底：正式文件不得印出 `{{...}}`，三种未解析原因要分得开。"""
     from app.modules.bizdoc import tokens as token_rules

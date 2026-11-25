@@ -30,7 +30,10 @@ TOKEN_PATTERN = re.compile(r"\{\{([^}]+)\}\}")
 SOURCE_FIELDS: dict[str, dict[str, str]] = {
     "customer": {
         "name": "客户名称",
-        "level": "客户等级",
+        # ⚠️ 这里**曾有** `"level": "客户等级"`（2026-11-25 主人拍板移除）：
+        # 这三类单据（打样需求单/下单文件/对客报价单）都是要发到客户或工厂手里的，
+        # 客户等级是**内部评级**，印出去既无用又泄露口径。项目未上线、库中模板零引用，
+        # 直接摘掉；以后模板再写 {{customer.level}} 会在保存/预览时被报"不支持的变量"。
         # ⚠️ 这里**曾有** `"phone": "客户电话"`（2026-10-14 审查移除）：
         # `Customer` 表上根本没有 phone 列（电话在 `contacts.phone` 上），
         # 而 `resolve_tokens` 走 `getattr(obj, field, None)` → **恒为 None**
