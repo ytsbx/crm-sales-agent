@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     #: 只有来自这些反向代理网段的请求才允许使用 X-Forwarded-For。
     #: 留空时一律使用 TCP 对端地址，避免客户端伪造来源头绕过登录限流。
     trusted_proxy_ips: str = ""
+    #: 登录回调域名白名单（B11-11，逗号分隔）。
+    #: 钉钉扫码登录的 redirect_uri 与回调后跳回的地址是用请求 Host 拼的，
+    #: 应用层不认白名单之外的 Host。生产填实际对外域名（如 crm.mandla.cn）；
+    #: 留空 = 不启用，仅供本地开发与测试（反代仍应固定 Host）。
+    auth_callback_hosts: str = ""
 
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
@@ -196,6 +201,10 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [x.strip() for x in self.cors_origins.split(",") if x.strip()]
+
+    @property
+    def auth_callback_host_list(self) -> list[str]:
+        return [x.strip() for x in self.auth_callback_hosts.split(",") if x.strip()]
 
     @property
     def trusted_proxy_ip_list(self) -> list[str]:

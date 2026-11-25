@@ -5911,3 +5911,12 @@
 - 前端：失败/未发出时表单恢复可编辑，按钮改为「重新提交」并说明原因；附件也可重新选择。
 - 验证：新增 2 条用例（failed 改字段重试更新快照 + 审计差异；needs_review 仍拒绝）；打样相关 5 个测试文件 162 项、全量 pytest、pyflakes、前端 tsc 与 vite build 全部通过。
 - 未做：B11-11（登录回调 Host 白名单）暂未动，`auth/router.py` 正由另一个会话修改（钉钉扫码登录），等那边落定再改。
+
+## 2026-11-25 B11-11 收口：登录回调域名白名单进应用配置（未部署）
+
+- 问题：钉钉扫码登录的 `redirect_uri` 与回调后跳回的地址用请求 Host 拼；生产反代目前只把 crm.mandla.cn 转给 CRM，但那是部署配置、不在代码里，也没有测试。
+- 做法：新增 `settings.auth_callback_hosts`（逗号分隔；留空 = 不启用，仅本地开发）与 `app/core/auth_host_guard.py` 中间件；只拦会拼地址的两个入口 `/auth/dingtalk/authorize`、`/auth/dingtalk/callback`，Host 归一（去协议/端口/大小写）后不在白名单直接 400，路由不执行；反代固定 Host 保留，两道一起用。
+- 不影响 OA 内嵌：OA 登录走 `POST /auth/oa/exchange` 服务端换票，不拼回调地址，不在拦截范围。
+- 验证：新增 7 条用例（归一、空名单放行、两个入口拒绝伪造 Host、带端口通过、其他路径不受影响、中间件确实挂到应用上）；全量 pytest、pyflakes 通过。
+- 部署注意：生产 `.env` 需设置 `AUTH_CALLBACK_HOSTS=crm.mandla.cn`，否则白名单不启用；`.env.example` 已加说明。
+- 未做：`auth/router.py` 正由另一会话修改（OA 换票），本批未动该文件。

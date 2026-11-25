@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.core.auth_host_guard import auth_callback_host_guard
 from app.core.config import settings
 from app.core.errors import register_exception_handlers
 from app.core.jsonio import DecimalJSONResponse
@@ -108,6 +109,10 @@ if "*" in _cors_origins:
     )
     _cors_origins = [o for o in _cors_origins if o != "*"]
 
+# B11-11：钉钉扫码登录的回调地址用请求 Host 拼，应用层按白名单再守一道
+# （名单为空 = 不启用，见 core/auth_host_guard）。放在 CORS 之前注册，
+# 让 CORS 成为外层：被拦下的 400 也带上跨域头。
+app.middleware("http")(auth_callback_host_guard)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
