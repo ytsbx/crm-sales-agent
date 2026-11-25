@@ -927,14 +927,22 @@ export default function OrderDetailPage() {
     // 已全部退完的行不再出现：否则「登记退货」按钮仍可点，弹窗里全是 0。
     .filter((item) => Number(item.remaining_quantity_exact) > 0)
   const returnPendingCount = returns.filter((row) => row.status === 'pending').length
+  const returnRefundPendingCount = returns.filter(
+    (row) => row.status === 'completed' && Number(row.refund_amount_exact) > 0,
+  ).length
   const returnRequestedItems = returnableRows
     .map((row) => ({ shipment_batch_item_id: row.shipment_batch_item_id, quantity: Number(returnQty[row.shipment_batch_item_id] || 0) }))
     .filter((row) => row.quantity > 0)
+  const overReturnRow = returnableRows.find(
+    (row) => Number(returnQty[row.shipment_batch_item_id] || 0) > Number(row.remaining_quantity_exact),
+  )
   const returnSubmitBlocked = returnReason.trim().length < 2
     ? '请填写退货原因（至少 2 个字）'
-    : returnRequestedItems.length === 0
-      ? '请至少填一项本次退货数量'
-      : ''
+    : overReturnRow
+      ? `${overReturnRow.sku || '该明细'} 本次最多还能退 ${overReturnRow.remaining_quantity_exact}`
+      : returnRequestedItems.length === 0
+        ? '请至少填一项本次退货数量'
+        : ''
   const settleFreightValid = settleFreight.trim() !== ''
     && Number.isFinite(Number(settleFreight))
     && Number(settleFreight) >= 0
@@ -2155,6 +2163,7 @@ export default function OrderDetailPage() {
                 <p className="workflow-guide">
                   只退已实发批次，原发货记录保留；财务处理时先冲未收应收，剩余转待退款。
                   {returnPendingCount > 0 ? ` 当前有 ${returnPendingCount} 张待财务处理。` : ''}
+                  {returnRefundPendingCount > 0 ? ` 当前有 ${returnRefundPendingCount} 张待登记退款。` : ''}
                 </p>
                 <div style={{ flex: 1 }} />
                 {canManage && (
