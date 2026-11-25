@@ -3,15 +3,16 @@
 import hashlib
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile
-from sqlalchemy import Select, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.audit import write_audit
+from app.core.audit import AuditLog, write_audit
 from app.core.csvio import csv_bytes, parse_csv_bytes, read_upload_bytes
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, ensure_permission, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.importing import ImportReport, RowErrors, finalize, row_savepoint
+from app.core.timebase import to_business
 from app.modules.contact_util import find_duplicate_customers
 from app.modules.customer import io as io_util
 from app.modules.customer import service as svc
@@ -21,6 +22,56 @@ from app.modules.settings import service as settings_service
 from app.modules.user.model import User
 
 router = APIRouter(tags=["Customer"])
+
+
+async def _reject_reimported_file(session: AsyncSession, file_sha256: str) -> None:
+    """B13-06：同一份导入文件只允许执行一次。
+
+    文件字节完全相同 = 同一批行、同一份结论；重复执行只会再建一遍客户/联系人、
+    再开一遍撞单。预览也先拦下，免得人白跑一遍再在提交时被拒。
+    并发双击/网络重试由按文件哈希取的 advisory 锁串行化（随事务释放）。
+    """
+    dialect = session.get_bind().dialect.name
+    if dialect == "postgresql":
+        await session.execute(
+            select(func.pg_advisory_xact_lock(func.hashtext(file_sha256)))
+        )
+    stmt = (
+        select(AuditLog.operator_id, AuditLog.created_at, AuditLog.after_data)
+        .where(AuditLog.action == "import", AuditLog.business_type == "customer")
+        .order_by(AuditLog.id.desc())
+    )
+    if dialect == "postgresql":
+        prior = (
+            await session.execute(
+                stmt.where(
+                    AuditLog.after_data["file_sha256"].astext == file_sha256
+                ).limit(1)
+            )
+        ).first()
+    else:
+        prior = next(
+            (
+                row
+                for row in (await session.execute(stmt.limit(500))).all()
+                if (row.after_data or {}).get("file_sha256") == file_sha256
+            ),
+            None,
+        )
+    if prior is None:
+        return
+    operator = await session.get(User, prior.operator_id) if prior.operator_id else None
+    when = (
+        to_business(prior.created_at).strftime("%Y-%m-%d %H:%M")
+        if prior.created_at else "此前"
+    )
+    who = f"（{operator.name}）" if operator is not None else ""
+    raise AppError(
+        ErrorCode.DUPLICATE,
+        f"这份文件已于 {when} 导入过{who}，同一文件不能重复导入；"
+        "如确需重新导入，请先修改文件内容（至少改一处）再上传。",
+        409,
+    )
 
 
 @router.get("/customers/import-template")
@@ -281,6 +332,7 @@ async def import_customers(
 
     raw = await read_upload_bytes(file)
     file_sha256 = hashlib.sha256(raw).hexdigest()
+    await _reject_reimported_file(session, file_sha256)
     rows = parse_csv_bytes(raw, required_headers=["客户名称"], label="文件")
     report = ImportReport("customer", len(rows))
 

@@ -13,7 +13,17 @@
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, Date, DateTime, ForeignKey, Index, Numeric, String, Text
+from sqlalchemy import (
+    BigInteger,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base import Base, IdMixin, JSONType
@@ -99,6 +109,9 @@ class SampleRequest(Base, IdMixin):
         Index("ix_sample_requests_confirm_status", "confirm_status"),
         # 冻结判断要查"这一版有没有子版本"，按 parent_id 建索引
         Index("ix_sample_requests_parent", "parent_id"),
+        # B22-07：一张单只能开出一个下一版。并发/双击时靠它兜底，不只靠先查后插
+        # （parent_id 为 NULL 的根单不受约束影响，PostgreSQL 对 NULL 不做唯一比较）。
+        UniqueConstraint("parent_id", "version", name="uq_sample_requests_parent_version"),
     )
 
     opportunity_id: Mapped[int | None] = mapped_column(

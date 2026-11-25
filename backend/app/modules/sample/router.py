@@ -757,6 +757,22 @@ async def revise_sample(
     parent = await svc.get_visible_or_404(
         session, user, sample_id, for_update=True, allow_external_flow=True
     )
+    # B22-07：已经开出过修订版就拒绝（行锁已保证串行，这里给明确提示；
+    # 并发下另由 (parent_id, version) 唯一约束兜底）。
+    existing_child = (
+        await session.execute(
+            select(SampleRequest.id, SampleRequest.version)
+            .where(SampleRequest.parent_id == parent.id)
+            .order_by(SampleRequest.id)
+            .limit(1)
+        )
+    ).first()
+    if existing_child is not None:
+        raise AppError(
+            ErrorCode.DUPLICATE,
+            f"这张打样单已经开出修订版 V{existing_child.version}，请刷新后处理",
+            409,
+        )
     if parent.made_at is None and parent.status not in ("shipped", "signed"):
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
@@ -858,7 +874,14 @@ async def revise_sample(
         after={"id": child.id, "version": child.version, "parent_id": parent.id},
         ip=client_ip(request),
     )
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        # 唯一约束兜底：先查后插之间被并发抢开时，后到的那个明确 409，不做半截写入
+        await session.rollback()
+        raise AppError(
+            ErrorCode.DUPLICATE, "这张打样单已经开出修订版，请刷新后处理", 409
+        ) from exc
     await notification_service.dispatch_after_commit(session)
     return ok(after, f"已开第 {child.version} 版（原版冻结保留，等审批）")
 

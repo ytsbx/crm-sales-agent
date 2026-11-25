@@ -112,6 +112,50 @@ async def test_revision_without_approval_source_starts_a_tongxu_draft(monkeypatc
 
 
 @pytest.mark.anyio
+async def test_second_revision_is_rejected(monkeypatch):
+    """B22-07：同一张单只能开出一个下一版；第二次明确 409，不产生 V2 副本。"""
+    monkeypatch.setattr(sample_router.followup_service, "record_and_notify", AsyncMock())
+    monkeypatch.setattr(sample_router.notification_service, "dispatch_after_commit", AsyncMock())
+    engine = _engine()
+    Base.metadata.create_all(engine, tables=[
+        AuditLog.__table__, SampleItem.__table__, SampleShipment.__table__,
+    ])
+    actor = make_user(1, permissions=("sample:manage",))
+    request = Request({"type": "http", "headers": []})
+    with Session(engine) as raw:
+        raw.add(SampleRequest(id=1, owner_id=1, status="approved",
+                              made_at=datetime.now(UTC), source_context=None))
+        raw.commit()
+        session = SyncSessionAsAsync(raw)
+        first = (await sample_router.revise_sample(1, request, user=actor, session=session))["data"]
+        assert first["version"] == 2
+        # 顺序重放已被"原版冻结只读"拦下（422 或 409 都算拒绝），
+        # 关键是第二版没有建出来；并发下再由唯一约束兜底（下一用例）。
+        with pytest.raises(AppError):
+            await sample_router.revise_sample(1, request, user=actor, session=session)
+        assert raw.query(SampleRequest).filter_by(parent_id=1).count() == 1
+    engine.dispose()
+
+
+def test_parent_version_unique_constraint_blocks_duplicate_revision():
+    """并发兜底：同一父单同一版本只能存在一行。"""
+    from sqlalchemy.exc import IntegrityError
+
+    engine = _engine()
+    try:
+        with Session(engine) as raw:
+            raw.add(SampleRequest(id=1, owner_id=1, status="approved", version=1))
+            raw.add(SampleRequest(id=2, owner_id=1, status="pending", version=2, parent_id=1))
+            raw.commit()
+            raw.add(SampleRequest(id=3, owner_id=1, status="pending", version=2, parent_id=1))
+            with pytest.raises(IntegrityError):
+                raw.commit()
+            raw.rollback()
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.anyio
 async def test_local_review_endpoints_no_longer_accept_approval_or_resubmission():
     app = FastAPI(default_response_class=DecimalJSONResponse)
     register_exception_handlers(app)
