@@ -118,10 +118,9 @@ async def inspect_file_usage(
 ) -> FileUsage:
     """这份文件还被谁用着（第十一批 11.2）。
 
-    为什么要单独做一个判据：引用文件的列有**五处**，而且**一处外键都没有** ——
+    为什么要单独做一个判据：引用文件的列有**四处**，而且**一处外键都没有** ——
     数据库不会替我们守住"文件还被引用着"这件事，全靠应用层查。
     - `business_files.file_id`：通用附件挂载（一对多）；
-    - `contract_documents.generated_file_id`：合同生成稿；
     - `biz_docs.file_id`：单据生成稿；
     - `payment_records.voucher_file_id`：回款凭证；
     - `sample_requests.basis_files`（jsonb 快照）：打样的制作依据。
@@ -131,7 +130,6 @@ async def inspect_file_usage(
     已签合同的原件就此消失。判据集中在这里，谁要删文件都得先过它。
     """
     from app.modules.bizdoc.model import BizDoc
-    from app.modules.contract.model import ContractDocument
     from app.modules.payment.model import PaymentRecord
 
     protected = await file_protection_label(session, file_id)
@@ -146,12 +144,6 @@ async def inspect_file_usage(
     ).all()
 
     others: list[str] = []
-    if (
-        await session.execute(
-            select(ContractDocument.id).where(ContractDocument.generated_file_id == file_id)
-        )
-    ).first():
-        others.append("合同的生成稿")
     if (
         await session.execute(select(BizDoc.id).where(BizDoc.file_id == file_id))
     ).first():

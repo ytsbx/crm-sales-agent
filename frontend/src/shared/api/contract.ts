@@ -69,16 +69,13 @@ export interface ContractDocument {
   /** 合同钉死的报价版本。报价后来出 V2/V3 都不影响这一份。 */
   quote_version_id: number | null
   quote_version_no: number | null
-  template_id: number | null
   original_file_id?: number | null
   contract_origin?: 'company' | 'customer' | null
   contract_origin_label?: string
   content_snapshot: string
   filled_data: Record<string, string> | null
   /** 生成时没填上的占位符：字段 -> 没填上的原因（后端已翻译成人话）。正文里保留着 {{...}} 原文。 */
-  missing_fields: Record<string, string>
   /** 生成时落盘的那份 PDF 的文件 id；为空说明是这一批之前的老数据，下载会实时渲染 */
-  generated_file_id: number | null
   header_snapshot: ContractHeaderSnapshot | null
   /** 签署原件清单，只有详情接口返回 */
   signed_files?: ContractSignedFile[]

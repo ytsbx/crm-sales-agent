@@ -11,7 +11,7 @@ class TemplateFileCreate(CreateModel):
     """合同模板库：保存一版标准合同/月结协议原文件。
 
     只有"类型 + 名称 + 已上传的文件"，**没有正文与启用开关**——
-    系统模板生成仍保持停用，这里存的是给人下载后按客户填写的原件。
+    系统模板生成已删除，这里存的是给人下载后按客户填写的原件。
     """
 
     doc_type: str = "contract"  # contract / monthly
@@ -29,12 +29,12 @@ class DocumentCreate(BaseModel):
     order_id: int | None = None
     quote_id: int | None = None
     # 合同钉死的报价**版本**。报价可以出 V2/V3，只记报价单号无法证明金额依据的是哪一版。
-    # 不传也能生成（提前备合同），但不传就没有金额——登记签署前必须补上正式依据。
+    # 不传也能上传，但不传就没有冻结金额——登记签署前必须补上正式依据。
     # 只传 order_id 时，后端会按订单依据的那一版自动带出来。
     quote_version_id: int | None = None
     #: 与 `contract_documents.title` 的 `String(200)` 对齐（2026-10-14 审查补）：
     #: 原来完全不限长，传 201+ 字必撞列宽报 500（服务端拼的默认标题也会超，
-    #: 那条由 `service.generate_document` 用 `fit_column` 收进列宽）。
+    #: 那条在 `service.generate_document` 里用 `fit_column` 收进列宽）。
     title: str | None = Field(default=None, max_length=200)
     #: 合同编号（钉钉表单里的“合同编号”）：经办人手动填写时用这个；
     #: 留空则沿用 CRM 自动生成的编号（doc_no）。
@@ -56,7 +56,7 @@ class DocumentCreate(BaseModel):
     # 默认不勾——提前续签、旧协议还在适用期是很常见的情况，
     # 一登记就掐掉旧提醒会让还在生效的协议没人管。
     supersede_parent: bool = False
-    # 幂等键：前端打开生成弹窗时生成一个，重复提交 / 网络重试带同一个值。
+    # 幂等键：前端打开上传弹窗时生成一个，重复提交 / 网络重试带同一个值。
     # 不传也能用，但那样重复提交就防不住——所以前端必须带。
     request_key: str | None = Field(default=None, max_length=64)
     source_type: str = Field(default="crm_template", pattern="^(crm_template|customer_drafted)$")

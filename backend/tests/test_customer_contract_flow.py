@@ -94,7 +94,8 @@ async def test_original_contract_has_no_generated_template_or_content(sql_sessio
     monkeypatch.setattr(numbering,'generate_for',AsyncMock(return_value='CT-TEST'))
     p=DocumentCreate(customer_id=9,source_type='customer_drafted',original_file_id=88,title='原稿合同')
     doc,replayed=await service.generate_document(sql_session,payload=p,user_id=1)
-    assert doc.template_id is None and doc.generated_file_id is None
+    result=service.serialize_document(doc)
+    assert 'template_id' not in result and 'generated_file_id' not in result
     assert doc.filled_data['_original_file_id']==88
     # B07-03：无金额的原稿合同也要留下冻结键，后续不能因为订单补了金额就漂。
     assert doc.filled_data['_amount'] is None
@@ -149,7 +150,7 @@ async def test_overdue_reminder_is_daily_and_stops_after_archive(sql_session,mon
     from app.modules.task.model import Task
     from app.modules.notification import service as notices
     from datetime import timedelta
-    doc=ContractDocument(id=19,doc_no='CT-019',doc_type='contract',title='原稿',customer_id=9,template_id=None,content_snapshot='',filled_data={'_source_type':'customer_drafted'},status='draft',created_at=datetime.now(UTC))
+    doc=ContractDocument(id=19,doc_no='CT-019',doc_type='contract',title='原稿',customer_id=9,content_snapshot='',filled_data={'_source_type':'customer_drafted'},status='draft',created_at=datetime.now(UTC))
     task=Task(id=20,title='回签',owner_id=1,status='pending',priority='high',source='system',task_type='contract_signed_upload',source_key='contract:signed-upload:19',due_at=datetime.now(UTC)-timedelta(days=1))
     sql_session.add(doc); sql_session.add(task); await sql_session.flush()
     notice=AsyncMock();monkeypatch.setattr(notices,'notify',notice)
@@ -333,7 +334,7 @@ async def test_uploaded_contract_origin_is_frozen_and_displayed(sql_session,monk
     doc,_=await service.generate_document(sql_session,payload=p,user_id=1)
     result=service.serialize_document(doc)
     assert result['contract_origin']==origin and result['contract_origin_label']==label
-    assert doc.template_id is None and doc.generated_file_id is None
+    assert 'template_id' not in result and 'generated_file_id' not in result
 
 
 def test_unknown_history_is_not_reclassified_as_customer():

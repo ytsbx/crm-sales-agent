@@ -962,7 +962,7 @@ export default function CustomerDetailPage() {
                 <ContractDocsPanel
                   customerId={customerId}
                   boxed={false}
-                  empty="这家客户还没有合同文档——去合同台账按模板生成"
+                  empty="这家客户还没有合同文档——去合同台账上传合同"
                 />
               </div>
             </div>

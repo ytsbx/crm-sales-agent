@@ -6,7 +6,6 @@ import { ApprovalHistory, ContractBasis } from './CustomerApproval'
 import ContractOaForm from './ContractOaForm'
 import { approvalProgress, formatApprovalEventTime } from '../knowledge/approval-progress'
 import { ApiError } from '../../shared/api/client'
-import { templateFieldLabel } from './template-fields'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Button,
@@ -527,7 +526,7 @@ export default function DocumentsPage() {
 
   // 已选签署件的文件名：确认前要让用户看清"签的是哪份文件"，光给内部编号看不懂
   const signFiles = (signFilesQuery.data ?? []).filter((file) =>
-    file.id !== signTarget?.original_file_id && file.id !== signTarget?.generated_file_id)
+    file.id !== signTarget?.original_file_id)
   const selectedSignFile = signFiles.find((row) => row.id === signFileId)
   const documents = documentsQuery.data?.items ?? []
   /* 「到期日」这一列在真实数据里几乎是空的（草稿合同一律没有到期日）。
@@ -1609,16 +1608,6 @@ export default function DocumentsPage() {
                 ) : (detail.dingtalk_oa_row?.status ?? approvalSnapshot?.status) === 'rejected' && (
                   <p className="workflow-guide">CRM 还没有收到处理意见，可到同序 OA 查看。</p>
                 ))}
-              </div>
-            )}
-            {Object.keys(detail.missing_fields ?? {}).length > 0 && (
-              <div>
-                <div style={DETAIL_LABEL}>历史合同尚未填入的信息</div>
-                <div style={{ fontSize: 12, color: 'var(--crm-warning)' }}>
-                  {Object.entries(detail.missing_fields)
-                    .map(([token, reason]) => `${templateFieldLabel(token)}（${reason}）`)
-                    .join('；')}
-                </div>
               </div>
             )}
           </div>

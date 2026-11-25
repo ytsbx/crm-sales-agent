@@ -5684,3 +5684,12 @@
 - 路由层：创建接口去掉模板分支、`attach_generated_pdf` 分支和 parent/续签分支；上传仍写 `BusinessFile(contract_original)`、回签待办、审计并提交。
 - 保留：合同模板资料库（`/contract-templates` 存 PDF/Word 原文件、`enabled=False`、无正文）、上传原稿、OA 表单/审批/撤回、签署、作废、台账、到期提醒、替代关系状态机；历史模板稿若有 `generated_file_id` 仍可下载，没有存档的旧稿继续按历史数据渲染副本（只读兜底，不产生新合同）。
 - 测试：删除只测试已删功能的 8 条（3 条模板/续签生成、5 条 PDF 待清理对象）；新增 1 条上传主路径集成回归（合同+原件关联+回签待办+审计）。后端隔离全量 **2260 绿**。
+
+## 2026-11-25 合同生成栏位连表清理（主人确认"从来没生成过合同"）
+
+- 修正上一节的保守假设：系统从未生成过合同，不存在历史模板稿，因此不再保留 `generated_file_id` 的历史下载兜底。
+- 删除 `contract_documents.template_id` / `generated_file_id` 两列；迁移 `e6b4d2f8a1c9` 升级前先查非空值，发现任何历史模板稿数据就拒绝迁移，避免误删别的环境。
+- 下载只认上传原件 `filled_data._original_file_id`；没有原件直接 410 提示重新上传。删除 `build_pdf_data`、`contract/pdf.py`、`legacy_rendered` 现场渲染分支。
+- 同步清理前后端引用：合同序列化/审计/前端类型与审计字段、文件删除占用判据、OA 取合同文件、签署时生成稿拦截、`missing_fields` 展示、`template-fields.ts`。
+- 上传成功文案改为"合同已上传，已创建客户回签待办"，审计动作改为 `upload`；模板资料库（只存原文件）和上传/OA/签署/作废全部保留。
+- 验证：PostgreSQL 临时 schema 实测两列 drop/add 与外键恢复；后端隔离全量 **2257 绿**（删掉 3 条只测 PDF 渲染的用例）；`tsc -b` 通过；改动文件 pyflakes/oxlint 无新增错误。

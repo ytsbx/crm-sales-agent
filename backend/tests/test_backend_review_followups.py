@@ -207,7 +207,6 @@ async def test_file_usage_tolerates_old_sample_json_and_keeps_real_references():
     BusinessFile.__table__.create(engine)
     with Session(engine) as raw:
         for ddl in (
-            "contract_documents (id int, generated_file_id int)",
             "biz_docs (id int, file_id int)",
             "payment_records (id int, voucher_file_id int)",
             "sample_requests (basis_files json)",

@@ -140,7 +140,7 @@ async def save_template_file(
 ):
     """资料库：保存一版标准合同/月结协议原文件（只存档，不参与系统生成）。
 
-    系统模板生成保持停用：这里不收正文，落库的模板 `enabled=False`，
+    系统模板生成已删除：这里不收正文，落库的模板 `enabled=False`，
     生成入口仍然只接受上传的合同原文件。
     """
     template, file_row, created = await svc.create_file_template(
@@ -284,24 +284,19 @@ async def create_document_record(payload: DocumentCreate, request: Request, user
     await write_audit(
         session,
         operator_id=user.id,
-        action="generate",
+        action="upload",
         business_type="contract",
         business_id=doc.id,
-        after={"doc_no": doc.doc_no, "template_id": doc.template_id,
-               "customer_id": doc.customer_id, "order_id": doc.order_id,
-               "quote_id": doc.quote_id, "quote_version_id": doc.quote_version_id,
-               "generated_file_id": doc.generated_file_id, "contract_origin": payload.contract_origin},
+        after={"doc_no": doc.doc_no, "customer_id": doc.customer_id,
+               "order_id": doc.order_id, "quote_id": doc.quote_id,
+               "quote_version_id": doc.quote_version_id,
+               "contract_origin": payload.contract_origin},
         ip=client_ip(request),
     )
     await session.commit()
 
     result = svc.serialize_document(doc, customer_name=customer.name)
-    missing = result.get("missing_fields") or {}
-    if missing:
-        # 缺项必须说出来：正文里留着 {{...}}，不报一声用户会以为模板坏了、或者数据丢了。
-        # 这里只提示、不拦——"必填项不齐就不许生成对外文件"是模板级配置，属于下一批。
-        return ok(result, f"合同草稿已生成；有 {len(missing)} 处没填上（正文里保留了占位符）")
-    return ok(result, "合同草稿已生成")
+    return ok(result, "合同已上传，已创建客户回签待办")
 
 
 @router.get("/contract-documents/oa-field-options")
@@ -439,125 +434,44 @@ async def download_document(
     user: CurrentUser = Depends(require_permission("order:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    """下载合同原件（2026-11-25：生成功能已删，只返回上传的原文件）。
-
-    上传客户原稿时存的是原件；历史模板稿如果有 `generated_file_id`，返回当时
-    落盘的那一份。两者都不存在的旧模板稿不再现场渲染，直接报 410。
+    """下载合同原件：只返回上传的那份 Word/PDF，不再现场渲染模板稿。
 
     这是**合同原文件**，不是签署件：签回来的扫描件在详情接口的 `signed_files` 里。
     """
-    import asyncio
-    import hashlib
-
     from fastapi import Response
+    from urllib.parse import quote
 
-    from app.modules.contract.pdf import render_contract_pdf
-    from app.modules.file import storage
+    from app.modules.contract.support import verified_content
     from app.modules.file.model import FileRecord
 
     doc = await svc.get_doc_or_404(session, doc_id)
     await _ensure_doc_in_scope(session, user, doc)
     original_id = (doc.filled_data or {}).get("_original_file_id")
-    if original_id:
-        from app.modules.contract.support import verified_content
-        from urllib.parse import quote
-        record = await session.get(FileRecord, original_id)
-        content = verified_content(record)
-        await write_audit(session, operator_id=user.id, action="download", business_type="contract", business_id=doc.id,
-                          after={"doc_no": doc.doc_no, "source": "customer_original", "file_id": original_id})
-        await session.commit()
-        return Response(content=content, media_type=record.mime_type or "application/octet-stream",
-                        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(record.file_name)}"})
+    if not original_id:
+        raise AppError(
+            ErrorCode.NOT_FOUND,
+            "这份合同还没有上传原件，请先上传合同 Word 或 PDF",
+            410,
+        )
 
-
-    content: bytes | None = None
-    source = "generated"
-    if doc.generated_file_id:
-        record = await session.get(FileRecord, doc.generated_file_id)
-        missing: str | None = None
-        if record is None:
-            missing = "存档的文件记录已不存在"
-        else:
-            try:
-                path = storage.absolute_path(record.object_key)
-            except AppError:
-                # ⚠️ `absolute_path` 对非法 object_key（目录穿越形状）抛的是 `AppError`，
-                # 而它**不是** `OSError` —— 原来这个 except 只捕 OSError，于是那种情况
-                # 会一路冒成 500，**绕过了下面那条"存档不可用 + 单独记审计 + 410"**的
-                # 既定出口（2026-10-14 审查修）。object_key 正常只有系统写入，
-                # 所以这不是可达的常见路径，但让两种"读不到"走同一个出口才对。
-                missing = "存档文件的路径不合法（无法定位原件）"
-            else:
-                try:
-                    content = await asyncio.to_thread(path.read_bytes)
-                except OSError:
-                    missing = "存档文件已不在磁盘上"
-        # 校验值也要比：它是"这份原件没被换过"的唯一依据，光有文件不够
-        if content is not None and record is not None and record.checksum:
-            actual = hashlib.sha256(content).hexdigest()
-            if actual != record.checksum:
-                content = None
-                missing = "存档文件与登记时的校验值不一致（内容被改动过）"
-        if content is None:
-            # **明确报错，不再静默重新渲染**（第十一批 11.3）。
-            # 原实现是"读不到就当场重新排一份给你、HTTP 200"——用户会以为自己拿到的
-            # 就是当初那份存档，台账上"同一编号永远同一份"这句承诺也就破了。
-            # 先把这次异常**单独提交**记进审计（报错会把事务回滚掉，不先落库就查不到），
-            # 便于事后从备份恢复。
-            await write_audit(
-                session,
-                operator_id=user.id,
-                action="download_original_missing",
-                business_type="contract",
-                business_id=doc.id,
-                after={
-                    "doc_no": doc.doc_no,
-                    "reason": missing,
-                    "generated_file_id": doc.generated_file_id,
-                },
-            )
-            await session.commit()
-            raise AppError(
-                ErrorCode.NOT_FOUND,
-                f"这份合同的存档原件不可用（{missing}）。"
-                "为免把重新生成的稿子当成原件，这里不再返回 PDF；请从备份恢复原件",
-                410,
-            )
-    else:
-        # 历史模板稿没有落盘 PDF（本批之前的老数据）：保留原来的只读渲染兜底，
-        # 文件名明确标“副本”。新入口已不再生成模板稿，这条只服务历史数据。
-        source = "legacy_rendered"
-        data = await svc.build_pdf_data(session, doc)
-        content = await asyncio.to_thread(render_contract_pdf, data)
-
-    # 下载留痕：合同是含价格与条款的对客文件，谁在什么时候取了哪一份要能查
-    # （作废件也一样取得到，只是纸上必须带"已作废"，所以这里记状态）。
-    # `source` 记的是"这份内容从哪来"，用于分辨有没有回落到重新渲染。
+    record = await session.get(FileRecord, int(original_id))
+    content = verified_content(record)
     await write_audit(
         session,
         operator_id=user.id,
         action="download",
         business_type="contract",
         business_id=doc.id,
-        after={"doc_no": doc.doc_no, "status": doc.status, "source": source},
+        after={"doc_no": doc.doc_no, "source": "customer_original", "file_id": original_id},
     )
     await session.commit()
-    from urllib.parse import quote
-
-    filename = (
-        f"{doc.doc_no}（依据历史数据生成的副本）.pdf"
-        if source == "legacy_rendered"
-        else f"{doc.doc_no}.pdf"
-    )
     return Response(
         content=content,
-        media_type="application/pdf",
+        media_type=record.mime_type or "application/octet-stream",
         headers={
-            # `filename*` 走 RFC 5987 编码：副件的文件名带中文，直接塞进
-            # `filename=` 会乱码或被截断
-            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
-            # 页面/调用方据此分辨拿到的是"当时的存档"还是"后来的副本"
-            "X-Contract-Source": source,
+            # `filename*` 走 RFC 5987 编码：中文文件名直接塞进 `filename=` 会乱码
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(record.file_name)}",
+            "X-Contract-Source": "customer_original",
         },
     )
 

@@ -29,12 +29,12 @@ DOC_STATUS_LABEL = {
 
 
 class ContractTemplate(Base, IdMixin):
-    """模板一行一个版本。
+    """模板资料库一行一个版本。
 
     版本号是**永久标识**，所以 (类型, 名称, 版本) 上加唯一约束：
-    - 「第 2 版」永远只能指向同一份正文。没有这个约束，两个管理员同时新建同名
+    - 「第 2 版」永远只能指向同一份原文件。没有这个约束，两个管理员同时新建同名
       模板会双双算出 v2 并各插一行，历史文件钉死的"模板 v2"就有两个真相；
-    - 约束也是并发创建的最后一道防线（见 service.create_template 的重取逻辑）。
+    - 约束也是并发创建的最后一道防线（见 service.create_file_template 的重取逻辑）。
     """
 
     __tablename__ = "contract_templates"
@@ -45,7 +45,9 @@ class ContractTemplate(Base, IdMixin):
     doc_type: Mapped[str] = mapped_column(String(16), default="contract")  # contract/monthly
     name: Mapped[str] = mapped_column(String(128))
     version: Mapped[int] = mapped_column(BigInteger, default=1)
-    body: Mapped[str] = mapped_column(Text)  # 模板正文，{{customer.name}} 等占位符
+    # 历史文本模板正文；资料库新行固定空串，只存原文件，不参与生成。
+    body: Mapped[str] = mapped_column(Text)
+    # 历史文本模板启用开关；资料库新行固定 False。
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -64,12 +66,11 @@ class ContractDocument(Base, IdMixin):
     # 合同钉死的报价**版本**：报价可以出 V2、V3，但这份合同依据的是哪一版必须可证。
     # 只记 quote_id 的话，事后只能看出"关联了这张报价单"，无法说明金额与条款依据的是
     # 哪一版——报价后来改过价，合同上写的金额到底有没有依据就成了扯不清的事。
-    # 生成后固定，不因报价更新而漂移（要改就重新生成或走补充协议）。
+    # 登记后固定，不因报价更新而漂移（要改就重新上传一份新合同）。
     quote_version_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("quote_versions.id"), nullable=True
     )
-    template_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("contract_templates.id"), nullable=True)
-    # 生成时快照：正文与填入值分开存，可解释"哪个空是系统填的、哪个是人填的"
+    # 上传时固定的一句话说明；完整条款以随附原文件为准。
     content_snapshot: Mapped[str] = mapped_column(Text)
     filled_data: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="draft")  # draft/signed/void
@@ -82,14 +83,9 @@ class ContractDocument(Base, IdMixin):
     parent_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("contract_documents.id"), nullable=True)
     signed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     void_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    # 生成时落盘的那份 PDF（生成稿）。有它才能保证"同一个编号，任何时候下载都是同一份内容"。
-    # 此前是每次下载都拿当前资料重新渲染：客户名改了、公司名改了，同一份合同前后两次
-    # 下载的抬头就不一样——对外文件出现这种事说不清。现在下载走存下来的原件；
-    # 历史数据（本字段为空的老合同）才回落到实时渲染，见 router.download_document。
-    generated_file_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    # 生成请求的幂等键：前端打开生成弹窗时生成一个，重复点击 / 网络重试带的是同一个。
-    # 后端据此把第二次请求认成"这份刚才已经生成过了"，返回原来那份，
-    # 而不是台账上多出一份内容完全相同的草稿。
+    # 上传请求的幂等键：前端打开上传弹窗时生成一个，重复点击 / 网络重试带的是同一个。
+    # 后端据此把第二次请求认成"这份刚才已经传过了"，返回原来那份，
+    # 而不是台账上多出一份内容完全相同的合同。
     request_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

@@ -543,7 +543,6 @@ FIELD_LABELS: dict[str, str] = {
     "risk_level": "风险等级",
     "domain": "行业",
     "source_context": "来源快照",
-    "generated_file_id": "生成的 PDF",
     "content_snapshot": "正文快照",
     "filled_data": "填入的内容",
     "target_customer": "目标客户",

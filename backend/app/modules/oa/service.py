@@ -255,16 +255,16 @@ async def _contract_amount(session: AsyncSession, doc: ContractDocument) -> Deci
 
 
 async def _load_contract_file(session: AsyncSession, doc: ContractDocument) -> tuple[FileRecord, bytes]:
-    file_id = (doc.filled_data or {}).get("_original_file_id") or doc.generated_file_id
+    file_id = (doc.filled_data or {}).get("_original_file_id")
     if not file_id:
         raise AppError(
             ErrorCode.REQUIRED_FIELD_MISSING,
-            "这份合同还没有正文文件，请先生成合同或上传客户原合同",
+            "这份合同还没有上传原件，请先上传客户合同 Word 或 PDF",
             422,
         )
     record = await session.get(FileRecord, int(file_id))
     if record is None:
-        raise AppError(ErrorCode.NOT_FOUND, "合同正文文件不存在，请重新上传或生成", 422)
+        raise AppError(ErrorCode.NOT_FOUND, "合同原件不存在，请重新上传", 422)
     try:
         data = absolute_path(record.object_key).read_bytes()
     except OSError as exc:

@@ -2,7 +2,6 @@
 import asyncio
 import uuid
 from datetime import UTC, datetime
-from pathlib import Path
 
 import pytest
 from sqlalchemy.orm import Session
@@ -125,7 +124,7 @@ def test_start_contract_creates_self_oa_row_and_sign_gate(tmp_path, monkeypatch,
         file_row = FileRecord(id=1, object_key="contract.pdf", file_name="contract.pdf", size=14)
         doc = ContractDocument(
             id=1, doc_no="CT-001", title="测试合同", customer_id=1,
-            content_snapshot="正文", status="draft", generated_file_id=1,
+            content_snapshot="正文", status="draft", filled_data={"_original_file_id": 1},
             created_at=datetime.now(UTC),
         )
         raw.add_all([user, customer, file_row, doc])

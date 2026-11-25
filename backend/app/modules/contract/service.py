@@ -1,4 +1,4 @@
-"""合同文档台账：上传原件、签署/作废、替代关系与提醒（系统模板生成已停用）。"""
+"""合同文档台账：上传原件、签署/作废、替代关系与提醒（系统模板生成已删除）。"""
 
 import hashlib
 import json
@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.textfit import fit_column
 from app.core.draft_visibility import draft_scope
 from app.core.errors import AppError, ErrorCode
-from app.core.timebase import business_day_end, today_business, to_business
+from app.core.timebase import business_day_end, today_business
 from app.core.response import paginate
 from app.modules.contract.model import (
     DOC_STATUS_LABEL,
@@ -29,27 +29,11 @@ from app.modules.quote.model import Quote, QuoteVersion
 TEMPLATE_FILE_BUSINESS_TYPE = "contract_template"
 TEMPLATE_FILE_CATEGORY = "template"
 
-#: 占位符没填上的四种原因。**必须分开**：混成一个"缺项"会让人以为是"业务员忘了填"，
-#: 而实际上很可能是模板把字段名写错了——处理方式完全不同，一个要人补内容，一个要改模板。
-MISSING_UNKNOWN_SOURCE = "unknown_source"  # {{foo.bar}}：没有 foo 这个来源
-MISSING_UNKNOWN_FIELD = "unknown_field"  # {{customer.不存在的字段}}：来源在，字段不在
-MISSING_EMPTY = "empty"  # 字段存在，但这份资料里是空的
-MISSING_EXTRA = "extra_missing"  # {{extra.付款方式}} 本次没填
-
-MISSING_REASON_LABEL: dict[str, str] = {
-    MISSING_UNKNOWN_SOURCE: "模板里的字段来源不存在",
-    MISSING_UNKNOWN_FIELD: "对象上没有这个字段",
-    MISSING_EMPTY: "字段存在，但这份资料里是空的",
-    MISSING_EXTRA: "本次没有填写这一项",
-}
-
-
 def _request_fingerprint(payload) -> str:
-    """合同生成幂等键对应的完整业务请求指纹。
+    """合同上传幂等键对应的完整业务请求指纹。
 
-    只用 customer/template 会把同一把键换订单、报价版本或正文附加字段的
-    请求错误地回放成旧合同。指纹放进生成快照的内部字段，不新增迁移，且不
-    暴露给前端。
+    只用 customer 会把同一把键换订单、报价版本或附加字段的请求错误地回放成
+    旧合同。指纹放进上传快照的内部字段，不新增迁移，且不暴露给前端。
     """
     data = payload.model_dump(mode="json", exclude={"request_key"})
     raw = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -163,13 +147,7 @@ def serialize_document(
     customer_name: str | None = None,
     parent_doc_no: str | None = None,
 ) -> dict:
-    # 生成时没填上的占位符（正文里留着 {{...}} 原文），编译成人话给界面提示用。
-    # 直接给翻译好的：前端只管显示，不必再维护一份 code->文案的映射（两处映射迟早分叉）。
     filled = doc.filled_data or {}
-    missing = {
-        token: MISSING_REASON_LABEL.get(reason, reason)
-        for token, reason in (filled.get("_missing") or {}).items()
-    }
     header = filled.get("_header") or {}
     return {
         "id": doc.id,
@@ -185,7 +163,6 @@ def serialize_document(
         "quote_id": doc.quote_id,
         "quote_version_id": doc.quote_version_id,
         "quote_version_no": header.get("quote_version_no"),
-        "template_id": doc.template_id,
         "content_snapshot": doc.content_snapshot,
         "filled_data": ({key: value for key, value in filled.items()
                          if key != "_supersession_task_states"} if doc.filled_data is not None else None),
@@ -196,11 +173,8 @@ def serialize_document(
         "counterparty_name": filled.get("_counterparty_name"),
         "contract_origin_label": {"company": "我方合同", "customer": "客户合同"}.get(filled.get("_contract_origin"), "历史未标注"),
         "dingtalk_oa": filled.get("_dingtalk_oa"),
-        "missing_fields": missing,
         # 抬头快照（生成时的公司名/客户名/单号）：详情页据此说明"当时是以谁的名义出的"
         "header_snapshot": header or None,
-        # 生成时落盘的那份 PDF；为空说明是本批之前的老数据，下载回落实时渲染
-        "generated_file_id": doc.generated_file_id,
         "status": doc.status,
         "status_label": DOC_STATUS_LABEL.get(doc.status, doc.status),
         "expiry_date": doc.expiry_date,
@@ -443,7 +417,7 @@ async def generate_document(
             submitted = payload.model_fields_set
             if isinstance(echo, dict):
                 requested = _request_values(payload)
-                legacy_mismatch = replayed.customer_id != payload.customer_id or replayed.template_id != payload.template_id or any(
+                legacy_mismatch = replayed.customer_id != payload.customer_id or any(
                     echo.get(field) != requested.get(field) for field in submitted
                 )
             else:
@@ -465,7 +439,7 @@ async def generate_document(
                         return False
                     return stored != incoming
 
-                legacy_mismatch = replayed.customer_id != payload.customer_id or replayed.template_id != payload.template_id or any(
+                legacy_mismatch = replayed.customer_id != payload.customer_id or any(
                     _legacy_field_differs(field) for field in _ECHO_COMPARABLE
                 )
             if stored_fingerprint is None and legacy_mismatch:
@@ -592,7 +566,6 @@ async def generate_document(
         order_id=payload.order_id,
         quote_id=quote.id if quote is not None else None,
         quote_version_id=quote_version.id if quote_version is not None else None,
-        template_id=None,
         content_snapshot="上传的合同原件，完整条款以随附原文件为准。",
         filled_data=filled,
         expiry_date=payload.expiry_date,
@@ -654,52 +627,6 @@ async def get_doc_or_404(
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "合同所属客户已变化，请刷新后重试", 409)
     return doc
 
-
-async def build_pdf_data(session: AsyncSession, doc: ContractDocument) -> dict:
-    """组装合同 PDF 的渲染数据（生成时落盘与下载共用这一份）。
-
-    抬头（公司名 / 客户名 / 订单号 / 报价号）**优先取生成时的快照**，
-    只有本批之前生成的老数据（快照里没有 `_header`）才回落到实时查询。
-
-    这是"同一编号任何时候下载都是同一份"的关键：落盘那次和下载这次
-    拿到的是同一组抬头，不会因为客户改了名而对不上。
-    """
-    from app.modules.settings import service as settings_service
-
-    header = (doc.filled_data or {}).get("_header") or {}
-
-    company_name = header.get("company_name")
-    if company_name is None:
-        company_name = await settings_service.get_text(session, "company_name", "text", "")
-
-    customer_name = header.get("customer_name")
-    if customer_name is None:
-        customer = await session.get(Customer, doc.customer_id)
-        customer_name = customer.name if customer else None
-
-    order_no = header.get("order_no")
-    if order_no is None and doc.order_id:
-        order = await session.get(SalesOrder, doc.order_id)
-        order_no = order.order_no if order else None
-
-    quote_no = header.get("quote_no")
-    if quote_no is None and doc.quote_id:
-        quote = await session.get(Quote, doc.quote_id)
-        quote_no = quote.quote_no if quote else None
-
-    return {
-        "company_name": company_name,
-        "doc_no": doc.doc_no,
-        "doc_type_label": DOC_TYPE_LABEL.get(doc.doc_type, doc.doc_type),
-        "status_label": DOC_STATUS_LABEL.get(doc.status, doc.status),
-        "customer_name": customer_name,
-        "created_date": to_business(doc.created_at).strftime("%Y-%m-%d") if doc.created_at else None,
-        "order_no": order_no,
-        "quote_no": quote_no,
-        "quote_version_no": header.get("quote_version_no"),
-        "expiry_date": doc.expiry_date,
-        "content_snapshot": doc.content_snapshot,
-    }
 
 async def list_signed_files(session: AsyncSession, doc_id: int) -> list[dict]:
     """这份合同的**签署原件**清单（category=signed，按登记时间倒序）。
@@ -957,22 +884,19 @@ async def sign_document(
     if original_id:
         from app.modules.contract.support import verified_content
         verified_content(record)
-    # 不能把系统自己出的生成稿登记成"客户签回来的那一份"：那会让台账上
-    # "下载到的到底是生成稿还是签署件"彻底分不清，而且生成稿会因此被列入
-    # signed 保护集、看起来像一份真的签署证据。
-    own_generated = doc.generated_file_id == file_id
-    if not own_generated:
-        own_generated = (
-            await session.execute(
-                select(BusinessFile.id)
-                .where(BusinessFile.file_id == file_id, BusinessFile.category == "generated")
-                .limit(1)
-            )
-        ).scalar_one_or_none() is not None
-    if own_generated:
+    # 不能把系统生成的其他单据稿登记成"客户签回来的那一份"：那会让台账上
+    # "原件到底是客户签回的还是系统出的"分不清。合同已不再生成稿，但
+    # `generated` 类文件仍可能来自单据生成，统一在这里拦住。
+    if (
+        await session.execute(
+            select(BusinessFile.id)
+            .where(BusinessFile.file_id == file_id, BusinessFile.category == "generated")
+            .limit(1)
+        )
+    ).scalar_one_or_none() is not None:
         raise AppError(
             ErrorCode.PARAM_ERROR,
-            "这是系统生成的合同稿，不能登记为签署原件；请上传客户签回的扫描件",
+            "这是系统生成的文件，不能登记为签署原件；请上传客户签回的扫描件",
             422,
         )
     if await _signed_file_used_elsewhere(session, doc.id, record):

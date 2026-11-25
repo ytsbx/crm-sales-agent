@@ -51,7 +51,7 @@ def db():
 def document(db, *, parent=None, status='signed', effective=None, replace=True):
     s,user,c,t=db
     d=ContractDocument(doc_no='CT-'+uuid4().hex[:8],doc_type='monthly',title='月结',
-        customer_id=c.id,template_id=t.id,content_snapshot='正文',status=status,
+        customer_id=c.id,content_snapshot='正文',status=status,
         effective_date=effective or today_business(),expiry_date=today_business()+timedelta(days=5),
         parent_id=parent.id if parent else None,
         filled_data={'_supersedes':{'id':parent.id,'doc_no':parent.doc_no}} if parent and replace else {},

@@ -24,8 +24,6 @@ from app.modules.approval import router as approvals
 from app.modules.pricing.model import PricePermission
 from app.modules.settings.model import SystemSetting
 from app.modules.order.schema import ShipmentBatchShip
-from app.modules.contract.model import ContractDocument
-from app.modules.contract.service import build_pdf_data
 NOW=datetime.now(UTC)
 REQ=Request({'type':'http','headers':[],'client':('127.0.0.1',1)})
 class Nest:
@@ -113,11 +111,6 @@ async def test_comparison_mixed_and_repeated_custom(case):
     changes=[c for c in result['diffs'][0]['changes'] if c['field']=='quoted_price']
     assert len(changes)==4 and {c['sku_name'] for c in changes}=={'行0','行1','行2','行3'}
     assert [c['sku_id'] for c in changes].count(None)==3
-@pytest.mark.anyio
-@pytest.mark.parametrize('hour,day',[(23,'2026-10-14'),(0,'2026-10-13'),(16,'2026-10-14')])
-async def test_contract_beijing_day(hour,day):
-    doc=ContractDocument(doc_no='ISOLATED',doc_type='sales_contract',status='draft',created_at=datetime(2026,10,13,hour,tzinfo=UTC),filled_data={'_header':{'company_name':'公司','customer_name':'客户','quote_no':'Q','order_no':'S'}})
-    assert (await build_pdf_data(None,doc))['created_date']==day
 @pytest.mark.parametrize('field',['logistics_company','tracking_no'])
 def test_shipping_length(field):
     assert getattr(ShipmentBatchShip(**{field:'中'*64}),field)=='中'*64

@@ -181,7 +181,7 @@ def _seed(session):
     ))
     session.add(ContractDocument(
         id=55, doc_no="CT-2026-001", doc_type="contract", title="销售合同",
-        customer_id=9, template_id=3, content_snapshot="正文", status="draft",
+        customer_id=9, content_snapshot="正文", status="draft",
         filled_data={"_source_type": "customer_drafted"},
         created_at=datetime.now(UTC),
     ))
