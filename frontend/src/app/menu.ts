@@ -20,6 +20,7 @@ import {
   IconFilter,
   IconFolder,
   IconGift,
+  IconHelpCircle,
   IconHome,
   IconInbox,
   IconMoneyExchangeStroked,
@@ -131,6 +132,9 @@ export const MENU_GROUPS: MenuGroup[] = [
     title: '智能与协同',
     items: [
       { key: 'agent', path: '/agent', label: 'AI 助手', icon: IconComment, ready: true, permission: 'agent:use' },
+      // 流程指引对所有登录用户开放：新人第一周最需要的不是权限，而是
+      // “先做哪一步、卡住找谁、反悔怎么退”。它不替代各页的灰按钮提示。
+      { key: 'guide', path: '/guide', label: '流程指引', icon: IconHelpCircle, ready: true },
       { key: 'wecom', path: '/wecom', label: '企业微信', icon: IconAt, ready: true, permission: 'wecom:view', hideWithoutPermission: true },
       // 回收站：三块（线索/产品/客户）集中在一个页面。任一业务模块可看即给入口，
       // 页面内部再按各自权限决定显示哪几块（与"数据分析"同一套写法）。
