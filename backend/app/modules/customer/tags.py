@@ -493,7 +493,12 @@ async def _detect_conflicts(
             }
         )
 
-    if source.tax_no and target.tax_no and source.tax_no != target.tax_no:
+    from app.core.tax_no import normalize_tax_no
+
+    source_tax = normalize_tax_no(source.tax_no)
+    target_tax = normalize_tax_no(target.tax_no)
+    # 先规范化再比：大小写/空格/全角差异不该被当成"两家公司"（B13-02 第二层）。
+    if source_tax and target_tax and source_tax != target_tax:
         conflicts.append(
             {
                 "key": "tax_no",

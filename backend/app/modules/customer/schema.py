@@ -5,7 +5,7 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator, field_validator
 from app.core.patch_schema import CreateModel, PatchModel
-
+from app.core.tax_no import validate_tax_no
 
 
 class CustomerCreate(CreateModel):
@@ -27,6 +27,12 @@ class CustomerCreate(CreateModel):
     #: 不给也不报错（老客户端照常工作），但响应里会说明这次没有幂等保护 ——
     #: 不能让人以为"重试一定安全"。
     request_key: str | None = Field(default=None, max_length=128)
+
+    @field_validator("tax_no")
+    @classmethod
+    def _check_tax_no(cls, value: str | None) -> str | None:
+        # 税号是"公司身份证号"：查重、合并、回款认客户都靠它，按国标校验（GB 32100-2015）。
+        return validate_tax_no(value)
 
 
 class CustomerUpdate(PatchModel):
@@ -58,6 +64,11 @@ class CustomerUpdate(PatchModel):
             if value > datetime.now(UTC):
                 raise ValueError("最近联系时间不能在未来；未来联系请登记跟进任务")
         return value
+
+    @field_validator("tax_no")
+    @classmethod
+    def _check_tax_no(cls, value: str | None) -> str | None:
+        return validate_tax_no(value)
 
 
 class CustomerTransfer(BaseModel):

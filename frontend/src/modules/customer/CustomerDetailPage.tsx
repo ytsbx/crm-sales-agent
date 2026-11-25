@@ -656,6 +656,7 @@ export default function CustomerDetailPage() {
                     short_name: customer.short_name ?? '',
                     region: customer.region ?? '',
                     address: customer.address ?? '',
+                    tax_no: customer.tax_no ?? '',
                     source: customer.source ?? '',
                     level: customer.level ?? null,
                     remark: customer.remark ?? '',
@@ -1606,6 +1607,17 @@ export default function CustomerDetailPage() {
               value={editForm.address ?? ''}
               onChange={(v) => setEditForm({ ...editForm, address: v })}
             />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>统一社会信用代码</div>
+            <Input
+              value={editForm.tax_no ?? ''}
+              placeholder="例：91440300708461136T"
+              onChange={(v) => setEditForm({ ...editForm, tax_no: v })}
+            />
+            <div style={{ marginTop: 4, fontSize: 12, color: 'var(--crm-text-3)' }}>
+              18 位统一社会信用代码（营业执照右上角，最后一位是校验码）；个人、境外客户可留空
+            </div>
           </div>
           <div>
             <div style={{ marginBottom: 4 }}>备注</div>

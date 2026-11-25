@@ -57,6 +57,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import json_safe
 from app.core.errors import AppError, ErrorCode
+from app.core.tax_no import normalize_tax_no
 from app.core.trade_mode import CNY, reject_foreign_currency
 from app.modules.customer.model import Customer
 from app.modules.erp.adapter import (
@@ -738,6 +739,8 @@ async def resolve_mapping(
     if mapping.object_type == "customer":
         if not code:
             return None, None, "对方没有给出客户标识，无法匹配", MATCH_PENDING
+        # 外部给的税号先按国标规范化（去空格/全角、统一大写）再与本地比对。
+        code = normalize_tax_no(code) or code
         by_tax = (
             await session.execute(
                 select(Customer.id).where(Customer.tax_no == code, Customer.deleted_at.is_(None)).limit(2)

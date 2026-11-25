@@ -17,6 +17,11 @@ export interface CustomerPayload {
   short_name?: string | null
   region?: string | null
   address?: string | null
+  /**
+   * 统一社会信用代码（税号）。18 位、GB 32100-2015 校验位在后端统一校验
+   * （`backend/app/core/tax_no.py`），空格/全角/小写会被规范化，留空表示个人或境外客户。
+   */
+  tax_no?: string | null
   source?: string | null
   level?: string | null
   remark?: string | null

@@ -11,6 +11,8 @@ from typing import Any
 
 import re
 
+from app.core.tax_no import normalize_tax_no
+
 CUSTOMER_SCORE_FALLBACKS = {
     "threshold": 50,
     "weight_name_exact": 60,
@@ -126,8 +128,13 @@ def similarity_score(
         ("domain", "weight_domain", "官网域名一致"),
         ("address", "weight_address", "地址一致"),
     ):
-        lv = (left.get(field) or "").strip().lower()
-        rv = (right.get(field) or "").strip().lower()
+        if field == "tax_no":
+            # 税号先按国标规范化（去空格/全角、统一大写）再比，脏格式不该骗过查重。
+            lv = normalize_tax_no(left.get(field)) or ""
+            rv = normalize_tax_no(right.get(field)) or ""
+        else:
+            lv = (left.get(field) or "").strip().lower()
+            rv = (right.get(field) or "").strip().lower()
         if lv and rv and lv == rv:
             score += int(w.get(weight_key, CUSTOMER_SCORE_FALLBACKS[weight_key]))
             reasons.append(label)
