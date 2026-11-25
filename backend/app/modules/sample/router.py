@@ -422,6 +422,23 @@ async def create_sample(
     return ok(await svc.detail(session, sample, user), "样品申请已创建")
 
 
+@router.get("/samples/application-form-template")
+async def download_application_form_template(
+    user: CurrentUser = Depends(require_permission("sample:view")),
+):
+    """下载空白的《样品明细明细表》三表模板，供经办人填好后再上传同序审批。"""
+    from app.modules.sample.application_form import TEMPLATE_FILENAME, TEMPLATE_PATH
+    if not TEMPLATE_PATH.is_file():
+        raise AppError(ErrorCode.NOT_FOUND, "打样申请单模板文件不存在，请联系管理员", 404)
+    return Response(
+        content=TEMPLATE_PATH.read_bytes(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(TEMPLATE_FILENAME)}",
+        },
+    )
+
+
 @router.get("/samples/{sample_id}")
 async def get_sample(
     sample_id: int,

@@ -206,6 +206,11 @@ export function exportSampleApplicationForm(id: number) {
   return api.download(`/samples/${id}/application-form`)
 }
 
+/** 下载空白的《样品明细明细表》三表模板，填好后再上传到同序审批。 */
+export function exportSampleApplicationTemplate() {
+  return api.download('/samples/application-form-template')
+}
+
 
 export function listSampleTransferOptions(id: number, keyword: string) {
   return api.get<{ id: number; name: string }[]>(`/samples/${id}/transfer-options`, { keyword })
