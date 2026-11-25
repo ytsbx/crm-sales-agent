@@ -5769,3 +5769,12 @@
 - B18-08：案例创建审计补 `customer_id/customer_label/problem_tags/status/evidence_count`。
 - 验证：全量后端 pytest 通过；静态检查 pyflakes/模型列/权限码 OK。未部署。
 - 下一批候选：B10-04（钉钉读接口裸 `resp.json()`）、B22-09/B22-10（任务/打样审计补齐）、B19-10/B20-12（P3）。
+
+
+## 2026-11-25 B10-04：钉钉读接口不再裸解析 JSON（未部署）
+
+- 新增 `dingtalk/client.py::_read_json`：非 JSON / 非对象响应统一转 `DingTalkError`（502 人话），不再让 `JSONDecodeError` 冒成 500。
+- 替换 10 处**只读**接口：实例查询、模板结构、媒体上传回执、成员搜索、用户部门、子部门、部门成员、登录令牌换取、登录用户信息、unionid 反查。
+- 有副作用的 create/terminate 路径保持原有"结果未知"语义不动（它们的 try/except 已单独处理）。
+- 新增 3 条用例；全量 pytest、静态检查三项 OK。未部署。
+- 下一批候选：B22-09/B22-10（任务/打样审计补齐）、B19-10/B20-12（P3）。

@@ -344,7 +344,7 @@ class DingTalkClient:
                 f"查询审批实例时外部请求没有得到响应（{type(exc).__name__}）：{exc}"
             ) from exc
         try:
-            data = resp.json() if resp.content else {}
+            data = _read_json(resp, api="workflow/processInstances:get")
         except ValueError as exc:
             # 响应体读不出来（网关错误页 / WAF 拦截页）：同样属于"结果未知"
             raise DingTalkUnknownOutcome(
@@ -430,7 +430,7 @@ class DingTalkClient:
                 params={"processCode": process_code},
                 headers={"x-acs-dingtalk-access-token": token},
             )
-        data = resp.json() if resp.content else {}
+        data = _read_json(resp, api="forms/schemas/processCodes")
         if resp.status_code != 200:
             raise DingTalkError(
                 data.get("message") or resp.text[:200],
@@ -459,7 +459,7 @@ class DingTalkClient:
                 params={"access_token": token, "type": media_type},
                 files={"media": (filename, content)},
             )
-        data = resp.json() if resp.content else {}
+        data = _read_json(resp, api="media/upload")
         if data.get("errcode") or not data.get("media_id"):
             raise DingTalkError(
                 data.get("errmsg") or resp.text[:200],
@@ -493,7 +493,7 @@ class DingTalkClient:
                 f"查询钉钉成员失败：{exc}", api="contact/users/search"
             ) from exc
         try:
-            data = resp.json() if resp.content else {}
+            data = _read_json(resp, api="contact/users/search")
         except ValueError as exc:
             raise DingTalkError(
                 "钉钉成员搜索响应不是合法 JSON",
@@ -557,7 +557,7 @@ class DingTalkClient:
                 params={"access_token": token},
                 json={"userid": user_id},
             )
-        data = resp.json() if resp.content else {}
+        data = _read_json(resp, api="topapi/v2/user/get")
         if data.get("errcode"):
             raise DingTalkError(
                 data.get("errmsg") or "user/get 失败",
@@ -595,7 +595,7 @@ class DingTalkClient:
                 params={"access_token": token},
                 json={"dept_id": dept_id},
             )
-        data = resp.json() if resp.content else {}
+        data = _read_json(resp, api="topapi/v2/department/listsub")
         if data.get("errcode"):
             raise DingTalkError(
                 data.get("errmsg") or "department/listsub 失败",
@@ -626,7 +626,7 @@ class DingTalkClient:
                 params={"access_token": token},
                 json={"dept_id": dept_id, "cursor": cursor, "size": size},
             )
-        data = resp.json() if resp.content else {}
+        data = _read_json(resp, api="topapi/v2/user/list")
         if data.get("errcode"):
             raise DingTalkError(
                 data.get("errmsg") or "user/list 失败",
@@ -690,7 +690,7 @@ class DingTalkClient:
                 f"换取用户令牌失败：{exc}", api="oauth2/userAccessToken"
             ) from exc
         try:
-            data = resp.json() if resp.content else {}
+            data = _read_json(resp, api="oauth2/userAccessToken")
         except ValueError as exc:
             raise DingTalkError(
                 "用户令牌响应不是合法 JSON",
@@ -729,7 +729,7 @@ class DingTalkClient:
                 f"读取钉钉用户信息失败：{exc}", api="contact/users/me"
             ) from exc
         try:
-            data = resp.json() if resp.content else {}
+            data = _read_json(resp, api="contact/users/me")
         except ValueError as exc:
             raise DingTalkError(
                 "钉钉用户信息响应不是合法 JSON",
@@ -770,7 +770,7 @@ class DingTalkClient:
                 f"查询钉钉成员失败：{exc}", api="topapi/user/getbyunionid"
             ) from exc
         try:
-            data = resp.json() if resp.content else {}
+            data = _read_json(resp, api="topapi/user/getbyunionid")
         except ValueError as exc:
             raise DingTalkError(
                 "钉钉成员查询响应不是合法 JSON",
@@ -807,6 +807,25 @@ class DingTalkClient:
             raise DingTalkError(data.get("errmsg") or "读取企业成员详情失败",
                                 api="topapi/v2/user/get", http_status=resp.status_code)
         return dict(data.get("result") or {})
+
+def _read_json(resp: httpx.Response, *, api: str) -> dict[str, Any]:
+    """读接口的响应解析：非 JSON / 非对象一律转成人话错误，不让解析异常冒成 500。
+
+    B10-04：模板查询、成员查询、上传图片等**只读**接口原来直接 `resp.json()`；
+    钉钉网关抖动返回 HTML/空体时，调用方看到的是 500「服务器内部错误」。
+    """
+    try:
+        data = resp.json() if resp.content else {}
+    except ValueError as exc:
+        raise DingTalkError(
+            "钉钉接口返回了无法解析的响应，请稍后重试", api=api, http_status=resp.status_code
+        ) from exc
+    if not isinstance(data, dict):
+        raise DingTalkError(
+            "钉钉接口响应结构异常，请稍后重试", api=api, http_status=resp.status_code
+        )
+    return data
+
 
 _client: DingTalkClient | None = None
 
