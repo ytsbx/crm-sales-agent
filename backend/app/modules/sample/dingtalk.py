@@ -18,7 +18,6 @@ from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok
 from app.modules.dingtalk import service as oa
-from app.modules.dingtalk.client import get_client, DingTalkError
 from app.modules.dingtalk.model import OaInstance
 from app.modules.oa import client as oa_client
 from app.modules.oa import sample as oa_sample
@@ -77,67 +76,12 @@ def self_oa_available() -> bool:
 
 
 async def template(session, *, for_display=False, self_oa_only=False):
-    # 自研 OA 已配置时，CRM 动态表单直接返回 OA 字段；下面 submit 走 OA 分支。
+    # 打样审批只走自研 OA；钉钉审批路径已于 2026-11-25 删除。
     if self_oa_available():
         return {'configured': True, 'enabled': True, 'provider': 'self_oa', 'fields': oa_sample.oa_template_fields()}, None
-    if settings.dingtalk_push_off:
-        return {'configured': False, 'enabled': False, 'provider': 'self_oa',
-                'fields': oa_sample.oa_template_fields(),
-                'template_error': '尚未配置同序 OA 打样审批，可先保存草稿'}, None
-    if self_oa_only:
-        return {'configured': False, 'enabled': False, 'fields': []}, None
-    from app.modules.settings.service import get_setting
-    cfg = await get_setting(session, CONFIG_KEY) or {}
-    code = cfg.get('process_code')
-    if not code or settings.dingtalk_push_off:
-        return {'configured':bool(code),'enabled':not settings.dingtalk_push_off,'fields':[]},None
-    try:
-        client = get_client()
-        schema = await (client.get_display_process_schema(code) if for_display else client.get_process_schema(code))
-        fields = _legacy_template_fields(schema)
-    except (DingTalkError,httpx.HTTPError) as error:
-        raise AppError(ErrorCode.EXTERNAL_ERROR,'无法读取钉钉打样模板，可稍后重试，未发出审批',502) from error
-    except ValueError as error:
-        raise AppError(ErrorCode.EXTERNAL_ERROR, '钉钉打样模板格式异常，请联系管理员核对模板，未发出审批', 502) from error
-    if not INPUT_LABELS.issubset({f['label'] for f in fields}):
-        raise AppError(ErrorCode.PARAM_ERROR,'钉钉打样模板已变化，请管理员核对字段',422)
-    return {'configured':True,'enabled':True,'fields':fields},code
-
-
-def _legacy_template_fields(schema: dict) -> list[dict]:
-    if not isinstance(schema, dict):
-        raise ValueError('Invalid template response')
-    content = schema.get('schemaContent') or {}
-    if isinstance(content, str):
-        content = json.loads(content)
-    items = content.get('items', []) if isinstance(content, dict) else None
-    if not isinstance(items, list):
-        raise ValueError('Invalid template items')
-    fields = []
-    for item in items:
-        if not isinstance(item, dict):
-            raise ValueError('Invalid template item')
-        props = item.get('props') or {}
-        if not isinstance(props, dict):
-            raise ValueError('Invalid template field properties')
-        label = props.get('label')
-        if not isinstance(label, str) or label not in INPUT_LABELS | SYSTEM_LABELS:
-            continue
-        field_id = props.get('id')
-        raw_options = props.get('options') or []
-        if not isinstance(field_id, str) or not field_id.strip() or not isinstance(raw_options, list):
-            raise ValueError('Invalid template field ID or options')
-        options = []
-        for option in raw_options:
-            if isinstance(option, str) and option.startswith('{'):
-                option = json.loads(option)
-            value = option.get('value') if isinstance(option, dict) else option
-            if value is not None:
-                options.append(str(value))
-        fields.append({'id': field_id, 'label': label, 'type': item.get('componentName'),
-                       'required': bool(props.get('required')), 'options': options,
-                       'format': props.get('format'), 'system': label in SYSTEM_LABELS})
-    return fields
+    return {'configured': False, 'enabled': False, 'provider': 'self_oa',
+            'fields': oa_sample.oa_template_fields(),
+            'template_error': '尚未配置同序 OA 打样审批，可先保存草稿'}, None
 
 
 async def inquiry_candidates(session,user,sample):
@@ -159,7 +103,6 @@ async def inquiry_candidates(session,user,sample):
                  OaInstance.status.in_(['pending','approved','rejected','cancelled'])).order_by(OaInstance.id.desc()))).all()
         for row in rows:result.append({'id':row.id,'label':f'{inquiry.title} · 第{row.submit_round}轮 · {oa.serialize(row)["status_label"]}'})
     return result
-
 
 def collect_template_values(fields_meta, supplied):
     """按真实模板读这次要提交的值，并做**逐字段**校验。
@@ -408,7 +351,7 @@ async def submit(sample_id:int,payload:Draft,request:Request,user:CurrentUser=De
     sample=await service.get_visible_or_404(session,user,sample_id,for_update=True,allow_external_flow=True)
     meta=metadata(sample)
     self_oa_enabled = self_oa_available()
-    if (meta.get('requires_self_oa') or (settings.dingtalk_push_off and payload.mode == 'standalone')) and not self_oa_enabled:
+    if (meta.get('requires_self_oa') or payload.mode == 'standalone') and not self_oa_enabled:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED,'尚未配置同序 OA 打样审批，暂不能提交审批，可先保存草稿',409)
     previous=await oa.get_by_business_key(session,inquiry_id=sample.id,inquiry_version=int(sample.version or 1),oa_type='sample') if payload.mode=='standalone' or self_oa_enabled else None
     if previous is not None and getattr(previous, 'provider', None) == 'self_oa' and previous.status in ('submitting','needs_review'):
@@ -472,121 +415,5 @@ async def submit(sample_id:int,payload:Draft,request:Request,user:CurrentUser=De
                          after={'oa_provider':'self_oa','oa_status':row.status,'instance_id':row.instance_id},ip=client_ip(request))
         await session.commit()
         return ok(oa.serialize(row),message)
-    if not options['configured'] or not options['enabled']:
-        raise AppError(ErrorCode.PARAM_ERROR,'独立打样模板未配置或钉钉推送未开启，请先保存草稿',422)
-    fields={f['label']:f for f in options['fields']}
-    values,by_label=collect_template_values(options['fields'],payload.fields)
-    from app.modules.user.model import User
-    account=await session.get(User,user.id)
-    if account is None or account.status!='active' or not account.dingtalk_userid:
-        raise AppError(ErrorCode.PARAM_ERROR,'请管理员先绑定当前账号的钉钉身份，再提交打样审批',422)
-    client=get_client();departments=await client.get_user_dept_ids(account.dingtalk_userid)
-    if not departments:raise AppError(ErrorCode.PARAM_ERROR,'钉钉未返回申请人的部门，请先核对',422)
-    for label,value in [('申请人员',account.dingtalk_userid),('归属部门',departments[0])]:
-        if label not in fields:raise AppError(ErrorCode.PARAM_ERROR,f'打样模板缺少{label}',422)
-        values[fields[label]['id']]=value
-    # 自动用现有公司底稿生成样品明细表，随后上传为真正的钉钉附件。
-    from app.modules.sample.application_form import TEMPLATE_FILENAME, render_application_form
-    from app.modules.dingtalk.attachments import upload_approval_attachment
-    items=(await session.scalars(select(SampleItem).where(SampleItem.sample_request_id==sample.id))).all()
-    attrs={column.key:getattr(sample,column.key) for column in sample.__table__.columns}
-    for key in ('material_spec','product_size','printing','accessories','packaging','craft_requirement'):
-        value=payload.fields.get('_'+key)
-        if value is not None:attrs[key]=value
-    # 「打样目的 / 紧急程度 / 样品情况」同样以**本次提交的值**为准（其次才是列里已有的）。
-    # 这三项在钉钉模板里没有控件（13 个控件核对过），只能由 CRM 带过去 —— 申请表
-    # 的 C4/G4/C5 三格就是它们。`save()` 已经把值写进列了，这里再兜一道是为了
-    # 兼容"以前只存在草稿 metadata 里"的老单子。
-    for key in ('sample_purpose','urgency','sample_situation'):
-        value=payload.fields.get('_'+key)
-        if value is not None:attrs[key]=value or None
-    # 打样费用（申请表 C3）：同样以**本次提交的值**为准，列值兜底
-    _deliver=payload.fields.get('_deliver_date')
-    if _deliver is not None:
-        from datetime import date as _date
-        _t=str(_deliver).strip()
-        attrs['deliver_date']=_date.fromisoformat(_t) if _t else None
-    attrs.update(validated_sample_details(payload.fields))
-    # 这几个值直接取自模板字段（`template()` 已保证这些标签都在），但**选填的日期/积分
-    # 可以是空的**：空就别往申请表上写，而不是拿 '' 去 fromisoformat / Decimal ——
-    # 那会让"选填留空"在提交的最后一步炸成一个 500。
-    attrs.update(sample_type=by_label['打样类型'],product_category=by_label['打样产品大类'],maker_unit=by_label['样品制作单位'])
-    if by_label['要求完成日期']:
-        attrs['target_completion_date']=date.fromisoformat(by_label['要求完成日期'])
-    if by_label['本次打样积分']:
-        attrs['estimated_hours']=Decimal(by_label['本次打样积分'])/10
-    from app.modules.sample.oa_content import dingtalk_requirement_note, submission_summary
-    # Excel 保存完整单头和逐条明细；钉钉文本框只放真正的说明及附件提示，避免和
-    # 原生字段、Excel 内容在审批详情中重复。
-    summary=submission_summary(SimpleNamespace(**attrs),list(items),note=by_label['打样需求说明'],applicant_name=user.name)
-    values[fields['打样需求说明']['id']]=dingtalk_requirement_note(
-        by_label['打样需求说明'], attachment_name=TEMPLATE_FILENAME
-    )
-    attrs['oa_submission_summary']=summary
-    if '样品明细明细表' not in fields:raise AppError(ErrorCode.PARAM_ERROR,'钉钉模板缺少样品明细表字段',422)
-    from app.modules.file.model import FileRecord, BusinessFile
-    from app.core.deps import ensure_permission
-    from app.modules.file.storage import absolute_path
-    linked=(await session.execute(select(FileRecord, BusinessFile.category).join(BusinessFile,BusinessFile.file_id==FileRecord.id).where(
-        BusinessFile.business_type=='sample',BusinessFile.business_id==sample.id).order_by(BusinessFile.id))).all()
-    if linked:ensure_permission(user,'file:view')
-    prepared=[]
-    _images=[]
-    image_ids=set()
-    for file,category in linked:
-        is_image=_is_image(file.file_name,file.mime_type or '')
-        if category=='sample_product_image' or (not category and is_image):
-            if not is_image:
-                raise AppError(ErrorCode.PARAM_ERROR,f'产品图片「{file.file_name}」不是有效图片，请重新上传',422)
-            image_ids.add(file.id)
-    seen=set()
-    for file,category in linked:
-        if file.id in seen:continue
-        seen.add(file.id)
-        path=absolute_path(file.object_key)
-        if not path.is_file() or path.stat().st_size!=file.size:
-            raise AppError(ErrorCode.PARAM_ERROR,f'文件「{file.file_name}」缺失或不完整，请重新上传',422)
-        if file.id in image_ids:
-            _images.append(path)
-        else:
-            prepared.append((file.file_name,path))
-    if len(_images)>4:raise AppError(ErrorCode.PARAM_ERROR,'产品图片最多4张，请删除多余图片后重试',422)
-    if len(prepared)>9:raise AppError(ErrorCode.PARAM_ERROR,'随单资料最多9份（另有1份自动生成的申请表），请先整理附件',422)
-    try:
-        # 申请表的「打样部门」对应业务上选择的样品制作单位；不要把内部提示语
-        # “以钉钉归属部门为准”写进 Excel。钉钉归属部门仍保留在审批原生字段中。
-        content=render_application_form(SimpleNamespace(**attrs),list(items),applicant_name=user.name,department_name=attrs.get('maker_unit') or '',product_images=_images,sample_maker=attrs.get('sample_maker') or '')
-    except ValueError as error:
-        raise AppError(ErrorCode.PARAM_ERROR,str(error),422) from error
-    try:
-        attachments=[await upload_approval_attachment(client,user_id=account.dingtalk_userid,filename=TEMPLATE_FILENAME,content=content)]
-        for filename,path in prepared:
-            attachments.append(await upload_approval_attachment(client,user_id=account.dingtalk_userid,filename=filename,content=path.read_bytes()))
-    except (DingTalkError,ValueError,OSError,httpx.HTTPError) as error:
-        # ⚠️ **把真实原因带上**（2026-10-16 主人：「为什么失败了」）：
-        # 原来这里一律抛一句"请核对附件权限或稍后重试"，把 `DingTalkError` 里
-        # 已经写好的**具体是哪一步失败**（附件空间查询 / 上传信息 / 签名 PUT / 入库）
-        # 连同钉钉返回的 HTTP 状态码全吞掉了 —— 用户看到的是一句无从下手的提示，
-        # 我也只能去猜。失败原因要能直接看到，才谈得上修。
-        _detail = str(error) or error.__class__.__name__
-        _status = getattr(error, 'http_status', None)
-        if _status:
-            _detail = f'{_detail}（钉钉 HTTP {_status}）'
-        # 服务端日志也留一条原始记录：接口层面只回一句原因，排查时仍需要完整异常
-        import logging as _logging
-        _logging.getLogger('crm.sample').warning(
-            '打样资料传入钉钉失败 sample=%s filename=%s: %s', sample.id,
-            [f for f, _ in prepared], error, exc_info=True)
-        raise AppError(ErrorCode.PARAM_ERROR,f'打样资料未能传入钉钉，尚未发起审批：{_detail}',422) from error
-    values[fields['样品明细明细表']['id']]=json.dumps(attachments,ensure_ascii=False)
-    # 先保存流程归属；OA 服务在调用外部前持久化唯一占位，断线不会自动重复建单。
-    sample.source_context={**sample.source_context,META_KEY:{**metadata(sample),'submitted':True}}
-    sample.status='pending'
-    await session.flush()
-    row=await oa.create_inquiry_instance(session,user=user,inquiry_id=sample.id,inquiry_version=int(sample.version or 1),
-        customer_id=sample.customer_id,process_code=code,originator_user_id=account.dingtalk_userid,field_map=values,oa_type='sample',resubmit=open_new_round,
-        field_definitions=options['fields'],dept_id=int(departments[0]))
-    await write_audit(session,operator_id=user.id,action='update',business_type='sample',business_id=sample.id,
-                      after={'dingtalk_oa_status':row.status,'instance_id':row.instance_id},ip=client_ip(request))
-    await session.commit()
-    return ok(oa.serialize(row),'请查看钉钉审批状态；审批在钉钉处理')
+    raise AppError(ErrorCode.STATUS_NOT_ALLOWED,
+                   '独立打样审批尚未配置同序 OA 模板，暂不能提交；可先保存草稿', 409)

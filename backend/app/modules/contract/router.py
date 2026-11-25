@@ -74,15 +74,13 @@ async def start_oa_contract_approval(
 
 
 @router.post("/contract-documents/{doc_id}/oa-withdraw")
-async def withdraw_dingtalk_contract_approval(
+async def withdraw_contract_oa_approval(
     doc_id: int,
     request: Request,
     user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """撤回仍在钉钉流转中的合同审批；已完成的审批不能从 CRM 撤回。"""
-    from app.core.config import settings as app_settings
-    from app.modules.dingtalk import service as dingtalk_service
+    """撤回仍在同序 OA 流转中的合同审批；已完成的审批不能从 CRM 撤回。"""
     from app.modules.dingtalk.model import OaInstance
 
     doc = await svc.get_doc_or_404(session, doc_id, for_update=True)
@@ -117,25 +115,8 @@ async def withdraw_dingtalk_contract_approval(
         )
         await session.commit()
         return ok(oa_service.serialize(row), "已撤回 OA 合同审批")
-    if app_settings.dingtalk_push_off:
-        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "历史审批仅供查看，新审批请使用同序 OA", 422)
-    from app.modules.contract.support import withdraw_before_void
-    await withdraw_before_void(session, user, doc)
-    await _ensure_doc_in_scope(session, user, doc)
-    if row.status != "withdrawn":
-        await session.commit()
-        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "审批已经结束，不能撤回；状态已同步，请刷新", 422)
-    await write_audit(
-        session,
-        operator_id=user.id,
-        action="withdraw_contract_oa",
-        business_type="contract",
-        business_id=doc.id,
-        after={"oa_instance_id": row.id, "instance_id": row.instance_id, "status": row.status},
-        ip=client_ip(request),
-    )
-    await session.commit()
-    return ok(dingtalk_service.serialize(row), "已向钉钉发起撤回，审批单已撤回")
+    # 历史钉钉审批记录不再调外部；旧钉钉审批入口已于 2026-11-25 删除。
+    raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "历史钉钉审批仅供查看，请核对原审批结果", 422)
 
 
 @router.get("/contract-templates")
