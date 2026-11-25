@@ -1,5 +1,9 @@
 """钉钉发起报文契约回归（P1 修复：`originatorUserId` 必须是钉钉 userid）。
 
+2026-11-25：旧钉钉询价/合同发起通道已删除。本套件保留两段仍有意义的回归：
+客户端发报文契约（第 0 节）与「未配置同序 → 422 不外呼」闸门（第 1 节）；
+历史钉钉行改为直接落夹具，只回归同步/核定的关闸与不改记录（第 2–3 节）。
+
 跑法（需要 PostgreSQL；**全程不连钉钉、不发任何真实请求**）：
     cd backend
     PYTHONPATH=. .venv/bin/python scripts/check_dingtalk_contract.py
@@ -35,10 +39,10 @@
 """
 
 import asyncio
-import json
 import sys
 import time
 import types
+from datetime import UTC, datetime
 
 from sqlalchemy import select, text
 from _test_support import require_isolated_db
@@ -285,13 +289,11 @@ async def main() -> int:
 
     stamp = int(time.time())
     object_key = f"{PREFIX}/{stamp}.png"
-    fake = FakeClient()
 
-    # 两个 import 点都要打桩：service 在模块级 `from ... import get_client`，
-    # router 在函数里再导一次——只改一个的话，另一个还在走真客户端（会真连网）
-    dt.get_client = lambda: fake
+    # 两个 import 点都保存下来：关闸用例把它们换成"一碰就炸"的桩，
+    # 证明整段路径没有访问任何审批客户端（旧钉钉发起通道已删除）。
     original_client_getter = client_module.get_client
-    client_module.get_client = lambda: fake
+    original_service_getter = dt.get_client
 
     # 总闸只在本进程内打开——**客户端是假的，不会有任何真实请求**
     saved_push_off = settings.dingtalk_push_off
@@ -412,109 +414,33 @@ async def main() -> int:
         check('被拒后没有落库 OA 记录', len(rows), 0)
         check('关闸没有取得客户端', len(external_attempts), 0)
 
-        # 只在本测试进程开启模拟路径，客户端仍全部为桩；验证 skipped 后可正确重建报文。
-        settings.dingtalk_push_off = False
-        dt.get_client = lambda: fake
-        client_module.get_client = lambda: fake
-        print("=== 2. 假客户端发起：走 router（关闸不记 skipped，直接新发）===")
+        print("=== 2. 旧钉钉发起通道已删除：直接构造历史行作为核定夹具 ===")
+        # 2026-11-25 删除旧钉钉询价/合同通道后，router 不再向钉钉建单；
+        # 历史行只读保留，但同步/核定的关闸行为仍要回归，所以直接落一行夹具。
         async with SessionLocal() as s:
-            admin = (
-                await s.execute(select(User).where(User.username == "admin"))
-            ).scalars().one()
-            user = CurrentUser(admin, permissions={"quote:manage"}, roles=[], data_scope="all")
-            resp = await dt_router.start_inquiry_approval(
+            fixture = OaInstance(
                 inquiry_id=inquiry_id,
-                payload=dt_router.StartApproval(),
-                request=fake_request(),
-                user=user,
-                session=s,
+                inquiry_version=1,
+                oa_type="inquiry",
+                idempotency_key=f"{PREFIX}-legacy-{stamp}",
+                submit_round=1,
+                provider="dingtalk",
+                status="pending",
+                instance_id="FAKE-INST-1",
+                originator_user_id=DING_USER_ID,
+                created_at=datetime.now(UTC),
             )
-        check("接口返回码", resp.get("code"), 0)
-        check_true('模拟发起落了新一行（关闸已不记 skipped，无可复用记录）',
-                   isinstance(resp['data'].get('id'), int) and resp['data']['id'] > 0,
-                   f"id={resp['data'].get('id')}")
-        check("外部建单被调用次数", fake.created, 1)
-        check("按姓名找人时用的是 CRM 里的姓名", fake.searched_name, "系统管理员")
-        check(
-            "报文里的发起人是钉钉 userid",
-            fake.last_kwargs.get("originator_user_id"),
-            DING_USER_ID,
-        )
-        check_true(
-            "发起人不是 CRM 主键",
-            fake.last_kwargs.get("originator_user_id") != str(admin.id),
-            f"CRM id={admin.id}",
-        )
+            s.add(fixture)
+            await s.commit()
+            oa_id = fixture.id
+        check_true("历史钉钉行已落库", isinstance(oa_id, int) and oa_id > 0, f"id={oa_id}")
+        check('旧通道删除后没有外部调用', len(external_attempts), 0)
 
-        sent = {
-            item["id"]: item["value"]
-            for item in fake.last_kwargs.get("form_component_values", [])
-        }
-        check_true(
-            "每个表单值都带了 id（钉钉按控件主键认）",
-            all(
-                item.get("id") == item.get("name")
-                for item in fake.last_kwargs.get("form_component_values", [])
-            ),
-            "",
-        )
-        check_true(
-            "componentType 由控件 id 前缀推导（实测 69 个真实控件全一致）",
-            all(
-                item.get("componentType") == item.get("id", "").split("_", 1)[0]
-                for item in fake.last_kwargs.get("form_component_values", [])
-            ),
-            "",
-        )
-        check(
-            "「提报人」控件填的也是同一个编号",
-            json.loads(sent.get(TEST_CONFIG["originator_component"])),
-            [DING_USER_ID],
-        )
-        check(
-            "「提报部门」控件填的是部门编号",
-            str(sent.get(TEST_CONFIG["dept_component"])),
-            str(DING_DEPT_ID),
-        )
-        check(
-            "「对接报价员」控件填的是需求上选的那位",
-            json.loads(sent.get(TEST_CONFIG["quote_owner_component"])),
-            [DING_QUOTE_ID],
-        )
-        from urllib.parse import urlsplit, parse_qs
-        import hashlib, hmac
-        urls = json.loads(sent[TEST_CONFIG['image_component']])
-        image = urlsplit(urls[0])
-        params = parse_qs(image.query)
-        expiry = int(params['expires'][0])
-        expected = hmac.new(settings.jwt_secret.encode(), f'{file_row.id}:{expiry}'.encode(), hashlib.sha256).hexdigest()
-        check_true('图片字段是可读取原图的签名 URL 数组', len(urls) == 1 and image.path.endswith(f'/inquiry-images/{file_row.id}'))
-        check('图片签名匹配当前原文件', params['sig'][0], expected)
-        check('不再上传不可访问的临时 media_id', fake.uploaded, 0)
-
-        print('=== 3. 落库那行：排查"这单谁发起的"只看这一列 ===')
-        async with SessionLocal() as s:
-            stored = (
-                await s.execute(
-                    text(
-                        "select originator_user_id, status, instance_id from oa_instances "
-                        "where inquiry_id = :iid order by id desc limit 1"
-                    ),
-                    {"iid": inquiry_id},
-                )
-            ).mappings().first()
-        check_true("有落库记录", stored is not None)
-        if stored is not None:
-            check("库里存的是钉钉 userid", stored["originator_user_id"], DING_USER_ID)
-            check("状态", stored["status"], "pending")
-            check("实例号", stored["instance_id"], "FAKE-INST-1")
-
-        print('=== 4. 关闸同步及人工重发：原记录保持不变 ===')
+        print('=== 3. 关闸同步及人工重发：原记录保持不变 ===')
         settings.dingtalk_push_off = True
         dt.get_client = forbidden_get_client
         client_module.get_client = forbidden_get_client
         async with SessionLocal() as s:
-            oa_id = resp['data']['id']
             before_sync = (await s.execute(select(OaInstance.__table__).where(OaInstance.id == oa_id))).one()
             # bdd6efc9 删掉了批量手动同步 /dingtalk/oa-sync（手动只剩单条、轮询归定时
             # 任务），单条同步在关闸时直接 422「历史审批仅供查看」——同样不外呼、
@@ -579,7 +505,7 @@ async def main() -> int:
                 else:
                     row.value = saved_setting
             await s.commit()
-        dt.get_client = original_client_getter
+        dt.get_client = original_service_getter
         client_module.get_client = original_client_getter
         settings.dingtalk_push_off = saved_push_off
         await cleanup(object_key)
