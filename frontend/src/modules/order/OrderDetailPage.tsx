@@ -920,9 +920,12 @@ export default function OrderDetailPage() {
   const shipment = shipmentsQuery.data
   const returns = returnsQuery.data ?? []
   const returnable = returnableQuery.data
-  const returnableRows: ReturnableRow[] = (returnable?.batches ?? []).flatMap((batch: ReturnableBatch) =>
-    batch.items.map((item) => ({ ...item, batch_no: batch.batch_no, actual_ship_date: batch.actual_ship_date })),
-  )
+  const returnableRows: ReturnableRow[] = (returnable?.batches ?? [])
+    .flatMap((batch: ReturnableBatch) =>
+      batch.items.map((item) => ({ ...item, batch_no: batch.batch_no, actual_ship_date: batch.actual_ship_date })),
+    )
+    // 已全部退完的行不再出现：否则「登记退货」按钮仍可点，弹窗里全是 0。
+    .filter((item) => Number(item.remaining_quantity_exact) > 0)
   const returnPendingCount = returns.filter((row) => row.status === 'pending').length
   const returnRequestedItems = returnableRows
     .map((row) => ({ shipment_batch_item_id: row.shipment_batch_item_id, quantity: Number(returnQty[row.shipment_batch_item_id] || 0) }))
@@ -1233,6 +1236,13 @@ export default function OrderDetailPage() {
           actions.push(
             <span key="none" style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
               已冲应收，无退款
+            </span>,
+          )
+        }
+        if (row.status === 'completed' && Number(row.refund_amount_exact) > 0 && !canPayment) {
+          actions.push(
+            <span key="refund-wait" style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+              待财务退款
             </span>,
           )
         }
@@ -2151,7 +2161,7 @@ export default function OrderDetailPage() {
                   <Button
                     type="primary"
                     theme="outline"
-                    disabled={!returnable?.batches.length}
+                    disabled={returnableRows.length === 0}
                     onClick={() => {
                       createReturnMutation.reset()
                       setReturnReasonCode('customer_rejected')
@@ -2166,8 +2176,12 @@ export default function OrderDetailPage() {
                   </Button>
                 )}
               </div>
-              {canManage && returnableQuery.isSuccess && !returnable?.batches.length && (
-                <p className="workflow-guide">这张订单还没有已实发批次，暂时不能登记退货。</p>
+              {canManage && returnableQuery.isSuccess && returnableRows.length === 0 && (
+                <p className="workflow-guide">
+                  {returnable?.batches.length
+                    ? '这张订单的已实发数量已经全部退完，暂无可退数量。'
+                    : '这张订单还没有已实发批次，暂时不能登记退货。'}
+                </p>
               )}
               <Table<SalesReturn>
                 columns={returnColumns}
@@ -2176,7 +2190,7 @@ export default function OrderDetailPage() {
                 rowKey="id"
                 pagination={false}
                 empty={emptyText(returnsQuery, '还没有退货登记',
-                  canManage && returnable?.batches.length ? '客户拒收/退错货时，点「登记退货」发起。' : undefined)}
+                  canManage && returnableRows.length ? '客户拒收/退错货时，点「登记退货」发起。' : undefined)}
               />
             </>
           )}
