@@ -21,6 +21,7 @@ from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.draft_visibility import draft_scope
 from app.core.errors import AppError
+from app.modules.contract.model import ContractTemplate
 from app.modules.customer.model import Customer
 from app.modules.file.model import BusinessFile
 from app.modules.lead.model import Lead
@@ -73,6 +74,9 @@ BUSINESS_PERMISSIONS: dict[str, tuple[str, str | None]] = {
     "inquiry": ("quote:view", "quote:manage"),
     "order_draft": ("order:view", "order:manage"),
     "contract": ("order:view", "order:manage"),
+    # 合同模板库（2026-11-25）：标准合同/月结协议原文件，全公司共享，
+    # 归属不看负责人，所以模型登记在 NO_OWNER_MODELS，这里只放权限码。
+    "contract_template": ("order:view", "order:manage"),
     "followup": ("followup:view", "followup:create"),
 }
 
@@ -95,7 +99,12 @@ BUSINESS_PERMISSIONS: dict[str, tuple[str, str | None]] = {
 #: `sku` 与 `product` 同一档：产品资料全公司可见，附件跟随资料本身。
 #: 放进这里就走"只查存在性 + 未软删"那条分支（`Sku` 有 `deleted_at`，
 #: 已删型号与不存在同等待遇），不用另写可见性逻辑。
-NO_OWNER_MODELS: dict[str, type] = {"product": Product, "sku": Sku}
+NO_OWNER_MODELS: dict[str, type] = {
+    "product": Product,
+    "sku": Sku,
+    # 模板是全公司共用的标准文件，没有负责人；这里只做"存在且未软删"检查。
+    "contract_template": ContractTemplate,
+}
 
 #: 不可破坏的原件类别 → 人话标签（第一批返修 §3.1 要求"三条路径统一判断"）。
 #: - `signed`：已签合同的签署扫描件，是"签的是哪一版"的唯一证据；
@@ -107,6 +116,9 @@ PROTECTED_CATEGORIES: dict[str, str] = {
     "signed": "已签署的原件",
     "contract_original": "客户合同原稿",
     "generated": "系统生成的原件",
+    # 模板库的原文件：删掉之后模板只剩元数据，"当时用的哪份标准条款"就无据可查。
+    # 同"原件不可无痕消失"一个口径：删除与解绑两条路都拦住。
+    "template": "合同模板原文件",
 }
 
 

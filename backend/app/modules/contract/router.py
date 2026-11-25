@@ -17,7 +17,13 @@ from app.core.draft_visibility import ensure_draft_access
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data
 from app.modules.contract import service as svc
-from app.modules.contract.schema import ContractOaStart, DocumentCreate, DocumentSign, DocumentVoid
+from app.modules.contract.schema import (
+    ContractOaStart,
+    DocumentCreate,
+    DocumentSign,
+    DocumentVoid,
+    TemplateFileCreate,
+)
 from app.modules.dingtalk import service as dingtalk_service
 from app.modules.dingtalk.model import OaInstance, allowed_actions
 
@@ -125,6 +131,43 @@ async def list_templates(
     session: AsyncSession = Depends(get_db),
 ):
     return ok(await svc.list_templates(session))
+
+
+@router.post("/contract-templates")
+async def save_template_file(
+    payload: TemplateFileCreate,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("order:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """资料库：保存一版标准合同/月结协议原文件（只存档，不参与系统生成）。
+
+    系统模板生成保持停用：这里不收正文，落库的模板 `enabled=False`，
+    生成入口仍然只接受上传的合同原文件。
+    """
+    template, file_row, created = await svc.create_file_template(
+        session, payload=payload, user_id=user.id
+    )
+    if created:
+        await write_audit(
+            session,
+            operator_id=user.id,
+            action="create",
+            business_type="contract_template",
+            business_id=template.id,
+            after={
+                "doc_type": template.doc_type,
+                "name": template.name,
+                "version": template.version,
+                "file_id": file_row.id,
+            },
+            ip=client_ip(request),
+        )
+        await session.commit()
+    return ok(
+        svc.serialize_template(template, file=file_row),
+        "资料已保存" if created else "这份文件已经在资料库里，未重复建版本",
+    )
 
 
 @router.get("/contract-documents")

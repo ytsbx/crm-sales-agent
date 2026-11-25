@@ -2,6 +2,14 @@ import { api } from './client'
 import type { PageResult } from '../types'
 import type { OaApprovalInstance } from './dingtalk'
 
+export interface ContractTemplateFile {
+  file_id: number
+  file_name: string
+  mime_type?: string | null
+  size: number
+  uploaded_at?: string | null
+}
+
 export interface ContractTemplate {
   id: number
   doc_type: string
@@ -12,6 +20,8 @@ export interface ContractTemplate {
   enabled: boolean
   is_current: boolean
   created_at: string
+  /** 模板库的原文件；历史"文本模板"没有文件，为 null。 */
+  file?: ContractTemplateFile | null
 }
 
 /** 生成时的抬头快照：下载出来的原件用的是这一组值，不随客户/公司资料变化。 */
@@ -110,6 +120,18 @@ export interface ContractDocument {
 
 export function listContractTemplates() {
   return api.get<ContractTemplate[]>('/contract-templates')
+}
+
+/**
+ * 合同模板库：保存一版标准合同/月结协议原文件（只存档，不参与系统生成）。
+ * 文件先走 `/files/upload`，这里只登记"类型 + 名称 + 文件"。
+ */
+export function createContractTemplate(payload: {
+  doc_type: 'contract' | 'monthly'
+  name: string
+  file_id: number
+}) {
+  return api.post<ContractTemplate>('/contract-templates', payload)
 }
 
 export function listContractDocuments(

@@ -16,6 +16,18 @@ class TemplateCreate(CreateModel):
     enabled: bool = True
 
 
+class TemplateFileCreate(CreateModel):
+    """合同模板库：保存一版标准合同/月结协议原文件。
+
+    只有"类型 + 名称 + 已上传的文件"，**没有正文与启用开关**——
+    系统模板生成仍保持停用，这里存的是给人下载后按客户填写的原件。
+    """
+
+    doc_type: str = "contract"  # contract / monthly
+    name: str = Field(min_length=1, max_length=128)
+    file_id: int = Field(gt=0)
+
+
 class DocumentCreate(BaseModel):
     """上传合同原文件；历史模板字段保留用于兼容，新增入口只接受上传。"""
 

@@ -39,6 +39,8 @@ import {
   getContractDocument,
   getContractOaFieldOptions,
   listContractDocuments,
+  listContractTemplates,
+  createContractTemplate,
   signContractDocument,
   startContractOaApproval,
   withdrawContractOaApproval,
@@ -47,6 +49,7 @@ import {
   type ContractDocument,
   type ContractAmendment,
   type ContractSignedFile,
+  type ContractTemplate,
 } from '../../shared/api/contract'
 import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
 import { newRequestKey } from '../../shared/api/requestKey'
@@ -123,6 +126,8 @@ export default function DocumentsPage() {
   const queryClient = useQueryClient()
   const { can, isReviewer } = usePermissions()
   const canManage = can('order:manage')
+  // 资料库上传要两道权限：文件中心（file:manage）+ 合同模块（order:manage）
+  const canUploadTemplateFile = canManage && can('file:manage')
 
   // 台账真分页：后端原来写死 limit 500，第 501 份合同在页面上永远不出现、也没有提示
   const [docPage, setDocPage] = useState(1)
@@ -141,6 +146,47 @@ export default function DocumentsPage() {
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ['contract-documents'] })
   }
+
+  // 合同资料库（2026-11-25）：存公司标准合同/月结协议的原文件，不挂客户。
+  // 业务员从这里下载、按客户填写后，再走「上传合同」进审批。
+  const [templatesVisible, setTemplatesVisible] = useState(false)
+  const [templateName, setTemplateName] = useState('')
+  const [templateType, setTemplateType] = useState<'contract' | 'monthly'>('monthly')
+  const [templateFile, setTemplateFile] = useState<File | null>(null)
+  const [templateFileId, setTemplateFileId] = useState<number | null>(null)
+  const templateFileInput = useRef<HTMLInputElement>(null)
+  const templatesQuery = useQuery({
+    queryKey: ['contract-templates'],
+    queryFn: listContractTemplates,
+    enabled: templatesVisible,
+  })
+  const saveTemplateMutation = useMutation({
+    mutationFn: async () => {
+      if (!templateName.trim()) throw new Error('请填写资料名称')
+      if (!templateFile) throw new Error('请选择资料文件（PDF / Word）')
+      // 文件先传，再登记资料：创建失败时文件 id 留着，重试不用再传一遍
+      let fileId = templateFileId
+      if (!fileId) {
+        const row = await uploadFile(templateFile)
+        fileId = row.id
+        setTemplateFileId(row.id)
+      }
+      return createContractTemplate({
+        doc_type: templateType,
+        name: templateName.trim(),
+        file_id: fileId,
+      })
+    },
+    onSuccess: (row) => {
+      Toast.success(`资料「${row.name}」已存入资料库（v${row.version}）`)
+      setTemplateName('')
+      setTemplateFile(null)
+      setTemplateFileId(null)
+      if (templateFileInput.current) templateFileInput.current.value = ''
+      void queryClient.invalidateQueries({ queryKey: ['contract-templates'] })
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
 
   // 上传合同原文件，并明确条款版本的提供方
   const [uploadVisible, setUploadVisible] = useState(false)
@@ -520,10 +566,17 @@ export default function DocumentsPage() {
           /* 2026-11-20：原来「上传合同」单独占卡片内左上角一行，右边一整排空白，
              和其它列表页"新建类按钮在页头右上"（案例库「新建案例」）也不一致。
              挪到页头 extra，卡片从表格直接开始。 */
-          extra={canManage && (
-            <Button type="primary" theme="outline" onClick={() => openUploadModal()}>
-              上传合同
-            </Button>
+          extra={(
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <Button theme="borderless" onClick={() => setTemplatesVisible(true)}>
+                资料库
+              </Button>
+              {canManage && (
+                <Button type="primary" theme="outline" onClick={() => openUploadModal()}>
+                  上传合同
+                </Button>
+              )}
+            </div>
           )}
         />
         <SectionCard
@@ -1127,6 +1180,140 @@ export default function DocumentsPage() {
               />
             </div>
           </div>
+        </div>
+      </Modal>
+
+      <Modal
+        width={860}
+        title={
+          <span className="crm-help-label">
+            资料库
+            <HelpTip
+              forLabel="资料库"
+              text="公司标准合同 / 月结协议等文件的存放处，不挂客户。业务员下载后按客户填写，再走「上传合同」进同序 OA 审批；这里只存档，不参与系统自动生成。"
+            />
+          </span>
+        }
+        style={{ maxWidth: 'calc(100vw - 32px)' }}
+        visible={templatesVisible}
+        onCancel={() => { if (!saveTemplateMutation.isPending) setTemplatesVisible(false) }}
+        footer={null}
+      >
+        <div style={{ display: 'grid', gap: 14 }}>
+          <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+            同一份资料再存一次会自动成为新版本，旧版本保留可追溯；同一份文件重复保存不会建重复版本。
+          </div>
+          {canUploadTemplateFile ? (
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 132px minmax(0, 1fr) auto', gap: 8, alignItems: 'center' }}>
+              <Input
+                value={templateName}
+                onChange={setTemplateName}
+                maxLength={128}
+                placeholder="资料名称，例如：货款月结协议（一件代发专用）"
+              />
+              <Select
+                value={templateType}
+                onChange={(v) => setTemplateType(v as 'contract' | 'monthly')}
+                optionList={[
+                  { value: 'contract', label: '销售合同' },
+                  { value: 'monthly', label: '月结协议' },
+                ]}
+              />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                <Button disabled={saveTemplateMutation.isPending} onClick={() => templateFileInput.current?.click()}>
+                  选择文件
+                </Button>
+                <span
+                  title={templateFile?.name}
+                  style={{
+                    fontSize: 12,
+                    color: 'var(--crm-text-3)',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {templateFile ? templateFile.name : '支持 .pdf / .doc / .docx'}
+                </span>
+                <input
+                  ref={templateFileInput}
+                  type="file"
+                  accept=".pdf,.doc,.docx"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0] || null
+                    setTemplateFile(file)
+                    setTemplateFileId(null)
+                  }}
+                />
+              </div>
+              <Button
+                type="primary"
+                loading={saveTemplateMutation.isPending}
+                disabled={!templateName.trim() || !templateFile || saveTemplateMutation.isPending}
+                onClick={() => saveTemplateMutation.mutate()}
+              >
+                保存资料
+              </Button>
+            </div>
+          ) : (
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+              上传资料需要「订单管理」和「文件管理」权限；没有权限时只能查看和下载已有资料。
+            </div>
+          )}
+          <Table<ContractTemplate>
+            rowKey="id"
+            size="small"
+            loading={templatesQuery.isFetching}
+            dataSource={(templatesQuery.data ?? []).filter((row) => Boolean(row.file))}
+            pagination={false}
+            empty={templatesQuery.isPending ? '正在读取资料库…' : '资料库还是空的——点「选择文件」上传一份标准合同文件'}
+            columns={[
+              {
+                title: '资料名称',
+                dataIndex: 'name',
+                render: (v: string) => <span className="cell-strong" title={v}>{v}</span>,
+              },
+              { title: '类型', dataIndex: 'doc_type_label', width: 96 },
+              {
+                title: '版本',
+                dataIndex: 'version',
+                width: 88,
+                render: (v: number, record) => (
+                  <span>
+                    v{v}
+                    {record.is_current ? <span style={{ marginLeft: 4, fontSize: 11, color: 'var(--crm-text-3)' }}>当前</span> : null}
+                  </span>
+                ),
+              },
+              {
+                title: '原文件',
+                dataIndex: 'file',
+                render: (file: ContractTemplate['file']) => {
+                  if (!file) {
+                    return <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>—</span>
+                  }
+                  if (!can('file:view')) return <span>{file.file_name}</span>
+                  return (
+                    <button
+                      type="button"
+                      className="crm-text-action"
+                      title={file.file_name}
+                      onClick={() => void showDownloadResult(downloadFile(file.file_id, file.file_name))}
+                    >
+                      {file.file_name}
+                    </button>
+                  )
+                },
+              },
+              {
+                title: '保存时间',
+                dataIndex: 'created_at',
+                width: 120,
+                render: (v: string) => formatBeijingDate(v),
+              },
+            ]}
+          />
         </div>
       </Modal>
 

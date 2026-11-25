@@ -24,8 +24,14 @@ from app.modules.contract.model import (
     ContractTemplate,
 )
 from app.modules.customer.model import Customer
+from app.modules.file.model import BusinessFile, FileRecord
 from app.modules.order.model import SalesOrder
 from app.modules.quote.model import Quote, QuoteVersion
+
+#: 模板库里的原文件挂在这个"业务对象"下（business_files.business_type）。
+#: 它指向一行 `contract_templates`，可见性与权限判据登记在 file/access.py。
+TEMPLATE_FILE_BUSINESS_TYPE = "contract_template"
+TEMPLATE_FILE_CATEGORY = "template"
 
 #: 占位符：{{customer.name}} / {{order.order_no}} / {{extra.付款方式}} / {{today}}
 _TOKEN = re.compile(r"\{\{([^{}]+)\}\}")
@@ -236,7 +242,9 @@ async def _header_snapshot(
     }
 
 
-def serialize_template(template: ContractTemplate, *, is_current: bool = False) -> dict:
+def serialize_template(
+    template: ContractTemplate, *, is_current: bool = False, file: FileRecord | None = None
+) -> dict:
     return {
         "id": template.id,
         "doc_type": template.doc_type,
@@ -247,6 +255,14 @@ def serialize_template(template: ContractTemplate, *, is_current: bool = False) 
         "enabled": template.enabled,
         "is_current": is_current,
         "created_at": template.created_at,
+        # 模板库的原文件；历史"文本模板"没有文件，为 None。
+        "file": None if file is None else {
+            "file_id": file.id,
+            "file_name": file.file_name,
+            "mime_type": file.mime_type,
+            "size": file.size,
+            "uploaded_at": file.created_at,
+        },
     }
 
 
@@ -367,6 +383,98 @@ async def create_template(session: AsyncSession, *, payload, user_id: int) -> Co
     )
 
 
+async def create_file_template(
+    session: AsyncSession, *, payload, user_id: int
+) -> tuple[ContractTemplate, FileRecord, bool]:
+    """保存一版**资料文件**（2026-11-25：文档管理里的「资料库」入口）。
+
+    与 `create_template`（系统模板生成）刻意分开：
+    - 正文留空、`enabled=False`：`create_document` 只认启用中的模板，
+      资料文件即使被直接选中也生成不出一份空白合同；
+    - 同一份文件重复提交（连点 / 网络重试）直接返回已挂的那一版，
+      台账上不出现两个内容完全相同的版本。
+
+    返回 `(资料, 原文件, 是否新建)`；"是否新建"给调用方决定要不要写审计。
+    """
+    doc_type = payload.doc_type if payload.doc_type in DOC_TYPE_LABEL else "contract"
+    name = payload.name.strip()
+    if not name:
+        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "请填写资料名称", 422)
+    # 锁住文件行再判"是否已挂载"：两个人同时把同一份文件存资料时，
+    # 后到的那个等前者提交后能看到资料关联，走后面的幂等分支，而不是各建一版。
+    file_row = (
+        await session.execute(
+            select(FileRecord).where(FileRecord.id == payload.file_id).with_for_update()
+        )
+    ).scalars().first()
+    if file_row is None:
+        raise AppError(ErrorCode.NOT_FOUND, "资料文件不存在，请重新上传", 404)
+    # 资料挂上后对**所有有订单查看权的人**可见（见 file/access.py 的
+    # NO_OWNER_MODELS）。所以只认"本人刚上传、还没挂到业务数据上"的文件：
+    # 否则有资料维护权的人可以把别人的签署件/凭证翻出来挂成资料，等于把
+    # 一份受数据范围保护的文件转成全员可下载 —— 典型的横向越权。
+    if file_row.uploaded_by != user_id:
+        raise AppError(
+            ErrorCode.FORBIDDEN, "只能把自己刚上传的文件存为资料", 403
+        )
+    suffix = file_row.file_name.rsplit(".", 1)[-1].lower() if "." in file_row.file_name else ""
+    if suffix not in {"pdf", "doc", "docx"}:
+        raise AppError(ErrorCode.PARAM_ERROR, "资料只支持 PDF / Word 文件", 422)
+    existing_links = (
+        await session.execute(
+            select(BusinessFile).where(BusinessFile.file_id == file_row.id)
+        )
+    ).scalars().all()
+    template_links = [
+        link for link in existing_links
+        if link.business_type == TEMPLATE_FILE_BUSINESS_TYPE
+    ]
+    if len(template_links) != len(existing_links):
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "这份文件已经挂在业务数据上，不能再存为资料；请重新上传一份资料文件",
+            422,
+        )
+    existing_link = template_links[0] if template_links else None
+    if existing_link is not None:
+        template = await session.get(ContractTemplate, existing_link.business_id)
+        if template is not None and template.deleted_at is None:
+            return template, file_row, False
+    for _ in range(3):
+        version = await _next_template_version(session, doc_type, name)
+        try:
+            # 保存点：撞唯一约束时只回滚这一次插入，外层事务还能继续用
+            async with session.begin_nested():
+                template = ContractTemplate(
+                    doc_type=doc_type,
+                    name=name,
+                    version=version,
+                    body="",
+                    enabled=False,
+                    created_by=user_id,
+                    created_at=datetime.now(UTC),
+                )
+                session.add(template)
+                await session.flush()
+                session.add(
+                    BusinessFile(
+                        business_type=TEMPLATE_FILE_BUSINESS_TYPE,
+                        business_id=template.id,
+                        file_id=file_row.id,
+                        category=TEMPLATE_FILE_CATEGORY,
+                    )
+                )
+                await session.flush()
+        except IntegrityError:
+            continue
+        return template, file_row, True
+    raise AppError(
+        ErrorCode.STATUS_NOT_ALLOWED,
+        "模板版本号连续冲突，请重试；若反复出现请检查是否有同名模板在被批量创建",
+        409,
+    )
+
+
 async def list_templates(session: AsyncSession) -> list[dict]:
     rows = (
         await session.execute(
@@ -383,8 +491,29 @@ async def list_templates(session: AsyncSession) -> list[dict]:
         )
         for t in rows
     }
+    # 模板库原文件：一次查完当前所有模板的挂载，避免逐行 N+1。
+    # 同一模板理论上只挂一份文件；万一历史上有多次挂载，取最新的一条。
+    files: dict[int, FileRecord] = {}
+    if rows:
+        links = (
+            await session.execute(
+                select(BusinessFile.business_id, FileRecord)
+                .join(FileRecord, FileRecord.id == BusinessFile.file_id)
+                .where(
+                    BusinessFile.business_type == TEMPLATE_FILE_BUSINESS_TYPE,
+                    BusinessFile.business_id.in_([t.id for t in rows]),
+                )
+                .order_by(BusinessFile.id.desc())
+            )
+        ).all()
+        for business_id, file_row in links:
+            files.setdefault(business_id, file_row)
     return [
-        serialize_template(t, is_current=current_keys.get((t.doc_type, t.name)) == t.version)
+        serialize_template(
+            t,
+            is_current=current_keys.get((t.doc_type, t.name)) == t.version,
+            file=files.get(t.id),
+        )
         for t in rows
     ]
 
