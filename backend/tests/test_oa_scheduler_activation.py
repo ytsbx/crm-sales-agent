@@ -8,9 +8,9 @@ from app.core import scheduler as module
 
 @pytest.mark.parametrize('general,oa,expected',[
     (False,False,set()),
-    (False,True,{'oa_sync'}),
-    (True,False,{'public_pool_recycle','auto_task_rules','milestone_overdue','notification_retry','notification_digest','oa_sync'}),
-    (True,True,{'public_pool_recycle','auto_task_rules','milestone_overdue','notification_retry','notification_digest','oa_sync'}),
+    (False,True,{'oa_sync','oa_template_watch'}),
+    (True,False,{'public_pool_recycle','auto_task_rules','milestone_overdue','notification_retry','notification_digest','oa_sync','oa_template_watch'}),
+    (True,True,{'public_pool_recycle','auto_task_rules','milestone_overdue','notification_retry','notification_digest','oa_sync','oa_template_watch'}),
 ])
 def test_only_requested_jobs_are_started(monkeypatch,general,oa,expected):
     fake=Mock()

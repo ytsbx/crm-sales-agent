@@ -136,6 +136,8 @@ class Settings(BaseSettings):
     oa_inquiry_approver_mode: str = "sequential"
     # OA 审批状态轮询：每多少分钟拉一次（文档 §11.3 :152 的"回收状态与结果"）。
     scheduler_oa_sync_minutes: int = 3
+    # OA 模板变更检查：每多少分钟比对一次字段/审批人结构（变化时通知管理员）。
+    scheduler_oa_template_watch_minutes: int = 60
     # 钉钉仅用于登录。兼容旧环境变量，但旧值不能重新开启审批或同步。
     dingtalk_push_off: bool = True
 

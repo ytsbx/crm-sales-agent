@@ -194,6 +194,29 @@ def _register_oa_sync_job() -> None:
     )
 
 
+async def run_oa_template_watch_job() -> None:
+    """每 N 分钟：比对 OA 模板的字段/审批人结构，变了给管理员发提醒。
+
+    只做提醒，不改 CRM 的字段映射——新增字段的业务含义没法自动推断。
+    """
+    from app.modules.oa.template_watch import run_oa_template_watch_job as watch
+
+    await watch()
+
+
+def _register_oa_template_watch_job() -> None:
+    scheduler.add_job(
+        run_oa_template_watch_job,
+        "interval",
+        minutes=settings.scheduler_oa_template_watch_minutes,
+        id="oa_template_watch",
+        name="OA 模板变更检查（周期）",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+
+
 def start_scheduler() -> None:
     """应用启动时调用：注册周期任务并启动调度器。
 
@@ -215,6 +238,7 @@ def start_scheduler() -> None:
     if not settings.scheduler_enabled:
         if settings.scheduler_oa_sync_enabled:
             _register_oa_sync_job()
+            _register_oa_template_watch_job()
         if settings.scheduler_oa_sync_enabled or wecom_events_enabled:
             scheduler.start()
         logger.info("通用定时任务已关闭；OA 自动同步：%s；企微变更同步：%s",
@@ -276,6 +300,7 @@ def start_scheduler() -> None:
         misfire_grace_time=3600,
     )
     _register_oa_sync_job()
+    _register_oa_template_watch_job()
     scheduler.start()
     logger.info(
         "定时任务调度已启动：公海回收每天 %02d:00、自动任务规则每天 %02d:10、"
