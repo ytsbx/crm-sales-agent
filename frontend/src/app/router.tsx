@@ -48,6 +48,7 @@ const SampleListPage = lazyPage(() => import('../modules/sample/SampleListPage')
 const TaskListPage = lazyPage(() => import('../modules/task/TaskListPage'))
 const AnalyticsPage = lazyPage(() => import('../modules/analytics/AnalyticsPage'))
 const AgentPage = lazyPage(() => import('../modules/agent/AgentPage'))
+const GuidePage = lazyPage(() => import('../modules/guide/GuidePage'))
 const SettingsPage = lazyPage(() => import('../modules/settings/SettingsPage'))
 
 function RequireAuth({ children }: { children: ReactNode }) {
@@ -142,6 +143,10 @@ export const router = createBrowserRouter([
       {
         path: 'agent',
         element: <AgentPage />,
+      },
+      {
+        path: 'guide',
+        element: <GuidePage />,
       },
       {
         path: 'settings',
