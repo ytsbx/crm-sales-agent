@@ -12,6 +12,7 @@ from app.modules.returns.schema import (
     ReturnCancel,
     ReturnCreate,
     ReturnRefund,
+    ReturnReview,
     ReturnSettle,
     ReturnVoid,
 )
@@ -60,7 +61,7 @@ async def create_return(
     )
     data = await svc.serialize_return(session, row)
     await session.commit()
-    return ok(data, f"退货单 {row.return_no} 已登记，等待财务处理")
+    return ok(data, f"退货单 {row.return_no} 已登记，等待主管复核")
 
 
 @router.get("/returns")
@@ -81,6 +82,34 @@ async def get_return(
 ):
     row = await svc.get_visible_return(session, user, return_id)
     return ok(await svc.serialize_return(session, row))
+
+
+@router.post("/returns/{return_id}/review")
+async def review_return(
+    return_id: int,
+    payload: ReturnReview,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("order:assign")),
+    session: AsyncSession = Depends(get_db),
+):
+    """主管复核退货：`order:assign` 是主管级权限，财务/业务员没有。"""
+    row = await _lock_return_with_order(session, user, return_id)
+    await svc.review_return(
+        session,
+        user,
+        row,
+        decision=payload.decision,
+        note=payload.note,
+        ip=client_ip(request),
+    )
+    data = await svc.serialize_return(session, row)
+    await session.commit()
+    message = (
+        f"退货单 {row.return_no} 已通过复核，转财务处理"
+        if row.status == "pending"
+        else f"退货单 {row.return_no} 已驳回，可退数量已释放"
+    )
+    return ok(data, message)
 
 
 @router.post("/returns/{return_id}/cancel")
@@ -113,6 +142,7 @@ async def settle_return(
         session,
         user,
         row,
+        settled_goods_amount=payload.settled_goods_amount,
         freight_refund_amount=payload.freight_refund_amount,
         settlement_note=payload.settlement_note,
         ip=client_ip(request),
@@ -120,7 +150,8 @@ async def settle_return(
     data = await svc.serialize_return(session, row)
     await session.commit()
     message = (
-        f"退货单 {row.return_no} 已处理：冲应收 {row.offset_amount:.2f} 元"
+        f"退货单 {row.return_no} 已处理：确认退货货款 {row.settled_goods_amount:.2f} 元，"
+        f"冲应收 {row.offset_amount:.2f} 元"
         + (f"，待退款 {row.refund_amount:.2f} 元" if row.refund_amount > 0 else "")
     )
     return ok(data, message)

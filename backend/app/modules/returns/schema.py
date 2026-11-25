@@ -35,11 +35,26 @@ class ReturnCreate(BaseModel):
 
 
 class ReturnSettle(BaseModel):
+    #: 财务**人工填写**的最终退货货款；系统不再按单价自动折算。
+    settled_goods_amount: Decimal = Field(gt=0, max_digits=16, decimal_places=2)
     #: 运费默认不退；确需退时财务在这里手工加。
     freight_refund_amount: Decimal = Field(
         default=Decimal("0"), ge=0, max_digits=16, decimal_places=2
     )
     settlement_note: str | None = Field(default=None, max_length=255)
+
+
+class ReturnReview(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    decision: Literal["approve", "reject"]
+    note: str | None = Field(default=None, max_length=255)
+
+    @model_validator(mode="after")
+    def _reject_needs_reason(self):
+        if self.decision == "reject" and len((self.note or "").strip()) < 2:
+            raise ValueError("驳回必须填写原因（至少 2 个字）")
+        return self
 
 
 class ReturnRefund(BaseModel):

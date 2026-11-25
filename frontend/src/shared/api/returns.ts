@@ -1,6 +1,13 @@
 import { api } from './client'
 
-export type SalesReturnStatus = 'pending' | 'completed' | 'refunded' | 'cancelled' | 'voided'
+export type SalesReturnStatus =
+  | 'reviewing'
+  | 'pending'
+  | 'completed'
+  | 'refunded'
+  | 'rejected'
+  | 'cancelled'
+  | 'voided'
 
 export interface SalesReturnItem {
   id: number
@@ -33,6 +40,9 @@ export interface SalesReturn {
   currency: string
   goods_amount: number
   goods_amount_exact: string
+  /** 财务人工确认的最终退货货款；未处理为 null。 */
+  settled_goods_amount?: number | null
+  settled_goods_amount_exact?: string | null
   freight_refund_amount: number
   freight_refund_amount_exact: string
   total_amount: number
@@ -47,6 +57,9 @@ export interface SalesReturn {
   created_by?: number | null
   created_by_name?: string | null
   created_at?: string | null
+  reviewed_by_name?: string | null
+  reviewed_at?: string | null
+  review_note?: string | null
   settled_by_name?: string | null
   settled_at?: string | null
   refunded_by_name?: string | null
@@ -115,8 +128,25 @@ export function cancelReturn(returnId: number, reason: string) {
   return api.post<SalesReturn>(`/returns/${returnId}/cancel`, { reason })
 }
 
-export function settleReturn(returnId: number, freightRefundAmount: number, settlementNote?: string) {
+export function reviewReturn(
+  returnId: number,
+  decision: 'approve' | 'reject',
+  note?: string,
+) {
+  return api.post<SalesReturn>(`/returns/${returnId}/review`, {
+    decision,
+    note: note || undefined,
+  })
+}
+
+export function settleReturn(
+  returnId: number,
+  settledGoodsAmount: number,
+  freightRefundAmount: number,
+  settlementNote?: string,
+) {
   return api.post<SalesReturn>(`/returns/${returnId}/settle`, {
+    settled_goods_amount: settledGoodsAmount,
     freight_refund_amount: freightRefundAmount,
     settlement_note: settlementNote || undefined,
   })

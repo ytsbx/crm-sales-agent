@@ -1119,7 +1119,11 @@ async def order_finance_summary(session: AsyncSession, order_id: int) -> dict:
             )
         )
     ).scalars().all()
-    returned_amount = sum((row.goods_amount or ZERO) for row in return_rows)
+    # 老单没有 settled_goods_amount 时回退到登记货款，保证历史账不断。
+    returned_amount = sum(
+        ((row.settled_goods_amount if row.settled_goods_amount is not None else row.goods_amount) or ZERO)
+        for row in return_rows
+    )
     return_freight = sum((row.freight_refund_amount or ZERO) for row in return_rows)
     return_offset = sum((row.offset_amount or ZERO) for row in return_rows)
     return_refund = sum((row.refund_amount or ZERO) for row in return_rows)

@@ -32,9 +32,11 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.base import Base, IdMixin, TimestampMixin
 
 RETURN_STATUS_LABEL = {
+    "reviewing": "待主管复核",
     "pending": "待财务处理",
     "completed": "已冲账",
     "refunded": "已退款",
+    "rejected": "主管驳回",
     "cancelled": "已取消",
     "voided": "已作废",
 }
@@ -65,8 +67,12 @@ class SalesReturn(Base, IdMixin, TimestampMixin):
     return_date: Mapped[date] = mapped_column(Date)
     currency: Mapped[str] = mapped_column(String(8), default="CNY")
 
-    #: 货款（按订单明细单价折算），不含运费。
+    #: 登记时的参考货款（按订单明细单价折算），仅供主管/财务参考，不是最终账。
     goods_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
+    #: 财务处理时**人工填写**的最终退货货款；空 = 还没处理。
+    settled_goods_amount: Mapped[Decimal | None] = mapped_column(
+        Numeric(16, 2), nullable=True
+    )
     #: 财务处理时手工追加的退运费；默认 0（运费不退）。
     freight_refund_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
     #: 本单应退总额 = goods_amount + freight_refund_amount。
@@ -81,6 +87,9 @@ class SalesReturn(Base, IdMixin, TimestampMixin):
     settlement_note: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     created_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    reviewed_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    review_note: Mapped[str | None] = mapped_column(String(255), nullable=True)
     settled_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     refunded_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

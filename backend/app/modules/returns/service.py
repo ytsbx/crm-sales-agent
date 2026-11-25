@@ -29,7 +29,7 @@ from app.modules.order.model import (
 )
 from app.modules.order.service import get_order_or_404
 from app.modules.payment import service as payment_svc
-from app.modules.payment.model import PaymentRecord, ReceivablePlan
+from app.modules.payment.model import ReceivablePlan
 from app.modules.returns.model import (
     RETURN_REASON_LABEL,
     RETURN_STATUS_LABEL,
@@ -45,7 +45,7 @@ ZERO = Decimal("0")
 CENT = Decimal("0.01")
 UNIT = Decimal("0.0001")
 #: 参与“占用量”的退货状态。cancelled/voided 不占，允许重新登记。
-ACTIVE_RETURN_STATUSES = ("pending", "completed", "refunded")
+ACTIVE_RETURN_STATUSES = ("reviewing", "pending", "completed", "refunded")
 #: 已对钱做过处理的退货状态。作废时要把这些单的冲减算进“已冲”分母。
 SETTLED_RETURN_STATUSES = ("completed", "refunded")
 
@@ -320,7 +320,7 @@ async def create_return(
     return_row = SalesReturn(
         return_no=await generate_return_no(session),
         order_id=order.id,
-        status="pending",
+        status="reviewing",
         reason_code=payload.reason_code,
         reason=payload.reason.strip(),
         return_date=payload.return_date or today_business(),
@@ -370,7 +370,7 @@ async def create_return(
         content=(
             f"订单 {order.order_no} 登记退货 {return_row.return_no}，"
             f"货款 {format(return_row.goods_amount, '.2f')} 元，原因：{payload.reason.strip()}；"
-            "待财务处理。"
+            "待主管复核。"
         ),
         business_type="sales_return",
         business_id=return_row.id,
@@ -381,6 +381,76 @@ async def create_return(
     return return_row
 
 
+async def review_return(
+    session: AsyncSession,
+    user,
+    row: SalesReturn,
+    *,
+    decision: str,
+    note: str | None,
+    ip: str | None = None,
+) -> SalesReturn:
+    """主管复核：通过才进入财务处理，驳回则释放占用的可退数量。
+
+    权限在路由层用 `order:assign`（主管级）控制；这里再挡一次“自己审自己”：
+    除非管理员，登记人不能复核自己的单，否则复核就是自签自批。
+    """
+    if row.status != "reviewing":
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"「{RETURN_STATUS_LABEL.get(row.status, row.status)}」的退货单不在待复核状态",
+            422,
+        )
+    if row.created_by == user.id and "admin" not in user.roles:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "不能复核自己登记的退货，请让另一名主管或管理员复核",
+            422,
+        )
+    before = row.status
+    row.reviewed_by = user.id
+    row.reviewed_at = datetime.now(UTC)
+    row.review_note = (note or "").strip() or None
+    if decision == "approve":
+        row.status = "pending"
+        title = "销售退货已通过主管复核"
+        content = (
+            f"订单退货 {row.return_no} 已通过主管复核，待财务处理。"
+        )
+    else:
+        row.status = "rejected"
+        title = "销售退货被主管驳回"
+        content = (
+            f"订单退货 {row.return_no} 被主管驳回，原因："
+            f"{row.review_note or '未填写'}；可退数量已释放。"
+        )
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="review_return",
+        business_type="sales_return",
+        business_id=row.id,
+        before={"status": before},
+        after={"status": row.status, "decision": decision, "note": row.review_note},
+        ip=ip,
+    )
+    order = await get_order_or_404(session, row.order_id)
+    await record_and_notify(
+        session,
+        customer_id=order.customer_id,
+        owner_id=order.owner_id,
+        operator_id=user.id,
+        title=title,
+        content=content,
+        business_type="sales_return",
+        business_id=row.id,
+        order_id=order.id,
+        event_key=f"order:return:review:{row.id}",
+    )
+    await session.flush()
+    return row
+
+
 async def cancel_return(
     session: AsyncSession,
     user,
@@ -389,7 +459,7 @@ async def cancel_return(
     *,
     ip: str | None = None,
 ) -> SalesReturn:
-    if row.status != "pending":
+    if row.status not in ("reviewing", "pending"):
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
             f"「{RETURN_STATUS_LABEL.get(row.status, row.status)}」的退货单不能取消；"
@@ -420,6 +490,7 @@ async def settle_return(
     user,
     row: SalesReturn,
     *,
+    settled_goods_amount: Decimal,
     freight_refund_amount: Decimal,
     settlement_note: str | None,
     ip: str | None = None,
@@ -435,7 +506,8 @@ async def settle_return(
             ErrorCode.STATUS_NOT_ALLOWED, "本项目只支持人民币退货", 422
         )
     order = await get_order_or_404(session, row.order_id)
-    goods_total = _money(row.goods_amount)
+    # 2026-11-25 主人拍板：最终退货货款由财务**人工填写**，系统不再按单价折算。
+    goods_total = _money(settled_goods_amount)
     freight_total = _money(freight_refund_amount)
     total = _money(goods_total + freight_total)
     plans = (
@@ -450,16 +522,6 @@ async def settle_return(
             .execution_options(populate_existing=True)
         )
     ).scalars().all()
-    received = _money(
-        (
-            await session.execute(
-                select(func.coalesce(func.sum(PaymentRecord.received_amount), 0)).where(
-                    PaymentRecord.order_id == order.id,
-                    PaymentRecord.status == "confirmed",
-                )
-            )
-        ).scalar_one()
-    )
     previous_offset = _money(
         (
             await session.execute(
@@ -471,28 +533,13 @@ async def settle_return(
             )
         ).scalar_one()
     )
-    previous_refund = _money(
-        (
-            await session.execute(
-                select(func.coalesce(func.sum(SalesReturn.refund_amount), 0)).where(
-                    SalesReturn.order_id == order.id,
-                    SalesReturn.id != row.id,
-                    SalesReturn.status.in_(SETTLED_RETURN_STATUSES),
-                )
-            )
-        ).scalar_one()
-    )
 
     if order.status == "cancelled":
-        # 订单已经取消：货款退款只可能来自确实收到的钱，没有应收可冲。
-        # 运费是额外的公司成本，不占用“已收货款”的退款额度。
+        # 订单已经取消：没有应收可冲，人工确认的货款全部进入退款。
+        # 运费是额外的公司成本，单独加。
         offset = ZERO
-        goods_refund = min(goods_total, max(received - previous_refund, ZERO))
+        goods_refund = goods_total
         refund = _money(goods_refund + freight_total)
-        if goods_refund < goods_total:
-            settlement_note = (
-                (settlement_note + "；") if settlement_note else ""
-            ) + "订单已取消，货款差额仅登记不退款"
         plans = []
     else:
         if not plans:
@@ -517,13 +564,6 @@ async def settle_return(
         # 运费不参与冲应收：应收是货款，退运费是额外的公司成本。
         offset = min(goods_total, available)
         goods_refund = _money(goods_total - offset)
-        if goods_refund > max(received - previous_refund, ZERO) + CENT:
-            raise AppError(
-                ErrorCode.STATUS_NOT_ALLOWED,
-                f"应退货款 {goods_refund} 超过实际已收可退金额 "
-                f"{(received - previous_refund):.2f}，请先核对回款",
-                422,
-            )
         refund = _money(goods_refund + freight_total)
 
     # 先冲减未收应收：从到期日最晚的一期往前冲，尽量保留近期该收的钱。
@@ -564,6 +604,7 @@ async def settle_return(
                 422,
             )
 
+    row.settled_goods_amount = goods_total
     row.freight_refund_amount = _money(freight_refund_amount)
     row.total_amount = total
     row.offset_amount = _money(offset)
@@ -819,7 +860,8 @@ async def serialize_return(session: AsyncSession, row: SalesReturn) -> dict:
         )
     ).scalars().all()
     names = await _user_names(
-        session, [row.created_by, row.settled_by, row.refunded_by, row.voided_by, row.cancelled_by]
+        session,
+        [row.created_by, row.reviewed_by, row.settled_by, row.refunded_by, row.voided_by, row.cancelled_by],
     )
     return {
         "id": row.id,
@@ -837,6 +879,8 @@ async def serialize_return(session: AsyncSession, row: SalesReturn) -> dict:
         "currency": row.currency,
         "goods_amount": float(row.goods_amount or 0),
         "goods_amount_exact": format(row.goods_amount or 0, ".2f"),
+        "settled_goods_amount": float(row.settled_goods_amount or 0) if row.settled_goods_amount is not None else None,
+        "settled_goods_amount_exact": format(row.settled_goods_amount, ".2f") if row.settled_goods_amount is not None else None,
         "freight_refund_amount": float(row.freight_refund_amount or 0),
         "freight_refund_amount_exact": format(row.freight_refund_amount or 0, ".2f"),
         "total_amount": float(row.total_amount or 0),
@@ -850,6 +894,9 @@ async def serialize_return(session: AsyncSession, row: SalesReturn) -> dict:
         "remark": row.remark,
         "created_by": row.created_by,
         "created_by_name": names.get(row.created_by or 0),
+        "reviewed_by_name": names.get(row.reviewed_by or 0),
+        "reviewed_at": row.reviewed_at.isoformat() if row.reviewed_at else None,
+        "review_note": row.review_note,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "settled_by_name": names.get(row.settled_by or 0),
         "settled_at": row.settled_at.isoformat() if row.settled_at else None,

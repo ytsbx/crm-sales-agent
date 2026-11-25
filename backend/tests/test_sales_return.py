@@ -41,7 +41,12 @@ NOW = datetime.now(UTC)
 def run(coro):
     return asyncio.run(coro)
 USER = make_user(1, data_scope="all", permissions=("order:manage", "payment:manage"))
-
+REVIEWER = make_user(
+    2,
+    data_scope="all",
+    permissions=("order:assign", "order:view", "payment:view"),
+    roles=("sales_manager",),
+)
 
 class AsyncSession(SyncSessionAsAsync):
     async def delete(self, obj):
@@ -144,6 +149,14 @@ def db(monkeypatch):
         yield AsyncSession(raw), order, item, batch_item, plans
 
 
+def _approve(session, row):
+    return run(
+        svc.review_return(
+            session, REVIEWER, row, decision="approve", note="数量与原因已核对"
+        )
+    )
+
+
 def _payload(qty: str = "3", batch_item_id: int = 1):
     return ReturnCreate(
         reason_code="customer_rejected",
@@ -155,17 +168,17 @@ def _payload(qty: str = "3", batch_item_id: int = 1):
 def test_return_over_quantity_and_cancel_frees_it(db):
     s, order, item, batch_item, plans = db
     row = run(svc.create_return(s, USER, order, _payload("3")))
-    assert row.status == "pending"
+    assert row.status == "reviewing"
     assert row.goods_amount == D("30.00")
     # 已发 10、已退 3，再退 8 必须拦（最多 7）
     with pytest.raises(AppError, match="最多还能退 7"):
         run(svc.create_return(s, USER, order, _payload("8")))
-    assert row.status == "pending"
+    assert row.status == "reviewing"
     # 取消后释放占用，3 又能退
     run(svc.cancel_return(s, USER, row, "客户又不要退了"))
     assert row.status == "cancelled"
     again = run(svc.create_return(s, USER, order, _payload("3")))
-    assert again.status == "pending"
+    assert again.status == "reviewing"
     assert again.goods_amount == D("30.00")
 
 
@@ -193,8 +206,9 @@ def test_settle_offsets_unpaid_then_refunds_paid_part(db):
     for plan in plans:
         run(svc.payment_svc.recalc_plan(s, plan))
     row = run(svc.create_return(s, USER, order, _payload("10")))
+    _approve(s, row)
     result = run(svc.settle_return(
-        s, USER, row,
+        s, USER, row, settled_goods_amount=D("100.00"),
         freight_refund_amount=D("0"), settlement_note=None,
     ))
     assert result.status == "completed"
@@ -230,8 +244,10 @@ def test_refund_must_be_registered_then_cannot_void(db):
     s.add(PaymentAllocation(payment_id=1, plan_id=2, amount=D("70.00"), created_at=NOW, updated_at=NOW))
     s._session.flush()
     row = run(svc.create_return(s, USER, order, _payload("2")))
+    _approve(s, row)
     result = run(svc.settle_return(
-        s, USER, row, freight_refund_amount=D("0"), settlement_note="质量补偿"
+        s, USER, row, settled_goods_amount=D("20.00"),
+        freight_refund_amount=D("0"), settlement_note="质量补偿"
     ))
     assert result.offset_amount == D("0.00")
     assert result.refund_amount == D("20.00")
@@ -244,7 +260,11 @@ def test_refund_must_be_registered_then_cannot_void(db):
 def test_void_restores_plan_exactly_and_blocks_after_manual_edit(db):
     s, order, item, batch_item, plans = db
     row = run(svc.create_return(s, USER, order, _payload("4")))
-    run(svc.settle_return(s, USER, row, freight_refund_amount=D("0"), settlement_note=None))
+    _approve(s, row)
+    run(svc.settle_return(
+        s, USER, row, settled_goods_amount=D("40.00"),
+        freight_refund_amount=D("0"), settlement_note=None,
+    ))
     assert row.status == "completed"
     assert row.offset_amount == D("40.00")
     p2 = s._session.get(ReceivablePlan, 2)
@@ -265,8 +285,9 @@ def test_void_restores_plan_exactly_and_blocks_after_manual_edit(db):
 def test_freight_refund_is_separate_and_counts_toward_refund(db):
     s, order, item, batch_item, plans = db
     row = run(svc.create_return(s, USER, order, _payload("2")))  # 货款 20
+    _approve(s, row)
     result = run(svc.settle_return(
-        s, USER, row,
+        s, USER, row, settled_goods_amount=D("20.00"),
         freight_refund_amount=D("10.00"),
         settlement_note="客户承担一半运费",
     ))
@@ -284,9 +305,17 @@ def test_void_older_return_keeps_later_return(db):
     """两张退货先后冲同一期：作废前一张，后一张的冲减必须保留。"""
     s, order, item, batch_item, plans = db
     first = run(svc.create_return(s, USER, order, _payload("2")))  # 20
-    run(svc.settle_return(s, USER, first, freight_refund_amount=D("0"), settlement_note=None))
+    _approve(s, first)
+    run(svc.settle_return(
+        s, USER, first, settled_goods_amount=D("20.00"),
+        freight_refund_amount=D("0"), settlement_note=None,
+    ))
     second = run(svc.create_return(s, USER, order, _payload("3")))  # 30
-    run(svc.settle_return(s, USER, second, freight_refund_amount=D("0"), settlement_note=None))
+    _approve(s, second)
+    run(svc.settle_return(
+        s, USER, second, settled_goods_amount=D("30.00"),
+        freight_refund_amount=D("0"), settlement_note=None,
+    ))
     p2 = s._session.get(ReceivablePlan, 2)
     assert p2.amount == D("20.00")  # 70 - 20 - 30
 
@@ -299,3 +328,56 @@ def test_void_older_return_keeps_later_return(db):
     run(svc.void_return(s, USER, second, "第二张也退错了"))
     assert s._session.get(ReceivablePlan, 2).amount == D("70.00")
     assert second.status == "voided"
+
+
+def test_review_required_self_review_blocked_and_reject_releases(db):
+    s, order, item, batch_item, plans = db
+    row = run(svc.create_return(s, USER, order, _payload("3")))
+    assert row.status == "reviewing"
+    # 登记人自己不能审自己（除非 admin）
+    with pytest.raises(AppError, match="自己登记"):
+        run(svc.review_return(s, USER, row, decision="approve", note=None))
+    rejected = run(
+        svc.review_return(
+            s, REVIEWER, row, decision="reject", note="客户没把货寄回，先驳回"
+        )
+    )
+    assert rejected.status == "rejected"
+    assert rejected.reviewed_by == REVIEWER.id
+    assert rejected.review_note == "客户没把货寄回，先驳回"
+    # 驳回后不占可退数量：同一批还能重新登记 10 件
+    again = run(svc.create_return(s, USER, order, _payload("10")))
+    assert again.status == "reviewing"
+    assert again.goods_amount == D("100.00")
+
+
+def test_finance_manual_amount_can_be_less_or_full(db):
+    s, order, item, batch_item, plans = db
+    # 退 5 件，登记参考 50；财务按协商只确认 30
+    less = run(svc.create_return(s, USER, order, _payload("5")))
+    _approve(s, less)
+    result = run(svc.settle_return(
+        s, USER, less, settled_goods_amount=D("30.00"),
+        freight_refund_amount=D("0"), settlement_note="客户承担 20 元折损",
+    ))
+    assert result.goods_amount == D("50.00")  # 登记参考价保留
+    assert result.settled_goods_amount == D("30.00")
+    assert result.offset_amount == D("30.00")
+    assert result.refund_amount == D("0.00")
+    assert result.total_amount == D("30.00")
+
+
+def test_finance_manual_full_amount_can_exceed_reference(db):
+    s, order, item, batch_item, plans = db
+    # 只退 5 件、登记参考 50，但公司同意按整单 100 全退；系统照财务填的记。
+    row = run(svc.create_return(s, USER, order, _payload("5")))
+    _approve(s, row)
+    result = run(svc.settle_return(
+        s, USER, row, settled_goods_amount=D("100.00"),
+        freight_refund_amount=D("0"), settlement_note="客户投诉，整单全退",
+    ))
+    assert result.goods_amount == D("50.00")
+    assert result.settled_goods_amount == D("100.00")
+    assert result.offset_amount == D("100.00")
+    assert result.refund_amount == D("0.00")
+    assert result.total_amount == D("100.00")
