@@ -164,10 +164,24 @@ export interface PaymentAllocationRow {
 export interface FinanceSummary {
   order_amount: number
   order_amount_exact?: string | null
+  net_order_amount?: number
+  net_order_amount_exact?: string | null
+  returned_amount?: number
+  returned_amount_exact?: string | null
+  return_offset_amount?: number
+  return_offset_amount_exact?: string | null
+  return_refund_amount?: number
+  return_refund_amount_exact?: string | null
+  return_refunded_amount?: number
+  return_refunded_amount_exact?: string | null
+  refund_pending_amount?: number
+  refund_pending_amount_exact?: string | null
   planned_amount: number
   planned_amount_exact?: string | null
   received_amount: number
   received_amount_exact?: string | null
+  net_received_amount?: number
+  net_received_amount_exact?: string | null
   allocated_amount: number
   allocated_amount_exact?: string | null
   unallocated_amount: number

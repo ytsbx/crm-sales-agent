@@ -24,6 +24,7 @@ from app.modules.notification import model as notification_model  # noqa: F401
 from app.modules.opportunity import model as opportunity_model  # noqa: F401
 from app.modules.order import model as order_model  # noqa: F401
 from app.modules.payment import model as payment_model  # noqa: F401
+from app.modules.returns import model as returns_model  # noqa: F401
 from app.modules.pricing import model as pricing_model  # noqa: F401
 from app.modules.product import model as product_model  # noqa: F401
 from app.modules.quote import model as quote_model  # noqa: F401

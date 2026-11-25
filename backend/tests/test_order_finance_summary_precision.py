@@ -23,7 +23,9 @@ def test_summary_exact_amounts_from_decimal(monkeypatch, text):
         received_result, pending_result = Mock(), Mock()
         received_result.scalar_one.return_value = amount * 2
         pending_result.scalar_one.return_value = amount
-        session.execute.side_effect = [plan_result, received_result, pending_result]
+        return_result = Mock()
+        return_result.scalars.return_value.all.return_value = []
+        session.execute.side_effect = [plan_result, received_result, pending_result, return_result]
         monkeypatch.setattr(service,'confirmed_amounts',AsyncMock(return_value={1:amount} if plans else {}))
         monkeypatch.setattr(service,'allocation_totals',AsyncMock(return_value={1:{'allocated_amount':amount,'unallocated_amount':amount}}))
         result = await service.order_finance_summary(session,1)

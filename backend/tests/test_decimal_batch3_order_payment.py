@@ -92,7 +92,9 @@ async def test_finance_summary_big_amount_wire_exact(monkeypatch):
     received_result, pending_result = Mock(), Mock()
     received_result.scalar_one.return_value = BIG
     pending_result.scalar_one.return_value = BIG
-    session.execute.side_effect = [plan_result, received_result, pending_result]
+    return_result = Mock()
+    return_result.scalars.return_value.all.return_value = []
+    session.execute.side_effect = [plan_result, received_result, pending_result, return_result]
     monkeypatch.setattr(pay_svc, "confirmed_amounts", AsyncMock(return_value={1: BIG}))
     monkeypatch.setattr(pay_svc, "allocation_totals",
                         AsyncMock(return_value={1: {"allocated_amount": BIG, "unallocated_amount": BIG}}))

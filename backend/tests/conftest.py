@@ -135,6 +135,7 @@ def make_engine():
     from app.modules.payment.model import PaymentAllocation, PaymentRecord, ReceivablePlan
     from app.modules.pricing.model import ExchangeRate
     from app.modules.quote.model import Quote, QuoteVersion
+    from app.modules.returns.model import SalesReturn, SalesReturnItem, SalesReturnPlanAdjustment
     from app.modules.user.model import Department, User
 
     _register_sqlite_bigint_as_integer()
@@ -170,6 +171,10 @@ def make_engine():
             # 通用文件可见性也反查系统归档原件的当前权限/归属。
             BizDocTemplate,
             BizDoc,
+            # 订单财务概览会统计已冲账退货（2026-11-25）
+            SalesReturn,
+            SalesReturnItem,
+            SalesReturnPlanAdjustment,
         )
     ]
     engine = create_engine("sqlite+pysqlite:///:memory:")

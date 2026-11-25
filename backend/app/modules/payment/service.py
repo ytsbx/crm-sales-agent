@@ -1109,15 +1109,43 @@ async def order_finance_summary(session: AsyncSession, order_id: int) -> dict:
     balances = await confirmed_amounts(session, [p.id for p in plans])
     totals = (await allocation_totals(session, [order_id])).get(order_id, {})
     total = order.total_amount if order else ZERO
+    from app.modules.returns.model import SalesReturn
+
+    return_rows = (
+        await session.execute(
+            select(SalesReturn).where(
+                SalesReturn.order_id == order_id,
+                SalesReturn.status.in_(("completed", "refunded")),
+            )
+        )
+    ).scalars().all()
+    returned_amount = sum((row.total_amount or ZERO) for row in return_rows)
+    return_offset = sum((row.offset_amount or ZERO) for row in return_rows)
+    return_refund = sum((row.refund_amount or ZERO) for row in return_rows)
+    return_refunded = sum(
+        (row.refund_amount or ZERO) for row in return_rows if row.status == "refunded"
+    )
+    net_order = (total or ZERO) - returned_amount
+    net_received = Decimal(received) - return_refunded
+    # 未收 = 原订单额 - 已冲应收 - 已确认回款。退现部分不改变“还欠多少”：
+    # 订单额和到手现金同时减，抵消后只剩 offset 影响应收。
+    unreceived = (total or ZERO) - return_offset - Decimal(received)
     amounts = {
         "order_amount": total,
+        "net_order_amount": net_order,
+        "returned_amount": returned_amount,
+        "return_offset_amount": return_offset,
+        "return_refund_amount": return_refund,
+        "return_refunded_amount": return_refunded,
+        "refund_pending_amount": return_refund - return_refunded,
         "planned_amount": sum((p.amount for p in plans if p.status != "cancelled"), ZERO),
         "allocated_amount": totals.get("allocated_amount", ZERO),
         "unallocated_amount": totals.get("unallocated_amount", ZERO),
         "unsettled_plan_amount": sum((max(p.amount - balances.get(p.id, ZERO), ZERO) for p in plans if p.status != "cancelled"), ZERO),
         "received_amount": Decimal(received),
+        "net_received_amount": net_received,
         "pending_confirm_amount": Decimal(pending_confirm),
-        "unreceived_amount": (total or ZERO) - Decimal(received),
+        "unreceived_amount": unreceived,
     }
     return {
         **{key: _f(value) for key, value in amounts.items()},

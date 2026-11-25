@@ -36,6 +36,7 @@ from app.modules.lead.io_router import router as lead_io_router
 from app.modules.opportunity.router import router as opportunity_router
 from app.modules.order.router import router as order_router
 from app.modules.order.drafts_router import router as order_drafts_router
+from app.modules.returns.router import router as returns_router
 from app.modules.notification.router import router as notification_router
 from app.modules.payment.router import router as payment_router
 from app.modules.pricing.io_router import router as pricing_io_router
@@ -157,6 +158,7 @@ app.include_router(sample_dingtalk_router, prefix=settings.api_prefix)
 app.include_router(approval_router, prefix=settings.api_prefix)
 app.include_router(approval_rules_router, prefix=settings.api_prefix)  # 规则接口自带静态/动态顺序，见 rules_router 模块注释
 app.include_router(order_router, prefix=settings.api_prefix)
+app.include_router(returns_router, prefix=settings.api_prefix)
 app.include_router(order_drafts_router, prefix=settings.api_prefix)
 app.include_router(payment_router, prefix=settings.api_prefix)
 app.include_router(analytics_router, prefix=settings.api_prefix)

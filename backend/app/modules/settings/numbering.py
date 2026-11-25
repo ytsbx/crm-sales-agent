@@ -88,6 +88,14 @@ DEFAULT_RULES: dict[str, dict] = {
         "seq_length": 4,
         "reset_period": "daily",
     },
+    # 销售退货：发货之后的退回单，单独号段，便于和订单/发货对账
+    "return": {
+        "name": "销售退货单号",
+        "prefix": "RT",
+        "date_format": "%Y%m%d",
+        "seq_length": 4,
+        "reset_period": "daily",
+    },
     # 定制需求编号（场景09）：尚无正式 SKU 时，询价、报价、打样三头都靠它
     # 指向同一条需求。放在同一套取号器里，规则可配、并发不撞号。
     "inquiry": {
@@ -154,11 +162,13 @@ def _number_column(code: str) -> Any:
     from app.modules.inquiry.model import CustomInquiry
     from app.modules.order.model import SalesOrder
     from app.modules.quote.model import Quote
+    from app.modules.returns.model import SalesReturn
 
     return {
         "quote": Quote.quote_no,
         "order": SalesOrder.order_no,
         "contract": ContractDocument.doc_no,
+        "return": SalesReturn.return_no,
         "inquiry": CustomInquiry.inquiry_no,
         "sample_doc": BizDoc.doc_no,
         "order_doc": BizDoc.doc_no,
