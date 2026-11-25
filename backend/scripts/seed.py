@@ -31,7 +31,12 @@ from app.modules.pricing.model import (
     ProductCost,
 )
 from app.modules.task.model import Task
-from app.modules.settings.model import PublicPoolRule, SystemSetting, TaskRule
+from app.modules.settings import service as settings_service
+from app.modules.settings.model import (
+    PublicPoolRule,
+    SystemSetting,
+    TaskRule,
+)
 from app.modules.user.model import Department, Permission, Role, User, role_permissions, user_roles
 
 #: 客户等级折扣系数（**行业通用占位**）：A 级大客户 −8%、B −4%、C −1%、
@@ -51,6 +56,10 @@ PERMISSIONS: list[tuple[str, str, str, str]] = [
     ("customer:create", "新建客户", "customer", "create"),
     ("customer:update", "编辑客户", "customer", "update"),
     ("customer:delete", "删除客户", "customer", "delete"),
+    # 业务员只能删**自己负责**的客户（2026-11-13 用户确认）。单列一个码，不把
+    # `customer:delete` 直接下放给业务员：客户的可见范围包含公海（无主客户人人可见），
+    # 共用一把钥匙会让业务员能删掉整片公海客户，而不是"自己的客户"。
+    ("customer:delete_own", "删除自己的客户", "customer", "delete_own"),
     ("customer:assign", "分配客户", "customer", "assign"),
     # 导出闸门（§11.2/场景19）：批量导出是独立授权，不给销售默认开通——
     # "能看列表"不再等于"能批量拿走本范围全部客户"
@@ -82,6 +91,7 @@ PERMISSIONS: list[tuple[str, str, str, str]] = [
     ("quote:view", "查看报价", "quote", "view"),
     ("quote:manage", "维护报价", "quote", "manage"),
     ("quote:approve", "报价审批", "quote", "approve"),
+    ("quote:finance_approve", "财务会签", "quote", "finance_approve"),
     ("price:manage", "价格维护", "price", "manage"),
     ("order:view", "查看订单", "order", "view"),
     ("order:manage", "维护订单", "order", "manage"),
@@ -100,18 +110,29 @@ PERMISSIONS: list[tuple[str, str, str, str]] = [
     # **业务动作**，不该和"系统设置"共用一个权限码 ——
     # 默认销售主管要能做这件事，但不该顺带拿到整个系统设置的权限。
     ("customer:pool_review", "公海回收复核", "customer", "pool_review"),
+    ("customer:pool_restore", "恢复公海客户", "customer", "pool_restore"),
     ("agent:use", "使用 Sales Agent", "agent", "use"),
     ("sample:view", "查看样品", "sample", "view"),
     ("sample:manage", "管理样品", "sample", "manage"),
     ("wecom:view", "查看企业微信集成", "wecom", "view"),
-    ("wecom:manage", "同步与归一转处理", "wecom", "manage"),
+    ("wecom:manage", "整理企微联系人", "wecom", "manage"),
+    ("wecom:sync_directory", "同步企微部门和成员", "wecom", "sync_directory"),
+    ("wecom:sync_contacts", "同步企微联系人和跟进关系", "wecom", "sync_contacts"),
+    ("wecom:import_preview", "预览企微客户导入", "wecom", "import_preview"),
+    ("wecom:import", "确认企微客户导入", "wecom", "import"),
+    ("wecom:transfer_preview", "查看企微离职交接清单", "wecom", "transfer_preview"),
+    ("wecom:transfer", "执行企微离职交接", "wecom", "transfer"),
 ]
 
 SALES_PERMISSIONS = [
     "customer:view",
     "customer:create",
     "customer:update",
+    # 业务员可软删自己负责的客户；主管的 `customer:delete` 仍是按数据范围删。
+    "customer:delete_own",
     "product:view",
+    # 2026-11-23 主人确认：业务员可以新建/维护产品与 SKU。
+    "product:manage",
     "opportunity:view",
     "opportunity:manage",
     "lead:view",
@@ -172,6 +193,8 @@ MANAGER_PERMISSIONS = SALES_PERMISSIONS + [
     # 企业微信集成：只有主管及以上才需要看同步状态、做待归一处理和离职继承
     "wecom:view",
     "wecom:manage",
+    "wecom:import_preview",
+    "wecom:transfer_preview",
     # 公海回收复核：主管复核本团队客户的回收候选（批准/驳回/暂缓）。
     # 独立于 settings:manage —— 此前复用系统设置权限，默认主管根本没有它，
     # 于是"主管逐条或批量批准"实际上打不通（第六批审查第 7 条）。
@@ -181,6 +204,7 @@ MANAGER_PERMISSIONS = SALES_PERMISSIONS + [
 FINANCE_PERMISSIONS = [
     "customer:view",
     "quote:view",
+    "quote:finance_approve",
     "order:view",
     "payment:view",
     "payment:manage",
@@ -237,6 +261,8 @@ async def seed() -> None:
                 role = Role(code=code, name=name, data_scope=scope, description=desc)
                 session.add(role)
                 await session.flush()
+                if code == "sales_manager":
+                    perms = [*perms, "customer:pool_restore"]
             role_map[code] = role
             have = {
                 pid
@@ -376,6 +402,17 @@ async def seed() -> None:
                         source="手工录入",
                     )
                 )
+
+        # 5.5 产品分类**不再有字典**（2026-10-15 主人确认「彻底清掉」）
+        #
+        # 这一段原来会预置 `物流器具 / 包装箱 / 缠绕膜` 三条。那是产品分类还是
+        # **受控字典**的年代留下的：示例产品绕过接口直接建库，分类值必须先在
+        # 字典里存在，否则示例产品一进编辑页就存不上（见 `4b7e2a9c5f31` 迁移）。
+        #
+        # 现在产品分类改成**产品页直接填写**（最多 64 字，后端不再校验成员），
+        # 字典里那三条**没有任何消费方**了，主人让一并清掉 ——
+        # 所以这里不再预置，字典页的类型下拉里也不再出现「产品分类」。
+        # 下面示例产品的 `category` 保持原样：它现在只是自由文本。
 
         # 6. 示例产品与 SKU（仅为演示，可随时删除；真实产品资料待业务方提供）
         demo_products = [
@@ -550,7 +587,8 @@ async def seed() -> None:
         # 8. 失单原因（总设计文档 §19 的 9 类，必须有初始数据才能失单）
         loss_defs = [
             ("price", "价格", "商务"),
-            ("moq", "MOQ", "商务"),
+            # 用中文（2026-10-10）：`code` 保持 `moq` 不变，只改给人看的名字。
+            ("moq", "起订量", "商务"),
             ("delivery", "交期", "交付"),
             ("product", "产品", "产品"),
             ("competitor", "竞争对手", "竞争"),
@@ -746,9 +784,21 @@ async def seed() -> None:
                         sku_id=sku.id,
                         purchase_cost=Decimal(purchase),
                         package_cost=Decimal(package),
+                        # ⚠️ 生产/加工成本**显式写 0**，不是留空（2026-10-13 第七批 P1-1）。
+                        #
+                        # 演示数据里这两个值本来就没维护，留空（NULL）等于告诉系统
+                        # "这项还没填" —— 而不完整的成本算不出可信毛利：核价会警告
+                        # 并停用由成本反推的价格，审批侧也会要求人工看一眼。
+                        # 结果是**演示库里每一张报价单都走不完流程**（实测：
+                        # 报价发不出去、转单 40002）。
+                        #
+                        # 口径：演示数据是"这套成本就是这些"，缺的两项按 0 计，
+                        # 属于**已填**；真要表达"还没维护"，才留空。
+                        production_cost=Decimal(0),
+                        processing_cost=Decimal(0),
                         effective_from=date(today.year, 1, 1),
                         currency="CNY",
-                        remark="演示占位成本，待业务确认后替换",
+                        remark="演示占位成本（生产/加工按 0 计），待业务确认后替换",
                         created_by=user_map["admin"].id,
                     )
                 )
@@ -1016,8 +1066,16 @@ async def seed() -> None:
         settings_defs = [
             ("quote_valid_days", {"days": 30}, "报价单默认有效期（天）"),
             ("default_payment_terms", {"text": "款到发货"}, "报价单默认付款条件"),
-            ("default_delivery_terms", {"text": "含运费，送货上门"}, "报价单默认交货条件"),
-            ("company_name", {"text": "曼德拉（示例，请替换为公司全称）"}, "报价单抬头公司名"),
+            # ⚠️ 文案引用**同一个常量**，不要在这里手写（审查 2026-10-09）：
+            # 从前这里硬编码旧文案「含运费，送货上门」，与"产品单价不含运费"的
+            # 新口径直接冲突 —— 迁移只改了存量行，**全新库跑完种子仍是旧文案**，
+            # 新建报价就带着"含运费"发给客户。
+            (
+                "default_delivery_terms",
+                {"text": settings_service.DEFAULT_DELIVERY_TERMS},
+                "报价单默认交货条件",
+            ),
+            ("company_name", {"text": "mandla（示例，请替换为公司全称）"}, "报价单抬头公司名"),
             ("default_target_margin", {"ratio": 0.3}, "无价格规则时的默认目标利润率（0.3=30%）"),
             ("default_min_margin", {"ratio": 0.15}, "角色未配价格权限时的最低利润率（0.15=15%）"),
             ("price_range_ratio", {"ratio": 0.04}, "核价建议区间的上下浮动比例（0.04=±4%）"),
@@ -1072,7 +1130,7 @@ async def seed() -> None:
                     SystemSetting(key=key, value=value, description=description)
                 )
 
-        # 审批流转规则（设计稿 `_6` 的国内业务版）：三条默认规则，发布 V1 并启用。
+        # 默认审批规则发布 V1 并启用，条件互斥。
         # 只对"有明细超权限"的报价生效；不满足任何规则时仍走金额分档，行为不变。
         from app.modules.approval.model import ApprovalRule, ApprovalRuleVersion
 
@@ -1095,7 +1153,21 @@ async def seed() -> None:
                 "priority": 20,
                 "description": "让价金额很小且客户无逾期：跳过高层级，主管一级直接审完",
                 "conditions": [
-                    {"field": "gross_margin", "op": "gte", "value": 22},
+                    {"field": "gross_margin", "op": "gt", "value": 22},
+                    {"field": "gross_margin", "op": "lt", "value": 25},
+                    {"field": "concession_amount", "op": "lte", "value": 1000},
+                    {"field": "customer_has_overdue", "op": "eq", "value": False},
+                ],
+                "action": {},
+            },
+            {
+                "name": "小额让价极速通道（高毛利大额报价）",
+                "kind": "express",
+                "priority": 21,
+                "description": "让价金额很小且客户无逾期：跳过高层级，主管一级直接审完",
+                "conditions": [
+                    {"field": "gross_margin", "op": "gte", "value": 25},
+                    {"field": "total_amount", "op": "gt", "value": 100000},
                     {"field": "concession_amount", "op": "lte", "value": 1000},
                     {"field": "customer_has_overdue", "op": "eq", "value": False},
                 ],
@@ -1110,20 +1182,15 @@ async def seed() -> None:
                     {"field": "gross_margin", "op": "lte", "value": 22},
                 ],
                 "action": {
-                    "add_node_role_codes": ["finance"],
+                    "add_node_permission": "quote:finance_approve",
                     "add_node_label": "财务会签",
                     "veto": True,
                 },
             },
         ]
-        for spec in default_rules:
-            exists = (
-                await session.execute(
-                    select(ApprovalRule).where(ApprovalRule.name == spec["name"])
-                )
-            ).scalar_one_or_none()
-            if exists is not None:
-                continue
+        has_rules = await session.scalar(select(ApprovalRule.id).limit(1))
+        # Existing installations may have customized the routing or removed a default.
+        for spec in default_rules if has_rules is None else []:
             rule = ApprovalRule(
                 name=spec["name"],
                 kind=spec["kind"],
@@ -1156,7 +1223,7 @@ async def seed() -> None:
         print(
             "种子数据完成：3 个角色、权限清单、3 个账号、3 个示例客户、3 个示例产品、"
             "9 个商机阶段、9 类失单原因、2 条示例线索、1 个示例商机"
-            "、成本与价格规则（占位值）、价格权限、运费费率、3 条审批规则"
+            "、成本与价格规则（占位值）、价格权限、运费费率、初始化审批规则"
         )
         print("登录账号：admin / admin123     zhangsan / 123456     lisi / 123456")
 

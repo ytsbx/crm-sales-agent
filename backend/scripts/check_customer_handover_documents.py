@@ -387,7 +387,9 @@ async def seed_fixtures() -> dict:
             ),
             Quote(
                 quote_no=f"{PREFIX}Q{STAMP}", customer_id=customer.id,
-                owner_id=from_owner.id, status="draft", created_by=from_owner.id,
+                # 已正式发送的报价不是私人草稿，交接后接手人按数据范围可见。
+                # 未提交过的纯草稿按设计只属于创建人，不在"接手人能打开"的范围里。
+                owner_id=from_owner.id, status="sent", created_by=from_owner.id,
             ),
             sample_mine,
             sample_prod_only,

@@ -25,27 +25,66 @@
 "成功 0 条"。静默成功会让运营以为企微里真的没人，这是最坏的失败方式。
 """
 
+import hashlib
+import time
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+
+import httpx
+
 from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
 from app.core.database import get_db
-from app.core.deps import CurrentUser, client_ip, require_permission
+from app.core.deps import CurrentUser, client_ip, require_permission, ensure_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
-from app.modules.wecom import callback as wecom_callback
+from app.modules.wecom import callback as wecom_callback, client as wecom_client
 from app.modules.wecom import service as svc
-from app.modules.wecom.client import WeComError, WeComNotConfigured
-from app.modules.wecom.model import WeComSyncJob
+from app.modules.wecom.client import WeComError, WeComNotConfigured, WeComResponseError
+from app.modules.user.model import User
+from app.modules.wecom.model import WeComSyncJob, WeComTransferItem
 from app.modules.wecom.schema import (
     BindCustomerRequest,
+    ImportCustomersRequest,
     CreateCustomerRequest,
     IgnoreContactRequest,
     TransferRequest,
 )
 
+#: 回调时间戳允许的最大偏差（秒）。企微官方建议 5 分钟；超出即视为重放/过期报文。
+#: 没有它时，一份抓到的合法报文可以无限重放（每次都落一条同步任务）。
+WECOM_CALLBACK_MAX_SKEW_SECONDS = 300
+WECOM_CALLBACK_MAX_BODY_BYTES = 1024 * 1024
+
 router = APIRouter(tags=["WeCom"])
+
+
+def require_wecom_action(*codes: str):
+    async def check(user: CurrentUser = Depends(require_permission(*codes))) -> CurrentUser:
+        ensure_permission(user, "wecom:view")
+        return user
+    return check
+
+
+async def _ensure_transfer_department(session: AsyncSession, user: CurrentUser, people: set[int]) -> None:
+    if "admin" in user.roles:
+        return
+    in_department = set(await session.scalars(select(User.id).where(
+        User.id.in_(people), User.department_id == user.department_id,
+    ))) if user.department_id else set()
+    if not people or in_department != people:
+        raise AppError(ErrorCode.FORBIDDEN, "跨部门或未归属部门的离职交接请由管理员处理", 403)
+
+
+async def _get_transfer_for_user(session: AsyncSession, user: CurrentUser, job_id: int) -> WeComSyncJob:
+    job = await session.get(WeComSyncJob, job_id)
+    if job is None or job.job_type != "transfer" or ("admin" not in user.roles and job.operator_id != user.id):
+        raise AppError(ErrorCode.NOT_FOUND, "交接记录不存在或不在你的查看范围", 404)
+    return job
 
 
 def _translate(error: Exception) -> AppError:
@@ -56,9 +95,35 @@ def _translate(error: Exception) -> AppError:
             f"{error}；配置位置：backend/.env",
             422,
         )
-    if isinstance(error, WeComError):
-        return AppError(ErrorCode.WECOM_SYNC_FAILED, str(error), 502)
-    return AppError(ErrorCode.WECOM_SYNC_FAILED, f"企业微信同步失败：{error}", 502)
+    # 不回显HTTP异常原文：URL里可能含access_token、corpsecret。
+    if isinstance(error, httpx.TimeoutException):
+        return AppError(ErrorCode.WECOM_SYNC_FAILED, "连接企业微信超时，请稍后重试", 502)
+    if isinstance(error, httpx.HTTPStatusError):
+        return AppError(ErrorCode.WECOM_SYNC_FAILED,
+                        f"企业微信服务返回 HTTP {error.response.status_code}，请稍后重试", 502)
+    if isinstance(error, httpx.RequestError):
+        return AppError(ErrorCode.WECOM_SYNC_FAILED, "连接企业微信失败，请检查网络后重试", 502)
+    if isinstance(error, (WeComError, WeComResponseError)):
+        return AppError(ErrorCode.WECOM_SYNC_FAILED, wecom_client.safe_error_text(error), 502)
+    return AppError(ErrorCode.WECOM_SYNC_FAILED, wecom_client.safe_error_text(error), 502)
+
+
+async def _run_sync(
+    session: AsyncSession, *, user: CurrentUser, job_type: str,
+    operation: Callable[..., Awaitable[WeComSyncJob]],
+) -> WeComSyncJob:
+    """整批外部失败先回滚同步事实，再单独提交一次失败流水。"""
+    started_at = datetime.now(UTC)
+    try:
+        return await operation(session, user=user)
+    except (WeComNotConfigured, WeComError, WeComResponseError, httpx.RequestError, httpx.HTTPStatusError) as error:
+        translated = _translate(error)
+        await session.rollback()
+        job = await svc.start_job(session, job_type=job_type, operator_id=user.id)
+        job.started_at = started_at
+        svc.finish_job(job, success=0, fail=1, error=translated.message)
+        await session.commit()
+        raise translated from error
 
 
 @router.get("/integrations/wecom/readiness")
@@ -73,13 +138,10 @@ async def wecom_readiness(
 @router.post("/integrations/wecom/sync-departments")
 async def sync_departments(
     request: Request,
-    user: CurrentUser = Depends(require_permission("wecom:manage")),
+    user: CurrentUser = Depends(require_wecom_action("wecom:sync_directory")),
     session: AsyncSession = Depends(get_db),
 ):
-    try:
-        job = await svc.sync_departments(session, user=user)
-    except (WeComNotConfigured, WeComError) as error:
-        raise _translate(error) from error
+    job = await _run_sync(session, user=user, job_type="department", operation=svc.sync_departments)
     await write_audit(
         session,
         operator_id=user.id,
@@ -96,63 +158,64 @@ async def sync_departments(
 @router.post("/integrations/wecom/sync-users")
 async def sync_users(
     request: Request,
-    user: CurrentUser = Depends(require_permission("wecom:manage")),
+    user: CurrentUser = Depends(require_wecom_action("wecom:sync_directory")),
     session: AsyncSession = Depends(get_db),
 ):
-    try:
-        job = await svc.sync_users(session, user=user)
-    except (WeComNotConfigured, WeComError) as error:
-        raise _translate(error) from error
+    job = await _run_sync(session, user=user, job_type="user", operation=svc.sync_users)
     await write_audit(
         session,
         operator_id=user.id,
         action="wecom_sync_users",
         business_type="integration",
         business_id=job.id,
-        after={"success": job.success_count, "unmatched": (job.detail or {}).get("unmatched")},
+        after={
+            "success": job.success_count,
+            "unmatched": (job.detail or {}).get("unmatched"),
+            "conflicts": (job.detail or {}).get("conflicts"),
+        },
         ip=client_ip(request),
     )
     await session.commit()
     unmatched = len((job.detail or {}).get("unmatched") or [])
+    conflicts = len((job.detail or {}).get("conflicts") or [])
     message = f"成员同步完成，成功 {job.success_count} 条"
     if unmatched:
-        message += f"；其中 {unmatched} 人在 CRM 里没有账号，需要人工建号并分配角色"
+        message += f"；{unmatched} 人未匹配到 CRM 账号，请核对员工资料"
+    if conflicts:
+        message += f"；{conflicts} 人的手机号或账号绑定有冲突，请人工核对"
     return ok(svc.serialize_job(job), message)
 
 
 @router.post("/integrations/wecom/sync-external-contacts")
 async def sync_external_contacts(
     request: Request,
-    user: CurrentUser = Depends(require_permission("wecom:manage")),
+    user: CurrentUser = Depends(require_wecom_action("wecom:sync_contacts")),
     session: AsyncSession = Depends(get_db),
 ):
-    try:
-        job = await svc.sync_external_contacts(session, user=user)
-    except (WeComNotConfigured, WeComError) as error:
-        raise _translate(error) from error
+    job = await _run_sync(session, user=user, job_type="external_contact", operation=svc.sync_external_contacts)
     await write_audit(
         session,
         operator_id=user.id,
         action="wecom_sync_external_contacts",
         business_type="integration",
         business_id=job.id,
-        after={"success": job.success_count},
+        after={"success": job.success_count, "fail": job.fail_count},
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(svc.serialize_job(job), f"外部联系人同步完成，成功 {job.success_count} 条")
+    message = f"外部联系人同步完成，成功 {job.success_count} 条"
+    if job.fail_count:
+        message += f"；{job.fail_count} 个成员未完整同步，请查看同步记录后重试"
+    return ok(svc.serialize_job(job), message)
 
 
 @router.post("/integrations/wecom/sync-follow-relations")
 async def sync_follow_relations(
     request: Request,
-    user: CurrentUser = Depends(require_permission("wecom:manage")),
+    user: CurrentUser = Depends(require_wecom_action("wecom:sync_contacts")),
     session: AsyncSession = Depends(get_db),
 ):
-    try:
-        job = await svc.sync_follow_relations(session, user=user)
-    except (WeComNotConfigured, WeComError) as error:
-        raise _translate(error) from error
+    job = await _run_sync(session, user=user, job_type="follow_relation", operation=svc.sync_follow_relations)
     await write_audit(
         session,
         operator_id=user.id,
@@ -163,7 +226,10 @@ async def sync_follow_relations(
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(svc.serialize_job(job), f"跟进关系同步完成，成功 {job.success_count} 条")
+    message = f"跟进关系同步完成，成功 {job.success_count} 条"
+    if job.fail_count:
+        message += f"；{job.fail_count} 个客户同步失败，原有跟进关系保留，请重试"
+    return ok(svc.serialize_job(job), message)
 
 
 @router.get("/integrations/wecom/unbound-contacts")
@@ -184,11 +250,12 @@ async def list_unbound_contacts(
 @router.get("/integrations/wecom/unbound-contacts/{contact_id}/candidates")
 async def unbound_candidates(
     contact_id: int,
-    _: CurrentUser = Depends(require_permission("wecom:view")),
+    user: CurrentUser = Depends(require_permission("wecom:view")),
     session: AsyncSession = Depends(get_db),
 ):
     """候选客户匹配（PRD §8.3 的第 2 步）。"""
-    return ok(await svc.unbound_candidates(session, contact_id))
+    ensure_permission(user, "customer:view")
+    return ok(await svc.unbound_candidates(session, contact_id, user=user))
 
 
 @router.post("/integrations/wecom/unbound-contacts/{contact_id}/bind-customer")
@@ -196,10 +263,11 @@ async def bind_customer(
     contact_id: int,
     payload: BindCustomerRequest,
     request: Request,
-    user: CurrentUser = Depends(require_permission("wecom:manage")),
+    user: CurrentUser = Depends(require_wecom_action("wecom:manage")),
     session: AsyncSession = Depends(get_db),
 ):
     """关联已有客户（PRD §8.3 的第 3 步之一）。"""
+    ensure_permission(user, "customer:update")
     result = await svc.bind_customer(
         session,
         user=user,
@@ -225,10 +293,11 @@ async def create_customer(
     contact_id: int,
     payload: CreateCustomerRequest,
     request: Request,
-    user: CurrentUser = Depends(require_permission("wecom:manage")),
+    user: CurrentUser = Depends(require_wecom_action("wecom:manage")),
     session: AsyncSession = Depends(get_db),
 ):
     """创建新客户（PRD §8.3 的第 3 步之二）。"""
+    ensure_permission(user, "customer:create")
     if not payload.name.strip():
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "客户名称必填", 422)
     result = await svc.create_customer_from_contact(
@@ -252,7 +321,7 @@ async def ignore_contact(
     contact_id: int,
     payload: IgnoreContactRequest,
     request: Request,
-    user: CurrentUser = Depends(require_permission("wecom:manage")),
+    user: CurrentUser = Depends(require_wecom_action("wecom:manage")),
     session: AsyncSession = Depends(get_db),
 ):
     """暂不处理（PRD §8.3 的第 3 步之三）。"""
@@ -272,11 +341,24 @@ async def ignore_contact(
     return ok({"id": row.id, "normalize_status": row.normalize_status}, "已标记为暂不处理")
 
 
+@router.get("/integrations/wecom/transfer-people")
+async def transfer_people(
+    user: CurrentUser = Depends(require_wecom_action("wecom:transfer_preview", "wecom:transfer")),
+    session: AsyncSession = Depends(get_db),
+):
+    stmt = select(User.id, User.name, User.username, User.status).order_by(User.name, User.id)
+    if "admin" not in user.roles:
+        if not user.department_id:
+            return ok([])
+        stmt = stmt.where(User.department_id == user.department_id)
+    return ok([dict(row) for row in (await session.execute(stmt)).mappings()])
+
+
 @router.get("/integrations/wecom/transfer-preview")
 async def transfer_preview(
     handover_user_id: int = Query(..., description="离职人（交接方）"),
     takeover_user_id: int = Query(..., description="接管人"),
-    _: CurrentUser = Depends(require_permission("wecom:view")),
+    user: CurrentUser = Depends(require_wecom_action("wecom:transfer_preview", "wecom:transfer")),
     session: AsyncSession = Depends(get_db),
 ):
     """离职交接**清单预览**（只读，返工单 6.6）。
@@ -285,6 +367,7 @@ async def transfer_preview(
     当前责任人、拟接手人、状态与"不能交接的原因"。看清单和实际执行
     读的是同一份数据——不会出现"清单里没有、执行时却动了"。
     """
+    await _ensure_transfer_department(session, user, {handover_user_id, takeover_user_id})
     return ok(
         await svc.preview_transfer(
             session,
@@ -298,7 +381,7 @@ async def transfer_preview(
 async def transfer(
     payload: TransferRequest,
     request: Request,
-    user: CurrentUser = Depends(require_permission("wecom:manage")),
+    user: CurrentUser = Depends(require_wecom_action("wecom:transfer")),
     session: AsyncSession = Depends(get_db),
 ):
     """离职继承（PRD §8.4）。不配企微 secret 时传 transfer_wecom=false 只转 CRM 侧。
@@ -315,6 +398,9 @@ async def transfer(
             "需业务确认后由管理员设置 WECOM_TRANSFER_ENABLED=1 才能执行",
             403,
         )
+    await _ensure_transfer_department(session, user, {
+        payload.handover_user_id, payload.takeover_user_id, *(payload.item_assignees or {}).values(),
+    })
     job = await svc.transfer_relations(
         session,
         user=user,
@@ -366,13 +452,10 @@ async def transfer(
 @router.get("/integrations/wecom/transfer/{job_id}")
 async def get_transfer_job(
     job_id: int,
-    _: CurrentUser = Depends(require_permission("wecom:view")),
+    user: CurrentUser = Depends(require_wecom_action("wecom:transfer")),
     session: AsyncSession = Depends(get_db),
 ):
-    job = await session.get(WeComSyncJob, job_id)
-    if job is None or job.job_type != "transfer":
-        raise AppError(ErrorCode.NOT_FOUND, "继承任务不存在", 404)
-    return ok(svc.serialize_job(job))
+    return ok(svc.serialize_job(await _get_transfer_for_user(session, user, job_id)))
 
 
 @router.get("/integrations/wecom/transfer/{job_id}/items")
@@ -385,13 +468,14 @@ async def list_transfer_items(
     ),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
-    _: CurrentUser = Depends(require_permission("wecom:view")),
+    user: CurrentUser = Depends(require_wecom_action("wecom:transfer")),
     session: AsyncSession = Depends(get_db),
 ):
     """交接**逐项结果**（返工单 6.7：失败明细完整保存、界面可翻页）。
 
     12 条失败就是 12 条，不会再像原来那样在存储阶段被截断成 10 条。
     """
+    await _get_transfer_for_user(session, user, job_id)
     items, total = await svc.list_transfer_items(
         session, job_id=job_id, page=page, page_size=page_size,
         kind=kind, pending_only=pending_only, crm_status=crm_status,
@@ -403,7 +487,7 @@ async def list_transfer_items(
 async def retry_transfer(
     job_id: int,
     request: Request,
-    user: CurrentUser = Depends(require_permission("wecom:manage")),
+    user: CurrentUser = Depends(require_wecom_action("wecom:transfer")),
     session: AsyncSession = Depends(get_db),
 ):
     """按**逐项状态**重试没办完的项（返工单 6.7）。
@@ -425,6 +509,16 @@ async def retry_transfer(
             "需业务确认后由管理员设置 WECOM_TRANSFER_ENABLED=1 才能执行",
             403,
         )
+    job = await _get_transfer_for_user(session, user, job_id)
+    if "admin" not in user.roles:
+        detail = job.detail or {}
+        people = {detail.get("handover_id"), detail.get("takeover_id")}
+        people.update(await session.scalars(select(WeComTransferItem.to_owner_id).where(
+            WeComTransferItem.job_id == job_id, WeComTransferItem.to_owner_id.is_not(None),
+        )))
+        if None in people:
+            raise AppError(ErrorCode.FORBIDDEN, "这条历史交接记录缺少人员信息，请由管理员处理", 403)
+        await _ensure_transfer_department(session, user, people)
     result = await svc.retry_transfer(session, user=user, job_id=job_id)
     await write_audit(
         session,
@@ -448,10 +542,15 @@ async def list_sync_jobs(
     status: str | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
-    _: CurrentUser = Depends(require_permission("wecom:view")),
+    user: CurrentUser = Depends(require_permission("wecom:view")),
     session: AsyncSession = Depends(get_db),
 ):
     stmt = select(WeComSyncJob)
+    if "admin" not in user.roles:
+        visible = WeComSyncJob.job_type != "transfer"
+        if user.has("wecom:transfer"):
+            visible |= WeComSyncJob.operator_id == user.id
+        stmt = stmt.where(visible)
     if job_type:
         stmt = stmt.where(WeComSyncJob.job_type == job_type)
     if status:
@@ -465,16 +564,24 @@ async def list_sync_jobs(
 @router.get("/integrations/wecom/sync-jobs/{job_id}")
 async def get_sync_job(
     job_id: int,
-    _: CurrentUser = Depends(require_permission("wecom:view")),
+    user: CurrentUser = Depends(require_permission("wecom:view")),
     session: AsyncSession = Depends(get_db),
 ):
     job = await session.get(WeComSyncJob, job_id)
     if job is None:
         raise AppError(ErrorCode.NOT_FOUND, "同步任务不存在", 404)
+    if job.job_type == "transfer":
+        ensure_permission(user, "wecom:transfer")
+        await _get_transfer_for_user(session, user, job_id)
     return ok(svc.serialize_job(job))
 
 
 # ---- 事件回调：无需登录，靠签名校验 ---------------------------------------
+
+
+def _require_wecom_callback_config() -> None:
+    if not wecom_client.get_client().callback_ready():
+        raise AppError(ErrorCode.WECOM_SYNC_FAILED, "企业微信回调未配置", 503)
 
 
 @router.get("/webhooks/wecom/events")
@@ -489,6 +596,7 @@ async def verify_wecom_url(
     这个接口**不能要求登录**（企微服务器没有我们的 token），
     安全性靠签名校验 + AES 解密来保证。
     """
+    _require_wecom_callback_config()
     try:
         wecom_callback.verify_signature(
             signature=msg_signature, timestamp=timestamp, nonce=nonce, encrypt=echostr
@@ -506,18 +614,42 @@ async def receive_wecom_event(
     nonce: str = Query(...),
     session: AsyncSession = Depends(get_db),
 ):
-    """接收企微事件。
+    """验签后持久化事件，后台同步联系人，快速应答企微。"""
+    _require_wecom_callback_config()
+    raw_length = request.headers.get("content-length")
+    try:
+        if raw_length is not None and int(raw_length) > WECOM_CALLBACK_MAX_BODY_BYTES:
+            raise AppError(ErrorCode.PARAM_ERROR, "企微回调报文超过 1 MB 限制", 413)
+    except ValueError:
+        raise AppError(ErrorCode.PARAM_ERROR, "企微回调 Content-Length 无效", 400) from None
 
-    当前落库范围：把事件本身记进 `wecom_sync_jobs`（job_type=外部事件），
-    让运营能看到"企微推了什么过来"。真正的增量同步（change_external_contact
-    等事件触发只拉那一个人）留给拿到凭据、能联调时再做——现在没有真实回调，
-    写增量逻辑无法验证，等于凭空猜。
-    """
-    body = (await request.body()).decode("utf-8")
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > WECOM_CALLBACK_MAX_BODY_BYTES:
+            raise AppError(ErrorCode.PARAM_ERROR, "企微回调报文超过 1 MB 限制", 413)
+        chunks.append(chunk)
+    try:
+        body = b"".join(chunks).decode("utf-8")
+    except UnicodeDecodeError:
+        raise AppError(ErrorCode.PARAM_ERROR, "企微回调报文不是有效 UTF-8", 400) from None
     try:
         encrypt = wecom_callback.parse_event(body).get("Encrypt", "")
         if not encrypt:
             raise wecom_callback.WeComCallbackError("回调报文里没有 Encrypt 字段")
+        # ⚠️ 时间戳时效（2026-10-14 审查）：原来 `timestamp` 只参与签名计算、
+        # **从不校验时效**，又不按事件去重 —— 抓到一份合法报文就能**无限重放**，
+        # 每次都插一条 `wecom_sync_jobs`（企微自身的重试还会放大这件事）。
+        # 企微标准防护是"拒绝 5 分钟以外的 timestamp"，这里照做。
+        try:
+            ts = int(timestamp)
+        except (TypeError, ValueError):
+            raise wecom_callback.WeComCallbackError("回调 timestamp 不是整数") from None
+        if abs(int(time.time()) - ts) > WECOM_CALLBACK_MAX_SKEW_SECONDS:
+            raise wecom_callback.WeComCallbackError(
+                f"回调已过期（timestamp 与本机相差超过 {WECOM_CALLBACK_MAX_SKEW_SECONDS} 秒），拒绝重放"
+            )
         wecom_callback.verify_signature(
             signature=msg_signature, timestamp=timestamp, nonce=nonce, encrypt=str(encrypt)
         )
@@ -525,14 +657,66 @@ async def receive_wecom_event(
     except wecom_callback.WeComCallbackError as error:
         raise AppError(ErrorCode.WECOM_SYNC_FAILED, str(error), 400) from error
 
+    # 按**密文指纹**去重：同一份报文（哪怕时间戳还在窗口内）只记一次。
+    # 指纹取密文的 sha256 前 32 位 —— 不存原文（密文含业务内容，没必要留在库里）。
+    fingerprint = hashlib.sha256(str(encrypt).encode("utf-8")).hexdigest()[:32]
+    already = (
+        await session.execute(
+            select(WeComSyncJob.id)
+            .where(WeComSyncJob.event_fingerprint == fingerprint)
+            .limit(1)
+        )
+    ).scalars().first()
+    if already is not None:
+        # 重复投递：按企微要求回 success（否则它会一直重试），但**不再落新任务**。
+        return Response(content="success", media_type="text/plain")
+
+    should_sync = svc.contact_change_id(event) is not None
     job = WeComSyncJob(
-        job_type="external_contact",
-        status="success",
-        success_count=1,
+        job_type="contact_event" if should_sync else "event_callback",
+        status="running" if should_sync else "success",
+        success_count=0,
         fail_count=0,
-        detail={"source": "event_callback", "event": event},
+        finished_at=None if should_sync else datetime.now(UTC),
+        event_fingerprint=fingerprint,
+        detail={"source": "event_callback", "event": event, "fingerprint": fingerprint},
     )
     session.add(job)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        # 两个相同回调并发时，唯一索引只允许一个落库；另一个按企微要求
+        # 视为已处理并返回 success，不能把第三方重试风暴放大成 500。
+        await session.rollback()
+        duplicate = await session.execute(
+            select(WeComSyncJob.id)
+            .where(WeComSyncJob.event_fingerprint == fingerprint)
+            .limit(1)
+        )
+        if duplicate.scalar_one_or_none() is None:
+            raise
     # 企微要求回 "success"，否则会重试
     return Response(content="success", media_type="text/plain")
+
+
+@router.get("/integrations/wecom/customer-import/preview")
+async def preview_customer_import(
+    user: CurrentUser = Depends(require_wecom_action("wecom:import_preview", "wecom:import")),
+    session: AsyncSession = Depends(get_db),
+):
+    from app.modules.wecom.customer_import import preview_import
+    return ok(await preview_import(session))
+
+
+@router.post("/integrations/wecom/customer-import")
+async def import_customers(
+    payload: ImportCustomersRequest,
+    user: CurrentUser = Depends(require_wecom_action("wecom:import")),
+    session: AsyncSession = Depends(get_db),
+):
+    from app.modules.wecom.customer_import import execute_import
+    ensure_permission(user, "customer:create")
+    ensure_permission(user, "customer:assign")
+    result = await execute_import(session, digest=payload.digest, operator_id=user.id)
+    await session.commit()
+    return ok(result, f"已导入 {result['import_contacts']} 条联系人，待确认 {result['held_contacts']} 条")

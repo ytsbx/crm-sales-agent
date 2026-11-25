@@ -1,16 +1,19 @@
 """通知接口（03-API §32 通知 + §33 通知设置）。"""
 
-from datetime import UTC, datetime
+import re
+from datetime import UTC, date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.core.audit import write_audit
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, get_current_user, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
+from app.core.timebase import business_day_start
 from app.modules.notification.visibility import process_notification_filter
 from app.modules.notification.model import (
     CHANNEL_LABEL,
@@ -21,6 +24,43 @@ from app.modules.notification.model import (
 from app.modules.notification.schema import NotificationSettingUpdate
 
 router = APIRouter(tags=["Notification"])
+
+# 读侧兜底：历史通知的 wecom_error 可能含修复前落入的 URL/凭据原文。
+# 新数据已由 safe_error_text 在写入侧脱敏，这里对所有回显/审计出口再过一遍。
+_SENSITIVE_RE = re.compile(
+    r"https?://\S+|access_token=[^&\s,;)\]]+|corpsecret=[^&\s,;)\]]+",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_error(text: str | None) -> str | None:
+    if not text:
+        return text
+    return _SENSITIVE_RE.sub("[已脱敏]", text)
+
+
+#: 这些原因说明"卡住的是环境配置"，人工再补投多少次都是同一结果。
+#: 判据是**原因文案** —— 它是 `service.dispatch_pending` 写下的事实，
+#: 这里重查一遍配置反而会与"当时那一刻"的实际判据不一致（例如配置后来又改回去了）。
+_CONFIG_BLOCKED_MARKERS = (
+    "推送已临时关闭",
+    "没有绑定企业微信",
+    "未配置企微应用",
+)
+
+
+def redispatch_hint(wecom_error: str | None) -> str | None:
+    """补投前给一句话：这次补投有没有可能成功。
+
+    返回 None 表示"可以试"（例如投递真的失败过，重试有意义）；
+    返回文案表示"先别点，得先把别的弄好"。
+    界面把这句话显示在补投入口旁边，用户就不用"点一下才知道没用"。
+    """
+    if not wecom_error:
+        return None
+    if any(marker in wecom_error for marker in _CONFIG_BLOCKED_MARKERS):
+        return "要先把企业微信配置或推送开关处理好，否则补投还是同一结果"
+    return None
 
 
 def serialize(row: Notification) -> dict:
@@ -45,7 +85,7 @@ def serialize(row: Notification) -> dict:
             if row.wecom_status
             else None
         ),
-        "wecom_error": row.wecom_error,
+        "wecom_error": _sanitize_error(row.wecom_error),
         "wecom_sent_at": row.wecom_sent_at,
         # 投递重试（文档 §六）：试过几次、下次什么时候再试都要能看见——
         # 只给一个 failed，运营不知道该等它自己好还是该点补投
@@ -53,6 +93,16 @@ def serialize(row: Notification) -> dict:
         "wecom_next_retry_at": row.wecom_next_retry_at,
         # 可补投：失败与未投递两种状态都能人工重发；已投递/没走企微渠道的不需要
         "can_redispatch": row.wecom_status in ("failed", "skipped"),
+        # ⚠️ **补投有没有用**，与"能不能补投"是两件事（2026-10-13 加）。
+        #
+        # 起因：主人看到「未投递」后面挂着「补投」，点了只说"仍未投出"。
+        # 实测三种未投递成因（推送开关关着 / 没绑企微 / 没配企微应用）
+        # 都返回 `can_redispatch=True` —— 而它们**再点多少次都是同一个结果**，
+        # 卡住的是环境配置而不是这一次投递。那就是"点了没用还不说为什么"。
+        #
+        # 判据不在这里重写：文案是 `service.dispatch_pending` 写的，是否"配置类"
+        # 也由 `redispatch_hint` 统一判断（两边分头写必然漂移）。
+        "redispatch_hint": redispatch_hint(row.wecom_error),
         "read": row.read_at is not None,
         "created_at": row.created_at,
     }
@@ -61,14 +111,31 @@ def serialize(row: Notification) -> dict:
 @router.get("/notifications")
 async def list_notifications(
     unread_only: bool = False,
+    date_from: date | None = Query(None, description="按通知日期过滤：起始日（含）"),
+    date_to: date | None = Query(None, description="按通知日期过滤：截止日（含）"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
-    stmt = select(Notification).where(Notification.user_id == user.id, await process_notification_filter(session, user))
+    # 日期顺序在入口就拦：from 晚于 to 是明显的手误，返回空列表只会让人以为"那天没通知"
+    if date_from and date_to and date_from > date_to:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "起始日期不能晚于截止日期，请调换后再筛",
+            422,
+        )
+    stmt = select(Notification).where(
+        Notification.user_id == user.id, Notification.dismissed_at.is_(None),
+        await process_notification_filter(session, user),
+    )
     if unread_only:
         stmt = stmt.where(Notification.read_at.is_(None))
+    if date_from is not None:
+        stmt = stmt.where(Notification.created_at >= business_day_start(date_from.year, date_from.month, date_from.day))
+    if date_to is not None and date_to < date.max:
+        next_day = date_to + timedelta(days=1)
+        stmt = stmt.where(Notification.created_at < business_day_start(next_day.year, next_day.month, next_day.day))
     rows, total = await paginate(session, stmt.order_by(Notification.id.desc()), page, page_size)
     return ok(page_data([serialize(row) for row in rows], total, page, page_size))
 
@@ -82,6 +149,7 @@ async def unread_count(
         await session.execute(
             select(func.count(Notification.id)).where(
                 Notification.user_id == user.id, Notification.read_at.is_(None),
+                Notification.dismissed_at.is_(None),
                 await process_notification_filter(session, user),
             )
         )
@@ -97,7 +165,7 @@ async def mark_read(
 ):
     await session.execute(
         update(Notification)
-        .where(Notification.id == notification_id, Notification.user_id == user.id)
+        .where(Notification.id == notification_id, Notification.user_id == user.id, Notification.dismissed_at.is_(None))
         .values(read_at=datetime.now(UTC))
     )
     await session.commit()
@@ -111,11 +179,47 @@ async def mark_all_read(
 ):
     await session.execute(
         update(Notification)
-        .where(Notification.user_id == user.id, Notification.read_at.is_(None))
+        .where(
+            Notification.user_id == user.id, Notification.read_at.is_(None),
+            Notification.dismissed_at.is_(None), await process_notification_filter(session, user),
+        )
         .values(read_at=datetime.now(UTC))
     )
     await session.commit()
     return ok(None, "全部已读")
+
+
+@router.post("/notifications/{notification_id}/dismiss")
+async def dismiss_notification(
+    notification_id: int,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    await _dismiss_for_user(session, user, Notification.id == notification_id)
+    return ok(None, "通知已移除")
+
+
+@router.post("/notifications/dismiss-read")
+async def dismiss_read_notifications(
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    await _dismiss_for_user(session, user, Notification.read_at.is_not(None))
+    return ok(None, "已读通知已清除")
+
+
+async def _dismiss_for_user(
+    session: AsyncSession, user: CurrentUser, criterion: ColumnElement[bool],
+) -> None:
+    await session.execute(
+        update(Notification)
+        .where(
+            Notification.user_id == user.id, Notification.dismissed_at.is_(None),
+            await process_notification_filter(session, user), criterion,
+        )
+        .values(dismissed_at=datetime.now(UTC))
+    )
+    await session.commit()
 
 
 # ---- 投递失败补投（文档 §六：发送失败保留业务记录并重试通知）----------------
@@ -148,9 +252,9 @@ async def redispatch_notification(
         raise AppError(ErrorCode.PARAM_ERROR, f"当前状态为「{label}」，不需要补投", 422)
 
     queued = await service.requeue_for_redispatch(session, ids=[row.id])
-    result = await service.dispatch_pending(session, only_ids={row.id})
-    if queued["requeued"]:
-        await session.refresh(row)
+    result = await service.dispatch_pending(session, only_ids=set(queued["ids"]))
+    # 可能已被自动 worker 或另一个补投请求处理，无论是否本次排队都重读结果。
+    await session.refresh(row)
 
     await write_audit(
         session,
@@ -161,7 +265,7 @@ async def redispatch_notification(
         after={
             "wecom_status": row.wecom_status,
             "wecom_attempts": row.wecom_attempts,
-            "wecom_error": row.wecom_error,
+            "wecom_error": _sanitize_error(row.wecom_error),
         },
         ip=client_ip(request),
     )
@@ -170,13 +274,13 @@ async def redispatch_notification(
     if row.wecom_status == "sent":
         message = "已补投"
     else:
-        message = f"仍未能投出：{row.wecom_error or '未知原因'}"
+        message = f"仍未能投出：{_sanitize_error(row.wecom_error) or '未知原因'}"
     return ok(
         {
             "id": row.id,
             "wecom_status": row.wecom_status,
             "wecom_status_label": WECOM_STATUS_LABEL.get(row.wecom_status or "", None),
-            "wecom_error": row.wecom_error,
+            "wecom_error": _sanitize_error(row.wecom_error),
             **result,
         },
         message,
@@ -239,15 +343,23 @@ async def retry_failed_notifications(
 
 
 def _settings_payload(value: dict, *, wecom_ready: bool, agent_configured: bool) -> dict:
-    events = value.get("wecom_events") or {}
+    from app.modules.notification import service as notify_service
+
     return {
         "inapp_enabled": bool(value.get("inapp_enabled", True)),
         "wecom_enabled": bool(value.get("wecom_enabled", False)),
         "wecom_events": {
-            "approval": bool(events.get("approval", True)),
-            "task": bool(events.get("task", True)),
-            "payment": bool(events.get("payment", True)),
-            "followup": bool(events.get("followup", True)),
+            # ⚠️ 这四行原来各写了一遍 `bool(events.get(k, True))`，默认值是 **True**，
+            # 而投递侧（`service.wecom_event_enabled`）是 `events.get(k, False)` ——
+            # 同一个"键缺失算不算开"两处相反：库里缺 `followup` 时（升级前写入的行
+            # 就是这个形状）面板显示"开"、实际一条都不推，界面上看不出来
+            # （2026-10-14 审查修）。现在统一调投递侧那个函数，不可能再分叉。
+            # 判据直接交给投递侧那个函数（它自己会取 `value["wecom_events"]`），
+            # 入参就是这个设置对象本身。
+            **{
+                k: notify_service.wecom_event_enabled(value, k)
+                for k in notify_service.WECOM_EVENT_TYPES
+            },
         },
         # 给界面看的就绪度：企微渠道开着但后面对接没配好时要能提示
         "wecom_ready": wecom_ready,
@@ -328,7 +440,7 @@ async def update_notification_settings(
         session,
         operator_id=user.id,
         action="update_notification_settings",
-        business_type="settings",
+        business_type="setting",
         business_id=row.id,
         after=current,
         ip=client_ip(request),
@@ -415,7 +527,7 @@ async def update_level_policy(
         session,
         operator_id=user.id,
         action="update_notification_levels",
-        business_type="settings",
+        business_type="setting",
         business_id=existing.id if existing is not None else None,
         after=current,
         ip=client_ip(request),

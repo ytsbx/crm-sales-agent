@@ -31,6 +31,9 @@ class LogisticsCalculateRequest(BaseModel):
     """true 时把选中的方案落成一条 logistics_quotes 记录。"""
     selected_provider: str | None = None
     """save=true 时指定选哪家；不填则取费用最低的方案。"""
+    selected_rate_id: int | None = None
+    """按具体方案选择，避免同一承运商有多条费率时保存错行。"""
+    expected_amount: Decimal | None = None
 
 
 class LogisticsCompareRequest(BaseModel):

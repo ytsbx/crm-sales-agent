@@ -5,9 +5,11 @@
 的那道闸门"，让所有会动到文件的入口走同一份。
 """
 
+import json
 import logging
 from dataclasses import dataclass, field
 
+import anyio
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +18,7 @@ from app.modules.file.access import file_protection_label, sample_basis_lock_lab
 from app.modules.file.model import BusinessFile, FileRecord
 
 logger = logging.getLogger("crm.file")
+UPLOAD_CLEANUP_TIMEOUT_SECONDS = 5
 
 
 async def discard_unregistered_upload(session: AsyncSession, object_key: str) -> None:
@@ -32,17 +35,26 @@ async def discard_unregistered_upload(session: AsyncSession, object_key: str) ->
     - 删之前**先确认库里确实没有这条登记**。少了这一步，就可能把一条
       **已经提交成功**的记录变成"记录在、文件没了"——那比留个孤儿文件更糟。
     """
-    try:
-        await session.rollback()
-        registered = (
-            await session.execute(
-                select(FileRecord.id).where(FileRecord.object_key == object_key)
-            )
-        ).first()
-        if registered is None:
-            storage.delete_object(object_key)
-    except Exception:  # noqa: BLE001 —— 清理失败不该盖掉真正的登记错误
-        logger.warning("上传登记失败，且临时文件清理失败：%s", object_key, exc_info=True)
+    # 持续取消会在每次数据库 await 再次抛出，故不能只捕获一次 CancelledError。
+    # 仅保护补偿，不提交原事务；超时/无法确认登记时保留文件，继续原异常。
+    with anyio.move_on_after(UPLOAD_CLEANUP_TIMEOUT_SECONDS, shield=True) as cleanup_scope:
+        try:
+            await session.rollback()
+            try:
+                registered = (
+                    await session.execute(
+                        select(FileRecord.id).where(FileRecord.object_key == object_key)
+                    )
+                ).first()
+            finally:
+                # 登记核对即使报错，也在保护范围内结束其只读事务。
+                await session.rollback()
+            if registered is None:
+                storage.delete_object(object_key)
+        except Exception:  # noqa: BLE001 —— 清理失败不该盖掉真正的登记错误
+            logger.warning("上传登记失败，且临时文件清理失败：%s", object_key, exc_info=True)
+    if cleanup_scope.cancel_called:
+        logger.warning("上传登记失败，临时文件清理超时，保留文件待核对：%s", object_key)
 
 
 async def lock_file_row(session: AsyncSession, file_id: int) -> FileRecord | None:
@@ -106,10 +118,9 @@ async def inspect_file_usage(
 ) -> FileUsage:
     """这份文件还被谁用着（第十一批 11.2）。
 
-    为什么要单独做一个判据：引用文件的列有**五处**，而且**一处外键都没有** ——
+    为什么要单独做一个判据：引用文件的列有**四处**，而且**一处外键都没有** ——
     数据库不会替我们守住"文件还被引用着"这件事，全靠应用层查。
     - `business_files.file_id`：通用附件挂载（一对多）；
-    - `contract_documents.generated_file_id`：合同生成稿；
     - `biz_docs.file_id`：单据生成稿；
     - `payment_records.voucher_file_id`：回款凭证；
     - `sample_requests.basis_files`（jsonb 快照）：打样的制作依据。
@@ -119,7 +130,6 @@ async def inspect_file_usage(
     已签合同的原件就此消失。判据集中在这里，谁要删文件都得先过它。
     """
     from app.modules.bizdoc.model import BizDoc
-    from app.modules.contract.model import ContractDocument
     from app.modules.payment.model import PaymentRecord
 
     protected = await file_protection_label(session, file_id)
@@ -135,12 +145,6 @@ async def inspect_file_usage(
 
     others: list[str] = []
     if (
-        await session.execute(
-            select(ContractDocument.id).where(ContractDocument.generated_file_id == file_id)
-        )
-    ).first():
-        others.append("合同的生成稿")
-    if (
         await session.execute(select(BizDoc.id).where(BizDoc.file_id == file_id))
     ).first():
         others.append("单据的生成稿")
@@ -154,15 +158,39 @@ async def inspect_file_usage(
 
     # 打样依据只在 jsonb 快照里（`basis_files`），不在 `business_files` 表上，
     # 所以必须单独查一次 —— 这是最容易漏掉的一处。
+    if session.get_bind().dialect.name == "sqlite":
+        basis_predicate = """
+            exists (
+                select 1 from json_each(case json_type(basis_files)
+                    when 'array' then basis_files
+                    when 'object' then json_array(json(basis_files))
+                    else '[]' end
+                ) entry
+                where cast(case when entry.type = 'object'
+                    then json_extract(entry.value, '$.file_id') end as text) = :fid
+            )
+        """
+        basis_params = {"fid": str(file_id)}
+    else:
+        # 同时保护正常数组和旧数据里直接存入的单个文件对象。
+        basis_predicate = """
+            basis_files @> cast(:array_numeric as jsonb)
+            or basis_files @> cast(:array_string as jsonb)
+            or basis_files @> cast(:object_numeric as jsonb)
+            or basis_files @> cast(:object_string as jsonb)
+        """
+        numeric_ref = {"file_id": file_id}
+        string_ref = {"file_id": str(file_id)}
+        basis_params = {
+            "array_numeric": json.dumps([numeric_ref]),
+            "array_string": json.dumps([string_ref]),
+            "object_numeric": json.dumps(numeric_ref),
+            "object_string": json.dumps(string_ref),
+        }
     basis_hit = (
         await session.execute(
-            text(
-                "select 1 from sample_requests where basis_files is not null"
-                " and exists (select 1 from jsonb_array_elements(basis_files) e"
-                "             where (e->>'file_id')::bigint = :fid)"
-                " limit 1"
-            ),
-            {"fid": file_id},
+            text(f"select 1 from sample_requests where {basis_predicate} limit 1"),
+            basis_params,
         )
     ).first()
     if basis_hit:

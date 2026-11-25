@@ -8,12 +8,49 @@ export interface SystemSettingRow {
   value?: Record<string, unknown> | null
   description?: string | null
   updated_at?: string | null
+  customer_score_details?: {
+    points: Record<string, number | string>
+    name_similarity_min: number
+    max_score: number
+  }
   /**
    * true = 这一项还是**代码里的开发默认值**，系统里从没改过。
    * 回收预告期 / 暂缓等待期属于"口径未定、先用开发默认值跑"，
    * 界面上要照实标出来，不能让人以为已经是确认过的正式规则。
    */
   is_default?: boolean
+}
+
+export interface DictionaryItemRow {
+  id: number
+  type: string
+  code: string
+  label: string
+  sort_no: number
+  enabled: boolean
+  remark?: string | null
+}
+
+export function listDictionaries(type?: string, enabledOnly = true) {
+  return api.get<DictionaryItemRow[]>('/dictionaries', {
+    ...(type ? { type } : {}),
+    enabled_only: enabledOnly,
+  })
+}
+
+export function createDictionary(payload: {
+  type: string
+  code: string
+  label: string
+  sort_no?: number
+  enabled?: boolean
+  remark?: string
+}) {
+  return api.post<DictionaryItemRow>('/dictionaries', payload)
+}
+
+export function updateDictionary(id: number, payload: Partial<Pick<DictionaryItemRow, 'label' | 'sort_no' | 'enabled' | 'remark'>>) {
+  return api.patch<DictionaryItemRow>(`/dictionaries/${id}`, payload)
 }
 
 export interface PublicPoolRuleRow {
@@ -36,11 +73,6 @@ export interface TaskRuleRow {
 
 export function listSettings() {
   return api.get<SystemSettingRow[]>('/settings')
-}
-
-/** 所有登录用户可读的少量配置：决定界面显示什么 */
-export function getPublicConfig() {
-  return api.get<{ trade_mode: string; default_currency: string }>('/meta/config')
 }
 
 export function saveSetting(key: string, value: Record<string, unknown>, description?: string) {
@@ -67,6 +99,10 @@ export function runPublicPoolRecycle() {
     protected_count: number
     disputed_count: number
     already_open_count: number
+    cooldown_count?: number
+    enabled_rule_count?: number
+    unknown_contact_count?: number
+    protection_overridden_count?: number
     /** 本轮实际发出的预告通知条数（原负责人与复核主管分别计） */
     notified_count: number
     notice_days: number
@@ -89,6 +125,13 @@ export interface RecycleCandidateRow {
   last_active_at?: string | null
   /** 提名那一刻的履约保护明细；批准执行前还会再算一次 */
   protection: string[]
+  /**
+   * **是不是「破例提名」**：有履约保护、但保护已过最长有效期（
+   * `pool_recycle_max_protect_days` 天没活跃）仍被提名。
+   * 复核名单上要单独点出来：「有履约事项仍被提名，请重点看」。
+   * 判据由后端下发（`serialize_candidate`），前端只渲染。
+   */
+  protection_overridden?: boolean
   status: string
   status_label: string
   notice_at?: string | null
@@ -101,6 +144,7 @@ export interface RecycleCandidateRow {
    */
   earliest_action_at?: string | null
   decided_at?: string | null
+  reconsider_at?: string | null
   decision_note?: string | null
   deferred_until?: string | null
   defer_days?: number | null
@@ -181,4 +225,11 @@ export function updateTaskRule(id: number, payload: Record<string, unknown>) {
 
 export function runAutoTaskRules() {
   return api.post<{ created_count: number; failed_rule_count?: number; rule_errors?: { rule_id: number; code: string; error: string }[] }>('/tasks/run-auto-rules')
+}
+
+export function saveUnratedRules(payload: {
+  reminder_days: number | null; reminder_enabled: boolean
+  recycle_days: number | null; recycle_enabled: boolean
+}) {
+  return api.post('/customer-levels/unrated/rules', payload)
 }

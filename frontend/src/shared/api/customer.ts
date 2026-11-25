@@ -17,9 +17,23 @@ export interface CustomerPayload {
   short_name?: string | null
   region?: string | null
   address?: string | null
+  /**
+   * 统一社会信用代码（税号）。18 位、GB 32100-2015 校验位在后端统一校验
+   * （`backend/app/core/tax_no.py`），空格/全角/小写会被规范化，留空表示个人或境外客户。
+   */
+  tax_no?: string | null
   source?: string | null
   level?: string | null
   remark?: string | null
+  /**
+   * 负责人。**可以不填**（主人 2026-10-13：「为啥只能谁创建谁是负责人，不能指定吗，
+   * 没有指定再是自己」）—— 不填 / 传 null 时后端归创建人自己
+   * （`customer/service.create_customer`）。要建给别人就在这里指定。
+   *
+   * ⚠️ 这个字段原来**没在前端类型里**，所以界面即使想传也传不出去，
+   * 看起来就像"只能谁建归谁"。
+   */
+  owner_id?: number | null
   /** 请求幂等键（第八批 8.15）：同一份表单的多次提交必须用同一把键 */
   request_key?: string
 }
@@ -52,6 +66,7 @@ export interface CustomerOpportunity {
   stage_name: string | null
   status: string
   expected_amount: number | null
+  expected_amount_exact?: string | null
   expected_close_date: string | null
   owner_id: number | null
   owner_name: string | null
@@ -68,6 +83,7 @@ export interface CustomerQuote {
   current_version_id: number | null
   current_version_no: number | null
   current_version_amount: number | null
+  current_version_amount_exact?: string | null
   approval_status: string | null
   created_at: string
 }
@@ -131,6 +147,15 @@ export interface ContactDuplicateMatch {
   is_primary: boolean
   score: number
   reasons: string[]
+  /**
+   * 联系方式是否被脱敏（2026-10-14 审查修）。
+   *
+   * 查重接口原来把 `mobile` / `email` **原样**返回，成了脱敏口径漏掉的第六个出口
+   * （后端已改：走同一份 `full_contact_customer_ids` 判据）。
+   * 这里带着标记，界面据此**只给"为什么判它疑似"的证据、不回显号码** ——
+   * 知道"手机号一致"是有用的，看到号码本身不是。
+   */
+  contact_masked?: boolean
 }
 
 export function listCustomers(query: CustomerQuery) {
@@ -160,12 +185,45 @@ export function updateCustomer(id: number, payload: Partial<CustomerPayload>) {
   return api.patch<Customer>(`/customers/${id}`, payload)
 }
 
+/**
+ * 软删客户（03-API §7 `DELETE /customers/{id}`）。
+ *
+ * 只把客户本人置为已删除：名下的联系人/商机/报价/订单/跟进都保留、不改挂；
+ * 删完可在回收站恢复。权限分两档（后端判）：
+ * `customer:delete` 按数据范围删，`customer:delete_own` 只能删自己负责的。
+ */
+export function deleteCustomer(id: number) {
+  return api.delete<null>(`/customers/${id}`)
+}
+
 export function listContacts(customerId: number) {
   return api.get<Contact[]>(`/customers/${customerId}/contacts`)
 }
 
 export function createContact(customerId: number, payload: Partial<Contact>) {
   return api.post<Contact>(`/customers/${customerId}/contacts`, payload)
+}
+
+/**
+ * 改联系人（03-API §8 `PATCH /contacts/{id}`）。
+ *
+ * ⚠️ **脱敏字段不要往这里放**：对没有完整查看权限的人，后端回的号码是
+ * `138****8000` 这种星号形状（响应上有 `contact_masked: true`）。把星号原样
+ * 保存回去会把真实号码覆盖掉 —— 后端现在会拒并说明原因，但界面本来就不该发，
+ * 所以编辑框在脱敏时把那几个字段锁住、并且**根本不提交**它们。
+ */
+export function updateContact(contactId: number, payload: Partial<Contact>) {
+  return api.patch<Contact>(`/contacts/${contactId}`, payload)
+}
+
+/** 删联系人（软删）。同一客户的主联系人被删后主位自然空出。 */
+export function deleteContact(contactId: number) {
+  return api.delete<null>(`/contacts/${contactId}`)
+}
+
+/** 设为主联系人（同一客户下只能有一个，后端会把其余的清掉）。 */
+export function setPrimaryContact(contactId: number) {
+  return api.post<Contact>(`/contacts/${contactId}/set-primary`)
 }
 
 export function transferCustomer(customerId: number, payload: { owner_id: number | null; reason?: string }) {
@@ -320,12 +378,20 @@ export function batchTagCustomers(payload: {
   return api.post<{ affected: number }>('/customers/batch-tag', payload)
 }
 
+export interface CustomerBatchTransferResult {
+  affected: number
+  already_assigned: number
+  unavailable: number
+  documents_moved: number
+  documents_skipped: number
+}
+
 export function batchTransferCustomers(payload: {
   customer_ids: number[]
   owner_id: number | null
   reason?: string
 }) {
-  return api.post<{ affected: number }>('/customers/batch-transfer', payload)
+  return api.post<CustomerBatchTransferResult>('/customers/batch-transfer', payload)
 }
 
 export function deduplicateCustomers(payload: {
@@ -410,6 +476,7 @@ export function listCustomerMergeLogs(customerId: number) {
 
 export interface DuplicateCase {
   id: number
+  assign_existing_blocked_reason?: string | null
   customer_id: number
   customer_name?: string | null
   candidate_id: number
@@ -424,6 +491,7 @@ export interface DuplicateCase {
   status: string
   decision?: string | null
   decision_label?: string | null
+  resolved_owner_id?: number | null
   resolved_at?: string | null
   remark?: string | null
   created_at?: string | null
@@ -437,6 +505,7 @@ export interface DuplicateCase {
  */
 export function listDuplicateCases(query: {
   status?: string
+  customer_id?: number
   page?: number
   page_size?: number
 } = {}) {

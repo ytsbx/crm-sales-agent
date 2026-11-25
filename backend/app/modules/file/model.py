@@ -32,6 +32,9 @@ class FileRecord(Base, IdMixin):
     )
 
 
+CONTRACT_PENDING_SIGNATURE = "pending_signature"
+
+
 class BusinessFile(Base, IdMixin):
     __tablename__ = "business_files"
     __table_args__ = (

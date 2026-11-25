@@ -1,30 +1,31 @@
 """规则执行：公海自动回收与自动任务生成。
 
 这两件事原本写死在代码里，现在改成读规则表执行——业务想调天数不用找我改代码。
-"""
-
-"""规则执行：公海自动回收与自动任务生成。
 
 另外这里集中放**所有可配置的业务参数**：代码里不再出现"魔法数字"，
 每个数字都有一个配置键，管理员在系统设置界面上就能改。
 """
 
+import math
 import re
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
+from app.modules.customer.levels import level_filter, level_label, level_code
 from app.core.audit import write_audit
 from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
-from app.core.timebase import today_business
+from app.core.timebase import to_business, today_business
 from app.modules.customer import duplicates
 from app.modules.customer.model import Customer, CustomerOwnerHistory
 from app.modules.order.model import ORDER_STATUS_LABEL, SalesOrder
-from app.modules.payment.model import PaymentRecord, ReceivablePlan
+from app.modules.payment.model import ReceivablePlan
 from app.modules.quote.model import QUOTE_STATUS_LABEL, Quote, QuoteVersion
 from app.modules.sample.model import (
     CONFIRM_ACCEPTED,
@@ -34,27 +35,47 @@ from app.modules.sample.model import (
     SampleRequest,
 )
 from app.modules.settings.model import (
+    DictionaryItem,
     RECYCLE_OPEN_STATUSES,
     RECYCLE_STATUS_LABEL,
     PublicPoolRecycleCandidate,
     PublicPoolRule,
     TaskRule,
 )
-from app.modules.task.model import Task
-from app.modules.task.scanning import lock_task_scan
+from app.modules.task.model import HANDOVER_SOURCE, Task
+from app.modules.task.scanning import lock_recycle_scan, lock_task_scan
 from app.modules.followup.model import FollowUp
-from app.modules.user.model import User
+from app.modules.user.model import Role, User
 
 # ---------------------------------------------------------------- 可配置参数
 #
 # 约定：键名 → {字段名: 默认值}。数据库里有同名的 SystemSetting 记录时以数据库为准，
 # 所以业务想改数字不用改代码，改了立刻生效。
+#: 新报价的**默认交货条款**（2026-10-09「产品价格与运费分离」）。
+#:
+#: 全项目**只此一份**：`DEFAULT_SETTINGS` 与 `scripts/seed.py` 都引用它，
+#: `quote.service.create_quote` 的代码回退值也从 `DEFAULT_SETTINGS` 取。
+#: 从前这句话在四个地方各写了一遍（配置默认值、代码回退值、种子脚本、迁移），
+#: 改口径时漏掉了种子脚本 —— 全新库跑完种子，新建报价仍带旧文案
+#: 「含运费，送货上门」，与"产品单价不含运费"直接冲突（审查 2026-10-09 实测）。
+#:
+#: ⚠️ 只是**新报价的默认值**：历史版本的 `delivery_terms` 是快照，一个字不动。
+DEFAULT_DELIVERY_TERMS = "产品单价不含运费。运费单列，按已确认的实际金额由本公司代收代付。"
+
+
+LEGACY_POOL_RESTORE_SETTING = "pool_recycle_restore_permission"
+
 DEFAULT_SETTINGS: dict[str, dict] = {
     # 报价
     "company_name": {"text": "示例公司（请替换为公司全称）"},
     "quote_valid_days": {"days": 30},
     "default_payment_terms": {"text": "款到发货"},
-    "default_delivery_terms": {"text": "含运费，送货上门"},
+    # 默认交货条款（2026-10-09「产品价格与运费分离」）。
+    # 原文案「含运费，送货上门」是**旧口径**的说法：那时运费含在产品单价里。
+    # 新口径产品单价不含运费、运费单列并代收代付，继续用旧文案会让客户以为
+    # 报价里已经包了运费 —— 属于会对客户说错话的默认值，必须换掉。
+    # ⚠️ 这里只是**新报价的默认值**：历史版本的 `delivery_terms` 是快照，一个字不动。
+    "default_delivery_terms": {"text": DEFAULT_DELIVERY_TERMS},
     # 核价
     "default_target_margin": {"ratio": 0.30},
     "default_min_margin": {"ratio": 0.15},
@@ -138,11 +159,12 @@ DEFAULT_SETTINGS: dict[str, dict] = {
     #:
     #: ⚠️ **30 天同样是开发默认值**，同上：口径未定，界面上标明。
     "pool_recycle_defer_days": {"days": 30},
-    #: 恢复操作需要哪个权限码。做成配置而不是写死角色：
-    #: "谁能把回收掉的客户还回去"是管理口径，不同公司不一样。
-    #: 默认 `customer:assign` —— 销售主管有这个权限，普通业务员没有。
-    #: 保存时会校验这个码在权限表里真实存在（写错等于谁都恢复不了）。
-    "pool_recycle_restore_permission": {"text": "customer:assign"},
+    #: 履约保护的**最长有效期**（天，2026-10-13 主人拍板）：
+    #: 从最后活跃算起超过这么多天仍无动静，即便有在途报价/订单/打样/未结应收，
+    #: 保护也不再豁免提名 —— 防止"挂一张在途订单长期占位不跟进"。
+    #: 提名后主管复核那道闸仍在（批准时重新检查保护，有保护必须填例外原因）。
+    #: 0 = 不设上限（旧行为：有保护就永不提名）。
+    "pool_recycle_max_protect_days": {"days": 90},
     # 通知渠道（PRD §25 要求"站内 + 企业微信"）。
     # 默认只开站内：企微投递依赖 WECOM_AGENT_ID 与每个用户的 wecom_userid，
     # 没配好之前开成默认会每次都失败，反而把"真失败"淹掉。
@@ -154,6 +176,11 @@ DEFAULT_SETTINGS: dict[str, dict] = {
             "approval": True,
             "task": True,
             "payment": True,
+            # 2026-10-14 补：原来少了 `followup`，升级前写入的行因此缺这个键 ——
+            # 而展示侧当时默认 True、投递侧默认 False，于是"面板显示开、实际不推"。
+            # 判据已统一（`notification/service.wecom_event_enabled`），这里补齐默认值，
+            # 让新装环境四个键都在。
+            "followup": True,
         },
     },
     # 通知分级（文档 §11.4 验收 24）：逐次推 还是 攒进日报，属业务决策
@@ -171,9 +198,20 @@ DEFAULT_SETTINGS: dict[str, dict] = {
     # 只改这里就能跑。字段映射的 key 必须是钉钉控件的 **componentId**
     # （不是中文名——名字对不上钉钉不报错，只把那格留空，"免重复录入"会静默失效）。
     # 例：{"process_code": "PROC-XXXX", "field_map": {"title": "TextField_XXXX", "quantity": "NumberField_XXXX"}}
+    "dingtalk_sample_oa": {"process_code": ""},
+    # 客户起草合同的钉钉签署审批。线上只填真实模板编号和控件映射。
+    "dingtalk_contract_oa": {
+        "process_code": "",
+        "field_map": {},
+        # 可选：把完整正文放进多行文本控件；附件控件建议同时配置，保证长正文不被截断。
+        "content_component": "",
+        "attachment_component": "",
+    },
     "dingtalk_oa": {
         "process_code": "",
         "field_map": {},
+        # 可选：把询价完整摘要写入钉钉多行文本控件；附件仍单独走 OA 附件控件。
+        "content_component": "",
         # 谁发起：owner = 需求负责人对应的人；不填则用当前操作者
         "originator_source": "operator",
     },
@@ -188,14 +226,150 @@ DEFAULT_SETTINGS: dict[str, dict] = {
 #:
 #: 为什么必须挡在入口：预告期写成 -3 天，候选的到期时间会直接算成"过去"，
 #: 于是扫描一提名就立刻可回收；而这类错值往往要到半夜定时任务里才现形。
-SETTING_NUMBER_RULES: dict[str, tuple[str, int, int, str]] = {
-    # key: (字段名, 下限, 上限, 中文名)
-    "pool_recycle_notice_days": ("days", 0, 365, "回收预告期"),
-    "pool_recycle_defer_days": ("days", 0, 365, "主管暂缓等待期"),
+#: 数值类配置的校验规则：**(key, field) → (下限含义, 下限, 上限, 中文名)**。
+#:
+#: ⚠️ 键必须是 `(key, field)` 而不是 `key`（2026-10-14 修我自己的第一版）：
+#: 一个 key 可以有**多个**数值字段（`export` 就有 limit / alert_rows /
+#: alert_window_hours 三个），而**前端只提交被改的那一个**
+#: （`SettingsPage` 写的是 `{[key]: next}`，落库是整对象替换）。
+#: 我第一版按 key 索引，于是"只改 limit"时会拿 `alert_rows=None` 去校验 →
+#: **正常值也被拒**（实测 `export.limit=5000` 报"导出告警行数必须是整数天"）。
+#: 改成按字段索引后，**只校验本次真传了的字段**。
+#:
+#: 为什么要这张表（2026-10-14 审查）：这些配置读侧一直用 `get_number`，
+#: 而 `get_number` **只防 NaN/Inf/类型错，不查上下界** —— 写成负数/0 会被
+#: 原样拿去做业务且**不报错**。实测过的后果：
+#:   · `quote_valid_days = -30` → 新建报价 `valid_until = 今天-30`，**一出生就过期**；
+#:     同时履约保护里 `Quote.valid_until >= today` 不再成立 → 客户被错误回收；
+#:   · `customer_active_days / customer_stale_days = 0` → 两个 cutoff 反转，
+#:     全公司客户被判"沉睡/活跃"；
+#:   · `export.limit = 0` → 所有导出报 413「超过单次上限 0」。
+SETTING_NUMBER_RULES: dict[tuple[str, str], tuple[int, int, str]] = {
+    # (key, field): (下限, 上限, 中文名)
+    ("pool_recycle_notice_days", "days"): (0, 365, "回收预告期"),
+    ("pool_recycle_defer_days", "days"): (0, 365, "主管暂缓等待期"),
+    ("pool_recycle_max_protect_days", "days"): (0, 365, "履约保护最长有效期"),
+    ("quote_valid_days", "days"): (1, 365, "报价有效期"),
+    ("customer_active_days", "days"): (1, 3650, "客户活跃期"),
+    ("customer_stale_days", "days"): (1, 3650, "客户沉睡期"),
+    ("opportunity_risk_days", "days"): (1, 3650, "商机风险预警期"),
+    ("opportunity_stale_days", "days"): (1, 3650, "商机停滞预警期"),
+    ("contract", "monthly_remind_days"): (1, 365, "合同月结提醒提前天数"),
+    # 客户起草合同：钉钉审批通过后，给「上传客户回签合同」待办留几天去追客户盖章。
+    # 它只影响待办截止日与推送，不影响任何单据状态；代码默认 7 天（见
+    # dingtalk/service._notify_contract_review_outcome），属**开发默认值**，
+    # 业务定了之后改这里即生效，不用改代码。
+    ("contract", "countersign_days"): (1, 365, "客户回签跟进天数"),
+    ("export", "limit"): (1, 1_000_000, "单次导出行数上限"),
+    ("export", "alert_rows"): (1, 10_000_000, "导出告警行数"),
+    ("export", "alert_window_hours"): (1, 720, "导出告警统计窗口"),
+    ("logistics_volumetric_ratio", "number"): (100, 100_000, "体积重换算系数"),
+}
+
+#: 比率类配置：**(key, field) → 中文名**。值是 0–1 之间的小数。
+#: 此前**完全没有范围校验**（上一轮审查的已知项），与天数类同一个洞：
+#: 写成 1.5 或 -0.2 会被当"授权利润率/折扣上限"用，审批门槛跟着一起歪
+#: （写大了=不拦，写负了=什么都拦）。
+SETTING_RATIO_RULES: dict[tuple[str, str], str] = {
+    ("default_min_margin", "ratio"): "默认最低毛利率",
+    ("default_target_margin", "ratio"): "默认目标毛利率",
+    ("price_range_ratio", "ratio"): "建议价区间比例",
+    ("hard_floor", "markup_ratio"): "硬底价加成比例",
+    ("export_tax_refund_rate", "ratio"): "出口退税率",
 }
 
 
-def _strict_int(raw: object, label: str, low: int, high: int) -> int:
+def _validate_number_settings(session_key: str, value: object) -> None:
+    """校验本次传了的数值/比率字段；**同时挡住"什么都没传"与"字段是 null"**。
+
+    ## 为什么"只校验传了的字段"还不够（2026-10-15 修，CI 一直红在这）
+
+    这条规则是为了**局部更新**才放宽的：前端只提交被改的那一个字段
+    （`SettingsPage` 写的是 `{[key]: next}`），所以不能拿没传的字段去校验
+    —— 那会把"只改 `export.limit`"判成 `alert_rows` 不合法（我在 2026-10-14 踩过）。
+
+    但同一条规则**顺手把两种真错误也放行了**：
+
+      · `{"value": {}}`      —— **一个字段都没传**。这不是"局部更新"，
+        是"这次没有可用数据"，应当拒；旧代码会因为 `None < low` 比较报错而拒掉它。
+      · `{"days": null}`     —— 字段名在、值是 null。旧代码同样会拒。
+
+    实测（`scripts/check_pool_wait_and_settings.py:378`
+    「缺字段 → 被拒」）：这两种都返回 **200**，坏值落库。
+
+    ## 现在怎么判
+
+    1. **不是字典** → 拒（`[]` / `"x"` / `3` 都不该被当成配置值）；
+    2. **空字典** → 拒（"一个字段都没传"）；
+    3. **本次传了的字段，值是 null** → 拒（字段名都给了，就不该是空）；
+    4. 声明了规则的字段，照旧做上下界/整数/比率校验。
+
+    第 2、3 条**只针对有规则的 key**（`SETTING_NUMBER_RULES` /
+    `SETTING_RATIO_RULES`）—— 其它 key（如 `notification_channels` 这种复合对象）
+    各有各的形状，不在这里一刀切。
+    """
+    # 这个 key 有没有数值类规则
+    has_rules = any(k == session_key for (k, _f) in SETTING_NUMBER_RULES) or any(
+        k == session_key for (k, _f) in SETTING_RATIO_RULES
+    )
+    if not has_rules:
+        return
+
+    if not isinstance(value, dict) or not value:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "配置值不能为空：至少要提供一项要修改的字段",
+            422,
+        )
+
+    # 校验声明了规则的字段
+    for (key, field), (low, high, label) in SETTING_NUMBER_RULES.items():
+        if key != session_key or field not in value:
+            continue
+        _strict_int(value.get(field), label, low, high, allow_zero=key == "logistics_volumetric_ratio")
+    for (key, field), label in SETTING_RATIO_RULES.items():
+        if key != session_key or field not in value:
+            continue
+        _strict_ratio(value.get(field), label)
+
+    # 传了名字但值是 null 的字段一律拒（包括那些暂时没有规则的字段）：
+    # "字段在 → 值必须有效"，把 null 当"保持原值"会让清空操作**静默无效**
+    # （用户以为清掉了，其实原值还在）。
+    blank = [field for field, raw in value.items() if raw is None]
+    if blank:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"这些字段不能为空：{'、'.join(sorted(blank))}",
+            422,
+        )
+
+
+def _strict_ratio(raw: object, label: str) -> float:
+    """把比率配置严格读成 0–1 的小数（与 `_strict_int` 同一套口径）。"""
+    if isinstance(raw, bool):
+        raise AppError(
+            ErrorCode.PARAM_ERROR, f"{label}必须是 0–1 之间的小数，不能填真/假", 422
+        )
+    try:
+        number = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"{label}必须是 0–1 之间的小数，收到的不是数字：{raw!r}",
+            422,
+        ) from None
+    if not math.isfinite(number):
+        raise AppError(
+            ErrorCode.PARAM_ERROR, f"{label}必须是有限数字（不能是 NaN/Infinity）", 422
+        )
+    if number < 0 or number > 1:
+        raise AppError(
+            ErrorCode.PARAM_ERROR, f"{label}须在 0–1 之间（当前 {number}）", 422
+        )
+    return number
+
+
+def _strict_int(raw: object, label: str, low: int, high: int, *, allow_zero: bool = False) -> int:
     """把天数配置严格读成整数（返修单 R14）。
 
     此前用的是 `int(raw)`，它有两个安静的坑：
@@ -207,11 +381,12 @@ def _strict_int(raw: object, label: str, low: int, high: int) -> int:
     现在只认两种输入：**真正的整数**，和**纯数字字符串**（表单可能传字符串）。
     小数、布尔、空、负数串、其它类型一律 422，并说清收到的是什么。
     """
+    allowed = f"0（关闭）或 {low}–{high}" if allow_zero else f"{low}–{high}"
     if isinstance(raw, bool):
         # 必须先挡布尔：bool 是 int 的子类，不挡的话 True 会静默变成 1
         raise AppError(
             ErrorCode.PARAM_ERROR,
-            f"{label}必须是整数天（{low}–{high}），不能填真/假",
+            f"{label}必须是整数（{allowed}），不能填真/假",
             422,
         )
     if isinstance(raw, int):
@@ -221,46 +396,135 @@ def _strict_int(raw: object, label: str, low: int, high: int) -> int:
     else:
         raise AppError(
             ErrorCode.PARAM_ERROR,
-            f"{label}必须是整数天（{low}–{high}），收到的不是整数：{raw!r}",
+            f"{label}必须是整数（{allowed}），收到的不是整数：{raw!r}",
             422,
         )
-    if number < low or number > high:
+    if not (low <= number <= high or (allow_zero and number == 0)):
         raise AppError(
             ErrorCode.PARAM_ERROR,
-            f"{label}须在 {low}–{high} 天之间，当前填的是 {number}",
+            f"{label}须为 {allowed}，当前填的是 {number}",
             422,
         )
     return number
+
+
+def _strict_amount(raw: object, label: str) -> Decimal:
+    """金额门槛的严格校验：非负、最多两位小数。**只核对，不改值**。
+
+    为什么不能直接 `float(raw)` 了事：那样「1e5」也能过（=100000）、
+    「-50000」取绝对值也能过 —— 而这是**决定这张报价该找谁批的钱的门槛**，
+    含糊的值不该落库。
+
+    界面上那个输入框已经拦了一道，这里是**不管从哪个入口写进来都拦得住**
+    的那一道（2026-10-14 主人拍板要的兜底）。
+    """
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+        # 先挡布尔：bool 是 int 的子类，不挡的话 True 会当成 1 收下
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"{label}必须是数字（最多两位小数），收到的不是：{raw!r}",
+            422,
+        )
+    text = str(raw).strip()
+    if not re.fullmatch(r"\d+(\.\d{1,2})?", text):
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"{label}要填数字（最多两位小数，例如 50000 或 50000.00），不限就留空；"
+            f"收到的是：{raw!r}",
+            422,
+        )
+    amount = Decimal(text)
+    # 与报价总额的 Numeric(16, 2) 取值范围一致。
+    if amount > Decimal("99999999999999.99"):
+        raise AppError(ErrorCode.PARAM_ERROR, f"{label}超过报价金额可填写的范围，请核对金额", 422)
+    return amount
 
 
 async def validate_setting_value(
     session: AsyncSession, key: str, value: dict | None
 ) -> None:
     """保存配置前的合法性校验。不合法直接 422，不让坏值落库。"""
-    rule = SETTING_NUMBER_RULES.get(key)
-    if rule is not None:
-        field, low, high, label = rule
-        _strict_int((value or {}).get(field), label, low, high)
-        return
+    # 数值/比率类：只校验**本次真传了的**字段（没传的保持原值）。
+    _validate_number_settings(key, value)
 
-    if key == "pool_recycle_restore_permission":
-        from app.modules.user.model import Permission
+    if key == "hard_floor" and value and "mode" in value:
+        if value["mode"] not in ("off", "cost", "cost_markup"):
+            raise AppError(ErrorCode.PARAM_ERROR, "绝对底价模式无效，请选择关闭、按成本或按成本加成", 422)
 
-        code = str((value or {}).get("text") or "").strip()
-        if not code:
+    if key == "dedup_scoring" and value:
+        if "threshold" in value:
+            _strict_int(value["threshold"], "客户查重阈值", 0, 100)
+        for field in (DEFAULT_SETTINGS[key].keys() & value.keys()) - {"threshold"}:
+            weight = value[field]
+            if not (
+                (type(weight) is int and weight >= 0)
+                or (isinstance(weight, str) and re.fullmatch(r"[0-9]+", weight.strip()))
+            ):
+                raise AppError(ErrorCode.PARAM_ERROR, "客户查重权重必须为非负整数", 422)
+
+    if key == LEGACY_POOL_RESTORE_SETTING:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "请在「角色与数据范围」中配置「恢复公海客户」权限。",
+            422,
+        )
+
+    if key == "approval_levels":
+        # 报价审批分级：决定"这张报价该找谁批"。这份配置坏掉**不会报错**，
+        # 只会默默算错、找错人，所以必须在进库前就看住（2026-10-14 主人拍板）。
+        levels = (value or {}).get("levels")
+        if not isinstance(levels, list) or not levels:
             raise AppError(
                 ErrorCode.PARAM_ERROR,
-                "恢复权限不能留空（默认 customer:assign）",
+                "报价审批分级至少要留一档，否则报价提交时找不到该找谁批",
                 422,
             )
-        exists = (
-            await session.execute(select(Permission.code).where(Permission.code == code))
-        ).first()
-        if exists is None:
-            # 写错一个字母，界面上看起来"设了权限"，实际谁都恢复不了 —— 挡在这里
-            raise AppError(
-                ErrorCode.PARAM_ERROR, f"权限码「{code}」不在系统权限表里，请核对", 422
-            )
+        previous_cap: Decimal | None = None
+        configured_roles: dict[str, int] = {}
+        for index, item in enumerate(levels, start=1):
+            if not isinstance(item, dict):
+                raise AppError(
+                    ErrorCode.PARAM_ERROR, f"第 {index} 档不是一条有效配置", 422
+                )
+            role_codes = item.get("role_codes")
+            if role_codes is not None and (
+                not isinstance(role_codes, list)
+                or any(not isinstance(code, str) or not code.strip() for code in role_codes)
+            ):
+                raise AppError(
+                    ErrorCode.PARAM_ERROR,
+                    f"第 {index} 档的「可审批角色」必须是一组角色码，"
+                    f"收到的不是：{role_codes!r}",
+                    422,
+                )
+            for role_code in role_codes or []:
+                configured_roles.setdefault(role_code, index)
+            raw = item.get("max_amount")
+            if raw is None or (isinstance(raw, str) and not raw.strip()):
+                # 留空 = 不限。它只能出现在最后一档：中间留空之后，后面那些档
+                # 永远轮不到 —— 配的时候看不出来，报价一到就全落进中间那一档。
+                if index != len(levels):
+                    raise AppError(
+                        ErrorCode.PARAM_ERROR,
+                        f"第 {index} 档的金额上限是空的（不限）。「不限」只能放在最后一档，"
+                        "否则后面那些档永远轮不到。",
+                        422,
+                    )
+                continue
+            cap = _strict_amount(raw, f"第 {index} 档的金额上限")
+            if previous_cap is not None and cap <= previous_cap:
+                raise AppError(ErrorCode.PARAM_ERROR,
+                               f"第 {index} 档金额上限必须大于上一档，否则这一档不会被使用。", 422)
+            previous_cap = cap
+        if configured_roles:
+            existing_roles = set(await session.scalars(select(Role.code).where(Role.code.in_(configured_roles))))
+            for role_code, index in configured_roles.items():
+                if role_code not in existing_roles:
+                    raise AppError(
+                        ErrorCode.PARAM_ERROR,
+                        f"第 {index} 档的审批角色「{role_code}」不存在，请重新选择",
+                        422,
+                    )
 
 
 async def recompute_open_candidates(
@@ -319,6 +583,34 @@ async def get_list(session: AsyncSession, key: str, field: str = "levels") -> li
     return raw if isinstance(raw, list) else []
 
 
+async def ensure_dictionary_value(
+    session: AsyncSession,
+    *,
+    type: str,
+    code: str | None,
+    field_label: str,
+) -> None:
+    """校验业务字段引用的是启用中的受控字典项。"""
+    if code is None or not str(code).strip():
+        return
+    value = str(code).strip()
+    row = (
+        await session.execute(
+            select(DictionaryItem).where(
+                DictionaryItem.type == type,
+                DictionaryItem.code == value,
+                DictionaryItem.enabled.is_(True),
+            )
+        )
+    ).scalars().first()
+    if row is None:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"{field_label}“{value}”不在启用中的数据字典里，请先在系统设置维护",
+            400,
+        )
+
+
 async def get_setting(session: AsyncSession, key: str) -> dict:
     """读一个配置项：数据库优先，没有则用代码里的默认值。"""
     from app.modules.settings.model import SystemSetting
@@ -338,8 +630,11 @@ async def get_number(
     value = await get_setting(session, key)
     raw = value.get(field)
     try:
-        return float(raw)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+        number = float(raw)  # type: ignore[arg-type]
+        # JSON/数据库都可能保存 NaN 或 Infinity。它们不是可执行的业务参数：
+        # 传进 timedelta、Decimal 或分页/重试计算后会变成 500 或无穷等待。
+        return number if math.isfinite(number) else fallback
+    except (OverflowError, TypeError, ValueError):
         return fallback
 
 
@@ -384,13 +679,16 @@ def _protection_reason(label: str, detail: str) -> str:
     return f"{label}：{detail}"
 
 
-async def protection_detail(session: AsyncSession) -> dict[int, list[str]]:
+async def protection_detail(
+    session: AsyncSession, *, customer_id: int | None = None
+) -> dict[int, list[str]]:
     """履约保护名单 + **每一笔的具体原因**（返工单 6.4）。
 
     返回 `{客户id: ["在途订单 SH2024-001（生产中）", "有效报价 QT2024-018（已发送，有效期 2026-12-31）"]}`。
 
     为什么要把原因也返回：只给一个 `set[int]` 的话，主管看到"这个客户没被回收"
     却不知道**是被哪张单据拦住的**，想去催也只能靠猜。回收预告页要用它。
+    customer_id 用于扫描锁内定向复核；不传时保留全量查询，保护口径相同。
     """
     # 回收预告里的"今天"按业务日期（§9.10 复审）：与报价过期、客户动态同一个基准
     today = today_business()
@@ -409,33 +707,47 @@ async def protection_detail(session: AsyncSession) -> dict[int, list[str]]:
                 Quote.status.in_(QUOTE_PROTECTIVE_STATUSES),
                 Quote.valid_until.is_not(None),
                 Quote.valid_until >= today,
+                Quote.customer_id == customer_id if customer_id is not None else True,
             )
         )
     ).all():
         add(cid, _protection_reason("有效报价", f"{quote_no}（{QUOTE_STATUS_LABEL.get(status, status)}，有效期至 {valid_until}）"))
 
     # ---- 在途订单 ----
+    #
+    # ⚠️ 口径变更（2026-10-13 主人拍板）：**已签收（`delivered`）不再算"在途"**。
+    # 从前 `delivered` 也在保护里，于是"货都到客户手里了、就是不点完成"能
+    # 永远保护一个不跟进的客户；主人点名要收窄。真正还没结束的是钱
+    # （由下面的"未结应收"保护），货已经交付就不该再顶一遍。
     for cid, order_no, status in (
         await session.execute(
             select(SalesOrder.customer_id, SalesOrder.order_no, SalesOrder.status).where(
-                SalesOrder.status.in_(("pending", "in_production", "shipped", "delivered"))
+                SalesOrder.status.in_(("pending", "in_production", "shipped")),
+                SalesOrder.customer_id == customer_id if customer_id is not None else True,
             )
         )
     ).all():
         add(cid, _protection_reason("在途订单", f"{order_no}（{ORDER_STATUS_LABEL.get(status, status)}）"))
 
-    # ---- 未结应收 ----
-    for cid, order_no in (
+    # ---- 未结应收：**只看还没到期的** ----
+    #
+    # ⚠️ 口径变更（2026-10-13 主人拍板）：**已经逾期的应收不再保护**。
+    # 从前只要节点没取消就保护，与"收不回来也不跟进"长期互相掩护；
+    # 到期还没收齐本身就是不跟进的证据，不该再当免死金牌。
+    # 到期日按**日期**比（不信状态列：时间自己走过时状态可能没刷新）。
+    for cid, order_no, due_date in (
         await session.execute(
-            select(SalesOrder.customer_id, SalesOrder.order_no)
+            select(SalesOrder.customer_id, SalesOrder.order_no, ReceivablePlan.due_date)
             .join(ReceivablePlan, ReceivablePlan.order_id == SalesOrder.id)
             .where(
                 ReceivablePlan.status.in_(("pending", "partial", "overdue")),
+                ReceivablePlan.due_date >= today,
                 SalesOrder.status != "cancelled",
+                SalesOrder.customer_id == customer_id if customer_id is not None else True,
             )
         )
     ).all():
-        add(cid, _protection_reason("未结应收", f"{order_no} 尚有节点未收完"))
+        add(cid, _protection_reason("未结应收", f"{order_no} 尚有节点未收完（到期 {due_date}）"))
 
     # ---- 打样：**客户明确确认接受之后，这张单不再保护**（已确认口径，返工单 6.4）----
     #
@@ -466,13 +778,13 @@ async def protection_detail(session: AsyncSession) -> dict[int, list[str]]:
     #
     # "最新版"就是"没有任何单把它当 parent"的那张：V1→V2→V3 时 V1、V2 都出现在
     # 这个集合里，只有 V3 参与判断，规则自动成立，不用递归去追链头。
-    superseded_ids = set(
-        (
-            await session.execute(
-                select(SampleRequest.parent_id).where(SampleRequest.parent_id.is_not(None))
-            )
-        ).scalars().all()
-    )
+    parents = select(SampleRequest.parent_id).where(SampleRequest.parent_id.is_not(None))
+    if customer_id is not None:
+        parent = aliased(SampleRequest)
+        parents = parents.join(parent, SampleRequest.parent_id == parent.id).where(
+            parent.customer_id == customer_id
+        )
+    superseded_ids = set((await session.execute(parents)).scalars().all())
     sample_stmt = select(
         SampleRequest.customer_id,
         SampleRequest.id,
@@ -484,6 +796,10 @@ async def protection_detail(session: AsyncSession) -> dict[int, list[str]]:
         SampleRequest.status.in_(SAMPLE_OPEN_STATUSES),
         # 客户已明确接受的：**这张单到此为止**
         SampleRequest.confirm_status.is_distinct_from(SAMPLE_CONFIRM_ACCEPTED),
+        # 已软删的同样"到此为止"（2026-10-15）：单子都被当作没建过了，
+        # 还拿它拦着公海回收说不通 —— 那样"删了"反而保护得更牢。
+        SampleRequest.deleted_at.is_(None),
+        SampleRequest.customer_id == customer_id if customer_id is not None else True,
     )
     if superseded_ids:
         sample_stmt = sample_stmt.where(SampleRequest.id.not_in(superseded_ids))
@@ -491,18 +807,9 @@ async def protection_detail(session: AsyncSession) -> dict[int, list[str]]:
         label = SAMPLE_STATUS_LABEL.get(status, status)
         if confirm:
             label = f"{label} / {CONFIRM_STATUS_LABEL.get(confirm, confirm)}"
-        add(cid, _protection_reason("在途打样", f"打样单 #{sample_id}（{label}）"))
+        add(cid, _protection_reason("在途打样", f"打样单编号 {sample_id}（{label}）"))
 
     return out
-
-
-async def _protected_customer_ids(session: AsyncSession) -> set[int]:
-    """履约保护名单（文档 §11.2/场景21）：这些客户暂不回收。
-
-    口径见 `protection_detail` —— 这里只是取它的键集合，
-    **判据只写一处**，避免"定时扫描"和"人工释放"两处各判一套（返工单 6.4 第 6 条）。
-    """
-    return set((await protection_detail(session)).keys())
 
 
 async def recycle_reviewer_ids(
@@ -580,11 +887,15 @@ async def _notify_recycle_candidate(
     from app.modules.notification.model import Notification
     from app.modules.notification.service import channel_settings, notify
 
-    due_text = candidate.due_at.strftime("%Y-%m-%d") if candidate.due_at else "—"
+    # ⚠️ 必须走 `to_business`（2026-10-14）：`candidate.due_at` 是 UTC 瞬时，
+    # 直接 `strftime` 印出来的是 **UTC 日历日** —— 北京时间 00:00–08:00 的通知会
+    # 写前一天。这两行曾在 `b1ebe8f` 修好，`a008b0e`（公海回收口径收窄）基于
+    # 更早的版本改这个函数时又带了回来，`check_output_criteria` 抓到了。
+    due_text = to_business(candidate.due_at).strftime("%Y-%m-%d") if candidate.due_at else "—"
     active = candidate.last_active_at
-    active_text = active.strftime("%Y-%m-%d") if active else "无记录"
+    active_text = to_business(active).strftime("%Y-%m-%d") if active else "无记录"
     reason = (
-        f"{candidate.level or ''} 级客户超过 {candidate.rule_days} 天未跟进"
+        f"{level_label(candidate.level)}客户超过 {candidate.rule_days} 天未跟进"
         if candidate.rule_days
         else "长期未跟进"
     )
@@ -617,8 +928,7 @@ async def _notify_recycle_candidate(
                 "回收预告待复核",
                 f"客户「{customer.name}」{reason}，最近活跃 {active_text}，"
                 f"原负责人 {owner.name if owner else candidate.owner_id}。"
-                f"预告期至 {due_text}，到期后可在「系统设置 → 业务规则 → "
-                f"回收待复核」批准或驳回。",
+                f"预告期至 {due_text}。可前往回收复核查看，到期后可批准或驳回。",
             )
         )
 
@@ -667,6 +977,9 @@ async def _notify_recycle_candidate(
     return sent
 
 
+RECYCLE_REJECTION_COOLDOWN = timedelta(days=30)
+
+
 async def run_public_pool_recycle(
     session: AsyncSession, operator_id: int | None, source: str = "WEB"
 ) -> dict:
@@ -681,25 +994,37 @@ async def run_public_pool_recycle(
     活跃 = max(最近有效联系, 最近业务进展)；有效报价/在途订单/在途打样/
     未结应收的客户按政策保护（§11.2），保护明细随结果一并返回。
     """
+    # B23-P1：手动/定时共用同一把回收防重入锁，避免并发扫描重复提名/抢连接。
+    await lock_recycle_scan(session)
     rules = (
         await session.execute(
             select(PublicPoolRule).where(PublicPoolRule.enabled.is_(True))
         )
     ).scalars().all()
     now = datetime.now(UTC)
+    rejected_since = now - RECYCLE_REJECTION_COOLDOWN
     notice_days = int(await get_number(session, "pool_recycle_notice_days", "days", 7))
+    #: 保护的最长有效期（天，2026-10-13 主人拍板）：从最后活跃算起超过这么多天
+    #: 仍无动静，履约保护不再豁免提名 —— 防止"挂着一张在途订单就长期占位不跟进"。
+    #: 0 = 不设上限（回到旧行为）。
+    max_protect_days = int(
+        await get_number(session, "pool_recycle_max_protect_days", "days", 90)
+    )
     due_at = now + timedelta(days=notice_days)
-    protection = await protection_detail(session)
 
     nominated: list[dict] = []
     protected_skipped: list[dict] = []
     #: 撞单争议中、被冻结自动改派的客户（文档 §11.5 :279）
     disputed_skipped: list[dict] = []
+    #: 有履约保护、但保护已过最长有效期仍被提名的客户（2026-10-13 新增）：
+    #: 名单上单独列出，主管复核时重点看
+    protection_overridden: list[dict] = []
     #: **最近联系时间未知**的历史导入客户（第七批 7.5，用户 2026-10-06 确认口径）：
     #: 先标记未知，补核后才进自动回收候选。这类客户不参与本轮扫描，
     #: 但要单独列出来 —— 名单上"看不见"才最危险，主管得知道有多少条等着补核。
     unknown_contact_skipped: list[dict] = []
     already_open: list[int] = []
+    cooldown_skipped: set[int] = set()
     #: 本轮实际发出去的预告通知条数（一人一条，原负责人与主管分别算）
     notified = 0
 
@@ -720,10 +1045,43 @@ async def run_public_pool_recycle(
             Customer.deleted_at.is_(None),
             Customer.pool_status == "private",
             Customer.owner_id.is_not(None),
-            Customer.level == rule.level,
+            level_filter(Customer.level, rule.level),
         )
         rows = (await session.execute(stmt)).scalars().all()
         for customer in rows:
+            if customer.id in open_ids:
+                already_open.append(customer.id)
+                continue
+            # Initial rows are only candidates: ownership or activity may have changed.
+            # Busy customers are retried next scan; never wait behind an approval
+            # holding candidate -> customer locks while we hold customer locks.
+            customer = (
+                await session.execute(
+                    select(Customer).where(
+                        Customer.id == customer.id,
+                        Customer.owner_id == customer.owner_id,
+                        Customer.deleted_at.is_(None),
+                        Customer.pool_status == "private",
+                        level_filter(Customer.level, rule.level),
+                    ).with_for_update(skip_locked=True)
+                    .execution_options(populate_existing=True)
+                )
+            ).scalars().first()
+            if customer is None:
+                continue
+            # A competing scan may have committed after our initial open_ids read.
+            # Plain MVCC read also sees an open candidate held by an approval,
+            # avoiding an insert waiting on its unique index with the customer held.
+            existing = await session.scalar(
+                select(PublicPoolRecycleCandidate.id).where(
+                    PublicPoolRecycleCandidate.customer_id == customer.id,
+                    PublicPoolRecycleCandidate.status.in_(RECYCLE_OPEN_STATUSES),
+                ).limit(1)
+            )
+            if existing is not None:
+                open_ids.add(customer.id)
+                already_open.append(customer.id)
+                continue
             # 联系时间未知 + 没有任何真实业务进展 → 不能按"刚联系过"或"刚建档"算，
             # 也不能直接回收（我们并不知道他是什么时候联系的）。跳过并列入待补核。
             if customer.last_contact_unknown and customer.last_progress_at is None:
@@ -744,18 +1102,50 @@ async def run_public_pool_recycle(
                 last = last.replace(tzinfo=UTC)
             if last >= cutoff:
                 continue
-            if customer.id in protection:
-                # 场景21：超期但仍在履约（有效报价/在途订单/打样/应收）→
-                # 按政策豁免本轮。**保护原因一并记下**，主管要看得到是哪张单拦住的
-                protected_skipped.append(
-                    {
-                        "customer_id": customer.id,
-                        "name": customer.name,
-                        "level": rule.level,
-                        "reasons": protection[customer.id],
-                    }
-                )
+            recently_rejected = await session.scalar(
+                select(PublicPoolRecycleCandidate.id).where(
+                    PublicPoolRecycleCandidate.customer_id == customer.id,
+                    PublicPoolRecycleCandidate.status == "rejected",
+                    PublicPoolRecycleCandidate.decided_at > rejected_since,
+                ).limit(1)
+            )
+            if recently_rejected is not None:
+                cooldown_skipped.add(customer.id)
                 continue
+            # Recheck current protective documents after locking and refreshing the
+            # customer. An OA draft may add protection without touching activity.
+            reasons = (await protection_detail(session, customer_id=customer.id)).get(customer.id, [])
+            if reasons:
+                # 保护**不是无限期**（2026-10-13 主人拍板）：从最后活跃算起超过
+                # `pool_recycle_max_protect_days` 天仍然没动静的，保护失效、照常提名，
+                # 名单上带出原因让主管重点看（"有在途订单仍被提名"）。
+                # 主管复核那道闸还在：批准时 `decide_candidate` 会重新检查保护，
+                # 有保护必须填例外原因才放行 —— 所以"照样提名"不等于"随便收走"。
+                # 配 0 = 不设上限（回到"有保护就永不提名"的旧行为）。
+                if max_protect_days > 0 and (now - last) >= timedelta(days=max_protect_days):
+                    protection_overridden.append(
+                        {
+                            "customer_id": customer.id,
+                            "name": customer.name,
+                            "level": rule.level,
+                            "idle_days": (now - last).days,
+                            "max_protect_days": max_protect_days,
+                            "reasons": reasons,
+                        }
+                    )
+                    # 不 continue：往下走正常提名
+                else:
+                    # 场景21：超期但仍在履约（有效报价/在途订单/打样/应收）→
+                    # 按政策豁免本轮。**保护原因一并记下**，主管要看得到是哪张单拦住的
+                    protected_skipped.append(
+                        {
+                            "customer_id": customer.id,
+                            "name": customer.name,
+                            "level": rule.level,
+                            "reasons": reasons,
+                        }
+                    )
+                    continue
             # 撞单争议未结案 → 冻结自动改派（文档 §11.5 :279）
             if await duplicates.is_disputed(session, customer.id):
                 disputed_skipped.append(
@@ -775,7 +1165,7 @@ async def run_public_pool_recycle(
                 last_contact_at=customer.last_followup_at,
                 last_progress_at=customer.last_progress_at,
                 last_active_at=last,
-                protection_snapshot=protection.get(customer.id, []),
+                protection_snapshot=reasons,
                 status="pending",
                 notice_at=now,
                 due_at=due_at,
@@ -807,6 +1197,9 @@ async def run_public_pool_recycle(
                     "level": rule.level,
                     "rule_days": rule.days,
                     "last_active_at": last.isoformat(),
+                    #: 这份提名是"保护已过最长有效期、仍被提名"（2026-10-13）：
+                    #: 非空说明有在途报价/订单/打样/应收，主管复核重点看
+                    "protection_reasons": reasons,
                 }
             )
 
@@ -823,27 +1216,42 @@ async def run_public_pool_recycle(
             "nominated": nominated[:100],
             "protected_count": len(protected_skipped),
             "protected": protected_skipped[:100],
+            #: 保护过期被硬提名的（2026-10-13）：主管复核要重点看这批
+            "protection_overridden_count": len(protection_overridden),
+            "protection_overridden": protection_overridden[:100],
             "disputed_count": len(disputed_skipped),
             "disputed": disputed_skipped[:100],
             "unknown_contact_count": len(unknown_contact_skipped),
             "unknown_contact": unknown_contact_skipped[:100],
             "already_open_count": len(already_open),
+            "cooldown_count": len(cooldown_skipped),
+            "enabled_rule_count": len(rules),
             "notified_count": notified,
         },
     )
     await session.commit()
+    # B23-02：预告通知落库后立即投递，否则停在 pending 收不到（同 B22-06 口径）
+    from app.modules.notification.service import dispatch_after_commit
+
+    await dispatch_after_commit(session)
     return {
         #: 本轮**提名**（预告）了多少个 —— 注意不是"回收了多少"
         "nominated_count": len(nominated),
         "candidates": nominated,
         "protected_count": len(protected_skipped),
         "protected": protected_skipped[:100],
+        #: 有履约保护、但保护已过最长有效期仍被提名的客户（2026-10-13）：
+        #: 名单上单独列出——"有在途订单仍被提名，请主管重点看"
+        "protection_overridden_count": len(protection_overridden),
+        "protection_overridden": protection_overridden[:100],
         "disputed_count": len(disputed_skipped),
         "disputed": disputed_skipped[:100],
         #: 联系时间未知、待补核的历史客户：这批不参与自动回收
         "unknown_contact_count": len(unknown_contact_skipped),
         "unknown_contact": unknown_contact_skipped[:100],
         "already_open_count": len(already_open),
+        "cooldown_count": len(cooldown_skipped),
+        "enabled_rule_count": len(rules),
         #: 发出了多少条预告通知（原负责人与复核主管分别计）
         "notified_count": notified,
         "notice_days": notice_days,
@@ -919,6 +1327,18 @@ def serialize_candidate(
         "last_progress_at": row.last_progress_at.isoformat() if row.last_progress_at else None,
         "last_active_at": row.last_active_at.isoformat() if row.last_active_at else None,
         "protection": row.protection_snapshot or [],
+        #: **这条是不是「破例提名」**（2026-10-13 主人拍板的最长保护期）：
+        #: 有履约保护、但从最后活跃算起已超过 `pool_recycle_max_protect_days`
+        #: 天没动静 → 照样提名。复核名单上要单独点出来让主管重点看。
+        #:
+        #: 判据写**这里**、前端只渲染（不复刻判据）：正常提名路径上，有保护的
+        #: 客户根本生成不了候选（会被 `protected_skipped` 拦掉、`continue`），
+        #: 所以复核阶段快照里还有保护事项，就只可能是"保护失效照提"。
+        #: 范围收在**待复核 / 已暂缓**：主管一旦批准执行，这份快照会被
+        #: "例外执行的理由"重写（`decide_candidate` 里 `protection_snapshot = reasons`），
+        #: 含义已经变了，不能再挂"破例提名"的牌子。
+        "protection_overridden": bool(row.protection_snapshot)
+        and row.status in ("pending", "deferred"),
         "status": row.status,
         "status_label": RECYCLE_STATUS_LABEL.get(row.status, row.status),
         "notice_at": row.notice_at.isoformat() if row.notice_at else None,
@@ -932,6 +1352,8 @@ def serialize_candidate(
         "earliest_action_at": earliest.isoformat() if earliest else None,
         "decided_by": row.decided_by,
         "decided_at": row.decided_at.isoformat() if row.decided_at else None,
+        "reconsider_at": (row.decided_at + RECYCLE_REJECTION_COOLDOWN).isoformat()
+        if row.status == "rejected" and row.decided_at else None,
         "decision_note": row.decision_note,
         "deferred_until": row.deferred_until.isoformat() if row.deferred_until else None,
         "defer_days": row.defer_days,
@@ -1173,6 +1595,13 @@ async def decide_candidate(
             409,
         )
 
+    if level_code(customer.level) != level_code(row.level):
+        raise AppError(
+            ErrorCode.VERSION_CONFLICT,
+            "客户等级已调整，这条回收提名的等级依据已失效，请驳回后重新扫描",
+            409,
+        )
+
     # **等待期校验**（返修单第六批第 8 条）：预告期 / 暂缓期没满就不该收。
     # 这是"等待期限真正执行"那一条的直接落点 —— 此前 due_at / deferred_until
     # 只是存着好看。
@@ -1199,7 +1628,9 @@ async def decide_candidate(
         row.early_approved = True
 
     # **执行前重新检查**：预告发出之后有没有新的履约事项 / 新的跟进
-    reasons = (await protection_detail(session)).get(customer.id, [])
+    if customer.last_contact_unknown and customer.last_progress_at is None:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "最近联系时间待核实，请先补核后再决定是否回收", 422)
+    reasons = (await protection_detail(session, customer_id=customer.id)).get(customer.id, [])
     latest = _last_active_at(customer)
     if latest is not None and latest.tzinfo is None:
         latest = latest.replace(tzinfo=UTC)
@@ -1235,7 +1666,7 @@ async def decide_candidate(
             old_owner_id=customer.owner_id,
             new_owner_id=None,
             reason=(
-                f"{row.level or ''} 级客户超过 {row.rule_days} 天未跟进，"
+                f"{level_label(row.level)}客户超过 {row.rule_days} 天未跟进，"
                 f"经主管复核回收"
                 + ("（例外：仍有履约保护，理由见候选记录）" if exception else "")
                 + ("（提前回收：未满预告/暂缓等待期，理由见候选记录）" if early else "")
@@ -1352,7 +1783,7 @@ async def restore_candidate(
             customer_id=customer.id,
             old_owner_id=None,
             new_owner_id=row.owner_id,
-            reason=f"恢复公海回收（候选 #{row.id}）",
+            reason=f"恢复公海回收（候选编号 {row.id}）",
             operator_id=operator_id,
             created_at=now,
         )
@@ -1392,7 +1823,7 @@ async def assert_no_protection(
     判据与定时扫描、回收执行**完全共用** `protection_detail`，
     不在这里另判一套 —— 两处各判一套必然漂移。
     """
-    reasons = (await protection_detail(session)).get(customer_id, [])
+    reasons = (await protection_detail(session, customer_id=customer_id)).get(customer_id, [])
     if not reasons:
         return []
     if allow_exception and (reason or "").strip():
@@ -1427,6 +1858,54 @@ async def _has_open_task(session: AsyncSession, rule_id: int, **filters) -> bool
     return (await session.execute(stmt)).first() is not None
 
 
+def validate_task_rule(rule: TaskRule) -> None:
+    if rule.trigger_type not in ("quote_no_followup", "customer_silent", "receivable_due"):
+        raise AppError(ErrorCode.PARAM_ERROR, "自动任务触发类型无效", 422)
+    config = rule.trigger_config or {}
+    if not isinstance(config, dict):
+        raise AppError(ErrorCode.PARAM_ERROR, "自动任务触发配置格式无效", 422)
+    raw_days = config.get("days", 3)
+    try:
+        days = int(raw_days)
+        if isinstance(raw_days, bool) or days < 0 or str(days) != str(raw_days):
+            raise ValueError
+        delta = timedelta(days=days)
+        if rule.trigger_type == "receivable_due":
+            today_business() + delta
+        else:
+            datetime.now(UTC) - delta
+    except (TypeError, ValueError, OverflowError):
+        raise AppError(ErrorCode.PARAM_ERROR, "自动任务天数必须为可计算的非负整数", 422) from None
+    if rule.trigger_type == "customer_silent":
+        levels = config.get("levels") or ["A"]
+        if not isinstance(levels, list) or not all(isinstance(level, str) for level in levels):
+            raise AppError(ErrorCode.PARAM_ERROR, "客户等级须为列表", 422)
+
+
+async def reject_duplicate_task_rule(session: AsyncSession, candidate: TaskRule) -> None:
+    if candidate.status != "active":
+        return
+
+    def title(rule: TaskRule) -> str:
+        action = rule.action_config if isinstance(rule.action_config, dict) else {}
+        return str(action.get("title") or rule.name).strip()
+
+    def levels(rule: TaskRule) -> set[str]:
+        config = rule.trigger_config if isinstance(rule.trigger_config, dict) else {}
+        values = config.get("levels") or ["A"]
+        return {value for value in values if isinstance(value, str)} if isinstance(values, list) else set()
+
+    rules = (await session.execute(select(TaskRule).where(
+        TaskRule.status == "active", TaskRule.trigger_type == candidate.trigger_type,
+    ).order_by(TaskRule.id))).scalars().all()
+    for rule in rules:
+        if rule.id == candidate.id or title(rule) != title(candidate):
+            continue
+        if candidate.trigger_type != "customer_silent" or levels(candidate) & levels(rule):
+            raise AppError(ErrorCode.DUPLICATE,
+                           f"此规则与「{rule.name}」（编号 {rule.id}）会给同一对象生成同名任务，请调整适用范围或任务名称，或停用原规则。", 409)
+
+
 async def run_auto_tasks(
     session: AsyncSession, operator_id: int | None, source: str = "WEB"
 ) -> dict:
@@ -1442,6 +1921,15 @@ async def run_auto_tasks(
     errors: list[dict] = []
     followup_customer_ids: set[int] = set()
     now = datetime.now(UTC)
+    disabled_owners = set((await session.execute(
+        select(User.id).where(User.status != "active")
+    )).scalars())
+
+    def task_owner(owner_id: int) -> dict:
+        if owner_id in disabled_owners:
+            return {"owner_id": None, "source_business_type": HANDOVER_SOURCE,
+                    "source_business_id": owner_id}
+        return {"owner_id": owner_id}
 
     for rule in rules:
         config = rule.trigger_config or {}
@@ -1460,9 +1948,19 @@ async def run_auto_tasks(
             errors.append({"rule_id": rule.id, "code": rule.code, "error": "days 必须是非负整数"})
             continue
 
+        # 天数能转整数，不代表日期可计算；与其它坏配置一样只跳过本规则。
+        try:
+            delta = timedelta(days=days_ahead)
+            if rule.trigger_type == "receivable_due":
+                due_before = today_business() + delta
+            else:
+                cutoff = now - delta
+        except OverflowError:
+            errors.append({"rule_id": rule.id, "code": rule.code, "error": "days 超出日期可计算范围"})
+            continue
+
         if rule.trigger_type == "quote_no_followup":
             # 报价发送后 N 天没有跟进记录 → 提醒负责人
-            cutoff = now - timedelta(days=days_ahead)
             latest_sent = (select(QuoteVersion.quote_id, func.max(QuoteVersion.sent_at).label("sent_at"))
                            .where(QuoteVersion.sent_at.is_not(None))
                            .group_by(QuoteVersion.quote_id).subquery())
@@ -1500,7 +1998,7 @@ async def run_auto_tasks(
                     task_type="followup",
                     customer_id=quote.customer_id,
                     quote_id=quote.id,
-                    owner_id=quote.owner_id,
+                    **task_owner(quote.owner_id),
                     priority="high",
                     status="pending",
                     due_at=now,
@@ -1514,7 +2012,6 @@ async def run_auto_tasks(
 
         elif rule.trigger_type == "customer_silent":
             # 某等级客户 N 天没联系 → 给负责人建跟进任务
-            cutoff = now - timedelta(days=days_ahead)
             levels = config.get("levels") or ["A"]
             if not isinstance(levels, list) or not all(isinstance(level, str) for level in levels):
                 errors.append({"rule_id": rule.id, "code": rule.code, "error": "levels 必须是客户等级列表"})
@@ -1525,19 +2022,17 @@ async def run_auto_tasks(
                         Customer.deleted_at.is_(None),
                         Customer.pool_status == "private",
                         Customer.owner_id.is_not(None),
-                        Customer.level.in_(levels),
+                        level_filter(Customer.level, levels),
                     )
                 )
             ).scalars().all()
-            # 派生缓存不能让既有未来任务失效；扫描时从真实未完任务批量校准。
-            next_due = dict((await session.execute(
-                select(Task.customer_id, func.min(Task.due_at)).where(
-                    Task.customer_id.in_([row.id for row in rows]), Task.task_type == "followup",
-                    Task.status.in_(("pending", "doing")), Task.due_at.is_not(None),
-                ).group_by(Task.customer_id)
-            )).all()) if rows else {}
+            # B23-06：派生缓存校准改为锁内重算（refresh_next_followup_at 先锁客户行），
+            # 避免无锁批量写把用户刚设的未来跟进时间擦成旧值/空。
+            from app.modules.customer.service import refresh_next_followup_at
+
             for customer in rows:
-                customer.next_followup_at = next_due.get(customer.id)
+                await refresh_next_followup_at(session, customer.id)
+                await session.refresh(customer)
                 # 同一活跃时钟口径：业务进展（报价/打样/下单/回款）也算"有联系"
                 last = _last_active_at(customer)
                 if last is None:
@@ -1567,7 +2062,7 @@ async def run_auto_tasks(
                     title=f"{title_template}：{customer.name}",
                     task_type="followup",
                     customer_id=customer.id,
-                    owner_id=customer.owner_id,
+                    **task_owner(customer.owner_id),
                     priority="high",
                     status="pending",
                     due_at=now,
@@ -1586,32 +2081,36 @@ async def run_auto_tasks(
             # 原来取的是 `now.date()`，而 now 是 UTC —— 北京时间凌晨 0-8 点会比业务日
             # 早一天，而默认的自动任务调度正好是凌晨跑：当天到期的提醒要等到第二天
             # 才发得出来。存储不变（due_date 本来就是 date 列），只换"今天"的取法。
-            due_before = today_business() + timedelta(days=days_ahead)
+            open_reminder = select(Task.id).where(
+                Task.order_id == SalesOrder.id, Task.task_type == "payment",
+                Task.source == "system", Task.status.in_(("pending", "doing")),
+            ).exists()
             rows = (
                 await session.execute(
-                    select(ReceivablePlan, SalesOrder)
+                    select(SalesOrder, func.min(ReceivablePlan.due_date))
+                    .select_from(ReceivablePlan)
                     .join(SalesOrder, SalesOrder.id == ReceivablePlan.order_id)
                     .where(
                         ReceivablePlan.status.in_(["pending", "partial", "overdue"]),
                         ReceivablePlan.due_date <= due_before,
                         SalesOrder.status != "cancelled",
+                        SalesOrder.owner_id.is_not(None),
+                        ~open_reminder,
                     )
+                    .group_by(SalesOrder.id)
+                    .order_by(SalesOrder.id)
                 )
             ).all()
-            for plan, order in rows:
-                if not order.owner_id:
-                    continue
-                if await _has_open_task(session, rule.id, order_id=order.id):
-                    continue
+            for order, due_date in rows:
                 task = Task(
-                    title=f"{title_template}：{order.order_no} {plan.plan_name}",
+                    title=f"{title_template}：{order.order_no}",
                     task_type="payment",
                     customer_id=order.customer_id,
                     order_id=order.id,
-                    owner_id=order.owner_id,
+                    **task_owner(order.owner_id),
                     priority="high",
                     status="pending",
-                    due_at=datetime.combine(plan.due_date, datetime.min.time(), tzinfo=UTC),
+                    due_at=datetime.combine(due_date, datetime.min.time(), tzinfo=UTC),
                     source="system",
                     source_rule_id=rule.id,
                 )
@@ -1708,18 +2207,12 @@ async def notify_due_followups(session: AsyncSession) -> int:
 
 async def confirmed_not_paid_count(session: AsyncSession) -> int:
     """给设置页用的小指标：已确认回款但节点还没结清的条数。"""
-    rows = (
-        await session.execute(
-            select(PaymentRecord.receivable_plan_id).where(PaymentRecord.status == "confirmed").distinct()
-        )
-    ).scalars().all()
-    if not rows:
-        return 0
-    plans = (
-        await session.execute(
-            select(ReceivablePlan.id).where(
-                ReceivablePlan.id.in_([int(x) for x in rows if x]), ReceivablePlan.status != "paid"
-            )
-        )
-    ).scalars().all()
-    return len(plans)
+    from decimal import Decimal
+    from app.modules.payment import service as payment_service
+    effective = payment_service.effective_allocations()
+    plans = (await session.execute(select(ReceivablePlan)
+        .join(SalesOrder, SalesOrder.id == ReceivablePlan.order_id)
+        .where(ReceivablePlan.id.in_(select(effective.c.plan_id)),
+               ReceivablePlan.status != "cancelled", SalesOrder.status != "cancelled"))).scalars().all()
+    amounts = await payment_service.confirmed_amounts(session, [p.id for p in plans])
+    return sum(amounts.get(p.id, Decimal(0)) < p.amount for p in plans)

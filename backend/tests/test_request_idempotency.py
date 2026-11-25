@@ -15,7 +15,7 @@
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import event, select
+from sqlalchemy import event, select, text
 from sqlalchemy.orm import Session
 
 from tests.conftest import SyncSessionAsAsync, _register_sqlite_bigint_as_integer
@@ -95,6 +95,29 @@ async def test_same_key_same_payload_replays(session):
     assert second.should_replay is True
     assert second.replay_payload == {"id": 7, "name": "宏远包装"}
     assert second.replay_id == 7
+
+
+@pytest.mark.anyio
+async def test_concurrent_reservation_replay_preserves_prior_write(session, monkeypatch):
+    key = dict(user_id=1, action="customer:create", request_key="race", payload=PAYLOAD)
+    winner = await reserve(session, **key)
+    await complete(session, winner, result_payload={"id": 7})
+    await session.execute(text("CREATE TABLE prior_write (id INTEGER)"))
+    await session.commit()
+    await session.execute(text("INSERT INTO prior_write VALUES (1)"))
+
+    # 模拟首次查询时另一请求尚未提交，再走真实的唯一约束冲突。
+    execute = session.execute
+
+    async def miss_once(_stmt):
+        monkeypatch.setattr(session, "execute", execute)
+        return await execute(select(RequestKey).where(RequestKey.id < 0))
+
+    monkeypatch.setattr(session, "execute", miss_once)
+    replay = await reserve(session, **key)
+    assert replay.replay_payload == {"id": 7}
+    await session.commit()
+    assert (await session.execute(text("SELECT id FROM prior_write"))).scalar_one() == 1
 
 
 @pytest.mark.anyio
@@ -201,16 +224,19 @@ async def test_complete_makes_the_payload_json_safe(session):
         result_id=9,
     )
     stored = reservation.row.result_payload
+    assert isinstance(stored, str)  # Q4 决策2：精确原文
     json.dumps(stored)  # JSON 列的要求：必须可直接序列化
-    assert stored["created_at"] == created_at.isoformat()
-    assert stored["amount"] == 12.5
-    assert stored["tags"][0]["at"] == created_at.isoformat()
+    back = json.loads(stored, parse_float=Decimal)
+    assert back["created_at"] == created_at.isoformat()
+    assert back["amount"] == Decimal("12.50")
+    assert back["tags"][0]["at"] == created_at.isoformat()
 
     replay = await reserve(
         session, user_id=1, action="customer:create", request_key="k-json", payload=PAYLOAD
     )
     assert replay.should_replay is True
-    json.dumps(replay.replay_payload)
+    from app.core.jsonio import exact_json_dumps
+    exact_json_dumps(replay.replay_payload)
 
 
 @pytest.mark.anyio

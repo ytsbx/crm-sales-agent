@@ -67,3 +67,82 @@ def test_invisible_or_deleted_destination_never_creates_clone(code, message, sta
         session.add.assert_not_called()
         session.flush.assert_not_awaited()
     asyncio.run(scenario())
+
+
+@pytest.mark.anyio
+async def test_copy_items_empty_selection_and_quantity_only(monkeypatch):
+    from decimal import Decimal
+
+    from conftest import SyncSessionAsAsync, make_engine
+    from sqlalchemy.orm import Session
+    from app.modules.opportunity.model import OpportunityItem
+    from app.modules.product import service as products
+
+    monkeypatch.setattr(products, "ensure_skus_for_new_business", AsyncMock())
+    engine = make_engine()
+    OpportunityItem.__table__.create(engine)
+    with Session(engine) as raw:
+        source = OpportunityItem(opportunity_id=1, sku_id=1, quantity=3,
+                                 target_price=100, currency="USD", specification="来源规格")
+        target = OpportunityItem(opportunity_id=2, sku_id=1, quantity=1,
+                                 target_price=12, currency="CNY", specification="原规格")
+        raw.add_all([source, target])
+        raw.flush()
+        session = SyncSessionAsAsync(raw)
+
+        empty = await service.copy_items_from(
+            session, target_opportunity_id=2, source_opportunity_id=1, sku_ids=[]
+        )
+        assert empty == {"source_total": 0, "added": 0, "replaced": 0, "skipped": 0}
+        assert raw.query(OpportunityItem).count() == 2
+        replaced = await service.copy_items_from(
+            session, target_opportunity_id=2, source_opportunity_id=1,
+            sku_ids=[1], on_conflict="replace",
+        )
+        assert replaced["replaced"] == 1
+        assert (target.quantity, target.target_price, target.currency, target.specification) == (
+            Decimal(3), Decimal(12), "CNY", "原规格",
+        )
+        with pytest.raises(AppError, match="只支持人民币"):
+            await service.copy_items_from(
+                session, target_opportunity_id=2, source_opportunity_id=1,
+                sku_ids=[1], on_conflict="add",
+            )
+        assert raw.query(OpportunityItem).count() == 2
+
+
+@pytest.mark.anyio
+async def test_disabled_product_blocks_new_items_without_removing_old_items(monkeypatch):
+    from conftest import SyncSessionAsAsync, make_engine
+    from sqlalchemy.orm import Session
+    from app.modules.opportunity.model import OpportunityItem
+    from app.modules.order import service as orders
+    from app.modules.product.model import Product, Sku
+
+    monkeypatch.setattr(orders, "ensure_currency_allowed", AsyncMock(return_value="CNY"))
+    engine = make_engine()
+    for model in (Product, Sku, OpportunityItem):
+        model.__table__.create(engine)
+    with Session(engine) as raw:
+        raw.add(Product(id=1, name="停用产品", status="inactive"))
+        raw.add(Sku(id=1, product_id=1, sku_code="R26", name="在用 SKU", status="active"))
+        raw.add(OpportunityItem(opportunity_id=1, sku_id=1, quantity=1))
+        raw.flush()
+        class DeletingSession(SyncSessionAsAsync):
+            async def delete(self, obj):
+                raw.delete(obj)
+
+        session = DeletingSession(raw)
+        with pytest.raises(AppError, match="产品.*停用"):
+            await orders.create_order(
+                session, user_id=1, customer_id=1, items=[SimpleNamespace(sku_id=1)]
+            )
+        with pytest.raises(AppError, match="产品.*停用"):
+            await service.replace_items(
+                session, opportunity_id=2, items=[{"sku_id": 1, "quantity": 2}]
+            )
+        assert raw.query(OpportunityItem).count() == 1
+        historical = await service.replace_items(
+            session, opportunity_id=1, items=[{"sku_id": 1, "quantity": 2}]
+        )
+        assert len(historical) == 1 and historical[0].quantity == 2

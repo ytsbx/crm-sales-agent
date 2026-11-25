@@ -1,4 +1,5 @@
 import type { CSSProperties, ReactNode } from 'react'
+import HelpTip from './HelpTip'
 
 /**
  * 表单字段的标签行。
@@ -16,12 +17,35 @@ import type { CSSProperties, ReactNode } from 'react'
 export default function FormLabel({
   children,
   required,
+  conditionallyRequired,
   hint,
+  help,
+  helpLabel,
   style,
+  className,
 }: {
   children: ReactNode
   /** 必填：在标签后跟一个红色星号 */
   required?: boolean
+  /**
+   * **条件必填**：在标签后跟一个灰色空心星 `*`，并且**必须同时给 `hint`**
+   * 说明"什么条件下必填"。
+   *
+   * ## 为什么要有这一档（主人 2026-10-13 截图反馈）
+   *
+   * 案例库的「关键动作 / 可复用做法」是**二选一**（提交审核时至少填一项），
+   * 存草稿时两项都不要求。所以：
+   *   · 打**实心红星**是撒谎 —— 看起来两项都必填、而且存草稿就要填
+   *     （2026-10-06 就是因此把星号去掉的）；
+   *   · 但只留一行灰色小字，规则**不显眼** —— 主人扫一眼的结论就是
+   *     "必填的怎么没标星号"。
+   *
+   * 所以给第三档：**空心灰星**代表"有条件下必填"，比纯文字显眼、
+   * 又不会被误读成"现在就必填"。空心 vs 实心的区别写在 `index.css`
+   * 的 `.required-mark-conditional`，并在标签后用 `hint` 把条件讲出来
+   * （`ops/check_form_required_marks.py` 会强制"标了就必须有 hint"）。
+   */
+  conditionallyRequired?: boolean
   /**
    * 灰色小字说明，跟在标签（和星号）后面。
    *
@@ -30,11 +54,24 @@ export default function FormLabel({
    * 这种规则用星号标不出来（标了就是假的），只能用一句话讲明白。
    */
   hint?: string
+  /**
+   * 字段名旁边的小「?」说明。给第一次用、光看名字猜不出含义或口径的字段用；
+   * 一句话讲清楚「它是什么/怎么算」，不要重复表单里已经看得见的格式要求。
+   */
+  help?: string
+  /** 读屏器用来念「XX 说明」；缺省取 children 的纯文本。 */
+  helpLabel?: string
   /** 个别地方标签的字号/颜色本来就不同（如设置页用小号次要色），从这里覆盖 */
   style?: CSSProperties
+  /**
+   * 沿用调用方的类名。给"本来就有自己的标签类"的地方用
+   * （如报价发送弹窗的 `send-field-label`）—— 换成 FormLabel 时不丢那套样式，
+   * 也不至于让既有测试的 DOM 判据失效。
+   */
+  className?: string
 }) {
   return (
-    <div style={{ marginBottom: 4, ...style }}>
+    <div className={className} style={{ marginBottom: 'var(--crm-space-1)', ...style }}>
       {children}
       {required && (
         // aria-hidden：读屏器念一声「星号」对使用者没有帮助，必填最终由
@@ -43,7 +80,22 @@ export default function FormLabel({
           *
         </span>
       )}
+      {!required && conditionallyRequired && (
+        // 空心灰星：有条件下必填。空心是为了与"现在就必填"的实心红星区分开，
+        // 具体条件由旁边的 hint 说清（标了星却不给 hint 会被静态检查拦下）。
+        <span className="required-mark-conditional" aria-hidden="true">
+          *
+        </span>
+      )}
       {hint && <span className="label-hint">{hint}</span>}
+      {help && (
+        <span style={{ marginLeft: 6, display: 'inline-flex', verticalAlign: '-2px' }}>
+          <HelpTip
+            forLabel={helpLabel ?? (typeof children === 'string' ? children : '字段')}
+            text={help}
+          />
+        </span>
+      )}
     </div>
   )
 }

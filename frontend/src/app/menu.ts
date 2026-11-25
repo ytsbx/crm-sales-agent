@@ -40,6 +40,7 @@ export interface MenuItem {
   ready: boolean
   /** 需要的权限码；字符串数组表示"任一命中即可"。缺省 = 所有人可见。 */
   permission?: string | string[]
+  hideWithoutPermission?: boolean
   /**
    * 另一个身份看同一个入口时该叫什么。
    *
@@ -49,6 +50,14 @@ export interface MenuItem {
    * `when` 命中且没有主权限时，用 `label` 显示（返修单 R12）。
    */
   altLabel?: { when: string; label: string }
+  /**
+   * 既没有主权限、也没命中 `altLabel` 的**普通成员**看到的名字。
+   *
+   * 例：`/settings` 对谁都开着（每个人都要能改自己的密码、看自己的权限），
+   * 但普通业务员进去只看得到「我的」那一页 —— 菜单上写「系统设置」会让他
+   * 以为点错了地方（他会去找用户、角色，结果一个都没有）。
+   */
+  plainLabel?: string
 }
 
 export interface MenuGroup {
@@ -61,8 +70,15 @@ export const MENU_GROUPS: MenuGroup[] = [
     title: '销售作业',
     items: [
       { key: 'workbench', path: '/workbench', label: '工作台', icon: IconHome, ready: true },
+      // 销售任务记录"接下来要做什么"，和客户/商机/订单是同一班人同一条线，
+      // 放在工作台后面作为每天的业务入口，不再归到运营管理。
+      { key: 'tasks', path: '/tasks', label: '销售任务', icon: IconCheckList, ready: true, permission: 'task:view' },
       { key: 'leads', path: '/leads', label: '线索中心', icon: IconFilter, ready: true, permission: 'lead:view' },
       { key: 'customers', path: '/customers', label: '客户中心', icon: IconUserGroup, ready: true, permission: 'customer:view' },
+      // 公海回收复核不单列菜单项（2026-11-19 主人："不用单独做一个板块吧"）。
+      // 它本来就是「公海客户」的后续动作：谁该被回收、批不批，跟公海池是一件事。
+      // 现在挂在「客户中心」的「回收复核」页签里 —— 一处看池子、一处做决定。
+      // 路由 /pool-recycle 保留，只给老链接兜底，菜单上不再出现。
       { key: 'duplicate-cases', path: '/duplicate-cases', label: '撞单裁定', icon: IconVerify, ready: true, permission: 'customer:view' },
       {
         key: 'opportunities',
@@ -73,8 +89,9 @@ export const MENU_GROUPS: MenuGroup[] = [
         permission: 'opportunity:view',
       },
       { key: 'quotes', path: '/quotes', label: '报价中心', icon: IconFile, ready: true, permission: 'quote:view' },
-      { key: 'orders', path: '/orders', label: '订单中心', icon: IconBox, ready: true, permission: 'order:view' },
+      // 样品是下单前的动作（进展会回写商机），排在报价与订单之间，顺着业务链路走。
       { key: 'samples', path: '/samples', label: '样品管理', icon: IconGift, ready: true, permission: 'sample:view' },
+      { key: 'orders', path: '/orders', label: '订单中心', icon: IconBox, ready: true, permission: 'order:view' },
       { key: 'receivables', path: '/receivables', label: '回款中心', icon: IconCreditCard, ready: true, permission: 'payment:view' },
     ],
   },
@@ -84,8 +101,11 @@ export const MENU_GROUPS: MenuGroup[] = [
       { key: 'products', path: '/products', label: '产品中心', icon: IconBriefcase, ready: true, permission: 'product:view' },
       // 价格中心 / 物流试算挂在 pricing 模块下，读接口用 product:view，维护用 price:manage
       { key: 'prices', path: '/prices', label: '价格中心', icon: IconPriceTag, ready: true, permission: ['price:manage', 'product:view'] },
+      // 「核价」（/pricing）不再单列菜单：它只是价格中心的一个试算工具，
+      // 全部依据（成本、标准价、客户特殊价、让价权限）都在价格中心那一页里
+      // —— 主人 2026-11-21「不用为核价单独做一个大模块呀」。
+      // 入口在价格中心的页头「核价试算」抽屉；深链 /pricing 仍然可用（报价单会带参跳过来）。
       { key: 'logistics', path: '/logistics', label: '物流试算', icon: IconSend, ready: true, permission: ['price:manage', 'product:view'] },
-      { key: 'tasks', path: '/tasks', label: '销售任务', icon: IconCheckList, ready: true, permission: 'task:view' },
       { key: 'approvals', path: '/approvals', label: '审批中心', icon: IconTickCircle, ready: true, permission: 'quote:view' },
       { key: 'documents', path: '/documents', label: '文档管理', icon: IconFolder, ready: true, permission: 'order:view' },
       { key: 'cases', path: '/cases', label: '案例库', icon: IconStar, ready: true, permission: 'quote:view' },
@@ -95,7 +115,7 @@ export const MENU_GROUPS: MenuGroup[] = [
       // 别处链接文案（「已转需求」「去看这条需求」）本来就都叫「定制需求」，
       // 只有标签和标题还挂着「知识库」——这次统一过来。编号前缀 XQ 正是
       // 「需求」的拼音首字母，改完两者才对得上。
-      { key: 'inquiries', path: '/inquiries', label: '定制需求', icon: IconInbox, ready: true },
+      { key: 'inquiries', path: '/inquiries', label: '定制需求', icon: IconInbox, ready: true, permission: 'quote:view' },
       {
         key: 'analytics',
         path: '/analytics',
@@ -105,8 +125,16 @@ export const MENU_GROUPS: MenuGroup[] = [
         // 各分析接口的权限不同，任一可看即给入口
         permission: ['customer:view', 'opportunity:view', 'quote:view', 'payment:view', 'product:view'],
       },
+    ],
+  },
+  {
+    title: '智能与协同',
+    items: [
+      { key: 'agent', path: '/agent', label: 'AI 助手', icon: IconComment, ready: true, permission: 'agent:use' },
+      { key: 'wecom', path: '/wecom', label: '企业微信', icon: IconAt, ready: true, permission: 'wecom:view', hideWithoutPermission: true },
       // 回收站：三块（线索/产品/客户）集中在一个页面。任一业务模块可看即给入口，
       // 页面内部再按各自权限决定显示哪几块（与"数据分析"同一套写法）。
+      // 它是恢复误删记录的系统工具，放最底部、紧挨系统设置，不占业务分组的位置。
       {
         key: 'recycle-bin',
         path: '/recycle-bin',
@@ -115,26 +143,23 @@ export const MENU_GROUPS: MenuGroup[] = [
         ready: true,
         permission: ['lead:view', 'product:view', 'customer:view'],
       },
-    ],
-  },
-  {
-    title: '智能与协同',
-    items: [
-      { key: 'agent', path: '/agent', label: 'AI Sales Agent', icon: IconComment, ready: true, permission: 'agent:use' },
-      { key: 'wecom', path: '/wecom', label: '企业微信', icon: IconAt, ready: true, permission: 'wecom:view' },
       {
         key: 'settings',
         path: '/settings',
         label: '系统设置',
-        // 销售主管拿的是 `customer:pool_review`（公海回收复核），**不是**
-        // `settings:manage`。原来这条只认 settings:manage，于是主管**常规菜单里
-        // 根本没有入口**，只能靠回收预告的通知链接撞进去（返修单 R12）。
-        // 现在两种权限任一命中都给入口，且**不给他系统设置权限本身**；
-        // 没有 settings:manage 时菜单改名 —— 他进去本来就只看得到复核那一块。
-        altLabel: { when: 'customer:pool_review', label: '公海回收复核' },
+        // 这个入口对**所有人**开：每个人都要能改自己的密码、看自己的权限。
+        // 但不同身份进去看到的东西完全不同，所以菜单名要跟着身份换（否则
+        // 主管会以为自己拿到了整个系统设置、业务员会以为自己点错了地方）。
+        //
+        // 只认 `settings:manage`。销售主管拿的是 `customer:pool_review`
+        // （公海回收复核）—— 那件事已经搬到「销售作业 › 公海回收」独立页，
+        // 不再需要靠给系统设置加权限、再把菜单改名来伪装（2026-11-19）。
+        // 没有 settings:manage 的人进来看不到规则页签；普通成员只剩「我的」。
+        permission: 'settings:manage',
+        // 两种权限都没有的普通成员：进去只有「我的」那一页。
+        plainLabel: '我的',
         icon: IconSetting,
         ready: true,
-        permission: ['settings:manage', 'customer:pool_review'],
       },
     ],
   },
@@ -146,26 +171,53 @@ export function matchMenu(pathname: string): MenuItem | undefined {
   return MENUS.find((item) => pathname === item.path || pathname.startsWith(`${item.path}/`))
 }
 
-/** 与后端 require_permission 的判定对齐：admin 直通，数组权限任一命中即可。 */
-function hasPermission(
-  user: { roles: string[]; permissions?: string[] } | null,
+/**
+ * 与后端 require_permission 的判定对齐：admin 直通，数组权限任一命中即可。
+ *
+ * ⚠️ **入参的字段一律当"可能没有"处理**（2026-10-13）：
+ * 登录态是**持久化**的（`crm-auth`），旧版本留下的那份数据会被新版代码直接读出来用。
+ * 前一版这里写 `user.roles.includes('admin')`，而登录接口 `_user_brief` 只返回
+ * `{id, name, username}`（没有 roles）——两者一叠加，只要本地存的是那份不完整的 user，
+ * **整个 AppLayout（每一页）都会崩**，界面上出现的是 React 的英文报错和调用栈
+ * （`Cannot read properties of undefined (reading 'includes')` + `at hasPermission`），
+ * 排查脚本实测复现过。
+ *
+ * TypeScript 的类型标注（`roles: string[]`）**拦不住运行时**：数据是从 localStorage
+ * 读出来的 JSON，类型只是"我以为的形状"。所以这里用局部变量 + `?? []` 兜底，
+ * 缺字段就按"没有这个权限"处理（与 `!user` 同一口径：宁可少给权限，不可崩页面）。
+ */
+export function hasPermission(
+  user: { roles?: string[]; permissions?: string[] } | null | undefined,
   permission?: string | string[],
 ): boolean {
   if (!permission) return true
   if (!user) return false
-  if (user.roles.includes('admin')) return true
+  const roles = user.roles ?? []
+  if (roles.includes('admin')) return true
   const granted = user.permissions ?? []
   const needed = Array.isArray(permission) ? permission : [permission]
   return needed.some((code) => granted.includes(code))
 }
 
-/** 菜单按当前用户权限过滤后的分组（权限不足的入口直接不显示）。 */
-export function visibleMenuGroups(
-  user: { roles: string[]; permissions?: string[] } | null,
-): MenuGroup[] {
+/**
+ * 菜单分组（**不再按权限过滤**，主人 2026-10-12 拍板）。
+ *
+ * ## 为什么改了
+ *
+ * 从前这里 `filter(hasPermission)` —— 权限不足的入口**整个不显示**。
+ * 于是"管理员把某个角色的权限收回"之后，那个人看到的菜单里那一项**消失了**，
+ * 他分不清是「我没有这个权限」还是「系统没有这个功能」。
+ *
+ * 主人选的是：**入口留着**，点进去由 `RoutePermissionGuard` 把原因说明白
+ * （"该功能存在，只是你这个角色看不到它"）。判断仍然用同一份 `hasPermission`。
+ *
+ * ⚠️ `ready: false` 的项照旧不显示 —— 那是"功能还没做"，与权限无关，
+ * 两件事不能混：一个该说"你没权限"，一个本就该说"还没做"。
+ */
+export function visibleMenuGroups(user: { roles: string[]; permissions?: string[] } | null): MenuGroup[] {
   return MENU_GROUPS.map((group) => ({
     ...group,
-    items: group.items.filter((item) => item.ready && hasPermission(user, item.permission)),
+    items: group.items.filter((item) => item.ready && (!item.hideWithoutPermission || hasPermission(user, item.permission))),
   })).filter((group) => group.items.length > 0)
 }
 
@@ -180,10 +232,17 @@ export function menuLabel(
   item: MenuItem,
   user: { roles: string[]; permissions?: string[] } | null,
 ): string {
-  const alt = item.altLabel
-  if (alt) {
-    const primary = Array.isArray(item.permission) ? item.permission[0] : item.permission
-    if (!hasPermission(user, primary) && hasPermission(user, alt.when)) return alt.label
+  if (item.key === 'settings') {
+    const hasManagementTab = hasPermission(user, ['settings:manage', 'user:manage', 'audit:view'])
+      || (hasPermission(user, 'customer:view') && hasPermission(user, 'customer:update'))
+    return hasManagementTab ? item.label : (item.plainLabel ?? item.label)
   }
-  return item.label
+  const primary = Array.isArray(item.permission) ? item.permission[0] : item.permission
+  // 有主权限 → 就是本名（管理员看到的是「系统设置」）。
+  if (primary && hasPermission(user, primary)) return item.label
+  // 没有主权限：先按 altLabel 改名（返修单 R12：主管看到的是「公海回收复核」）……
+  const alt = item.altLabel
+  if (alt && hasPermission(user, alt.when)) return alt.label
+  // ……都没命中，说明这是个什么管理权限都没有的普通成员，用他看得懂的那个名字。
+  return item.plainLabel ?? item.label
 }

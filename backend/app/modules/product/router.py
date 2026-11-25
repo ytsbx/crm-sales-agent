@@ -8,14 +8,18 @@
 直接 422）。换个前缀比调整注册顺序更不容易被后来的人改坏。
 """
 
+from decimal import Decimal, InvalidOperation
+
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
+from app.core.patch_schema import FIELD_LABELS
 from app.core.response import ok, page_data, paginate
 from app.modules.integration.model import IntegrationDiff
 from app.modules.product import master as master_svc
@@ -24,9 +28,10 @@ from app.modules.product.model import Product, Sku
 from app.modules.product.schema import (
     ProductCreate,
     ProductUpdate,
-    SkuCreate,
     SkuAuthorityRequest,
+    SkuCreate,
     SkuIngestRequest,
+    SkuLocalConfirmRequest,
     SkuMasterDiffConfirmRequest,
     SkuRenameRequest,
     SkuStandaloneCreate,
@@ -102,6 +107,32 @@ async def get_product(
     return ok(svc.serialize_product(product, sku_count=counts.get(product.id, 0)))
 
 
+def _check_edit_baseline(record, changes: dict, expected: dict[str, str | None] | None) -> None:
+    if expected is None:
+        return
+    if set(expected) != set(changes):
+        raise AppError(ErrorCode.PARAM_ERROR, "请重新打开编辑窗口后保存", 422)
+
+    conflicts = []
+    for field, original in expected.items():
+        current = getattr(record, field)
+        if current == changes[field]:
+            continue
+        if isinstance(current, (Decimal, int)) and original is not None:
+            try:
+                matches = current == Decimal(original)
+            except InvalidOperation:
+                matches = False
+        else:
+            matches = (str(current) if current is not None else None) == original
+        if not matches:
+            model = "SkuUpdate" if isinstance(record, Sku) else "ProductUpdate"
+            label = FIELD_LABELS.get(f"{model}.{field}") or FIELD_LABELS.get(field, "资料")
+            conflicts.append(label)
+    if conflicts:
+        raise AppError(ErrorCode.VERSION_CONFLICT, f"同事已修改「{'、'.join(conflicts)}」，请核对最新值后保存。", 409)
+
+
 @router.patch("/products/{product_id}")
 async def update_product(
     product_id: int,
@@ -110,9 +141,14 @@ async def update_product(
     user: CurrentUser = Depends(require_permission("product:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    product = await svc.get_product_or_404(session, product_id)
+    # 产品更新与软删/恢复共用产品行锁，避免更新在级联删除之后又把已删产品写活。
+    product = await svc.lock_product(session, product_id)
+    if product is None or product.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "产品不存在", 404)
     before = svc.serialize_product(product)
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True, exclude={"expected_fields"})
+    _check_edit_baseline(product, changes, payload.expected_fields)
+    for field, value in changes.items():
         setattr(product, field, value)
     await session.flush()
     await write_audit(
@@ -235,7 +271,10 @@ async def list_product_skus(
         .order_by(Sku.id.asc())
     )
     rows = (await session.execute(stmt)).scalars().all()
-    return ok([svc.serialize_sku(sku, product_name=product.name) for sku in rows])
+    from app.modules.pricing.service import sku_cost_statuses
+    cost_statuses = await sku_cost_statuses(session, [sku.id for sku in rows])
+    return ok([{**svc.serialize_sku(sku, product_name=product.name),
+                "cost_status": cost_statuses[sku.id]} for sku in rows])
 
 
 @router.post("/products/{product_id}/skus")
@@ -255,10 +294,15 @@ async def create_sku(
     product = await svc.lock_product(session, product_id)
     if product is None or product.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "产品不存在", 404)
-    await svc.ensure_sku_code_unique(session, payload.sku_code)
-    sku = Sku(**payload.model_dump(), product_id=product.id)
+    data = payload.model_dump()
+    data["sku_code"] = await svc.resolve_new_sku_code(session, payload.sku_code)
+    sku = Sku(**data, product_id=product.id)
     session.add(sku)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise AppError(ErrorCode.DUPLICATE, f"SKU 编码 {data['sku_code']} 已存在", 409) from exc
     await write_audit(
         session,
         operator_id=user.id,
@@ -301,7 +345,10 @@ async def list_skus(
     rows = (
         await session.execute(stmt.offset((page - 1) * page_size).limit(page_size))
     ).all()
-    items = [svc.serialize_sku(sku, product_name=name) for sku, name in rows]
+    from app.modules.pricing.service import sku_cost_statuses
+    cost_statuses = await sku_cost_statuses(session, [sku.id for sku, _ in rows])
+    items = [{**svc.serialize_sku(sku, product_name=name),
+              "cost_status": cost_statuses[sku.id]} for sku, name in rows]
     return ok(page_data(items, total, page, page_size))
 
 
@@ -313,14 +360,25 @@ async def update_sku(
     user: CurrentUser = Depends(require_permission("product:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    sku = await svc.get_sku_or_404(session, sku_id)
-    data = payload.model_dump(exclude_unset=True)
+    locked = await svc.lock_sku_with_product(session, sku_id)
+    if locked is None:
+        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
+    sku, product = locked
+    if sku.deleted_at is not None or product.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
+    data = payload.model_dump(exclude_unset=True, exclude={"expected_fields"})
+    _check_edit_baseline(sku, data, payload.expected_fields)
+    await master_svc.require_local_editable(session, sku, data)
     if "sku_code" in data:
         await svc.ensure_sku_code_unique(session, data["sku_code"], exclude_id=sku.id)
     before = svc.serialize_sku(sku)
     for field, value in data.items():
         setattr(sku, field, value)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise AppError(ErrorCode.DUPLICATE, f"SKU 编码 {data.get('sku_code')} 已存在", 409) from exc
     await write_audit(
         session,
         operator_id=user.id,
@@ -341,7 +399,12 @@ async def enable_sku(
     user: CurrentUser = Depends(require_permission("product:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    sku = await svc.get_sku_or_404(session, sku_id)
+    locked = await svc.lock_sku_with_product(session, sku_id)
+    if locked is None:
+        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
+    sku, product = locked
+    if sku.deleted_at is not None or product.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
     sku.status = "active"
     await write_audit(
         session, operator_id=user.id, action="enable", business_type="sku", business_id=sku.id
@@ -356,7 +419,12 @@ async def disable_sku(
     user: CurrentUser = Depends(require_permission("product:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    sku = await svc.get_sku_or_404(session, sku_id)
+    locked = await svc.lock_sku_with_product(session, sku_id)
+    if locked is None:
+        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
+    sku, product = locked
+    if sku.deleted_at is not None or product.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
     sku.status = "disabled"
     await write_audit(
         session, operator_id=user.id, action="disable", business_type="sku", business_id=sku.id
@@ -374,7 +442,12 @@ async def delete_sku(
 ):
     from datetime import UTC, datetime
 
-    sku = await svc.get_sku_or_404(session, sku_id)
+    locked = await svc.lock_sku_with_product(session, sku_id)
+    if locked is None:
+        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
+    sku, product = locked
+    if sku.deleted_at is not None or product.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
     before = svc.serialize_sku(sku)
     sku.deleted_at = datetime.now(UTC)
     await write_audit(
@@ -413,23 +486,10 @@ async def restore_sku(
     锁住产品之后 SKU 还要**重新读一遍**（`populate_existing`），
     否则拿到的可能是锁之前读进内存的旧值。
     """
-    product_id = (
-        await session.execute(select(Sku.product_id).where(Sku.id == sku_id))
-    ).scalar_one_or_none()
-    if product_id is None:
+    locked = await svc.lock_sku_with_product(session, sku_id)
+    if locked is None:
         raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
-
-    product = await svc.lock_product(session, int(product_id))
-    row = (
-        await session.execute(
-            select(Sku)
-            .where(Sku.id == sku_id)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
-    ).scalars().first()
-    if row is None:
-        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
+    row, product = locked
 
     await recycle_svc.restore_sku(session, row, product=product)
     await write_audit(
@@ -485,11 +545,15 @@ async def create_standalone_sku(
     product = await svc.lock_product(session, payload.product_id)
     if product is None or product.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "产品不存在", 404)
-    await svc.ensure_sku_code_unique(session, payload.sku_code)
     data = payload.model_dump(exclude={"product_id"})
+    data["sku_code"] = await svc.resolve_new_sku_code(session, payload.sku_code)
     sku = Sku(**data, product_id=product.id)
     session.add(sku)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise AppError(ErrorCode.DUPLICATE, f"SKU 编码 {data['sku_code']} 已存在", 409) from exc
     await write_audit(
         session,
         operator_id=user.id,
@@ -555,8 +619,8 @@ async def attach_product_file(
     product_id: int,
     request: Request,
     file_id: int = Query(..., description="先调 POST /files/upload 拿到的文件 id"),
-    category: str | None = None,
-    remark: str | None = None,
+    category: str | None = Query(None, max_length=32),
+    remark: str | None = Query(None, max_length=255),
     user: CurrentUser = Depends(require_permission("product:manage")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -606,6 +670,14 @@ async def attach_product_file(
     record = await file_service.lock_file_row(session, file_id)
     if record is None:
         raise AppError(ErrorCode.NOT_FOUND, f"文件 id={file_id} 不存在", 404)
+    if not await visible_object(
+        session, user, business_type="product", business_id=product_id, write=True
+    ) or not await can_access_file(session, user, file_id):
+        raise AppError(
+            ErrorCode.DATA_SCOPE_DENIED,
+            "不能给该产品挂附件：产品或文件已不在你的可见范围内",
+            403,
+        )
     link = BusinessFile(
         business_type="product",
         business_id=product_id,
@@ -898,6 +970,57 @@ async def set_sku_field_authority(
     return ok(result, result["message"])
 
 
+@router.post("/sku-master/skus/{sku_id}/confirm-local")
+async def confirm_local_sku_master(
+    sku_id: int,
+    payload: SkuLocalConfirmRequest,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("product:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """**本地直接确认**主数据：核对本地值后一次确认并冻结一版快照。
+
+    补的是这条链缺的那一段（审查 2026-10-10 实测的 P1 流程阻断）：
+    本地建 SKU 不产生确认记录与快照，唯一的确认动作又挂在**差异记录**上，
+    于是"零差异"的本地 SKU 没有可引用的已确认版本 → 正式发送被硬拦、无路可走。
+    "从外部导入一次"也不是可靠出口：来源值与本地一致时零差异，仍然没有入口。
+
+    确认的是**当前本地值**（与差异核定的"保留本地"同一口径），
+    记录操作人与时间并生成 `sku_master_versions` 快照，供正式报价引用。
+    """
+    if payload.sku_id != sku_id:
+        raise AppError(ErrorCode.PARAM_ERROR, "路径里的 sku_id 与请求体不一致", 422)
+    result = await master_svc.confirm_local_master(
+        session,
+        sku_id=sku_id,
+        fields=tuple(payload.fields) if payload.fields else master_svc.QUOTE_DISPLAY_FIELDS,
+        note=payload.note,
+        operator_id=user.id,
+    )
+    await write_audit(
+        session,
+        operator_id=user.id,
+        # 「又核对了一遍、但确认值没变」与「真的确认/改了值」分开记
+        # （主人 2026-10-10 拍板：不改确认时间，但要留核对痕迹）。
+        # 这样两个问题都答得出来："确认值变过几次"（看字段的 confirmed_version）
+        # 与"有人核对过几次"（看这两类审计的条数）。
+        action=("sku_master_recheck" if result.get("recheck") else "sku_master_confirm_local"),
+        business_type="sku",
+        business_id=sku_id,
+        after={
+            "confirmed_fields": result["confirmed_fields"],
+            "changed_fields": result.get("changed_fields") or [],
+            "values": result["values"],
+            "version_no": result["version_no"],
+            "snapshot_created": result.get("snapshot_created"),
+            "note": payload.note,
+        },
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(result, result["message"])
+
+
 @router.post("/sku-master/diffs/{diff_id}/confirm")
 async def confirm_sku_master_diff(
     diff_id: int,
@@ -909,7 +1032,7 @@ async def confirm_sku_master_diff(
     """核定一条 SKU 主数据差异：**唯一**能改 SKU 关键字段的入口，改动留版本快照。"""
     diff = await session.get(IntegrationDiff, diff_id)
     if diff is None or diff.domain != "sku_master":
-        raise AppError(ErrorCode.NOT_FOUND, f"SKU 主数据差异 #{diff_id} 不存在", 404)
+        raise AppError(ErrorCode.NOT_FOUND, f"SKU 主数据差异编号 {diff_id} 不存在", 404)
     result = await master_svc.confirm_sku_diff(
         session,
         diff,

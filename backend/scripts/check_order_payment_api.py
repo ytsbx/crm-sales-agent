@@ -252,13 +252,16 @@ def main():
     check('GET /receivables/{id}', res.get('code'), 0)
     check('带订单号', res['data']['order_no'] is not None, True)
 
+    # 尾款建 1300 而不是 1400：应收写入口有「计划合计 ≤ 订单总额」校验
+    # （assert_receivable_amount_fits，bdd6efc9 有意收紧）。下面「只改金额」
+    # 会把定金 600 改成 700，给尾款留出 100 的余量，合计 700+1300=2000 刚好装下。
     status, res = call('POST', '/receivables', token=admin,
-                       body={'plan_name': '尾款', 'due_date': next_due, 'amount': 1400})
+                       body={'plan_name': '尾款', 'due_date': next_due, 'amount': 1300})
     check('缺 order_id 被拒', res.get('code'), 40003)
 
     status, res = call('POST', '/receivables', token=admin,
                        body={'order_id': order_id, 'plan_name': '尾款', 'due_date': next_due,
-                             'amount': 1400})
+                             'amount': 1300})
     check('订单内入口同逻辑', res.get('code'), 0)
     plan2_id = res['data']['id']
 
@@ -380,9 +383,11 @@ def main():
         ('GET /orders/{id}/receivables', 'GET', f'/orders/{order_id}/receivables', None),
         ('GET /orders/{id}/payments', 'GET', f'/orders/{order_id}/payments', None),
         ('POST /orders/{id}/refresh-status', 'POST', f'/orders/{order_id}/refresh-status', None),
-        ('POST /orders/{id}/sync-erp', 'POST', f'/orders/{order_id}/sync-erp', None),
+        ('POST /orders/{id}/sync-erp', 'POST', f'/orders/{order_id}/sync-erp?confirm=true', None),
         ('GET erp status', 'GET', f'/integrations/erp/orders/{order_id}/status', None),
-        ('POST erp sync', 'POST', f'/integrations/erp/orders/{order_id}/sync', None),
+        # 2026-10-12（第二轮审查 P2）：推单入口统一要 confirm=true。这里验的是
+        # **数据范围**（先判范围、后判确认），带上确认参数才是在验范围本身。
+        ('POST erp sync', 'POST', f'/integrations/erp/orders/{order_id}/sync?confirm=true', None),
         ('GET /receivables/{id}', 'GET', f'/receivables/{plan_id}', None),
         ('PATCH /receivables/{id}', 'PATCH', f'/receivables/{plan_id}', {'amount': 1}),
         ('DELETE /receivables/{id}', 'DELETE', f'/receivables/{plan2_id}', None),

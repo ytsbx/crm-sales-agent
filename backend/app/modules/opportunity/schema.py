@@ -1,23 +1,35 @@
 from datetime import date
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field
-from app.core.patch_schema import PatchModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from app.core.patch_schema import CreateModel, PatchModel
+from app.modules.order.schema import ReceivablePlanIn
 
 
 
-class OpportunityCreate(BaseModel):
+class OpportunityCreate(CreateModel):
     customer_id: int
     title: str = Field(min_length=1, max_length=200)
     primary_contact_id: int | None = None
     source: str | None = None
     stage_id: int | None = None
-    expected_amount: float | None = None
+    # 与数据库 Numeric(16,2) 对齐；Decimal 的有限数校验会拒绝 NaN/Infinity。
+    expected_amount: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=2
+    )
     expected_close_date: date | None = None
     owner_id: int | None = None
     competitor: str | None = None
     risk_level: str | None = None
     next_action: str | None = None
+
+    @field_validator("title")
+    @classmethod
+    def _title_blank(cls, value):
+        value = value.strip()
+        if not value:
+            raise ValueError("商机标题不能为空")
+        return value
 
 
 class OpportunityUpdate(PatchModel):
@@ -26,11 +38,21 @@ class OpportunityUpdate(PatchModel):
     title: str | None = None
     primary_contact_id: int | None = None
     source: str | None = None
-    expected_amount: float | None = None
+    expected_amount: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=2
+    )
     expected_close_date: date | None = None
     competitor: str | None = None
     risk_level: str | None = None
     next_action: str | None = None
+
+    @field_validator("title")
+    @classmethod
+    def _title_not_null(cls, value):
+        # B19-08：显式 title:null/空白 会写非空列 500，提前拒（不传=不改）
+        if value is None or not value.strip():
+            raise ValueError("商机标题不能为空")
+        return value.strip()
 
 
 class StageChange(BaseModel):
@@ -56,9 +78,12 @@ class OpportunityConfirmWin(BaseModel):
     win_quote_version_id: int | None = None
     delivery_date: date | None = None
     remark: str | None = None
+    #: 收款计划（2026-10-13 改动三）：不传 = 一条「全款」。
+    #: 类型与报价转单**共用同一个模型**，免得两处判据漂移。
+    receivable_plan: ReceivablePlanIn | None = None
 
 
-class OpportunityItemCreate(BaseModel):
+class OpportunityItemCreate(CreateModel):
     sku_id: int
     # 数值的取值范围与小数位要**跟库列对齐**（第 12.5 条那半句）：数量是
     # `Numeric(16,3)`、目标价是 `Numeric(16,4)`，写法照抄订单明细
@@ -103,7 +128,8 @@ class OpportunityItemUpdate(PatchModel):
 class OpportunityAssign(BaseModel):
     """变更商机负责人（03-API §11）。"""
 
-    owner_id: int | None = None
+    # B20-03（用户已确认拒空）：必须指定在职负责人，null 会让商机变无主、非 all 范围全 403
+    owner_id: int = Field(gt=0)
     remark: str | None = None
 
 
@@ -156,7 +182,7 @@ class RecommendProductsRequest(BaseModel):
     keyword: str | None = None
 
 
-class StageCreate(BaseModel):
+class StageCreate(CreateModel):
     """新增阶段（03-API §13）。"""
 
     model_config = ConfigDict(extra="ignore")

@@ -12,17 +12,23 @@
 
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import Select, delete, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
+from app.modules.customer.duplicates import MERGED_DECISION
 from app.modules.customer.model import (
     Contact,
     Customer,
+    CustomerDuplicateCase,
     CustomerMergeLog,
+    CustomerOwnerHistory,
     Tag,
     customer_tags,
 )
+from app.modules.user.model import User
 
 
 def _now() -> datetime:
@@ -45,37 +51,110 @@ async def get_tag_or_404(session: AsyncSession, tag_id: int) -> Tag:
     return tag
 
 
+async def lock_tag_or_404(session: AsyncSession, tag_id: int) -> Tag:
+    """锁标签行，串行化改名/删除，避免删除等待期间继续写旧对象。"""
+    tag = (
+        await session.execute(
+            select(Tag)
+            .where(Tag.id == tag_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if tag is None:
+        raise AppError(ErrorCode.NOT_FOUND, "标签不存在", 404)
+    return tag
+
+
 async def find_tag_by_name(session: AsyncSession, name: str) -> Tag | None:
     return (
         await session.execute(select(Tag).where(Tag.name == name.strip()))
     ).scalar_one_or_none()
 
 
+#: 与库列一一对应（超了会撞约束报 500）：`name varchar(64)`、`type varchar(32)`
+TAG_NAME_MAX = 64
+TAG_TYPE_MAX = 32
+
+
+def normalize_tag_name(raw: str) -> str:
+    """标签名的**唯一**校验入口（审查 B2-05）：去空格 → 非空 → 长度。
+
+    从前新增与编辑各写一套，而且编辑那套只判"值非空"：
+      · 名称改成三个空格 → 200，落库成**空字符串**（`strip()` 之后没再判空）；
+      · 名称改成 65 个字符 → **500**（撞上 `tags.name` 的 `String(64)`）。
+    两处口径不一致、且非法输入报的是服务器错误，调用方看不出是自己填错了。
+    现在共用一个函数，非法输入一律 400 并说清原因。
+    """
+    name = (raw or "").strip()
+    if not name:
+        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "标签名不能为空（空格也不算）")
+    if len(name) > TAG_NAME_MAX:
+        raise AppError(
+            ErrorCode.PARAM_ERROR, f"标签名最多 {TAG_NAME_MAX} 个字符，当前 {len(name)} 个"
+        )
+    return name
+
+
+def normalize_tag_type(raw: str | None) -> str:
+    """标签分组的**唯一**校验入口：去空格 → 非空（留空给默认）→ 长度。
+
+    与 `normalize_tag_name` 同一个道理，也是同一类缺陷的另一半：
+    `tags.type` 是 `varchar(32)`，超长会撞数据库约束 → **500**。
+    实测「标签分组 40 个字符」就是这样炸的（我修 name 的文案时顺手发现的）。
+    现在超长给 400 并说清上限。
+    """
+    value = (raw or "").strip()
+    if not value:
+        return "custom"
+    if len(value) > TAG_TYPE_MAX:
+        raise AppError(
+            ErrorCode.PARAM_ERROR, f"标签分组最多 {TAG_TYPE_MAX} 个字符，当前 {len(value)} 个"
+        )
+    return value
+
+
 async def create_tag(
     session: AsyncSession, *, name: str, type_: str = "custom", sort_no: int = 0
 ) -> Tag:
-    name = name.strip()
-    if not name:
-        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "标签名不能为空")
+    name = normalize_tag_name(name)
+    type_ = normalize_tag_type(type_)
     if await find_tag_by_name(session, name) is not None:
         raise AppError(ErrorCode.DUPLICATE, f"标签「{name}」已存在", 409)
-    tag = Tag(name=name, type=type_ or "custom", status="active", sort_no=sort_no)
-    session.add(tag)
+    tag = Tag(name=name, type=type_, status="active", sort_no=sort_no)
     await session.flush()
+    try:
+        async with session.begin_nested():
+            session.add(tag)
+            await session.flush()
+    except IntegrityError as exc:
+        raise AppError(ErrorCode.DUPLICATE, f"标签「{name}」已存在", 409) from exc
     return tag
 
 
 async def update_tag(session: AsyncSession, tag: Tag, data: dict) -> Tag:
-    if "name" in data and data["name"]:
-        new_name = data["name"].strip()
+    changes = {field: data[field] for field in ("status", "sort_no") if data.get(field) is not None}
+    new_name = tag.name
+    if "name" in data:
+        # ⚠️ 不能写成 `and data["name"]`：三个空格是 **truthy**，会通过这个判断，
+        # `strip()` 之后变成空字符串照样落库（审查 B2-05 实测）。
+        # 交共用校验处理"空/超长"，非法输入报 400 而不是 500。
+        new_name = normalize_tag_name(data["name"] or "")
         existing = await find_tag_by_name(session, new_name)
         if existing is not None and existing.id != tag.id:
             raise AppError(ErrorCode.DUPLICATE, f"标签「{new_name}」已存在", 409)
-        tag.name = new_name
-    for field in ("type", "status", "sort_no"):
-        if field in data and data[field] is not None:
-            setattr(tag, field, data[field])
+        changes["name"] = new_name
+    if data.get("type") is not None:
+        # 长度同样交共用校验：`varchar(32)` 超了会 500（见 normalize_tag_type）
+        changes["type"] = normalize_tag_type(data["type"])
     await session.flush()
+    try:
+        async with session.begin_nested():
+            for field, value in changes.items():
+                setattr(tag, field, value)
+            await session.flush()
+    except IntegrityError as exc:
+        raise AppError(ErrorCode.DUPLICATE, f"标签「{new_name}」已存在", 409) from exc
     return tag
 
 
@@ -119,6 +198,15 @@ async def attach_tags(session: AsyncSession, customer_id: int, tag_ids: list[int
     """给客户打标签（已存在的跳过）。返回实际新增数量。"""
     if not tag_ids:
         return 0
+    unique_tag_ids = list(dict.fromkeys(tag_ids))
+    # 删除标签也会先锁标签行再清理关联；这里按 id 升序锁住本批标签，避免
+    # 删除与新增关联交错导致外键/主键 500，也避免多标签请求按不同顺序互等。
+    await session.execute(
+        select(Tag.id)
+        .where(Tag.id.in_(unique_tag_ids))
+        .order_by(Tag.id.asc())
+        .with_for_update()
+    )
     existing = set(
         (
             await session.execute(
@@ -130,16 +218,14 @@ async def attach_tags(session: AsyncSession, customer_id: int, tag_ids: list[int
     )
     # 校验标签都存在，避免打进不存在的 id
     found = set(
-        (
-            await session.execute(select(Tag.id).where(Tag.id.in_(tag_ids)))
-        ).scalars().all()
+        (await session.execute(select(Tag.id).where(Tag.id.in_(unique_tag_ids)))).scalars().all()
     )
-    missing = set(tag_ids) - found
+    missing = set(unique_tag_ids) - found
     if missing:
         raise AppError(ErrorCode.NOT_FOUND, f"标签不存在：{sorted(missing)}", 404)
 
     added = 0
-    for tag_id in dict.fromkeys(tag_ids):
+    for tag_id in unique_tag_ids:
         if tag_id not in existing:
             await session.execute(
                 customer_tags.insert().values(customer_id=customer_id, tag_id=tag_id)
@@ -179,6 +265,14 @@ MERGE_TARGETS: list[tuple[str, str, str]] = [
     ("app.modules.sample.model", "SampleRequest", "打样单"),
     ("app.modules.order.model", "OrderDraft", "订单草稿"),
     ("app.modules.contract.model", "ContractDocument", "合同"),
+    # ⚠️ 补登记（2026-10-14 审查）。本清单上面的判据是**本文件自己写的**：
+    # 「凡是带 `customer_id` 的业务表都要在这里登记。漏登记一项，合并就是
+    # "看起来成功了、其实留了一半"」——而 `BizDoc` 有 `customer_id`、
+    # 有 `ix_biz_docs_customer` 索引、`bizdoc/service.list_docs(customer_id=...)`
+    # 就按它过滤，却没登记。漏了它，把 A 合并进 B 之后，A 名下的打样需求单 /
+    # 下单文件 / 对客报价单一律仍挂在 A 上，而 A 已软删、`owner_id` 被清空
+    # —— `GET /biz-docs?customer_id=B` 查不到这批对外文件，B 的档案里永远补不齐。
+    ("app.modules.bizdoc.model", "BizDoc", "生成文件"),
     ("app.modules.cases.model", "SalesCase", "销售案例"),
     ("app.modules.pricing.model", "LogisticsQuote", "物流报价"),
     # 专属价格要跟着走，但**有冲突时不能随便走**：两边同一个 SKU 定了不同的价，
@@ -324,17 +418,6 @@ async def _price_conflicts(
     return out
 
 
-async def price_conflict_exists(
-    session: AsyncSession, *, source: Customer, target: Customer
-) -> bool:
-    """两个客户之间是否存在**需要价格维护权限**的有效专属价冲突。
-
-    给路由做鉴权用（第六批审查第 6 条）：合并时选 keep_source/keep_target
-    会把一边的生效价转成历史资料，改变了实际适用价，那是价格维护的活。
-    """
-    return bool(await _price_conflicts(session, source=source, target=target))
-
-
 async def _customer_self_conflicts(
     session: AsyncSession, *, customer_id: int
 ) -> list[dict]:
@@ -410,7 +493,12 @@ async def _detect_conflicts(
             }
         )
 
-    if source.tax_no and target.tax_no and source.tax_no != target.tax_no:
+    from app.core.tax_no import normalize_tax_no
+
+    source_tax = normalize_tax_no(source.tax_no)
+    target_tax = normalize_tax_no(target.tax_no)
+    # 先规范化再比：大小写/空格/全角差异不该被当成"两家公司"（B13-02 第二层）。
+    if source_tax and target_tax and source_tax != target_tax:
         conflicts.append(
             {
                 "key": "tax_no",
@@ -429,6 +517,21 @@ async def _detect_conflicts(
     return conflicts
 
 
+def _pending_merge_cases(source_id: int, target_id: int) -> Select:
+    ids = (source_id, target_id)
+    return select(CustomerDuplicateCase).where(
+        CustomerDuplicateCase.status == "pending",
+        or_(CustomerDuplicateCase.customer_id.in_(ids), CustomerDuplicateCase.candidate_id.in_(ids)),
+    ).order_by(CustomerDuplicateCase.id)
+
+
+def _has_third_customer(case: CustomerDuplicateCase, source_id: int, target_id: int) -> bool:
+    return {case.customer_id, case.candidate_id} != {source_id, target_id}
+
+
+_THIRD_CUSTOMER_CASE_MESSAGE = "其中一份档案还和第三家客户有待裁定的查重记录，请先处理该记录，再回来合并。"
+
+
 async def merge_preview(
     session: AsyncSession, *, source: Customer, target: Customer
 ) -> dict:
@@ -444,6 +547,12 @@ async def merge_preview(
     targets = await _count_links(session, source_id=source.id)
     targets += await _count_special_links(session, source_id=source.id)
     conflicts = await _detect_conflicts(session, source=source, target=target)
+    cases = await session.scalars(_pending_merge_cases(source.id, target.id))
+    if any(_has_third_customer(case, source.id, target.id) for case in cases):
+        conflicts.append({
+            "key": "duplicate_case", "label": "还有查重待办", "detail": _THIRD_CUSTOMER_CASE_MESSAGE,
+            "options": [], "items": [], "count": 1,
+        })
 
     return {
         "source": {
@@ -463,6 +572,23 @@ async def merge_preview(
             "合并不可逆：来源客户会被软删，上列关联全部改挂到目标客户。"
             "历史报价、合同签署文件、打样图纸与确认记录的内容不会改写，"
             "只是档案归属换到目标客户。"
+            + (
+                # ⚠️ 归属口径要说清（2026-10-14 审查）：合并**只改 `customer_id`**，
+                # 单据的负责人一个都不动。而 `customer/documents.py` 里定的是
+                # "客户的负责人从 A 换成 B 时，把原本挂在 A 名下的**这个客户的**单据
+                # 一起改成 B"——两个客户负责人不同时，合并后 B 打开客户，
+                # 「报价 / 订单」标签页可能仍然是空的（那些标签页按**单据自己的负责人**
+                # 过滤），用户会以为合并把数据弄丢了。
+                # 这里不擅自改单据归属（那等于替别人做交接决定），但**必须提前说清**。
+                (
+                    f"注意：来源客户的负责人（id={source.owner_id}）与目标客户"
+                    f"（id={target.owner_id}）**不是同一个人** —— 合并不会改单据负责人，"
+                    "所以原来记在来源负责人名下的报价 / 订单，合并后仍需他本人（或主管"
+                    "）才能看到；要让新负责人接手，请另外走一次「转移负责人」。"
+                    if source.owner_id != target.owner_id
+                    else ""
+                )
+            )
         ),
     }
 
@@ -507,7 +633,7 @@ async def merge_customers(
     *,
     source: Customer,
     target: Customer,
-    operator_id: int | None,
+    user: CurrentUser,
     reason: str | None = None,
     resolutions: dict[str, str] | None = None,
 ) -> dict:
@@ -536,7 +662,9 @@ async def merge_customers(
     if target.deleted_at is not None:
         raise AppError(ErrorCode.PARAM_ERROR, "目标客户已被删除，无法合并", 422)
 
-    # 加锁，并把两个对象重读成库里的最新值
+    from app.modules.customer.service import assert_customer_visible
+
+    # 加锁后再次检查范围，避免覆盖刚刚完成的交接。
     locked: dict[int, Customer] = {}
     for customer_id in sorted({source.id, target.id}):
         row = (
@@ -551,9 +679,20 @@ async def merge_customers(
             raise AppError(ErrorCode.PARAM_ERROR, "客户已被删除，无法合并", 422)
         locked[customer_id] = row
     source, target = locked[source.id], locked[target.id]
+    await assert_customer_visible(session, user, source)
+    await assert_customer_visible(session, user, target)
 
     # 冲突摆出来，等调用方给口径
     conflicts = await _detect_conflicts(session, source=source, target=target)
+    price_conflict = next((row for row in conflicts if row["key"] == "customer_price"), None)
+    if price_conflict and "admin" not in user.roles and not user.has("price:manage"):
+        raise AppError(
+            ErrorCode.FORBIDDEN,
+            "这次合并涉及有效专属价格的裁决（要决定保留哪一边的价），"
+            "需要价格维护权限（price:manage）。请让有价格权限的同事处理，"
+            "或先到价格中心把两边的价整理一致，再重新发起合并",
+            403,
+        )
     given = resolutions or {}
     unresolved = [row for row in conflicts if not given.get(row["key"])]
     if unresolved:
@@ -564,14 +703,26 @@ async def merge_customers(
             + "。请先在「合并影响」里做出选择再提交",
             422,
         )
+    # 税号冲突的答复必须真等于唯一选项 confirm（B13-02）：
+    # 只判非空等于画个圈也算签字，而合并不可逆。
+    if any(row["key"] == "tax_no" for row in conflicts) and given.get("tax_no") != "confirm":
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "协议主体（税号）冲突的处理口径无效：只能是 confirm"
+            "（确认是同一家、继续合并）。合并不可逆，请先在「合并影响」里明确确认再提交",
+            422,
+        )
     conflicts_applied = {row["key"]: given[row["key"]] for row in conflicts}
+    pending_cases = (await session.scalars(
+        _pending_merge_cases(source.id, target.id).with_for_update().execution_options(populate_existing=True)
+    )).all()
+    if any(_has_third_customer(case, source.id, target.id) for case in pending_cases):
+        raise AppError(ErrorCode.VERSION_CONFLICT, _THIRD_CUSTOMER_CASE_MESSAGE, 409)
+    before_owners = {str(source.id): source.owner_id, str(target.id): target.owner_id}
 
     # 按选定的口径把一边的专属价转成**历史资料**
     # （`pricing/model.CustomerPriceRule.status` 写明 historical 不参与匹配与
     # 冲突检查）。不删：价目变动是事实，删掉就查不出来了。
-    price_conflict = next(
-        (row for row in conflicts if row["key"] == "customer_price"), None
-    )
     if price_conflict:
         from sqlalchemy import update as sql_update
 
@@ -627,7 +778,9 @@ async def merge_customers(
     #  得人工再设一个。）
     merged_contact_ids = list(
         (
-            await session.execute(select(Contact.id).where(Contact.customer_id == source.id))
+            await session.execute(select(Contact.id).where(
+                Contact.customer_id == source.id, Contact.deleted_at.is_(None),
+            ))
         ).scalars().all()
     )
     for module_path, class_name, label in MERGE_TARGETS:
@@ -660,18 +813,27 @@ async def merge_customers(
     #    目标原来就有主的话**什么都别做**：那位才是主人，并过来的保持非主。
     #    （从前这里写的是"有主就降级并过来的"，那句判断本身没错，错在它跑在
     #    改挂之后 —— 降级是补的，索引早在改挂那一步就拦下来了。）
+    # ⚠️ 判据必须带 `deleted_at IS NULL`（2026-10-14 审查修）：
+    # 全项目的"主位"口径就是 `is_primary AND deleted_at IS NULL`
+    # —— 部分唯一索引 `uq_contacts_primary_per_customer` 的 WHERE 条件如此，
+    # `contact_util.take_primary_slot` / `has_primary` 也都这么写；
+    # 而删除联系人只置 `deleted_at`、**不清 `is_primary`**。
+    # 不带这句时：目标客户原来那个主联系人被软删过（很常见）→ 计数仍是 1
+    # → 不再从并过来的联系人里顶一个，合并后目标客户**一个"活的"主联系人
+    # 都没有**，与本段注释"合并完目标名下不该突然变得一个主联系人都没有"相反。
     has_own_primary = (
         await session.execute(
             select(func.count(Contact.id)).where(
                 Contact.customer_id == target.id,
                 Contact.is_primary.is_(True),
+                Contact.deleted_at.is_(None),
             )
         )
     ).scalar_one()
     if not has_own_primary and merged_contact_ids:
         await session.execute(
             Contact.__table__.update()
-            .where(Contact.id == min(merged_contact_ids))
+            .where(Contact.id == min(merged_contact_ids), Contact.deleted_at.is_(None))
             .values(is_primary=True)
         )
 
@@ -695,20 +857,42 @@ async def merge_customers(
                    "domain", "tax_no", "source", "level", "remark"):
         if getattr(target, column) in (None, "") and snapshot.get(column):
             setattr(target, column, snapshot[column])
-    # 负责人：目标没有负责人时继承来源的
+    owner_resolution = "kept_target"
     if target.owner_id is None and source.owner_id is not None:
-        target.owner_id = source.owner_id
-        target.pool_status = "private"
+        source_owner_active = await session.scalar(
+            select(User.id).where(User.id == source.owner_id, User.status == "active").with_for_update(read=True)
+        )
+        if source_owner_active is not None:
+            target.owner_id = source.owner_id
+            target.pool_status = "private"
+            owner_resolution = "inherited_active_owner"
+            session.add(CustomerOwnerHistory(
+                customer_id=target.id, old_owner_id=None, new_owner_id=target.owner_id,
+                reason="合并客户时继承在职负责人", operator_id=user.id, created_at=_now(),
+            ))
+        else:
+            target.pool_status = "public"
+            owner_resolution = "kept_public_inactive_source_owner"
+
+    merged_at = _now()
+    for case in pending_cases:
+        case.status = "resolved"
+        case.decision = MERGED_DECISION
+        case.resolved_by = user.id
+        case.resolved_at = merged_at
+        case.resolved_owner_id = target.owner_id
+        case.before_owners = before_owners
+        case.remark = "两份档案已合并，查重待办随合并结案。"
 
     # 5) 来源软删 + 标记（避免它仍出现在列表/公海里）
-    source.deleted_at = _now()
+    source.deleted_at = merged_at
     source.owner_id = None
     source.pool_status = "public"
 
     log = CustomerMergeLog(
         source_customer_id=source.id,
         target_customer_id=target.id,
-        operator_id=operator_id,
+        operator_id=user.id,
         merge_snapshot=snapshot,
         moved=moved,
         # 冲突是怎么处理的也要留痕：事后有人问"这个价为什么变成这样"，
@@ -740,6 +924,9 @@ async def merge_customers(
         "merge_log_id": log.id,
         "snapshot": snapshot,
         "conflicts": conflicts_applied,
+        "resolved_duplicate_case_ids": [case.id for case in pending_cases],
+        "owner_resolution": owner_resolution,
+        "target_owner_id": target.owner_id,
     }
 
 

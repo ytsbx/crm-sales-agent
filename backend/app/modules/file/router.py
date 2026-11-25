@@ -1,5 +1,9 @@
 """文件中心接口（对齐 03-API §31）。"""
 
+import asyncio
+import hashlib
+import hmac
+import time
 import logging
 from pathlib import Path
 from urllib.parse import quote
@@ -25,12 +29,46 @@ from app.modules.file.access import (
     visible_object,
 )
 from app.modules.file import access, service, storage
-from app.modules.file.model import BusinessFile, FileRecord
+from app.modules.file.model import CONTRACT_PENDING_SIGNATURE, BusinessFile, FileRecord
 from app.modules.user.model import User
 
 logger = logging.getLogger("crm.file")
 
 router = APIRouter(tags=["File"])
+
+
+def _attachment_category(business_type: str | None, category: str | None) -> str | None:
+    # 兼容已发布的回签弹窗。上传完成时文件还没有正式登记。
+    if business_type == "contract" and category == "signed":
+        return CONTRACT_PENDING_SIGNATURE
+    return category
+
+@router.get("/public/inquiry-images/{file_id}")
+async def public_inquiry_image(file_id: int, expires: int, sig: str, session: AsyncSession = Depends(get_db)):
+    """钉钉审批图片控件使用的短期只读图片地址。"""
+    # 按字节比较：非 ASCII 的错误签名也应正常拒绝，不能触发 compare_digest 的 TypeError。
+    if expires < int(time.time()) or not hmac.compare_digest(
+        hmac.new(settings.jwt_secret.encode(), f"{file_id}:{expires}".encode(), hashlib.sha256).hexdigest().encode("ascii"),
+        sig.encode("utf-8"),
+    ):
+        raise AppError(ErrorCode.FORBIDDEN, "图片链接已失效", 403)
+    record = await session.get(FileRecord, file_id)
+    safe_type = preview_media_type(record) if record is not None else None
+    if safe_type is None or not safe_type.startswith("image/"):
+        raise AppError(ErrorCode.NOT_FOUND, "图片不存在", 404)
+    linked = (await session.execute(select(BusinessFile).where(
+        BusinessFile.file_id == file_id, BusinessFile.business_type == "inquiry"
+    ))).scalars().first()
+    path = storage.absolute_path(record.object_key)
+    # B12-05：询价已软删后图片链接同步失效，不能拿着旧签名继续读已删单据的附件
+    from app.modules.inquiry.model import CustomInquiry
+
+    inquiry = await session.get(CustomInquiry, linked.business_id) if linked is not None else None
+    if linked is None or inquiry is None or inquiry.deleted_at is not None or not path.is_file():
+        raise AppError(ErrorCode.NOT_FOUND, "图片不存在", 404)
+    return FileResponse(path, media_type=safe_type, headers={
+        "Content-Disposition": "inline", "X-Content-Type-Options": "nosniff",
+    })
 
 # 原件保护判据（哪些类别不可破坏、对应什么人话）**集中在 access.PROTECTED_CATEGORIES**，
 # 不在这里再维护一份：删除、解绑、以后任何会动到原件的入口都调
@@ -50,6 +88,18 @@ def serialize_file(record: FileRecord, uploader: str | None = None) -> dict:
         "uploader_name": uploader,
         "created_at": record.created_at,
     }
+
+
+async def _lock_sample_attachment(session, user, business_type, business_id):
+    """制作登记与附件修改共用单据锁；必须在文件锁之前取得。"""
+    if business_type != "sample":
+        return
+    from app.modules.sample.model import SampleRequest
+    from app.modules.sample import service as sample_service
+
+    (await session.execute(select(SampleRequest).where(SampleRequest.id == business_id)
+                           .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
+    await sample_service.get_visible_or_404(session, user, business_id)
 
 
 @router.post("/files/upload")
@@ -78,6 +128,7 @@ async def upload_file(
     # 制作依据（图纸、规格书）必须在制作当时就指定好，事后混进来的资料
     # 不能和依据混为一谈——见 access.sample_write_lock_label。
     if business_type == "sample" and business_id is not None:
+        await _lock_sample_attachment(session, user, business_type, business_id)
         lock = await sample_write_lock_label(session, business_id)
         if lock is not None and (category or "").strip() != SUPPLEMENT_CATEGORY:
             raise AppError(
@@ -89,6 +140,7 @@ async def upload_file(
                 422,
             )
 
+    category = _attachment_category(business_type, category)
     object_key, size, checksum = await storage.save_upload(file)
     record = FileRecord(
         storage_provider=settings.storage_provider,
@@ -139,6 +191,20 @@ async def upload_file(
         # 不再各写一遍（第十一批 11.8 —— 它原先就是漏了这段）。
         await service.discard_unregistered_upload(session, object_key)
         raise
+    except asyncio.CancelledError:
+        # ⚠️ **请求被取消也要补偿**（第七批 P2-9）。
+        #
+        # `CancelledError` 继承自 `BaseException`，上面那个 `except Exception`
+        # **捕不到它**。客户端断开 / 网关超时 / 服务停机会在
+        # "文件已写盘、数据库登记还没提交"这一刻把请求取消，于是补偿不执行，
+        # 盘上留下一份**没有任何记录指向**的文件（审查实测：记录 0 条、文件在盘上）。
+        #
+        # 复用的 `discard_unregistered_upload` 自身是安全的，它先 `rollback()`
+        # 再确认"库里确实没有这个 object_key 的登记"才删 —— 所以
+        # **登记已经提交成功**的情况（取消发生在提交之后）不会被误删。
+        # 删之后**必须把取消重新抛出**：吞掉它等于把"取消"变成"成功"。
+        await service.discard_unregistered_upload(session, object_key)
+        raise
     return ok(serialize_file(record, user.name), "上传成功")
 
 
@@ -168,6 +234,8 @@ async def download_file(
     # 附件挂在业务对象上，必须反查可见性；只校验 file:view 会让任何人按 id 取走别人的文件
     if not await access.can_access_file(session, user, file_id):
         raise AppError(ErrorCode.FORBIDDEN, "该文件所在的业务对象不在你的数据范围内", 403)
+    from app.modules.bizdoc.service import ensure_quote_file_cost_complete
+    await ensure_quote_file_cost_complete(session, file_id)
     path = storage.absolute_path(record.object_key)
     if not path.exists():
         raise AppError(ErrorCode.NOT_FOUND, "文件内容已丢失", 404)
@@ -220,16 +288,66 @@ PREVIEWABLE_SUFFIXES = {
     ".log",
 }
 
+#: 后缀兜底时**由服务端指定**的类型（不采信客户端声明的那个）。见 `preview_media_type`。
+SUFFIX_FALLBACK_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".pdf": "application/pdf",
+    ".txt": "text/plain",
+    ".csv": "text/csv",
+    ".md": "text/markdown",
+    ".log": "text/plain",
+}
+
+#: 客户端**没给出可用类型**时才有资格走后缀兜底（见下）。
+UNKNOWN_MIME = {"", "application/octet-stream", "binary/octet-stream"}
+
+
+def normalize_mime(raw: str | None) -> str:
+    """把 MIME 规范化成**主类型**：小写、去空白、丢掉 `;` 之后的参数。
+
+    为什么必须做（第三批审查 P1，2026-10-12）：`text/html; charset=utf-8`
+    与 `text/html` 是两个不同的字符串，按完整串比较就漏了前者；而浏览器
+    只认主类型 —— 它照样按 HTML 执行。参数还可能写成大写、带空格、带引号。
+    """
+    text = (raw or "").strip().lower()
+    return text.split(";", 1)[0].strip()
+
+
+def preview_media_type(record: FileRecord) -> str | None:
+    """能内联预览时返回**服务端认可的** `Content-Type`；不能则 None。
+
+    判定顺序（第三批审查 P1 修，原来的实现有三处漏）：
+
+    1. 规范化主类型后先过危险清单（html / svg / xml 系列）—— 防 `text/html; charset=utf-8`
+       这类"带参数就绕过字符串比较"的写法；
+    2. 后缀也过危险清单 —— 类型没存对时不能靠后缀放行；
+    3. **声明了类型就以声明的类型为准**，且必须落在安全白名单里。
+       类型与后缀矛盾时（`drawing.png` + `text/html`）一律拒绝 ——
+       原来的实现在这种情况下落到"按后缀放行"，实测能骗过预览出口；
+    4. 只有类型**缺失或未知**（空 / octet-stream）时才允许按后缀兜底，
+       而且此时回的类型是本文件里**写死的**安全类型，不回显客户端那张表。
+
+    响应头用这里的返回值，不再用库里存的原始串 —— 原始串可能带
+    `; charset=...` 甚至客户端随便写的值。
+    """
+    mime = normalize_mime(record.mime_type)
+    suffix = Path(record.file_name or "").suffix.lower()
+    if mime in DANGEROUS_MIME_EXACT or suffix in DANGEROUS_SUFFIXES:
+        return None
+    if mime not in UNKNOWN_MIME:
+        if mime.startswith(PREVIEWABLE_MIME_PREFIXES) or mime in PREVIEWABLE_MIME_EXACT:
+            return mime
+        return None
+    return SUFFIX_FALLBACK_TYPES.get(suffix)
+
 
 def is_previewable(record: FileRecord) -> bool:
-    mime = (record.mime_type or "").lower()
-    suffix = Path(record.file_name or "").suffix.lower()
-    # 危险清单优先于一切：mime 说是图片也不行
-    if mime in DANGEROUS_MIME_EXACT or suffix in DANGEROUS_SUFFIXES:
-        return False
-    if mime.startswith(PREVIEWABLE_MIME_PREFIXES) or mime in PREVIEWABLE_MIME_EXACT:
-        return True
-    return suffix in PREVIEWABLE_SUFFIXES
+    return preview_media_type(record) is not None
 
 
 @router.get("/files/{file_id}/preview")
@@ -249,6 +367,8 @@ async def preview_file(
         raise AppError(ErrorCode.NOT_FOUND, "文件不存在", 404)
     if not await access.can_access_file(session, user, file_id):
         raise AppError(ErrorCode.FORBIDDEN, "该文件所在的业务对象不在你的数据范围内", 403)
+    from app.modules.bizdoc.service import ensure_quote_file_cost_complete
+    await ensure_quote_file_cost_complete(session, file_id)
     path = storage.absolute_path(record.object_key)
     if not path.exists():
         raise AppError(ErrorCode.NOT_FOUND, "文件内容已丢失", 404)
@@ -260,15 +380,33 @@ async def preview_file(
             422,
         )
 
+    # ⚠️ 只用**校验后的类型**，不回显库里那串原始值（第三批审查 P1，2026-10-12）：
+    # 原始值可能带 `; charset=...`，也可能与后缀矛盾；回显等于把"用户写什么就执行什么"
+    # 又交回给浏览器。`preview_media_type` 已经判定过它落在安全白名单里。
+    safe_type = preview_media_type(record)
+    if safe_type is None:  # pragma: no cover - 上面刚判过，双保险
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"「{record.file_name}」的类型不支持在线预览，请下载后查看",
+            422,
+        )
+    headers = {
+        "Content-Disposition": f"inline; filename*=UTF-8''{quote(record.file_name)}",
+        # 防嗅探：浏览器不得把内容当成别的类型执行
+        "X-Content-Type-Options": "nosniff",
+    }
+    if safe_type != "application/pdf":
+        # 再上一道：把这份内容当成**独立沙箱源**渲染，脚本/表单/同源访问一律禁止。
+        # 类型白名单本身已经挡住脚本类内容，这层是防"以后有人往白名单里加类型"。
+        # ⚠️ PDF 不加：真要渲染 PDF 得让浏览器用内置阅读器，套上 sandbox 有把
+        # 现有预览打坏的风险（预览坏了就是功能回归）。PDF 的风险面也小得多 ——
+        # 它既不是可执行内容，类型又由这里写死。
+        headers["Content-Security-Policy"] = "sandbox; default-src 'none'"
     return FileResponse(
         path,
-        media_type=record.mime_type or "application/octet-stream",
+        media_type=safe_type,
         filename=record.file_name,
-        headers={
-            "Content-Disposition": f"inline; filename*=UTF-8''{quote(record.file_name)}",
-            # 防嗅探：浏览器不得把内容当成别的类型执行
-            "X-Content-Type-Options": "nosniff",
-        },
+        headers=headers,
     )
 
 
@@ -315,9 +453,13 @@ async def rename_file(
     """
     if not await access.can_access_file(session, user, file_id):
         raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该文件不在你的可见范围内", 403)
-    record = await session.get(FileRecord, file_id)
+    # 可见性检查之后文件仍可能被并发删除；与所有会改变文件引用的入口一样，
+    # 先锁文件行并重读，避免拿着旧对象改名。
+    record = await service.lock_file_row(session, file_id)
     if record is None:
         raise AppError(ErrorCode.NOT_FOUND, "文件不存在", 404)
+    if not await access.can_access_file(session, user, file_id):
+        raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该文件不在你的可见范围内", 403)
 
     name = (payload.file_name or "").strip()
     if not name:
@@ -379,6 +521,8 @@ async def delete_file(
     ).scalars().first()
     if record is None:
         raise AppError(ErrorCode.NOT_FOUND, "文件不存在", 404)
+    if not await can_access_file(session, user, file_id):
+        raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该文件不在你的可见范围内", 403)
     links = (
         await session.execute(select(BusinessFile).where(BusinessFile.file_id == file_id))
     ).scalars().all()
@@ -435,6 +579,73 @@ async def delete_file(
     except Exception:  # noqa: BLE001 —— 清盘失败不该让已成功的删除回滚
         logger.warning("文件 %s 已从库中删除，但磁盘原件清理失败：%s", file_id, object_key, exc_info=True)
     return ok(None, "文件已删除")
+
+
+@router.get("/business/{business_type}/files/batch")
+async def list_business_files_batch(
+    business_type: str,
+    business_ids: str,
+    user: CurrentUser = Depends(require_permission("file:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """一次拿多个业务对象的附件，返回 `{business_id: [附件…]}`（2026-10-10 加）。
+
+    **为什么需要它**：SKU 列表要在每行显示缩略图。若逐行调
+    `GET /business/sku/{id}/files`，一个产品有几个型号就发几个请求 —— 典型 N+1。
+
+    `business_ids` 是逗号分隔的 id 串（前端把当前页的 id 一次带上）。
+    可见性**逐个判**，与单条列表同一条规则（`visible_object`）：
+    看不见的对象直接不出现在返回里，而不是报错 —— 批量接口报错会让"其中一个
+    不可见"变成整个列表打不开。上限 500 个，防被当成枚举通道。
+    """
+    try:
+        ids = [int(x) for x in business_ids.split(",") if x.strip()]
+    except ValueError:
+        raise AppError(ErrorCode.PARAM_ERROR, "business_ids 必须是逗号分隔的数字", 422) from None
+    ids = list(dict.fromkeys(ids))  # 去重且保序
+    if not ids:
+        return ok({})
+    if len(ids) > 500:
+        raise AppError(ErrorCode.PARAM_ERROR, "一次最多查 500 个业务对象", 422)
+
+    if business_type in access.NO_OWNER_MODELS:
+        visible_ids = await access.visible_no_owner_ids(
+            session, user, business_type=business_type, business_ids=ids
+        )
+        visible = [bid for bid in ids if bid in visible_ids]
+    else:
+        visible = [
+            bid
+            for bid in ids
+            if await access.visible_object(
+                session, user, business_type=business_type, business_id=bid
+            )
+        ]
+    if not visible:
+        return ok({})
+    rows = (
+        await session.execute(
+            select(BusinessFile, FileRecord, User.name)
+            .join(FileRecord, FileRecord.id == BusinessFile.file_id)
+            .outerjoin(User, User.id == FileRecord.uploaded_by)
+            .where(
+                BusinessFile.business_type == business_type,
+                BusinessFile.business_id.in_(visible),
+            )
+            .order_by(BusinessFile.id.desc())
+        )
+    ).all()
+    grouped: dict[str, list[dict]] = {str(bid): [] for bid in visible}
+    for link, record, uploader in rows:
+        grouped.setdefault(str(link.business_id), []).append(
+            {
+                **serialize_file(record, uploader),
+                "business_file_id": link.id,
+                "category": link.category,
+                "remark": link.remark,
+            }
+        )
+    return ok(grouped)
 
 
 @router.get("/business/{business_type}/{business_id}/files")
@@ -504,6 +715,7 @@ async def attach_file(
     # ③ 打样锁：已制作/寄出后，挂上来的只能是「后续补充资料」。
     #    与上传接口同一条判据，避免"上传被拦、改用挂载绕过去"。
     if business_type == "sample":
+        await _lock_sample_attachment(session, user, business_type, business_id)
         lock = await sample_write_lock_label(session, business_id)
         if lock is not None and (category or "").strip() != SUPPLEMENT_CATEGORY:
             raise AppError(
@@ -521,6 +733,27 @@ async def attach_file(
     record = await service.lock_file_row(session, file_id)
     if record is None:
         raise AppError(ErrorCode.NOT_FOUND, "文件不存在", 404)
+    # 文件锁等待期间目标对象或数据范围可能变化；挂载前再确认一次授权，
+    # 避免把加锁前的可见性当成最终结论。
+    if not await visible_object(
+        session, user, business_type=business_type, business_id=business_id, write=True
+    ) or not await can_access_file(session, user, file_id):
+        raise AppError(
+            ErrorCode.DATA_SCOPE_DENIED,
+            "不能给该业务对象挂附件：目标或文件已不在你的可见范围内",
+            403,
+        )
+    if business_type == "sample":
+        lock = await sample_write_lock_label(session, business_id)
+        if lock is not None and (category or "").strip() != SUPPLEMENT_CATEGORY:
+            raise AppError(
+                ErrorCode.STATUS_NOT_ALLOWED,
+                f"{lock}，不能再往上挂制作依据类的附件。"
+                f"事后补进来的资料请把类别选成「{SUPPLEMENT_LABEL}」"
+                f"（category={SUPPLEMENT_CATEGORY}）",
+                422,
+            )
+    category = _attachment_category(business_type, category)
     link = BusinessFile(
         business_type=business_type,
         business_id=business_id,
@@ -560,6 +793,33 @@ async def unlink_file(
     #    「能拆掉它挂在别人业务对象上的关联」；
     # ③ 而且"看得见"也不等于"能改"：解绑要该模块的**写入权**（write=True），
     #    否则只有查看权的人能悄悄摘掉别人单据上的凭证关联。
+    if not await visible_object(
+        session, user,
+        business_type=link.business_type, business_id=link.business_id, write=True,
+    ):
+        raise AppError(
+            ErrorCode.DATA_SCOPE_DENIED,
+            "不能解绑该附件：它所在的业务对象不在你的数据范围内，或你没有该模块的维护权限",
+            403,
+        )
+    # 文件删除、回款凭证删除、产品/合同挂载都以文件行作为并发闸门。
+    # 解绑也必须先拿同一把锁：否则删除流程查完引用后，解绑才提交，
+    # 删除仍可能把文件记录清掉，留下指向不存在文件的 BusinessFile。
+    await _lock_sample_attachment(session, user, link.business_type, link.business_id)
+    if await service.lock_file_row(session, link.file_id) is None:
+        raise AppError(ErrorCode.NOT_FOUND, "文件不存在", 404)
+    # 等待文件锁后重新读取关联；另一个解绑请求可能已经提交删除了它。
+    link = (
+        await session.execute(
+            select(BusinessFile)
+            .where(BusinessFile.id == business_file_id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if link is None:
+        raise AppError(ErrorCode.NOT_FOUND, "关联不存在", 404)
+    # 负责人/对象状态可能在等待文件锁期间发生变化，范围判断也必须针对锁后
+    # 重新读到的关联再做一次，不能把加锁前的授权当成最终结论。
     if not await visible_object(
         session, user,
         business_type=link.business_type, business_id=link.business_id, write=True,

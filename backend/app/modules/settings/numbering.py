@@ -38,14 +38,16 @@
 不需要认识具体的业务模型。
 """
 
+import re
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
+from app.core.timebase import now_business, to_business
 from app.modules.settings.model import NumberSequence, NumberingRule
 
 #: 取号时最多连续探测多少个候选号。够覆盖"计数器落后于实际数据"的常见情形，
@@ -145,6 +147,71 @@ def format_number(rule: NumberingRule, sequence: int, now: datetime) -> str:
     return f"{rule.prefix}{date_part}{sequence:0{rule.seq_length}d}"
 
 
+def _number_column(code: str) -> Any:
+    """当前正式取号入口的目标列；上限直接读取模型，避免与数据库定义分叉。"""
+    from app.modules.bizdoc.model import BizDoc
+    from app.modules.contract.model import ContractDocument
+    from app.modules.inquiry.model import CustomInquiry
+    from app.modules.order.model import SalesOrder
+    from app.modules.quote.model import Quote
+
+    return {
+        "quote": Quote.quote_no,
+        "order": SalesOrder.order_no,
+        "contract": ContractDocument.doc_no,
+        "inquiry": CustomInquiry.inquiry_no,
+        "sample_doc": BizDoc.doc_no,
+        "order_doc": BizDoc.doc_no,
+        "quote_doc": BizDoc.doc_no,
+    }.get(code)
+
+
+def validate_number_length(number: str, max_length: int | None) -> None:
+    if max_length is not None and len(number) > max_length:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"编号过长（{len(number)}位，最多{max_length}位），请管理员缩短编号规则的前缀或流水位数",
+            422,
+        )
+
+
+def validate_rule_period(rule: NumberingRule) -> None:
+    """流水归零时，日期部分必须能区分不同周期。"""
+    if rule.reset_period == "none":
+        return
+    directives = set(re.findall(r"%(?:%|[a-zA-Z])", rule.date_format or ""))
+    has_year = "%Y" in directives
+    has_month = bool(directives & {"%m", "%b", "%B"})
+    has_day = bool(directives & {"%d", "%e"})
+    distinguishes_day = "%F" in directives or (
+        has_year and ("%j" in directives or (has_month and has_day))
+    )
+    valid = {
+        "daily": distinguishes_day,
+        "monthly": distinguishes_day or (has_year and has_month),
+        "yearly": distinguishes_day or has_year,
+    }
+    if not valid.get(rule.reset_period, False):
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"流水{RESET_PERIODS[rule.reset_period]}重置时，编号日期必须能区分相应周期。"
+            "请补齐日期格式（如 %Y%m%d），或选择不重置。",
+            422,
+        )
+
+
+def validate_rule_length(
+    rule: NumberingRule, current: int | None = None, *, now: datetime | None = None
+) -> None:
+    """保存时核对合并后的规则与下一流水；实际取号仍须检查真实候选号。"""
+    column = _number_column(rule.code)
+    if column is not None:
+        validate_number_length(
+            format_number(rule, (current or 0) + 1, now if now is not None else now_business()),
+            column.type.length,
+        )
+
+
 async def get_rule(session: AsyncSession, code: str) -> NumberingRule:
     """取规则：库里优先，没有则用内置默认值构造一个（不落库）。"""
     row = (
@@ -182,7 +249,7 @@ async def next_number(
     if not rule.enabled:
         raise AppError(ErrorCode.PARAM_ERROR, f"编号规则 {code} 已停用", 422)
 
-    moment = now or datetime.now(UTC)
+    moment = to_business(now) if now is not None else now_business()
     key = period_key(rule.reset_period, moment)
 
     # 取该周期的计数器并加行锁。并发的第二个请求会在这里等第一个提交，
@@ -252,13 +319,16 @@ async def period_max_number(
     按 `前缀 + 日期` 前缀取字典序最大的一条单号，再解析出尾部流水。
     字典序对"定长左补零"的流水号等价于数值序。
     """
-    moment = now or datetime.now(UTC)
+    moment = to_business(now) if now is not None else now_business()
     head = rule.prefix + (moment.strftime(rule.date_format) if rule.date_format else "")
     if not head:
         return 0
+    # B22-11：prefix 可含 %/_，不转义会匹配错号段、播种错流水
+    esc = head.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     latest = (
         await session.execute(
-            select(column).where(column.like(f"{head}%")).order_by(column.desc()).limit(1)
+            select(column).where(column.like(f"{esc}%", escape="\\"))
+            .order_by(column.desc()).limit(1)
         )
     ).scalar_one_or_none()
     if not latest:
@@ -290,12 +360,17 @@ async def generate_for(
         ).first()
         return row is not None
 
-    seed = await period_max_number(session, model=model, column=column, rule=rule, now=now)
-    return await next_number(session, code, now=now, taken=taken, seed_from=seed)
+    moment = now if now is not None else now_business()
+    seed = await period_max_number(session, model=model, column=column, rule=rule, now=moment)
+    number = await next_number(session, code, now=moment, taken=taken, seed_from=seed)
+    validate_number_length(number, column.type.length)
+    return number
 
 
-def serialize_rule(rule: NumberingRule, period: str, current: int | None) -> dict:
-    date_part = datetime.now(UTC).strftime(rule.date_format) if rule.date_format else ""
+def serialize_rule(
+    rule: NumberingRule, period: str, current: int | None, *, now: datetime | None = None
+) -> dict:
+    moment = now if now is not None else now_business()
     sample_seq = (current or 0) + 1
     return {
         "id": rule.id,
@@ -310,7 +385,7 @@ def serialize_rule(rule: NumberingRule, period: str, current: int | None) -> dic
         "remark": rule.remark,
         # 给界面看的"下一个号长什么样"，省得管理员改完还得去建单试
         "next_preview": (
-            f"{rule.prefix}{date_part}{sample_seq:0{rule.seq_length}d}"
+            format_number(rule, sample_seq, moment)
             if rule.enabled
             else None
         ),

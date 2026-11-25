@@ -53,6 +53,8 @@ class LoginSession(Base, IdMixin, TimestampMixin):
 
     #: 令牌里的 `sid`。（随机 32 位十六进制串）
     sid: Mapped[str] = mapped_column(String(64))
+    # NULL until the next refresh for sessions issued before token rotation was introduced.
+    token_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     #: 外键 `ondelete="CASCADE"`：删用户时把他的会话一并带走，
     #: 不留"指向已删用户的会话"这种要定期清扫的孤儿行。
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"))

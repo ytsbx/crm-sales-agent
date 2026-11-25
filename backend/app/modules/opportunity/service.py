@@ -1,8 +1,9 @@
 """商机业务逻辑。"""
 
 from datetime import UTC, date, datetime
+from decimal import Decimal
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.data_scope import ensure_in_scope, scoped_owner_ids
@@ -21,8 +22,9 @@ from app.modules.product.model import Sku
 from app.modules.user.model import User
 
 
-def _number(value) -> float | None:
-    return None if value is None else float(value)
+def _number(value) -> Decimal | None:
+    """序列化总闸：保留 Decimal 原值（float→Decimal 专项批5，B19-03）。"""
+    return value
 
 
 def assert_regular_stage(stage: OpportunityStage) -> None:
@@ -99,7 +101,7 @@ async def lock_stages(session: AsyncSession) -> None:
     await session.execute(select(OpportunityStage.id).with_for_update())
 
 
-async def ensure_stage_config_ok(session: AsyncSession) -> None:
+async def ensure_stage_config_ok(session: AsyncSession, *, require_winner: bool = False) -> None:
     """保存阶段配置**之前**，确认"存完之后整体还能被业务正确使用"（第十二批 12.3）。
 
     当前业务按**单一销售流程**运行：成交阶段必须明确且唯一 —— 取成交阶段的代码
@@ -117,6 +119,8 @@ async def ensure_stage_config_ok(session: AsyncSession) -> None:
         await session.execute(select(OpportunityStage).order_by(OpportunityStage.id.asc()))
     ).scalars().all()
     wins = [row for row in rows if row.is_win]
+    if require_winner and not wins:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "不能取消唯一的成交阶段", 422)
     if len(wins) > 1:
         names = "、".join(f"「{row.name}」" for row in wins)
         raise AppError(
@@ -126,6 +130,8 @@ async def ensure_stage_config_ok(session: AsyncSession) -> None:
             422,
         )
     for row in rows:
+        if row.is_win and row.status != "active":
+            raise AppError(ErrorCode.STATUS_NOT_ALLOWED, f"成交阶段「{row.name}」须保持启用", 422)
         if row.is_win and row.is_loss:
             raise AppError(
                 ErrorCode.PARAM_ERROR,
@@ -195,6 +201,7 @@ def serialize_opportunity(
         "stage_name": stage.name if stage else None,
         "stage_code": stage.code if stage else None,
         "expected_amount": _number(opportunity.expected_amount),
+        "expected_amount_exact": str(opportunity.expected_amount) if opportunity.expected_amount is not None else None,
         "currency": opportunity.currency,
         "expected_close_date": opportunity.expected_close_date,
         "owner_id": opportunity.owner_id,
@@ -241,11 +248,18 @@ def build_opportunity_stmt(
     status: str | None = None,
     owner_id: int | None = None,
     customer_id: int | None = None,
+    search_customer_name: bool = False,
 ) -> Select:
     stmt = select(Opportunity).where(Opportunity.deleted_at.is_(None))
     if keyword:
-        like = f"%{keyword.strip()}%"
-        stmt = stmt.where(Opportunity.title.ilike(like))
+        _kw = keyword.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = f"%{_kw}%"
+        title_matches = Opportunity.title.ilike(like, escape="\\")
+        if search_customer_name:
+            customer_matches = select(Customer.id).where(Customer.name.ilike(like, escape="\\"))
+            stmt = stmt.where(or_(title_matches, Opportunity.customer_id.in_(customer_matches)))
+        else:
+            stmt = stmt.where(title_matches)
     if stage_id:
         stmt = stmt.where(Opportunity.stage_id == stage_id)
     if status:
@@ -363,7 +377,7 @@ async def create_opportunity_from_lead(
     title: str,
     owner_id: int | None,
     created_by: int | None,
-    expected_amount: float | None = None,
+    expected_amount: Decimal | None = None,
     expected_close_date: date | None = None,
 ) -> Opportunity:
     stage = await get_first_stage(session)
@@ -531,6 +545,12 @@ async def clone_opportunity(
       - expected_amount（金额随数量与价格变，让业务重新确认）
       - 阶段回到初始阶段
     需求明细按 `copy_items` 决定是否一起复制。
+
+    ⚠️ 复制需求前要**先验一遍 SKU 可用性**（第三批审查 P2，2026-10-12）：
+    普通新增需求会验，这条复制路径原来是直接插行 —— 实测可用性检查调用次数为 0，
+    停用 SKU 的编号照样写进新商机，等到核价/报价才被拦住，而那时新流程里
+    已经躺着一条无效需求。校验放在**创建商机之前**：失败就整次不写，
+    不留下"商机建了、明细没进去"的半成品。历史来源单据一个字不动。
     """
     final_owner_id = owner_id if owner_id is not None else source.owner_id
     await assert_owner_active(session, final_owner_id)
@@ -540,6 +560,23 @@ async def clone_opportunity(
     # 换客户复制只复制需求内容，原客户的联系人不能跟着新业务走。
     contact_id = source.primary_contact_id if target_customer_id == source.customer_id else None
     await validate_contact(session, customer_id=target_customer_id, contact_id=contact_id)
+
+    source_items: list[OpportunityItem] = []
+    if copy_items:
+        source_items = list(
+            (
+                await session.execute(
+                    select(OpportunityItem).where(
+                        OpportunityItem.opportunity_id == source.id
+                    )
+                )
+            ).scalars().all()
+        )
+        from app.modules.product.service import ensure_skus_for_new_business
+
+        await ensure_skus_for_new_business(
+            session, [item.sku_id for item in source_items]
+        )
 
     first_stage = await get_first_stage(session)
     clone = Opportunity(
@@ -566,18 +603,14 @@ async def clone_opportunity(
             from_stage_id=None,
             to_stage_id=first_stage.id,
             operator_id=user.id,
-            remark=f"由商机 #{source.id} 复制而来",
+            remark=f"由商机编号 {source.id} 复制而来",
             entered_at=datetime.now(UTC),
         )
     )
 
     if copy_items:
-        rows = (
-            await session.execute(
-                select(OpportunityItem).where(OpportunityItem.opportunity_id == source.id)
-            )
-        ).scalars().all()
-        for item in rows:
+        # 上面已经按这批明细验过可用性（并已查出 `source_items`），这里直接落库
+        for item in source_items:
             session.add(
                 OpportunityItem(
                     opportunity_id=clone.id,
@@ -598,29 +631,23 @@ async def clone_opportunity(
 
 
 async def ensure_skus_exist(session: AsyncSession, sku_ids: list[int | None]) -> None:
-    """明细引用的 SKU 必须真实存在且未删除（第十二批 12.5）。
+    """明细引用的 SKU 必须真实存在、未删除、**且未停用**（第十二批 12.5 + issue #7）。
 
     从前直接落库 → 撞外键 → 500「服务器内部错误」，用户看不出是哪一条错；
     而批量替换又是"先删光再写"，一条坏 SKU 会让**原明细整批消失**、新的又没进去。
+
+    issue #7 补的一条：这里原先只查 `deleted_at`，**不看 `status`** ——
+    于是停用的 SKU 照样能加进需求行、再一路流进报价与订单。停用与删除
+    对新业务是同一件事，判据统一收到 `product.service.require_available_sku` 一份上，
+    以后新加入口不会再各写一遍。
     """
     ids = {int(x) for x in sku_ids if x is not None}
     if not ids:
         return
-    found = set(
-        (
-            await session.execute(
-                select(Sku.id).where(Sku.id.in_(ids), Sku.deleted_at.is_(None))
-            )
-        ).scalars().all()
-    )
-    missing = sorted(ids - found)
-    if missing:
-        raise AppError(
-            ErrorCode.NOT_FOUND,
-            f"SKU id={missing[0]} 不存在或已删除，请重新选一个；"
-            f"本次共 {len(missing)} 条明细的 SKU 查不到",
-            404,
-        )
+    from app.modules.product.service import require_available_sku
+
+    for sku_id in sorted(ids):
+        await require_available_sku(session, sku_id)
 
 
 async def replace_items(
@@ -634,12 +661,17 @@ async def replace_items(
     ⚠️ 但"清空"之前必须**先把整批验完**（第十二批 12.5）：从前一条坏 SKU 会先删掉
     全部原明细、再在外键上炸掉 —— 用户既丢了原数据、又没存上新数据。
     """
-    await ensure_skus_exist(session, [item.get("sku_id") for item in items])
     existing = (
         await session.execute(
             select(OpportunityItem).where(OpportunityItem.opportunity_id == opportunity_id)
         )
     ).scalars().all()
+    from app.modules.product.service import ensure_skus_for_new_business
+
+    existing_sku_ids = {row.sku_id for row in existing}
+    sku_ids = {item.get("sku_id") for item in items}
+    await ensure_skus_exist(session, list(sku_ids & existing_sku_ids))
+    await ensure_skus_for_new_business(session, list(sku_ids - existing_sku_ids))
     for row in existing:
         await session.delete(row)
     await session.flush()
@@ -680,7 +712,7 @@ async def copy_items_from(
             )
         )
     ).scalars().all()
-    if sku_ids:
+    if sku_ids is not None:
         wanted = set(sku_ids)
         source_rows = [row for row in source_rows if row.sku_id in wanted]
 
@@ -695,6 +727,18 @@ async def copy_items_from(
         ).scalars().all()
     }
 
+    from app.modules.product.service import ensure_skus_for_new_business
+
+    await ensure_skus_for_new_business(session, [
+        row.sku_id for row in source_rows
+        if on_conflict != "skip" or row.sku_id not in existing
+    ])
+    from app.core.trade_mode import reject_foreign_currency
+
+    reject_foreign_currency(
+        *(row.currency for row in source_rows if on_conflict == "add" or row.sku_id not in existing),
+        label="商机需求明细",
+    )
     added = skipped = replaced = 0
     for row in source_rows:
         current = existing.get(row.sku_id)
@@ -703,12 +747,6 @@ async def copy_items_from(
             continue
         if current is not None and on_conflict == "replace":
             current.quantity = row.quantity
-            current.target_price = row.target_price
-            current.specification = row.specification
-            current.color = row.color
-            current.package_requirement = row.package_requirement
-            current.delivery_date = row.delivery_date
-            current.destination = row.destination
             replaced += 1
             continue
         session.add(
@@ -745,45 +783,51 @@ async def recommend_products(
     业务能看到"为什么推这个"。等接了模型再换掉实现，接口形状不变。
     """
     from app.modules.order.model import SalesOrder, SalesOrderItem
+    from app.modules.product.model import Product
+    from app.modules.product.service import SKU_AVAILABLE_STATUSES
 
-    # 该客户历史订单里出现过的 SKU（按出现次数排序）
-    customer_rows = (
-        await session.execute(
-            select(
-                SalesOrderItem.sku_id,
-                func.count(SalesOrderItem.id).label("times"),
-                func.max(SalesOrderItem.unit_price).label("last_price"),
-            )
-            .join(SalesOrder, SalesOrder.id == SalesOrderItem.order_id)
-            .where(SalesOrder.customer_id == opportunity.customer_id)
-            # 定制件（无 SKU）不能进推荐：sku_id 为 None 时 `int(row.sku_id)`
-            # 会直接 TypeError → 500。客户名下只要有一行定制明细，整个"推荐商品"
-            # 就崩。推荐的是"可复用的 SKU"，本来也不该包含无 SKU 的定制行。
-            .where(SalesOrderItem.sku_id.is_not(None))
-            .group_by(SalesOrderItem.sku_id)
-            .order_by(func.count(SalesOrderItem.id).desc())
-            .limit(limit)
+    history = (
+        select(
+            SalesOrderItem.sku_id, SalesOrder.id.label("order_id"), SalesOrder.created_at,
+            func.min(SalesOrderItem.unit_price).label("min_price"),
+            func.max(SalesOrderItem.unit_price).label("max_price"),
         )
-    ).all()
+        .join(SalesOrder, SalesOrder.id == SalesOrderItem.order_id)
+        .join(Sku, Sku.id == SalesOrderItem.sku_id)
+        .join(Product, Product.id == Sku.product_id)
+        .where(
+            SalesOrder.status != "cancelled", SalesOrder.currency == "CNY",
+            Sku.deleted_at.is_(None), Product.deleted_at.is_(None),
+            func.lower(func.trim(Sku.status)).in_(SKU_AVAILABLE_STATUSES),
+            func.lower(func.trim(Product.status)).in_(SKU_AVAILABLE_STATUSES),
+        )
+        .group_by(SalesOrderItem.sku_id, SalesOrder.id, SalesOrder.created_at)
+    )
+
+    def latest_orders(stmt, max_rows):
+        orders = stmt.subquery()
+        ranked = select(
+            orders.c.sku_id, orders.c.min_price, orders.c.max_price,
+            func.count().over(partition_by=orders.c.sku_id).label("times"),
+            func.row_number().over(
+                partition_by=orders.c.sku_id,
+                order_by=(orders.c.created_at.desc(), orders.c.order_id.desc()),
+            ).label("rank"),
+        ).subquery()
+        return select(ranked).where(ranked.c.rank == 1).order_by(
+            ranked.c.times.desc(), ranked.c.sku_id
+        ).limit(max_rows)
+
+    customer_rows = (await session.execute(latest_orders(
+        history.where(SalesOrder.customer_id == opportunity.customer_id), limit
+    ))).all()
     # 显式记住"哪些来自该客户"，后面补全时不会再改这个集合。
     # （第一版靠列表切片判断，追加数据后含义就变了，是写给自己看的坑。）
     customer_sku_ids = {int(row.sku_id) for row in customer_rows}
     seen = set(customer_sku_ids)
 
     # 不足时用公司整体成交频次补足
-    global_rows = (
-        await session.execute(
-            select(
-                SalesOrderItem.sku_id,
-                func.count(SalesOrderItem.id).label("times"),
-                func.max(SalesOrderItem.unit_price).label("last_price"),
-            )
-            .where(SalesOrderItem.sku_id.is_not(None))
-            .group_by(SalesOrderItem.sku_id)
-            .order_by(func.count(SalesOrderItem.id).desc())
-            .limit(limit * 3)
-        )
-    ).all()
+    global_rows = (await session.execute(latest_orders(history, limit * 3))).all()
     all_rows = list(customer_rows)
     for row in global_rows:
         if int(row.sku_id) in seen:
@@ -823,7 +867,9 @@ async def recommend_products(
                 "unit": sku.unit,
                 "moq": sku.moq,
                 "order_times": int(row.times),
-                "last_unit_price": _number(row.last_price),
+                "last_unit_price": _number(row.min_price) if row.min_price == row.max_price else None,
+                "last_unit_price_min_exact": str(row.min_price),
+                "last_unit_price_max_exact": str(row.max_price),
                 "reason": (
                     f"该客户历史成交 {int(row.times)} 次"
                     if from_customer

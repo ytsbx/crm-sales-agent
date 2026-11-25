@@ -1,11 +1,13 @@
 """Auth：登录 / 登出 / 当前用户 / 我的权限（对齐 03-API §2）。"""
 
 import logging
-from datetime import UTC, datetime
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Request
+from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -16,18 +18,21 @@ from app.core.errors import AppError, ErrorCode
 from app.core import rate_limit
 from app.core.response import ok
 from app.core.security import (
-    create_access_token,
     decode_access_token_allow_expired,
     verify_password,
 )
-from app.modules.auth.schema import LoginRequest, WeComSsoCallback
+from app.modules.auth.schema import DingTalkExchange, LoginRequest, WeComSsoCallback, PersonalAccountUpdate
 from app.modules.auth.session import (
     REASON_LOGOUT,
     SID_CLAIM,
+    issue_session_token,
     load_active_session,
     open_session,
     revoke_session,
 )
+from app.modules.dingtalk import service as dingtalk_service
+from app.modules.dingtalk.client import DingTalkDisabled, DingTalkError
+from app.modules.user import service as user_service
 from app.modules.user.model import Department, User
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -94,9 +99,7 @@ async def login(
     # 每次登录开一个**服务端会话**，令牌里带上它的标识（第十批 10.12）。
     # 与审计同一次提交：不会出现"审计有登录、会话表却没有"的半成品。
     login_session = await open_session(session, user.id)
-    token = create_access_token(
-        user.id, {"name": user.name}, session_id=login_session.sid
-    )
+    token = issue_session_token(login_session, user.name)
     await write_audit(
         session,
         operator_id=user.id,
@@ -106,6 +109,18 @@ async def login(
         ip=client_ip(request),
     )
     await session.commit()
+
+    # ⚠️ 先把要返回给前端的标量**取出来**（C5-05，2026-10-10 修）。
+    #
+    # 为什么必须在这里取：下面那段附加扫描失败时会 `session.rollback()`，
+    # 而回滚会让 ORM 实例的**所有属性过期**。过期之后同步读 `user.name`
+    # 会触发一次懒加载 —— 在同步上下文里就是
+    # `MissingGreenlet: greenlet_spawn has not been called`。
+    # 实测症状：月结扫描一抛异常 → 登录代码回滚 → `_user_brief(user)` 炸 → **登录返回 500**。
+    # 一个"附加提醒"把"能不能登录"打挂了，与那段 try 注释里写的取舍正好相反。
+    # 取值放在 commit 之后（`user.id` 在 commit 时也会过期，只是同一个 session 里
+    # 属性还留着上次加载的值；显式取出来才是确定的）。
+    user_brief = _user_brief(user)
 
     # 月结协议到期提醒（口径已确认 2026-10-05）：**扫描挂在登录上**。
     # 原本它只挂在每日自动任务里，而 `SCHEDULER_ENABLED` 按约定一直关着（多实例安全），
@@ -124,7 +139,8 @@ async def login(
         await session.rollback()
         logger.exception("登录时的月结到期扫描失败（不影响登录）")
 
-    return ok({"access_token": token, "token_type": "Bearer", "user": _user_brief(user)})
+    # 用上面取好的标量，**不再碰 user 对象**：它可能已被回滚整片过期。
+    return ok({"access_token": token, "token_type": "Bearer", "user": user_brief})
 
 
 @router.post("/refresh")
@@ -135,8 +151,7 @@ async def refresh(
 ):
     """用即将过期（或刚过期）的 token 换一个新 token（03-API §2）。
 
-    只在宽限期内有效（`settings.refresh_grace_minutes`），过期太久必须重新登录 ——
-    否则一个泄漏的旧 token 等于永久通行证。
+    刷新须在凭据的续期宽限内，且整个会话尚未达到最长有效期。
 
     用户必须仍然 active：停用后即使拿着有效 token 也不能续期，
     否则"停用账号"会被一个后台页面无限续命。
@@ -145,7 +160,7 @@ async def refresh(
     （`load_active_session`）。登出过、或改过密码的令牌，
     既不能访问接口，也不能拿来换新令牌 —— 否则"失效"只挡得住一半的路。
 
-    续期**不新建会话**：一次登录及其后续刷新属于同一会话，`sid` 原样带过去。
+    续期保留同一会话，替换当前凭据。并发续期串行处理，旧凭据只能成功换一次。
     """
     if credentials is None or not credentials.credentials:
         raise AppError(ErrorCode.UNAUTHORIZED, "未登录", 401)
@@ -162,12 +177,10 @@ async def refresh(
     if user is None or user.status != "active":
         raise AppError(ErrorCode.UNAUTHORIZED, "账号不存在或已停用", 401)
 
-    login_session = await load_active_session(session, payload.get(SID_CLAIM), user_id)
-    login_session.last_refresh_at = datetime.now(UTC)
-
-    token = create_access_token(
-        user.id, {"name": user.name}, session_id=login_session.sid
+    login_session = await load_active_session(
+        session, payload.get(SID_CLAIM), user_id, token_id=payload.get("jti"), for_refresh=True,
     )
+    token = issue_session_token(login_session, user.name)
     await write_audit(
         session,
         operator_id=user.id,
@@ -227,6 +240,153 @@ async def wecom_sso_callback(payload: WeComSsoCallback, request: Request):
     raise AppError(ErrorCode.EXTERNAL_ERROR, detail, 503)
 
 
+# ---- 钉钉扫码登录 ---------------------------------------------------------
+#
+# 三条纪律（照上面 `wecom_sso_callback` 的教训，但这次是**真的接通**）：
+#
+# ① **身份只能服务端换**：授权码 → 用户级令牌 → unionId → userid，全程由后端完成。
+#    前端给什么（包括自报的 unionid / userid）一律不认 —— 那是企微 SSO 被关死的
+#    原因，不能在钉钉这边重犯。
+# ② **拒绝理由分开报**："没绑定" / "不在通讯录" / "钉钉那边出错" 是三件事，
+#    混成一句"登录失败"会让人无从下手。
+# ③ **令牌不进 URL**：回调是浏览器重定向，所以只落一次性 ticket，前端再 POST 换走。
+
+
+def _external_base(request: Request) -> str:
+    """拼出「外网看到的这个站」的基址。
+
+    nginx 会把 `Host` 与 `X-Forwarded-Proto` 传下来，所以这里得到的是
+    `https://crm.mandla.cn`，而不是 `http://127.0.0.1:8010`。
+
+    ⚠️ 它会进 redirect_uri，而**钉钉只认登记过的域名** ——
+    所以即便 Host 被伪造，也换不来一个能用的回调地址。
+    """
+    host = request.headers.get("host") or request.url.netloc
+    forwarded_proto = (request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip().lower()
+    # 只接受浏览器可用的 HTTP 方案；直接把请求头拼进重定向地址会让异常代理头
+    # 生成 `javascript:` 等危险 Location。Host 的部署白名单仍由反向代理负责。
+    proto = forwarded_proto if forwarded_proto in {"http", "https"} else request.url.scheme
+    if proto not in {"http", "https"}:
+        proto = "http"
+    return f"{proto}://{host}"
+
+
+def _dingtalk_redirect_uri(request: Request) -> str:
+    return f"{_external_base(request)}{settings.api_prefix}/auth/dingtalk/callback"
+
+
+#: 回调失败时回给前端的说明。`resolve_login_user` 给的是 `LOGIN_REASON_LABEL`
+#: 里的键，这里只补"流程本身"的三种情况 —— 两边合成一张表，前端不用再维护一份。
+_CALLBACK_FLOW_ERROR: dict[str, str] = {
+    "state": "这次登录凭据已失效（页面停留过久或重复提交），请重新扫码",
+    "disabled_gate": "钉钉扫码登录的闸关着，暂不可用，请联系管理员",
+    "external": "和钉钉通讯时出错了，请稍后重试或改用账号密码登录",
+}
+
+
+@router.get("/dingtalk/authorize")
+async def dingtalk_authorize(request: Request):
+    """扫码登录第一步：拿到钉钉授权地址（前端负责跳过去）。
+
+    **这里不签发任何东西**，只生成一个一次性 state 并回一个 URL。
+    未就绪时**当场报错**，而不是给个跳过去必然失败的地址 ——
+    "扫完码才说不行"最费人时间。
+    """
+    if not settings.dingtalk_login_ready:
+        reason = (
+            "登录闸关着（DINGTALK_LOGIN_OFF=1）"
+            if (settings.dingtalk_app_key and settings.dingtalk_app_secret)
+            else "钉钉应用凭据未配置（缺 DINGTALK_APP_KEY / DINGTALK_APP_SECRET）"
+        )
+        raise AppError(
+            ErrorCode.EXTERNAL_ERROR,
+            f"钉钉扫码登录暂不可用：{reason}。请改用账号密码登录，或联系管理员开通。",
+            503,
+        )
+    state = dingtalk_service.issue_login_state()
+    url = dingtalk_service.get_client().build_login_url(
+        redirect_uri=_dingtalk_redirect_uri(request), state=state
+    )
+    return ok({"authorize_url": url})
+
+
+@router.get("/dingtalk/callback")
+async def dingtalk_callback(
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    session: AsyncSession = Depends(get_db),
+):
+    """扫码登录第二步：钉钉把用户送回来，这里换身份、签发令牌。
+
+    这是**浏览器重定向**进来的（GET），所以只能 302 回前端、不能返回 JSON。
+    成功时把令牌装进一次性 ticket 交给前端（60 秒内不来换即作废）。
+    """
+    target = f"{_external_base(request)}/login"
+
+    def back(reason: str) -> RedirectResponse:
+        text = _CALLBACK_FLOW_ERROR.get(reason) or dingtalk_service.LOGIN_REASON_LABEL.get(
+            reason, "登录失败，请重试"
+        )
+        return RedirectResponse(f"{target}?dingtalk_error={quote(text)}", status_code=303)
+
+    # state 一次性消费：没有 / 用过 / 过期，一律当成"不是我们发起的这次登录"。
+    if not dingtalk_service.consume_login_state(state):
+        return back("state")
+
+    try:
+        user, reason = await dingtalk_service.resolve_login_user(session, code=code or "")
+    except DingTalkDisabled:
+        return back("disabled_gate")
+    except DingTalkError as exc:
+        logger.warning("钉钉扫码登录换取身份失败：%s", exc)
+        return back("external")
+
+    if user is None:
+        return back(reason)
+
+    # 与账号密码登录**同一套**：开服务端会话 → 令牌带 sid → 审计，落在同一次提交里。
+    login_session = await open_session(session, user.id)
+    token = issue_session_token(login_session, user.name)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="dingtalk_login",
+        business_type="user",
+        business_id=user.id,
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return RedirectResponse(
+        f"{target}?dingtalk_ticket={dingtalk_service.issue_login_ticket(token)}",
+        status_code=303,
+    )
+
+
+@router.post("/dingtalk/exchange")
+async def dingtalk_exchange(
+    payload: DingTalkExchange,
+    session: AsyncSession = Depends(get_db),
+):
+    """扫码登录第三步：前端拿一次性 ticket 换令牌（走请求体，不进 URL）。"""
+    token = dingtalk_service.consume_login_ticket(payload.ticket)
+    if not token:
+        raise AppError(ErrorCode.UNAUTHORIZED, "登录凭据已失效，请重新扫码", 401)
+    claims = decode_access_token_allow_expired(token, grace_minutes=0)
+    try:
+        user_id = int(claims.get("sub", ""))
+    except (TypeError, ValueError) as exc:
+        raise AppError(ErrorCode.UNAUTHORIZED, "登录状态无效，请重新登录", 401) from exc
+    user = await session.get(User, user_id)
+    if user is None or user.status != "active":
+        raise AppError(ErrorCode.UNAUTHORIZED, "账号不存在或已停用", 401)
+    await load_active_session(session, claims.get(SID_CLAIM), user_id, token_id=claims.get("jti"))
+    return ok(
+        {"access_token": token, "token_type": "Bearer", "user": _user_brief(user)},
+        "登录成功",
+    )
+
+
 @router.post("/logout")
 async def logout(
     request: Request,
@@ -276,6 +436,7 @@ async def me(
             "id": user.id,
             "name": user.name,
             "username": user.username,
+            "initial_password_pending": user.initial_password_pending,
             "department": dept_name,
             "roles": user.roles,
             "data_scope": user.data_scope,
@@ -285,9 +446,85 @@ async def me(
 
 
 @router.get("/permissions")
-async def my_permissions(user: CurrentUser = Depends(get_current_user)):
-    return ok({"permissions": sorted(user.permissions), "roles": user.roles})
+async def my_permissions(
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    """我的权限，连同每个权限的中文名一起下发。
+
+    为什么中文名必须由服务端在这里拼好：权限目录接口（`GET /users/permissions`）
+    要求「账号与权限」管理权限，普通人根本调不动 —— 而"看看我自己有哪些权限"
+    不该依赖管理权限。这里只解析**这个人自己持有的**那些权限码，
+    不会把整个权限目录泄露出去。
+
+    `permissions` / `roles` 两个字段保持原样（老调用方照读不误），
+    中文名是新加的 `permission_names`：加字段，不改结构。
+    """
+    catalog = await user_service.list_permissions(session)
+    names = {p.code: p.name for p in catalog}
+    owned = sorted(user.permissions)
+    return ok(
+        {
+            "permissions": owned,
+            "roles": user.roles,
+            "permission_names": {code: names.get(code) or code for code in owned},
+        }
+    )
 
 
 def _user_brief(user: User) -> dict:
     return {"id": user.id, "name": user.name, "username": user.username}
+
+
+@router.patch("/account")
+async def update_personal_account(
+    payload: PersonalAccountUpdate,
+    request: Request,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    """只修改当前登录人；不接收用户 ID、角色或数据范围。"""
+    from app.core.security import hash_password
+    from app.modules.user.service import lock_user_row
+    from app.modules.user.usernames import lock_usernames
+    from app.modules.auth.session import REASON_PASSWORD_CHANGE, revoke_user_sessions
+    throttle_key = f"account-change:{user.id}|{client_ip(request) or 'unknown'}"
+    if rate_limit.remaining_lock_seconds(throttle_key, max_attempts=settings.login_max_attempts,
+                                         window_minutes=settings.login_lockout_window_minutes):
+        raise AppError(ErrorCode.RATE_LIMITED, "当前密码错误次数过多，请稍后重试", 429)
+    await lock_usernames(session)
+    await lock_user_row(session, user.id)
+    target = (await session.execute(select(User).where(User.id == user.id)
+                    .execution_options(populate_existing=True))).scalar_one()
+    if user.sid:
+        await load_active_session(session, user.sid, user.id, token_id=user.token_id)
+    if target.status != "active":
+        raise AppError(ErrorCode.FORBIDDEN, "账号已停用", 403)
+    if not verify_password(payload.current_password, target.password_hash):
+        rate_limit.register_failure(throttle_key, max_attempts=settings.login_max_attempts,
+                                    window_minutes=settings.login_lockout_window_minutes)
+        raise AppError(ErrorCode.PARAM_ERROR, "当前密码不正确", 400)
+    rate_limit.reset(throttle_key)
+    clash = (await session.execute(select(User.id).where(
+        func.lower(User.username) == payload.username.lower(), User.id != user.id))).first()
+    if clash:
+        raise AppError(ErrorCode.DUPLICATE, "登录名已被占用，请换一个", 409)
+    before = {"username": target.username}
+    changed = target.username != payload.username or payload.new_password is not None
+    if not changed:
+        return ok({"username": target.username, "require_relogin": False}, "账号没有变化")
+    try:
+        async with session.begin_nested():
+            target.username = payload.username
+            if payload.new_password is not None:
+                target.password_hash = hash_password(payload.new_password)
+                target.initial_password_pending = False
+            await session.flush()
+    except IntegrityError as exc:
+        raise AppError(ErrorCode.DUPLICATE, "登录名已被占用，请换一个", 409) from exc
+    await revoke_user_sessions(session, user.id, reason=REASON_PASSWORD_CHANGE)
+    await write_audit(session, operator_id=user.id, action="update", business_type="user", business_id=user.id,
+                      before=before, after={"username": target.username, "password_changed": payload.new_password is not None},
+                      ip=client_ip(request))
+    await session.commit()
+    return ok({"username": target.username, "require_relogin": True}, "账号已保存，请重新登录")

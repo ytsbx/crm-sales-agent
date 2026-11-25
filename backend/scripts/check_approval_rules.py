@@ -30,7 +30,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from _test_support import require_api_base, require_isolated_db
+from _test_support import confirm_freight_before_submit, require_api_base, require_isolated_db
 
 require_isolated_db()
 
@@ -138,6 +138,18 @@ async def clean(verbose=False):
         ('报价明细', "delete from quote_items where quote_version_id in "
                  "(select id from quote_versions where quote_id in "
                  f"(select id from quotes where customer_id in (select id from customers where name like 'CHK{RUN}%')))"),
+        # ⚠️ 发送记录与附加费用都要**先删**：前者指向版本（本套件有发送步骤），
+        # 后者是本套件新增的"确认运费"夹具 —— 两者都有外键指向版本。
+        ('发送记录', "delete from quote_send_logs where quote_version_id in "
+                 "(select id from quote_versions where quote_id in "
+                 f"(select id from quotes where customer_id in (select id from customers where name like 'CHK{RUN}%')))"),
+        # 附加费用同上
+        # 再提交审批，而 quote_charges.quote_version_id 有外键指向版本 ——
+        # 少了这一段，删版本会撞 quote_charges_quote_version_id_fkey（实测）。
+        # 这类「夹具多插了一张表就得同步清理」的连带，是套件最容易漏的地方。
+        ('附加费用', "delete from quote_charges where quote_version_id in "
+                 "(select id from quote_versions where quote_id in "
+                 f"(select id from quotes where customer_id in (select id from customers where name like 'CHK{RUN}%')))"),
         ('报价版本', "delete from quote_versions where quote_id in "
                  f"(select id from quotes where customer_id in (select id from customers where name like 'CHK{RUN}%'))"),
         ('报价单', f"delete from quotes where customer_id in (select id from customers where name like 'CHK{RUN}%')"),
@@ -200,7 +212,7 @@ async def main():
     print('=== 3. 规则 CRUD / 发布 / 版本 ===')
     status, res = call('POST', '/approval-rules', token=admin, body={
         'name': f'CHK{RUN}测试规则', 'kind': 'auto_pass', 'priority': 99,
-        'conditions': [{'field': 'gross_margin', 'op': 'gte', 'value': 10}],
+        'conditions': [{'field': 'gross_margin', 'op': 'gte', 'value': 30}, {'field': 'customer_has_overdue', 'op': 'eq', 'value': True}],
         'description': '回归测试用'})
     check('建草稿', res.get('code'), 0)
     rule_id = res['data']['id']
@@ -209,13 +221,13 @@ async def main():
     status, res = call('PATCH', f'/approval-rules/{rule_id}/enabled', token=admin, body={'enabled': True})
     check('未发布不能启用', res.get('code'), 40002)
 
-    status, res = call('POST', f'/approval-rules/{rule_id}/publish', token=admin)
+    status, res = call('POST', f'/approval-rules/{rule_id}/publish?confirm=true', token=admin)
     check('发布 V1', res['data']['published_version_no'], 1)
     status, res = call('PATCH', f'/approval-rules/{rule_id}', token=admin, body={
         'name': f'CHK{RUN}测试规则', 'kind': 'auto_pass', 'priority': 98,
-        'conditions': [{'field': 'gross_margin', 'op': 'gte', 'value': 20}]})
+        'conditions': [{'field': 'gross_margin', 'op': 'gte', 'value': 35}, {'field': 'customer_has_overdue', 'op': 'eq', 'value': True}]})
     check_true('改草稿后标记有变更', res['data']['has_draft_changes'] is True, '')
-    status, res = call('POST', f'/approval-rules/{rule_id}/publish', token=admin)
+    status, res = call('POST', f'/approval-rules/{rule_id}/publish?confirm=true', token=admin)
     check('发布 V2', res['data']['published_version_no'], 2)
     status, res = call('GET', f'/approval-rules/{rule_id}/versions', token=admin)
     check('版本历史两条', len(res['data']), 2)
@@ -259,8 +271,14 @@ async def main():
     from datetime import UTC as _UTC
     from datetime import datetime as _datetime
 
+    # ⚠️ **四项都要填**（第七批 P1-1）。原来只填 `purchase_cost`，其余三项为 NULL：
+    # 成本"合计"仍按 0 计入（看着是 10），但那属于**不完整成本** —— 现在
+    # 不完整的成本算不出可信毛利（`gross_margin=None`），"低毛利强制财务会签"
+    # 这类**基于毛利**的规则就命中不了，本套件随之变红。
+    # 本套件要验的是毛利规则本身，所以夹具给一份**完整**成本（显式 0 也算填）。
     status, res = call('POST', f'/skus/{sku_id}/costs', token=admin, body={
-        'purchase_cost': 10, 'effective_from': str(_datetime.now(_UTC).date()),
+        'purchase_cost': 10, 'production_cost': 0, 'package_cost': 0,
+        'processing_cost': 0, 'effective_from': str(_datetime.now(_UTC).date()),
         'remark': f'CHK{RUN}成本'})
     check('给测试 SKU 建成本', res.get('code'), 0)
 
@@ -302,6 +320,7 @@ async def main():
     check_true('单 C 建好（大额高毛利）', quote_c is not None, str(res_c)[:120])
 
     def submit_and_fetch(version_id, reason):
+        confirm_freight_before_submit(call, zhangsan, version_id)
         status, res = call('POST', f'/quote-versions/{version_id}/submit-approval',
                            token=zhangsan, body={'reason': reason})
         return res
@@ -311,7 +330,7 @@ async def main():
     print('=== 5. 沙盒试算（单 B：低毛利）===')
     version_b = quote_b['version_id']
     check_true('单 B 有版本', version_b is not None, str(quote_b)[:100])
-    status, res = call('POST', '/approval-rules/sandbox', token=admin,
+    status, res = call('POST', '/approval-rules/sandbox', token=zhangsan,
                        body={'quote_version_id': version_b})
     check('沙盒可跑', res.get('code'), 0)
     sandbox_b = res['data']
@@ -351,7 +370,7 @@ async def main():
     status, res = call('GET', f'/approvals/{approval_b}', token=admin)
     check_true('带规则痕迹', res['data']['summary'].get('rule_trace', {}).get('kind') == 'exception_route',
                str(res['data']['summary'].get('rule_trace'))[:120])
-    check_true('带会签配置', res['data']['summary'].get('co_sign', {}).get('role_codes') == ['finance'], '')
+    check_true('带会签配置', res['data']['summary'].get('co_sign', {}).get('permission_code') == 'quote:finance_approve', '')
 
     # 财务不能批业务节点
     status, res = call('POST', f'/approvals/{approval_b}/approve', token=wangwu)

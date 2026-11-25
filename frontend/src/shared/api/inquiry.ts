@@ -1,8 +1,15 @@
 import { api } from './client'
 import type { PageResult } from '../types'
 
+export interface InquiryOaDraft {
+  fields: Record<string, string>
+  quote_owner_user_id?: string | null
+  attachment_file_ids: number[]
+}
 export interface CustomInquiryRow {
+  source_insight_id?: number | null
   id: number
+  extra?: { oa_draft?: InquiryOaDraft | null; [key: string]: unknown } | null
   /** 需求编号（场景09）：报价/打样明细引用它溯源，同一条需求的各版本共用一个号 */
   inquiry_no?: string | null
   title: string
@@ -12,7 +19,9 @@ export interface CustomInquiryRow {
   contact_id?: number | null
   opportunity_id?: number | null
   quantity?: number | null
+  quantity_exact?: string | null
   target_price?: number | null
+  target_price_exact?: string | null
   status: string
   status_label: string
   remark?: string | null
@@ -20,9 +29,19 @@ export interface CustomInquiryRow {
   version?: number
   root_id?: number | null
   revision_note?: string | null
+  /**
+   * 这条需求已经转出来的报价（后端 `linked_quotes_for` 按需求 id 聚合）。
+   *
+   * 为什么要有：同一条需求转成的报价是「原报价」，再点一次不该再生成一张新的，
+   * 而要能把人带回原报价上去改价或加版本。字段是后端已经在返回的，
+   * 前端类型这里补齐，页面才有判据（缺了它就只剩「生成报价」一个按钮）。
+   * 目前只返回 id 和报价号：够做入口，不需要金额口径。
+   */
+  linked_quotes?: Array<{ id: number; quote_no: string }>
   /** 已被新版取代（取代是版本属性，不覆盖业务 status） */
   superseded_at?: string | null
   is_superseded?: boolean
+  is_deleted?: boolean
   version_state_label?: string
   converted_sku_id?: number | null
   created_by?: number | null
@@ -31,12 +50,13 @@ export interface CustomInquiryRow {
 }
 
 export interface CustomInquiryPayload {
+  oa_draft?: InquiryOaDraft
   title: string
   description?: string | null
   customer_id?: number | null
   opportunity_id?: number | null
-  quantity?: number | null
-  target_price?: number | null
+  quantity?: number | string | null
+  target_price?: number | string | null
   remark?: string | null
   status?: string
 }
@@ -48,6 +68,7 @@ export interface InquiryStatusCount {
 }
 
 export function listCustomInquiries(query: {
+  inquiry_id?: number
   status?: string
   keyword?: string
   opportunity_id?: number
@@ -80,8 +101,8 @@ export function reviseCustomInquiry(
     revision_note?: string | null
     title?: string
     description?: string | null
-    quantity?: number | null
-    target_price?: number | null
+    quantity?: number | string | null
+    target_price?: number | string | null
     remark?: string | null
   },
 ) {
@@ -101,9 +122,9 @@ export function customInquiryHistory(id: number) {
 export function createQuoteFromInquiry(
   id: number,
   payload: {
-    unit_cost: number
-    quoted_price: number
-    quantity?: number | null
+    unit_cost: number | string
+    quoted_price: number | string
+    quantity?: number | string | null
     item_name?: string | null
     valid_until?: string | null
   },

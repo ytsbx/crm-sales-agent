@@ -1,15 +1,17 @@
 """应收与回款接口（对齐 03-API §29 / §30）。"""
 
+import asyncio
+import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import select
+from sqlalchemy import delete, func, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import idempotency
-from app.core.audit import json_safe, write_audit
+from app.core.audit import write_audit
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
@@ -22,9 +24,14 @@ from app.modules.order.model import SalesOrder
 from app.modules.notification import service as notification_service
 from app.modules.order.service import get_order_or_404
 from app.modules.payment import service as svc
-from app.modules.payment.model import PaymentRecord, ReceivablePlan
+from app.modules.payment.model import (
+    PaymentAllocation,
+    PaymentRecord,
+    ReceivablePlan,
+)
 from app.modules.payment.schema import (
     PaymentAction,
+    PaymentAllocationUpdate,
     PaymentCreate,
     PaymentUpdate,
     ReceivableCreate,
@@ -33,6 +40,7 @@ from app.modules.payment.schema import (
 )
 
 router = APIRouter(tags=["Payment"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/receivables")
@@ -51,7 +59,24 @@ async def list_receivables(
     if visible is not None:
         stmt = stmt.where(ReceivablePlan.order_id.in_(visible))
     if status:
-        stmt = stmt.where(ReceivablePlan.status == status)
+        # 逾期/部分回款**按口径现算**，不比缓存的状态列（2026-10-13 主人拍板）：
+        # - 逾期 = 到期日已过且没收齐（收过一部分也算）；
+        # - 部分回款 = 收过一部分 **且还没到期**。
+        # 不这样做的话，"到期了但今天还没刷新状态"的节点会躲过逾期筛选，
+        # 与工作台/审批条件的口径对不上（那正是"两套账"的来源）。
+        received_sq = func.coalesce(svc.plan_received_expression(), 0)
+        overdue_cond = svc.plan_overdue_expression()
+        active = ReceivablePlan.status != "cancelled"
+        if status == "overdue":
+            stmt = stmt.where(overdue_cond)
+        elif status == "partial":
+            stmt = stmt.where(active, received_sq > 0, received_sq < ReceivablePlan.amount, not_(overdue_cond))
+        elif status == "paid":
+            stmt = stmt.where(active, received_sq > 0, received_sq >= ReceivablePlan.amount)
+        elif status == "pending":
+            stmt = stmt.where(active, received_sq <= 0, not_(overdue_cond))
+        else:
+            stmt = stmt.where(ReceivablePlan.status == status)
     if order_id:
         stmt = stmt.where(ReceivablePlan.order_id == order_id)
     rows, total = await paginate(session, stmt.order_by(ReceivablePlan.due_date.asc()), page, page_size)
@@ -88,10 +113,41 @@ async def get_receivable(
 async def _create_plan(session, order_id, payload, request, user):
     order = await get_order_or_404(session, order_id)
     await svc.assert_order_visible(session, user, order_id)
+    request_key = idempotency.request_key_from(request, payload.request_key)
+    reservation = None
+    if request_key:
+        fingerprint = payload.model_dump(exclude={"request_key"})
+        fingerprint.update(order_id=order_id, amount=format(payload.amount, ".2f"))
+        reservation = await idempotency.reserve(
+            session, user_id=user.id, action="receivable:create", request_key=request_key,
+            payload=fingerprint, result_type="receivable_plan",
+        )
+        if reservation.should_replay:
+            await _assert_replay_belongs_to_order(session, order_id=order_id, plan_id=reservation.replay_id)
+            return ok(reservation.replay_payload, "这期应收此前已创建，已返回原记录")
+    try:
+        return await _save_manual_plan(session, order, payload, request, user, reservation)
+    except Exception:
+        if reservation is not None:
+            await session.rollback()
+        raise
+
+
+async def _save_manual_plan(session, order, payload, request, user, reservation):
+    order_id = order.id
     # 与"按比例生成"共用同一把订单行锁（锁序见 svc.lock_order）：否则生成那边
     # "查无计划"的窗口里还能挤进一个手工节点，两边判断都不算错、结果却混着两套。
     if await svc.lock_order(session, order_id) is None:
         raise AppError(ErrorCode.NOT_FOUND, "订单不存在", 404)
+    # ⚠️ 生命周期检查必须放在**拿锁之后**（C5-02，2026-10-10 修）。
+    #
+    # 原来它在 `lock_order` 之前：请求先读到订单 `pending`，随后订单被并发取消，
+    # 加锁这一步不会发现 —— 因为它查的是自己刚读到的那个（已过期的）对象，
+    # 于是新增应收照样成功，取消的订单上又长出一个催收节点。
+    # `lock_order` 现在带 `populate_existing`，会**就地把同一个实例刷新成最新值**，
+    # 所以这里重查一次 `order` 拿到的是锁内的事实。
+    await svc.assert_order_can_add_receivable(order)
+    await svc.assert_receivable_amount_fits(session, order, payload.amount)
     plan = ReceivablePlan(
         order_id=order_id,
         plan_name=payload.plan_name,
@@ -107,17 +163,25 @@ async def _create_plan(session, order_id, payload, request, user):
     # 刚插入的行只有本事务看得见（别的会话连行都选不到），不需要再取节点锁。
     await svc.recalc_plan(session, plan)
     await session.flush()
+    # 多了一期应收 → "收齐"这个前提变了，跟单节点要跟着重算
+    # （第三批审查 P1：已收齐的订单再加一期，收款节点必须退回未完成）
+    from app.modules.order import milestones as milestones_svc
+
+    await milestones_svc.sync_payment_milestones(session, order_id, operator_id=user.id)
+    body = await svc.serialize_plan(session, plan)
     await write_audit(
         session,
         operator_id=user.id,
         action="create",
         business_type="receivable_plan",
         business_id=plan.id,
-        after=await svc.serialize_plan(session, plan),
+        after=body,
         ip=client_ip(request),
     )
+    if reservation is not None:
+        await idempotency.complete(session, reservation, result_payload=body, result_id=plan.id)
     await session.commit()
-    return ok(await svc.serialize_plan(session, plan), "应收节点已创建")
+    return ok(body, "应收节点已创建")
 
 
 @router.post("/orders/{order_id}/receivables")
@@ -129,6 +193,47 @@ async def create_order_receivable(
     session: AsyncSession = Depends(get_db),
 ):
     return await _create_plan(session, order_id, payload, request, user)
+
+
+@router.post("/orders/{order_id}/receivables/preview")
+async def preview_receivables(
+    order_id: int,
+    payload: ReceivableGenerate,
+    user: CurrentUser = Depends(require_permission("payment:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """**预览**按比例分期的各期金额，不落库（第九批问题 ⑤）。
+
+    为什么要有这个接口：前端原来自己用 JavaScript 浮点 + `Math.round` 算预览，
+    而后端用 `Decimal`（默认 `ROUND_HALF_EVEN`）。**同一份输入两边结果不同**：
+    `0.05` 元分两期，前端显示 `0.03 / 0.02`、后端落库 `0.02 / 0.03` ——
+    用户确认的金额与保存的金额不是一回事。
+
+    现在预览与落库**都走 `svc.split_amounts`**，用户看到什么就存什么。
+    不合法（分出不大于 0 的期）时同样返回 422，让前端在提交前就能说清原因。
+    """
+    # ⚠️ **数据范围必须先查**（第十批审查 ④，2026-10-13）。
+    #
+    # 这个预览接口是第九批加的，当时只调了 `get_order_or_404`（只判"存不存在"），
+    # 漏了范围校验 —— 实测：只有 `payment:manage`、数据范围只有自己的账号，
+    # 预览别人的订单能拿到总额 9876.54 元与各期金额；同一个账号调**正式生成**
+    # 却被正确拒绝（那条路有 `assert_order_visible`）。
+    #
+    # 预览也是"把别人订单的金额读出来"，性质和详情一样，必须同一道闸门。
+    await svc.assert_order_visible(session, user, order_id)
+    # 取订单用本文件既有的入口（不是自己拼 `get_visible_order`；
+    # 我第一版写了个不存在的 `_f` 与错误的取单方式，pyflakes 当场报出来了）
+    order = await get_order_or_404(session, order_id)
+    await svc.assert_order_visible(session, user, order_id)
+    ratios = [Decimal(str(r)) for r in payload.ratios]
+    amounts = svc.split_amounts(order.total_amount, ratios)
+    return ok(
+        {
+            "total_amount": svc._f(order.total_amount),
+            "currency": order.currency,
+            "amounts": [svc._f(amount) for amount in amounts],
+        }
+    )
 
 
 @router.post("/orders/{order_id}/receivables/generate")
@@ -148,9 +253,19 @@ async def generate_receivables(
     """
     order = await get_order_or_404(session, order_id)
     await svc.assert_order_visible(session, user, order_id)
+    # 取消的订单不许再产生应收（N03）。放在幂等占位**之前**：注定失败的操作
+    # 不该占掉一把请求键，否则用户"改完再来"会撞上同键冲突。
+    await svc.assert_order_can_add_receivable(order)
 
     data = payload.model_dump()
     request_key = idempotency.request_key_from(request, data.pop("request_key", None))
+    # ---- 幂等指纹必须含**路径里的 order_id**（第二轮审查 P1，2026-10-12）----
+    #
+    # 原来指纹只算 body（比例、期数、日期），而 order_id 在**路径**上。于是
+    # "订单 1 用某把键生成过"之后，对订单 2 用同一把键、同样参数提交时指纹完全
+    # 相同 → 直接回放订单 1 的那份结果：**订单 2 一个计划都没生成，却提示成功**。
+    # 把 order_id 并进指纹后，同键换订单会走"同键不同内容"的 409 冲突，说得清楚。
+    fingerprint = {**data, "order_id": order_id}
     reservation = None
     if request_key:
         reservation = await idempotency.reserve(
@@ -158,10 +273,16 @@ async def generate_receivables(
             user_id=user.id,
             action="receivable:generate",
             request_key=request_key,
-            payload=data,
+            payload=fingerprint,
             result_type="receivable_plan",
         )
         if reservation.should_replay:
+            # 回放前还要**复验那份结果确实是这张订单的**（存在性 + 归属）：
+            # 加指纹之前的旧记录、以及"结果 id 指向别的单"这类异常，都不能当成功返回。
+            # 数据范围由上面 `assert_order_visible` 对本次 order_id 的校验兜住。
+            await _assert_replay_belongs_to_order(
+                session, order_id=order_id, plan_id=reservation.replay_id
+            )
             return ok(
                 reservation.replay_payload,
                 "这次生成此前已成功过，已返回原计划（没有重复生成）",
@@ -178,10 +299,39 @@ async def generate_receivables(
         raise
 
 
+async def _assert_replay_belongs_to_order(
+    session: AsyncSession, *, order_id: int, plan_id: int | None
+) -> None:
+    """回放幂等结果前的复验：那份结果必须**存在**且**属于本次请求的订单**。
+
+    为什么不能只靠指纹：指纹是"这次提交"与"上次提交"比对的依据，而它说明不了
+    *上次那份结果到底建在哪张单上*。加 order_id 进指纹之前留下的记录、以及
+    `result_id` 指错对象这类脏数据，都只能在这里拦。比对不上就明确报冲突，
+    绝不把它当成"你已经成功过了"返回（那是让用户以为订单 2 有应收、实际没有）。
+    """
+    plan = await session.get(ReceivablePlan, plan_id) if plan_id else None
+    if plan is None or plan.order_id != order_id:
+        raise AppError(
+            ErrorCode.VERSION_CONFLICT,
+            "这把请求键此前的结果不属于本订单（可能是同一把键用在了别的订单上），"
+            "已拒绝回放。请刷新页面重新打开表单后再提交",
+            409,
+        )
+
+
 async def _generate_receivables(session, order, order_id, payload, request, user, reservation):
     # 锁共同订单行（统一锁序的第一把）：见函数说明。
     if await svc.lock_order(session, order_id) is None:
         raise AppError(ErrorCode.NOT_FOUND, "订单不存在", 404)
+    # ⚠️ 拿锁之后**再查一次生命周期**（C5-02，2026-10-10 修）。
+    #
+    # 调用方在进来之前已经查过一次，但那次是**锁外**的：请求读到订单 `pending`，
+    # 随后订单被并发取消 —— 那次检查看不出任何异常，而这个窗口里新增应收会成功。
+    # 保留锁外那次是有理由的（注释在调用方：注定失败的操作不该占掉一把请求键），
+    # 所以这里**再查一次**而不是把它挪下来。
+    # `lock_order` 带 `populate_existing`，会就地刷新同一个实例，所以此处读到的
+    # 是锁内的事实。
+    await svc.assert_order_can_add_receivable(order)
     # 比例校验**保持原样**（容差 0.0001）：实测浮点误差只有 1e-16 量级，够不到容差，
     # 不会误判；而比例微差的风险已由下面"最后一期补差额"兜住——就算有人把比例
     # 打成 99.99%，最后一期 = 总额 − 前面各期之和，合计仍然严格等于订单总额。
@@ -212,38 +362,32 @@ async def _generate_receivables(session, order, order_id, payload, request, user
     if existing:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该订单已有应收计划，请先删除再重新生成")
 
-    due_dates = [payload.first_due_date, payload.second_due_date or payload.first_due_date]
-    names = [payload.first_name, payload.second_name]
+    # 三期及以上在入参校验时已要求提供完整到期日。
+    due_dates = payload.due_dates or [
+        payload.first_due_date, payload.second_due_date or payload.first_due_date,
+    ]
+    names = payload.names
+    if names is None:
+        names = (
+            [payload.first_name, payload.second_name] if len(ratios) <= 2
+            else [f"第 {index} 期" for index in range(1, len(ratios) + 1)]
+        )
     # 各期金额：前面按比例算，**最后一期用"总额 − 前面各期之和"**。
     # 每期独立四舍五入会让合计不等于总额（订单 0.05 元按 50%/50% 得
     # 0.02 + 0.02 = 0.04，少一分）；差额补在最后一期，合计严格等于订单总额。
     total = Decimal(order.total_amount)
-    amounts: list[Decimal] = []
-    for index, ratio in enumerate(ratios):
-        if index == len(ratios) - 1:
-            amounts.append(total - sum(amounts, Decimal(0)))
-        else:
-            amounts.append((total * ratio).quantize(Decimal("0.01")))
-
-    # 末期兜底之后**必须回头检查有没有非正数期**：前面各期各自四舍五入，
-    # 金额极小时它们之和可能已经超过总额，末期就成了负数
-    # （0.03 元按 5×20% 分：前四期各 0.01，末期 −0.01）。负数的应收期会让
-    # 财务核销和催收都对不上，宁可明确拒绝并要求调整期数/比例。
-    if any(amount <= 0 for amount in amounts):
-        raise AppError(
-            ErrorCode.PARAM_ERROR,
-            f"订单总额 {total} 按当前比例分 {len(ratios)} 期会分出不大于 0 的期"
-            f"（{'、'.join(str(a) for a in amounts)}）。请减少期数或调整比例",
-            422,
-        )
+    # 拆金额与"有没有非正数期"的校验**都在 `svc.split_amounts` 一处**
+    # （第九批问题 ①：原来这里写了一遍带校验的，转单那边又写了一遍漏了校验的，
+    #  于是转单能生成负数额应收）
+    amounts = svc.split_amounts(total, ratios)
 
     created = []
-    for index, ratio in enumerate(ratios):
+    for index, amount in enumerate(amounts):
         plan = ReceivablePlan(
             order_id=order_id,
-            plan_name=names[index] if index < len(names) else f"第 {index + 1} 期",
-            due_date=due_dates[index] if index < len(due_dates) else payload.first_due_date,
-            amount=amounts[index],
+            plan_name=names[index],
+            due_date=due_dates[index],
+            amount=amount,
             # **必须显式继承订单币种**（第十一批 11.1）。不写这一行，它会落到列默认的
             # CNY：美元订单按比例分出来的几期全成了人民币，金额看着对、代表的钱已经不同。
             # 手工新增那条路（`_create_plan`）一直是这样写的，两条路的币种规则必须一致。
@@ -255,6 +399,10 @@ async def _generate_receivables(session, order, order_id, payload, request, user
         session.add(plan)
         await session.flush()
         created.append(plan)
+    # 新增整套应收 → 跟单节点按新的事实重算（同上，第三批审查 P1）
+    from app.modules.order import milestones as milestones_svc
+
+    await milestones_svc.sync_payment_milestones(session, order_id, operator_id=user.id)
     await write_audit(
         session,
         operator_id=user.id,
@@ -269,7 +417,9 @@ async def _generate_receivables(session, order, order_id, payload, request, user
         await idempotency.complete(
             session,
             reservation,
-            result_payload=json_safe(body),
+            # Q4 决策2：原始 Decimal 响应体直接交 complete 底座存精确原文，
+            # 不再预先 json_safe(False) 过 float。
+            result_payload=body,
             result_id=created[0].id if created else order_id,
         )
     await session.commit()
@@ -288,20 +438,56 @@ async def update_receivable(
 
     取节点时必须带锁（`for_update=True`）：改金额要重算节点状态，重算不在锁内
     就是"读旧汇总、写覆盖"——与并发确认撞上时，后写的那个把 paid 改回 partial。
+
+    ⚠️ 改完还要**同步跟单节点**（第三批审查 P1，2026-10-12）：把应收从 100 改成 200
+    之后，已确认回款仍是 100，应收状态正确变 `partial`，而「收款」节点却继续显示
+    已完成 —— 一份订单两个说法。同步与这次改动在同一把订单锁、同一个事务内
+    （`get_visible_plan(for_update=True)` 内部已按"订单 → 节点"锁序取锁）。
     """
     plan = await svc.get_visible_plan(session, user, plan_id, for_update=True)
     before = await svc.serialize_plan(session, plan)
     changes = payload.model_dump(exclude_unset=True)
+    amount = changes.get("amount")
+    amount_changed = amount is not None and amount != plan.amount
+    if amount_changed and amount > plan.amount and plan.status != "cancelled":
+        order = await get_order_or_404(session, plan.order_id)
+        await svc.assert_receivable_amount_fits(session, order, amount, replacing=plan)
     if changes.get("plan_name") is not None:
         plan.plan_name = changes["plan_name"]
     if changes.get("due_date") is not None:
         plan.due_date = changes["due_date"]
-    if changes.get("amount") is not None:
-        plan.amount = Decimal(str(changes["amount"]))
+    if amount_changed:
+        plan.amount = amount
     if "remark" in changes:
         plan.remark = changes["remark"]
-    await svc.recalc_plan(session, plan)
+    # ⚠️ 应收金额变了要**重新平衡分配**（第十批实测发现的缺口）。
+    #
+    # 分配原来只在"确认回款"时算一次；把某一期从 100 改大到 200 之后，
+    # 原来收到的钱不够了，而**另一期超收出来的钱不会自动补过来** ——
+    # 客户其实付够了，系统却显示还差 100（`check_round3_risk_repairs` 就是这么红的）。
+    # 主人定的口径是"超收按到期日自动抵后续期"，所以平衡要跟着应收变化走。
+    # 单独延期只重算本期逾期状态，保留已有回款的期次归属。
+    plans_to_recalc = [plan]
+    if amount_changed:
+        await svc.rebalance_order_allocations(session, plan.order_id, operator_id=user.id)
+        plans_to_recalc = (
+            await session.execute(
+                select(ReceivablePlan)
+                .where(
+                    ReceivablePlan.order_id == plan.order_id,
+                    ReceivablePlan.status != "cancelled",
+                )
+                .order_by(ReceivablePlan.id.asc())
+            )
+        ).scalars().all()
+    for each_plan in plans_to_recalc:
+        await svc.recalc_plan(session, each_plan)
     await session.flush()
+    from app.modules.order import milestones as milestones_svc
+
+    await milestones_svc.sync_payment_milestones(
+        session, plan.order_id, operator_id=user.id
+    )
     await write_audit(
         session,
         operator_id=user.id,
@@ -329,17 +515,31 @@ async def delete_receivable(
     正好在给这个节点登记回款，两边各自读到"没有/节点还在"，结果回款挂在一个
     已被删掉的节点上（孤儿账）。锁上之后两种顺序都安全：先登记的先插、删除方
     看得到；先删的删完，登记方拿到锁后重查节点已不存在 → 404。
+
+    删掉一个节点会让"应收合计"变小（删到"已确认收款 ≥ 应收"时「收款」节点该完成），
+    所以删完要在**同一个事务**里同步跟单节点（第三批审查 P1，2026-10-12）。
     """
     plan = await svc.get_visible_plan(session, user, plan_id, for_update=True)
+    order = await session.get(SalesOrder, plan.order_id)
+    if plan.status == "cancelled" or (order is not None and order.status == "cancelled"):
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已取消的应收计划须保留历史，不能删除", 422)
     paid = (
         await session.execute(
             select(PaymentRecord.id).where(PaymentRecord.receivable_plan_id == plan_id)
         )
     ).first()
-    if paid:
-        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该应收节点已有回款记录，不能删除")
+    allocated = (await session.execute(select(PaymentAllocation.id).where(
+        PaymentAllocation.plan_id == plan_id).limit(1))).first()
+    if paid or allocated:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该应收节点已有回款记录或收款分配，不能删除；请先核对并调整回款分配", 422)
+    order_id = plan.order_id
     before = await svc.serialize_plan(session, plan)
     await session.delete(plan)
+    # 先 flush：同步要算的"应收合计"必须已经不含这一行
+    await session.flush()
+    from app.modules.order import milestones as milestones_svc
+
+    await milestones_svc.sync_payment_milestones(session, order_id, operator_id=user.id)
     await write_audit(
         session,
         operator_id=user.id,
@@ -362,10 +562,31 @@ async def mark_overdue(
 ):
     """把节点直接标成逾期。
 
+    **终态不许覆盖**（N02，2026-10-09 修）：已收齐（`paid`）与已取消
+    （`cancelled`）的节点，这个接口从前是**无条件**写 `status="overdue"` ——
+    实测把一条已结清的节点标成了逾期，财务结论被业务操作盖掉。
+    现在先判终态，明确报错并说清当前状态。
+
     同样要先锁节点：这是"覆盖状态"的写入，与并发确认的重算放在同一把锁下，
     谁后写都是基于最新事实（否则确认刚把节点算成 paid，这边一个旧状态覆盖回去）。
     """
     plan = await svc.get_visible_plan(session, user, plan_id, for_update=True)
+    # ⚠️ 这里**不能用 `svc.TERMINAL_PLAN_STATUSES`**（C4-01 补修，2026-10-09）：
+    # 那个常量现在只剩 `cancelled`（`paid` 已移出，好让它参与"改金额后如实重算"）。
+    # 而"不许把已结清的节点标成逾期"是**本端点自己的**业务规则，与重算无关 ——
+    # 我第一版图省事复用了那个常量，结果把这个保护一起拆掉了（实测已结清的节点
+    # 能被标成逾期），是靠新增的断言 ⑥ 抓出来的。
+    if plan.status in ("paid", "cancelled"):
+        # 文案与"只有待确认的回款可以操作"同一风格：先说清为什么不行，
+        # 再说清当前是什么状态，让人知道该去看哪里。
+        label = svc.PLAN_STATUS_LABEL.get(plan.status, plan.status)
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"该应收节点已是「{label}」，不能再标为逾期"
+            + ("；已收齐的节点不能退回待收。" if plan.status == "paid"
+               else "；随订单取消的节点不再参与催收。"),
+            422,
+        )
     before_status = plan.status
     plan.status = "overdue"
     await session.flush()
@@ -491,6 +712,12 @@ async def upload_payment_voucher(
         # 补偿与通用上传共用同一份逻辑，不在这里另写一套。
         await file_service.discard_unregistered_upload(session, object_key)
         raise
+    except asyncio.CancelledError:
+        # 请求被取消同样要补偿（第七批 P2-9）：`CancelledError` 是 BaseException，
+        # 上面 `except Exception` 捕不到 —— 客户端断开时这份凭证会留在盘上
+        # 而库里没有记录。与通用上传入口同一个漏、同一套修法。
+        await file_service.discard_unregistered_upload(session, object_key)
+        raise
     return ok({"voucher_file_id": voucher.id, "voucher_file_name": voucher.file_name}, "凭证已上传")
 
 
@@ -561,7 +788,17 @@ async def delete_payment_voucher(
     )
     await session.commit()
     if file_removed and object_key is not None:
-        storage.delete_object(object_key)
+        # 数据库删除已提交。磁盘清理失败只能留下孤儿文件，不能把已成功的
+        # 删除返回成 500，否则客户端重试时只会得到“凭证不存在”。
+        try:
+            storage.delete_object(object_key)
+        except Exception:  # noqa: BLE001 —— 与通用文件删除保持相同的提交后清理语义
+            logger.warning(
+                "回款凭证 %s 已从库中删除，但磁盘原件清理失败：%s",
+                old_file_id,
+                object_key,
+                exc_info=True,
+            )
     if file_removed:
         return ok(
             {"detached_only": False, "file_deleted": True},
@@ -570,6 +807,131 @@ async def delete_payment_voucher(
     return ok(
         {"detached_only": True, "file_deleted": False},
         "已解除这条回款的凭证关联；该文件仍被其他业务使用，未删除",
+    )
+
+
+@router.put("/payments/{payment_id}/allocations")
+async def update_payment_allocations(
+    payment_id: int,
+    payload: PaymentAllocationUpdate,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("payment:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """人工调整一笔回款的**分配**（分给哪几期、各多少）——第十批主人定。
+
+    主人原话（选方案1）：「系统不能擅自调整已经登记的收款归属，必须由有权限的
+    人员确认后才能调整」+「调整时要保留完整的操作审计记录，包括原归属期数、
+    新归属期数、调整金额、操作人员和操作时间」。
+
+    所以这里：
+
+    - **整份替换**：传进来的就是这笔回款的全部分配；没传的期即不分配。
+      这样审计里"原归属 → 新归属"是一条清晰对照，而不是一串增删改；
+    - 全部标 `source='manual'`：标过人工的回款，之后系统自动分配**不会覆盖**
+      它们（`allocate_payment` 只重算 `auto` 那部分）；
+    - 写审计（含 `before` / `after` 与原因），并标明是谁、什么时候改的；
+    - 改完立刻重算相关各期的状态与跟单节点 —— 否则页面还显示旧的"未收齐"。
+
+    用途（主人点的两个场景）：把挂错期的回款改到正确的期；或客户提前付了后续期，
+    人工确认后把超额部分分给后续期（而不是被当成登记错误）。
+
+    ⚠️ 分配总额不得超过回款金额：多出来的钱没有来源，等于凭空记了一笔已收。
+    """
+    record = await svc.get_visible_payment(session, user, payment_id, for_update=True)
+    if record.status != "confirmed":
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "只有已确认的回款才谈得上分配；这笔还是「待确认」，请先确认到账",
+            422,
+        )
+    order = await session.get(SalesOrder, record.order_id)
+    if order is not None and order.status == "cancelled":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "订单已取消，不能再调整回款分配", 422)
+
+    total = sum((item.amount for item in payload.allocations), Decimal(0))
+    received = Decimal(record.received_amount or 0)
+    if total > received:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"分配合计 {total} 超过这笔回款的金额 {received}；"
+            "多出来的部分没有来源，请先核对金额或减少分配",
+            422,
+        )
+    # 目标期必须都属于这张单、且没被取消（不能把钱分到别的订单的期上）
+    plan_ids = [item.plan_id for item in payload.allocations]
+    plans: dict[int, ReceivablePlan] = {}
+    if plan_ids:
+        rows = (
+            await session.execute(
+                select(ReceivablePlan).where(ReceivablePlan.id.in_(plan_ids))
+            )
+        ).scalars().all()
+        plans = {row.id: row for row in rows}
+        for item in payload.allocations:
+            plan = plans.get(item.plan_id)
+            if plan is None:
+                raise AppError(ErrorCode.NOT_FOUND, f"应收节点 {item.plan_id} 不存在", 404)
+            if plan.order_id != record.order_id:
+                raise AppError(
+                    ErrorCode.PARAM_ERROR,
+                    f"应收节点 {item.plan_id} 不属于订单 {order.order_no if order else record.order_id}，"
+                    "不能把回款分到别的订单上",
+                    422,
+                )
+            if plan.status == "cancelled":
+                raise AppError(
+                    ErrorCode.PARAM_ERROR, f"应收节点「{plan.plan_name}」已取消，不能分配", 422
+                )
+
+    before = await svc.serialize_allocations(session, record.id)
+    before_mode = record.allocation_mode
+    record.allocation_mode = "manual"
+    # 整份替换：删掉这笔回款的全部旧分配，按新的一份重建（都标 manual）
+    await session.execute(
+        delete(PaymentAllocation).where(PaymentAllocation.payment_id == record.id)
+    )
+    now = datetime.now(UTC)
+    for item in payload.allocations:
+        session.add(
+            PaymentAllocation(
+                payment_id=record.id,
+                plan_id=item.plan_id,
+                amount=item.amount,
+                source="manual",
+                created_by=user.id,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    await session.flush()
+    after = await svc.serialize_allocations(session, record.id)
+
+    # 重算受影响各期的状态（原来分到的期 + 现在分到的期，都可能变化）
+    affected = {row["plan_id"] for row in before} | {row["plan_id"] for row in after}
+    for plan_id in sorted(affected):
+        plan = await svc.lock_plan(session, plan_id)
+        if plan is not None:
+            await svc.recalc_plan(session, plan)
+    # 审计：原归属 / 新归属 / 金额 / 操作人 / 时间 都在 before/after 里
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="update_allocations",
+        business_type="payment",
+        business_id=record.id,
+        before={"allocations": before, "allocation_mode": before_mode, "reason": None},
+        after={"allocations": after, "allocation_mode": "manual", "reason": payload.reason},
+        ip=client_ip(request),
+    )
+    if order is not None:
+        from app.modules.order import milestones as milestones_svc
+
+        await milestones_svc.sync_payment_milestones(session, order.id, operator_id=user.id)
+    await session.commit()
+    return ok(
+        {"allocations": after, "reason": payload.reason},
+        "回款分配已调整（原归属与新归属都已留审计）",
     )
 
 
@@ -586,7 +948,7 @@ async def update_payment(
     只有待确认（pending）的回款能改。确认/驳回都是财务给出的事实结论，
     事后改金额会让已对账的账目对不上。
 
-    取记录时带锁（`for_update=True`，内部按「应收节点 → 回款记录」的顺序取锁）：
+    取记录时带锁（`for_update=True`，内部按「订单 → 应收节点 → 回款记录」的顺序取锁）：
     改金额要重算节点状态，重算必须发生在节点锁内，否则与并发确认互相覆盖。
     """
     record = await svc.get_visible_payment(session, user, payment_id, for_update=True)
@@ -604,6 +966,11 @@ async def update_payment(
     )
     before = await svc.serialize_payment(session, record)
     changes = payload.model_dump(exclude_unset=True)
+    # 实收日期不能在未来（第四批审查 P1）：放在赋值之前，被拒时不留半改状态。
+    # 这里判的是"改完之后的日期"—— 传了就用新值，没传就维持原值（原值也可能
+    # 是修复前登记的异常未来日期，顺手也拦住）。
+    if "received_date" in changes:
+        svc.assert_received_date_not_future(changes["received_date"], action="修改回款")
     if "received_amount" in changes:
         record.received_amount = Decimal(str(changes["received_amount"]))
     if "received_date" in changes:
@@ -654,7 +1021,7 @@ async def create_payment(
        所以同额同日的两笔真实回款不会被"金额 + 日期相同"这种猜测合并掉。
        不带键仍然照旧登记，但响应里点明这次没有幂等保护。
     2. **币种继承应收节点**：给不同币种直接拒绝（跨币种核销口径未定，不猜汇率）。
-    3. **先锁应收节点再插回款**（统一锁序的第一段）：与"删节点""确认回款"
+    3. **先锁订单、再锁应收节点再插回款**（统一锁序的第一段）：与"删节点""确认回款"
        并发时不会出现"回款挂到已删节点上"或读旧汇总写覆盖。
     """
     if not payload.receivable_plan_id:
@@ -695,6 +1062,11 @@ async def create_payment(
         plan = await svc.get_visible_plan(
             session, user, payload.receivable_plan_id, for_update=True
         )
+        # 订单/节点已取消就不该再收钱（C5-01）：从前这里没有生命周期校验，
+        # 实测订单与节点都已取消仍能登记回款 → 200 落库。
+        await svc.assert_plan_accepts_payment(session, plan)
+        # 实收日期不能在未来（第四批审查 P1）：放在建记录之前，被拒时不留半改状态
+        svc.assert_received_date_not_future(payload.received_date)
         record = PaymentRecord(
             receivable_plan_id=plan.id,
             order_id=plan.order_id,
@@ -726,7 +1098,8 @@ async def create_payment(
             await idempotency.complete(
                 session,
                 reservation,
-                result_payload=json_safe(body),
+                # Q4 决策2：原始 Decimal 响应体直接交 complete 底座存精确原文。
+                result_payload=body,
                 result_id=record.id,
             )
         await session.commit()
@@ -755,27 +1128,66 @@ async def confirm_payment(
     第七批 7.9：`get_visible_payment(..., for_update=True)` 内部按统一锁序
     先锁**共同应收节点**再锁回款记录。两个各 50 的并发确认锁的是两条不同的
     回款记录、锁不到彼此，只锁回款记录时双方都会读到"已确认 50"各写一次
-    partial；先锁共同节点后，后到的那个在锁上等，等到时先到者已提交，
+    partial；先锁订单、再锁共同节点后，后到的那个在锁上等，等到时先到者已提交，
     重算才看得到 100 → 节点 paid。
     """
-    record = await svc.get_visible_payment(session, user, payment_id, for_update=True)
+    record = await svc.get_visible_payment(session, user, payment_id, for_update=True, protect_transfer=True)
     svc.ensure_payment_pending(record)
+    # 历史回款允许不挂应收节点，但它仍归属订单，不能绕过订单取消状态。
+    # get_visible_payment 已锁订单并刷新，这里检查的是锁内最新状态。
+    order = await session.get(SalesOrder, record.order_id)
+    if order is not None and order.status == "cancelled":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "订单已取消，不能再确认回款", 422)
+    # 订单/节点已取消就不该确认（C5-01）。放在这里而不是最后：被拒时**不能留下
+    # 半改的状态**。`get_visible_payment` 已按统一锁序拿到订单与节点锁，这一步与它同序。
+    # 没有节点（挂空）的回款不适用——那种本来就不参与节点重算。
+    if record.receivable_plan_id:
+        await svc.assert_plan_accepts_payment(
+            session,
+            await svc.lock_plan(session, record.receivable_plan_id),
+            action="确认回款",
+        )
+    # 实收日期不能在未来（第四批审查 P1）：**锁内**再查一次，拦住修复前登记的
+    # 存量异常记录 —— 只在登记处加校验挡不住它们。放在改状态之前。
+    svc.assert_received_date_not_future(record.received_date, action="确认回款")
     record.status = "confirmed"
     record.confirmed_by = user.id
     record.confirmed_at = datetime.now(UTC)
-    if record.receivable_plan_id:
-        # 节点锁已在 get_visible_payment 里按统一锁序取到；这里再取一次是同一
-        # 事务内的同一把锁，不额外阻塞，只为让"锁内重算"在调用点可见。
-        plan = await svc.lock_plan(session, record.receivable_plan_id)
+    # ⚠️ **先把这笔钱分配到各期，再重算状态**（第十批主人 2026-10-13 拍板）。
+    #
+    # 顺序不能反：`recalc_plan` 现在读的是**分配额**（`confirmed_amount` 走
+    # `payment_allocations`），先重算就会读到"这笔还没分配"的旧数，
+    # 于是这一期该 `paid` 却停在 `partial`。
+    #
+    # 分配规则：人工分配优先（人定过的不动），剩下的按**到期日从早到晚**
+    # 填各期空缺；全部填满后仍有余额就挂"待分配"，不硬塞给某一期。
+    await svc.allocate_payment(session, record, operator_id=user.id)
+    # 分配可能落到**多期**（超收抵后续期），所以这里重算本单**全部未取消**的期，
+    # 不是只重算原来挂的那一期。
+    for plan in (
+        await session.execute(
+            select(ReceivablePlan)
+            .where(
+                ReceivablePlan.order_id == record.order_id,
+                ReceivablePlan.status != "cancelled",
+            )
+            .order_by(ReceivablePlan.id.asc())
+        )
+    ).scalars().all():
         await svc.recalc_plan(session, plan)
-    order = await session.get(SalesOrder, record.order_id)
     if order:
+        # 收款事实回流到跟单节点（issue #11）：「付定金」「收款」两个节点的实际日
+        # 由**已确认收款**派生，不能人工直填。这一笔确认之后立刻同步，
+        # 否则跟单页还停在"未完成"，与财务页对不上。
+        from app.modules.order import milestones as milestones_svc
+
+        await milestones_svc.sync_payment_milestones(session, order.id)
         from app.modules.followup.service import record_and_notify
 
         await record_and_notify(
             session, customer_id=order.customer_id, operator_id=user.id, owner_id=order.owner_id,
             title="财务确认回款",
-            content=f"订单 {order.order_no} 的回款 #{record.id} 已由财务确认，"
+            content=f"订单 {order.order_no} 的回款编号 {record.id} 已由财务确认，"
                     f"收款日期 {record.received_date}；金额与凭证请在原单查看",
             business_type="payment", business_id=record.id, order_id=order.id,
             event_key=f"payment:confirm:{record.id}",
@@ -786,7 +1198,7 @@ async def confirm_payment(
             user_id=order.owner_id,
             type_="payment",
             title="回款已确认",
-            content=f"订单 {order.order_no} 收到 ¥{float(record.received_amount):,.2f}",
+            content=f"订单 {order.order_no} 收到 ¥{record.received_amount:,.2f}",
             business_type="order",
             business_id=order.id,
         )
@@ -803,7 +1215,7 @@ async def confirm_payment(
     # 那时再取属性可能触发额外的同步 IO（异步会话里会报 MissingGreenlet）。
     serialized = await svc.serialize_payment(session, record)
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(serialized, "财务已确认回款")
 
 
@@ -845,14 +1257,23 @@ async def plan_payments(
     session: AsyncSession = Depends(get_db),
 ):
     await svc.get_visible_plan(session, user, plan_id)
+    effective = svc.effective_allocations()
     rows = (
         await session.execute(
             select(PaymentRecord)
-            .where(PaymentRecord.receivable_plan_id == plan_id)
+            .where(or_(PaymentRecord.receivable_plan_id == plan_id,
+                       PaymentRecord.id.in_(select(effective.c.payment_id).where(effective.c.plan_id == plan_id))))
             .order_by(PaymentRecord.received_date.asc())
         )
     ).scalars().all()
-    return ok([await svc.serialize_payment(session, row) for row in rows])
+    items = []
+    for row in rows:
+        item = await svc.serialize_payment(session, row)
+        amount = sum((Decimal(a["amount_exact"]) for a in item["allocations"] if a["plan_id"] == plan_id), Decimal(0))
+        item["plan_allocated_amount"] = amount
+        item["plan_allocated_amount_exact"] = str(amount)
+        items.append(item)
+    return ok(items)
 
 
 @router.get("/orders/{order_id}/finance-summary")

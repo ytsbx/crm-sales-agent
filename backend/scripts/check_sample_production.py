@@ -32,7 +32,7 @@ import urllib.error
 import urllib.request
 
 from sqlalchemy import select, text
-from _test_support import require_api_base, require_isolated_db
+from _test_support import force_sample_review, require_api_base, require_isolated_db
 
 require_isolated_db()
 
@@ -182,7 +182,9 @@ async def main():
     check('未批准登记制作被拒', status, 422)
 
     print('=== 3. 客户收到 ≠ 客户接受 ===')
-    call('POST', f'/samples/{sample_id}/approve', token=token, body={'approved': True})
+    # 审批结果走直插（approve 已收口到同序 OA，bdd6efc9）；顺序守卫照旧断言
+    async with SessionLocal() as s:
+        await force_sample_review(s, sample_id, 'approved')
     status, res = call('POST', f'/samples/{sample_id}/made', token=token, body={})
     check('批准后可登记制作完成', res.get('code'), 0)
     check_true('制作时间已记', bool(res['data']['made_at']), f"made_at={res['data']['made_at']}")
@@ -231,7 +233,8 @@ async def main():
     # 车间依据**走明细接口**（创建接口的单头/明细都不收 material，别指望一次带上）
     call('PATCH', f'/samples/{rev_id}/items/{rev_item_id}', token=token,
          body={'material': 'PP 中空板', 'craft': '注塑', 'drawing_version': 'DWG-V1'})
-    call('POST', f'/samples/{rev_id}/approve', token=token, body={'approved': True})
+    async with SessionLocal() as s:
+        await force_sample_review(s, rev_id, 'approved')
     call('POST', f'/samples/{rev_id}/made', token=token, body={})
 
     # ① 已制作后原地改材质：必须被拒
@@ -288,7 +291,9 @@ async def main():
     check('没有制作/寄出事实的单子不给开修订版', status, 422)
 
     status, res = call(
-        'POST', f'/samples/{sample_id}/confirm', token=token, body={'accepted': True}
+        # 带 confirm：要验的是**业务原因**（还没签收），不是"需要确认"那道拦
+        'POST', f'/samples/{sample_id}/confirm?confirm=true', token=token,
+        body={'accepted': True}
     )
     check('还没签收就确认被拒', status, 422)
 
@@ -309,7 +314,7 @@ async def main():
     print('=== 4. 客户确认 ===')
     _, res = call(
         'POST',
-        f'/samples/{sample_id}/confirm',
+        f'/samples/{sample_id}/confirm?confirm=true',
         token=token,
         body={'accepted': True, 'remark': '客户确认可以做正式订单'},
     )

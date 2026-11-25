@@ -1,0 +1,2 @@
+[HIST-FX] rejected code=40002 http=400 message=报价币种只能用人民币（CNY），收到「USD」。系统当前只支持人民币（CNY）：这条记录上的外币金额不会被折算，也无法参与审批与统计。请把币种改回人民币。（这不是改配置能放开的：当前系统不做外币业务）
+[HIST-FX] quote=HIST-FX-USD-001 currency=USD order_before=None order_after=None

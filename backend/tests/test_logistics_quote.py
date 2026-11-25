@@ -1,9 +1,19 @@
 """物流计价纯函数单元测试：`quote_rate` 重量/体积取大、最低收费、时效文案。"""
 
 from decimal import Decimal
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
+import pytest
+from starlette.requests import Request
+
+from app.core.errors import AppError
+from app.modules.agent.tools import calculate_logistics
+from app.modules.pricing import logistics, logistics_router
 from app.modules.pricing.logistics import quote_rate
-from app.modules.pricing.model import LogisticsRate
+from app.modules.pricing.logistics_schema import LogisticsCalculateRequest
+from app.modules.pricing.model import LogisticsQuote, LogisticsRate
+from app.modules.product.model import Sku
 
 
 def make_rate(**overrides) -> LogisticsRate:
@@ -19,6 +29,79 @@ def make_rate(**overrides) -> LogisticsRate:
     )
     defaults.update(overrides)
     return LogisticsRate(**defaults)
+
+
+@pytest.mark.anyio
+async def test_logistics_confirmation_and_history_keep_exact_cents(monkeypatch):
+    sku = Sku(id=1, sku_code="SKU-1", weight=Decimal("99999999999"), unit="件")
+    rows = []
+    session = SimpleNamespace(get=AsyncMock(return_value=sku), add=rows.append,
+                              flush=AsyncMock(), commit=AsyncMock())
+    user = SimpleNamespace(id=1)
+    request = Request({"type": "http", "headers": []})
+    rate = make_rate(id=1, unit_price_per_kg=Decimal("999.9912"))
+    monkeypatch.setattr(logistics, "volumetric_ratio", AsyncMock(return_value=Decimal(0)))
+    monkeypatch.setattr(logistics, "match_rates", AsyncMock(return_value=([rate], [], 1)))
+
+    payload = LogisticsCalculateRequest(sku_id=1)
+    selected = (await logistics_router.calculate(payload, request, user, session))["data"]["selected"]
+    assert selected["amount_exact"] == "99999119999000.01"
+
+    def confirmation(amount):
+        return LogisticsCalculateRequest(sku_id=1, save=True, selected_rate_id=1, expected_amount=amount)
+
+    # 批4 后 selected["amount"] 已是精确 Decimal，原样回传不再漂移；
+    # 用旧 float 客户端的丢尾数回传验证"运费已变化"防线仍然生效。
+    with pytest.raises(AppError, match="运费已变化"):
+        await logistics_router.calculate(confirmation(float(selected["amount"])), request, user, session)
+    assert not rows
+
+    await logistics_router.calculate(confirmation(selected["amount_exact"]), request, user, session)
+    quote = rows[0]
+    assert isinstance(quote, LogisticsQuote)
+    assert quote.amount == Decimal("99999119999000.01")
+    assert logistics.serialize_quote(quote)["quantity_unit"] == "件"
+    assert quote.raw_data["option"]["amount_exact"] == logistics.serialize_quote(quote)["amount_exact"]
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("unit,quantity,error", [
+    ("件", "1.5", "正整数"), ("件", "3.0000", None),
+    ("米", "1.234", None), ("公斤", "0.0004", "三位小数"),
+])
+async def test_logistics_checks_quantity_by_sku_unit(monkeypatch, unit, quantity, error):
+    sku = Sku(id=1, sku_code="SKU-1", weight=Decimal("2"), unit=unit)
+    session = SimpleNamespace(get=AsyncMock(return_value=sku))
+    monkeypatch.setattr(logistics, "volumetric_ratio", AsyncMock(return_value=Decimal(0)))
+    monkeypatch.setattr(logistics, "match_rates", AsyncMock(return_value=([make_rate()], [], 1)))
+    if error:
+        with pytest.raises(AppError, match=error):
+            await logistics.prepare(session, sku_id=1, quantity=Decimal(quantity))
+    else:
+        result = await logistics.prepare(session, sku_id=1, quantity=Decimal(quantity))
+        assert result["sku"]["unit"] == unit
+        assert Decimal(result["quantity_exact"]) == Decimal(quantity)
+        assert result["measures"]["actual_weight"] == Decimal(quantity) * 2
+
+
+@pytest.mark.anyio
+async def test_agent_logistics_uses_decimal_quantity(monkeypatch):
+    sku = Sku(id=1, sku_code="SKU-1", weight=Decimal("2"))
+    session = SimpleNamespace(get=AsyncMock(return_value=sku))
+    ctx = SimpleNamespace(session=session)
+    monkeypatch.setattr(logistics, "volumetric_ratio", AsyncMock(return_value=Decimal(0)))
+    monkeypatch.setattr(logistics, "match_rates", AsyncMock(return_value=([make_rate()], [], "exact")))
+
+    result = await calculate_logistics(ctx, sku_id=1, quantity=1.5)
+
+    assert result["quantity"] == 1.5
+    assert result["measures"]["actual_weight"] == 3
+    assert result["options"][0]["amount"] == 50
+    with pytest.raises(AppError, match="数量必须大于 0"):
+        await calculate_logistics(ctx, sku_id=1, quantity=0)
+    with pytest.raises(AppError, match="数量必须是有效数字"):
+        await calculate_logistics(ctx, sku_id=1, quantity=float("inf"))
 
 
 class TestQuoteRateAmount:

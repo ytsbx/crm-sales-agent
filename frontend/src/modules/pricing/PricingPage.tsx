@@ -1,26 +1,36 @@
+import { skuLabel } from '../../shared/sku-label'
 import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Banner, Button, Input, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
 
-import { listCustomers } from '../../shared/api/customer'
+import { getCustomer, listCustomers } from '../../shared/api/customer'
 import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
+import { formatUnitPrice, formatMoney, toTwoDecimals } from '../../shared/components/money'
 import {
   calculatePrice,
   checkPricePermission,
   listSkusForPricing,
   simulatePricing,
-  type PricePermissionVerdict,
   type PricingScenario,
-  type PricingSimulationResult,
 } from '../../shared/api/pricing'
-import { getPublicConfig } from '../../shared/api/settings'
-import { agentPricingAnalysis, type AnalysisEnvelope } from '../../shared/api/agent'
+import { agentPricingAnalysis } from '../../shared/api/agent'
 import { usePermissions } from '../../shared/hooks/permissions'
 import AgentInsight from '../../shared/components/AgentInsight'
 import FormLabel from '../../shared/components/FormLabel'
-import { optionMatcher, withCode } from '../../shared/components/optionMatch'
+import HelpTip from '../../shared/components/HelpTip'
+import PriceTerm from './PriceTerm'
+import { optionMatcher } from '../../shared/components/optionMatch'
+import RecordSearchSelect from '../../shared/components/RecordSearchSelect'
+
+function validPricingDecimal(value: string, wholeDigits: number, decimals: number, allowZero = false) {
+  if (!/^(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)$/.test(value)) return false
+  const [whole, fraction = ''] = value.split('.')
+  return whole.replace(/^0+/, '').length <= wholeDigits
+    && fraction.replace(/0+$/, '').length <= decimals
+    && (allowZero || /[1-9]/.test(value))
+}
 
 function Stat({ label, value, tone }: { label: string; value: string; tone?: 'primary' | 'danger' | 'muted' }) {
   const color = tone === 'primary' ? 'var(--crm-primary)' : tone === 'danger' ? 'var(--crm-error)' : 'var(--crm-text)'
@@ -32,7 +42,13 @@ function Stat({ label, value, tone }: { label: string; value: string; tone?: 'pr
   )
 }
 
-export default function PricingPage() {
+/**
+ * 核价本体。不画页头、不套 page-container —— 它既挂在 /pricing 这条深链上，
+ * 也从「价格中心」右上角的抽屉里打开（主人 2026-11-21「不用为核价单独做一个大模块呀」：
+ * 核价只是价格中心的一个试算工具，不该占一屏、更不该在左侧菜单占一行）。
+ * embedded 时容器换窄类名：抽屉只有 860 宽，三列会挤，改两列。
+ */
+export function PricingTool({ embedded = false }: { embedded?: boolean }) {
   // 支持深链预填：/pricing?sku_id=1&customer_id=1&quantity=3000&quoted_price=25
   const [searchParams] = useSearchParams()
   const paramNumber = (key: string) => {
@@ -45,273 +61,266 @@ export default function PricingPage() {
   const [quantity, setQuantity] = useState(String(paramNumber('quantity') ?? 1000))
   const [logisticsCost, setLogisticsCost] = useState('')
   const [targetMargin, setTargetMargin] = useState('')
+  const [targetProfitAmount, setTargetProfitAmount] = useState('')
+  const { can } = usePermissions()
   const [quotedPrice, setQuotedPrice] = useState(
     paramNumber('quoted_price') !== undefined ? String(paramNumber('quoted_price')) : '',
   )
-  // 外贸口径：默认人民币；只有选了外币，汇率与退税率才出现
-  const [currency, setCurrency] = useState('CNY')
-  const [exchangeRate, setExchangeRate] = useState('')
-  const [taxRefundRate, setTaxRefundRate] = useState('')
 
-  const customersQuery = useQuery({
-    queryKey: ['customers-for-select'],
-    queryFn: () => listCustomers({ page: 1, page_size: 100 }),
-  })
   const skusQuery = useQuery({ queryKey: ['skus-for-pricing'], queryFn: listSkusForPricing })
-  // 贸易模式决定要不要显示外贸相关输入：国内模式下整块都不出现
-  const configQuery = useQuery({ queryKey: ['public-config'], queryFn: getPublicConfig })
-  const exportEnabled = (configQuery.data?.trade_mode ?? 'domestic') !== 'domestic'
+  const amountError = (value: string, wholeDigits: number, decimals: number, allowZero: boolean) =>
+    value.trim() && !validPricingDecimal(value.trim(), wholeDigits, decimals, allowZero)
+      ? `请输入${allowZero ? '非负' : '大于 0 的'}数字，整数最多 ${wholeDigits} 位，小数最多 ${decimals} 位。`
+      : ''
 
-  const quantityNumber = Number(quantity)
+  const quantityError = quantity.trim() ? amountError(quantity, 13, 3, false) : '请填写数量。'
+  const logisticsError = amountError(logisticsCost, 12, 4, true)
+  const margin = targetMargin.trim()
+  const marginError = margin && (!validPricingDecimal(margin, 2, 4) || Number(margin) > 1)
+    ? '请输入大于 0 且不超过 1 的小数，最多四位小数。' : ''
+  const profitError = can('price:manage') && !margin ? amountError(targetProfitAmount, 14, 2, true) : ''
+  const quotedError = amountError(quotedPrice, 12, 4, false)
+  const canCalculate = Boolean(skuId && !quantityError && !logisticsError && !marginError && !profitError && !quotedError)
   const payload = {
     sku_id: skuId,
-    quantity: Number.isFinite(quantityNumber) && quantityNumber > 0 ? quantityNumber : 1,
+    quantity: quantity.trim(),
     customer_id: customerId ?? null,
-    logistics_cost: logisticsCost.trim() ? Number(logisticsCost) : null,
-    target_margin: targetMargin.trim() ? Number(targetMargin) : null,
-    quoted_price: quotedPrice.trim() ? Number(quotedPrice) : null,
-    // 国内模式下一律按人民币口径核价，不往外传币种与退税
-    currency: exportEnabled ? currency : 'CNY',
-    exchange_rate: exportEnabled && exchangeRate.trim() ? Number(exchangeRate) : null,
-    tax_refund_rate: exportEnabled && taxRefundRate.trim() ? Number(taxRefundRate) : null,
+    logistics_cost: logisticsCost.trim() || null,
+    target_margin: margin || null,
+    target_profit_amount: can('price:manage') && !margin ? targetProfitAmount.trim() || null : null,
+    quoted_price: quotedPrice.trim() || null,
   }
-
+  const inputKey = JSON.stringify(payload)
   const resultQuery = useQuery({
     queryKey: ['pricing', payload],
     queryFn: () => calculatePrice(payload),
-    enabled: Boolean(skuId),
+    enabled: canCalculate,
+    retry: false,
   })
 
-  // 权限校验：同一个 payload，多回答"这个价能不能自主报、不行要走到哪一级"。
-  // 结果原地显示在下面的卡片里（原先弹窗会把底下的核价数据整个遮暗，看不了对照）。
-  const [verdict, setVerdict] = useState<PricePermissionVerdict | null>(null)
   const checkMutation = useMutation({
-    mutationFn: () => {
-      // 后端把「拟报价」定为必填、且必须大于 0（pricing/schema.py 的 PricePermissionCheck）：
-      // 空着发过去只会换回一句笼统的「参数校验失败」，界面上看不出是哪里不对 ——
-      // 这里提前拦住，把原因说到人话里，也省掉一次必然失败的请求。
-      if (!quotedPrice.trim()) {
-        throw new Error('请先填「拟报价」：权限校验判断的就是这个价能不能报')
-      }
-      if (!(Number(quotedPrice) > 0)) {
-        throw new Error('「拟报价」要填一个大于 0 的数字')
-      }
-      return checkPricePermission(payload)
-    },
-    onSuccess: (data) => setVerdict(data),
+    mutationFn: (_inputKey: string) => checkPricePermission(payload),
     onError: (error: Error) => Toast.error(error.message),
   })
+  const verdict = checkMutation.variables === inputKey ? checkMutation.data : undefined
 
   // 报价模拟：一次算多个候选价；留空候选价时后端自动试算建议价 / 授权下限 / 保护价
   const [candidatesText, setCandidatesText] = useState('')
-  const [simulation, setSimulation] = useState<PricingSimulationResult | null>(null)
   const simulateMutation = useMutation({
-    mutationFn: () =>
-      simulatePricing({
-        base: payload,
-        candidates: candidatesText
-          .split(/,|，/)
-          .map((item) => Number(item.trim()))
-          .filter((item) => Number.isFinite(item) && item > 0),
-      }),
-    onSuccess: (data) => setSimulation(data),
+    mutationFn: (_inputKey: string) => {
+      const candidates = candidatesText.split(/[,，]/).map(item => item.trim()).filter(Boolean)
+      if (candidates.length > 50 || candidates.some(item => !validPricingDecimal(item, 12, 4))) {
+        throw new Error('最多输入 50 个候选价，每个须大于 0，整数最多 12 位，小数最多 4 位。')
+      }
+      return simulatePricing({ base: payload, candidates })
+    },
     onError: (error: Error) => Toast.error(error.message),
   })
+  const simulationKey = JSON.stringify([inputKey, candidatesText])
+  const simulation = simulateMutation.variables === simulationKey ? simulateMutation.data : undefined
 
-  // AI 核价解读（API §37，需 agent:use）：把核价结果翻译成可执行的判断。
-  // 与客户/订单/商机详情页保持一致：结果原地显示在下面的卡片里，
-  // 不弹窗——弹窗会加一层遮罩把底下的核价数据全压暗，没法对照着看。
-  const { can } = usePermissions()
-  const [aiEnvelope, setAiEnvelope] = useState<AnalysisEnvelope | null>(null)
   const aiMutation = useMutation({
-    mutationFn: () =>
-      agentPricingAnalysis({
-        sku_id: payload.sku_id!,
-        quantity: payload.quantity,
-        customer_id: customerId,
-      }),
-    onSuccess: (data) => setAiEnvelope(data),
+    mutationFn: (_inputKey: string) => agentPricingAnalysis({
+      sku_id: payload.sku_id!,
+      // The AI endpoint uses an integer quantity, while main pricing accepts decimals.
+      quantity: Number(payload.quantity),
+      customer_id: customerId,
+    }),
     onError: (error: Error) => Toast.error(error.message),
   })
+  const aiEnvelope = aiMutation.variables === inputKey ? aiMutation.data ?? null : null
+  const aiQuantityValid = Number.isSafeInteger(Number(quantity))
 
-  const result = resultQuery.data
+  const result = canCalculate ? resultQuery.data : undefined
+  // 核价页显示的都是**单价**（成本/标准价/建议价/最低价），一律保真：
+  // 用 toFixed(2) 会把 4 位成本的尾数抹掉，和"单价×数量=金额"对不上（2026-11-17）
   const money = (value?: number | null) =>
-    value === null || value === undefined ? '-' : `¥${value.toFixed(2)}`
+    value === null || value === undefined ? '-' : formatUnitPrice(value, 'CNY')
   const percent = (value?: number | null) =>
     value === null || value === undefined ? '-' : `${(value * 100).toFixed(2)}%`
 
   return (
-    <div className="page-container">
-      <PageHeader
-        title="核价"
-        subtitle="填客户、产品、数量，系统按价格中心的成本和价格规则算出建议价与最低允许价"
-      />
-
-      <div className="pricing-grid">
-        <SectionCard title="核价输入">
-          <div className="pricing-form">
-            <div>
-              <div style={{ marginBottom: 4 }}>客户</div>
-              <Select
-                placeholder="选择客户（可空，仅影响客户等级价与一客一价）"
-                value={customerId}
-                onChange={(value) => setCustomerId(value as number | undefined)}
-                optionList={(customersQuery.data?.items ?? []).map((item) => ({
-                  value: item.id,
-                  label: withCode(`${item.name}（${item.level ?? '-'} 级）`, item.id),
-                }))}
-                filter={optionMatcher}
-                showClear
-                style={{ width: '100%' }}
-              />
-            </div>
-            <div>
-              <FormLabel required>产品 SKU</FormLabel>
-              <Select
-                placeholder="选择 SKU"
-                value={skuId}
-                onChange={(value) => setSkuId(value as number)}
-                optionList={(skusQuery.data ?? []).map((sku) => ({
-                  value: sku.id,
-                  label: `${sku.product_name ?? ''} ${sku.sku_code} ${sku.specification ?? ''}`,
-                }))}
-                filter={optionMatcher}
-                style={{ width: '100%' }}
-              />
-            </div>
-            <div>
-              <div style={{ marginBottom: 4 }}>数量</div>
-              <Input value={quantity} onChange={setQuantity} />
-            </div>
-            <div>
-              <div style={{ marginBottom: 4 }}>单件运费（留空则按费率表自动估算）</div>
-              <Input value={logisticsCost} onChange={setLogisticsCost} placeholder="例如 1.62" />
-            </div>
-            <div>
-              <div style={{ marginBottom: 4 }}>目标利润率（留空则用价格规则里的值）</div>
-              <Input value={targetMargin} onChange={setTargetMargin} placeholder="例如 0.30" />
-            </div>
-            <div>
-              <div style={{ marginBottom: 4 }}>拟报价（填了就会判断这单要不要审批）</div>
-              <Input value={quotedPrice} onChange={setQuotedPrice} placeholder="例如 25" />
-              {/* 按钮灰着得有个说法，不然只会让人以为坏了 */}
-              <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginTop: 4 }}>
-                「权限校验」要判断的也是这个价，空着点不动
-              </div>
-            </div>
-            {exportEnabled && (
-              <div>
-                <div style={{ marginBottom: 4 }}>报价币种</div>
-                <Select
-                  value={currency}
-                  onChange={(value) => setCurrency(value as string)}
-                  optionList={['CNY', 'USD', 'EUR'].map((code) => ({
-                    value: code,
-                    label: code === 'CNY' ? 'CNY 人民币' : `${code} 外币`,
-                  }))}
-                  style={{ width: '100%' }}
-                />
-              </div>
-            )}
-            {exportEnabled && currency !== 'CNY' && (
-              <>
-                <div>
-                  <div style={{ marginBottom: 4 }}>汇率（1 {currency} 兑人民币）</div>
-                  <Input
-                    value={exchangeRate}
-                    onChange={setExchangeRate}
-                    placeholder="例如 7.2"
-                  />
-                </div>
-                <div>
-                  <div style={{ marginBottom: 4 }}>出口退税率（没有就留空）</div>
-                  <Input
-                    value={taxRefundRate}
-                    onChange={setTaxRefundRate}
-                    placeholder="例如 0.13"
-                  />
-                </div>
-              </>
-            )}
+    <div className={embedded ? 'pricing-grid pricing-grid--drawer' : 'pricing-grid'}>
+      <SectionCard title="选择产品和数量">
+        <div className="pricing-form">
+          <div>
+            <FormLabel required>产品</FormLabel>
+            <Select aria-label="产品" placeholder="搜索产品名称或编码" value={skuId}
+              onChange={value => setSkuId(value as number | undefined)}
+              loading={skusQuery.isLoading} showClear filter={optionMatcher} style={{ width: '100%' }}
+              optionList={(skusQuery.data ?? []).map(sku => ({ value: sku.id, label: skuLabel(sku) }))} />
+            {skusQuery.isError && <Button size="small" type="danger" theme="borderless" onClick={() => void skusQuery.refetch()}>产品列表加载失败，重试</Button>}
           </div>
-        </SectionCard>
-
-        <SectionCard title="成本结构（单件）">
-          {resultQuery.isLoading && <div style={{ color: 'var(--crm-text-3)' }}>计算中…</div>}
-          {result && (
-            <>
-              <Stat label="采购成本" value={money(result.cost.purchase_cost)} />
-              <Stat label="生产成本" value={money(result.cost.production_cost)} />
-              <Stat label="包装成本" value={money(result.cost.package_cost)} />
-              <Stat label="加工成本" value={money(result.cost.processing_cost)} />
-              <Stat label="商品成本小计" value={money(result.cost.goods_cost)} />
-              <Stat label="单件运费" value={money(result.cost.logistics_cost)} />
-              <Stat label="合计成本" value={money(result.cost.base_cost)} tone="primary" />
-              {result.currency && result.currency !== 'CNY' && (
-                <>
-                  <Stat label={`折${result.currency}成本`} value={result.cost_in_quote_currency?.toFixed(4) ?? '-'} />
-                  <Stat label="汇率" value={String(result.exchange_rate ?? '未填')} />
-                </>
-              )}
-              <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginTop: 12 }}>
-                成本来源：{result.cost.source}
-                {result.customer_price_rule && ' · 命中客户特殊价'}
+          <div>
+            <FormLabel required>数量</FormLabel>
+            <Input aria-label="数量" inputMode="decimal" value={quantity} onChange={setQuantity} validateStatus={quantityError ? 'error' : 'default'} />
+            {quantityError && <small style={{ color: 'var(--crm-error)' }}>{quantityError}</small>}
+          </div>
+          <div>
+            <FormLabel hint="选填">客户</FormLabel>
+            <RecordSearchSelect
+              scope="pricing-customer"
+              enabled
+              placeholder="按客户名称或编号搜索，应用其价格规则"
+              value={customerId}
+              list={listCustomers}
+              lookup={getCustomer}
+              labelOf={(item) => `${item.name}（${item.level ?? '-'} 级）`}
+              onChange={(item) => setCustomerId(item?.id)}
+            />
+          </div>
+          <div>
+            <FormLabel hint="选填">拟报价（元／件）</FormLabel>
+            <Input aria-label="拟报价" inputMode="decimal" value={quotedPrice} onChange={setQuotedPrice}
+              placeholder="填入想报的单价" validateStatus={quotedError ? 'error' : 'default'} />
+            <small style={{ color: quotedError ? 'var(--crm-error)' : 'var(--crm-text-3)' }}>
+              {quotedError || '填写后可查看该价格的利润和审批要求。'}
+            </small>
+          </div>
+        </div>
+        {/* 2026-11-21 主人「不要这种折叠，巨丑」：三个选填条件就三格，
+            抽屉里本来放得下（780 宽两列），收进 <details> 之后那一行蓝字加个小三角
+            反而像页面被截断了、还得多点一下才能看到运费和利润率。平铺。 */}
+        <div className="pricing-form" style={{ marginTop: 16 }}>
+            <div>
+              <FormLabel>单件运费估算（元）</FormLabel>
+              <Input aria-label="单件运费估算" inputMode="decimal" value={logisticsCost} onChange={setLogisticsCost}
+                placeholder="例如 1.62" validateStatus={logisticsError ? 'error' : 'default'} />
+              <small style={{ color: logisticsError ? 'var(--crm-error)' : 'var(--crm-text-3)' }}>
+                {logisticsError || '仅供参考，产品建议价和利润按商品成本计算。'}
+              </small>
+            </div>
+            <div>
+              <FormLabel><PriceTerm term="目标利润率" /></FormLabel>
+              <Input aria-label="目标利润率" inputMode="decimal" value={targetMargin} onChange={setTargetMargin}
+                placeholder="例如 0.30 表示售价的 30%" validateStatus={marginError ? 'error' : 'default'} />
+              {marginError && <small style={{ color: 'var(--crm-error)' }}>{marginError}</small>}
+            </div>
+            {/* 这一组正好三格一行（运费 / 利润率 / 单件利润），跨满会把输入框
+                拉到 1200px，全站最宽的一个输入框就这么来的 —— 不跨了 */}
+            {can('price:manage') && (
+              <div>
+                <FormLabel hint="利润率留空时使用">目标单件利润（元）</FormLabel>
+                <Input aria-label="目标单件利润" inputMode="decimal" value={targetProfitAmount} onChange={setTargetProfitAmount}
+                  disabled={Boolean(margin)} placeholder="例如 80" validateStatus={profitError ? 'error' : 'default'} />
+                {profitError && <small style={{ color: 'var(--crm-error)' }}>{profitError}</small>}
               </div>
+            )}
+        </div>
+      </SectionCard>
+
+      {!result && (
+        <SectionCard title="试算结果">
+          {!skuId ? <div role="status">选择产品并填写数量，系统会自动试算。</div>
+            : !canCalculate ? <div role="status" style={{ color: 'var(--crm-error)' }}>
+              {quantityError ? '请检查数量。'
+                : quotedError ? '请检查拟报价，也可以清空它继续试算。'
+                  : logisticsError ? '请检查单件运费，也可以清空它继续试算。'
+                    : '请检查目标利润。'}
+            </div>
+              : resultQuery.isError ? <div role="alert">
+                <div>{resultQuery.error.message || '暂时无法完成试算。'}</div>
+                <Button size="small" theme="borderless" onClick={() => void resultQuery.refetch()}>重新试算</Button>
+              </div> : <div role="status">正在试算…</div>}
+        </SectionCard>
+      )}
+      {result && (
+        <SectionCard title="试算结果（元／件）">
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px 20px' }}>
+            {[
+              { label: '建议报价', value: result.recommended_price == null ? '暂无可用建议价' : money(result.recommended_price) },
+              ...(can('price:manage') ? [
+                { label: '你的最低允许价', help: '按你的报价授权算出的单件底价。低于它需要审批，公司保护价也会单独检查。', value: result.minimum_price == null ? '暂无法计算' : money(result.minimum_price) },
+                { label: '公司保护价', help: '公司层面的保护底价，所有人都要遵守。它和你按权限算出的「最低允许价」可能不是同一个数。', value: result.protection_price == null ? '暂未配置' : money(result.protection_price) },
+              ] : []),
+            ].map(({ label, help, value }) => (
+              <div key={label} style={{ minWidth: 0 }}>
+                <div className="crm-help-label" style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>
+                  {label}{help && <HelpTip forLabel={label} text={help} />}
+                </div>
+                <strong style={{ fontSize: 21, color: 'var(--crm-primary)', overflowWrap: 'anywhere' }}>{value}</strong>
+              </div>
+            ))}
+          </div>
+          {quotedPrice.trim() && <div style={{ marginTop: 12 }}>
+            <Tag color={result.approval_required ? 'red' : 'green'}>
+              {result.approval_required ? '按拟报价，需要审批' : '按拟报价，可在当前权限内报价'}
+            </Tag>
+          </div>}
+          {result.warnings.length > 0 && <div style={{ marginTop: 12 }}>
+            <Banner type="warning" description={result.warnings.join('；')} closeIcon={null} />
+          </div>}
+        </SectionCard>
+      )}
+
+      {result && <div className="pricing-side">
+        {can('price:manage') && <SectionCard title="成本结构（单件）" style={{ minHeight: 150 }}>
+          <Stat label="采购成本" value={money(result.cost.purchase_cost)} />
+          <Stat label="生产成本" value={money(result.cost.production_cost)} />
+          <Stat label="包装成本" value={money(result.cost.package_cost)} />
+          <Stat label="加工成本" value={money(result.cost.processing_cost)} />
+          <Stat label="商品成本小计" value={money(result.cost.goods_cost)} />
+          {/* 运费与产品核价分离（2026-10-09）：`base_cost` 现在**只含商品成本**，
+              运费不进定价基数。这里如实标出两者的关系，避免用户看到
+              "合计成本"跟商品成本一样而以为算错了。 */}
+          <Stat label="单件运费（参考估算，不计入核价）" value={money(result.cost.logistics_cost)} />
+          <Stat label="产品核价成本（不含运费）" value={money(result.cost.base_cost)} tone="primary" />
+          {result.currency && result.currency !== 'CNY' && (
+            <>
+              <Stat label={`折${result.currency}成本`} value={result.cost_in_quote_currency?.toFixed(4) ?? '-'} />
+              <Stat label="汇率" value={String(result.exchange_rate ?? '未填')} />
             </>
           )}
-          {!skuId && <div style={{ color: 'var(--crm-text-3)' }}>请先选择 SKU</div>}
-        </SectionCard>
+          <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginTop: 12 }}>
+            成本来源：{result.cost.source}
+            {result.customer_price_rule && ' · 命中客户特殊价'}
+          </div>
+        </SectionCard>}
 
-        <SectionCard title="核价结果">
-          {result && (
-            <>
-              {/* D3：报价基准是「系统适用价」（专属价→等级价→通用指导价），
-                  标准价只作让价幅度的对比参照，不作为对外报价口径 */}
-              <Stat label="标准价（对比参考）" value={money(result.standard_price)} />
-              <Stat label="建议报价" value={money(result.recommended_price)} tone="primary" />
-              <Stat
-                label="建议区间"
-                value={`${money(result.recommended_range[0])} ~ ${money(result.recommended_range[1])}`}
-              />
-              <Stat label="最低允许价" value={money(result.minimum_price)} />
-              <Stat label="当前报价" value={money(result.quoted_price)} />
-              <Stat
-                label="预计利润"
-                value={money(result.profit)}
-                tone={result.profit < 0 ? 'danger' : undefined}
-              />
-              <Stat
-                label="预计利润率"
-                value={percent(result.profit_rate)}
-                tone={result.profit_rate < 0 ? 'danger' : undefined}
-              />
-              {result.tax_refund ? (
-                <>
-                  <Stat label="出口退税（单件）" value={result.tax_refund.toFixed(4)} />
-                  <Stat
-                    label="退税后利润"
-                    value={`${result.profit_with_refund?.toFixed(4)}（${percent(result.profit_rate_with_refund)}）`}
-                    tone="primary"
-                  />
-                </>
-              ) : null}
-              <Stat label="你的授权最低利润率" value={percent(result.authorized_min_margin)} />
-              <div style={{ marginTop: 16 }}>
-                {result.approval_required ? (
-                  <Tag color="red" size="large">
-                    当前价格需要审批
-                  </Tag>
-                ) : (
-                  <Tag color="green" size="large">
-                    在当前权限内，可直接报价
-                  </Tag>
-                )}
-              </div>
-            </>
+        <SectionCard title="报价明细（单件）" style={{ minHeight: 150 }}>
+          {/* D3：报价基准是「系统适用价」（专属价→等级价→通用指导价），
+              标准价只作让价幅度的对比参照，不作为对外报价口径 */}
+          <Stat label="标准价（对比参考）" value={money(result.standard_price)} />
+          {result.inputs?.target_profit_price != null && (
+            <Stat label="目标利润达标价" value={money(result.inputs.target_profit_price)} />
           )}
-          {!skuId && <div style={{ color: 'var(--crm-text-3)' }}>选择 SKU 后自动计算</div>}
+          {/* ⚠️ 必须判整体为 null（2026-10-14 审查修）。
+              后端 `_sanitize_pricing_result` 对无 `price:manage` 的调用方，
+              在"没有规则来源"时是把**整个键**置 null（不是把元素置 null），
+              而类型原来写的是 `[number, number]` —— 于是 `null[0]` 抛 TypeError，
+              整页被错误边界替换成"这个页面没能加载出来"。
+              触发面不小：只有标准价、或新 SKU 还没指导价（建议价按成本推）都会命中。 */}
+          <Stat
+            label="建议区间"
+            value={
+              result.recommended_range
+                ? `${money(result.recommended_range[0])} ~ ${money(result.recommended_range[1])}`
+                : '-'
+            }
+          />
+          <Stat label="当前报价" value={money(result.quoted_price)} />
+          <Stat
+            label="预计利润"
+            value={money(result.profit)}
+            tone={result.profit < 0 ? 'danger' : undefined}
+          />
+          <Stat
+            label="预计利润率"
+            value={percent(result.profit_rate)}
+            tone={result.profit_rate < 0 ? 'danger' : undefined}
+          />
+          {result.tax_refund ? (
+            <>
+              <Stat label="出口退税（单件）" value={result.tax_refund.toFixed(4)} />
+              <Stat
+                label="退税后利润"
+                value={`${result.profit_with_refund?.toFixed(4)}（${percent(result.profit_rate_with_refund)}）`}
+                tone="primary"
+              />
+            </>
+          ) : null}
+          <Stat label="你的授权最低利润率" value={percent(result.authorized_min_margin)} />
         </SectionCard>
-      </div>
 
       {/* AI 解读与权限校验：与客户/订单/商机详情页同一个做法 ——
           按钮在卡片右上角、结果在卡片里原地显示。
@@ -320,12 +329,11 @@ export default function PricingPage() {
       {can('agent:use') && (
         <SectionCard
           title="AI 核价解读"
-          style={{ marginTop: 16 }}
           extra={
             <Button
-              disabled={!skuId}
+              disabled={!aiQuantityValid}
               loading={aiMutation.isPending}
-              onClick={() => aiMutation.mutate()}
+              onClick={() => aiMutation.mutate(inputKey)}
             >
               AI 解读
             </Button>
@@ -333,21 +341,20 @@ export default function PricingPage() {
         >
           <AgentInsight
             envelope={aiEnvelope}
-            empty="点右上角「AI 解读」：把核价结果翻成能直接用的判断——这个价合不合理、手上最多能让到哪、再低要走到哪一级"
+            empty={aiQuantityValid ? "查看建议价和审批要求的解读。" : "填写整数数量后可使用 AI 解读。"}
           />
         </SectionCard>
       )}
 
       <SectionCard
         title="报价权限校验"
-        style={{ marginTop: 16 }}
         extra={
           /* 必带「拟报价」：没填这个价就没什么可校验的，按钮直接禁用
              （而不是让他点了再吃一个 400 回来） */
           <Button
-            disabled={!skuId || !(Number(quotedPrice) > 0)}
+            disabled={!canCalculate || !quotedPrice.trim()}
             loading={checkMutation.isPending}
-            onClick={() => checkMutation.mutate()}
+            onClick={() => checkMutation.mutate(inputKey)}
           >
             权限校验
           </Button>
@@ -400,29 +407,28 @@ export default function PricingPage() {
           </div>
         ) : (
           <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>
-            {skuId
-              ? '点右上角「权限校验」：核对这个价能不能自主报、不行要交给谁批（先在左边填上「拟报价」）'
-              : '选择 SKU 并在左边填上「拟报价」后可用'}
+            填好上方「拟报价」后，可核对允许报价的范围和审批原因。
           </div>
         )}
       </SectionCard>
+      </div>}
 
-      {skuId && (
+      {result && (
         <SectionCard
-          title="报价模拟（What-if）"
+          title="多个报价对比"
           style={{ marginTop: 16 }}
           extra={
             <>
               <Input
-                placeholder="候选价，逗号分隔；留空用关键点位"
+                aria-label="候选报价" placeholder="例如 12，15，18"
                 value={candidatesText}
                 onChange={setCandidatesText}
                 style={{ width: 260 }}
               />
-              <Button
-                theme="solid"
+              <Button type="primary"
+                theme="outline"
                 loading={simulateMutation.isPending}
-                onClick={() => simulateMutation.mutate()}
+                onClick={() => simulateMutation.mutate(simulationKey)}
               >
                 开始模拟
               </Button>
@@ -431,7 +437,7 @@ export default function PricingPage() {
         >
           {!simulation ? (
             <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>
-              按上面同一组条件一次算多个候选价，看清「能让到哪、再低要审批」；留空候选价时自动试算建议价、授权下限、公司保护价三个点位
+              输入多个单价，用逗号隔开，比较各档利润和审批要求。留空可比较建议报价、最低允许价和公司保护价。
             </div>
           ) : (
             <Table<PricingScenario>
@@ -440,9 +446,15 @@ export default function PricingPage() {
                   title: '候选报价',
                   dataIndex: 'quoted_price',
                   width: 120,
-                  render: (v: number | null) => money(v),
+                  // 后端 2026-11-17 起同时给浮点与十进制字符串：浮点可能带
+                  // 1.2344999 这种尾数，优先读 quoted_price_exact。
+                  className: 'cell-money',
+                  render: (_: unknown, record: PricingScenario) =>
+                    record.quoted_price_exact != null || record.quoted_price != null
+                      ? formatUnitPrice(record.quoted_price_exact ?? record.quoted_price, 'CNY')
+                      : '-',
                 },
-                { title: '利润', dataIndex: 'profit', width: 110, render: (v: number | null) => money(v) },
+                { title: '利润', dataIndex: 'profit', width: 110, className: 'cell-money', render: (v: number | null) => money(v) },
                 {
                   title: '利润率',
                   dataIndex: 'profit_rate',
@@ -453,7 +465,13 @@ export default function PricingPage() {
                   title: '订单金额',
                   dataIndex: 'amount',
                   width: 130,
-                  render: (v: number | null) => (v === null ? '-' : `¥${v.toLocaleString('zh-CN')}`),
+                  // 原来 `¥${v.toLocaleString()}`：数量 3、单价 1.2345 显示成「¥3.7」，
+                  // 既没有两位小数也没有千分位。金额读 amount_exact（后端逐行到分）。
+                  className: 'cell-money',
+                  render: (_: unknown, record: PricingScenario) => {
+                    const exact = record.amount_exact ?? record.amount
+                    return exact == null ? '-' : formatMoney(toTwoDecimals(exact), 'CNY')
+                  },
                 },
                 {
                   title: '结论',
@@ -469,7 +487,10 @@ export default function PricingPage() {
                 },
               ]}
               dataSource={simulation.scenarios}
-              rowKey="quoted_price"
+              // 浮点单价做 key 会在 1.2345 / 1.23450 这类值上撞车；用精确字符串。
+              rowKey={(record?: PricingScenario) =>
+                String(record?.quoted_price_exact ?? record?.quoted_price ?? '')
+              }
               pagination={false}
               empty="没有可模拟的价格"
             />
@@ -477,15 +498,18 @@ export default function PricingPage() {
         </SectionCard>
       )}
 
-      {result && result.warnings.length > 0 && (
-        <div style={{ marginTop: 16 }}>
-          <Banner
-            type={result.warnings.some((item) => item.includes('审批')) ? 'warning' : 'info'}
-            description={result.warnings.join('；')}
-            closeIcon={null}
-          />
-        </div>
-      )}
+    </div>
+  )
+}
+
+export default function PricingPage() {
+  return (
+    <div className="page-container">
+      <PageHeader
+        title="核价"
+        subtitle="填客户、产品、数量，系统按价格中心的成本和价格规则算出建议价与最低允许价"
+      />
+      <PricingTool />
     </div>
   )
 }

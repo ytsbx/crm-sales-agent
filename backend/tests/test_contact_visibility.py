@@ -21,6 +21,7 @@ from tests.conftest import SyncSessionAsAsync, make_user
 from app.modules.contact_util import (
     CONTACT_FULL_PERMISSION,
     full_contact_customer_ids,
+    is_masked_contact_value,
     mask_contact_value,
     mask_contact_fields,
 )
@@ -209,3 +210,34 @@ async def test_admin_and_explicit_grant_are_unrestricted(db_session):
 
     other = make_user(997, roles=("salesperson",), data_scope="self")
     assert await full_contact_customer_ids(session, other, {customer.id}) == set()
+
+
+# ------------------------------------------------- 脱敏值不许被写回（2026-10-12）
+
+
+def test_masked_values_are_recognised_per_field():
+    """`PATCH /contacts/{id}` 必须能认出"这是脱敏后的星号"，不能当成用户填的新值。
+
+    为什么需要这条判据：客户详情以前**只有新建联系人的入口**，所以脱敏值没有
+    回写的路径；2026-10-12 补上编辑入口之后，"打开编辑框（号码是星号）→ 只改职位
+    → 保存"就会把**真实号码覆盖成星号串**，而且不可逆（审计里的 before 也是星号）。
+    """
+    # 各种脱敏形状都要认出来（形状由 mask_contact_value 的档位决定）
+    assert is_masked_contact_value("mobile", mask_contact_value("13812348000", "phone"))
+    assert is_masked_contact_value("phone", mask_contact_value("021-88889999", "phone"))
+    assert is_masked_contact_value("mobile", mask_contact_value("1234567", "phone"))
+    assert is_masked_contact_value("mobile", mask_contact_value("12", "phone"))
+    assert is_masked_contact_value("email", mask_contact_value("buyer@example.com", "email"))
+    assert is_masked_contact_value("wechat", mask_contact_value("buyer_wx", "wechat"))
+
+    # 正常值、空值都不算脱敏（不然会把正常编辑也拦下来）
+    assert not is_masked_contact_value("mobile", "13812348000")
+    assert not is_masked_contact_value("phone", "021-88889999")
+    assert not is_masked_contact_value("email", "buyer@example.com")
+    assert not is_masked_contact_value("wechat", "buyer_wx")
+    assert not is_masked_contact_value("mobile", "")
+    assert not is_masked_contact_value("mobile", None)
+
+    # 非联系方式字段不参与这条判据（备注里出现星号是正常写法）
+    assert not is_masked_contact_value("remark", "备注里可能有 * 号")
+    assert not is_masked_contact_value("name", "张*")

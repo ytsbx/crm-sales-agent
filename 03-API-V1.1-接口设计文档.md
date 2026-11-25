@@ -53,6 +53,7 @@
 - `POST /auth/refresh`
 - `GET /auth/me`
 - `GET /auth/permissions`
+- `PATCH /auth/account`
 - `POST /auth/sso/wecom/callback`
 
 ## 2.1 登录会话与失效（第十批 10.12）
@@ -66,7 +67,7 @@
 | 动作 | 结果 |
 | --- | --- |
 | `POST /auth/logout` | **只作废本次登录**。同一个令牌再来（任意接口或 `/auth/refresh`）一律 `40101`；同账号在别处的登录不受影响 |
-| `POST /auth/refresh` | 属于**同一会话**（不新建）。会话已失效时同样 `40101` —— 失效的凭据既不能访问、也不能续期 |
+| `POST /auth/refresh` | 保留同一会话并更换当前凭据。换发成功后，旧凭据不能访问接口或再次续期。会话从首次登录起默认最多有效 7 天，可用 `LOGIN_SESSION_MAX_DAYS` 配置，到期后须重新登录。 |
 | 改 / 重置密码（`PATCH /users/{id}` 带 `password`） | 与写新密码**同一笔事务**：该账号**全部**旧会话一起失效（含操作者自己的当前会话），别的账号不受影响。**并且与登录互斥在同一把账号行锁上**（2026-10-08 复审 10.12）：登录一进门就锁住账号行、在锁内重读密码哈希，"正在途中的登录"（密码已校验过、会话还没写进库）不会再漏过去——只"作废此刻已有的会话"挡不住它，那条会话还不存在 |
 | 服务重启 / 多进程 | 失效结果依然有效（判据只存库，无进程内缓存） |
 
@@ -77,6 +78,40 @@
    永远吊销不了的凭据。升级后需要重新登录一次。
 2. **`logout` 之后不能再用同一令牌调 `logout`**：它此时已不是有效凭据，返回
    `40101`。前端清本地状态、跳登录页不受影响。
+
+## 2.2 个人设置：我的权限与自助改账号
+
+看自己的资料、改自己的登录名和密码、知道自己有哪些权限 —— 这些**不该是管理员的
+专利**，所以下面两个接口的门槛只有"已登录"，不看任何权限码。
+
+### `GET /auth/permissions`
+
+返回 `{ permissions, roles, permission_names }`。
+
+`permissions` / `roles` 是原有的两个字段（老调用方照读不误）；`permission_names`
+是**新加的**中文名映射（加字段，不改结构）。之所以中文名必须由服务端在这里拼好：
+权限目录接口 `GET /users/permissions` 要求「账号与权限」管理权限，普通人调不动 ——
+而"看看我自己有哪些权限"不该依赖管理权限。
+
+只解析**这个人自己持有**的那些权限码，不下发整个权限目录。
+
+### `PATCH /auth/account`
+
+入参 `{ username, current_password, new_password? }`，返回
+`{ username, require_relogin }`。
+
+- **只改当前登录者自己**：不接收用户 id、角色和数据范围（`extra="forbid"`，
+  多传字段直接拒绝）。想改别人的账号走 `PATCH /users/{id}`（要「账号与权限」管理权限）。
+- `username` 须以小写字母开头，只能含小写字母、数字、下划线，最长 64 位；
+  与其它账号重名（不区分大小写）返回 `409`「登录名已被占用」。
+- `new_password` 留空表示**不改密码**。给了就校验长度：至少 6 位、且不超过
+  bcrypt 的 72 字节上限（按**字节**算 —— 25 个中文只有 25 个字符却是 75 字节，
+  按字符数拦不住它）。
+- `current_password` 不对返回 `40001`；连续失败到上限按登录那套限流拒绝（防爆破）。
+- 真的改动了才落库，并把该账号**全部**旧会话一次性作废（含操作者自己这一次），
+  返回 `require_relogin = true`。没改动时返回 `false`，**不作废任何会话**。
+- 写一条 `action = update` 的审计（`before` / `after` 记登录名与"密码是否改过"，
+  **不记密码本身**），与业务同事务。
 
 ---
 
@@ -224,6 +259,18 @@
 - `POST /customers/import`
 - `POST /customers/export`
 
+**删除客户（2026-11-13 用户确认）**：`DELETE /customers/{id}` 是**软删** —— 只把
+客户本人的 `deleted_at` 置为当前时间；名下的联系人、商机、报价、订单、合同、跟进、
+附件等资料**一条都不删、也不改挂**，恢复见 #42.2。权限分两档：
+
+- `customer:delete`：数据范围内可删（主管 / 管理员沿用原口径）；
+- `customer:delete_own`：只能删 `owner_id` 是本人的客户（业务员）。**公海客户没有
+  负责人，不在这一档里** —— 光"看得见公海"不能删公海。
+
+越权（别人的客户、公海客户）返回 403，且不写任何删除痕迹；删除成功写
+`action=delete` 审计（含删除前快照）。恢复入口与删除同一档：`customer:delete`
+按数据范围，`customer:delete_own` 只能恢复**负责人是自己**的客户。
+
 客户批量导出用途必填，可选值：`customer_follow_up`（客户跟进）、`business_analysis`（经营分析）、
 `management_report`（管理汇报）、`data_reconciliation`（数据核对）、
 `historical_migration`（历史数据迁移）、`other`（其他）。选择 `other` 时，
@@ -314,6 +361,8 @@ GET `/customers/export` 将 `purpose` 与 `purpose_note` 放在 query。两种�
 - `GET /integrations/wecom/sync-jobs`
 - `GET /integrations/wecom/sync-jobs/{id}`
 - `POST /webhooks/wecom/events`
+
+在企业微信后台登记 CRM 公网 HTTPS 回调地址 `/api/v1/webhooks/wecom/events`，并配置企业 ID、回调 Token、EncodingAESKey 和具有客户联系权限的密钥。GET 用于验证地址，POST 验签后将事件放入同步任务队列。后台每分钟处理新增、编辑及删除跟进关系事件，只同步受影响的企微联系人和跟进关系。失败最多尝试五次，可在同步任务列表查看结果。导入客户中心仍需人工确认。
 
 ---
 
@@ -555,7 +604,7 @@ GET `/customers/export` 将 `purpose` 与 `purpose_note` 放在 query。两种�
 同版本再次实际发送使用新编号，分别登记发送记录。省略编号时仅确认首次发送，
 已发送的旧数据重试不补造发送事实。同编号改变渠道/收件人返回错误。
 该接口是人工确认已实际发送，不调用邮件服务；`send-email` 在邮件服务未配置时
-仅登记未投递记录，不产生正式发送事实。前端确认按钮明确写“确认已实际发送”。
+仅登记未投递记录，不产生正式发送事实。前端确认按钮明确写“确认：我已经发给客户了”（2026-10-12 改：把“发给客户”写进按钮，原来那句只说明“已实际发送”，看不出是发给谁）。
 
 正式发送、客户接受/拒绝同事务写入客户过程记录及主管通知待办，保留版本号和
 实际操作者；只刷新业务进展时钟，不刷新有效客户联系或约定跟进时间。
@@ -605,7 +654,7 @@ GET `/customers/export` 将 `purpose` 与 `purpose_note` 放在 query。两种�
 
 ## 钉钉 OA 开发总闸
 
-- `POST /inquiries/{id}/oa-approval`
+- `POST /inquiries/{id}/oa-approval`：配置 `OA_INQUIRY_TEMPLATE_ID` 后改走自研 OA（首节点刘帅帅办理，`quote_files`/`quote_note` 由办理人补填），否则保持原钉钉路径。
 - `GET /inquiries/{id}/oa-approvals`
 - `POST /oa-instances/{id}/resolve`
 - `POST /dingtalk/oa-sync`
@@ -963,6 +1012,15 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 - `POST /customer-levels`
 - `PATCH /customer-levels/{id}`
 
+> **2026-10-15：字典现在只服务「客户等级」了。** `product_category`（产品分类）已退役 ——
+> 产品分类改成在产品页**直接填写**（最多 64 字，后端不再校验"必须命中字典成员"），
+> 字典里那几条记录也一并清掉了（迁移 `c2f5a8d1e4b7`）。
+> 因此 `GET /dictionaries` 现在只会返回 `customer_level` 一类；前端「系统设置 → 数据字典」
+> 页的类型下拉也只剩「客户等级」。
+> **`/dictionaries`、`/customer-levels` 这组接口本身保留、路径不变** —— 后端对 `type`
+> **没有白名单**（`DictionaryItemCreate.type` 是自由字符串），以后要再加受控词表
+> （来源 / 行业等）照样走它，只是前端下拉要同步加一项。
+
 ---
 
 # 37. Sales Agent
@@ -987,6 +1045,8 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 - `POST /agent/actions/{id}/confirm`
 - `POST /agent/actions/{id}/reject`
 - `POST /agent/actions/{id}/cancel`
+
+待确认操作自创建起满 24 小时后变为 `expired`，仍可从会话历史或 `GET /agent/actions?status=expired` 查看。确认接口会提示重新发起，原操作不会执行。
 
 ## Execution
 
@@ -1260,8 +1320,8 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
   **存档不可用时不静默重新生成**（第十一批 11.3）：文件记录缺失 / 磁盘文件缺失 / 校验值与登记时不符 → 一律 **410** 并说明是哪一种（**不返回 PDF**），同时单独落一条 `download_original_missing` 审计便于从备份恢复。原实现是"读不到就当场重排一份给你、HTTP 200"，用户会以为拿到的就是当初那份存档，"同一编号永远同一份"这句承诺也就破了。历史上**本来就没有存档**的旧记录（`generated_file_id` 为空）仍可下载，但必须能分辨：响应头 `X-Contract-Source: legacy_rendered`、文件名带「（依据历史数据生成的副本）」（`filename*` 走 RFC 5987 编码）。正常读存档时为 `X-Contract-Source: generated`。前端两处下载入口（合同台账、业务详情页的合同面板）共用 `shared/download-contract.ts`，失败原因会以提示条显示 —— 原来 `void` 掉了一个可能失败的 Promise，点了没反应。
 - `POST /contract-documents/{doc_id}/sign`：登记签署（上传客户签回的扫描件）。需要 `order:manage`。**闸门**：未签草稿可先备条款，但登记签署前必须挂上正式依据（正式订单，或**已发送/已接受**的报价；月结协议可只关联客户）——"允许提前备合同"口径，2026-10-05 定。**挂了报价版本时还要连着问两句**（2026-10-08 复审 10.8 收紧）：① 合同钉住的那一版（`quote_version_id`）必须是**报价的当前版本**（`quote.current_version_id`），否则 422 并提示"先确认当前报价、再重新生成合同"—— 报价发过 V2 之后，一份钉在**发过、但已被 V2 取代的 V1** 上的合同不能签字，否则台账上留下一个假依据；② 那一版还得是**客户见过**的（该版本自己的 `sent_at` / `accepted_at` 非空），否则 422 说清"还没发给过客户"。判据在**签署那一刻取最新状态**，并且对报价行加了锁 —— 判完到落库之间不许被并发换版改掉。**已签的历史合同不追溯改写**；以正式订单为依据的继续按订单规则走。没钉版本的（提前备条款时可以不选）沿用老口径：看整份报价的状态。
 - `POST /contract-documents/{doc_id}/void`：作废。需要 `order:manage`。**已签合同的作废要求主管权限**，原因必填且不得为纯空白；原件保留（作废 ≠ 删档）。
-- `GET /contract-templates`：模板列表（按类型多版本并存）。需要 `order:view`。
-- `POST /contract-templates`：新增一版模板。需要 `settings:manage`。**不覆盖旧版**，已生成的文件仍指向它们当时用的那一版。`(doc_type, name, version)` 有唯一约束，并发建同名模板会拿保存点重试取下一个版本号。
+- `GET /contract-templates`：资料列表（按类型多版本并存）。需要 `order:view`。每行带 `file`（资料库原文件：`file_id`/`file_name`/`size`/`uploaded_at`；历史文本模板为 `null`，页面「资料库」只展示有原文件的行）。
+- `POST /contract-templates`：合同资料库（页面名「资料库」）——保存一版标准合同/月结协议**原文件**。需要 `order:manage`。只收 `doc_type`/`name`/`file_id`，**不收正文、没有启用开关**：落库记录 `enabled=False`，系统模板生成保持停用，生成合同仍只能上传原文件。同名同类型再存自动升版本（旧版保留），同一份文件重复提交幂等不重复建版；只接受**本人上传、且尚未挂在业务数据上**的 PDF/Word 文件（资料对全体有 `order:view` 的人可见，防止把别人的签署件转为全员可下载）。
 
 ## 41.7 对外单据（biz-docs、biz-doc-templates）
 
@@ -1299,6 +1359,7 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 - `GET /orders/{order_id}/finance-summary`：财务汇总。需要 `payment:view`。
 - `POST /orders/{order_id}/receivables`：新增手动应收计划。需要 `payment:manage`。**币种强制继承订单币种**，不接受调用方指定。
 - `POST /orders/{order_id}/receivables/generate`：按比例生成应收计划（如 30% 定金 + 70% 尾款）。需要 `payment:manage`。**每一期的币种同样继承订单币种**——第十一批 11.1：这条路径原先不写 `currency`、落到列默认的 CNY，于是美元订单分出来的几期全成了人民币（"金额看着对、代表的钱已经不同"），而回款登记又是跟应收节点币种走的，错会一路传到回款、直到跨币种校验也形同虚设。该订单**已有任何应收计划**时拒绝生成（要重排请先清掉原计划）；带 `request_key` 的重复提交回放第一次结果，不生成第二组。末期金额用"总额 − 前面各期之和"，保证各期合计严格等于订单金额。
+  三期及以上须通过 `due_dates` 提供每期的到期日。`names` 可省略，系统按「第 1 期、第 2 期」顺序命名。一两期继续支持前两期的单独日期和名称字段。
 - `GET /orders/{order_id}/shipments`：批次与未发量——跟单看"承诺/事实"分开的数字。需要 `order:view`。
 - `POST /orders/{order_id}/shipments`：新建发货批次（计划）。需要 `order:manage`。
 - `POST /orders/{order_id}/shipments/{batch_id}/ship`：登记实发。需要 `order:manage`。只推进订单到「已发货」——整单完成由**未发量闸门**把关（场景13）。
@@ -1464,7 +1525,7 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 
 ## 41.17 打样（samples，补充条目）
 
-> 补齐 #26 Sample。以下 5 条与原 10 条合计 **15 条**。
+> 补齐 #26 Sample。以下 7 条与原 10 条合计 **17 条**。
 
 - `POST /samples/{sample_id}/made`：登记**制作完成**（文档 §3.5「分别记录制作、寄出、签收、客户确认」）。需要 `sample:manage`。刻意**不做成状态闸门**：CRM 管不到车间，把"制作完成"变成必点的状态只会让跟单为了往下走随手一点，反而污染数据。这里只记事实与时间，供打样需求单与跟单看板回答"目标完成日到了没有"。
 - `POST /samples/{sample_id}/confirm`：登记**客户确认结果**（文档 §3.5）。需要 `sample:manage`。规则只有一条但是重点：**必须先签收才能确认**——客户没收到样品就"确认接受"是假数据；签收是物流事实、确认是业务事实，分开记才答得了"这批样到底过没过"。
@@ -1481,6 +1542,22 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
   「请先在详情的附件区上传图纸/确认件」——指向一块不存在的地方，于是「制作依据」
   永远只能选空列表。现在详情里补了附件区。
 - `PATCH /samples/{sample_id}/items/{item_id}`：改一条明细的**车间依据**（材质 / 工艺 / 图纸版本）。需要 `sample:manage`。与单头资料的编辑**共用同一套闸门**（`_gate_part_lock`）：已批准的单子改了这三项就退回「待审批」重新批，已寄样/已签收直接拒。两处各写一份规则迟早会漂移，而"哪一档能改"是业务口径，只该有一个出处。**注意**：明细与单头用同一套闸门，但"同值重发不算改动"——只传没变化的字段会被判为无改动，不会误退回。
+- `DELETE /samples/{sample_id}`：**软删**打样单（2026-10-15 补）。需要 `sample:manage`。
+  加这个入口的原因：打样单建出来就**只能一直躺在列表里**——状态机 `pending→approved→shipped→signed` 没有出口，
+  试探性建的、被驳回又不打算再报的单子全堆在「全部」里，越积越多、没人能收走。
+  **只允许"还没走流程"的删**：`status` 属于 `SAMPLE_DELETABLE_STATUSES`（`pending` 待审批 / `rejected` 已驳回）才放行，
+  其余状态一律 400（错误码 `STATUS_NOT_ALLOWED`）并回显当前状态的中文名。理由：已批准 / 已寄样 / 已签收的单子
+  承载了制作与物流事实，删掉等于抹掉证据 —— 这与"只让没走流程的能删"的用户拍板一致。
+  实现是**置 `deleted_at`**（软删，与客户 / 报价同范式），不是物理删除；审计动作 `delete`。
+- `POST /samples/{sample_id}/restore`：恢复一张被软删的打样单。需要 `sample:manage`。只能恢复**已删除**的
+  （没删过的返回 400）。与删除成对 —— 软删不该是死路，误删要能捞回来。
+- **列表与详情的软删约定**：`GET /samples` 多一个查询参数 `include_deleted`（默认 `false`）——
+  列表默认只看没删的；传 `true` 时**只看已删的**（前端筛选器「已删除」就用它）。
+  列表每行与详情额外下发 `is_deleted`（布尔）、`deleted_at`、`can_delete`（布尔，是否可删）。
+  **`can_delete` 的判据只在后端一处**（`deleted_at is null and status in SAMPLE_DELETABLE_STATUSES`），
+  前端只认这个字段、**不复刻**状态判断 —— 否则前后端两份规则迟早对不上。
+  软删生效后，所有"还在流转的打样"口径的查询都加了 `deleted_at is null`：
+  客户阶段看板、公海回收的履约保护、企微离职交接的未结打样、附件迁移的目标单校验。
 
 ## 41.18 商机补充：确认成交（opportunities）
 
@@ -1503,9 +1580,9 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
   - 驳回/暂缓也要填 `note`（谁、为什么）；
   - **同名客户中途换过人**（`owner_id` 与提名时不一致）→ 409，让主管重新看，避免按过时依据回收。
 - `POST /public-pool/recycle-candidates/batch-decide`：批量复核。需要 `customer:pool_review` + 逐条数据范围校验。**请求体一次带齐** `{candidate_ids: number[], decision, note?, early?}`（返修单第六批第 10 条：此前 id 走查询参数、决定走请求体，与前端正好反着，从未调通）。**逐条处理、逐条报结果**（`{done: [{candidate_id, status}], failed: [{candidate_id, reason, code}]}`）：被拦下的不影响其余，且**不会被执行**，仍留在待复核里。
-- `POST /public-pool/recycle-candidates/{id}/restore`：**恢复**——把被回收的客户还给原负责人。需要配置项 `pool_recycle_restore_permission` 指定的权限（默认 `customer:assign`，即销售主管；管理员不受限；**普通业务员不能恢复**），并**校验客户数据范围**——客户进了公海虽然人人可见，也不能因此让别的团队的主管捞走。
+- `POST /public-pool/recycle-candidates/{id}/restore` 把被回收的客户还给原负责人。需要角色权限「公海回收复核」和「恢复公海客户」（`customer:pool_review`、`customer:pool_restore`）。管理员沿用角色权限豁免，后端仍按原负责人校验客户数据范围。
   三条纪律：**保留原回收记录**（状态转 `restored`，不删）；客户**已被别人合法领取**时报 **409** 并记下冲突（`restore_conflict_owner_id`），**绝不静默覆盖**；原负责人已停用时 422（改派给别人）。
-- `PATCH /settings`（回收相关配置）：需要 `settings:manage`。可改 `pool_recycle_notice_days`（回收预告期，天）、`pool_recycle_defer_days`（主管暂缓等待期，天）、`pool_recycle_restore_permission`（恢复所需权限码）。
+- `PATCH /settings` 的回收配置需要 `settings:manage`。可改回收预告期（`pool_recycle_notice_days`）、主管暂缓等待期（`pool_recycle_defer_days`）和履约保护天数（`pool_recycle_max_protect_days`）。恢复授权在角色设置中管理。
   **校验取值**（天数须为 0–365 的整数，权限码必须在权限表里真实存在），**审计记下修改前后值与修改人/时间**。
   **改动只对新提名的候选生效**：候选上各自存着生成时的天数与绝对到期时间，不追溯改期（追加口径 1）。`GET /settings` 会把"代码默认值里配了、库里还没落行"的项一并返回并标 `is_default=true`，界面上据此标注"当前为开发默认值"。
   三条纪律：**保留原回收记录**（状态转 `restored`，不删）；客户**已被别人合法领取**时报 **409** 并记下冲突（`restore_conflict_owner_id`），**绝不静默覆盖**；原负责人已停用时 422（改派给别人）。
@@ -1531,6 +1608,105 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 - `POST /leads/batch-assign`：批量分配线索。需要 `lead:assign`。
   逐条走与单条入口**同一套范围校验**，越权的那条按"无权分配"跳过并给出**与单条一致的 code（40302）**，
   且**不改动任何数据**。每条包在 SAVEPOINT 里，单条失败不会留下"历史写了、负责人没改"的半截状态。
+
+## 41.20 前面章节遗漏的现有接口（2026-10-18 补齐）
+
+以下接口已经在服务端注册并被前端或运维流程使用；本节补齐路径，具体权限仍以服务端
+`require_permission` 和数据范围校验为准。这里只补文档，不新增接口。
+
+### 认证、钉钉与文件
+
+- `GET /auth/dingtalk/authorize`：生成钉钉登录授权地址。
+- `GET /auth/dingtalk/callback`：钉钉授权回调入口。
+- `POST /auth/dingtalk/exchange`：用钉钉临时票据换取 CRM 登录令牌。
+- `POST /dingtalk/sync-users`：同步钉钉组织成员及账号绑定状态。
+- `GET /business/{business_id}/files/batch`：批量读取业务对象关联文件。
+- `GET /public/inquiry-images/{file_id}`：带短期签名的询价图片只读地址，供钉钉审批引用。
+
+### 客户、商机、工作台与等级
+
+- `GET /dashboard/stale-customers`：查询超过阈值未跟进的客户。
+- `PATCH /opportunity-items/{item_id}`：修改商机明细项。
+- `PATCH /opportunity-stages/{stage_id}`：修改商机阶段配置或阶段信息。
+- `POST /opportunities/{opportunity_id}/items/batch`：批量维护商机明细项。
+- `POST /customer-levels/unrated/rules`：维护未评级客户的等级规则。
+
+### 合同、审批与对外单据
+
+- `DELETE /contract-documents/{doc_id}`：删除未进入原件保护流程的合同草稿。
+- `GET /contract-documents/{doc_id}/approval-entry`：读取合同审批入口状态。
+- `POST /contract-documents/{doc_id}/approval-auto-link`：按可用依据自动关联审批单。
+- `POST /contract-documents/{doc_id}/approval-link`：关联已有审批实例。
+- `POST /contract-documents/{doc_id}/approval-sync`：同步合同审批状态（钉钉/自研 OA 按实例来源分流）。
+- `POST /contract-documents/{doc_id}/basis`：设置合同正式业务依据。
+- `POST /contract-documents/{doc_id}/oa-approval`：发起**自研 OA** 合同审批（2026-11-13 起；CRM 通过服务间 HMAC 调 OA，审批在 OA 完成）。请求体必须带经办人填写的 `our_company`（我方主体）、`counterparty_name`（对方主体），两项非空；系统不再自动用公司抬头/客户名代替。
+- `POST /contract-documents/{doc_id}/dingtalk-oa`：历史钉钉合同审批入口，只保留给旧数据，不再从界面发起。
+- `POST /contract-documents/{doc_id}/dingtalk-oa-withdraw`：撤回合同审批（按实例来源走钉钉或自研 OA）。
+- `POST /contract-documents/{doc_id}/restore`：恢复合同记录。
+- `POST /oa-instances/{instance_id}/sync`：同步审批实例（钉钉/自研 OA 按来源分流）。
+- `POST /oa-instances/{instance_id}/withdraw`：撤回审批实例。
+- `POST /biz-doc-templates/preview`：预览对外单据模板渲染结果。
+- `GET /recycle-bin/contracts`：查询回收站中的合同记录。
+
+### 跟进与询价
+
+- `GET /approvals/{approval_id}/transfer-candidates`：查询审批转交候选人。
+- `GET /inquiries/oa-submission-options`：读取询价发起审批的可选项。
+- `GET /inquiries/{inquiry_id}/oa-submission`：读取询价审批提交状态。
+
+### 订单、回款与报价版本
+
+- `POST /orders/{order_id}/receivables/preview`：预览订单应收计划变更。
+- `PUT /payments/{payment_id}/allocations`：更新回款分摊明细。
+- `GET /quote-versions/{version_id}/master-refresh-preview`：预览报价版本主数据刷新影响。
+- `POST /quote-versions/{version_id}/link-master`：关联报价版本主数据。
+
+### ERP 集成与对账
+
+- `GET /integrations/erp/collection/status`：查询 ERP 收款采集任务状态。
+- `GET /integrations/erp/exception-queue`：查询 ERP 集成异常队列。
+- `GET /integrations/erp/external-mappings`：查询外部单据映射。
+- `GET /integrations/erp/external-records`：查询外部同步记录。
+- `GET /integrations/erp/external-records/{record_id}`：查看单条外部同步记录。
+- `GET /integrations/erp/financial-adjustments`：查询 ERP 财务调整记录。
+- `GET /integrations/erp/reconcile/diffs`：查询对账差异。
+- `GET /integrations/erp/reconcile/diffs/{diff_id}`：查看单条对账差异。
+- `GET /integrations/erp/reconcile/runs`：查询对账批次。
+- `POST /integrations/erp/collection/run`：执行一次 ERP 收款采集。
+- `POST /integrations/erp/external-mappings/replay`：重放外部映射事件。
+- `POST /integrations/erp/external-mappings/{mapping_id}/match`：确认外部映射匹配。
+- `POST /integrations/erp/orders/{order_id}/reconcile`：发起订单对账。
+- `POST /integrations/erp/reconcile/diffs/{diff_id}/confirm`：确认对账差异处理结果。
+- `POST /integrations/erp/reconcile/runs`：创建对账批次。
+- `POST /integrations/erp/sources/verify`：验证 ERP 数据源配置。
+
+### 企微客户导入
+
+- `GET /integrations/wecom/customer-import/preview`：预览企微客户导入结果。
+- `POST /integrations/wecom/customer-import`：执行企微客户导入。
+
+### 打样与钉钉审批
+
+> 2026-11-14：配置 `OA_SAMPLE_TEMPLATE_ID` 后，打样 `GET /dingtalk` / `POST /dingtalk-submit` 仍沿用原路径但切换为自研 OA（9 字段、周星聿+刘帅帅会签）；未配置时保持钉钉。
+
+- `GET /samples/{sample_id}/application-form`：下载打样申请单。
+- `GET /samples/{sample_id}/dingtalk`：读取打样钉钉审批状态。
+- `POST /samples/{sample_id}/dingtalk-submit`：提交打样钉钉审批。
+- `PUT /samples/{sample_id}/dingtalk-draft`：保存打样钉钉审批草稿。
+
+### SKU 主数据
+
+- `GET /sku-master/diffs`：查询 SKU 主数据差异。
+- `GET /sku-master/identities`：查询外部 SKU 身份映射。
+- `GET /sku-master/skus/{sku_id}`：查看 SKU 主数据详情。
+- `GET /sku-master/skus/{sku_id}/confirmed`：查询 SKU 主数据确认状态。
+- `POST /sku-master/authority`：维护 SKU 主数据权威来源。
+- `POST /sku-master/diffs/{diff_id}/confirm`：确认 SKU 主数据差异。
+- `POST /sku-master/identities/{identity_id}/rename`：重命名 SKU 外部身份。
+- `POST /sku-master/identities/{identity_id}/replay`：重放 SKU 身份同步事件。
+- `POST /sku-master/identities/{identity_id}/stop`：停止 SKU 身份映射。
+- `POST /sku-master/skus/{sku_id}/confirm-local`：确认本地 SKU 主数据。
+- `POST /sku-master/sources/ingest`：接收 SKU 主数据源数据。
 
 ---
 
@@ -1624,10 +1800,14 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
   不让一次冲突把整批恢复搞崩。
 - `POST /skus/{id}/restore`：需要 `product:manage`。**它所属的产品必须已经恢复** ——
   产品还在回收站时恢复 SKU 会造出"挂在已删产品下"的孤儿，直接 **400** 让你先恢复产品。
-- `POST /customers/{id}/restore`（2026-10-08 加；同日第三轮补权限与改派）：
+- `POST /customers/{id}/restore`（2026-10-08 加；同日第三轮补权限与改派；
+  2026-11-13 补业务员恢复自己的客户）：
   恢复一个被**直接删除**的客户。
-  需要 **`customer:delete`** —— 与删除**共用同一把钥匙**（谁删的谁能拾回来），
+  需要 **`customer:delete` 或 `customer:delete_own`** —— 与删除**共用同一档钥匙**，
   不为它单开权限码；线索、产品那两个模块的恢复也是复用已有码。
+  `customer:delete` 按数据范围恢复；`customer:delete_own` 只能恢复**负责人是自己**的
+  客户（按归属判，不按"谁删的"判：主管删掉、负责人仍是本人的客户，业务员可以捡回来；
+  公海客户没有负责人，不在这一档）。
   入参 `{owner_id?}` 整个可以不传（最常见的情形就是"归还原负责人"）。
   **但传了 `owner_id` 就不再是"捡回来"，而是一次改派** → **额外要求 `customer:assign`**
   （否则只有"删除客户"权限的人借恢复这个入口就能把客户交到别人名下，等于绕开了

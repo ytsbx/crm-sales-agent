@@ -5,6 +5,7 @@
 import asyncio
 import os
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from urllib.parse import urlparse
 from uuid import uuid4
 from unittest.mock import patch
@@ -27,7 +28,7 @@ from app.modules.opportunity.model import Opportunity, OpportunityStage, Opportu
 from app.modules.order.model import SalesOrder, SalesOrderItem, OrderStatusHistory, OrderMilestone
 from app.modules.payment.model import ReceivablePlan
 from app.modules.quote import service as qs, lifecycle
-from app.modules.quote.model import Quote, QuoteVersion, QuoteSendLog
+from app.modules.quote.model import Quote, QuoteVersion, QuoteSendLog, QuoteCharge, QuoteItem
 from app.modules.quote.schema import SendRequest
 from app.modules.task.model import Task
 from app.modules.user.model import User
@@ -72,8 +73,16 @@ async def main():
                     customer.last_followup_at, customer.last_progress_at, customer.next_followup_at, counts)
 
     async def blocked(qid, vid, action, body=None, status=422, token=None):
+        # ⚠️ `convert-to-order` 加了"需要确认"那道拦之后，不带 confirm 会被
+        # 42206 先拦下 —— 那是**因为错误的原因通过**：本函数要验的是业务原因
+        # （未发送/已失效的报价不能转单）。所以这一条带 confirm 进去，
+        # 让它走到真正的业务校验。
+        suffix = '?confirm=true' if action == 'convert-to-order' else ''
         before = await snapshot(qid)
-        actual, result = call('POST', f'/quote-versions/{vid}/{action}', body=body, token=token or admin)
+        actual, result = call(
+            'POST', f'/quote-versions/{vid}/{action}{suffix}',
+            body=body, token=token or admin,
+        )
         assert actual == status, (action, actual, result)
         assert await snapshot(qid) == before, (action, '失败请求改变了业务事实')
 
@@ -88,6 +97,7 @@ async def main():
     with patch.object(httpx, 'AsyncClient', forbidden_http):
         try:
             admin = login('admin', 'admin123')
+            zhangsan = login('zhangsan', '123456')
             finance = login('wangwu', '123456')
             async with SessionLocal() as s:
                 users = {u.username: u for u in (await s.execute(select(User))).scalars()}
@@ -105,13 +115,32 @@ async def main():
                               valid_until=(datetime.now(UTC) + timedelta(days=-1 if label == 'expired' else 10)).date())
                     s.add(q); await s.flush(); qids.append(q.id)
                     version = QuoteVersion(quote_id=q.id, version_no=1, approval_status='approved',
-                                           created_at=datetime.now(UTC), total_amount=100)
+                                           created_at=datetime.now(UTC), subtotal_amount=100,
+                                           charge_amount=10, total_amount=110)
                     s.add(version); await s.flush(); vids.append(version.id)
+                    # 状态/并发正向用例使用已经完整核价的定制明细，避免因空单成本闸误过。
+                    s.add(QuoteItem(quote_version_id=version.id, sku_name_snapshot='夹具定制明细',
+                                    quantity=Decimal('1'), quoted_price=Decimal('100'),
+                                    cost_snapshot=Decimal('50'), cost_present_snapshot=True,
+                                    cost_complete_snapshot=True, profit_snapshot=Decimal('50')))
+                    # 运费分离（2026-10-09）：正式发送前必须已经确认运费金额。
+                    # 本套件验的是状态闸门与并发，不是运费，所以夹具补一条**已确认**的运费，
+                    # 让发送能走到它真正要验的那一步（不是放宽闸门）。
+                    s.add(QuoteCharge(quote_version_id=version.id, charge_type='logistics',
+                                      description='夹具运费', amount=Decimal('10'),
+                                      logistics_confirmed_at=datetime.now(UTC)))
                     q.current_version_id = version.id
                     facts[label] = (q.id, version.id, customer.id, opp.id)
                     if label == 'stale':
                         next_v = QuoteVersion(quote_id=q.id, version_no=2, approval_status='approved', created_at=datetime.now(UTC))
                         s.add(next_v); await s.flush(); vids.append(next_v.id); q.current_version_id = next_v.id
+                        s.add(QuoteItem(quote_version_id=next_v.id, sku_name_snapshot='夹具定制明细',
+                                        quantity=Decimal('1'), quoted_price=Decimal('100'),
+                                        cost_snapshot=Decimal('50'), cost_present_snapshot=True,
+                                        cost_complete_snapshot=True))
+                        s.add(QuoteCharge(quote_version_id=next_v.id, charge_type='logistics',
+                                          description='夹具运费', amount=Decimal('10'),
+                                          logistics_confirmed_at=datetime.now(UTC)))
                 await s.commit()
 
             qid, vid, _, _ = facts['unsent']
@@ -167,11 +196,13 @@ async def main():
                 assert all(f.owner_id == actor.id and 'V1' in f.content for f in follows)
                 assert all(n.user_id == manager.id and '操作者：'+actor.name in n.content for n in notices)
                 assert accepted[3] == previous_contact and accepted[4] > previous_contact and accepted[5] is None
-            created = request('POST', f'/quotes/{qid}/versions')
+            created = request('POST', f'/quotes/{qid}/versions?confirm=true')
             vids.append(created['id'])
             draft = await snapshot(qid)
-            request('POST', f'/quote-versions/{vid}/accept')
-            request('POST', f'/quote-versions/{vid}/mark-sent', body)
+            # 建了新版后这张报价退回草稿，且它从未正式提交过 → 属于私人草稿，
+            # 只有作者/负责人能操作；夹具负责人是 zhangsan。
+            request('POST', f'/quote-versions/{vid}/accept', token=zhangsan)
+            request('POST', f'/quote-versions/{vid}/mark-sent', body, token=zhangsan)
             assert await snapshot(qid) == draft
 
             qid, vid, _, _ = facts['decline']
@@ -252,6 +283,10 @@ async def main():
                         (OrderMilestone, OrderMilestone.order_id.in_(orders)),
                         (SalesOrder, SalesOrder.customer_id.in_(cids)),
                         (QuoteSendLog, QuoteSendLog.quote_version_id.in_(vids)),
+                        # 运费夹具（本套件新增的物流费用）先删：外键是 NO ACTION，
+                        # 不删会让 QuoteVersion 删不掉、夹具残留下来。
+                        (QuoteCharge, QuoteCharge.quote_version_id.in_(vids)),
+                        (QuoteItem, QuoteItem.quote_version_id.in_(vids)),
                         (QuoteVersion, QuoteVersion.quote_id.in_(qids)), (Quote, Quote.id.in_(qids)),
                         (OpportunityStageHistory, OpportunityStageHistory.opportunity_id.in_(oids)),
                         (Opportunity, Opportunity.id.in_(oids)), (Customer, Customer.id.in_(cids)),

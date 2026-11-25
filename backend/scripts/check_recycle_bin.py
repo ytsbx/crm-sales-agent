@@ -1100,9 +1100,11 @@ async def assert_customer_restore(ids: dict, admin: str, sales: str) -> None:
       未完成待办、名下单据、公海/私海标记都要一起办完。**"责任有没有真的搬过去"
       由 `check_customer_handover_documents` 第 11 段钉住**（那边才有各类单据的夹具）；
       这里只验接口层面：要不要权限、要不要选人、公海私海、归属历史。
-    - **权限两档**：恢复给原负责人只要 `customer:delete`（谁删的谁能拾回来）；
+    - **权限两档**：主管/管理员凭 `customer:delete` 按数据范围恢复；业务员凭
+      `customer:delete_own` 只能恢复**负责人是自己**的客户（2026-11-13 加）。
       **把客户交给别人额外要 `customer:assign`** —— 否则只有"删除客户"权限的人
-      借恢复这个入口就能改归属，等于绕开分配权限。业务员两样都没有 → 403。
+      借恢复这个入口就能改归属，等于绕开分配权限。下面这条客户归李四，业务员不是
+      负责人 → 403。
     """
     print()
     print("=== 20. 客户恢复（只有「直接删除」的能恢复）===")
@@ -1262,7 +1264,7 @@ async def assert_customer_restore(ids: dict, admin: str, sales: str) -> None:
     check("（6）前提：业务员能看回收站", call("GET", "/recycle-bin/customers", token=sales)[0], 200)
     check("（6）再删一条给业务员试", call("DELETE", f"/customers/{plain_id}", token=admin)[0], 200)
     check(
-        "（6）业务员（无 customer:delete）恢复 → 403",
+        "（6）业务员恢复别人的客户 → 403",
         call("POST", f"/customers/{plain_id}/restore", token=sales, body={})[0],
         403,
     )
@@ -1398,6 +1400,7 @@ async def main() -> int:
     try:
         admin = login("admin", "admin123")
         sales = login("zhangsan", "123456")
+        no_product_manage = login("wangwu", "123456")  # 财务：无 product:manage
 
         # ============================================================ 线索
         print()
@@ -1486,10 +1489,10 @@ async def main() -> int:
 
         print()
         print("=== 7. 产品：能看 ≠ 能恢复 ===")
-        status, _ = call("POST", f"/products/{ids['product_b']}/restore", token=sales)
-        check_true("业务员（无 product:manage）恢复产品被拒", status == 403, f"实际 {status}")
-        status, _ = call("POST", f"/skus/{ids['sku_b1']}/restore", token=sales)
-        check_true("业务员恢复 SKU 也被拒", status == 403, f"实际 {status}")
+        status, _ = call("POST", f"/products/{ids['product_b']}/restore", token=no_product_manage)
+        check_true("财务（无 product:manage）恢复产品被拒", status == 403, f"实际 {status}")
+        status, _ = call("POST", f"/skus/{ids['sku_b1']}/restore", token=no_product_manage)
+        check_true("财务恢复 SKU 也被拒", status == 403, f"实际 {status}")
 
         # ============================================================ 客户（只读）
         print()

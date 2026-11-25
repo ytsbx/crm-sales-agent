@@ -1,0 +1,66 @@
+.recycle-batch-toolbar,
+.recycle-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.recycle-batch-toolbar { margin-bottom: 10px; }
+.recycle-batch-toolbar > span { margin-right: auto; white-space: nowrap; }
+
+.recycle-review-receipt,
+.recycle-mobile-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+.recycle-review-receipt {
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  padding: 12px;
+  border-radius: var(--crm-radius-sm);
+  background: var(--crm-surface-low);
+  overflow-wrap: anywhere;
+}
+.recycle-mobile-list {
+  display: grid;
+  gap: 10px;
+  padding: 0;
+  margin: 0 0 10px;
+  list-style: none;
+}
+.recycle-mobile-item {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border-radius: var(--crm-radius-sm);
+  border: 1px solid var(--crm-border);
+  color: var(--crm-text-2);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.recycle-mobile-heading a {
+  color: var(--crm-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+.recycle-mobile-item .recycle-review-actions { margin-top: 4px; }
+
+.recycle-batch-hint {
+  color: var(--crm-text-2);
+  font-size: 12px;
+  margin: 0 0 10px;
+}
+@media (max-width: 680px) {
+  .recycle-review-tabs .semi-tabs-tab {
+    margin-right: 2px;
+    padding-inline: 8px;
+  }
+}
+
+.recycle-mobile-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  row-gap: 6px;
+}

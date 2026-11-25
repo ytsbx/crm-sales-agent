@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from conftest import SyncSessionAsAsync, make_engine
 
+from app.core.audit import AuditLog
 from app.core.base import Base
 from app.core.errors import AppError
 from app.modules.customer.model import Customer
@@ -38,6 +39,7 @@ from app.modules.integration.model import (
     ExternalRecord,
     ExternalSourceRegistry,
     ExternalSyncWatermark,
+    FinancialAdjustment,
     IntegrationDiff,
     IntegrationLog,
     ReconciliationRun,
@@ -72,6 +74,7 @@ def _engine():
             ExternalSourceRegistry.__table__,
             ReconciliationRun.__table__,
             IntegrationDiff.__table__,
+            FinancialAdjustment.__table__,
             # 采集留痕写在既有的集成日志表里；推单映射表也一起建，
             # 免得"共用集成基础设施"的用例因为少一张表而失败。
             IntegrationLog.__table__,
@@ -250,6 +253,27 @@ def _collect(session, adapter, *, object_type="order", shop_id="SHOP-A", **kwarg
 # ---------------------------------------------------------------- 幂等与断点
 
 
+@pytest.mark.parametrize("next_token", [None, " ", "cursor-2"])
+def test_invalid_next_token_keeps_last_committed_page(next_token):
+    class BrokenPage(FakeCollectAdapter):
+        async def fetch_records(self, **kwargs):
+            page = await super().fetch_records(**kwargs)
+            if kwargs["cursor"] == "cursor-2":
+                return ExternalPage(items=page.items, has_more=True, next_page_token=next_token)
+            return page
+
+    session = _session()
+    pages = [[_order_record("1", "SO-1")], [_order_record("2", "SO-2")]]
+    with pytest.raises(AppError, match="断点缺失或重复"):
+        _collect(session, BrokenPage(pages))
+    raw = session._session
+    assert raw.query(ExternalRecord).count() == 1
+    cursor = raw.query(ExternalSyncWatermark).one()
+    assert cursor.page_token == "cursor-2" and cursor.status == CURSOR_FAILED
+    _collect(session, FakeCollectAdapter(pages))
+    assert raw.query(ExternalRecord).count() == 2
+
+
 def test_repeat_collection_does_not_duplicate():
     """同一外部订单重拉：只有一行事实，第二次算"重复（内容未变）"。"""
     session = _session()
@@ -266,6 +290,60 @@ def test_repeat_collection_does_not_duplicate():
     order_row = next(row for row in rows if row["object_type"] == "order")
     assert order_row["collected_count"] == 2, "重复次数要如实记下来"
 
+
+def test_line_mapping_keeps_same_identity_when_external_id_appears_disappears_or_changes():
+    session = _session()
+    raw = session._session
+    for external_id in (None, "ERP-LINE-1", None, "ERP-LINE-9"):
+        item = _order_item("EXT-1", "1", "SKU-A", "10", external_id=external_id)
+        _collect(session, FakeCollectAdapter([[item]]))
+        assert raw.query(ExternalRecord).count() == 1
+        mapping = raw.query(ExternalObjectMapping).one()
+        assert mapping.id == 1
+        assert mapping.external_id == col.line_dedupe_key("EXT-1", "1")
+
+
+def test_legacy_line_mapping_keeps_manual_binding_and_ambiguous_alias_is_left_alone(caplog):
+    session = _session()
+    raw = session._session
+    item = _order_item("EXT-1", "1", "SKU-A", "10")
+    _collect(session, FakeCollectAdapter([[item]]))
+    stable = raw.query(ExternalObjectMapping).one().external_id
+    original = raw.query(ExternalObjectMapping).one()
+    original.external_id = item["external_id"]
+    original.match_status, original.internal_id, original.matched_by = MATCH_MATCHED, 101, 12
+    raw.commit()
+
+    _collect(session, FakeCollectAdapter([[{**item, "external_id": None}]]))
+    updated = raw.query(ExternalObjectMapping).one()
+    assert (updated.id, updated.external_id, updated.internal_id, updated.matched_by) == (1, stable, 101, 12)
+
+    raw.add(ExternalObjectMapping(system_type=updated.system_type, shop_id=updated.shop_id,
+        object_type=updated.object_type, parent_key=updated.parent_key, external_id=item["external_id"],
+        first_seen_at=PERIOD_START, last_seen_at=PERIOD_START,
+        match_status=MATCH_MATCHED, internal_id=102, matched_by=13))
+    raw.commit()
+    _collect(session, FakeCollectAdapter([[item]]))
+    assert [(row.external_id, row.internal_id, row.matched_by) for row in
+            raw.query(ExternalObjectMapping).order_by(ExternalObjectMapping.id)] == [
+        (stable, 101, 12), (item["external_id"], 102, 13),
+    ]
+    assert "ERP 明细存在多条旧映射，等待人工核对：[1, 2]" in caplog.text
+
+
+def test_line_mapping_fits_key_column_and_stays_separate_by_stable_line_key():
+    session = _session()
+    parent = "P" * 100
+    items = [_order_item(parent, str(i) * 30, "SKU-A", "10", external_id="SHARED")
+             for i in (1, 2)]
+    for _ in range(2):
+        _collect(session, FakeCollectAdapter([items]))
+    records = session._session.query(ExternalRecord).all()
+    mappings = session._session.query(ExternalObjectMapping).all()
+    assert len(records) == len(mappings) == 2
+    assert all(len(row.dedupe_key) == 131 for row in records)
+    assert len({row.external_id for row in mappings}) == 2
+    assert all(len(row.external_id) <= 128 for row in mappings)
 
 def test_pagination_break_keeps_token_and_resumes_without_loss():
     """第 2 页取数时崩了：断点留着，续拉后三页数据齐全且不重复。"""
@@ -403,13 +481,13 @@ def test_split_and_merge_are_not_double_counted():
 
     # 聚合键是**我方 SKU 编码**：行号在不同单据里各是各的编号，
     # 按行号聚合会把退货行与订单行算成两行，反而造出假差异。
-    o1 = aggregates["EXT-O1"]["lines"]["SKU-A"]
+    o1 = aggregates[(ADAPTER_SYSTEM, "SHOP-A", "EXT-O1")]["lines"]["SKU-A"]
     assert o1["ordered"] == Decimal(10)
     assert o1["shipped"] == Decimal(10), "拆单的两批货要相加，且各算一次"
     assert o1["returned"] == Decimal(2)
     assert o1["exchanged"] == Decimal(3), "换货单独计，不能混进退货"
 
-    o2 = aggregates["EXT-O2"]["lines"]["SKU-C"]
+    o2 = aggregates[(ADAPTER_SYSTEM, "SHOP-A", "EXT-O2")]["lines"]["SKU-C"]
     assert o2["shipped"] == Decimal(3), "合单里属于 O2 的行只算到 O2 头上"
     assert o1["shipped"] != Decimal(20), "同一批货被算两遍就会变成 20"
 
@@ -545,11 +623,76 @@ def test_manual_match_records_basis_and_operator():
     _collect(session, FakeCollectAdapter([[_order_record("EXT-O1", "CRM-UNKNOWN")]]))
     mapping = asyncio.run(col.list_mappings(session, owner_ids=None, page_size=50))[0][0]
     row = asyncio.run(col.get_mapping(session, mapping["id"]))
+    assert row.parent_key is None
+    row.parent_key = row.external_id  # 存量自指映射仍须通过真实人工匹配入口。
+    AuditLog.__table__.create(session.get_bind(), checkfirst=True)
+
+    from starlette.requests import Request
+    from conftest import make_user
+    from app.modules.erp.router import match_external_mapping, MappingMatchRequest
 
     target = asyncio.run(session.execute(select(SalesOrder))).scalars().first()
-    result = asyncio.run(col.assign_mapping(session, row, internal_id=target.id, operator_id=7))
+    result = asyncio.run(match_external_mapping(
+        row.id,
+        MappingMatchRequest(internal_id=target.id),
+        Request({"type": "http", "headers": []}),
+        make_user(7, permissions={"order:manage"}, data_scope="all"),
+        session,
+    ))["data"]
     assert result["mapping"]["match_basis"] == "manual"
     assert result["mapping"]["matched_by"] == 7
+    assert result["mapping"]["parent_key"] is None
+
+
+def test_manual_order_match_only_replays_its_own_related_records():
+    from starlette.requests import Request
+    from conftest import make_user
+    from app.modules.erp.router import MappingMatchRequest, match_external_mapping
+
+    session = _session()
+    target = _order("CRM-TARGET", owner_id=7)
+    other = _order("CRM-OTHER", owner_id=8)
+    moment = datetime.now(UTC)
+
+    def mapping(kind, key, *, parent=None, shop="SHOP-A", system="ERP", code=None):
+        return ExternalObjectMapping(
+            system_type=system, shop_id=shop, object_type=kind, external_id=key,
+            external_code=code, parent_key=parent, match_status=MATCH_PENDING,
+            first_seen_at=moment, last_seen_at=moment,
+        )
+
+    selected = mapping("order", "EXT-1")
+    related = [
+        mapping(kind, f"linked-{kind}", parent="EXT-1")
+        for kind in ("order_item", "shipment", "shipment_item", "aftersale", "aftersale_item")
+    ]
+    untouched = [
+        mapping("order", "EXT-2", code="CRM-OTHER"),
+        mapping("shipment", "other-order", parent="EXT-2"),
+        mapping("shipment", "other-shop", parent="EXT-1", shop="SHOP-B"),
+        mapping("aftersale", "other-system", parent="EXT-1", system="JST"),
+        mapping("customer", "customer", parent="EXT-1", code="测试客户"),
+    ]
+    _add(session, [target, other, Customer(name="测试客户"), selected, *related, *untouched])
+    asyncio.run(session.commit())
+    AuditLog.__table__.create(session.get_bind(), checkfirst=True)
+
+    result = asyncio.run(match_external_mapping(
+        selected.id, MappingMatchRequest(internal_id=target.id),
+        Request({"type": "http", "headers": []}),
+        make_user(7, permissions={"order:manage"}), session,
+    ))["data"]
+
+    assert result["replayed"] == {"checked": 5, "matched": 5, "still_pending": 0}
+    assert all(row.match_status == MATCH_MATCHED and row.internal_id == target.id for row in related)
+    assert all(row.match_status == MATCH_PENDING and row.internal_id is None for row in untouched)
+
+    # 手动匹配单条客户记录仍保存该行，但不会顺带重新匹配订单。
+    customer_mapping = untouched[-1]
+    customer = asyncio.run(session.execute(select(Customer))).scalars().one()
+    result = asyncio.run(col.assign_mapping(session, customer_mapping, internal_id=customer.id, operator_id=7))
+    assert result["replayed"] == {"checked": 0, "matched": 0, "still_pending": 0}
+    assert untouched[0].match_status == MATCH_PENDING
 
 
 def test_record_visibility_follows_the_linked_order_owner():
@@ -631,7 +774,7 @@ def test_aftersale_fact_never_writes_local_payment_and_needs_manual_review():
             [
                 _order_record("EXT-O1", "CRM-O1"),
                 _order_item("EXT-O1", "1", "SKU-A", "10"),
-                _aftersale("AS-1", "EXT-O1", "return"),
+                _aftersale("AS-1", "EXT-O1", "return", amount="25.00", currency="CNY"),
                 _aftersale_item("AS-1", "1", "EXT-O1", "return", "2"),
             ]
         ]
@@ -684,6 +827,24 @@ def test_aftersale_fact_never_writes_local_payment_and_needs_manual_review():
     )
     assert outcome["applied_to_local"] is False
     assert "不会自动改本地回款" in outcome["message"]
+    adjustment = outcome["financial_adjustment"]
+    assert adjustment["adjustment_type"] == "refund"
+    assert adjustment["amount"] == "25.00"
+    assert adjustment["status"] == "pending"
+    assert len(asyncio.run(session.execute(select(FinancialAdjustment))).scalars().all()) == 1
+
+    # 同一差异重复确认只回放原调整，不重复建台账。
+    repeated = asyncio.run(
+        rec.confirm_diff(
+            session,
+            diff,
+            resolution="manual",
+            note="再次核对",
+            operator_id=9,
+        )
+    )
+    assert repeated["financial_adjustment"]["id"] == adjustment["id"]
+    assert len(asyncio.run(session.execute(select(FinancialAdjustment))).scalars().all()) == 1
 
 
 def test_unverified_adapter_never_calls_out_and_records_not_verified(monkeypatch):
@@ -783,3 +944,70 @@ def test_collect_log_is_written_for_success_and_failure():
     assert [row.status for row in logs] == [col.LOG_STATUS_SUCCESS, col.LOG_STATUS_FAILED]
     assert logs[0].response_data["inserted"] == 1
     assert "对方接口 500" in (logs[1].error_message or "")
+
+
+def test_foreign_currency_rejection_survives_page_failure_and_resume():
+    session = _session()
+    foreign = {**_order_record("EXT-USD", "CRM-USD"), "currency": " usd "}
+    adapter = FakeCollectAdapter([
+        [_order_record("EXT-CNY-A", "CRM-A"), foreign],
+        [_order_record("EXT-CNY-B", "CRM-B")],
+    ])
+    adapter.fail_on_cursor = "cursor-2"
+    with pytest.raises(RuntimeError, match="模拟分页中断"):
+        _collect(session, adapter)
+
+    cursor = asyncio.run(session.execute(select(ExternalSyncWatermark))).scalar_one()
+    assert cursor.page_token == "cursor-2" and cursor.records_collected == 1
+    rejection = asyncio.run(session.execute(select(IntegrationLog).where(
+        IntegrationLog.business_type == col.BUSINESS_TYPE_COLLECT_REJECTED
+    ))).scalar_one()
+    assert rejection.response_data["external_id"] == "EXT-USD"
+    assert rejection.response_data["currency"] == "USD"
+    assert "EXT-USD" in rejection.error_message and "非人民币" in rejection.error_message
+    assert "amount" not in rejection.response_data
+    assert asyncio.run(session.execute(select(ExternalObjectMapping.external_id))).scalars().all() == ["EXT-CNY-A"]
+
+    result = _collect(session, adapter)
+    assert result["pages"] == result["inserted"] == 1
+    assert result["cursor"]["page_token"] is None and result["cursor"]["records_collected"] == 2
+    facts = asyncio.run(session.execute(select(ExternalRecord.external_id))).scalars().all()
+    assert set(facts) == {"EXT-CNY-A", "EXT-CNY-B"}
+
+
+def test_foreign_order_is_excluded_from_reconciliation_until_collected_in_cny():
+    session = _session()
+    local = _order("CRM-FX")
+    _add(session, [local])
+    asyncio.run(session.flush())
+    observed = datetime(2026, 9, 25, tzinfo=UTC)
+    _add(session, [ExternalObjectMapping(
+        system_type=ADAPTER_SYSTEM, shop_id="SHOP-A", object_type="order",
+        external_id="EXT-FX", internal_id=local.id, match_status=MATCH_MATCHED,
+        first_seen_at=observed, last_seen_at=observed,
+    )])
+    asyncio.run(session.commit())
+
+    def reconcile():
+        return asyncio.run(rec.run_reconciliation(
+            session, system_type=ADAPTER_SYSTEM, shop_id="SHOP-A",
+            period_start=observed.date().replace(day=1), period_end=observed.date().replace(day=30),
+        ))
+
+    valid = _order_record("EXT-FX", "CRM-FX")
+    result = _collect(session, FakeCollectAdapter([[{**valid, "currency": "USD"}]]), now=observed)
+    assert result["rejected_foreign_currency"] == 1
+    assert "拒收 1 条" in result["message"]
+    counters = reconcile()["counters"]
+    assert counters["orders_excluded_for_currency"] == 1 and counters["missing_external"] == 0
+
+    from datetime import timedelta
+
+    _collect(session, FakeCollectAdapter([[valid]]), now=observed + timedelta(days=1))
+    counters = reconcile()["counters"]
+    assert counters["orders_excluded_for_currency"] == 0 and counters["local_matched"] == 1
+
+    _collect(session, FakeCollectAdapter([[{**valid, "currency": "EUR"}]]), now=observed + timedelta(days=2))
+    counters = reconcile()["counters"]
+    assert counters["orders_excluded_for_currency"] == 1
+    assert counters["missing_external"] == counters["local_matched"] == 0

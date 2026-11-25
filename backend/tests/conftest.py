@@ -67,6 +67,9 @@ class SyncSessionAsAsync:
     def __init__(self, session):
         self._session = session
 
+    def get_bind(self):
+        return self._session.get_bind()
+
     async def execute(self, stmt, *args, **kwargs):
         return self._session.execute(stmt, *args, **kwargs)
 
@@ -88,8 +91,34 @@ class SyncSessionAsAsync:
     async def commit(self):
         self._session.commit()
 
+    async def rollback(self):
+        self._session.rollback()
+
     async def refresh(self, obj):
         self._session.refresh(obj)
+
+    def begin_nested(self):
+        """SAVEPOINT。
+
+        `order/milestones.ensure_initialized` 用它在**并发造行**时兜唯一约束
+        （撞了就回滚到保存点，外层事务不受污染），回款确认链会在同一事务里
+        走到它。真实 `AsyncSession.begin_nested()` 是异步上下文管理器，
+        这里把同步的 `SessionTransaction` 包一层，语义保持一致。
+        """
+        return _SyncCtxAsAsync(self._session.begin_nested())
+
+
+class _SyncCtxAsAsync:
+    """把同步的上下文管理器包成异步的（只给替身用）。"""
+
+    def __init__(self, ctx):
+        self._ctx = ctx
+
+    async def __aenter__(self):
+        return self._ctx.__enter__()
+
+    async def __aexit__(self, *exc):
+        return self._ctx.__exit__(*exc)
 
 
 def make_engine():
@@ -98,11 +127,12 @@ def make_engine():
 
     from app.core.base import Base
     from app.core.idempotency import RequestKey
+    from app.modules.bizdoc.model import BizDoc, BizDocTemplate
     from app.modules.customer.model import Contact, Customer
     from app.modules.lead.model import Lead
     from app.modules.opportunity.model import Opportunity, OpportunityStage
-    from app.modules.order.model import SalesOrder
-    from app.modules.payment.model import PaymentRecord, ReceivablePlan
+    from app.modules.order.model import OrderMilestone, SalesOrder
+    from app.modules.payment.model import PaymentAllocation, PaymentRecord, ReceivablePlan
     from app.modules.pricing.model import ExchangeRate
     from app.modules.quote.model import Quote, QuoteVersion
     from app.modules.user.model import Department, User
@@ -124,17 +154,46 @@ def make_engine():
             Quote,
             QuoteVersion,
             SalesOrder,
+            # issue #11（2026-10-10）：确认收款会同步「付定金/收款」跟单节点
+            # （`milestones.sync_payment_milestones`），它读 `order_milestones`。
+            # 少了这张表，回款路由的用例会炸 "no such table: order_milestones"。
+            OrderMilestone,
             ReceivablePlan,
             PaymentRecord,
+            # 第十批（2026-10-13）：确认回款会写「回款分配」，跟单节点也读它。
+            # 少了这张表，回款/跟单相关用例会炸 "no such table: payment_allocations"。
+            PaymentAllocation,
             ExchangeRate,
             # 通用请求幂等（第七批 7.9 回款登记 / 8.15 各模块重复提交）：
             # 走 router 的用例需要这张表，缺了会直接 "no such table: request_keys"。
             RequestKey,
+            # 通用文件可见性也反查系统归档原件的当前权限/归属。
+            BizDocTemplate,
+            BizDoc,
         )
     ]
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine, tables=tables)
     return engine
+
+
+@pytest.fixture(autouse=True)
+def _disable_self_oa_business_templates(monkeypatch):
+    """本地 `.env` 配了 OA 时，不让打样/询价测试误走自研 OA。
+
+    自研 OA 的合同/打样/询价都有独立模板开关；合同测试自己会打开，
+    这里只清掉打样/询价，保证既有钉钉用例按原路径回归。
+    """
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "oa_sample_template_id", "")
+    monkeypatch.setattr(settings, "oa_inquiry_template_id", "")
+    # 2026-11-21：本地 `.env` 切到同序 8791 后多了模板 code，单测会误走自研 OA；
+    # 三个 code 一并清掉，测试不再依赖本机 OA 配置。
+    monkeypatch.setattr(settings, "oa_sample_template_code", "")
+    monkeypatch.setattr(settings, "oa_inquiry_template_code", "")
+    monkeypatch.setattr(settings, "oa_contract_template_code", "")
+    # 外部单据的 external_ref 前缀也一样取自本机 `.env`；测试不依赖机器配置。
+    monkeypatch.setattr(settings, "oa_external_ref_namespace", "")
 
 
 @pytest.fixture()

@@ -312,6 +312,8 @@ def main():
     new_token = res['data']['access_token']
     check_true('发的是新 token', new_token != admin, 'token 已更换')
     check('新 token 可用', call('GET', '/auth/me', token=new_token)[1].get('code'), 0)
+    # 续期会轮换服务端会话的 jti：旧令牌随即失效，后续请求必须用新令牌。
+    admin = new_token
 
     status, res = call('POST', '/auth/refresh')
     check('无 token 不能续期', res.get('code'), 40101)
@@ -327,20 +329,21 @@ def main():
     sys.path.insert(0, '.')
     from app.core.config import settings as app_settings
 
-    def sid_of(token):
-        """取令牌里的登录会话标识（**只看载荷、不验签**：这里是要读它，不是信它）。"""
+    def payload_of(token):
+        """取令牌载荷（**只看载荷、不验签**：这里是要读它，不是信它）。"""
         part = token.split('.')[1]
         part += '=' * (-len(part) % 4)
-        return json.loads(base64.urlsafe_b64decode(part))['sid']
+        return json.loads(base64.urlsafe_b64decode(part))
 
-    # ⚠️ 第十批 10.12 起，令牌必须挂在一个**服务端仍然有效**的登录会话上
-    # （鉴权与续期都查 `login_sessions` 里那一行）。所以这里"直接构造 JWT"
-    # 必须把**真实会话的 sid** 带上 —— 少一个 sid 会被判成"登录状态无效"，
-    # 那是另一条规则，会把"宽限期内能不能续期"这件事测歪。
-    admin_sid = sid_of(admin)
-    zs_sid = sid_of(zhangsan)
+    # ⚠️ 第十批 10.12 起，令牌必须挂在一个**服务端仍然有效**的登录会话上，
+    # 且 `jti` 要与该会话当前凭据一致（续期会轮换 jti）。所以这里"直接构造 JWT"
+    # 必须把**真实会话的 sid + 当前 jti** 带上。
+    admin_payload = payload_of(admin)
+    zs_payload = payload_of(zhangsan)
+    admin_sid, admin_jti = admin_payload['sid'], admin_payload.get('jti')
+    zs_sid, zs_jti = zs_payload['sid'], zs_payload.get('jti')
 
-    def make_token(user_id, sid, *, expired_minutes_ago=0):
+    def make_token(user_id, sid, jti, *, expired_minutes_ago=0):
         now = int(time.time())
         payload = {
             'sub': str(user_id),
@@ -348,27 +351,34 @@ def main():
             'exp': now - expired_minutes_ago * 60,
             'name': 'test',
             'sid': sid,
+            'jti': jti,
         }
         return pyjwt.encode(payload, app_settings.jwt_secret,
                             algorithm=app_settings.jwt_algorithm)
 
     # 过期 5 分钟，在宽限期内 -> 应该能续
     status, res = call('POST', '/auth/refresh',
-                       token=make_token(admin_id, admin_sid, expired_minutes_ago=5))
+                       token=make_token(admin_id, admin_sid, admin_jti, expired_minutes_ago=5))
     check('过期 5 分钟内可续期', res.get('code'), 0)
+    if res.get('code') == 0:
+        # 续期会轮换 jti：后续必须用新令牌，否则旧令牌已被服务端拒绝。
+        admin = res['data']['access_token']
+        admin_jti = payload_of(admin).get('jti')
 
     # 过期远超宽限期 -> 必须重新登录
     status, res = call('POST', '/auth/refresh',
-                       token=make_token(admin_id, admin_sid, expired_minutes_ago=100000))
+                       token=make_token(admin_id, admin_sid, admin_jti, expired_minutes_ago=100000))
     check('过期太久不能续期', res.get('code'), 40102)
 
     # 停用账号即使 token 有效也不能续
     call('POST', f'/users/{zs_id}/disable', token=admin)
-    status, res = call('POST', '/auth/refresh', token=make_token(zs_id, zs_sid))
+    status, res = call('POST', '/auth/refresh', token=make_token(zs_id, zs_sid, zs_jti))
     check('停用账号不能续期', res.get('code'), 40101)
     call('POST', f'/users/{zs_id}/enable', token=admin)
-    status, res = call('POST', '/auth/refresh', token=make_token(zs_id, zs_sid))
+    status, res = call('POST', '/auth/refresh', token=make_token(zs_id, zs_sid, zs_jti))
     check('重新启用后可续期', res.get('code'), 0)
+    if res.get('code') == 0:
+        zhangsan = res['data']['access_token']
 
     print()
     print('=== 9. 企微 SSO 回调（未配凭据必须明确报错）===')

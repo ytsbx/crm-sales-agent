@@ -265,6 +265,13 @@ async def cleanup() -> None:
             {"t": STARTED_AT},
         )
         await s.execute(text("delete from request_keys where request_key like :p"), {"p": f"{PREFIX}%"})
+        # ⚠️ 跟单里程碑要先删（2026-10-12 第三批审查 P2 之后）：回款确认/应收改动
+        # 现在会**按财务事实同步跟单节点**，于是这些订单也会长出 `order_milestones`
+        # 行，而它是 `sales_orders` 的子表 —— 先删主表会撞外键。
+        await s.execute(
+            text("delete from order_milestones where order_id in "
+                 "(select id from sales_orders where id in (" + orders + "))")
+        )
         await s.execute(text(f"delete from sales_orders where id in ({orders})"))
         await s.execute(text("delete from customers where name like :p"), {"p": f"{PREFIX}%"})
         await s.commit()

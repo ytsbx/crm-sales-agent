@@ -35,7 +35,7 @@ class ApprovalDefinitionCreate(BaseModel):
     code: str = Field(min_length=1, max_length=64)
     name: str = Field(min_length=1, max_length=128)
     business_type: str = Field(min_length=1, max_length=64)
-    status: str = "active"
+    status: str = Field(default="active", max_length=16)
     config_json: dict | None = None
 
 

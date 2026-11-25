@@ -47,7 +47,20 @@ async def main():
         assert skipped['status'] == 'skipped' and skipped['skipped_by']
         req('PATCH', contract, {'actual_date': '2026-10-05'}, 422)
         deposit = base + f"/milestones/{nodes['deposit']['id']}"
-        req('PATCH', deposit, {'actual_date': '2026-10-01'})
+        # ⚠️ 这里从前直接 `PATCH {'actual_date': ...}` 把「付定金」标成已完成 ——
+        # issue #11（2026-10-10）之后，`deposit`/`payment`/`first_shipment` 的实际日
+        # **只能由真实事实派生**（已确认收款 / 已发货批次），人工直填一律 422。
+        # 下一行要验的是"**已实际完成的节点不能标为不适用**"，
+        # 所以这里必须让节点**真的完成**：走一遍真实的收款确认。
+        plan = req('POST', f'/orders/{oid}/receivables',
+                   {'plan_name': '定金', 'amount': 100, 'due_date': '2026-10-20'})['id']
+        pay = req('POST', '/payments',
+                  {'receivable_plan_id': plan, 'received_amount': 100,
+                   'received_date': '2026-10-01'})['id']
+        req('POST', f'/payments/{pay}/confirm', {})
+        nodes = {n['node']: n for n in req('GET', base + '/milestones')}
+        assert nodes['deposit']['actual_date'] == '2026-10-01', nodes['deposit']
+        deposit = base + f"/milestones/{nodes['deposit']['id']}"
         req('PATCH', deposit, {'skipped': True, 'skip_reason': '不要'}, 422)
         sample = base + f"/milestones/{nodes['pre_sample_sent']['id']}"
         req('PATCH', sample, {'planned_date': '2026-10-10'})
@@ -76,7 +89,9 @@ async def main():
             assert skipped_node.overdue_notified_at is None
         analytics = req('GET', '/analytics/delivery')
         assert not any(n['name'] == '签订合同' and n['value'] for n in analytics['overdue_nodes'])
-        req('POST', base + f'/shipments/{batch}/ship', {'actual_ship_date': '2026-10-25'})
+        # 实际发货日必须是**过去或今天**（第三批审查 P2）：原来这里填 2026-10-25，
+        # 是"还没发生"的日期，登记成功还一路推到整单完成。计划日期照旧可以填未来。
+        req('POST', base + f'/shipments/{batch}/ship', {'actual_ship_date': '2026-10-11'})
         ship = req('GET', base + '/shipments')
         assert ship['summary']['remaining'] == 60 and not ship['summary']['all_shipped']
         # 「首批发货」节点由**首个有效实际发货批次**定义（第一批返修 §3.5）：
@@ -86,7 +101,7 @@ async def main():
         first_node = next(
             n for n in req('GET', base + '/milestones') if n['node'] == 'first_shipment'
         )
-        assert first_node['actual_date'] == '2026-10-25', first_node
+        assert first_node['actual_date'] == '2026-10-11', first_node
         config['plan_offsets']['pre_sample_sent'] = 10
         change3 = req('POST', base + '/schedule-changes', config)
         assert next(n['after'] for n in change3['affected']['nodes'] if n['node'] == 'pre_sample_sent') == '2026-10-15'

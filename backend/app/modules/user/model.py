@@ -4,7 +4,7 @@
 本实现把数据范围挂在角色上（self / department / department_and_sub / all）。
 """
 
-from sqlalchemy import BigInteger, ForeignKey, String, Table, Column
+from sqlalchemy import Boolean, false, BigInteger, ForeignKey, String, Table, Column
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base import Base, IdMixin, TimestampMixin
@@ -25,6 +25,11 @@ class Department(Base, IdMixin, TimestampMixin):
     parent_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     name: Mapped[str] = mapped_column(String(128))
     wecom_department_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: 同序/钉钉通讯录的部门编号。按需同步：只有真有 CRM 用户的部门才落库，
+    #: 不导入整套组织树；用来避免同名部门（如两处「财务部」）被并错。
+    dingtalk_department_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
+    #: 同序 OA 自己的部门编号（UUID），与钉钉编号分开存，避免两套编号混用。
+    oa_department_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
     status: Mapped[str] = mapped_column(String(32), default="active")
 
 
@@ -34,12 +39,23 @@ class User(Base, IdMixin, TimestampMixin):
     name: Mapped[str] = mapped_column(String(64))
     username: Mapped[str] = mapped_column(String(64), unique=True)
     password_hash: Mapped[str] = mapped_column(String(255))
+    initial_password_pending: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False)
     mobile: Mapped[str | None] = mapped_column(String(32), nullable=True)
     email: Mapped[str | None] = mapped_column(String(128), nullable=True)
     department_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("departments.id"), nullable=True
     )
     wecom_userid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: 钉钉 userid（企业内部应用的成员编号）。有值 = 这个人可以用钉钉登录。
+    #:
+    #: 为什么与 wecom_userid 并列而不是另建映射表（2026-10-14）：绑定关系
+    #: **只需要「一个人 ↔ 一个编号」**这一件事，没有企微那种"外部联系人待归一"
+    #: 的中间态，所以不必为它开一张表。多余的中间表只会多一处要维护的一致性。
+    #:
+    #: 长度给 128：钉钉 userid 官方口径"最长 64 字符"，但手机号格式的 userid
+    #: 会带上企业后缀，实际见过更长的（与 wecom_users.wecom_userid 取同一长度）。
+    dingtalk_userid: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    oa_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True, unique=True)
     status: Mapped[str] = mapped_column(String(32), default="active")
 
 

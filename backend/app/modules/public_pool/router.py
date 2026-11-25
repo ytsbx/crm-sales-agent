@@ -24,6 +24,7 @@ PRD 把「公海」明确为一项能力：放入公海 / 领取 / 分配 / 自�
 公海路径就成了"本人范围也能改走别人私有客户"的旁路。
 """
 
+from app.modules.customer.levels import level_filter
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -67,7 +68,7 @@ async def list_public_customers(
         like = f"%{keyword.strip()}%"
         stmt = stmt.where(Customer.name.ilike(like) | Customer.short_name.ilike(like))
     if level:
-        stmt = stmt.where(Customer.level == level)
+        stmt = stmt.where(level_filter(Customer.level, level))
     if region:
         stmt = stmt.where(Customer.region == region)
 
@@ -144,14 +145,14 @@ async def assign_public_customer(
     # 公海客户人人可见，**私有客户必须在操作者范围内** ——
     # 此前这里用 get_customer_or_404（只判存在），本人范围的业务员
     # 拿 id 就能把别人名下的私有客户改给自己。
-    customer = await customer_service.get_visible_customer(session, user, customer_id)
+    customer = await customer_service.get_visible_customer(session, user, customer_id, for_update=True)
     if payload.owner_id is None and customer.owner_id is not None:
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
             "该客户已有负责人，请用客户详情里的「放入公海」以留下变更历史",
         )
     before_owner = customer.owner_id
-    await customer_service.transfer_customer(
+    documents = await customer_service.transfer_customer(
         session, user, customer, payload.owner_id, payload.reason or "公海指派"
     )
     await write_audit(
@@ -162,7 +163,15 @@ async def assign_public_customer(
         business_id=customer.id,
         # 审计要能回答"原来归谁、改成了谁、为什么"（返工单 6.1 第 6 条）
         before={"owner_id": before_owner},
-        after={"owner_id": payload.owner_id, "reason": payload.reason},
+        # B13-08：指派审计带单据 ids/数量
+        after={
+            "owner_id": payload.owner_id, "reason": payload.reason,
+            "document_transfer": {
+                "moved": documents.get("moved", {}),
+                "moved_total": documents.get("moved_total", 0),
+                "skipped_total": documents.get("skipped_total", 0),
+            },
+        },
         ip=client_ip(request),
     )
     await session.commit()
@@ -263,7 +272,7 @@ async def assign_public_lead(
 ):
     """把公海线索指派给某人（`owner_id` 为空表示放回线索池）。"""
     # 同上：取数用带数据范围校验的那个，与 `/leads/{id}/assign` 一致
-    lead = await lead_service.get_visible_lead(session, user, lead_id)
+    lead = await lead_service.lock_lead(session, user, lead_id)
     before_owner = lead.owner_id
     await lead_service.assign_lead(
         session,

@@ -1,6 +1,7 @@
 import { Table } from '@douyinfe/semi-ui'
 
 import type { AnalysisEnvelope } from '../api/agent'
+import { formatUnitPrice } from './money'
 
 /**
  * Agent 专用分析接口（03-API §37）结果的统一渲染。
@@ -11,27 +12,61 @@ import type { AnalysisEnvelope } from '../api/agent'
  * 这里按字段形态自动渲染，不逐接口写死——后端加字段不用改这里。
  */
 
-/** 已知字段的中文列名；没映射的键直接用原词。 */
+/**
+ * 后端分析字段的中文名。
+ *
+ * ⚠️ **没映射的键不许把英文原词印给用户**（2026-10-13 修，主人当面指出）：
+ * 回款风险分析的 `summary` 里 `overdue_count / overdue_amount / open_amount /
+ * upcoming_count` 四个键当时没有中文名，于是界面上直接出现
+ * `overdue_count 0`、`open_amount ¥501` 这种"半句英文"——
+ * 主人原话：「ai分析这一块怎么不讲人话呀，不要有英文」。
+ *
+ * 原来的兜底是「没映射的键直接用原词」，等于**新增字段必然漏给用户看**，
+ * 而且不报错、不失败。现在兜底改成可见的「未命名字段」，并且由
+ * `ops/check_agent_analysis_labels.py` 在 CI 里**提前**把它挡住
+ * （那个脚本会枚举后端分析信封里所有会渲染的键，缺一个就红）。
+ *
+ * 加字段时的规矩：后端 `insights.py` 新增一个会渲染的键 → 这里必须同时加中文名，
+ * 否则 CI 会拦下来。
+ */
 const KEY_LABEL: Record<string, string> = {
+  // —— 建议 / 动作类 ——
   action: '建议动作',
   reason: '理由',
   priority: '优先级',
   suggested_channel: '建议方式',
-  sku_code: 'SKU',
+  note: '说明',
+  // —— 商品 / 明细类 ——
+  sku_code: 'SKU 编码',
   sku: 'SKU',
+  sku_id: 'SKU 编号',
+  opportunity_item_id: '需求明细编号',
   name: '名称',
   specification: '规格',
   unit: '单位',
-  moq: 'MOQ',
+  moq: '起订量',
   quantity: '数量',
-  order_times: '成交次数',
+  amount: '金额',
+  // —— 价格 / 利润类 ——
+  standard_price: '标准价',
   last_unit_price: '最近成交价',
   quoted_price: '建议报价',
+  suggested_price: '建议价',
   minimum_price: '最低允许价',
+  protection_price: '公司保护价',
+  target_price: '目标价',
   profit: '利润',
   profit_rate: '利润率',
-  target_price: '目标价',
-  suggested_price: '建议价',
+  order_times: '成交次数',
+  approval_required: '需要审批',
+  // —— 回款风险 summary（主人看到的那四个）——
+  overdue_count: '逾期条数',
+  overdue_amount: '逾期金额',
+  open_amount: '应收期未结金额',
+  received_amount: '实际到账金额',
+  allocated_amount: '已分配金额',
+  unallocated_amount: '已到账待分配金额',
+  upcoming_count: '待到期条数',
 }
 
 /** 优先级等枚举值的中文显示。 */
@@ -57,6 +92,19 @@ const fmtValue = (key: string, value: unknown): string => {
   return String(value)
 }
 
+/**
+ * 键的中文名。没有映射时**不印英文原文**（那正是主人抱怨的形态），
+ * 给一个可见的占位并在控制台喊一声，方便验收时一眼看出漏了哪个键。
+ * 正常路径上 CI 的 `check_agent_analysis_labels.py` 会先把它拦住。
+ */
+const labelOf = (key: string): string => {
+  const mapped = KEY_LABEL[key]
+  if (mapped) return mapped
+  // eslint-disable-next-line no-console
+  console.warn(`[AgentInsight] 字段「${key}」没有中文名，请在 KEY_LABEL 里补上`)
+  return '未命名字段'
+}
+
 /** 把一个字符串键值对象渲染成两列小表（用于 summary 这类汇总块）。 */
 function KeyValueRows({ data }: { data: Record<string, unknown> }) {
   return (
@@ -65,7 +113,7 @@ function KeyValueRows({ data }: { data: Record<string, unknown> }) {
         .filter(([, value]) => typeof value !== 'object')
         .map(([key, value]) => (
           <div key={key} style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span style={{ color: 'var(--crm-text-3)' }}>{KEY_LABEL[key] ?? key}</span>
+            <span style={{ color: 'var(--crm-text-3)' }}>{labelOf(key)}</span>
             <span style={{ fontWeight: 500 }}>{fmtValue(key, value)}</span>
           </div>
         ))}
@@ -92,7 +140,7 @@ function ListBlock({ rows }: { rows: unknown[] }) {
     (key) =>
       key !== '_idx' &&
       records.every((row) => typeof row[key] !== 'object' || row[key] === null) &&
-      key !== 'id',
+      key !== 'id' && key !== 'last_unit_price_min_exact' && key !== 'last_unit_price_max_exact',
   )
   return (
     <Table
@@ -101,10 +149,20 @@ function ListBlock({ rows }: { rows: unknown[] }) {
       dataSource={records}
       rowKey="_idx"
       columns={keys.map((key) => ({
-        title: KEY_LABEL[key] ?? key,
+        title: labelOf(key),
         dataIndex: key,
         align: 'center' as const,
-        render: (value: unknown) => fmtValue(key, value),
+        className: isMoneyKey(key) ? 'cell-money' : undefined,
+        render: (value: unknown, row: Record<string, unknown>) => {
+          const { last_unit_price_min_exact: min, last_unit_price_max_exact: max } = row
+          if (key === 'last_unit_price' && typeof min === 'string' && typeof max === 'string') {
+            const low = formatUnitPrice(min, 'CNY')
+            const high = formatUnitPrice(max, 'CNY')
+            if (low === high) return low
+            return `${low.slice(1).replace(/\.00$/, '')}–${high.slice(1).replace(/\.00$/, '')} 元`
+          }
+          return fmtValue(key, value)
+        },
       }))}
       empty="无"
     />

@@ -1,5 +1,6 @@
 """FastAPI 入口。"""
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -8,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.errors import register_exception_handlers
+from app.core.jsonio import DecimalJSONResponse
 from app.core.response import ok
 from app.modules.approval.router import router as approval_router
 from app.modules.approval.rules_router import router as approval_rules_router
@@ -19,6 +21,7 @@ from app.modules.audit_router import router as audit_router
 from app.modules.bizdoc.router import router as bizdoc_router
 from app.modules.dingtalk.router import router as dingtalk_router
 from app.modules.contract.router import router as contract_router
+from app.modules.contract.support import router as contract_customer_router
 from app.modules.product_insight.router import router as product_insight_router
 from app.modules.customer.router import router as customer_router
 from app.modules.customer.contacts_router import router as contacts_router
@@ -44,6 +47,7 @@ from app.modules.public_pool.router import router as public_pool_router
 from app.modules.quote.router import router as quote_router
 from app.modules.recycle.router import router as recycle_router
 from app.modules.sample.router import router as sample_router
+from app.modules.sample.dingtalk import router as sample_dingtalk_router
 from app.modules.task.router import router as task_router
 from app.modules.timeline.router import router as timeline_router
 from app.modules.user.router import router as user_router
@@ -59,14 +63,28 @@ logging.basicConfig(
 )
 
 
+# HTTP 请求日志可能带钉钉 access_token 查询参数，不记录完整请求 URL。
+logging.getLogger('httpx').setLevel(logging.WARNING)
+logging.getLogger('httpcore').setLevel(logging.WARNING)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     # 调度器要等事件循环就绪（AsyncIOScheduler 挂在应用自己的 loop 上）
     from app.core.scheduler import start_scheduler, stop_scheduler
-
-    start_scheduler()
-    yield
-    stop_scheduler()
+    from app.modules.erp.adapter import reset_adapters
+    from app.modules.wecom.client import reset_client
+    try:
+        start_scheduler()
+        yield
+    finally:
+        try:
+            stop_scheduler()
+        finally:
+            try:
+                await reset_adapters()
+            finally:
+                await reset_client()
 
 
 app = FastAPI(
@@ -75,11 +93,23 @@ app = FastAPI(
     version="1.1.0",
     docs_url="/docs" if settings.debug else None,
     redoc_url=None,
+    # float→Decimal 专项批1：金额按 Decimal 原值渲染精确 JSON 数字，
+    # 不再走默认编码器的 Decimal→float（大额会差一分）。见 core/jsonio。
+    default_response_class=DecimalJSONResponse,
 )
+
+# B24-01：allow_credentials=True 时来源不能用 *（CORS 规范禁止，浏览器也会拒）。
+# 配了 * 属于误配：忽略它并告警，提示配置明确来源，避免"看似放开实则全拒"。
+_cors_origins = settings.cors_origin_list
+if "*" in _cors_origins:
+    logging.getLogger(__name__).warning(
+        "CORS 配置含 * 且启用 allow_credentials，不符合规范；已忽略 *，请配置明确来源"
+    )
+    _cors_origins = [o for o in _cors_origins if o != "*"]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origin_list,
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -123,6 +153,7 @@ app.include_router(quote_router, prefix=settings.api_prefix)
 # 不会和任何 /xxx/{id} 动态路由抢匹配。
 app.include_router(recycle_router, prefix=settings.api_prefix)
 app.include_router(sample_router, prefix=settings.api_prefix)
+app.include_router(sample_dingtalk_router, prefix=settings.api_prefix)
 app.include_router(approval_router, prefix=settings.api_prefix)
 app.include_router(approval_rules_router, prefix=settings.api_prefix)  # 规则接口自带静态/动态顺序，见 rules_router 模块注释
 app.include_router(order_router, prefix=settings.api_prefix)
@@ -137,6 +168,7 @@ app.include_router(search_router, prefix=settings.api_prefix)
 app.include_router(agent_router, prefix=settings.api_prefix)
 app.include_router(wecom_router, prefix=settings.api_prefix)
 app.include_router(erp_router, prefix=settings.api_prefix)
+app.include_router(contract_customer_router, prefix=settings.api_prefix)
 app.include_router(contract_router, prefix=settings.api_prefix)
 app.include_router(bizdoc_router, prefix=settings.api_prefix)
 app.include_router(dingtalk_router, prefix=settings.api_prefix)
@@ -158,9 +190,12 @@ async def health() -> dict:
     db_ok = True
     try:
         async with SessionLocal() as session:
-            await session.execute(text("SELECT 1"))
+            # B24-02：显式超时，慢 DB 不拖住探活
+            await asyncio.wait_for(session.execute(text("SELECT 1")), timeout=5)
     except Exception:
         db_ok = False
+        # B24-02：留日志，运维能看到 DB 故障原因
+        logging.getLogger(__name__).warning("health 数据库检查失败", exc_info=True)
     return ok(
         {
             "status": "up" if db_ok else "degraded",

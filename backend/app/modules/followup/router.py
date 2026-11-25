@@ -1,16 +1,19 @@
 """跟进记录接口（对齐 03-API §24）。"""
 
 
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.audit import write_audit
+from app.core.audit import AuditLog, write_audit
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
 from app.modules.customer import service as customer_service
+from app.modules.customer.model import Customer
 from app.modules.followup.model import FollowUp
 from app.modules.followup.mutations import serialize, notify_manual_followup, create_manual_followup
 from app.modules.notification import service as notification_service
@@ -23,16 +26,25 @@ from app.modules.followup.schema import (
 )
 from app.modules.opportunity.model import Opportunity
 from app.modules.task.model import Task
+from app.modules.task.locking import lock_customers
 from app.modules.user.model import User
 
 router = APIRouter(tags=["FollowUp"])
 
 
 async def _visible_followup(
-    session: AsyncSession, user: CurrentUser, followup_id: int
+    session: AsyncSession, user: CurrentUser, followup_id: int, *, for_update=False
 ) -> FollowUp:
     """取跟进记录并校验与附件共用的数据范围。"""
-    return await get_visible_followup(session, user, followup_id)
+    row = await get_visible_followup(session, user, followup_id)
+    if for_update:
+        parent = row.customer_id
+        await lock_customers(session, [parent])
+        await session.refresh(row, with_for_update=True)
+        if row.customer_id != parent:
+            raise AppError(ErrorCode.VERSION_CONFLICT, "跟进关联客户刚被改变，请刷新后重试", 409)
+        row = await get_visible_followup(session, user, followup_id)
+    return row
 
 
 @router.get("/followups")
@@ -78,7 +90,7 @@ async def create_followup(
 ):
     followup, replayed = await create_manual_followup(session, user, payload, ip=client_ip(request))
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok({"followup": serialize(followup, user.name), "task_id": followup.next_task_id,
                "replayed": replayed}, "跟进已记录")
 
@@ -91,7 +103,7 @@ async def update_followup(
     user: CurrentUser = Depends(require_permission("followup:create")),
     session: AsyncSession = Depends(get_db),
 ):
-    followup = await _visible_followup(session, user, followup_id)
+    followup = await _visible_followup(session, user, followup_id, for_update=True)
     if followup.followup_type == "系统":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "系统过程记录不可编辑，请在原单执行业务操作", 422)
     await session.refresh(followup, with_for_update=True)
@@ -148,7 +160,7 @@ async def update_followup(
     if before != serialize(followup):
         await notify_manual_followup(session, followup, user, action="update")
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(serialize(followup), "已保存")
 
 
@@ -192,9 +204,7 @@ async def create_next_task(
     不用再手填一遍 —— 这也是这个接口存在的意义。
     负责人默认记跟进的本人；显式指定时校验存在且在职。
     """
-    followup = await _visible_followup(session, user, followup_id)
-
-    await session.refresh(followup, with_for_update=True)
+    followup = await _visible_followup(session, user, followup_id, for_update=True)
     if followup.next_task_id:
         task = await session.get(Task, followup.next_task_id)
         if task:
@@ -318,10 +328,35 @@ async def delete_followup(
 ):
     # update 与详情都走 _visible_followup，删除原先却只 session.get——
     # 任何有跟进权限的人拿别人的 id 就能删（"列表看不到的，按 id 也拿不到"是本项目铁律）。
-    followup = await _visible_followup(session, user, followup_id)
+    followup = await _visible_followup(session, user, followup_id, for_update=True)
     if followup.followup_type == "系统":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "系统过程记录不可删除，请在原单执行业务操作", 422)
     await session.delete(followup)
+    if followup.customer_id is not None:
+        await session.flush()
+        customer = await session.get(Customer, followup.customer_id)
+        # 客户已软删时不必再回写"最近跟进时间"：列表和提醒都不再读这条客户。
+        if customer is not None and customer.deleted_at is None:
+            latest = await session.scalar(select(func.max(FollowUp.created_at)).where(
+                FollowUp.customer_id == customer.id, FollowUp.followup_type != "系统",
+            ))
+            after = AuditLog.after_data["last_followup_at"].as_string()
+            baseline = await session.scalar(select(after).where(
+                AuditLog.business_type == "customer",
+                AuditLog.business_id == customer.id,
+                or_(AuditLog.action == "import", and_(
+                    AuditLog.action == "update",
+                    after.is_distinct_from(AuditLog.before_data["last_followup_at"].as_string()),
+                )),
+            ).order_by(AuditLog.id.desc()).limit(1))
+            times = [value for value in (latest, datetime.fromisoformat(baseline) if baseline else None) if value]
+            customer.last_followup_at = max(
+                (value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC) for value in times),
+                default=None,
+            )
+            customer.last_contact_unknown = customer.last_followup_at is None
+            # B19-02：删除跟进后也要刷新下次跟进时间，否则提醒仍指向已删计划
+            await customer_service.refresh_next_followup_at(session, customer.id)
     await write_audit(
         session,
         operator_id=user.id,
@@ -348,8 +383,12 @@ async def list_opportunity_followups(
     await opportunity_service.get_visible_opportunity(session, user, opportunity_id)
     rows = (
         await session.execute(
-            select(FollowUp)
-            .where(FollowUp.opportunity_id == opportunity_id)
+            select(FollowUp).where(
+                FollowUp.opportunity_id == opportunity_id,
+                # 系统记录可能包含报价金额、审批过程等敏感内容；商机可见不等于
+                # 来源报价可见。普通人工跟进仍按商机范围保留协作可见性。
+                await followup_visibility_filter(session, user),
+            )
             .order_by(FollowUp.id.desc())
         )
     ).scalars().all()

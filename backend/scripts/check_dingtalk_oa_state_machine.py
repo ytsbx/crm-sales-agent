@@ -230,7 +230,7 @@ async def main() -> int:
             print('FAILED 迁移前置不满足：先 alembic upgrade head，再跑本脚本')
             return 1
         admin = (await s.execute(select(User).where(User.username == 'admin'))).scalars().one()
-        user = CurrentUser(admin, permissions=set(), roles=[], data_scope='all')
+        user = CurrentUser(admin, permissions={'quote:manage'}, roles=[], data_scope='all')
         customer = Customer(name=f'{PREFIX}客户-{stamp}', level='A', status='active',
                             pool_status='private', owner_id=admin.id)
         s.add(customer)

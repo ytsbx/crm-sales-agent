@@ -44,10 +44,11 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
+from app.modules.product.field_rules import parse_numeric_field
 from app.modules.integration.model import IntegrationDiff
 from app.modules.integration.vocab import (
     ALL_SHOPS,
@@ -95,7 +96,10 @@ MASTER_FIELDS: dict[str, str] = {
     "weight": "单重(kg)",
     "carton_qty": "装箱数",
     "carton_volume": "箱体积(m³)",
-    "moq": "MOQ",
+    #: 用**中文**而不是 `MOQ`（2026-10-10，主人："很多人都不知道啥意思"）。
+    #: 而且项目里本来就有中文说法：价格中心一直叫「起订量」——
+    #: 同一个概念两套名字（价格中心「起订量」/ 产品「MOQ」）本身就该统一。
+    "moq": "起订量",
     "package_type": "包装方式",
     "unit": "单位",
 }
@@ -186,9 +190,14 @@ def _text(value: Any) -> str | None:
 
 
 def _json_value(value: Any) -> Any:
-    """把字段值转成能进 JSON 列、又能与本地值直接比较的形状。"""
+    """把字段值转成能进 JSON 列的形状。
+
+    Q6 决策3（主人拍板）：Decimal 存**原值字符串**（精确留档，历史 float 行不重写）；
+    "变没变"的比较不走这里_raw 形状，统一走 _normalize_for_compare 精确归一；
+    指纹原料在 build_sku_diff_key 里还原老 float 形状，存量差异键零换血。
+    """
     if isinstance(value, Decimal):
-        return float(value)
+        return format(value, 'f')
     return value
 
 
@@ -204,25 +213,28 @@ def normalize_field_value(field: str, value: Any) -> Any:
         # 空串与 None 是同一件事：**增量里的空值**，不能当成"明确要清空"。
         return None
     if field in _TEXT_FIELDS:
-        return str(value).strip() or None
-    if field in _INT_FIELDS:
-        try:
-            return int(Decimal(str(value)))
-        except (InvalidOperation, ValueError, TypeError) as error:
+        text = str(value).strip() or None
+        # B20-06：列宽前置校验（max_length 读 Sku 列宽，与核定_apply 路径同一把尺子），
+        # 超长当场 422，不再到 flush 才 500、差异证据被截断。
+        max_length = Sku.__table__.columns[field].type.length
+        if text is not None and len(text) > max_length:
+            from app.core.patch_schema import FIELD_LABELS
+
+            label = FIELD_LABELS.get(f"SkuUpdate.{field}", FIELD_LABELS.get(field, field))
             raise AppError(
                 ErrorCode.PARAM_ERROR,
-                f"字段 {field}（{MASTER_FIELDS[field]}）需要一个整数，收到 {value!r}",
+                f"来源的{label}最长可保存 {max_length} 个字符，请核对后再核定",
                 422,
-            ) from error
-    if field in _DECIMAL_FIELDS:
-        try:
-            return Decimal(str(value))
-        except (InvalidOperation, ValueError, TypeError) as error:
-            raise AppError(
-                ErrorCode.PARAM_ERROR,
-                f"字段 {field}（{MASTER_FIELDS[field]}）需要一个数字，收到 {value!r}",
-                422,
-            ) from error
+            )
+        return text
+    # 数值字段的约束**与常规 SKU 接口共用一份**（第九批问题 ④）。
+    #
+    # 原来这里只做类型转换：`int(Decimal("1.9"))` 静默截断成 1、`-5` 直接放行、
+    # `1e30` 撞库列范围变 500。而 `SkuCreate/SkuUpdate` 那边**本来就有**
+    # `ge=0` / `max_digits` / `decimal_places` —— 核定这条路绕过了它。
+    # 现在两边都读 `field_rules.NUMERIC_RULES`，不再各写一份。
+    if field in _INT_FIELDS or field in _DECIMAL_FIELDS:
+        return parse_numeric_field(field, value, where="主数据核定")
     raise AppError(
         ErrorCode.PARAM_ERROR,
         f"字段 {field} 不在 SKU 关键字段白名单里（{'、'.join(MASTER_FIELDS)}）："
@@ -233,6 +245,17 @@ def normalize_field_value(field: str, value: Any) -> Any:
 
 def local_value(sku: Sku, field: str) -> Any:
     return _json_value(getattr(sku, field, None))
+
+
+def _ensure_sku_text_fits(field: str, value: Any) -> None:
+    if not isinstance(value, str):
+        return
+    from app.core.patch_schema import FIELD_LABELS
+
+    limit = Sku.__table__.columns[field].type.length
+    if len(value) > limit:
+        label = FIELD_LABELS.get(f"SkuUpdate.{field}", FIELD_LABELS.get(field, field))
+        raise AppError(ErrorCode.PARAM_ERROR, f"来源的{label}最长可保存 {limit} 个字符，请核对后再核定", 422)
 
 
 def _diff_conflict_type(field: str) -> str:
@@ -264,10 +287,44 @@ def build_sku_diff_key(
         "field_name": field_name or "",
     }
     if values is not None:
-        raw = json.dumps(values, ensure_ascii=False, sort_keys=True, default=str)
+        raw = json.dumps(_fingerprint_values(values, field_name),
+                         ensure_ascii=False, sort_keys=True, default=str)
         payload["values"] = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
     text = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return "skudiff-" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:48]
+
+
+def _fingerprint_values(values: Any, field_name: str | None) -> Any:
+    """Q6 决策3：指纹原料保持**老 float/int 形状**，存量差异键零换血。
+
+    快照/留痕已改存精确字符串，但指纹若跟着变形状，存量 pending 差异的
+    diff_key 会一次性失配→重复开单。这里只对**数值字段**把字符串还原成
+    float（整数字段还原 int），与历史 json.dumps 形状逐字一致；
+    16 位边界老 float 本就塌缩，还原后同样塌缩→键仍稳定。
+    文本字段/非数值字符串原样，枚举指纹不受影响。
+    """
+    if not isinstance(values, dict) or field_name is None:
+        return values
+    numeric = field_name in _INT_FIELDS or field_name in _DECIMAL_FIELDS
+    if not numeric:
+        return values
+
+    def legacy_shape(v: Any) -> Any:
+        if isinstance(v, Decimal):
+            return float(v)
+        if isinstance(v, str):
+            try:
+                dec = Decimal(v)
+            except (InvalidOperation, ValueError):
+                return v
+            if not dec.is_finite():
+                return v
+            if field_name in _INT_FIELDS and dec == dec.to_integral_value():
+                return int(dec)
+            return float(dec)
+        return v
+
+    return {key: legacy_shape(v) for key, v in values.items()}
 
 
 async def _upsert_diff(session: AsyncSession, fields: dict[str, Any]) -> tuple[IntegrationDiff, str]:
@@ -323,25 +380,29 @@ def serialize_version(row: SkuMasterVersion) -> dict:
     }
 
 
-async def get_sku_or_404(session: AsyncSession, sku_id: int) -> Sku:
-    sku = await session.get(Sku, sku_id)
+async def get_sku_or_404(session: AsyncSession, sku_id: int, *, for_update: bool = False) -> Sku:
+    if for_update:
+        sku = (await session.execute(select(Sku).where(Sku.id == sku_id)
+               .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
+    else:
+        sku = await session.get(Sku, sku_id)
     if sku is None or sku.deleted_at is not None:
-        raise AppError(ErrorCode.NOT_FOUND, f"SKU #{sku_id} 不存在", 404)
+        raise AppError(ErrorCode.NOT_FOUND, f"SKU 编号 {sku_id} 不存在", 404)
     return sku
 
 
 async def _find_identity(
-    session: AsyncSession, *, system_type: str, shop_id: str, external_code: str
+    session: AsyncSession, *, system_type: str, shop_id: str, external_code: str,
+    for_update: bool = False,
 ) -> SkuIdentitySource | None:
-    return (
-        await session.execute(
-            select(SkuIdentitySource).where(
-                SkuIdentitySource.system_type == system_type,
-                SkuIdentitySource.shop_id == shop_id,
-                SkuIdentitySource.external_code == external_code,
-            )
-        )
-    ).scalars().first()
+    stmt = select(SkuIdentitySource).where(
+        SkuIdentitySource.system_type == system_type,
+        SkuIdentitySource.shop_id == shop_id,
+        SkuIdentitySource.external_code == external_code,
+    )
+    if for_update:
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
+    return (await session.execute(stmt)).scalars().first()
 
 
 async def _match_identity(
@@ -399,9 +460,26 @@ async def _authority_for(
             select(SkuFieldAuthority).where(
                 SkuFieldAuthority.sku_id == sku_id,
                 SkuFieldAuthority.field_name == field_name,
-            )
+            ).execution_options(populate_existing=True)
         )
     ).scalars().first()
+
+
+async def require_local_editable(session: AsyncSession, sku: Sku, values: dict) -> None:
+    fields = {field for field in MASTER_FIELDS.keys() & values.keys()
+              if _normalize_for_compare(local_value(sku, field)) != _normalize_for_compare(values[field])}
+    if not fields:
+        return
+    rows = (await session.execute(select(SkuFieldAuthority).where(
+        SkuFieldAuthority.sku_id == sku.id, SkuFieldAuthority.field_name.in_(fields),
+        SkuFieldAuthority.authority.is_not(None), SkuFieldAuthority.source_verified.is_(True),
+    ))).scalars().all()
+    blocked = [MASTER_FIELDS[row.field_name] for row in rows if row.source_system
+               and row.authority.upper() == row.source_system.upper()
+               and row.authority.upper() not in ("CRM", "MANUAL")]
+    if blocked:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "以下字段由已核实的外部来源维护，请通过差异核定修改："
+                       + "、".join(blocked), 409)
 
 
 async def _raise_field_diffs(
@@ -470,7 +548,7 @@ async def _raise_field_diffs(
         created += 1
         return created, "empty"
 
-    if confirmed_version and confirmed is not None and _json_value(incoming) != confirmed:
+    if confirmed_version and confirmed is not None and _normalize_for_compare(incoming) != _normalize_for_compare(confirmed):
         values = {"confirmed": confirmed, "incoming": _json_value(incoming)}
         await _upsert_diff(
             session,
@@ -507,7 +585,7 @@ async def _raise_field_diffs(
         created += 1
         return created, "differs"
 
-    if _json_value(incoming) == current:
+    if _normalize_for_compare(incoming) == _normalize_for_compare(current):
         return 0, "same"
 
     diff_type = _diff_conflict_type(field)
@@ -559,8 +637,11 @@ async def _materialize_fields(
     fields: dict[str, Any],
     source_verified: bool,
     now: datetime,
+    event_updated_at: datetime | None = None,
 ) -> dict:
     """把来源给的字段落成"来源值 + 差异"，**一个字段都不写回 `skus`**。"""
+    # 同一 SKU 的差异核定也先锁 SKU，再锁差异行。
+    sku = await get_sku_or_404(session, sku.id, for_update=True)
     conflicts = 0
     empties = 0
     same = 0
@@ -577,10 +658,28 @@ async def _materialize_fields(
             authority = SkuFieldAuthority(sku_id=sku.id, field_name=field)
             session.add(authority)
             await session.flush()
+        expected = (authority.authority or ("CRM" if field == "name" else "")).upper()
+        if expected and (expected != source.system_type.upper() or not source_verified):
+            _, verdict = await _raise_field_diffs(
+                session, source=source, sku=sku, field=field, incoming=incoming, now=now
+            )
+            conflicts += int(verdict == "differs")
+            empties += int(verdict == "empty")
+            same += int(verdict == "same")
+            continue
+        recorded_at = authority.source_updated_at
+        if recorded_at is not None and recorded_at.tzinfo is None:
+            recorded_at = recorded_at.replace(tzinfo=UTC)
+        same_origin = authority.source_system == source.system_type and authority.external_identity == source.external_code
+        if same_origin and recorded_at is not None and (
+            event_updated_at is None or event_updated_at < recorded_at
+        ):
+            same += 1
+            continue
         authority.source_system = source.system_type
         authority.source_verified = source_verified
         authority.external_identity = source.external_code
-        authority.source_updated_at = source.source_updated_at
+        authority.source_updated_at = event_updated_at
         authority.source_value = _json_value(incoming)
         await session.flush()
 
@@ -632,6 +731,7 @@ async def ingest_external_sku(
     # 字段名先全部校验一遍：不认识的字段要**在写任何东西之前**报错，
     # 否则会出现"前三个字段落了库、第四个字段报错"的半截状态，
     # 而且身份行已经建出来了，重试还会撞唯一键。
+    fields = dict(fields or {})
     unknown = [field for field in fields if field not in MASTER_FIELDS]
     if unknown:
         raise AppError(
@@ -640,7 +740,6 @@ async def ingest_external_sku(
             422,
         )
     shop = (shop_id or "").strip() or ALL_SHOPS
-    fields = dict(fields or {})
     updated_at = source_updated_at
     if isinstance(updated_at, str):
         try:
@@ -650,8 +749,16 @@ async def ingest_external_sku(
     if isinstance(updated_at, datetime) and updated_at.tzinfo is None:
         updated_at = updated_at.replace(tzinfo=UTC)
 
+    # 身份行可能还不存在，先锁归一后的外部身份，直到本条同步提交。
+    if session.get_bind().dialect.name == "postgresql":
+        identity_key = json.dumps([system_type, shop, code], ensure_ascii=False)
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"crm:sku-identity:{identity_key}"},
+        )
+
     source = await _find_identity(
-        session, system_type=system_type, shop_id=shop, external_code=code
+        session, system_type=system_type, shop_id=shop, external_code=code, for_update=True,
     )
     if source is None:
         source = SkuIdentitySource(
@@ -663,8 +770,14 @@ async def ingest_external_sku(
         )
         session.add(source)
         await session.flush()
-    source.external_name = _text(external_name) or source.external_name
-    source.source_updated_at = updated_at or source.source_updated_at
+    previous_at = source.source_updated_at
+    if previous_at is not None and previous_at.tzinfo is None:
+        previous_at = previous_at.replace(tzinfo=UTC)
+    is_current = previous_at is None or (updated_at is not None and updated_at >= previous_at)
+    if is_current or not source.external_name:
+        source.external_name = _text(external_name) or source.external_name
+    if updated_at is not None and is_current:
+        source.source_updated_at = updated_at
     source.last_seen_at = moment
 
     # 字段名已在开头校验过，这里只做类型归一。
@@ -674,6 +787,14 @@ async def ingest_external_sku(
     }
 
     if source.sku_id is None:
+        # 待匹配时只积累有值的字段。迟到或无时间的数据可以补缺，但不能改掉已有的值。
+        pending = {field: value for field, value in (source.source_payload or {}).items() if value is not None}
+        incoming = {field: value for field, value in normalized.items() if value is not None}
+        merged = {**pending, **incoming} if is_current else {**incoming, **pending}
+        source.source_payload = merged
+        normalized = {**normalized, **merged} if is_current else merged
+        if not is_current:
+            updated_at = previous_at
         sku_id, basis, status = await _match_identity(session, source)
         source.match_status = status
         source.match_basis = basis
@@ -684,15 +805,13 @@ async def ingest_external_sku(
 
     verified = await _source_verified(session, system_type=system_type, shop_id=shop)
     result: dict[str, Any] = {
-        "identity": serialize_identity(source),
         "source_verified": verified,
         "matched_sku_id": source.sku_id,
         "applied_to_local": False,
     }
 
     if source.sku_id is None:
-        # 还没匹配上：原始字段值存在身份行里，等本地补建 SKU 后重放（replay）。
-        source.source_payload = normalized
+        result["identity"] = serialize_identity(source)
         if source.match_status != IDENTITY_CONFLICT:
             # 同名不同码已经有一条更具体的差异了，不再叠加一条泛化的"待匹配"——
             # 同一个问题在队列里出两条，人就会开始忽略这个队列。
@@ -710,7 +829,7 @@ async def ingest_external_sku(
     else:
         counts = await _materialize_fields(
             session, source=source, sku=sku, fields=normalized,
-            source_verified=verified, now=moment,
+            source_verified=verified, now=moment, event_updated_at=updated_at,
         )
         source.source_payload = None
         result.update(counts)
@@ -720,6 +839,7 @@ async def ingest_external_sku(
             "本地 SKU 没有被自动改写，差异请在队列里核定"
         )
     # 提交：见 docstring —— 集成入口的"收到即落地"。
+    result["identity"] = serialize_identity(source)
     await session.commit()
     return result
 
@@ -815,6 +935,14 @@ async def replay_identity_source(
 ) -> dict:
     """待匹配的外部身份重放一次：本地补建 SKU 之后把留存的来源值落成字段权威。"""
     moment = now or _now()
+    source = (
+        await session.execute(
+            select(SkuIdentitySource)
+            .where(SkuIdentitySource.id == source.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
     if source.sku_id is not None:
         return {
             "identity": serialize_identity(source),
@@ -849,6 +977,9 @@ async def replay_identity_source(
         fields=dict(source.source_payload or {}),
         source_verified=verified,
         now=moment,
+        event_updated_at=source.source_updated_at.replace(tzinfo=UTC)
+        if source.source_updated_at is not None and source.source_updated_at.tzinfo is None
+        else source.source_updated_at,
     )
     source.source_payload = None
     await session.flush()
@@ -1022,7 +1153,7 @@ async def set_field_authority(
             f"字段 {field_name} 不是 SKU 关键字段（{'、'.join(MASTER_FIELDS)}）",
             422,
         )
-    sku = await get_sku_or_404(session, sku_id)
+    sku = await get_sku_or_404(session, sku_id, for_update=True)
     moment = now or _now()
     row = await _authority_for(session, sku_id=sku.id, field_name=field_name)
     if row is None:
@@ -1150,19 +1281,60 @@ async def _confirm_field(
     value: Any,
     operator_id: int | None,
     now: datetime,
-) -> SkuFieldAuthority:
+    dedupe: bool = False,
+) -> tuple[SkuFieldAuthority, bool]:
+    """确认一个字段的值为**当前本地值**。返回 `(行, 这次是否真的变了)`。
+
+    `dedupe=True` 时，值没变就**不递增 `confirmed_version`、不改 `confirmed_at`、
+    不改 `confirmed_by`** —— "确认次数"与"确认时间"表达的是**确认值发生过变化**，
+    反复点同一件事不该把它们推着走（issue 建议第 3 条）。
+    逐字段独立确认也靠它：只把这次真的改了的字段算一次确认。
+
+    调用方（`confirm_sku_diff`）不传 `dedupe`，保持原行为：差异核定本身是
+    一次有依据的人工裁定，即使值恰好相同也是一次确认动作。
+    """
     row = await _authority_for(session, sku_id=sku.id, field_name=field_name)
     if row is None:
         row = SkuFieldAuthority(sku_id=sku.id, field_name=field_name)
         session.add(row)
         await session.flush()
-    row.confirmed_value = _json_value(value)
+    incoming = _json_value(value)
+    unchanged = (
+        dedupe
+        and (row.confirmed_version or 0) > 0
+        and _normalize_for_compare(row.confirmed_value) == _normalize_for_compare(incoming)
+    )
+    if unchanged:
+        return row, False
+    row.confirmed_value = incoming
     row.confirmed_version = (row.confirmed_version or 0) + 1
     row.confirmed_by = operator_id
     row.confirmed_at = now
     row.status = AUTH_CONFIRMED
     await session.flush()
-    return row
+    return row, True
+
+
+def _normalize_for_compare(value: Any) -> str:
+    """把值归一成可比较的**精确十进制文本键**。
+
+    为什么不能直接比：`confirmed_value` 是 JSONB，`None` 与 `""` 都要能与
+    本地值如实对照；数字 `30` 与 `"30"` 在不同来源下含义相同，不该因为类型
+    差异被当成"变了"而多记一次确认。
+    Q6 决策3：数值再统一去掉尾零/科学计数（'1.90'、1.9、Decimal('1.900')
+    归一成同一个键），历史 float 行与新字符串行混比不刷伪差异；
+    16 位边界上老 float 糊掉的值与新精确值**判为不同**（修掉漏同步）。
+    非数字文本原样 str，None→"" 语义保持。
+    """
+    if value is None:
+        return ""
+    try:
+        dec = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return str(value)
+    if not dec.is_finite():
+        return str(value)
+    return format(dec.normalize(), 'f')
 
 
 def _validate_resolution(diff: IntegrationDiff, resolution: str, note: str | None) -> None:
@@ -1187,6 +1359,156 @@ def _validate_resolution(diff: IntegrationDiff, resolution: str, note: str | Non
         )
 
 
+async def confirm_local_master(
+    session: AsyncSession,
+    *,
+    sku_id: int,
+    fields: tuple[str, ...] = QUOTE_DISPLAY_FIELDS,
+    note: str | None = None,
+    operator_id: int | None = None,
+    now: datetime | None = None,
+) -> dict:
+    """**本地直接确认**：有权限的人核对本地值后，一次确认这些字段并冻结一版快照。
+
+    为什么必须有这个入口（审查 2026-10-10 实测的 P1 流程阻断）：
+
+        - 本地新建 SKU **不会**产生确认记录、也不产生快照（实测 `SkuFieldAuthority`
+          0 条、`sku_master_versions` 0 版）；
+        - 唯一的确认动作挂在**差异记录**上（`confirm_sku_diff`），
+          而"登记权威归属"（`set_field_authority`）只写 `authority`、
+          **不碰 `confirmed_version`**；
+        - 于是本地自建的 SKU 没有可引用的已确认版本 →
+          正式发送时 `quoted_snapshot_problems` 返回
+          「（没有可引用的已确认主数据版本）」→ **正式报价被硬拦，且无路可走**。
+
+    ⚠️ "从外部导入一次"**不是**可靠出口：来源值与本地完全一致时不产生差异，
+    也就仍然没有可点的核定入口（实测 zero-diff）。
+
+    与 `confirm_sku_diff` 的 `RESOLUTION_KEEP_LOCAL` **同源同口径**：
+    确认的都是**当前本地值**（`local_value`），都锁 SKU 行、都冻结一版快照。
+
+    三个字段**一起确认**（主人 2026-10-10 拍板）：不允许出现"确认了名称、
+    规格还没确认"的半截状态 —— 那正是正式发送被拦时最难解释的情况。
+    但**值允许为空**：`""` 是合法的已确认值（例如没有规格的产品），
+    判据是"这个 key 有没有进快照"，不是"值非不非空" —— 与
+    `quoted_snapshot_problems` 的判据保持一致。
+    """
+    wanted = list(fields)
+    unknown = [f for f in wanted if f not in MASTER_FIELDS]
+    if unknown:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "不是 SKU 关键字段：" + "、".join(unknown),
+            422,
+        )
+    moment = now or _now()
+    # 锁 SKU 行：两个并发确认会同时算 version_no，靠行锁 + 唯一约束才能只出一版
+    #（与 `confirm_sku_diff` 同一手法）
+    sku = (
+        await session.execute(select(Sku).where(Sku.id == sku_id).with_for_update())
+    ).scalars().first()
+    if sku is None or sku.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, f"SKU 编号 {sku_id} 不存在", 404)
+
+    # 逐个确认**当前本地值**（与 RESOLUTION_KEEP_LOCAL 同一件事）。
+    # `dedupe=True`：值没变的字段不算一次新确认（逐字段独立确认，第 2/3 条）。
+    changed: list[str] = []
+    for field in wanted:
+        _row, did_change = await _confirm_field(
+            session,
+            sku=sku,
+            field_name=field,
+            value=local_value(sku, field),
+            operator_id=operator_id,
+            now=moment,
+            dedupe=True,
+        )
+        if did_change:
+            changed.append(field)
+    after = await _confirmed_values(session, sku_id=sku.id, fields=wanted)
+    # ⚠️ **值没变就不再冻结一版**：重复点"确认"会一路垒出 V2/V3/V4 而内容完全一样，
+    # 版本列表越来越难看懂，而"正式报价用的哪一版"正是靠这个列表回答的。
+    # 与 `_maybe_snapshot` 不为空差异造版本的道理相同。
+    #
+    # 但"有人又核对过一次"这件事**要留痕**（主人 2026-10-10 拍板）：
+    # 不改 `confirmed_at`/`confirmed_version`（那是"确认值变过"的记录），
+    # 而是在审计里写一条 `sku_master_recheck` —— 与 `sku_master_confirm_local`
+    # 分开，这样"确认过几次"与"核对过几次"两个问题都答得出来。
+    if not changed:
+        existing = await confirmed_master_version(session, sku.id)
+        return {
+            "sku_id": sku.id,
+            "sku_code": sku.sku_code,
+            "confirmed_fields": wanted,
+            "confirmed_labels": [MASTER_FIELDS[f] for f in wanted],
+            "values": after,
+            "changed_fields": [],
+            "changed_labels": [],
+            "version_no": (existing or {}).get("version_no"),
+            "version_id": (existing or {}).get("id"),
+            "confirmed_by": operator_id,
+            "confirmed_at": moment,
+            "note": note,
+            "snapshot_created": False,
+            #: True = 这次只是"又核对了一遍"，没有改变任何确认值。
+            #: 调用方据此写 `sku_master_recheck` 审计（而不是 confirm 审计）。
+            "recheck": True,
+            "message": (
+                "主数据与已确认版本一致，无需重新确认"
+                + (
+                    f"（当前已确认版本：第 {(existing or {}).get('version_no')} 版）"
+                    if existing
+                    else ""
+                )
+            ),
+        }
+    version = await _snapshot_version(
+        session,
+        sku=sku,
+        operator_id=operator_id,
+        note=note or "本地直接确认",
+        diff_key=None,
+        now=moment,
+    )
+    return {
+        "sku_id": sku.id,
+        "sku_code": sku.sku_code,
+        "confirmed_fields": wanted,
+        "confirmed_labels": [MASTER_FIELDS[f] for f in wanted],
+        "values": after,
+        "changed_fields": changed,
+        "changed_labels": [MASTER_FIELDS[f] for f in changed],
+        "version_no": version.version_no,
+        "version_id": version.id,
+        "confirmed_by": operator_id,
+        "confirmed_at": moment,
+        "note": version.note,
+        "snapshot_created": True,
+        "recheck": False,
+        "message": (
+            "已确认主数据（"
+            + "、".join(MASTER_FIELDS[f] for f in wanted)
+            + f"）并冻结为第 {version.version_no} 版快照"
+        ),
+    }
+
+
+async def _confirmed_values(
+    session: AsyncSession, *, sku_id: int, fields: list[str]
+) -> dict[str, Any]:
+    """取这些字段**当前已确认**的值（只为对比"这次确认改了什么"）。"""
+    rows = (
+        await session.execute(
+            select(SkuFieldAuthority).where(
+                SkuFieldAuthority.sku_id == sku_id,
+                SkuFieldAuthority.field_name.in_(fields),
+                SkuFieldAuthority.confirmed_version > 0,
+            )
+        )
+    ).scalars().all()
+    return {row.field_name: row.confirmed_value for row in rows}
+
+
 async def confirm_sku_diff(
     session: AsyncSession,
     diff: IntegrationDiff,
@@ -1201,8 +1523,50 @@ async def confirm_sku_diff(
     写回的范围严格受 `MASTER_FIELDS` 白名单约束；每次写入都会生成一版
     `sku_master_versions` 快照，所以"正式报价用过的口径"事后可回溯。
     """
+    from app.modules.product.service import lock_sku_with_product
+
+    sku_id = diff.internal_id
+    locked = await lock_sku_with_product(session, sku_id) if sku_id is not None else None
+    diff = (await session.execute(select(IntegrationDiff).where(IntegrationDiff.id == diff.id)
+            .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
+    if diff is None:
+        raise AppError(ErrorCode.NOT_FOUND, "SKU 差异不存在", 404)
+    if diff.internal_id != sku_id:
+        raise AppError(ErrorCode.VERSION_CONFLICT, "差异关联已变化，请刷新后核定", 409)
     resolution = (resolution or "").strip()
     _validate_resolution(diff, resolution, note)
+
+    # ⚠️ **已核定的差异不许改判、也不许重复落库**（第九批问题 ③）。
+    #
+    # 原来这里没有任何"已经核定过"的判据，于是同一差异能被反复核定：
+    # 实测 keep_local → take_external → take_external 三次都成功，
+    # 主数据版本一路长到 v4，而"核定"在业务上是一次性结论。
+    #
+    # 口径（两种请求分开对待，与主人"弱网重试不能变成重复动作"的一贯要求一致）：
+    #   · **同一个结论**再来 → 幂等回放（不报错、不改库、不再生成版本）。
+    #     弱网下客户端重试很常见，不该因此报错。
+    #   · **不同结论**再来 → 拒绝，并说清原来的结论是什么。
+    if diff.resolved_at is not None:
+        if (diff.resolution or "") == resolution:
+            # 返回体**照成功分支的形状**给（diff / resolution_label /
+            # applied_to_local / detail / version / message）—— 我第一版自己编了几个
+            # 字段名（`resolution_note` 之类），模型上并没有这些列。
+            return {
+                "diff": serialize_sku_diff(diff),
+                "resolution_label": RESOLUTION_LABELS.get(diff.resolution, diff.resolution),
+                "applied_to_local": False,
+                "detail": {},
+                "version": None,
+                "replayed": True,
+                "message": "这条差异此前已用同一结论核定过，本次为重复提交（未再次改动主数据）",
+            }
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"这条差异已经核定过了（结论："
+            f"{RESOLUTION_LABELS.get(diff.resolution or '', diff.resolution or '')}），"
+            "不能改判：核定是一次性结论，要改请让外部来源重新报值生成新差异",
+            422,
+        )
     moment = now or _now()
     applied = False
     version: SkuMasterVersion | None = None
@@ -1217,17 +1581,35 @@ async def confirm_sku_diff(
         )
 
     if diff.internal_id is not None:
-        # 锁住 SKU 行：两个并发确认会同时算 version_no，靠行锁 + 唯一约束才能只出一版。
-        sku = (
-            await session.execute(
-                select(Sku).where(Sku.id == diff.internal_id).with_for_update()
-            )
-        ).scalars().first()
-        if sku is None:
-            raise AppError(ErrorCode.NOT_FOUND, f"SKU #{diff.internal_id} 不存在", 404)
+        if locked is None:
+            raise AppError(ErrorCode.NOT_FOUND, f"SKU 编号 {diff.internal_id} 不存在", 404)
+        sku, product = locked
+        if sku.deleted_at is not None or product.deleted_at is not None:
+            raise AppError(ErrorCode.NOT_FOUND, f"SKU 编号 {diff.internal_id} 已删除", 404)
+        if diff.field_name and resolution in (RESOLUTION_TAKE_EXTERNAL, RESOLUTION_KEEP_LOCAL):
+            authority = await _authority_for(session, sku_id=sku.id, field_name=diff.field_name)
+            expected = ((authority.authority if authority is not None else None)
+                        or ("CRM" if diff.field_name == "name" else "")).upper()
+            if resolution == RESOLUTION_TAKE_EXTERNAL and expected and (
+                expected != diff.system_type.upper() or not await _source_verified(
+                    session, system_type=diff.system_type, shop_id=diff.shop_id
+                )
+            ):
+                raise AppError(ErrorCode.STATUS_NOT_ALLOWED, f"该字段由 {expected} 维护，不能采用这条外部来源", 409)
+            same_origin = authority is not None and (
+                authority.source_system, authority.external_identity
+            ) == (diff.system_type, diff.external_id)
+            if (resolution == RESOLUTION_TAKE_EXTERNAL or same_origin) and (
+                not same_origin
+                or _normalize_for_compare(authority.source_value) != _normalize_for_compare(diff.incoming_value)
+                or _normalize_for_compare(diff.current_value) != _normalize_for_compare(local_value(sku, diff.field_name))
+            ):
+                raise AppError(ErrorCode.VERSION_CONFLICT, "差异所用数据已变化，请刷新后核定最新差异", 409)
 
         if resolution == RESOLUTION_KEEP_LOCAL:
             if diff.field_name:
+                # 差异核定不传 `dedupe`：它本身是一次有依据的人工裁定，
+                # 即使值恰好与上一次相同，也算一次确认动作。
                 await _confirm_field(
                     session,
                     sku=sku,
@@ -1250,7 +1632,8 @@ async def confirm_sku_diff(
                     422,
                 )
             incoming = normalize_field_value(diff.field_name, diff.incoming_value)
-            row = await _confirm_field(
+            _ensure_sku_text_fits(diff.field_name, incoming)
+            row, _changed = await _confirm_field(
                 session,
                 sku=sku,
                 field_name=diff.field_name,
@@ -1271,6 +1654,7 @@ async def confirm_sku_diff(
             new_code = _text(diff.incoming_value)
             if not new_code:
                 raise AppError(ErrorCode.PARAM_ERROR, "差异里没有新编码，无法改码", 422)
+            _ensure_sku_text_fits("sku_code", new_code)
             clash = (
                 await session.execute(
                     select(Sku).where(Sku.sku_code == new_code, Sku.id != sku.id)
@@ -1279,7 +1663,7 @@ async def confirm_sku_diff(
             if clash is not None:
                 raise AppError(
                     ErrorCode.DUPLICATE,
-                    f"编码 {new_code} 已被 SKU #{clash.id} 占用：先合并/改名，不要覆盖",
+                    f"编码 {new_code} 已被 SKU 编号 {clash.id} 占用：先合并/改名，不要覆盖",
                     409,
                 )
             old_code = sku.sku_code
@@ -1411,7 +1795,7 @@ async def list_identity_sources(
 async def get_identity_source(session: AsyncSession, source_id: int) -> SkuIdentitySource:
     row = await session.get(SkuIdentitySource, source_id)
     if row is None:
-        raise AppError(ErrorCode.NOT_FOUND, f"SKU 外部身份 #{source_id} 不存在", 404)
+        raise AppError(ErrorCode.NOT_FOUND, f"SKU 外部身份编号 {source_id} 不存在", 404)
     return row
 
 
@@ -1432,21 +1816,40 @@ async def sku_master_overview(session: AsyncSession, sku_id: int) -> dict:
     fields = []
     for field, label in MASTER_FIELDS.items():
         row = by_field.get(field)
+        local = local_value(sku, field)
+        confirmed = row.confirmed_value if row else None
+        has_confirmed = bool(row and (row.confirmed_version or 0) > 0)
+        # 「本地值已修改、尚未重新确认」：本地值与已确认值不一致（issue 建议第 4 条）。
+        # Q6 决策3：数值走精确归一比较（'1.90' 与 1.9 算同值，不刷"已修改"）；
+        # 文本保持原 str 语义并显式区分 None 与 ""（归一函数 None→"" 与原口径一致）。
+        differs = has_confirmed and (
+            _normalize_for_compare(local) != _normalize_for_compare(confirmed)
+        )
         fields.append(
             {
                 "field_name": field,
                 "field_label": label,
-                "local_value": local_value(sku, field),
+                "local_value": local,
                 "source_system": row.source_system if row else None,
                 "source_verified": bool(row.source_verified) if row else False,
-                "source_status": ("已核实" if row and row.source_verified else "待核实"),
+                # 「本地字段已确认」与「外部来源已核实」是**两件事**（第 6 条）。
+                # 没有外部来源时显示「无外部来源」，不挂一个长期误导的「待核实」——
+                # 本地自建的 SKU 本来就没有外部来源，写「待核实」会让人以为
+                # "还差一步外部核对"，而它永远等不到。
+                "source_status": (
+                    "已核实"
+                    if (row and row.source_verified)
+                    else ("待核实" if (row and row.source_system) else "无外部来源")
+                ),
                 "external_identity": row.external_identity if row else None,
                 "source_updated_at": row.source_updated_at if row else None,
                 "source_value": row.source_value if row else None,
                 "authority": row.authority if row else None,
                 "authority_label": (row.authority if row and row.authority else "未拍板"),
                 "confirmed_version": row.confirmed_version if row else 0,
-                "confirmed_value": row.confirmed_value if row else None,
+                "confirmed_value": confirmed,
+                #: 本地值是否与已确认值不同 —— 前端据此提示「本地值已修改，尚未重新确认」
+                "local_differs_from_confirmed": differs,
                 "confirmed_at": row.confirmed_at if row else None,
                 "status": row.status if row else AUTH_UNVERIFIED,
             }
@@ -1713,6 +2116,8 @@ __all__ = [
     "UNIT_FIELDS",
     "WRITING_RESOLUTIONS",
     "build_sku_diff_key",
+    "confirm_local_master",
+    "quote_master_refresh_preview",
     "confirm_sku_diff",
     "confirmed_master_version",
     # §8.14 复审补的：整版快照号 + "那一版够不够印给客户"的判据
@@ -1737,3 +2142,111 @@ __all__ = [
     "set_field_authority",
     "sku_master_overview",
 ]
+
+
+# ---------------------------------------------------------------- 报价刷新预览
+
+
+def _norm_text(value: Any) -> str:
+    return "" if value is None else str(value)
+
+
+async def quote_master_refresh_preview(
+    session: AsyncSession,
+    *,
+    version,  # QuoteVersion（不 import 以免循环依赖）
+    items: list,  # list[QuoteItem]
+) -> dict:
+    """报价草稿刷新主数据前**先给人看会变什么**（issue 建议第 5 条）。
+
+    为什么要有预览：刷新会把明细上的名称/规格/单位换成最新已确认快照，
+    而这三个字段是**印给客户**的。让人先看清"从什么变成什么"再确认，
+    比刷完再发现印错了便宜得多。
+
+    返回每条明细的逐字段变化 + 一个总的 `changed_count`。
+    只做读，不写任何东西 —— 真正的刷新走既有的 `/quote-versions/{id}/price-refresh`
+    （它已经在同一个事务里按已确认主数据重建快照）。
+
+    已发送的版本不给刷：报价发出去之后内容就是**对客承诺**，
+    改它等于改承诺。这条路只能新建版本（由调用方判断并提示）。
+    """
+    rows: list[dict] = []
+    changed_total = 0
+    never_referenced = 0
+    for item in items:
+        code = item.sku_code_snapshot or f"SKU编号 {item.sku_id}"
+        if item.sku_id is None:
+            # 定制项没有 SKU 主数据，跳过（它的名称是人工填的，不属于主数据口径）
+            continue
+        # 与 `link_master_only` 同一份口径：报价只关心**对客三字段**，
+        # 不传会让"颜色/长宽高"这些无关字段也算成缺确认。
+        master = await resolve_confirmed_master(
+            session, item.sku_id, list(QUOTE_DISPLAY_FIELDS)
+        )
+        confirmed = master.get("values") or {}
+        # ⚠️ **从未引用过任何已确认版本**的明细（`master_version_no` 为空）必须说清楚。
+        # 它生成时还没有可引用的快照，所以"明细当前值"未必等于任何已确认值 ——
+        # 只按"明细值 vs 最新已确认值"比，会在两者恰好相同时报"无需刷新"，
+        # 而那正是最需要刷新的一条（刷新才会把版本号钉上去）。
+        # 实测踩到：明细的 name/spec/unit 快照全为空、master_version_no 为空，
+        # 预览却说"都引用最新、刷新不会改变内容" —— 误导。
+        if item.master_version_no is None:
+            never_referenced += 1
+        fields: list[dict] = []
+        for field in QUOTE_DISPLAY_FIELDS:
+            current = _norm_text(
+                {
+                    "name": item.sku_name_snapshot,
+                    "specification": item.spec_snapshot,
+                    "unit": getattr(item, "unit_snapshot", None),
+                }.get(field)
+            )
+            incoming = _norm_text(confirmed.get(field))
+            if current != incoming:
+                fields.append(
+                    {
+                        "field": field,
+                        "label": MASTER_FIELDS[field],
+                        "before": current or None,
+                        "after": incoming or None,
+                    }
+                )
+        if fields or item.master_version_no is None:
+            changed_total += 1
+        rows.append(
+            {
+                "item_id": item.id,
+                "sku_id": item.sku_id,
+                "sku_code": code,
+                # 明细当前引用的主数据版本（空 = 生成时还没有可引用的已确认版本）
+                "master_version_no": item.master_version_no,
+                "never_referenced": item.master_version_no is None,
+                "confirmed_version_no": master.get("version_no"),
+                "unconfirmed": master.get("unconfirmed") or [],
+                "unconfirmed_labels": master.get("unconfirmed_labels") or [],
+                "changes": fields,
+            }
+        )
+    if not rows:
+        # 空版本（一条明细都没有）：不能让文案说"都已引用最新" ——
+        # 那听起来像"检查过了、没问题"，实际是"没什么可检查的"。
+        _msg = (
+            "这一版没有明细（没有 SKU 行），刷新不会改变任何内容"
+            if not items
+            else "这一版只有定制项，没有引用 SKU 主数据的明细"
+        )
+    elif changed_total:
+        _msg = f"{changed_total} 条明细会因刷新而改变"
+        if never_referenced:
+            _msg += f"（其中 {never_referenced} 条还没有引用过任何已确认版本）"
+    else:
+        _msg = "所有明细都已引用最新的已确认主数据，刷新不会改变内容"
+    return {
+        "items": rows,
+        "changed_count": changed_total,
+        "never_referenced_count": never_referenced,
+        "item_count": len(rows),
+        "display_fields": list(QUOTE_DISPLAY_FIELDS),
+        "display_field_labels": [MASTER_FIELDS[f] for f in QUOTE_DISPLAY_FIELDS],
+        "message": _msg,
+    }

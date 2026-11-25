@@ -37,7 +37,7 @@ class ProductRecommendationIn(BaseModel):
 
 class PricingAnalysisIn(BaseModel):
     sku_id: int
-    quantity: Decimal = Field(default=Decimal(1), gt=0)
+    quantity: Decimal = Field(default=Decimal(1), gt=0, max_digits=16, decimal_places=3)
     customer_id: int | None = None
 
 

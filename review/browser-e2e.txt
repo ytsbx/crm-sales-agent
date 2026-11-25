@@ -1,0 +1,81 @@
+✓ 接口登录成功：系统管理员（admin）
+✓ 主数据确认：库 crm_review_smoke_20261123：已补 78 条字段确认（13 个字段 × 未删除的 SKU，已有的不动），并落整版快照 6 版
+✓ 订单中心为空，已在测试库造出订单 #1
+✓ 用例数据：客户 #3 商机 #1 产品 #3 报价 #1 订单 #1
+✓ 前端已就绪（依赖预构建完成）
+—— 预热：无断言过一遍全部页面（触发懒编译/依赖再优化）——
+✓ 预热完成
+✗ /workbench → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/01-workbench.png
+  页面主内容：
+✗ /analytics → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/02-analytics.png
+  页面主内容：
+✗ /leads → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/03-leads.png
+  页面主内容：
+✗ /customers → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/04-customers.png
+  页面主内容：
+✗ /duplicate-cases → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/04b-duplicate-cases.png
+  页面主内容：
+✗ /customers/3 → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/05-customer-detail.png
+  页面主内容：
+✗ /customers/3?tab=files → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/05b-customer-files.png
+  页面主内容：
+✗ /opportunities → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/06-opportunities.png
+  页面主内容：
+✗ /opportunities/1 → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/07-opportunity-detail.png
+  页面主内容：
+✗ /products → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/08-products.png
+  页面主内容：
+✗ /products/3 → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/09-product-detail.png
+  页面主内容：
+✗ /prices → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/10-price-center.png
+  页面主内容：
+✗ /pricing?sku_id=1&customer_id=3&quantity=3000&quoted_price=25 → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/11-pricing.png
+  页面主内容：
+✗ /quotes → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/12-quotes.png
+  页面主内容：
+✗ /quotes/1 → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/13-quote-detail.png
+  页面主内容：
+✗ /approvals → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/14-approvals.png
+  页面主内容：
+✗ /orders → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/15-orders.png
+  页面主内容：
+✗ /orders/1 → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/16-order-detail.png
+  页面主内容：
+✗ /order-drafts → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/16b-order-drafts.png
+  页面主内容：
+✗ /receivables → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/16c-receivables.png
+  页面主内容：
+✗ /documents → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/16d-documents.png
+  页面主内容：
+✗ /tasks → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/17-tasks.png
+  页面主内容：
+✗ /settings → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/18-settings.png
+  页面主内容：
+✗ /settings?tab=rules → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/19-settings-rules.png
+  页面主内容：
+✗ /settings?tab=tags → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/23-settings-tags.png
+  页面主内容：
+✗ /settings?tab=notifications → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/31-settings-notifications.png
+  页面主内容：
+✗ /settings?tab=roles → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/24-settings-roles.png
+  页面主内容：
+✗ /settings?tab=departments → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/25-settings-departments.png
+  页面主内容：
+✗ /agent → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/20-agent.png
+  页面主内容：
+✗ /inquiries → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/32-inquiries.png
+  页面主内容：
+✗ /cases → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/32b-cases.png
+  页面主内容：
+✗ /insights → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/32c-insights.png
+  页面主内容：
+✗ /recycle-bin → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/32d-recycle-bin.png
+  页面主内容：
+✗ /samples → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/22-samples.png
+  页面主内容：
+✗ /wecom → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/30-wecom.png
+  页面主内容：
+✗ /logistics?sku_id=1&quantity=3000&destination=%E5%8D%8E%E4%B8%9C → /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/review/smoke-shots/21-logistics.png
+  页面主内容：
+✗ 收尾清扫失败（本轮可能留下站内通知）：拒绝执行：库名 'crm_review_smoke_20261123' 不是一次性隔离库（须以 crm_iso/crm_check/crm_test 开头，或以 _test 结尾）
+✗ 冒烟测试失败：POST /samples/1/made: 打样审批尚未通过，不能执行此正式动作。请先在同序 OA 完成审批，并在 CRM 同步最新结果

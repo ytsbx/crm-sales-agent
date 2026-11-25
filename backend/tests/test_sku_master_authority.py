@@ -16,7 +16,7 @@
 """
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -122,6 +122,35 @@ def _confirm(session, diff_id, resolution, note=None):
     )
 
 
+def test_verified_authority_and_latest_source_prevent_stale_adoption():
+    session = _session()
+    sku_id = _sku(session, code="A-1", name="甲件", weight=5)
+    session.add(ExternalSourceRegistry(system_type=JUSHUITAN, shop_id="*",
+                source_kind="sku_master", verified=True, evidence="隔离验证"))
+    asyncio.run(session.flush())
+    asyncio.run(m.set_field_authority(session, sku_id=sku_id, field_name="weight",
+                                     authority=JUSHUITAN, operator_id=9))
+    first = NOW
+    later = NOW + timedelta(minutes=5)
+    _ingest(session, system_type=JUSHUITAN, fields={"weight": 10}, source_updated_at=first)
+    old = next(row for row in _diffs(session)[0] if row["field_name"] == "weight")
+    _ingest(session, system_type=JUSHUITAN, fields={"weight": 12}, source_updated_at=later)
+    _ingest(session, system_type=JUSHUITAN, fields={"weight": 10}, source_updated_at=first)
+    _ingest(session, fields={"weight": 100, "name": "外部名称"}, source_updated_at=later)
+    assert _get(session, Sku, sku_id).weight == 5
+    with pytest.raises(AppError, match="刷新后核定最新"):
+        _confirm(session, old["id"], RESOLUTION_TAKE_EXTERNAL, "旧资料")
+    diffs = _diffs(session)[0]
+    for other in (row for row in diffs if row["system_type"] == JIANDAO):
+        with pytest.raises(AppError, match="不能采用"):
+            _confirm(session, other["id"], RESOLUTION_TAKE_EXTERNAL, "其他来源")
+    with pytest.raises(AppError, match="通过差异核定"):
+        asyncio.run(m.require_local_editable(session, _get(session, Sku, sku_id), {"weight": 20}))
+    newest = next(row for row in diffs if row["system_type"] == JUSHUITAN and row["incoming_value"] == '12')
+    _confirm(session, newest["id"], RESOLUTION_TAKE_EXTERNAL, "已比对")
+    assert _get(session, Sku, sku_id).weight == 12
+
+
 # ---------------------------------------------------------------- 不自动覆盖
 
 
@@ -169,6 +198,20 @@ def test_unverified_source_and_unclaimed_authority_are_visible():
     untouched = next(item for item in overview["fields"] if item["field_name"] == "color")
     assert untouched["status"] == AUTH_UNVERIFIED
     assert untouched["source_system"] is None
+
+
+def test_taking_external_sku_text_requires_it_to_fit_the_local_field():
+    session = _session()
+    sku_id = _sku(session, code="A-1", name="甲件", specification="600×400")
+    incoming = "字" * 201
+    # B20-06：列宽校验前移到核定入口（normalize），超长增量当场拒收，不再落差异行
+    with pytest.raises(AppError, match="规格.*200"):
+        _ingest(session, fields={"specification": incoming})
+    assert _get(session, Sku, sku_id).specification == "600×400"
+    assert _diffs(session)[0] == []
+    # 采纳路径同一把尺子仍在（_apply 直调也拦）
+    with pytest.raises(AppError, match="规格.*200"):
+        m._ensure_sku_text_fits("specification", incoming)
 
 
 def test_null_increment_does_not_erase_manual_data_and_needs_evidence():
@@ -487,6 +530,39 @@ def test_unknown_field_name_is_rejected_before_any_write():
 
 
 # ---------------------------------------------------------------- 待匹配与重放
+
+
+@pytest.mark.parametrize("match_by_ingest", [False, True])
+def test_unmatched_source_merges_nonempty_fields_until_matching(match_by_ingest):
+    session = _session()
+    first = _ingest(session, external_code="NEW-1", fields={"unit": "箱"},
+                    source_updated_at=NOW)
+    source_id = first["identity"]["id"]
+    _ingest(session, external_code="NEW-1", fields={"name": "新版名称", "unit": " "},
+            source_updated_at=NOW + timedelta(minutes=2))
+    _ingest(session, external_code="NEW-1", fields={"name": "旧名称", "weight": 5},
+            source_updated_at=NOW - timedelta(minutes=1))
+    _ingest(session, external_code="NEW-1", fields={"unit": None})
+    assert _get(session, SkuIdentitySource, source_id).source_payload == {
+        "name": "新版名称", "unit": "箱", "weight": '5',  # Q6 决策3：快照数值存原值字符串
+    }
+
+    sku_id = _sku(session, code="NEW-1", name="本地名称", unit="件")
+    if match_by_ingest:
+        result = _ingest(session, external_code="NEW-1", fields=None)
+        assert result["matched_sku_id"] == sku_id
+        assert result["identity"]["has_pending_payload"] is False
+    else:
+        source = _get(session, SkuIdentitySource, source_id)
+        result = asyncio.run(m.replay_identity_source(session, source, operator_id=9))
+        assert result["replayed"] is True
+    assert _get(session, SkuIdentitySource, source_id).source_payload is None
+    overview = asyncio.run(m.sku_master_overview(session, sku_id))
+    unit = next(item for item in overview["fields"] if item["field_name"] == "unit")
+    assert unit["source_value"] == "箱"
+    assert any(row["field_name"] == "name" and row["incoming_value"] == "新版名称"
+               for row in overview["pending_diffs"])
+    assert _get(session, Sku, sku_id).unit == "件"
 
 
 def test_unmatched_source_replays_after_local_sku_created():

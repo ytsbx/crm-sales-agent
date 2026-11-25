@@ -22,7 +22,8 @@ Create Date: 2026-10-06
 删除会让已经发生过的事失去痕迹。
 """
 
-from alembic import op
+from alembic import context, op
+import sqlalchemy as sa
 
 revision = "f8d2b6a4c1e7"
 down_revision = "e7b3f1a5c9d2"
@@ -36,25 +37,25 @@ def upgrade() -> None:
         "ADD COLUMN IF NOT EXISTS before_owners JSONB"
     )
 
-    # 建索引前先收掉历史遗留的重复未决案件，否则唯一索引建不上。
-    # 判据与索引一致：无序对 + 仅未决。
-    op.execute(
-        """
-        UPDATE customer_duplicate_cases
-        SET status = 'resolved',
-            decision = 'superseded',
-            resolved_at = now(),
-            remark = COALESCE(remark, '') || '（自动结案：同一对客户存在多张未决案件，保留最早的一张）'
-        WHERE status = 'pending'
-          AND id NOT IN (
-              SELECT MIN(id)
-              FROM customer_duplicate_cases
-              WHERE status = 'pending'
-              GROUP BY LEAST(customer_id, candidate_id),
-                       GREATEST(customer_id, candidate_id)
-          )
-        """
-    )
+    # 历史重复不能由迁移擅自裁定；在线升级时暂停交人工处理。
+    if not context.is_offline_mode():
+        duplicates = op.get_bind().execute(sa.text(
+            "SELECT LEAST(customer_id, candidate_id) AS customer_id, "
+            "GREATEST(customer_id, candidate_id) AS candidate_id, COUNT(*) AS n, "
+            "string_agg(id::text, ',' ORDER BY id) AS row_ids "
+            "FROM customer_duplicate_cases WHERE status = 'pending' "
+            "GROUP BY LEAST(customer_id, candidate_id), GREATEST(customer_id, candidate_id) "
+            "HAVING COUNT(*) > 1"
+        )).fetchall()
+        if duplicates:
+            detail = "; ".join(
+                f"pair=({row[0]},{row[1]}) count={row[2]} ids={row[3]}"
+                for row in duplicates[:20]
+            )
+            raise RuntimeError(
+                "customer_duplicate_cases 存在重复未决案件，无法建立唯一约束；"
+                f"请人工确认历史记录后重试迁移：{detail}"
+            )
     op.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS uq_customer_dup_pending_pair

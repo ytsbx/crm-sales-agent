@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -102,7 +102,10 @@ def _serialize(row: ProductInsight, *, owner_name: str | None = None) -> dict:
         "direction": row.direction,
         "selling_points": row.selling_points,
         "price_assumption": (
-            float(row.price_assumption) if row.price_assumption is not None else None
+            row.price_assumption if row.price_assumption is not None else None
+        ),
+        "price_assumption_exact": (
+            format(row.price_assumption, 'f') if row.price_assumption is not None else None
         ),
         "conclusion": row.conclusion,
         # 参考图：字段一直在模型里，但创建/更新/返回/页面四个环节都没打通（§6.1(6)）
@@ -135,11 +138,11 @@ def _content_snapshot(row: ProductInsight) -> dict:
     """这一轮"报的是什么"：只取受评审约束的那几项（返工单 P1-4）。
 
     存快照而不是只存"改了哪几个字段名"——事后要能回答"当时批准的是这一份内容"，
-    光记字段名答不了。价格转成 float 是为了 JSON 能直接存（`Decimal` 不是 JSON 类型）。
+    光记字段名答不了。价格按 Q2 存原值字符串（JSON 可存且不失真；历史 float 行不重写）。
     """
     return {
         field: (
-            float(value)
+            format(value, 'f')
             if isinstance(value, Decimal)
             else (value if isinstance(value, (str, int, float, bool, list, dict)) else None)
         )
@@ -305,10 +308,26 @@ async def _get_visible(
     if _can_review(user):
         return row
     owner_ids = await scoped_owner_ids(session, user)
-    if owner_ids is not None and row.owner_id not in owner_ids:
+    # ⚠️ **无负责人的洞察按"公海"放行**（2026-10-14 审查修）。
+    #
+    # 原判据是 `row.owner_id not in owner_ids` —— 而 `owner_id` 可空
+    # （`InsightUpdate.owner_id` 允许传 `null` = 清空，`_assert_assignee`
+    # 对 None 直接放行）。一旦被清空：`None not in [...]` **恒为真** →
+    # 详情 403、列表里也不出现（`owner_id.in_(...)` 对 NULL 恒不成立），
+    # 操作人**自己**随后既看不到也改不了这条记录，想改回负责人也没有入口，
+    # 只能请全量范围的管理员救。
+    #
+    # 与项目其它模块口径一致：`pricing/service.py` 把 `owner_id IS NULL`
+    # 当公海对范围内所有人放行；客户模块同理（"公海对所有有 customer:view
+    # 的人可见 —— 这正是公海的意义"）。
+    if owner_ids is not None and row.owner_id is not None and row.owner_id not in owner_ids:
         # 同上：数据范围之外是 403，不是 400
         raise AppError(ErrorCode.FORBIDDEN, "不在你的数据范围内", 403)
     return row
+
+
+def _owner_in_write_scope(owner_id: int | None, owner_ids: list[int] | None) -> bool:
+    return owner_ids is None or owner_id is None or owner_id in owner_ids
 
 
 async def _get_writable(
@@ -329,7 +348,19 @@ async def _get_writable(
     """
     row = await _get_visible(session, user, insight_id, for_update=for_update)
     owner_ids = await scoped_owner_ids(session, user)
-    if owner_ids is not None and row.owner_id not in owner_ids:
+    # ⚠️ **无负责人的洞察按"公海"放行**（2026-10-14 审查修）。
+    #
+    # 原判据是 `row.owner_id not in owner_ids` —— 而 `owner_id` 可空
+    # （`InsightUpdate.owner_id` 允许传 `null` = 清空，`_assert_assignee`
+    # 对 None 直接放行）。一旦被清空：`None not in [...]` **恒为真** →
+    # 详情 403、列表里也不出现（`owner_id.in_(...)` 对 NULL 恒不成立），
+    # 操作人**自己**随后既看不到也改不了这条记录，想改回负责人也没有入口，
+    # 只能请全量范围的管理员救。
+    #
+    # 与项目其它模块口径一致：`pricing/service.py` 把 `owner_id IS NULL`
+    # 当公海对范围内所有人放行；客户模块同理（"公海对所有有 customer:view
+    # 的人可见 —— 这正是公海的意义"）。
+    if not _owner_in_write_scope(row.owner_id, owner_ids):
         raise AppError(
             ErrorCode.FORBIDDEN,
             "这条洞察的负责人不在你的数据范围内，不能修改"
@@ -352,11 +383,16 @@ async def list_insights(
     if status:
         stmt = stmt.where(ProductInsight.status == status)
     if keyword:
-        stmt = stmt.where(ProductInsight.title.ilike(f"%{keyword}%"))
+        _kw = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        stmt = stmt.where(ProductInsight.title.ilike(f"%{_kw}%", escape="\\"))
     owner_ids = await scoped_owner_ids(session, user)
     # 评审人看全部（待评审的那些不是他的，但他必须看得到）；其他人仍按数据范围。
     if owner_ids is not None and not _can_review(user):
-        stmt = stmt.where(ProductInsight.owner_id.in_(owner_ids))
+        # 同口径：范围内的 + **无负责人的**（公海）。少了后半个条件，
+        # 被清空负责人的洞察会从所有人的列表里消失（NULL IN (...) 恒不成立）。
+        stmt = stmt.where(
+            or_(ProductInsight.owner_id.in_(owner_ids), ProductInsight.owner_id.is_(None))
+        )
     stmt = stmt.order_by(ProductInsight.id.desc())
     rows, total = await paginate(session, stmt, page, page_size)
     names = await _owner_names(session, rows)
@@ -366,11 +402,16 @@ async def list_insights(
     # 看着像能点、其实是坏的。这里把判断结果随行下发。
     # 注意：藏按钮**不是**权限，后端每个写入口仍会用 `_get_writable` 再判一次。
     can_review_any = _can_review(user)
+    is_admin = "admin" in user.roles
     items = []
     for r in rows:
         item = _serialize(r, owner_name=names.get(r.owner_id))
-        item["can_edit"] = owner_ids is None or r.owner_id in owner_ids
-        item["can_review"] = can_review_any and r.status == "under_review"
+        item["can_edit"] = _owner_in_write_scope(r.owner_id, owner_ids)
+        # 管理员可以审自己提交的（2026-11-21 用户确认）；其他人仍只审别人的。
+        item["can_review"] = (
+            can_review_any and (r.created_by != user.id or is_admin)
+            and r.status == "under_review"
+        )
         items.append(item)
     return ok(page_data(items, total, page, page_size))
 
@@ -389,8 +430,12 @@ async def get_insight(
     # 能不能改这条：前端据此决定按钮显不显示。**后端仍然逐入口再判一次** ——
     # 藏按钮不是权限（返工单 P1-3 明确说了不能只靠前端）。
     owner_ids = await scoped_owner_ids(session, user)
-    payload["can_edit"] = owner_ids is None or row.owner_id in owner_ids
-    payload["can_review"] = _can_review(user) and row.status == "under_review"
+    payload["can_edit"] = _owner_in_write_scope(row.owner_id, owner_ids)
+    payload["can_review"] = (
+        _can_review(user)
+        and (row.created_by != user.id or "admin" in user.roles)
+        and row.status == "under_review"
+    )
     return ok(payload)
 
 
@@ -591,6 +636,10 @@ async def review_insight(
     # 加行锁：两个人同时点「通过/驳回」时，后到的会等前面提交完再读，
     # 读到的是已审状态 → 被下面的状态检查挡下，只有一个能成功。
     row = await _get_visible(session, user, insight_id, for_update=True)
+    # 管理员可以审核自己提交的（2026-11-21 用户确认）；其他评审人仍不能自审，
+    # 避免“自己提的自己批”绕过评审。只放宽 admin，不按权限码放行。
+    if row.created_by == user.id and "admin" not in user.roles:
+        raise AppError(ErrorCode.FORBIDDEN, "不能审核自己提交的新品洞察，请交由其他审核人处理", 403)
     if row.status != "under_review":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该记录不在待评审状态")
 
@@ -668,8 +717,15 @@ async def convert_insight(
         # 幂等：已经转过了就把既有目标还回去（重试、连点两次都走这里）。
         # 明确告知"没有新建"，避免调用方以为又生成了一条。
         if row.converted_inquiry_id is not None:
+            inquiry = await session.get(CustomInquiry, row.converted_inquiry_id)
+            if inquiry is None or inquiry.deleted_at is not None:
+                raise AppError(
+                    ErrorCode.STATUS_NOT_ALLOWED,
+                    "原询价已删除或无法找到，请联系管理员核对来源记录",
+                    409,
+                )
             return ok(
-                {"insight_id": row.id, "inquiry_id": row.converted_inquiry_id},
+                {"insight_id": row.id, "inquiry_id": inquiry.id},
                 "该洞察已经转过需求，返回的是原来那一条",
             )
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该洞察已标记为已转换，但没有关联需求")
@@ -705,7 +761,7 @@ async def convert_insight(
     if row.selling_points:
         parts.append(f"假设卖点：{row.selling_points}")
     if row.price_assumption is not None:
-        parts.append(f"价格假设（未确认，仅供内部参考）：{float(row.price_assumption)}")
+        parts.append(f"价格假设（未确认，仅供内部参考）：{format(row.price_assumption, 'f')}")
     if row.conclusion:
         parts.append(f"评估结论：{row.conclusion}")
 
@@ -727,7 +783,7 @@ async def convert_insight(
         status="open",
         origin=origin,
         source_insight_id=row.id,
-        remark=data.remark or f"由新品洞察 #{row.id} 转入",
+        remark=data.remark or f"由新品洞察编号 {row.id} 转入",
         created_by=user.id,
     )
     session.add(inquiry)

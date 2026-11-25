@@ -173,7 +173,7 @@ async def timing_summary(
     user_rows = [
         {
             "user_id": uid,
-            "user_name": names.get(uid, f"#{uid}"),
+            "user_name": names.get(uid, f"编号 {uid}"),
             "samples": bucket["samples"],
             "avg_ms": round(bucket["total_ms"] / bucket["samples"]),
         }

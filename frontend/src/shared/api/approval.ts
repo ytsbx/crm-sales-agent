@@ -120,8 +120,16 @@ export function toggleApprovalRule(id: number, enabled: boolean) {
   return api.patch<ApprovalRuleRow>(`/approval-rules/${id}/enabled`, { enabled })
 }
 
-export function publishApprovalRule(id: number) {
-  return api.post<ApprovalRuleRow>(`/approval-rules/${id}/publish`)
+/**
+ * 发布审批规则。
+ *
+ * ⚠️ 发布之后**后续提交的报价审批都按新规则算**（改的是"哪些报价要审批、
+ * 走哪一级"）。后端要求 `confirm=true`（不带返回 42206 + 规则条件说明）。
+ */
+export function publishApprovalRule(id: number, confirm = false) {
+  return api.post<ApprovalRuleRow>(
+    `/approval-rules/${id}/publish${confirm ? '?confirm=true' : ''}`,
+  )
 }
 
 export function deleteApprovalRule(id: number) {
@@ -134,4 +142,8 @@ export function listApprovalRuleVersions(id: number) {
 
 export function runApprovalSandbox(quoteVersionId: number) {
   return api.post<SandboxResult>('/approval-rules/sandbox', { quote_version_id: quoteVersionId })
+}
+
+export function listApprovalTransferCandidates(id: number) {
+  return api.get<Array<{ id: number; name: string }>>(`/approvals/${id}/transfer-candidates`)
 }

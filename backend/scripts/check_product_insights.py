@@ -76,7 +76,7 @@ async def main():
     )
 
     admin = login("admin", "admin123")      # 全权
-    zhangsan = login("zhangsan", "123456")  # 业务员：只有 product:view
+    zhangsan = login("zhangsan", "123456")  # 业务员：2026-11-23 起也有 product:manage
     zhaoliu = login("zhaoliu", "123456")    # 产品评审人：product:manage + review，范围 self
     wangwu = login("wangwu", "123456")      # 财务：无 product:review
 
@@ -90,9 +90,9 @@ async def main():
 
     try:
         print("=== 1. 评审人按权限码判：不是「主管」也能评 ===")
-        status, result = call("POST", "/product-insights", token=zhangsan,
-                              body={"title": f"{MARKER} 业务员想建的"})
-        check("没有 product:manage 的人建不了洞察（业务员）",
+        status, result = call("POST", "/product-insights", token=wangwu,
+                              body={"title": f"{MARKER} 财务想建的"})
+        check("没有 product:manage 的人建不了洞察（财务）",
               status == 403, f"HTTP {status} {result}")
 
         seed_insight = api("POST", "/product-insights", token=zhaoliu, body={

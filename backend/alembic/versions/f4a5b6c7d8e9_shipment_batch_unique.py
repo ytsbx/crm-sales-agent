@@ -25,7 +25,7 @@
 口径一致 —— 宁可停下来让人处理，不静默改历史。
 """
 import sqlalchemy as sa
-from alembic import op
+from alembic import context, op
 
 revision = "f4a5b6c7d8e9"
 down_revision = "e3f4a5b6c7d8"
@@ -34,22 +34,23 @@ depends_on = None
 
 
 def upgrade():
-    connection = op.get_bind()
-    duplicates = connection.execute(
-        sa.text(
-            "select order_id, batch_no, count(*) as n "
-            "from order_shipment_batches "
-            "group by order_id, batch_no having count(*) > 1"
-        )
-    ).fetchall()
-    if duplicates:
-        detail = "、".join(
-            f"订单 {row[0]} 的批次 {row[1]}（{row[2]} 条）" for row in duplicates
-        )
-        raise RuntimeError(
-            "发货批次表存在重复的「订单 + 批次号」，必须先人工处理再升级："
-            f"{detail}。本迁移刻意不自动重编号 —— 已发批次改号会把历史事实改掉。"
-        )
+    if not context.is_offline_mode():
+        connection = op.get_bind()
+        duplicates = connection.execute(
+            sa.text(
+                "select order_id, batch_no, count(*) as n "
+                "from order_shipment_batches "
+                "group by order_id, batch_no having count(*) > 1"
+            )
+        ).fetchall()
+        if duplicates:
+            detail = "、".join(
+                f"订单 {row[0]} 的批次 {row[1]}（{row[2]} 条）" for row in duplicates
+            )
+            raise RuntimeError(
+                "发货批次表存在重复的「订单 + 批次号」，必须先人工处理再升级："
+                f"{detail}。本迁移刻意不自动重编号 —— 已发批次改号会把历史事实改掉。"
+            )
 
     op.create_unique_constraint(
         "uq_shipment_batch_no", "order_shipment_batches", ["order_id", "batch_no"]

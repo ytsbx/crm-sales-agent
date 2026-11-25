@@ -5,7 +5,9 @@
 """
 
 from io import BytesIO
+from decimal import Decimal
 from typing import Any
+from xml.sax.saxutils import escape
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -15,6 +17,8 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+from app.core.money import format_unit_price
+
 CN_FONT = "STSong-Light"
 
 
@@ -23,6 +27,21 @@ def _register_font() -> None:
         pdfmetrics.getFont(CN_FONT)
     except KeyError:
         pdfmetrics.registerFont(UnicodeCIDFont(CN_FONT))
+
+
+def _fit_numeric_cells(rows, widths, columns, *, font_size, start_row=1) -> TableStyle:
+    """仅缩小放不下的数字；保留完整文本、列宽及普通单元格字号。"""
+    commands = []
+    for row in range(start_row, len(rows)):
+        for column in columns:
+            text = rows[row][column]
+            width = pdfmetrics.stringWidth(text, CN_FONT, font_size)
+            # 与Table默认左右各6pt内边距一致。
+            available = widths[column] - 12
+            if width > available:
+                commands.append(("FONTSIZE", (column, row), (column, row),
+                                 font_size * available / width))
+    return TableStyle(commands)
 
 
 def render_quote_pdf(data: dict[str, Any]) -> bytes:
@@ -52,7 +71,7 @@ def render_quote_pdf(data: dict[str, Any]) -> bytes:
     if data.get("company_name"):
         story.append(
             Paragraph(
-                str(data["company_name"]),
+                escape(str(data["company_name"])),
                 ParagraphStyle(
                     "CNCompany", parent=normal, fontSize=11, leading=16, alignment=1
                 ),
@@ -63,14 +82,14 @@ def render_quote_pdf(data: dict[str, Any]) -> bytes:
     story.append(Spacer(1, 6 * mm))
 
     meta_rows = [
-        [Paragraph(f"报价单号：{data.get('quote_no', '-')}", head),
-         Paragraph(f"版本：V{data.get('version_no', 1)}", head)],
-        [Paragraph(f"客户：{data.get('customer_name') or '-'}", head),
-         Paragraph(f"有效期至：{data.get('valid_until') or '-'}", head)],
-        [Paragraph(f"商机：{data.get('opportunity_title') or '-'}", head),
-         Paragraph(f"负责人：{data.get('owner_name') or '-'}", head)],
-        [Paragraph(f"报价日期：{data.get('quote_date') or '-'}", head),
-         Paragraph(f"状态：{data.get('status_label') or '-'}", head)],
+        [Paragraph(escape(f"报价单号：{data.get('quote_no', '-')}"), head),
+         Paragraph(escape(f"版本：V{data.get('version_no', 1)}"), head)],
+        [Paragraph(escape(f"客户：{data.get('customer_name') or '-'}"), head),
+         Paragraph(escape(f"有效期至：{data.get('valid_until') or '-'}"), head)],
+        [Paragraph(escape(f"商机：{data.get('opportunity_title') or '-'}"), head),
+         Paragraph(escape(f"负责人：{data.get('owner_name') or '-'}"), head)],
+        [Paragraph(escape(f"报价日期：{data.get('quote_date') or '-'}"), head),
+         Paragraph(escape(f"状态：{data.get('status_label') or '-'}"), head)],
     ]
     meta_table = Table(meta_rows, colWidths=[87 * mm, 87 * mm])
     meta_table.setStyle(
@@ -87,17 +106,24 @@ def render_quote_pdf(data: dict[str, Any]) -> bytes:
     header = ["序号", "SKU", "规格", "数量", "单价(元)", "金额(元)"]
     rows = [header]
     for index, item in enumerate(data.get("items", []), start=1):
+        quantity = format(Decimal(str(item.get("quantity", 0))), "f")
+        if "." in quantity:
+            quantity = quantity.rstrip("0").rstrip(".")
         rows.append(
             [
                 str(index),
                 item.get("sku_code") or "-",
                 item.get("specification") or "-",
-                f"{item.get('quantity', 0):g}",
-                f"{item.get('quoted_price', 0):.2f}",
+                quantity,
+                # 单价保留实际成交精度、末尾不补零（第二轮审查 P2，2026-10-12）：
+                # 截成两位会让"单价 × 数量"对不上金额那一栏
+                # （33.3333 × 1000 印成 33.33 × 1000 = 33330.00，而金额是 33333.30）
+                format_unit_price(item.get("quoted_price", 0)),
                 f"{item.get('amount', 0):.2f}",
             ]
         )
-    items_table = Table(rows, colWidths=[12 * mm, 30 * mm, 60 * mm, 22 * mm, 25 * mm, 25 * mm])
+    item_widths = [12 * mm, 30 * mm, 60 * mm, 22 * mm, 25 * mm, 25 * mm]
+    items_table = Table(rows, colWidths=item_widths)
     items_table.setStyle(
         TableStyle(
             [
@@ -110,6 +136,7 @@ def render_quote_pdf(data: dict[str, Any]) -> bytes:
             ]
         )
     )
+    items_table.setStyle(_fit_numeric_cells(rows, item_widths, [3, 4, 5], font_size=9))
     story.append(items_table)
     story.append(Spacer(1, 4 * mm))
 
@@ -124,7 +151,8 @@ def render_quote_pdf(data: dict[str, Any]) -> bytes:
                     f"{charge.get('amount', 0):.2f}",
                 ]
             )
-        charge_table = Table(charge_rows, colWidths=[30 * mm, 114 * mm, 30 * mm])
+        charge_widths = [30 * mm, 114 * mm, 30 * mm]
+        charge_table = Table(charge_rows, colWidths=charge_widths)
         charge_table.setStyle(
             TableStyle(
                 [
@@ -136,16 +164,36 @@ def render_quote_pdf(data: dict[str, Any]) -> bytes:
                 ]
             )
         )
+        charge_table.setStyle(_fit_numeric_cells(charge_rows, charge_widths, [2], font_size=9))
         story.append(charge_table)
         story.append(Spacer(1, 4 * mm))
 
-    total_rows = [
-        ["商品小计", f"¥{data.get('subtotal_amount', 0):.2f}"],
-        ["附加费用", f"¥{data.get('charge_amount', 0):.2f}"],
-        ["折扣", f"¥{data.get('discount_amount', 0):.2f}"],
-        ["合计金额", f"¥{data.get('total_amount', 0):.2f}"],
-    ]
-    total_table = Table(total_rows, colWidths=[134 * mm, 40 * mm])
+    # 合计区：货款 → 运费 → 其他费用 → 折扣 → 合计（2026-10-09 运费分离）。
+    # 运费**单独一列具体金额**，不再混在"附加费用"里让客户自己猜；
+    # 同时印一句"产品单价不含运费"，避免客户按旧口径以为运费已包在单价里。
+    # 这几行**只是把同一笔钱拆开显示**：`total_amount` 里已经含了费用与折扣，
+    # 逐行相加正好等于合计，**不再另加一遍**。
+    summary = data.get("summary") or {}
+    logistics = summary.get("logistics_amount")
+    other_charge = summary.get("other_charge_amount")
+    if logistics is None:
+        logistics = data.get("logistics_amount")
+    if other_charge is None:
+        other_charge = data.get("other_charge_amount")
+    total_rows = [["商品货款", f"¥{data.get('subtotal_amount', 0):.2f}"]]
+    if logistics is not None:
+        total_rows.append(["运费（代收代付）", f"¥{Decimal(str(logistics)):.2f}"])
+        total_rows.append(["其他费用", f"¥{Decimal(str(other_charge or 0)):.2f}"])
+    else:
+        # 历史文件没有拆分列：保持原来的"附加费用"一行，不改写老口径
+        total_rows.append(["附加费用", f"¥{data.get('charge_amount', 0):.2f}"])
+    total_rows.append(["折扣", f"¥{data.get('discount_amount', 0):.2f}"])
+    total_rows.append(["合计金额", f"¥{data.get('total_amount', 0):.2f}"])
+    unit_price_note = str(data.get("unit_price_note") or "").strip()
+    if unit_price_note:
+        total_rows.append([unit_price_note, ""])
+    total_widths = [134 * mm, 40 * mm]
+    total_table = Table(total_rows, colWidths=total_widths)
     total_table.setStyle(
         TableStyle(
             [
@@ -161,6 +209,7 @@ def render_quote_pdf(data: dict[str, Any]) -> bytes:
             ]
         )
     )
+    total_table.setStyle(_fit_numeric_cells(total_rows, total_widths, [1], font_size=10, start_row=0))
     story.append(total_table)
     story.append(Spacer(1, 6 * mm))
 
@@ -172,7 +221,7 @@ def render_quote_pdf(data: dict[str, Any]) -> bytes:
     if data.get("remark"):
         terms.append(f"备注：{data['remark']}")
     for line in terms:
-        story.append(Paragraph(line, normal))
+        story.append(Paragraph(escape(line), normal))
 
     story.append(Spacer(1, 8 * mm))
     story.append(

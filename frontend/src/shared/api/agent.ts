@@ -1,5 +1,5 @@
-import { api, ApiError } from './client'
-import { useAuthStore } from '../store/auth'
+import { api, ApiError, handleSessionRejection } from './client'
+import { currentAuthEpoch, useAuthStore } from '../store/auth'
 import type { PageResult } from '../types'
 
 export interface AgentSessionRow {
@@ -70,8 +70,8 @@ export interface AgentTurnResult {
   tool_calls: AgentToolCall[]
 }
 
-export function listAgentSessions() {
-  return api.get<AgentSessionRow[]>('/agent/sessions')
+export function listAgentSessions(query?: { before_id?: number; limit?: number }) {
+  return api.get<AgentSessionRow[]>('/agent/sessions', query)
 }
 
 export function createAgentSession(payload: { title?: string; context_type?: string; context_id?: number }) {
@@ -82,8 +82,18 @@ export function getAgentSession(id: number) {
   return api.get<{
     session: AgentSessionRow
     messages: AgentMessageRow[]
+    /** 最新 200 条之外是否还有更早消息（用户/助手，不含工具过程）。 */
+    messages_has_more?: boolean
     actions: AgentActionRow[]
   }>(`/agent/sessions/${id}`)
+}
+
+/** 按消息 id 游标加载更早的会话消息（只含 user/assistant）。 */
+export function getAgentOlderMessages(sessionId: number, query: { before_id: number; limit?: number }) {
+  return api.get<{ items: AgentMessageRow[]; has_more: boolean }>(
+    `/agent/sessions/${sessionId}/messages/older`,
+    query,
+  )
 }
 
 export function deleteAgentSession(id: number) {
@@ -91,7 +101,7 @@ export function deleteAgentSession(id: number) {
 }
 
 export function sendAgentMessage(sessionId: number, content: string) {
-  return api.post<AgentTurnResult>(`/agent/sessions/${sessionId}/messages`, { content })
+  return api.post<AgentTurnResult>(`/agent/sessions/${sessionId}/messages`, { content }, { timeout: 110000 })
 }
 
 // ---------------------------------------------------------------- 流式对话（token 级打字机）
@@ -115,10 +125,13 @@ export async function streamAgentMessage(
   sessionId: number,
   content: string,
   onEvent: (kind: AgentStreamEventKind, data: Record<string, unknown>) => void,
+  signal?: AbortSignal,
 ): Promise<AgentTurnResult | null> {
   const token = useAuthStore.getState().token
+  const sentAt = currentAuthEpoch()
   const resp = await fetch(`/api/v1/agent/sessions/${sessionId}/messages/stream`, {
     method: 'POST',
+    signal,
     headers: {
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -127,22 +140,18 @@ export async function streamAgentMessage(
   })
   if (!resp.ok) {
     // 失败时响应体是统一信封，解析出人话再抛；401 与 axios 拦截器同口径处理
-    let message = `请求失败（HTTP ${resp.status}）`
-    try {
-      const body = await resp.json()
-      message = body?.message ?? message
-      if (resp.status === 401 || body?.code === 40101 || body?.code === 40102) {
-        useAuthStore.getState().clear()
-        if (window.location.pathname !== '/login') window.location.href = '/login'
-      }
-    } catch {
-      /* 保留默认消息 */
+    const body = await resp.json().catch(() => null)
+    const message = body?.message ?? `请求失败（HTTP ${resp.status}）`
+    const code = body?.code
+    if (resp.status === 401 || code === 40101 || code === 40102) {
+      handleSessionRejection(sentAt, code === 40102)
     }
     throw new ApiError(message, 0)
   }
   if (!resp.body) {
     throw new ApiError('当前浏览器不支持流式读取', 0)
   }
+  signal?.throwIfAborted()
 
   const reader = resp.body.getReader()
   const decoder = new TextDecoder()
@@ -168,16 +177,21 @@ export async function streamAgentMessage(
     onEvent(kind as AgentStreamEventKind, data)
   }
 
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    let idx: number
-    while ((idx = buffer.indexOf('\n\n')) >= 0) {
-      const frame = buffer.slice(0, idx)
-      buffer = buffer.slice(idx + 2)
-      if (frame.trim()) dispatch(frame)
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      signal?.throwIfAborted()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      let idx: number
+      while ((idx = buffer.indexOf('\n\n')) >= 0) {
+        const frame = buffer.slice(0, idx)
+        buffer = buffer.slice(idx + 2)
+        if (frame.trim()) dispatch(frame)
+      }
     }
+  } finally {
+    reader.releaseLock()
   }
   return result
 }

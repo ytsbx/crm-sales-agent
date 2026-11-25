@@ -1,10 +1,12 @@
 """Sales Agent 接口（对齐 03-API §37）。"""
 
+import asyncio
 import json
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -48,13 +50,12 @@ MESSAGE_ROLE_LABEL = {
 
 
 async def _get_session(session: AsyncSession, session_id: int, user_id: int) -> AgentSession:
-    row = await session.get(AgentSession, session_id)
-    if row is None or row.user_id != user_id:
-        raise AppError(ErrorCode.NOT_FOUND, "会话不存在", 404)
-    return row
+    return await runtime.get_active_session(session, session_id, user_id)
 
 
-async def _get_action(session: AsyncSession, action_id: int, user_id: int) -> AgentAction:
+async def _get_action(
+    session: AsyncSession, action_id: int, user_id: int, *, for_update: bool = False
+) -> AgentAction:
     """取动作并校验归属。
 
     动作归属跟着会话走：不是自己的会话，连"这个 id 存在"都不该暴露，
@@ -63,25 +64,34 @@ async def _get_action(session: AsyncSession, action_id: int, user_id: int) -> Ag
     action = await session.get(AgentAction, action_id)
     if action is None:
         raise AppError(ErrorCode.NOT_FOUND, "动作不存在", 404)
-    agent_session = await session.get(AgentSession, action.session_id)
-    if agent_session is None or agent_session.user_id != user_id:
-        raise AppError(ErrorCode.NOT_FOUND, "动作不存在", 404)
+    try:
+        await runtime.get_active_session(session, action.session_id, user_id, for_update=for_update)
+    except AppError as error:
+        raise AppError(ErrorCode.NOT_FOUND, "动作不存在", 404) from error
     return action
 
 
 @router.get("/agent/sessions")
 async def list_sessions(
+    before_id: int | None = Query(None, ge=1),
+    limit: int = Query(30, ge=1, le=100),
     user: CurrentUser = Depends(require_permission("agent:use")),
     session: AsyncSession = Depends(get_db),
 ):
-    rows = (
-        await session.execute(
-            select(AgentSession)
-            .where(AgentSession.user_id == user.id)
-            .order_by(AgentSession.id.desc())
-            .limit(30)
-        )
-    ).scalars().all()
+    """当前用户的会话，按 id 倒序；用 `before_id` 游标加载更早的会话。
+
+    默认仍返回最近 30 条（老前端不受影响）。翻页用游标而不是 offset：
+    新建会话会插到最前面，用 offset 翻页会把同一条会话挤到两页或漏掉。
+    """
+    stmt = (
+        select(AgentSession)
+        .where(AgentSession.user_id == user.id, AgentSession.deleted_at.is_(None))
+        .order_by(AgentSession.id.desc())
+        .limit(limit)
+    )
+    if before_id is not None:
+        stmt = stmt.where(AgentSession.id < before_id)
+    rows = (await session.execute(stmt)).scalars().all()
     return ok(
         [
             {
@@ -119,7 +129,6 @@ async def create_session(
         business_type="agent_session",
         business_id=row.id,
         after={
-            "title": row.title,
             "context_type": row.context_type,
             "context_id": row.context_id,
         },
@@ -136,14 +145,19 @@ async def get_session_detail(
     session: AsyncSession = Depends(get_db),
 ):
     row = await _get_session(session, session_id, user.id)
-    messages = (
+    # 长对话默认给**最新** 200 条可见消息（user/assistant，不含 tool），
+    # 更早的由 `/messages/older` 按游标补。此前是升序 limit(200)，
+    # 超过 200 条后最新消息反而打不开，且 tool 消息会占掉可见条数。
+    message_rows = (
         await session.execute(
             select(AgentMessage)
-            .where(AgentMessage.session_id == session_id)
-            .order_by(AgentMessage.id.asc())
-            .limit(200)
+            .where(AgentMessage.session_id == session_id, AgentMessage.role != "tool")
+            .order_by(AgentMessage.id.desc())
+            .limit(201)
         )
     ).scalars().all()
+    messages_has_more = len(message_rows) > 200
+    messages = list(reversed(message_rows[:200]))
     actions = (
         await session.execute(
             select(AgentAction)
@@ -168,10 +182,10 @@ async def get_session_detail(
                     "created_at": m.created_at,
                 }
                 for m in messages
-                if m.role != "tool"
             ],
+            "messages_has_more": messages_has_more,
             "actions": [
-                {**runtime.serialize_action(a), "display": await runtime.action_display(session, a)}
+                {**runtime.serialize_action(a), "display": await runtime.action_display(session, a, user=user)}
                 for a in actions
             ],
         }
@@ -185,9 +199,18 @@ async def delete_session(
     user: CurrentUser = Depends(require_permission("agent:use")),
     session: AsyncSession = Depends(get_db),
 ):
-    row = await _get_session(session, session_id, user.id)
-    title = row.title
-    await session.delete(row)
+    row = await runtime.get_active_session(session, session_id, user.id, for_update=True)
+    await session.execute(delete(AgentMessage).where(AgentMessage.session_id == session_id))
+    await session.execute(delete(AgentAction).where(
+        AgentAction.session_id == session_id,
+        AgentAction.status.in_(("proposed", *runtime.PENDING_ACTION_STATUSES, "expired")),
+    ))
+    # B16-05：会话删除连执行记录一起清，与消息同口径；下面查询再滤软删会话兜历史行
+    await session.execute(delete(AgentExecution).where(AgentExecution.session_id == session_id))
+    row.deleted_at = datetime.now(UTC)
+    row.title = "已删除的会话"
+    row.context_type = None
+    row.context_id = None
     await write_audit(
         session,
         operator_id=user.id,
@@ -195,7 +218,6 @@ async def delete_session(
         action="delete",
         business_type="agent_session",
         business_id=session_id,
-        before={"title": title},
         ip=client_ip(request),
     )
     await session.commit()
@@ -210,9 +232,13 @@ async def send_message(
     session: AsyncSession = Depends(get_db),
 ):
     row = await _get_session(session, session_id, user.id)
-    result = await runtime.run_turn(
-        session, agent_session=row, user=user, text=payload.content
-    )
+    try:
+        async with asyncio.timeout(90):
+            result = await runtime.run_turn(
+                session, agent_session=row, user=user, text=payload.content
+            )
+    except TimeoutError as exc:
+        raise AppError(ErrorCode.SYSTEM_ERROR, runtime.model_error_message(exc), 504) from exc
     return ok(result)
 
 
@@ -257,6 +283,51 @@ async def list_messages(
     )
 
 
+@router.get("/agent/sessions/{session_id}/messages/older")
+async def list_older_messages(
+    session_id: int,
+    before_id: int = Query(..., ge=1),
+    limit: int = Query(100, ge=1, le=200),
+    user: CurrentUser = Depends(require_permission("agent:use")),
+    session: AsyncSession = Depends(get_db),
+):
+    """按消息 id 游标向前翻，补会话详情里最新 200 条之外的更早消息。
+
+    与详情同一口径：只回 user/assistant，tool 过程不占可见条数。
+    多取一条判断 `has_more`，返回时仍按 id 升序，前端可以直接 prepend。
+    """
+    await _get_session(session, session_id, user.id)
+    rows = (
+        await session.execute(
+            select(AgentMessage)
+            .where(
+                AgentMessage.session_id == session_id,
+                AgentMessage.role != "tool",
+                AgentMessage.id < before_id,
+            )
+            .order_by(AgentMessage.id.desc())
+            .limit(limit + 1)
+        )
+    ).scalars().all()
+    has_more = len(rows) > limit
+    items = list(reversed(rows[:limit]))
+    return ok(
+        {
+            "items": [
+                {
+                    "id": m.id,
+                    "role": m.role,
+                    "content": m.content,
+                    "tool_name": m.tool_name,
+                    "created_at": m.created_at,
+                }
+                for m in items
+            ],
+            "has_more": has_more,
+        }
+    )
+
+
 @router.get("/agent/actions/{action_id}")
 async def get_action(
     action_id: int,
@@ -268,9 +339,8 @@ async def get_action(
     return ok(
         {
             **runtime.serialize_action(action),
-            "status_label": ACTION_STATUS_LABEL.get(action.status, action.status),
             "risk_label": RISK_LABEL.get(action.risk_level, action.risk_level),
-            "display": await runtime.action_display(session, action),
+            "display": await runtime.action_display(session, action, user=user),
         }
     )
 
@@ -291,13 +361,16 @@ async def cancel_action(
     只有未执行、未拒绝、未失败的动作能取消 —— 已经落地的动作不能"取消"，
     那是业务回滚，得走各自的业务接口。
     """
+    # 归属校验不锁会话；与确认、拒绝共享的是下面的动作行锁。
     action = await _get_action(session, action_id, user.id)
-    if action.status in ("executed", "rejected", "cancelled"):
+    # 锁后重读，避免取消覆盖已执行结果。
+    await session.refresh(action, with_for_update=True)
+    before = runtime.require_action_not_expired(action)
+    if before in ("executed", "rejected", "cancelled", "failed"):
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
             f"动作已是「{ACTION_STATUS_LABEL.get(action.status, action.status)}」，不能取消",
         )
-    before = action.status
     action.status = "cancelled"
     await session.flush()
     await write_audit(
@@ -331,6 +404,8 @@ async def get_execution(
     agent_session = await session.get(AgentSession, row.session_id)
     if agent_session is None or agent_session.user_id != user.id:
         raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该执行记录不在你的数据范围内", 403)
+    if agent_session.deleted_at is not None:  # B16-05：已删会话视同不存在
+        raise AppError(ErrorCode.NOT_FOUND, "执行记录不存在", 404)
     return ok(
         {
             "id": row.id,
@@ -372,19 +447,22 @@ async def retry_execution(
     agent_session = await session.get(AgentSession, row.session_id)
     if agent_session is None or agent_session.user_id != user.id:
         raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该执行记录不在你的数据范围内", 403)
-    if row.status == "success":
+    if agent_session.deleted_at is not None:  # B16-05：已删会话不允许重试其执行
+        raise AppError(ErrorCode.NOT_FOUND, "执行记录不存在", 404)
+    if row.status != "failed":
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
-            "成功的工具调用不能重试（会造成重复写入）",
+            "只有执行失败的工具调用可以重试；运行中或已完成的记录不能重试",
         )
 
-    if not runtime.model_ready():
-        raise AppError(
-            ErrorCode.PARAM_ERROR,
-            "Agent 未配置模型（DEEPSEEK_API_KEY 为空），无法重试",
-            422,
-        )
+    # ⚠️ 这里**不再**要求 `model_ready()`（2026-10-14 审查修）。
+    # `runtime.retry_tool_call` 只做一件事：拿原来的入参再调一次 `spec.handler(ctx, ...)`
+    # —— 全程**不碰模型**（不建客户端、不发 chat.completions）。而没配
+    # `DEEPSEEK_API_KEY` 的部署本身是被支持的（此时 Agent 对话不可用，
+    # 但工具与页面都在）。原来那道门让"重试"按钮在这种部署里**永久 422**，
+    # 而它想防的"模型没配"与这次操作毫无关系。
 
+    agent_session = await runtime.get_active_session(session, row.session_id, user.id, for_update=True)
     result = await runtime.retry_tool_call(
         session, execution_row=row, user=user, agent_session=agent_session
     )
@@ -413,12 +491,13 @@ async def stream_message(
     async def event_stream():
         yield _sse("start", {"session_id": session_id})
         try:
-            async for kind, data in runtime.run_turn_events(
-                session, agent_session=row, user=user, text=payload.content
-            ):
-                yield _sse(kind, data)
+            async with asyncio.timeout(90):
+                async for kind, data in runtime.run_turn_events(
+                    session, agent_session=row, user=user, text=payload.content
+                ):
+                    yield _sse(kind, data)
         except Exception as exc:  # 流已经开了，500 发不出去；把原因作为最后一个事件告诉前端
-            yield _sse("error", {"message": str(exc)})
+            yield _sse("error", {"message": exc.message if isinstance(exc, AppError) else runtime.model_error_message(exc)})
 
     return StreamingResponse(
         event_stream(),
@@ -447,16 +526,22 @@ async def list_actions(
     stmt = (
         select(AgentAction)
         .join(AgentSession, AgentSession.id == AgentAction.session_id)
-        .where(AgentSession.user_id == user.id)
+        .where(AgentSession.user_id == user.id, AgentSession.deleted_at.is_(None))
     )
-    if status:
+    cutoff = runtime.action_expiry_cutoff()
+    if status == "expired":
+        stmt = stmt.where(
+            AgentAction.status.in_(runtime.PENDING_ACTION_STATUSES), AgentAction.created_at <= cutoff
+        )
+    elif status:
         stmt = stmt.where(AgentAction.status == status)
+        if status in runtime.PENDING_ACTION_STATUSES:
+            stmt = stmt.where(AgentAction.created_at > cutoff)
     rows, total = await paginate(session, stmt.order_by(AgentAction.id.desc()), page, page_size)
     items = [
         {
             **runtime.serialize_action(row),
-            "status_label": ACTION_STATUS_LABEL.get(row.status, row.status),
-            "display": await runtime.action_display(session, row),
+            "display": await runtime.action_display(session, row, user=user),
         }
         for row in rows
     ]
@@ -472,7 +557,9 @@ async def confirm_action(
     action = await session.get(AgentAction, action_id)
     if action is None:
         raise AppError(ErrorCode.NOT_FOUND, "动作不存在", 404)
-    agent_session = await _get_session(session, action.session_id, user.id)
+    # 归属校验不需要锁会话行：真正防并发双击的是 `execute_action` 里的动作行锁。
+    # 锁会话会把"拒绝正在校验归属"与"确认"串行化，反而拖住确认。
+    agent_session = await runtime.get_active_session(session, action.session_id, user.id)
     if agent_session.user_id != user.id:
         raise AppError(ErrorCode.FORBIDDEN, "只能确认自己的会话", 403)
     result = await runtime.execute_action(session, action=action, user=user)
@@ -490,8 +577,11 @@ async def reject_action(
     action = await session.get(AgentAction, action_id)
     if action is None:
         raise AppError(ErrorCode.NOT_FOUND, "动作不存在", 404)
-    await _get_session(session, action.session_id, user.id)
-    if action.status not in ("awaiting_confirmation", "approval_required"):
+    # 归属校验不锁会话；确认与拒绝共享的是下面这把**动作行锁**，
+    # 等待后重读，避免用旧状态覆盖已完成动作。
+    await runtime.get_active_session(session, action.session_id, user.id)
+    await session.refresh(action, with_for_update=True)
+    if runtime.require_action_not_expired(action) not in runtime.PENDING_ACTION_STATUSES:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该动作已经处理过了")
     action.status = "rejected"
     action.result = {"reason": payload.reason}
@@ -533,6 +623,7 @@ async def list_executions(
         select(AgentExecution)
         .join(AgentSession, AgentSession.id == AgentExecution.session_id)
         .where(AgentSession.user_id == user.id)
+        .where(AgentSession.deleted_at.is_(None))  # B16-05：已删会话的执行记录不再露出
         .order_by(AgentExecution.id.desc())
     )
     rows, total = await paginate(session, stmt, page, page_size)
@@ -584,6 +675,11 @@ async def list_tools(
 # 永远可用、可测试；模型只负责多给一段人话叙述。
 # 详见 insights.py 的模块说明。
 
+def _ensure_analysis_permissions(user: CurrentUser, *permissions: str) -> None:
+    if 'admin' not in user.roles and any(not user.has(code) for code in permissions):
+        raise AppError(ErrorCode.FORBIDDEN, '没有相关业务模块的查看权限，无法使用这项 AI 分析', 403)
+
+
 async def _with_commentary(topic: str, payload: dict) -> dict:
     """补上 `commentary` 字段：让模型把已经算好的事实讲成人话。
 
@@ -605,6 +701,7 @@ async def customer_summary(
     session: AsyncSession = Depends(get_db),
 ):
     """客户摘要（03-API §37）。"""
+    _ensure_analysis_permissions(user, "customer:view")
     result = await insights.customer_summary(
         session, user, customer_id=payload.customer_id
     )
@@ -618,6 +715,7 @@ async def opportunity_analysis(
     session: AsyncSession = Depends(get_db),
 ):
     """商机分析（03-API §37）：阶段停留时长、逾期任务、缺失信息。"""
+    _ensure_analysis_permissions(user, "opportunity:view")
     result = await insights.opportunity_analysis(
         session, user, opportunity_id=payload.opportunity_id
     )
@@ -631,6 +729,11 @@ async def product_recommendation(
     session: AsyncSession = Depends(get_db),
 ):
     """产品推荐（03-API §37）：复用商机模块的推荐实现。"""
+    _ensure_analysis_permissions(user, 'product:view')
+    if payload.opportunity_id is not None:
+        _ensure_analysis_permissions(user, 'opportunity:view')
+    if payload.customer_id is not None:
+        _ensure_analysis_permissions(user, 'customer:view')
     result = await insights.product_recommendation(
         session,
         user,
@@ -648,6 +751,9 @@ async def pricing_analysis(
     session: AsyncSession = Depends(get_db),
 ):
     """核价分析（03-API §37）：把核价结果翻译成可执行的判断。"""
+    _ensure_analysis_permissions(user, 'product:view')
+    if payload.customer_id is not None:
+        _ensure_analysis_permissions(user, 'customer:view')
     result = await insights.pricing_analysis(
         session,
         user,
@@ -665,6 +771,9 @@ async def quote_draft(
     session: AsyncSession = Depends(get_db),
 ):
     """报价草稿建议（03-API §37）：**只给建议，不落库**。"""
+    _ensure_analysis_permissions(user, 'opportunity:view', 'product:view')
+    if payload.customer_id is not None:
+        _ensure_analysis_permissions(user, 'customer:view')
     result = await insights.quote_draft(
         session,
         user,
@@ -681,6 +790,10 @@ async def followup_suggestion(
     session: AsyncSession = Depends(get_db),
 ):
     """跟进建议（03-API §37）：规则推出来的，每条都能指向具体事实。"""
+    if payload.customer_id is not None:
+        _ensure_analysis_permissions(user, 'customer:view')
+    if payload.lead_id is not None:
+        _ensure_analysis_permissions(user, 'lead:view')
     result = await insights.followup_suggestion(
         session, user, customer_id=payload.customer_id, lead_id=payload.lead_id
     )
@@ -698,5 +811,6 @@ async def risk_analysis(
     纯统计就能给出"有 3 个节点逾期、合计 12 万、最长 45 天"，
     没配模型也照样能报警 —— 这正是它不该依赖大模型的原因。
     """
+    _ensure_analysis_permissions(user, "payment:view")
     result = await insights.receivable_risk(session, user, order_id=payload.order_id)
     return ok(await _with_commentary("risk-analysis", result))

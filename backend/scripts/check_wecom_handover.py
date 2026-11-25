@@ -599,7 +599,7 @@ async def main() -> int:
             by_label = {row[0]: row[1] for row in rows}
             check_true(
                 "逐项结果里记的是**实际**接手人（不是统一那个）",
-                by_label.get(f"打样单 #{extra_sample_id}（已批准，待客户确认）") == ids["colleague"]
+                by_label.get(f"打样单编号 {extra_sample_id}（已批准，待客户确认）") == ids["colleague"]
                 or any(value == ids["colleague"] for value in by_label.values()),
                 str(by_label),
             )

@@ -1,0 +1,2242 @@
+#!/usr/bin/env node
+/**
+ * 界面冒烟测试：用无头浏览器打开 CRM，注入登录态后逐页截图，并收集控制台报错。
+ *
+ * 用法（必须明确指向本机服务与本机数据库，并关闭外部投递/调度）：
+ *   node ops/smoke_ui.mjs
+ *   SMOKE_ENABLE_FIXTURES=1 SMOKE_USER=admin SMOKE_OUT=/tmp/shots node ops/smoke_ui.mjs
+ *   SMOKE_ENABLE_FIXTURES=1 SMOKE_TWELFTH_ONLY=1 node ops/smoke_ui.mjs  # 仅第十二批界面反例
+ *
+ * 默认不写报价或订单。只有显式设置 SMOKE_ENABLE_FIXTURES=1 时，才会在**一次性测试库**
+ * 中造测试报价和订单；这些业务夹具不会删除，因此不要对开发库或生产库开启此选项。
+ * 脚本启动前会检查前后端地址、数据库地址及推送/调度开关。
+ *
+ * 为什么要有这个脚本：这个项目要分 6 个阶段做，每做完一段都得确认「页面真的能打开、
+ * 数据真的能读出来」，而不是只看构建有没有过。它用浏览器调试协议驱动 Edge/Chrome，
+ * 只依赖 Node 内置能力，不额外装 Playwright。
+ */
+
+import { spawn, spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
+import { tmpdir } from 'node:os'
+import { dirname, extname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const REPO_DIR = join(dirname(fileURLToPath(import.meta.url)), '..')
+const BACKEND_DIR = join(REPO_DIR, 'backend')
+
+/**
+ * 找浏览器：优先 EDGE_BIN 环境变量，否则按平台逐个探测常见安装路径。
+ * 原来这里只写死 macOS 的 Edge，换到 Windows/Linux 上会直接崩，
+ * 所以改成「探测第一个存在的」。
+ */
+function resolveBrowser() {
+  if (process.env.EDGE_BIN) return process.env.EDGE_BIN
+  const candidates =
+    process.platform === 'win32'
+      ? [
+          'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+          'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+          join(process.env.LOCALAPPDATA ?? '', 'Microsoft\\Edge\\Application\\msedge.exe'),
+          'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+          'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+        ]
+      : process.platform === 'darwin'
+        ? [
+            '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+          ]
+        : ['/usr/bin/microsoft-edge', '/usr/bin/google-chrome', '/usr/bin/chromium']
+  const hit = candidates.find((path) => path && existsSync(path))
+  if (!hit) {
+    throw new Error(
+      '找不到 Edge/Chrome。请设置环境变量 EDGE_BIN 指向浏览器可执行文件，例如：\n' +
+        '  $env:EDGE_BIN="C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"',
+    )
+  }
+  return hit
+}
+
+const EDGE_BIN = resolveBrowser()
+const APP_BASE = process.env.APP_BASE ?? 'http://localhost:5274'
+const API_BASE = process.env.API_BASE ?? 'http://127.0.0.1:8008'
+const USERNAME = process.env.SMOKE_USER ?? 'admin'
+const PASSWORD = process.env.SMOKE_PASSWORD ?? 'admin123'
+// 默认端口按进程号取（档案目录名跟着端口走）：写死 9333 时两套冒烟同时跑会抢
+// 同一个端口和同一个档案目录，渲染卡死 / ENOTEMPTY 假红都撞过（2026-11-17）。
+// 两套同时跑在多 agent 并行的开发机上很常见。显式传 CDP_PORT 仍可固定端口。
+const CDP_PORT = Number(process.env.CDP_PORT ?? (20000 + (process.pid % 20000)))
+const OUT_DIR = process.env.SMOKE_OUT ?? join(tmpdir(), 'crm-smoke')
+const PROFILE_DIR = join(tmpdir(), `crm-smoke-profile-${CDP_PORT}`)
+const FIXTURES_ENABLED = process.env.SMOKE_ENABLE_FIXTURES === '1'
+
+/**
+ * 自测页（`/selftest-lazy-region.html`）会**故意**制造"代码块取不到"的失败
+ * （`/missing-region.js`、`/missing-page.js`）—— 那正是它要验的场景。
+ * React 会把错误边界接住的错误照样 `console.error` 出来，于是这些**预期输出**
+ * 会被"控制台报错"这条检查当成产品缺陷。
+ *
+ * 只放过**带这两个标记**的报错：自测页上真出别的错、或别的页面出任何错，
+ * 照样会被抓到（不要图省事按"当前页是自测页"整页跳过 —— 那会把真问题一起放过去）。
+ */
+const EXPECTED_SELFTEST_ERRORS =
+  /\/missing-(region|page)\.js|\/__lazy\/mod-|这一块的代码第一次故意取不到/
+
+function assertSafeTargets() {
+  const isLoopback = (value, label) => {
+    let hostname
+    try {
+      hostname = new URL(value).hostname.replace(/^\[|\]$/g, '')
+    } catch {
+      throw new Error(`${label} 不是有效 URL：${value}`)
+    }
+    if (!['localhost', '127.0.0.1', '::1'].includes(hostname)) {
+      throw new Error(`${label} 必须指向本机回环地址，当前为 ${hostname}`)
+    }
+  }
+
+  isLoopback(API_BASE, 'API_BASE')
+  isLoopback(APP_BASE, 'APP_BASE')
+
+  const dbUrl = process.env.DATABASE_URL
+  if (!dbUrl) throw new Error('必须显式设置 DATABASE_URL，避免清理脚本误连 backend/.env 中的数据库')
+  const match = dbUrl.match(/^[^:]+:\/\/(?:[^@/]+@)?([^/?]*)(?:\/[^?]*)?(?:\?(.*))?$/)
+  if (!match) throw new Error('DATABASE_URL 格式无法安全识别')
+  const rawHost = match[1]
+  const host = rawHost.startsWith('[')
+    ? rawHost.slice(1, rawHost.indexOf(']'))
+    : rawHost.split(':')[0]
+  const socketHost = new URLSearchParams(match[2] ?? '').get('host')
+  if (!['localhost', '127.0.0.1', '::1'].includes(host) && !(host === '' && socketHost?.startsWith('/'))) {
+    throw new Error('DATABASE_URL 必须指向本机回环地址或本机 Unix socket')
+  }
+
+  const enabled = (name) => ['1', 'true'].includes(String(process.env[name] ?? '').toLowerCase())
+  const disabled = (name) => ['0', 'false'].includes(String(process.env[name] ?? '').toLowerCase())
+  if (!enabled('DINGTALK_PUSH_OFF') || !enabled('WECOM_PUSH_OFF')) {
+    throw new Error('UI 冒烟要求 DINGTALK_PUSH_OFF=1 和 WECOM_PUSH_OFF=1')
+  }
+  if (!disabled('SCHEDULER_ENABLED')) throw new Error('UI 冒烟要求 SCHEDULER_ENABLED=false')
+  if (process.env.DEEPSEEK_API_KEY) throw new Error('UI 冒烟期间必须清空 DEEPSEEK_API_KEY')
+  if (FIXTURES_ENABLED && !dbUrl.toLowerCase().includes('test') && !dbUrl.toLowerCase().includes('smoke')) {
+    throw new Error('SMOKE_ENABLE_FIXTURES=1 仅允许用于数据库名称含 test 或 smoke 的一次性测试库')
+  }
+}
+
+/**
+ * 找后端用的 Python：优先项目自己的 venv，其次 PATH 上的 python3/python。
+ * CI 的 UI 冒烟 job 是把依赖装进系统 python 再起后端的，所以没有 venv 时
+ * 直接退回 PATH——两边都能跑。
+ */
+function resolvePython() {
+  const candidates =
+    process.platform === 'win32'
+      ? [join(BACKEND_DIR, '.venv', 'Scripts', 'python.exe')]
+      : [join(BACKEND_DIR, '.venv', 'bin', 'python')]
+  const venv = candidates.find((path) => existsSync(path))
+  return venv ?? (process.platform === 'win32' ? 'python' : 'python3')
+}
+
+/**
+ * 收尾：把本轮冒烟跑出来的站内通知/系统留痕清掉。
+ *
+ * 冒烟会走真实业务流程（建报价、提审批、建打样），这些动作会往账号里写
+ * 站内通知；以前跑完就留在那儿，下次谁登录谁看见。复用后端同一个清理脚本
+ * （`clean_test_run_leftovers.py`），**按本轮时间窗**清，窗口之前的一律不动。
+ *
+ * 清理失败要算失败（否则残留会一直悄悄攒）；但找不到 Python / 脚本时只提示，
+ * 不算失败——那是环境没跑后端的情况，不是"留下了垃圾"。
+ */
+function cleanTestResidue(startedAt) {
+  const script = join(BACKEND_DIR, 'scripts', 'clean_test_run_leftovers.py')
+  if (!existsSync(script)) {
+    console.log(`（提示：找不到 ${script}，跳过收尾清扫）`)
+    return
+  }
+  const result = spawnSync(resolvePython(), ['scripts/clean_test_run_leftovers.py'], {
+    cwd: BACKEND_DIR,
+    env: { ...process.env, TEST_RUN_STARTED_AT: startedAt, PYTHONPATH: '.' },
+    encoding: 'utf8',
+  })
+  if (result.error || result.status !== 0) {
+    console.log(
+      `✗ 收尾清扫失败（本轮可能留下站内通知）：${result.error?.message ?? result.stderr?.trim() ?? result.status}`,
+    )
+    process.exitCode = 1
+    return
+  }
+  const line = (result.stdout ?? '').trim().split('\n').filter(Boolean).pop() ?? ''
+  console.log(`✓ 收尾清扫：${line}`)
+}
+
+/**
+ * 给隔离库里的 SKU 补上「主数据已确认」——正式发送报价的前置条件。
+ *
+ * 为什么需要（2026-10-07）：正式发送前有一道硬校验，这版明细引用的主数据必须
+ * 已经确认过（`quote/service.ensure_items_master_confirmed`，口径：草稿随便建、
+ * 正式发送时必须过）。而本脚本用的 SKU 是 seed 造的演示数据、默认没有确认记录，
+ * 于是"自动建单"那步的发送被 422 拦下，后面订单详情、客户接受/拒绝一连串验收
+ * 全部连带失败。按项目规矩：**行为变更要改夹具，不是放宽规则**。
+ *
+ * 必须在**建任何报价明细之前**调用 —— 明细是生成时把主数据版本号一起快照下来的，
+ * 建完再补确认，那一版明细仍然是"未确认"（这正是那条规则要防的事）。
+ */
+function confirmSkuMaster() {
+  const script = join(BACKEND_DIR, 'scripts', 'confirm_sku_master.py')
+  if (!existsSync(script)) {
+    console.log(`（提示：找不到 ${script}，跳过主数据确认）`)
+    return
+  }
+  const result = spawnSync(resolvePython(), ['scripts/confirm_sku_master.py'], {
+    cwd: BACKEND_DIR,
+    env: { ...process.env, PYTHONPATH: '.' },
+    encoding: 'utf8',
+  })
+  if (result.error || result.status !== 0) {
+    console.log(
+      `✗ 主数据确认失败：${result.error?.message ?? result.stderr?.trim() ?? result.status}`,
+    )
+    process.exitCode = 1
+    return
+  }
+  const line = (result.stdout ?? '').trim().split('\n').filter(Boolean).pop() ?? ''
+  console.log(`✓ 主数据确认：${line}`)
+}
+
+/** 取列表接口里真实存在的记录，避免写死演示数据 id。 */
+async function firstRecord(path, token) {
+  try {
+    const response = await fetch(`${API_BASE}/api/v1${path}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    const body = await response.json()
+    const items = Array.isArray(body?.data) ? body.data : (body?.data?.items ?? [])
+    return items.length ? items[0] : null
+  } catch {
+    return null
+  }
+}
+
+async function firstId(path, token) {
+  return (await firstRecord(path, token))?.id ?? null
+}
+
+/**
+ * 给一版报价补一条**已确认**的运费（夹具公共步骤）。
+ *
+ * 为什么每个建报价的夹具都要调它（2026-10-09「产品价格与运费分离」）：
+ * 正式发送前有一道硬校验 `quote.service.ensure_freight_confirmed` ——
+ * 草稿允许没填运费，**正式发送必须已经确认具体金额**（空输入不等于已确认的
+ * 零运费）。本脚本多处夹具建完报价就点/调"标记已发送"，不补这一步会被 422
+ * 拦下，表现为"报价发送失败"，而真正的原因在运费上。
+ *
+ * ⚠️ 必须在**提交审批之前**调：版本一旦提交审批就不可编辑。
+ *
+ * 收口成一个函数是因为这条规则前后漏了三处（sampleSource / demandFlow /
+ * quoteLifecycle 各一处），每次都是"夹具没跟上行为变更"，不如只写一遍。
+ */
+async function ensureFixtureFreight(token, versionId, amount = 30) {
+  return checkedJson(`/quote-versions/${versionId}/charges`, token, {
+    method: 'POST',
+    body: JSON.stringify({
+      charge_type: 'logistics', description: '冒烟夹具运费', amount,
+    }),
+  })
+}
+
+async function checkedJson(path, token, options = {}) {
+  const response = await fetch(`${API_BASE}/api/v1${path}`, {
+    ...options,
+    headers: {
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+      Authorization: `Bearer ${token}`,
+      ...options.headers,
+    },
+  })
+  const body = await response.json()
+  if (!response.ok || body?.code !== 0) {
+    throw new Error(`${options.method ?? 'GET'} ${path}: ${body?.message ?? response.status}`)
+  }
+  return body.data
+}
+
+/**
+ * 报价中心为空时临时造一张报价（带 1 条明细），否则 What-if 面板只能截到空态。
+ * 返回新报价的 id；失败返回 null，由调用方跳过依赖它的用例。
+ */
+async function createSeedQuote(token, customerId) {
+  if (!customerId) return null
+  try {
+    const headers = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    }
+    // 报价必须挂商机（后端口径），所以先找一张现成商机；一张都没有就用传入的
+    // 客户建一张快捷商机。以前这里只传 customer_id，接口直接 40001，
+    // "报价中心为空时自动造一张"的兜底其实早就失效了。
+    let opportunityId = await firstId('/opportunities?page_size=1', token)
+    if (!opportunityId) {
+      const opp = await fetch(`${API_BASE}/api/v1/opportunities`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ customer_id: customerId, title: '冒烟用例快捷商机' }),
+      }).then((r) => r.json())
+      opportunityId = opp?.data?.id ?? null
+    }
+    if (!opportunityId) return null
+    const created = await fetch(`${API_BASE}/api/v1/quotes`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ opportunity_id: opportunityId }),
+    }).then((r) => r.json())
+    const quoteId = created?.data?.quote_id
+    const versionId = created?.data?.version_id
+    if (!quoteId || !versionId) return null
+    const skus = await fetch(`${API_BASE}/api/v1/pricing/sku-options`, { headers }).then((r) =>
+      r.json(),
+    )
+    const skuId = skus?.data?.[0]?.id
+    if (skuId) {
+      await fetch(`${API_BASE}/api/v1/quote-versions/${versionId}/items/batch`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify([{ sku_id: skuId, quantity: 3000, quoted_price: 28 }]),
+      })
+      // 运费分离（2026-10-09）：正式发送前必须已确认运费。
+      // 这条引子报价后面会被"标记已发送 / 提交审批"用到，所以一并补上，
+      // 否则发送会被 422 拦下、后面的界面断言跟着红。
+      await ensureFixtureFreight(token, versionId)
+    }
+    return quoteId
+  } catch {
+    return null
+  }
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * 订单中心为空时在测试数据中造一张订单，覆盖真实的订单详情页。
+ * 返回错误原因供主流程判失败，避免静默退回 /orders/1 后仍报冒烟通过。
+ */
+async function createOrderIfEmpty(token, customerId) {
+  try {
+    if (!customerId) throw new Error('没有可用于建单的客户')
+
+    let opportunityId = await firstId('/opportunities?page_size=1', token)
+    const skuId = await firstId('/pricing/sku-options', token)
+    if (!skuId) throw new Error('没有可用于建单的 SKU')
+    const priceResult = await checkedJson('/pricing/calculate', token, {
+      method: 'POST',
+      body: JSON.stringify({ sku_id: skuId, quantity: 100, customer_id: customerId }),
+    })
+    const quotePrice = Number(priceResult?.recommended_price)
+    if (!Number.isFinite(quotePrice) || quotePrice <= 0) {
+      throw new Error('核价接口未返回有效的建议价，不能创建测试订单')
+    }
+
+    if (!opportunityId) {
+      const opportunity = await checkedJson('/opportunities', token, {
+        method: 'POST',
+        body: JSON.stringify({ customer_id: customerId, title: 'UI 冒烟测试商机' }),
+      })
+      opportunityId = opportunity?.id
+      if (!opportunityId) throw new Error('创建测试商机没有返回 id')
+      await checkedJson(`/opportunities/${opportunityId}/items`, token, {
+        method: 'POST',
+        body: JSON.stringify({ sku_id: skuId, quantity: 100, target_price: quotePrice }),
+      })
+    }
+
+    // 报价必须关联商机；使用同一 SKU 的系统建议价，避免凭空编造价格或触发低价审批。
+    const created = await checkedJson('/quotes', token, {
+      method: 'POST',
+      body: JSON.stringify({ opportunity_id: opportunityId }),
+    })
+    const quoteId = created?.quote_id
+    const versionId = created?.version_id
+    if (!quoteId || !versionId) throw new Error('创建测试报价未返回报价或版本 id')
+
+    await checkedJson(`/quote-versions/${versionId}/items/batch`, token, {
+      method: 'POST',
+      body: JSON.stringify([{ sku_id: skuId, quantity: 100, quoted_price: quotePrice }]),
+    })
+    // 运费分离（2026-10-09）：正式发送前必须已经确认运费金额
+    // （`quote.service.ensure_freight_confirmed`）。本脚本要验的是订单详情页，
+    // 不是运费 —— 所以在这里补一条**已确认**的运费，让流程能走到标记发送那一步。
+    // 必须在提交审批**之前**加：版本一旦提交审批就不可编辑。
+    await ensureFixtureFreight(token, versionId)
+    const submitted = await checkedJson(`/quote-versions/${versionId}/submit-approval`, token, {
+      method: 'POST',
+      body: JSON.stringify({ reason: '仅用于本地 UI 冒烟' }),
+    })
+    if (submitted?.version?.approval_status !== 'approved') {
+      throw new Error(`测试报价未自动通过审批（状态 ${submitted?.version?.approval_status ?? '未知'}）`)
+    }
+
+    // 在一次性数据库内登记虚构的正式发送事实，再模拟客户接受；不调用外部服务。
+    await checkedJson(`/quote-versions/${versionId}/mark-sent`, token, {
+      method: 'POST', body: JSON.stringify({ channel: '本地验收', receiver: '虚构客户' }),
+    })
+    await checkedJson(`/quote-versions/${versionId}/accept`, token, { method: 'POST' })
+    // confirm=true：转订单会生成正式订单 + 全款应收，接口要求先确认（42206）。
+    // 冒烟脚本是"已确认后执行"的那一路，所以直接带上。
+    const converted = await checkedJson(
+      `/quote-versions/${versionId}/convert-to-order?confirm=true`,
+      token,
+      { method: 'POST', body: JSON.stringify({}) },
+    )
+    if (!converted?.order_id) throw new Error('报价转订单没有返回订单 id')
+    return { orderId: converted.order_id, quoteId, opportunityId }
+  } catch (error) {
+    return { orderId: null, quoteId: null, opportunityId: null, error: error.message }
+  }
+}
+
+/** 三类客户过程事实及原单入口，仅用于显式启用夹具的隔离库。 */
+async function createTimelineFixture(token, customerId, skuId) {
+  const post = (path, body) => checkedJson(path, token, {
+    method: 'POST', body: JSON.stringify(body),
+  })
+  const { order_id: orderId } = await post('/orders', {
+    customer_id: customerId, delivery_date: '2026-12-01',
+    items: [{ sku_id: skuId, quantity: 10, unit_price: 100 }],
+  })
+  await checkedJson(`/orders/${orderId}/milestones`, token)
+  const change = await post(`/orders/${orderId}/schedule-changes`, {
+    delivery_kind: 'shipping', new_delivery_date: '2026-12-08', reason: '客户时间线 UI 冒烟',
+  })
+  await post(`/orders/${orderId}/schedule-changes/${change.id}/confirm`, {})
+  const items = await checkedJson(`/orders/${orderId}/items`, token)
+  const batch = await post(`/orders/${orderId}/shipments`, {
+    items: [{ order_item_id: items[0].id, planned_qty: 10 }],
+  })
+  await post(`/orders/${orderId}/shipments/${batch.batch_id}/ship`, { actual_ship_date: '2026-10-05' })
+  const plan = await post(`/orders/${orderId}/receivables`, {
+    plan_name: 'UI 时间线应收', due_date: '2026-12-08', amount: 1000,
+  })
+  const payment = await post('/payments', {
+    receivable_plan_id: plan.id, received_date: '2026-10-05', received_amount: 100,
+  })
+  await post(`/payments/${payment.id}/confirm`, {})
+  const sample = await post('/samples', {
+    customer_id: customerId, items: [{ sku_id: skuId, quantity: 1 }],
+  })
+  await post(`/samples/${sample.id}/approve`, { approved: true })
+  await post(`/samples/${sample.id}/made`, {})
+  await post(`/samples/${sample.id}/ship`, { carrier: 'UI 测试物流', tracking_no: 'UI-SAMPLE' })
+  await post(`/samples/${sample.id}/sign`, {})
+  // confirm=true：登记客户确认结果是客户侧商务事实，接口要求先确认（42206）
+  await post(`/samples/${sample.id}/confirm?confirm=true`, {
+    accepted: true, remark: '客户时间线 UI 验证',
+  })
+  return { orderId, sampleId: sample.id }
+}
+
+/**
+ * 按可见文字点击页面元素。
+ *
+ * 有些交付物（商机看板、Copilot 抽屉）默认不出现，只有点一下才渲染出来；
+ * 只截图列表页等于没验证。这里按文字找元素再派发真实点击事件。
+ */
+async function clickByText(client, text, { tag = 'button' } = {}) {
+  const expression = `(() => {
+    const nodes = Array.from(document.querySelectorAll(${JSON.stringify(tag)}));
+    const hit = nodes.find((node) => (node.innerText || '').trim() === ${JSON.stringify(text)});
+    if (!hit) return 'not-found';
+    hit.click();
+    return 'clicked';
+  })()`
+  const deadline = Date.now() + 8000
+  do {
+    const result = await client.send('Runtime.evaluate', { expression, returnByValue: true })
+    if (result.result.value === 'clicked') return 'clicked'
+    await sleep(250)
+  } while (Date.now() < deadline)
+  return 'not-found'
+}
+
+/**
+ * 点掉一层二次确认（Semi Popconfirm 的「确定」）。
+ *
+ * 为什么需要（2026-10-07）：正式下单 2026-10-06 起加了二次确认
+ * （主人当时定的范围明确包含「正式下单」——它会真的建订单、进入履约、不能一键撤回），
+ * Popconfirm 的按钮默认就是「确定」。脚本原来点完"确认正式下单"就在等报错，
+ * 二次确认没点掉、请求根本没发出去，于是表现成"未观察到数量不符阻断"。
+ * **功能是好的，是脚本没跟上那次改版。**
+ *
+ * 限定在 `.semi-popconfirm` 里找按钮，避免误点到页面上别的「确定」。
+ */
+async function clickPopconfirm(client, label = '确定') {
+  const result = await client.send('Runtime.evaluate', {
+    expression: `(() => {
+      const root = document.querySelector('.semi-popconfirm');
+      if (!root) return 'no-popconfirm';
+      const btn = Array.from(root.querySelectorAll('button'))
+        .find((node) => (node.innerText || '').trim() === ${JSON.stringify(label)});
+      if (!btn) return 'no-button';
+      btn.click();
+      return 'clicked';
+    })()`,
+    returnByValue: true,
+  })
+  return result.result.value
+}
+
+/** 等某个文字在页面上出现（交互后用它确认结果真的渲染了）。 */
+/**
+ * 往"按 placeholder 能认出来的那个输入框"里填字（走原生 setter + input 事件）。
+ *
+ * 为什么需要它：报价「标记已发送」的**收件人现在必填**（2026-10-12 重做，
+ * 原来可留空 → 事后无从查证发给了谁）。冒烟造的这份报价没有客户联系人，
+ * 所以要在手填框里写一个名字，否则确认键会被拦下、整个发送流程走不通。
+ *
+ * 为什么不是 `el.value = x`：React 受控输入框直接赋值**不会触发 onChange**，
+ * 值看着填进去了、state 还是空的 —— 那是这类脚本最经典的假绿。
+ * 必须用原型上的原生 setter 再派发 `input` 事件。
+ */
+async function fillByPlaceholder(client, placeholderPart, value) {
+  const expression = `(() => {
+    const inputs = Array.from(document.querySelectorAll('input, textarea'));
+    const hit = inputs.find((el) => (el.placeholder || '').includes(${JSON.stringify(placeholderPart)}));
+    if (!hit) return 'not-found';
+    const proto = hit instanceof HTMLTextAreaElement
+      ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+    setter.call(hit, ${JSON.stringify(value)});
+    hit.dispatchEvent(new Event('input', { bubbles: true }));
+    return 'filled';
+  })()`
+  const deadline = Date.now() + 8000
+  do {
+    const result = await client.send('Runtime.evaluate', { expression, returnByValue: true })
+    if (result.result.value === 'filled') return 'filled'
+    await sleep(250)
+  } while (Date.now() < deadline)
+  return 'not-found'
+}
+
+/**
+ * 点开"某个字段标签下面那一格"的下拉，并选中指定文案的选项。
+ *
+ * 为什么不能按位置索引取下拉：弹窗里有渠道、收件人两个下拉，位置会随实现变
+ * （我自己写验证脚本时就因为按索引取错、得到过假结论）。
+ * 这里按**字段标签**定位：找那个 `div`，它的直接子节点里有 `.send-field-label`
+ * 且文字命中，再取它里面的 `.semi-select`。
+ *
+ * ⚠️ 收件人这一格是**三态**（2026-10-12 重做时定的）：
+ * 没选 → 只有占位提示、**没有输入框**；选了「其他（手动填写）」→ 才露出输入框；
+ * 选了某个联系人 → 只显示联系人。所以"填名字"之前必须先选那一项 ——
+ * 直接找输入框会找不到（CI 上就是这么红的）。
+ */
+async function pickInFieldDropdown(client, labelPart, optionText) {
+  const open = `(() => {
+    const box = Array.from(document.querySelectorAll('.semi-modal-content div'))
+      .find((d) => {
+        // ⚠️ 标签有两种写法，都要认（2026-10-13）：
+        //   · 老写法：手写的 div，class 是 send-field-label；
+        //   · 新写法：共用件 FormLabel，class 透传成同一个 send-field-label。
+        // 只认第一种时，把标签换成共用件就会让这条断言红 —— 而红的表象是
+        // "收件人下拉没选到「其他（手动填写）」"，看着像弹窗坏了，其实是判据太窄。
+        // （这段在模板字符串里，注释里千万别写反引号 —— 会把模板提前闭合，
+        //   我第一版就是这么写的，node --check 直接报 Unexpected identifier。）
+        const lb = d.querySelector(':scope > .send-field-label');
+        if (!lb) return false;
+        // 直接文本要含（子元素里的星号/hint 不算干扰）
+        return (lb.innerText || '').includes(${JSON.stringify(labelPart)});
+      });
+    if (!box) return 'no-field';
+    const sel = box.querySelector('.semi-select');
+    if (!sel) return 'no-select';
+    sel.click();
+    return 'opened';
+  })()`
+  let deadline = Date.now() + 8000
+  let opened = false
+  do {
+    const r = await client.send('Runtime.evaluate', { expression: open, returnByValue: true })
+    if (r.result.value === 'opened') { opened = true; break }
+    await sleep(250)
+  } while (Date.now() < deadline)
+  if (!opened) return 'no-field'
+  await sleep(400)
+  const choose = `(() => {
+    const hit = Array.from(document.querySelectorAll('.semi-select-option'))
+      .find((o) => (o.innerText || '').includes(${JSON.stringify(optionText)}));
+    if (!hit) return 'no-option';
+    hit.click();
+    return 'picked';
+  })()`
+  deadline = Date.now() + 8000
+  do {
+    const r = await client.send('Runtime.evaluate', { expression: choose, returnByValue: true })
+    if (r.result.value === 'picked') return 'picked'
+    await sleep(250)
+  } while (Date.now() < deadline)
+  return 'no-option'
+}
+
+async function waitForText(client, text, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const result = await client.send('Runtime.evaluate', {
+      expression: `document.body.innerText.includes(${JSON.stringify(text)})`,
+      returnByValue: true,
+    })
+    if (result.result.value) return true
+    await sleep(250)
+  }
+  return false
+}
+
+/** 第十二批返修界面：只在显式允许的一次性库里造夹具。 */
+async function checkTwelfthRepairs(client, auth, problems) {
+  if (!FIXTURES_ENABLED) return
+  const previousProblems = problems.length
+  const prefix = `SMOKE12R-${Date.now()}`
+  const post = (path, body) => checkedJson(path, auth.token, {method: 'POST', body: JSON.stringify(body)})
+  const users = await checkedJson('/users?page_size=100', auth.token)
+  const owner = users.items.find((user) => user.username === 'zhangsan' && user.status === 'active')
+  if (!owner) throw new Error('第十二批 UI 验收缺在职业务员夹具')
+  const customer = await post('/customers', {name: `${prefix}客户`, owner_id: owner.id})
+  const stages = await checkedJson('/opportunity-stages', auth.token)
+  const sequence = Math.min(...stages.map((stage) => stage.sequence)) - 100
+  const source = await post('/opportunity-stages', {code: `${prefix}S`, name: `${prefix}起点`, sequence})
+  const disabled = await post('/opportunity-stages', {code: `${prefix}D`, name: `${prefix}停用`, sequence: sequence + 1})
+  const target = await post('/opportunity-stages', {code: `${prefix}T`, name: `${prefix}目标`, sequence: sequence + 2})
+  const opportunity = await post('/opportunities', {customer_id: customer.id, title: `${prefix}商机`, stage_id: source.id})
+  if (opportunity.owner_id !== owner.id || opportunity.owner_name !== owner.name) problems.push('12-R6 新建返回的继承负责人 ID/姓名不一致')
+  await checkedJson(`/opportunity-stages/${disabled.id}`, auth.token, {method: 'DELETE'})
+  await client.send('Page.navigate', {url: `${APP_BASE}/opportunities/${opportunity.id}`})
+  if (!await waitForText(client, `负责人：${owner.name}`)) problems.push('12-R6 详情负责人展示错误')
+  if (await clickByText(client, '推进阶段') !== 'clicked') throw new Error('12-R2 无法打开推进阶段弹窗')
+  if (!await waitForText(client, '选择目标阶段')) throw new Error('12-R2 推进阶段弹窗没有加载')
+  const opened = await client.send('Runtime.evaluate', {
+    expression: `(() => {const select=document.querySelector('.semi-modal .semi-select'); if (!select) return false; select.click(); return true})()`, returnByValue: true,
+  })
+  if (!opened.result.value) throw new Error('12-R2 找不到阶段选择控件')
+  await sleep(400)
+  const options = await client.send('Runtime.evaluate', {
+    expression: `Array.from(document.querySelectorAll('.semi-select-option')).map(option=>option.innerText.trim())`, returnByValue: true,
+  })
+  const forbidden = [disabled, ...stages.filter((stage) => stage.status !== 'active' || stage.is_win || stage.is_loss)]
+  if (!options.result.value.includes(target.name) || forbidden.some((stage) => options.result.value.includes(stage.name))) problems.push('12-R2 阶段下拉包含停用/终态目标，或遗漏合法目标')
+  let shot = await client.send('Page.captureScreenshot', {format: 'png'})
+  writeFileSync(join(OUT_DIR, '46-twelfth-stage-options.png'), Buffer.from(shot.data, 'base64'))
+  await client.send('Page.navigate', {url: `${APP_BASE}/opportunities?keyword=${encodeURIComponent(prefix)}`})
+  if (!await waitForText(client, opportunity.title)) throw new Error('12-R6 列表没有加载测试商机')
+  const row = await client.send('Runtime.evaluate', {
+    expression: `Array.from(document.querySelectorAll('tr')).find(row=>row.innerText.includes(${JSON.stringify(opportunity.title)}))?.innerText ?? ''`, returnByValue: true,
+  })
+  if (!row.result.value.includes(owner.name)) problems.push('12-R6 列表负责人展示错误')
+  if (await clickByText(client, '看板') !== 'clicked') throw new Error('12-R2 无法打开看板')
+  if (!await waitForText(client, '已停用')) problems.push('12-R2 看板未保留停用阶段标识')
+  const moved = await client.send('Runtime.evaluate', {
+    expression: `(() => {const title=Array.from(document.querySelectorAll('div')).find(el=>el.childElementCount===0 && el.innerText===${JSON.stringify(opportunity.title)}); const link=Array.from(title?.parentElement.querySelectorAll('a, button')??[]).find(el=>el.innerText.trim()==='推进 →'); if (!link) return false; link.click(); return true})()`, returnByValue: true,
+  })
+  if (!moved.result.value || !await waitForText(client, `已推进到「${target.name}」`)) problems.push('12-R2 看板推进未跳过停用阶段')
+  const saved = await checkedJson(`/opportunities/${opportunity.id}`, auth.token)
+  if (saved.stage_id !== target.id) problems.push('12-R2 看板推进没有落到合法普通阶段')
+  shot = await client.send('Page.captureScreenshot', {format: 'png'})
+  writeFileSync(join(OUT_DIR, '47-twelfth-board-owner.png'), Buffer.from(shot.data, 'base64'))
+  console.log(`${problems.length === previousProblems ? '✓' : '✗'} 第十二批 UI：阶段下拉、看板跳过停用阶段、负责人展示已验证`)
+}
+
+/** 往一个受控输入框里填值（Semi 受控组件：直接改 .value 不触发，得走原生 setter）。 */
+async function fillInput(client, selector, value) {
+  const result = await client.send('Runtime.evaluate', {
+    expression: `(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return null;
+      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      set.call(el, ${JSON.stringify(value)});
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      return el.value;
+    })()`,
+    returnByValue: true,
+  })
+  return result.result.value
+}
+
+/**
+ * 自测页：页面内「按需加载的一小块」失败时，**不能把整页连表单一起顶掉**
+ * （第九批复审 §9.11 的第二条）。
+ *
+ * 这里**必须断言输入框里的值还在** —— 只断言"没有整页刷新"是不够的：
+ * 修之前确实不刷新了，但错误边界把整页换成了提示，表单连同值一起被卸载，
+ * 用户填的东西在点「重新加载」之前就已经没了。所以判据是"值还在不在"，
+ * 不是"刷没刷新"。
+ *
+ * 顺带验路由级那条老口径没被破坏：**首次**加载失败仍自动刷新一次，但只刷一次。
+ */
+async function checkLazyRegionSelfTest(client, problems) {
+  await client.send('Runtime.evaluate', {
+    expression:
+      "try { sessionStorage.removeItem('selftest-loads'); sessionStorage.removeItem('crm-chunk-reload:/selftest-lazy-region.html'); } catch (e) {}",
+  })
+  await client.send('Page.navigate', { url: `${APP_BASE}/selftest-lazy-region.html` })
+  if (!await waitForText(client, '未保存的内容', 15000)) {
+    problems.push('自测页：打不开（第二个入口没被 vite 服务？）')
+    return
+  }
+
+  // ① 填一段"未保存的内容"
+  const typed = await fillInput(client, '#selftest-name', '王五-填了一半')
+  if (typed !== '王五-填了一半') {
+    problems.push('自测页：没法往输入框里填内容')
+    return
+  }
+
+  // ② 让那一块去加载 —— 它第一次必定取不到代码
+  await clickByText(client, '让那一块去加载')
+  if (!await waitForText(client, '没能加载出来', 8000)) {
+    problems.push('自测页：局部加载失败没有提示（局部兜底没生效）')
+    return
+  }
+
+  // ③ 核心断言：表单还在、值没丢、整页没被替换
+  const survived = await client.send('Runtime.evaluate', {
+    expression: `JSON.stringify({
+      formStillThere: Boolean(document.querySelector('#selftest-name')),
+      value: document.querySelector('#selftest-name')?.value ?? null,
+      pageKept: document.body.innerText.includes('按需加载区域的局部兜底'),
+      regionExplains: document.body.innerText.includes('都还在'),
+    })`,
+    returnByValue: true,
+  })
+  const state = JSON.parse(survived.result.value)
+  if (!state.formStillThere || state.value !== '王五-填了一半') {
+    problems.push(
+      `自测页：局部资源失败把表单弄丢了（输入框在=${state.formStillThere}，值=${state.value}）`,
+    )
+  }
+  if (!state.pageKept) problems.push('自测页：局部失败把整页替换掉了')
+  if (!state.regionExplains) problems.push('自测页：局部失败没有说清「其他内容还在」')
+
+  // ④ 局部重试：只把那一块重新拉一次
+  await clickByText(client, '重新加载这一块')
+  if (!await waitForText(client, '这一块已经加载出来了', 8000)) {
+    problems.push('自测页：局部重试没有把那一块加载出来')
+  }
+
+  // ⑤ 重试之后继续填写、提交都要正常
+  if (await fillInput(client, '#selftest-name', '李四-重试后') !== '李四-重试后') {
+    problems.push('自测页：局部失败之后输入框不能用了')
+  } else if (!await clickByText(client, '提交') || !await waitForText(client, '已提交：李四-重试后', 5000)) {
+    problems.push('自测页：局部失败之后提交结果不对')
+  }
+
+  // ⑥ 首次加载失败：自动刷新一次就够，绝不无限刷新
+  await client.send('Runtime.evaluate', {
+    expression:
+      "try { sessionStorage.removeItem('selftest-loads'); sessionStorage.removeItem('crm-chunk-reload:/selftest-lazy-region.html'); } catch (e) {}",
+  })
+  await client.send('Page.navigate', { url: `${APP_BASE}/selftest-lazy-region.html?fail=1` })
+  await sleep(4000)
+  const loads = await client.send('Runtime.evaluate', {
+    expression: "Number(sessionStorage.getItem('selftest-loads') || '0')",
+    returnByValue: true,
+  })
+  if (loads.result.value !== 2) {
+    problems.push(
+      `自测页：首次加载失败的自动刷新次数不对（应为 2 次页面加载，实际 ${loads.result.value}）`,
+    )
+  }
+  if (!await waitForText(client, '重新加载', 8000)) {
+    problems.push('自测页：首次加载失败没有给出可点的重新加载入口')
+  }
+  if (!await waitForText(client, '没有被提交', 5000)) {
+    problems.push('自测页：整页刷新前没有提示未保存内容的影响')
+  }
+
+  const shot = await client.send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT_DIR, '55-lazy-region-boundary.png'), Buffer.from(shot.data, 'base64'))
+  console.log(`✓ [交互] /selftest-lazy-region.html + 局部资源失败 → ${join(OUT_DIR, '55-lazy-region-boundary.png')}`)
+}
+
+/**
+ * 临时小服务：给自测页提供"真实会失败、之后会恢复"的模块地址。
+ *
+ * 为什么不能再用"第一次主动抛错"那种假失败：它只证明了"重挂 React 组件能成功"，
+ * 没证明**浏览器还会不会再去取那个失败的模块**。实测结论是**不会** ——
+ * 浏览器把失败的模块地址记在**模块映射**里，同一地址再 `import()` 连请求都不发
+ * （脚本这里靠服务端**请求计数**断言，不靠猜）。
+ *
+ * - `/__lazy/mod-transient.js`：先 503；`/__lazy/recover` 之后返回 200；
+ * - `/__lazy/mod-gone.js`：一直 404（发版后旧代码块已经不在了）；
+ * - 传了 `staticRoot` 就顺带托管一份静态产物（生产构建那一轮用，页面与模块同源）。
+ */
+const LAZY_MODULE_SOURCE = `export default function Loaded() {
+  return window.__React.createElement(
+    'div',
+    { className: 'lazy-region-ok' },
+    '这一块已经加载出来了',
+  )
+}`
+
+const STATIC_CONTENT_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.mjs': 'application/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
+}
+
+async function startLazyModuleServer({ staticRoot = null } = {}) {
+  const state = { requests: [] } // { method, url }
+  let recovered = false
+
+  const server = createServer((request, response) => {
+    const url = request.url || '/'
+    const path = url.split('?')[0]
+    state.requests.push({ method: request.method || 'GET', url })
+    response.setHeader('Cache-Control', 'no-store')
+    // 开发服务那一轮页面在前端 dev server（5274），模块在这个服务上 → 跨域，
+    // 动态 import 与探测都需要放行
+    response.setHeader('Access-Control-Allow-Origin', '*')
+
+    if (path === '/__lazy/recover') {
+      recovered = true
+      response.writeHead(200, { 'Content-Type': 'text/plain' })
+      response.end('recovered')
+      return
+    }
+    if (path === '/__lazy/mod-transient.js') {
+      if (!recovered) {
+        response.writeHead(503, { 'Content-Type': 'text/plain' })
+        response.end('temporarily unavailable')
+        return
+      }
+      response.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8' })
+      response.end(LAZY_MODULE_SOURCE)
+      return
+    }
+    if (path === '/__lazy/mod-gone.js') {
+      response.writeHead(404, { 'Content-Type': 'text/plain' })
+      response.end('this chunk is gone')
+      return
+    }
+    if (staticRoot) {
+      const target = join(staticRoot, path === '/' ? 'index.html' : decodeURIComponent(path))
+      if (target.startsWith(staticRoot) && existsSync(target) && statSync(target).isFile()) {
+        response.writeHead(200, {
+          'Content-Type': STATIC_CONTENT_TYPES[extname(target)] ?? 'application/octet-stream',
+        })
+        response.end(readFileSync(target))
+        return
+      }
+    }
+    response.writeHead(404, { 'Content-Type': 'text/plain' })
+    response.end('not found')
+  })
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address()
+  return {
+    state,
+    origin: `http://127.0.0.1:${port}`,
+    url: (path) => `http://127.0.0.1:${port}${path}`,
+    recover: () => {
+      recovered = true
+    },
+    close: () => new Promise((resolve) => server.close(resolve)),
+  }
+}
+
+/** 读一次自测页的现场：输入框的值还在不在、整页有没有被替换。 */
+async function readSelftestState(client) {
+  const result = await client.send('Runtime.evaluate', {
+    expression: `JSON.stringify({
+      formStillThere: Boolean(document.querySelector('#selftest-name')),
+      value: document.querySelector('#selftest-name')?.value ?? null,
+      pageKept: document.body.innerText.includes('按需加载区域的局部兜底'),
+    })`,
+    returnByValue: true,
+  })
+  return JSON.parse(result.result.value)
+}
+
+/** 那一块的"已经加载出来了"是否出现（两种模式共用同一句文案）。 */
+const REGION_OK_TEXT = '这一块已经加载出来了'
+
+/**
+ * 真实网络失败场景（本轮复核补的那条），开发服务与生产产物各跑一遍。
+ *
+ * 三轮断言：① 服务端**真的收到了**第一次请求；② 点重试后服务端**又收到了新的请求**
+ * 且带上了换地址用的参数；③ 全程用户填的内容都在。另一条反例是"地址已经不存在"——
+ * 界面必须改口成「刷新页面」，不能给一个永远点不通的重试。
+ *
+ * @param resolveModule 把服务端路径变成页面能用的模块地址：
+ *                      开发那一轮要绝对地址（跨域），生产那一轮用相对路径（同源）。
+ */
+async function runLazyRegionNetworkScenario(client, problems, options) {
+  const { pageBase, server, resolveModule, tag, shotFile } = options
+
+  const openPage = async (modulePath) => {
+    await client.send('Runtime.evaluate', {
+      expression: "try { sessionStorage.clear() } catch (e) {}",
+    })
+    await client.send('Page.navigate', {
+      url: `${pageBase}/selftest-lazy-region.html?region=${encodeURIComponent(resolveModule(modulePath))}`,
+    })
+    return waitForText(client, '未保存的内容', 15000)
+  }
+
+  // ── ① 服务先不可用，恢复后点「重新加载这一块」必须真的再发一次请求 ──
+  if (!await openPage('/__lazy/mod-transient.js')) {
+    problems.push(`${tag}：自测页打不开（带 ?region= 的入口）`)
+    return
+  }
+  if (await fillInput(client, '#selftest-name', '赵六-网络重试前') !== '赵六-网络重试前') {
+    problems.push(`${tag}：没法往输入框里填内容`)
+    return
+  }
+  await clickByText(client, '让那一块去加载')
+  if (!await waitForText(client, '没能加载出来', 8000)) {
+    problems.push(`${tag}：模块取不到时没有给出局部提示`)
+    return
+  }
+  const firstFetch = server.state.requests.filter(
+    (item) => item.method === 'GET' && item.url.includes('/__lazy/mod-transient.js'),
+  )
+  if (firstFetch.length < 1) {
+    problems.push(`${tag}：那一块根本没有真的去取模块（服务端没收到请求）`)
+  }
+  let state = await readSelftestState(client)
+  if (!state.formStillThere || state.value !== '赵六-网络重试前') {
+    problems.push(`${tag}：失败后表单值丢了（输入框在=${state.formStillThere}，值=${state.value}）`)
+  }
+  if (!state.pageKept) problems.push(`${tag}：局部失败把整页替换掉了`)
+
+  // 服务恢复 → 点重试
+  server.recover()
+  const beforeRetry = server.state.requests.length
+  await clickByText(client, '重新加载这一块')
+  if (!await waitForText(client, REGION_OK_TEXT, 10000)) {
+    problems.push(`${tag}：服务恢复后点重试仍然没有加载出来`)
+  }
+  const retryRequests = server.state.requests
+    .slice(beforeRetry)
+    .filter((item) => item.method === 'GET' && item.url.includes('__lazy_retry='))
+  if (retryRequests.length === 0) {
+    problems.push(
+      `${tag}：重试没有向服务器发出**新的**请求 —— 浏览器把失败的模块地址记在模块映射里，`
+      + '同一个地址再取连请求都不发，必须换一个新地址（带 __lazy_retry 参数）',
+    )
+  }
+  state = await readSelftestState(client)
+  if (state.value !== '赵六-网络重试前') {
+    problems.push(`${tag}：重试成功后表单值丢了（值=${state.value}）`)
+  }
+
+  // ── ② 地址已经不存在 → 不给点不完的重试，改口让用户刷新，内容保留 ──
+  if (!await openPage('/__lazy/mod-gone.js')) {
+    problems.push(`${tag}：自测页（地址已不存在那一路）打不开`)
+    return
+  }
+  await fillInput(client, '#selftest-name', '钱七-旧版本')
+  await clickByText(client, '让那一块去加载')
+  if (!await waitForText(client, '已经没有了', 8000)) {
+    problems.push(`${tag}：地址已不存在时，没有说清「这块代码在当前版本里已经没有了」`)
+  }
+  const goneResult = await client.send('Runtime.evaluate', {
+    expression: `JSON.stringify({
+      value: document.querySelector('#selftest-name')?.value ?? null,
+      hasReload: document.body.innerText.includes('刷新页面'),
+      hasRetry: document.body.innerText.includes('重新加载这一块'),
+    })`,
+    returnByValue: true,
+  })
+  const gone = JSON.parse(goneResult.result.value)
+  if (gone.value !== '钱七-旧版本') {
+    problems.push(`${tag}：地址已不存在时表单值丢了（值=${gone.value}）`)
+  }
+  if (!gone.hasReload) problems.push(`${tag}：地址已不存在时没有给出「刷新页面」这一步`)
+  if (gone.hasRetry) {
+    problems.push(`${tag}：地址已不存在时还挂着「重新加载这一块」—— 那是一个永远点不通的重试`)
+  }
+
+  const shot = await client.send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT_DIR, shotFile), Buffer.from(shot.data, 'base64'))
+  console.log(`✓ [交互] ${tag} → ${join(OUT_DIR, shotFile)}`)
+}
+
+/** 开发服务上的真实网络失败（页面在 vite dev server，模块在脚本起的小服务上）。 */
+async function checkLazyRegionNetworkRetry(client, problems) {
+  const server = await startLazyModuleServer()
+  try {
+    await runLazyRegionNetworkScenario(client, problems, {
+      pageBase: APP_BASE,
+      server,
+      resolveModule: (path) => server.url(path),
+      tag: '自测页（真实网络·开发服务）',
+      shotFile: '56-lazy-region-network-dev.png',
+    })
+  } finally {
+    await server.close()
+  }
+}
+
+/**
+ * 同一套断言再在**生产构建产物**上跑一遍。
+ *
+ * 复核方要求"防止方案只在开发服务里有效"：自测页刻意不进主包，主构建的产物里
+ * 没有它，所以这里用第二份构建配置单独把它打成生产产物（`vite.selftest.config.ts`），
+ * 再由脚本自己起的静态服务托管 —— 页面与模块同源，和线上更像。
+ */
+async function checkLazyRegionProdBuild(client, problems) {
+  const viteBin = join(REPO_DIR, 'frontend', 'node_modules', 'vite', 'bin', 'vite.js')
+  if (!existsSync(viteBin)) {
+    problems.push('自测页生产构建：找不到 vite（前端依赖没装？）')
+    return
+  }
+  const outDir = join(tmpdir(), 'crm-lazy-selftest-dist')
+  rmSync(outDir, { recursive: true, force: true })
+  const built = spawnSync(process.execPath, [viteBin, 'build', '--config', 'vite.selftest.config.ts'], {
+    cwd: join(REPO_DIR, 'frontend'),
+    env: { ...process.env, SELFTEST_OUT: outDir },
+    encoding: 'utf8',
+  })
+  if (built.status !== 0) {
+    problems.push(
+      `自测页生产构建失败：${(built.error?.message || built.stderr || built.stdout || '').slice(-400)}`,
+    )
+    return
+  }
+
+  const server = await startLazyModuleServer({ staticRoot: outDir })
+  try {
+    await runLazyRegionNetworkScenario(client, problems, {
+      pageBase: server.origin,
+      server,
+      resolveModule: (path) => path, // 同源，用相对路径即可
+      tag: '自测页（真实网络·生产构建产物）',
+      shotFile: '57-lazy-region-network-prod.png',
+    })
+  } finally {
+    await server.close()
+    rmSync(outDir, { recursive: true, force: true })
+  }
+}
+
+async function apiLogin() {
+  const response = await fetch(`${API_BASE}/api/v1/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: USERNAME, password: PASSWORD }),
+  })
+  const body = await response.json()
+  if (body.code !== 0) {
+    throw new Error(`登录失败：${body.message}`)
+  }
+  const token = body.data.access_token
+  const meResponse = await fetch(`${API_BASE}/api/v1/auth/me`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  const me = (await meResponse.json()).data
+  return { token, user: me }
+}
+
+async function waitForCdp() {
+  // CI 机器忙时 Chrome 启动能超 15 秒，上限放宽到 60 秒（2026-11-16 晚 browser timeout 假红）
+  for (let i = 0; i < 240; i += 1) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`)
+      if (response.ok) return
+    } catch {
+      // 浏览器还没起来，继续等
+    }
+    await sleep(250)
+  }
+  throw new Error('浏览器调试端口没有就绪')
+}
+
+async function openTarget(url) {
+  const response = await fetch(
+    `http://127.0.0.1:${CDP_PORT}/json/new?${encodeURIComponent(url)}`,
+    { method: 'PUT' },
+  )
+  if (!response.ok) throw new Error(`创建标签页失败：${response.status}`)
+  return response.json()
+}
+
+function connect(wsUrl) {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(wsUrl)
+    const pending = new Map()
+    const listeners = []
+    let nextId = 1
+
+    socket.addEventListener('open', () =>
+      resolve({
+        send(method, params = {}) {
+          const id = nextId
+          nextId += 1
+          return new Promise((res, rej) => {
+            const timer = setTimeout(() => {
+              pending.delete(id)
+              rej(new Error(`浏览器命令 ${method} 超过 60 秒未响应`))
+            }, 60000)
+            pending.set(id, { resolve: res, reject: rej, timer })
+            socket.send(JSON.stringify({ id, method, params }))
+          })
+        },
+        on(listener) {
+          listeners.push(listener)
+        },
+        close() {
+          socket.close()
+        },
+      }),
+    )
+    socket.addEventListener('error', () => reject(new Error('无法连接浏览器调试接口')))
+    socket.addEventListener('message', (event) => {
+      const message = JSON.parse(event.data)
+      if (message.id && pending.has(message.id)) {
+        const { resolve: res, reject: rej, timer } = pending.get(message.id)
+        clearTimeout(timer)
+        pending.delete(message.id)
+        if (message.error) rej(new Error(JSON.stringify(message.error)))
+        else res(message.result)
+        return
+      }
+      for (const listener of listeners) listener(message)
+    })
+  })
+}
+
+async function main() {
+  assertSafeTargets()
+  // 上次运行卡死时浏览器可能还占着这个目录（2026-11-17 实测连撞两次 ENOTEMPTY）：
+  // 清不掉也别当场死，交给启动等待报「调试端口没有就绪」——那才是人看得懂的错误。
+  try {
+    rmSync(PROFILE_DIR, { recursive: true, force: true })
+  } catch (error) {
+    console.log(`（提示：残留的临时目录没清掉（${error.code ?? error.message}），继续尝试启动浏览器）`)
+  }
+  mkdirSync(OUT_DIR, { recursive: true })
+  // 收尾清扫的时间窗起点：本脚本之前产生的通知一律不动
+  const runStartedAt = new Date().toISOString()
+
+  const auth = await apiLogin()
+  console.log(`✓ 接口登录成功：${auth.user.name}（${auth.user.roles.join(',')}）`)
+  // 按真实数据组装用例
+  const [customer, opportunity, product, quote, sku, firstOrder, sample] = await Promise.all([
+    firstRecord('/customers', auth.token),
+    firstRecord('/opportunities', auth.token),
+    firstRecord('/products', auth.token),
+    firstRecord('/quotes', auth.token),
+    firstRecord('/pricing/sku-options', auth.token),
+    firstRecord('/orders', auth.token),
+    firstRecord('/samples', auth.token),
+  ])
+  const customerId = customer?.id ?? null
+  let opportunityId = opportunity?.id ?? null
+  const productId = product?.id ?? null
+  const skuId = sku?.id ?? null
+  let quoteId = quote?.id ?? null
+  let orderId = firstOrder?.id ?? null
+  const setupProblems = []
+
+  // 建任何报价明细之前，先把 SKU 的主数据确认掉（明细生成时会把主数据版本号
+  // 快照下来，晚一步补确认，这一版明细照样会被"未确认"拦在正式发送那一步）。
+  if (FIXTURES_ENABLED) confirmSkuMaster()
+
+  // 订单中心为空时必须成功造单；失败要让 UI 冒烟失败，不能静默退回 /orders/1。
+  if (!orderId) {
+    if (!FIXTURES_ENABLED) {
+      setupProblems.push('订单为空；仅在一次性测试库显式设置 SMOKE_ENABLE_FIXTURES=1 后才会创建测试订单')
+    } else {
+      const created = await createOrderIfEmpty(auth.token, customerId)
+      orderId = created.orderId
+      quoteId ??= created.quoteId
+      opportunityId ??= created.opportunityId
+      if (orderId) console.log(`✓ 订单中心为空，已在测试库造出订单 #${orderId}`)
+      else setupProblems.push(`自动建单失败：${created.error}`)
+    }
+  }
+  if (!quoteId) {
+    if (!FIXTURES_ENABLED) {
+      setupProblems.push('没有报价；仅在一次性测试库显式设置 SMOKE_ENABLE_FIXTURES=1 后才会创建测试报价')
+    } else {
+      quoteId = await createSeedQuote(auth.token, customerId)
+      if (!quoteId) setupProblems.push('没有可用于报价详情/What-if 验收的报价')
+    }
+  }
+  if (!customerId) setupProblems.push('没有可用于客户详情验收的客户')
+  if (!opportunityId) setupProblems.push('没有可用于商机详情验收的商机')
+  if (!productId) setupProblems.push('没有可用于产品详情验收的产品')
+  if (!skuId) setupProblems.push('没有可用于核价/物流验收的 SKU')
+  if (!orderId) setupProblems.push('没有可用于订单详情验收的订单')
+  const PAGES = [
+    { path: '/workbench', name: '01-workbench', expectText: '我的待办' },
+    { path: '/analytics', name: '02-analytics', expectText: '数据分析' },
+    { path: '/leads', name: '03-leads', expectText: '线索中心' },
+    { path: '/customers', name: '04-customers', expectText: '客户中心' },
+    // 撞单裁定（验收20）：系统摆证据、归属由人裁定
+    { path: '/duplicate-cases', name: '04b-duplicate-cases', expectText: '撞单裁定' },
+    { path: `/customers/${customerId ?? 1}`, name: '05-customer-detail', expectText: customer?.name ?? '客户不存在' },
+    { path: `/customers/${customerId ?? 1}?tab=files`, name: '05b-customer-files', expectText: '合同、图纸、回款凭证' },
+    { path: '/opportunities', name: '06-opportunities', expectText: '客户项目' },
+    { path: `/opportunities/${opportunityId ?? 1}`, name: '07-opportunity-detail', expectText: opportunity?.title ?? '商机不存在' },
+    { path: '/products', name: '08-products', expectText: '产品中心' },
+    { path: `/products/${productId ?? 1}`, name: '09-product-detail', expectText: product?.name ?? '产品不存在' },
+    { path: '/prices', name: '10-price-center', expectText: '价格中心' },
+    {
+      path: `/pricing?sku_id=${skuId ?? 1}&customer_id=${customerId ?? 1}&quantity=3000&quoted_price=25`,
+      name: '11-pricing',
+      expectText: '核价',
+    },
+    { path: '/quotes', name: '12-quotes', expectText: '报价中心' },
+    { path: `/quotes/${quoteId ?? 1}`, name: '13-quote-detail', expectText: '版本与方案对比' },
+    { path: '/approvals', name: '14-approvals', expectText: '待我审批' },
+    { path: '/orders', name: '15-orders', expectText: '订单中心' },
+    { path: `/orders/${orderId ?? 1}`, name: '16-order-detail', expectText: '未推送 ERP/MES' },
+    { path: '/order-drafts', name: '16b-order-drafts', expectText: '订单草稿' },
+    { path: '/receivables', name: '16c-receivables', expectText: '应收计划' },
+    { path: '/documents', name: '16d-documents', expectText: '文档管理' },
+    { path: '/tasks', name: '17-tasks', expectText: '销售任务' },
+    { path: '/settings', name: '18-settings', expectText: '系统设置' },
+    { path: '/settings?tab=rules', name: '19-settings-rules', expectText: '业务规则' },
+    { path: '/settings?tab=tags', name: '23-settings-tags', expectText: '客户标签' },
+    { path: '/settings?tab=notifications', name: '31-settings-notifications', expectText: '通知' },
+    { path: '/settings?tab=roles', name: '24-settings-roles', expectText: '角色与数据范围' },
+    { path: '/settings?tab=departments', name: '25-settings-departments', expectText: '部门' },
+    { path: '/agent', name: '20-agent', expectText: '开始新对话' },
+    // 定制需求（原菜单名「知识库」）：需求列表 + 修订链/钉钉审批入口都在这一页
+    { path: '/inquiries', name: '32-inquiries', expectText: '定制需求' },
+    { path: '/cases', name: '32b-cases', expectText: '案例库' },
+    { path: '/insights', name: '32c-insights', expectText: '新品洞察' },
+    { path: '/recycle-bin', name: '32d-recycle-bin', expectText: '回收站' },
+    { path: '/samples', name: '22-samples', expectText: '样品管理' },
+    // 深链详情：/samples/:id 直接打开该条详情抽屉（案例证据跳转也走它）
+    ...(sample ? [{ path: `/samples/${sample.id}`, name: '22b-sample-detail', expectText: '样品' }] : []),
+    { path: '/wecom', name: '30-wecom', expectText: '企业微信' },
+    {
+      // 带参数进入，才能真正验证"选了 SKU 能出计费重与方案"，
+      // 否则只截图到空状态，等于没验证结果区
+      path: `/logistics?sku_id=${skuId ?? 1}&quantity=3000&destination=%E5%8D%8E%E4%B8%9C`,
+      name: '21-logistics',
+      expectText: '物流',
+    },
+  ]
+  console.log(
+    `✓ 用例数据：客户 #${customerId} 商机 #${opportunityId} 产品 #${productId} 报价 #${quoteId} 订单 #${orderId}`,
+  )
+
+  const browser = spawn(
+    EDGE_BIN,
+    [
+      '--headless=new',
+      '--disable-gpu',
+      '--no-first-run',
+      '--no-default-browser-check',
+      // 验收浏览器不加载员工扩展、不同步账号，外部域名也不解析。
+      '--disable-extensions',
+      '--disable-sync',
+      '--disable-background-networking',
+      '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1, EXCLUDE [::1]',
+      // CI 容器 /dev/shm 很小，Chrome 标签页会随机崩（白屏 + "Unable to
+      // capture screenshot"），这两个是官方建议的容器稳定参数
+      '--disable-dev-shm-usage',
+      '--no-sandbox',
+      `--remote-debugging-port=${CDP_PORT}`,
+      `--user-data-dir=${PROFILE_DIR}`,
+      'about:blank',
+    ],
+    { stdio: 'ignore' },
+  )
+
+  const problems = [...setupProblems]
+  let client
+  try {
+    await waitForCdp()
+    const target = await openTarget(`${APP_BASE}/login`)
+    client = await connect(target.webSocketDebuggerUrl)
+
+    client.on((message) => {
+      if (message.method === 'Runtime.exceptionThrown') {
+        const text = message.params.exceptionDetails.text ?? ''
+        if (!EXPECTED_SELFTEST_ERRORS.test(text)) {
+          problems.push(`未捕获异常：${text}`)
+        }
+      }
+      if (message.method === 'Runtime.consoleAPICalled' && message.params.type === 'error') {
+        const text = message.params.args.map((a) => a.value ?? a.description).join(' ')
+        if (!EXPECTED_SELFTEST_ERRORS.test(text)) {
+          problems.push(`控制台报错：${text}`)
+        }
+      }
+    })
+
+    await client.send('Page.enable')
+    await client.send('Runtime.enable')
+    await client.send('Emulation.setDeviceMetricsOverride', {
+      width: 1440,
+      // 默认 900；长页面（如分析页）要看下半部分时传 SMOKE_VIEWPORT_HEIGHT=2600。
+      // 本应用是「固定视口 + 内容区内部滚动」，captureBeyondViewport 无效，只能拉高视口。
+      height: Number(process.env.SMOKE_VIEWPORT_HEIGHT ?? 900),
+      deviceScaleFactor: 1,
+      mobile: false,
+    })
+
+    // 注入登录态（与前端 zustand persist 的存储格式一致）
+    const authStorage = JSON.stringify({ state: { token: auth.token, user: auth.user }, version: 0 })
+    await client.send('Page.addScriptToEvaluateOnNewDocument', {
+      source: `localStorage.setItem('crm-auth', ${JSON.stringify(authStorage)})`,
+    })
+    await client.send('Runtime.evaluate', {
+      expression: `localStorage.setItem('crm-auth', ${JSON.stringify(authStorage)})`,
+    })
+
+    // 预热：Vite 首次启动会在后台做依赖预构建（bundling dependencies），
+    // 这期间页面是空白的。先访问一次等它就绪，否则头几张截图会拍到白屏，
+    // 看起来像"页面打不开"，其实是构建窗口期（Windows 上尤其明显）。
+    await client.send('Page.navigate', { url: `${APP_BASE}/login` })
+    let frontendReady = false
+    for (let i = 0; i < 120; i += 1) {
+      const probe = await client.send('Runtime.evaluate', {
+        expression: 'Boolean(document.querySelector("#root, #app")?.children.length)',
+        returnByValue: true,
+      })
+      if (probe.result.value) {
+        frontendReady = true
+        break
+      }
+      await sleep(500)
+    }
+    if (!frontendReady) throw new Error('前端预览未在 60 秒内就绪')
+    console.log('✓ 前端已就绪（依赖预构建完成）')
+    if (process.env.SMOKE_TWELFTH_ONLY === '1') {
+      if (!FIXTURES_ENABLED) throw new Error('第十二批 UI 反例必须显式开启隔离库夹具')
+      await checkTwelfthRepairs(client, auth, problems)
+      if (problems.length) throw new Error(problems.join('；'))
+      console.log('✓ 第十二批界面反例通过')
+      return
+    }
+
+    // 预热二遍跑：逐页无断言过一遍，把懒加载路由块编译掉、把 vite 的
+    // 依赖再优化（会触发整页自动刷新）全部提前耗尽。CI 冷环境上，
+    // 预优化会在正式用例的探测窗口里把页面打成白屏（控制台还被清空），
+    // 本地暖环境复现不了——白白背一个"页面打不开"的假警报。
+    console.log('—— 预热：无断言过一遍全部页面（触发懒编译/依赖再优化）——')
+    for (const page of (process.env.SMOKE_FOLLOWUP_ONLY === '1' || process.env.SMOKE_RULES_ONLY === '1' || process.env.SMOKE_QUOTE_ONLY === '1' || process.env.SMOKE_COPILOT_ONLY === '1' || process.env.SMOKE_DEMAND_ONLY === '1' || process.env.SMOKE_SAMPLE_SOURCE_ONLY === '1' || process.env.SMOKE_ORDER_DRAFT_ONLY === '1' ? [] : PAGES)) {
+      await client.send('Page.navigate', { url: `${APP_BASE}${page.path}` })
+      for (let i = 0; i < 24; i += 1) {
+        const probe = await client.send('Runtime.evaluate', {
+          expression: 'Boolean(document.querySelector("#root, #app")?.children.length)',
+          returnByValue: true,
+        })
+        if (probe.result.value) break
+        await sleep(500)
+      }
+    }
+    await sleep(2500) // 等 vite 依赖再优化与其触发的整页刷新彻底安定
+    console.log('✓ 预热完成')
+
+    for (const page of (process.env.SMOKE_FOLLOWUP_ONLY === '1' || process.env.SMOKE_RULES_ONLY === '1' || process.env.SMOKE_QUOTE_ONLY === '1' || process.env.SMOKE_COPILOT_ONLY === '1' || process.env.SMOKE_DEMAND_ONLY === '1' || process.env.SMOKE_SAMPLE_SOURCE_ONLY === '1' || process.env.SMOKE_ORDER_DRAFT_ONLY === '1' ? [] : PAGES)) {
+      await client.send('Page.navigate', { url: `${APP_BASE}${page.path}` })
+      // 等页面真的渲染出来（而不是固定 sleep），最多 15 秒
+      let rendered = false
+      for (let i = 0; i < 60; i += 1) {
+        const probe = await client.send('Runtime.evaluate', {
+          expression:
+            `Boolean(document.querySelector("#root, #app")?.children.length) && (document.querySelector(".page-container")?.innerText ?? "").includes(${JSON.stringify(page.expectText ?? '')}) && !/^(页面)?加载中/.test(document.querySelector(".page-container")?.innerText.trim() ?? "加载中")`,
+          returnByValue: true,
+        })
+        if (probe.result.value) {
+          rendered = true
+          break
+        }
+        await sleep(250)
+      }
+      await sleep(400) // 给 react-query 的数据渲染留一点时间
+      const shot = await client.send('Page.captureScreenshot', { format: 'png' })
+      const file = join(OUT_DIR, `${page.name}.png`)
+      writeFileSync(file, Buffer.from(shot.data, 'base64'))
+
+      const text = await client.send('Runtime.evaluate', {
+        expression: 'document.querySelector(".page-container")?.innerText.replace(/\\s+/g, " ") ?? ""',
+        returnByValue: true,
+      })
+      if (!rendered) {
+        // 失败现场自动转储：光说"没渲染"排查不了，把 URL 和 DOM 头部带回来
+        const diag = await client.send('Runtime.evaluate', {
+          expression:
+            'JSON.stringify({ url: location.href, html: document.body.innerHTML.slice(0, 800) })',
+          returnByValue: true,
+        })
+        problems.push(`页面始终没有渲染出内容：${page.path} → ${diag.result.value}`)
+      }
+      const pageText = text.result.value ?? ''
+      if (page.expectText && !pageText.includes(page.expectText)) {
+        // 探测完整内容，日志只打印短片段，便于失败后定位且不刷屏。
+        const content = await client.send('Runtime.evaluate', {
+          expression: 'document.querySelector(".page-container")?.innerText ?? ""',
+          returnByValue: true,
+        })
+        problems.push(
+          `页面主内容缺少「${page.expectText}」：${page.path} → ${(content.result.value ?? '').slice(0, 400).replace(/\\s+/g, ' ')}`,
+        )
+      }
+      console.log(`${rendered && (!page.expectText || pageText.includes(page.expectText)) ? '✓' : '✗'} ${page.path} → ${file}`)
+      console.log(`  页面主内容：${pageText.slice(0, 160)}`)
+    }
+
+    // ---- 需要点击才出现的交付物：看板 / Copilot 抽屉 / What-if ----------------
+    // 这几项是"交互后才有"的，逐页截图覆盖不到，所以单独点一遍。
+    // 依赖报价数据的用例在没有报价时先造一张，否则会拿 404 页面当"通过"。
+    let interactionQuoteId = quoteId
+    if (!interactionQuoteId) {
+      interactionQuoteId = await createSeedQuote(auth.token, customerId)
+      console.log(
+        interactionQuoteId
+          ? `✓ 报价中心是空的，已临时造一张报价 #${interactionQuoteId} 用于验证 What-if`
+          : '（提示：造报价失败，跳过 What-if 用例）',
+      )
+    }
+
+    const timelineFixture = FIXTURES_ENABLED
+      ? await createTimelineFixture(auth.token, customerId, skuId)
+      : null
+    const batchQuoteId = FIXTURES_ENABLED ? await createSeedQuote(auth.token, customerId) : interactionQuoteId
+    if (FIXTURES_ENABLED && !batchQuoteId) throw new Error('批量录入验收未创建报价草稿')
+    const INTERACTIONS = [
+      {
+        name: '26-opportunity-board',
+        path: '/opportunities',
+        clicks: ['看板'],
+        expect: ['新询盘', '暂无商机', '推进'],
+      },
+      {
+        name: '27-copilot-drawer',
+        path: '/workbench',
+        clicks: ['AI 助手'],
+        expect: ['Sales Copilot', '当前上下文'],
+      },
+      {
+        name: '28-quote-whatif',
+        path: `/quotes/${interactionQuoteId ?? 1}`,
+        clicks: [],
+        expect: ['版本与方案对比', '边际测算'],
+        skip: !interactionQuoteId,
+      },
+      {
+        name: '29-quote-copilot-context',
+        path: `/quotes/${interactionQuoteId ?? 1}`,
+        clicks: ['AI 助手'],
+        expect: ['当前上下文：报价单'],
+        skip: !interactionQuoteId,
+      },
+      {
+        name: '33-quote-batch-items',
+        path: `/quotes/${batchQuoteId ?? 1}`,
+        clicks: ['批量录入'],
+        expect: ['批量录入明细', '整版替换'],
+        expectAll: true,
+        optional: !FIXTURES_ENABLED,
+        skip: !batchQuoteId,
+      },
+    ]
+
+    if (timelineFixture) INTERACTIONS.push({
+      name: '34-customer-timeline', path: `/customers/${customerId}?tab=logs`, clicks: [],
+      // ⚠️ 更正（2026-10-07）：这里原来写着「交期变更的确认动作**从不写**客户时间线、
+      // 那个文案在任何写入路径里都不存在」——**那句是错的**。
+      // `order/schedule.py` 里算计划日的那段确实不写，但它的**调用方**写了：
+      // 确认交期变更的那条路由（`order/router.py`）调了 `record_and_notify`，
+      // 标题就是「确认交期变更」，从 2026-10-05 的 d7def5f 起就在写。
+      // 当时断言失败的真实原因更可能是**翻页**：本夹具先确认交期，之后又写实发、
+      // 应收、回款、打样一大串，客户时间线按 id 倒序、每页 20 条，那条被挤到第 2 页了。
+      // 期望值保持下面这组（订单侧稳定会写、且靠后的事件），但别再沿用"交期变更不写"这个错结论。
+      expect: ['手工建单', '已实发', '已由财务确认', '查看原单'], expectAll: true,
+      sourcePath: `/orders/${timelineFixture.orderId}`,
+      // 这条事件可能被后面的实发/应收/回款/打样挤到第 2 页 —— 允许翻页兜底
+      sourceFallback: true,
+    })
+
+    if (timelineFixture) INTERACTIONS.push({
+      name: '35-customer-sample-source', path: `/customers/${customerId}?tab=logs`, clicks: [],
+      expect: ['制作完成', '已签收', '客户确认：接受', '查看原单'], expectAll: true,
+      sourcePath: `/samples/${timelineFixture.sampleId}`,
+      // ⚠️ 文案跟界面走：详情弹窗标题是「**样品申请编号** 1」（全站去 `#` 拼编号
+      // 之后改的），原来这里等的是 `样品申请 #1` —— 永远匹配不上。
+      // 这类"文案改了、断言没跟"当天已经踩到第三次（`打样单 #`、发送弹窗按钮、
+      // 这里），凡是要匹配界面文字的断言，改文案时都必须一起搜一遍。
+      sourceText: `样品申请编号`,
+      sourceFallback: true,  // 同上：不假设它一定在第 1 页
+    })
+
+    if (FIXTURES_ENABLED) INTERACTIONS.push({
+      name: '36-followup-required-plan', path: `/customers/${customerId}?tab=followups`,
+      // 星号现在是 FormLabel 里的**独立标签**（不再拼在标签文字里，
+      // 为了让必填标记能单独上色），innerText 里就没有那个空格了 ——
+      // 所以这里写「下一步动作*」而不是「下一步动作 *」。
+      clicks: ['记录跟进'], expect: ['下一步动作*', '下次跟进时间*', '保存后自动生成后续待办。'],
+      expectAll: true, followupPlan: true,
+    }, {
+      name: '37-followup-exemption', path: `/customers/${customerId}?tab=followups`,
+      clicks: ['记录跟进'], expect: ['CHKUI免填跟进'], expectAll: true, followupExemption: true,
+    }, {
+      name: '38-followup-scheduled', path: `/customers/${customerId}?tab=followups`,
+      clicks: ['记录跟进'], expect: ['CHKUI计划跟进', 'CHKUI回访客户'], expectAll: true, followupSchedule: true,
+    })
+
+    if (FIXTURES_ENABLED) INTERACTIONS.push({
+      name: '39-settings-task-rule-save', path: '/settings?tab=rules&section=auto', clicks: [],
+      expect: ['自动待办', '业务规则'], expectAll: true, ruleSave: 'task',
+    }, {
+      name: '39-settings-pool-rule-save', path: '/settings?tab=rules&section=pool', clicks: [],
+      expect: ['公海回收规则', '业务规则'], expectAll: true, ruleSave: 'pool',
+    })
+
+    if (FIXTURES_ENABLED) {
+      const lifecycleId = await createSeedQuote(auth.token, customerId)
+      if (!lifecycleId) throw new Error('报价流程验收未创建测试报价')
+      const versions = await checkedJson(`/quotes/${lifecycleId}/versions`, auth.token)
+      const versionId = versions[0].id
+      const submitted = await checkedJson(`/quote-versions/${versionId}/submit-approval`, auth.token, {
+        method: 'POST', body: JSON.stringify({ reason: '虚构 UI 报价流程' }),
+      })
+      if (submitted.version.approval_status !== 'approved') throw new Error('报价流程 UI 夹具未通过审批')
+      INTERACTIONS.push({
+        name: '40-quote-customer-response', path: `/quotes/${lifecycleId}`, clicks: [],
+        expect: ['客户拒绝'], expectAll: true, quoteLifecycle: { quoteId: lifecycleId, versionId },
+      })
+    }
+
+    if (FIXTURES_ENABLED && (auth.user.roles.includes('admin') || auth.user.permissions.includes('agent:use'))) {
+      INTERACTIONS.push({
+        name: '42-workbench-copilot-analysis', path: '/workbench', clicks: ['AI 助手'],
+        expect: ['Sales Copilot', '当前上下文：工作台', '我手上最该先跟的商机是哪个？'],
+        expectAll: true, workbenchAnalysis: true,
+      })
+    }
+
+    if (FIXTURES_ENABLED && auth.user.roles.includes('admin')) {
+      const demand = await checkedJson('/opportunities', auth.token, {
+        method: 'POST', body: JSON.stringify({ title: 'CHKUI独立采购需求', customer_id: customerId }),
+      })
+      INTERACTIONS.push({
+        name: '44-opportunity-demand-records', path: `/opportunities/${demand.id}`, clicks: [],
+        expect: ['关联单据', '定制询价及修订', '报价', '打样', '订单'], expectAll: true,
+        demandFlow: { opportunityId: demand.id, customerId },
+      })
+    }
+
+    if (FIXTURES_ENABLED && auth.user.roles.includes('admin')) {
+      const inquiry = await checkedJson('/custom-inquiries', auth.token, {
+        method: 'POST', body: JSON.stringify({ title: 'CHKUI来源采购', customer_id: customerId, quantity: 10000, description: '原规格' }),
+      })
+      const quote = await checkedJson(`/custom-inquiries/${inquiry.id}/create-quote`, auth.token, {
+        method: 'POST', body: JSON.stringify({ unit_cost: 10, quoted_price: 20 }),
+      })
+      INTERACTIONS.push({ name: '48-sample-source-quantities', path: `/quotes/${quote.quote_id}`, clicks: [],
+        // 交互末尾会停在打样详情；「打样来源」在那里可核对。
+        // 原采购数量/本次样品数量在「申请打样」弹窗里，由下面的
+        // sampleSource 交互逐项核对。
+        expect: ['打样来源'], expectAll: true,
+        sampleSource: { ...quote, inquiryId: inquiry.id, opportunityId: quote.opportunity_id },
+      })
+    }
+
+    if (FIXTURES_ENABLED && auth.user.roles.includes('admin')) {
+      const inquiry = await checkedJson('/custom-inquiries', auth.token, { method: 'POST', body: JSON.stringify({ title: 'CHKUI订单准备', customer_id: customerId, quantity: 10000, description: '订单原规格' }) })
+      const quote = await checkedJson(`/custom-inquiries/${inquiry.id}/create-quote`, auth.token, { method: 'POST', body: JSON.stringify({ unit_cost: 10, quoted_price: 20 }) })
+      // 运费分离（2026-10-09）：正式发送前必须已确认运费，所以这里补一条。
+      // 它会计入这一版的 `total_amount`（正式订单取的就是客户确认的报价版本总额），
+      // 因此下面"建立正式订单"那条断言的总金额也要跟着 +30。
+      await ensureFixtureFreight(auth.token, quote.version_id)
+      INTERACTIONS.push({ name: '50-order-draft-flow', path: `/quotes/${quote.quote_id}`, clicks: [], expect: ['订单明细'], orderDraft: { ...quote, inquiryId: inquiry.id } })
+    }
+
+    for (const item of (process.env.SMOKE_ORDER_DRAFT_ONLY === '1' ? INTERACTIONS.filter((item) => item.orderDraft) : process.env.SMOKE_SAMPLE_SOURCE_ONLY === '1' ? INTERACTIONS.filter((item) => item.sampleSource) : process.env.SMOKE_DEMAND_ONLY === '1' ? INTERACTIONS.filter((item) => item.demandFlow) : process.env.SMOKE_COPILOT_ONLY === '1' ? INTERACTIONS.filter((item) => item.workbenchAnalysis) : process.env.SMOKE_QUOTE_ONLY === '1' ? INTERACTIONS.filter((item) => item.quoteLifecycle) : process.env.SMOKE_RULES_ONLY === '1' ? INTERACTIONS.filter((item) => item.ruleSave) : process.env.SMOKE_FOLLOWUP_ONLY === '1' ? INTERACTIONS.filter((item) => item.followupPlan || item.followupExemption || item.followupSchedule) : INTERACTIONS)) {
+      if (item.skip) {
+        console.log(`- 跳过 ${item.name}（缺少赖以验证的数据）`)
+        continue
+      }
+      await client.send('Page.navigate', { url: `${APP_BASE}${item.path}` })
+      let ok = false
+      for (let i = 0; i < 60; i += 1) {
+        const probe = await client.send('Runtime.evaluate', {
+          expression: `location.pathname === ${JSON.stringify(item.path.split('?')[0])} && document.readyState === 'complete' && Boolean(document.querySelector("#root, #app")?.children.length) && document.body.innerText.trim().length > 0 && !document.body.innerText.includes('页面加载中')`,
+          returnByValue: true,
+        })
+        if (probe.result.value) {
+          ok = true
+          break
+        }
+        await sleep(250)
+      }
+      await sleep(600)
+
+      let optionalSkip = false
+      for (const label of item.clicks) {
+        const outcome = await clickByText(client, label)
+        if (outcome !== 'clicked') {
+          if (item.optional) {
+            // 可选用例：前置条件不满足（比如这张报价不是草稿）就跳过，不算失败
+            console.log(`- 跳过 ${item.name}（点不到「${label}」：当前数据不满足前置条件）`)
+            optionalSkip = true
+            break
+          }
+          const diag = await client.send('Runtime.evaluate', {
+            expression:
+              'JSON.stringify({ url: location.href, html: document.body.innerHTML.slice(0, 800) })',
+            returnByValue: true,
+          })
+          problems.push(`点不到「${label}」（${item.path}） → ${diag.result.value}`)
+        }
+        await sleep(500)
+      }
+      if (optionalSkip) continue
+
+      if (item.orderDraft) {
+        if (!await waitForText(client, '按此版本建订单草稿')) throw new Error('报价缺少草稿入口')
+        await clickByText(client, '按此版本建订单草稿')
+        if (!await waitForText(client, '本次下单数量')) throw new Error('建草稿弹窗未打开')
+        // 数量框 2026-11 起是精确输入（Input + id=source-quantity-*），不是 InputNumber 步进器
+        const quantity = await client.send('Runtime.evaluate', { expression: `document.querySelector('.semi-modal-content input[id^="source-quantity-"]')?.value`, returnByValue: true })
+        if (Number(quantity.result.value) !== 10000) throw new Error('订单草稿数量没有沿用来源')
+        await clickByText(client, '建立订单草稿')
+        if (!await waitForText(client, '确认正式下单')) throw new Error('订单草稿详情未打开')
+        const drafts = await checkedJson(`/order-drafts?opportunity_id=${item.orderDraft.opportunity_id}`, auth.token)
+        const draft = drafts.items.find(row => row.source_context.id === item.orderDraft.version_id)
+        if (!draft) throw new Error('草稿未关联商机')
+        if ((await checkedJson(`/orders?opportunity_id=${item.orderDraft.opportunity_id}`, auth.token)).total !== 0) throw new Error('创建草稿时错误生成正式订单')
+        const shot = await client.send('Page.captureScreenshot', { format: 'png' })
+        writeFileSync(join(OUT_DIR, '50-order-draft-detail.png'), Buffer.from(shot.data, 'base64'))
+        const setQuantity = async value => {
+          const result=await client.send('Runtime.evaluate', { expression: `(() => { const input=document.querySelector('.page-container input[aria-label="草稿数量"]'); if(!input) return false; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input, ${JSON.stringify(''+value)}); input.dispatchEvent(new Event('input',{bubbles:true})); return true; })()`,returnByValue:true })
+          if(!result.result.value) throw new Error('无法编辑草稿数量')
+          await sleep(150); await clickByText(client,'保存草稿'); await sleep(500)
+        }
+        await setQuantity(2)
+        let saved=await checkedJson(`/order-drafts/${draft.id}`,auth.token)
+        if(saved.items[0].quantity!==2 || Number(saved.items[0].source_snapshot.original_quantity)!==10000) throw new Error('修改草稿覆盖了原数量或未保存')
+        await clickByText(client,'生成草稿需求单'); await sleep(600)
+        const docs=await checkedJson(`/biz-docs?order_draft_id=${draft.id}`,auth.token)
+        if(docs.length!==1 || !docs[0].title.includes('草稿')) throw new Error('草稿文件未生成或未标注草稿')
+        await checkedJson(`/quote-versions/${item.orderDraft.version_id}/submit-approval`,auth.token,{method:'POST',body:JSON.stringify({reason:'虚构订单草稿验收'})})
+        await checkedJson(`/quote-versions/${item.orderDraft.version_id}/mark-sent`,auth.token,{method:'POST',body:JSON.stringify({})})
+        await checkedJson(`/quote-versions/${item.orderDraft.version_id}/accept`,auth.token,{method:'POST'})
+        await client.send('Page.navigate',{url:`${APP_BASE}/order-drafts/${draft.id}`}); await waitForText(client,'确认正式下单'); await sleep(400)
+        await client.send('Runtime.evaluate',{expression:`document.querySelector('.page-container .semi-select')?.click()`})
+        await sleep(300)
+        if(await clickByText(client,item.orderDraft.quote_no,{tag:'[role="option"]'})!=='clicked') {
+          const selected=await client.send('Runtime.evaluate',{expression:`(() => { const option=Array.from(document.querySelectorAll('.semi-select-option')).find(n=>n.innerText.includes(${JSON.stringify(item.orderDraft.quote_no)})); if(!option) return false; option.click(); return true; })()`,returnByValue:true})
+          if(!selected.result.value) throw new Error('无法选择客户确认报价')
+        }
+        await sleep(200); await clickByText(client,'确认正式下单')
+        await sleep(300)
+        // 点掉二次确认，请求才会真的发出去（数量是 2 ≠ 原数量，后端应当回 422）
+        if (await clickPopconfirm(client) !== 'clicked') throw new Error('正式下单的二次确认没弹出来')
+        if(!await waitForText(client,'与客户确认报价不一致')) { const diag=await client.send('Runtime.evaluate',{expression: `JSON.stringify({text:document.body.innerText,buttons:Array.from(document.querySelectorAll('button')).filter(n=>n.innerText.includes('确认正式下单')).map(n=>({text:n.innerText,disabled:n.disabled,aria:n.getAttribute('aria-disabled')}))})`,returnByValue:true}); throw new Error('未观察到数量不符阻断：'+diag.result.value) }
+        await setQuantity(10000)
+        await clickByText(client,'确认正式下单')
+        await sleep(300)
+        if (await clickPopconfirm(client) !== 'clicked') throw new Error('正式下单的二次确认没弹出来')
+        // 「订单详情」只是页签栏默认标题，订单数据一加载就换成订单号（页签体验改版）——
+        // 等它等于赌加载窗口；改等页面上稳定的「订单明细」页签。
+        if(!await waitForText(client,'订单明细')) throw new Error('核对一致后没有进入正式订单')
+        const orders=await checkedJson(`/orders?opportunity_id=${item.orderDraft.opportunity_id}`,auth.token)
+        // 200000 = 明细 10000 × 20；+30 = 上面补的那条已确认运费。
+        // 正式订单取的是**客户确认的报价版本**总额，而该口径里运费是单列计入应付的
+        // （「产品价格与运费分离」2026-10-09），所以这里必须是 200030 而不是 200000。
+        if(orders.total!==1 || orders.items[0].total_amount!==200030) throw new Error(`没有按确认报价建立一张正式订单（金额 ${orders.items[0]?.total_amount}）`)
+        if(!await waitForText(client,'CHKUI订单准备')) throw new Error('定制正式订单没有显示需求名称')
+        const formalShot=await client.send('Page.captureScreenshot',{format:'png'})
+        writeFileSync(join(OUT_DIR,'51-order-draft-confirmed.png'),Buffer.from(formalShot.data,'base64'))
+        if (process.env.SMOKE_DELIVERY_PLANNING === '1') {
+          const orderId = orders.items[0].id
+          await clickByText(client, '跟单节点', {tag: '[role="tab"]'}); await sleep(500)
+          await clickByText(client, '交期与计划')
+          if (!await waitForText(client, '交期与跟单计划')) throw new Error('交期计划弹窗未打开')
+          const setInput = async (selector, value) => {
+            const res=await client.send('Runtime.evaluate',{expression:`(() => { const input=document.querySelector(${JSON.stringify(selector)}); if(!input)return false; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(String(value))}); input.dispatchEvent(new Event('input',{bubbles:true})); return true; })()`,returnByValue:true})
+            if(!res.result.value) throw new Error('无法填写交期计划: '+selector)
+            await sleep(150)
+          }
+          await setInput('.semi-modal-content input', '2026-10-30')
+          await client.send('Runtime.evaluate',{expression:`document.querySelector('.semi-modal-content .semi-select')?.click()`})
+          await sleep(150)
+          await client.send('Runtime.evaluate',{expression:`Array.from(document.querySelectorAll('.semi-select-option')).find(n=>n.innerText.trim()==='到货日')?.click()`})
+          await sleep(150)
+          await setInput('.semi-modal-content .semi-input-number input', 3)
+          await clickByText(client, '预览受影响面')
+          if (!await waitForText(client, '建议发货日：2026-10-27')) throw new Error('到货日没有按运输天数倒排')
+          let untouched=await checkedJson(`/orders/${orderId}/milestones`,auth.token)
+          if(untouched.some(n=>n.planned_date)) throw new Error('预览错误写入计划')
+          const previewShot=await client.send('Page.captureScreenshot',{format:'png'})
+          writeFileSync(join(OUT_DIR,'52-delivery-planning-preview.png'),Buffer.from(previewShot.data,'base64'))
+          await clickByText(client, '提交待确认计划'); await sleep(500)
+          if((await checkedJson(`/orders/${orderId}`,auth.token)).delivery_kind) throw new Error('未确认就改了交期类型')
+          await clickByText(client, '确认并重排')
+          if(!await waitForText(client, '计划发货日：2026-10-27')) throw new Error('确认后订单日期没有刷新')
+          const rows=await checkedJson(`/orders/${orderId}/milestones`,auth.token)
+          const contract=rows.find(n=>n.node==='contract')
+          await client.send('Runtime.evaluate',{expression:`(() => { const row=Array.from(document.querySelectorAll('tr')).find(n=>n.innerText.includes('签订合同')); Array.from(row?.querySelectorAll('a, button')||[]).find(n=>n.innerText==='登记')?.click(); })()`})
+          if(!await waitForText(client,'登记里程碑：签订合同')) throw new Error('节点登记未打开')
+          await client.send('Runtime.evaluate',{expression:`document.querySelector('.semi-modal-content .semi-select')?.click()`})
+          await sleep(150)
+          await client.send('Runtime.evaluate',{expression:`Array.from(document.querySelectorAll('.semi-select-option')).find(n=>n.innerText.includes('不适用，跳过此节点'))?.click()`})
+          await sleep(150)
+          await setInput('.semi-modal-content input[aria-label="跳过原因"]', '现货使用已签框架协议')
+          await clickByText(client,'保存'); await sleep(500)
+          const updated=(await checkedJson(`/orders/${orderId}/milestones`,auth.token)).find(n=>n.id===contract.id)
+          if(updated.status!=='skipped' || updated.actual_date) throw new Error('跳过错误计作实际完成')
+          const planShot=await client.send('Page.captureScreenshot',{format:'png'})
+          writeFileSync(join(OUT_DIR,'53-delivery-planning-confirmed.png'),Buffer.from(planShot.data,'base64'))
+        }
+
+      }
+
+      if (item.sampleSource) {
+        if (!await waitForText(client, '按此版本申请打样')) throw new Error('草稿报价缺少打样入口')
+        await clickByText(client, '按此版本申请打样')
+        if (!await waitForText(client, '原采购数量 10,000')) throw new Error('原采购数量未展示')
+        const defaultQty = await client.send('Runtime.evaluate', {
+          expression: `document.querySelector('.semi-modal-content input[id^="source-quantity-"]')?.value`, returnByValue: true,
+        })
+        if (Number(defaultQty.result.value) !== 1) throw new Error(`样品数量非默认 1：${defaultQty.result.value}`)
+        const sourceShot = await client.send('Page.captureScreenshot', { format: 'png' })
+        writeFileSync(join(OUT_DIR, '48-sample-source-quantities.png'), Buffer.from(sourceShot.data, 'base64'))
+        await clickByText(client, '取消')
+        // confirm=true：新建版本会切换当前版、把报价改回草稿并结束旧版待审批，
+        // 接口要求先确认（42206）。冒烟是"已确认后执行"的那一路。
+        await checkedJson(`/quotes/${item.sampleSource.quote_id}/versions?confirm=true`, auth.token, { method: 'POST' })
+        await client.send('Page.navigate', { url: `${APP_BASE}/quotes/${item.sampleSource.quote_id}?version=${item.sampleSource.version_id}` })
+        await waitForText(client, '按此版本申请打样')
+        await clickByText(client, '按此版本申请打样')
+        if (!await waitForText(client, '（历史版本）')) throw new Error('历史版本打样来源未标识')
+        const changed = await client.send('Runtime.evaluate', {
+          expression: `(() => {
+            const dialog = document.querySelector('.semi-modal-content');
+            const input = dialog?.querySelector('input[id^="source-quantity-"]');
+            const spec = dialog?.querySelector('textarea');
+            if (!input || !spec) return false;
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '2');
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(spec, '本次规格');
+            spec.dispatchEvent(new Event('input', { bubbles: true })); return true;
+          })()`, returnByValue: true,
+        })
+        if (!changed.result.value) throw new Error('无法修改本次数量和规格')
+        await sleep(200)
+        await clickByText(client, '建立打样申请')
+        if (!await waitForText(client, '打样来源')) throw new Error('未进入打样详情')
+        const samples = await checkedJson(`/samples?opportunity_id=${item.sampleSource.opportunityId}`, auth.token)
+        const sample = samples.items.find(row => row.source_context?.id === item.sampleSource.version_id)
+        if (!sample || sample.items[0].quantity !== 2 || sample.items[0].original_quantity !== 10000 || sample.items[0].specification !== '本次规格') throw new Error('数量或规格未分开保存')
+        if (!await waitForText(client, '原规格：原规格')) throw new Error('详情未展示原规格差异')
+        const detailShot = await client.send('Page.captureScreenshot', { format: 'png' })
+        writeFileSync(join(OUT_DIR, '49-sample-source-detail.png'), Buffer.from(detailShot.data, 'base64'))
+        await client.send('Page.navigate', { url: `${APP_BASE}/inquiries?opportunity_id=${item.sampleSource.opportunityId}` })
+        if (!await waitForText(client, 'CHKUI来源采购')) throw new Error('询价来源未加载')
+        // 「申请打样」等次要动作 2026-10-06 起收进了行内的「更多」下拉
+        // （11 个操作平铺时链接被压成 17px 宽、"申请打样"四个字竖着一字一行）。
+        // 所以要先点开下拉、再从菜单里点它 —— 直接找 <a>申请打样</a> 永远找不到，
+        // CI 上就表现成"询价没有打样入口"，看着像功能没了，其实是**脚本没跟上改版**。
+        // 2026-11-24（017d20ca a11y）「更多」又从 <a> 改成了 <button type="button">，
+        // 脚本第二次没跟上 —— tag 认准 button。
+        await clickByText(client, '更多', { tag: 'button' })
+        await sleep(200)
+        if (await clickByText(client, '申请打样', { tag: '.semi-dropdown-item' }) !== 'clicked') {
+          throw new Error('询价没有打样入口（「更多」菜单里也没有）')
+        }
+        if (!await waitForText(client, '原采购数量 10,000')) throw new Error('询价未带入原数量')
+        await clickByText(client, '取消')
+        await checkedJson(`/custom-inquiries/${item.sampleSource.inquiryId}/revise`, auth.token, {
+          method: 'POST', body: JSON.stringify({ quantity: 20000, revision_note: 'UI 历史版本验收' }),
+        })
+        await client.send('Page.navigate', { url: `${APP_BASE}/inquiries?opportunity_id=${item.sampleSource.opportunityId}` })
+        await waitForText(client, 'CHKUI来源采购')
+        // 「历史」同样在「更多」下拉里（只有版本 > 1 的记录才有这一项，
+        // 上一段刚 revise 过，所以这里应该有）。别再用 waitForText 等它出现 ——
+        // 菜单没展开时未必渲染，等不到就会白等满 8 秒。
+        await clickByText(client, '更多', { tag: 'button' })
+        await sleep(200)
+        await clickByText(client, '历史', { tag: '.semi-dropdown-item' })
+        if (!await waitForText(client, '版本历史：')) throw new Error('询价历史未打开')
+        let choseV1 = false
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+          const choice = await client.send('Runtime.evaluate', {
+            expression: `(() => {
+              const row = Array.from(document.querySelectorAll('.semi-modal-content tr')).find(node => node.cells?.[0]?.innerText.trim() === 'v1');
+              // 017d20ca a11y 把行内动作从 <a> 改成 <button type="button">（crm-text-action），
+              // 认死 a 标签会永远找不到「按此版本申请打样」（CI 报「无法在历史表选择 V1」）。
+              const link = Array.from(row?.querySelectorAll('a, button') ?? []).find(el => el.textContent.trim() === '按此版本申请打样');
+              if (!link) return false; link.click(); return true;
+            })()`, returnByValue: true,
+          })
+          if (choice.result.value) { choseV1 = true; break }
+          await sleep(250)
+        }
+        if (!choseV1) throw new Error('无法在历史表选择 V1')
+        if (!await waitForText(client, '（历史版本）') || !await waitForText(client, '原采购数量 10,000')) throw new Error('询价历史版本未按原数量取用')
+        await clickByText(client, '取消')
+        await client.send('Page.navigate', { url: `${APP_BASE}/samples/${sample.id}` })
+        await waitForText(client, '打样来源')
+      }
+
+      if (item.demandFlow) {
+        const oid = item.demandFlow.opportunityId
+        if (!await waitForText(client, '关联单据')) {
+          const diag = await client.send('Runtime.evaluate', { expression: 'JSON.stringify({url:location.href,text:document.body.innerText})', returnByValue: true })
+          const shot = await client.send('Page.captureScreenshot', { format: 'png' })
+          writeFileSync(join(OUT_DIR, '44-demand-navigation-failure.png'), Buffer.from(shot.data, 'base64'))
+          throw new Error('商机未显示关联单据入口：' + diag.result.value)
+        }
+        if (await clickByText(client, '关联单据', { tag: '[role="tab"]' }) !== 'clicked') throw new Error('无法切换关联单据')
+        if (!await waitForText(client, '暂无关联定制询价')) throw new Error('单据页未加载')
+        await clickByText(client, '记录定制询价')
+        if (!await waitForText(client, '记录本次需求的定制询价')) throw new Error('需求询价弹窗未打开')
+        const inquiryTitle = 'CHKUI本次定制采购'
+        const filled = await client.send('Runtime.evaluate', {
+          expression: `(() => {
+            const dialog = document.querySelector('.semi-modal-content');
+            const input = dialog?.querySelector('input');
+            if (!input) return false;
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(inquiryTitle)});
+            input.dispatchEvent(new Event('input', { bubbles: true })); return true;
+          })()`, returnByValue: true,
+        })
+        if (!filled.result.value) throw new Error('无法填写商机询价标题')
+        await clickByText(client, '保存')
+        if (!await waitForText(client, '定制询价已记录并关联当前商机')) throw new Error('商机询价保存失败')
+        const inquiries = await checkedJson(`/custom-inquiries?opportunity_id=${oid}`, auth.token)
+        const inquiry = inquiries.items.find((row) => row.title === inquiryTitle)
+        if (!inquiry || inquiry.customer_id !== item.demandFlow.customerId) throw new Error('询价没有自动带入商机和客户')
+        const before = await checkedJson(`/opportunities/${oid}`, auth.token)
+        const quote = await checkedJson(`/custom-inquiries/${inquiry.id}/create-quote`, auth.token, {
+          method: 'POST', body: JSON.stringify({ unit_cost: 10, quoted_price: 20 }),
+        })
+        const afterDraft = await checkedJson(`/opportunities/${oid}`, auth.token)
+        if (before.stage_id !== afterDraft.stage_id) throw new Error('生成报价草稿错误推进了阶段')
+        // 运费分离（2026-10-09）：下面要用界面点"标记已发送"，而正式发送前
+        // 必须已经确认运费。这个报价是刚用接口建的，补一条已确认的运费
+        // —— 必须在提交审批之前（版本提交后不可编辑）。
+        await ensureFixtureFreight(auth.token, quote.version_id)
+        const approved = await checkedJson(`/quote-versions/${quote.version_id}/submit-approval`, auth.token, {
+          method: 'POST', body: JSON.stringify({ reason: '虚构 UI 验收' }),
+        })
+        if (approved.version.approval_status !== 'approved') throw new Error('报价未自动通过审批，无法验证正式发送入口')
+        await client.send('Page.navigate', { url: `${APP_BASE}/quotes/${quote.quote_id}` })
+        if (!await waitForText(client, '标记已发送')) throw new Error('报价发送入口未就绪')
+        await clickByText(client, '标记已发送')
+        // ⚠️ 弹窗文案在 2026-10-12 重做过（主人反馈"可模糊"）：确认键从
+        // 「确认已实际发送」改成「确认：我已经发给客户了」——**把"发给客户"写进按钮**，
+        // 因为原来那句话只出现在版本锁定提示里，弹窗本身没说清发给谁。
+        // 这里必须跟着改：文案变了而断言不改，就是"测试脚本抠文案"那类漂移
+        // （同一个毛病当天已经在 check_sixth_round_p2 上踩过一次）。
+        if (!await waitForText(client, '确认：我已经发给客户了')) throw new Error('报价发送确认未打开')
+        // 收件人现在是**必填**了（原来可留空，事后无从查证发给了谁），
+        // 而且这一格是下拉：没有客户联系人时，要先选「其他（手动填写）」
+        // 才会露出输入框（三态见 `pickInFieldDropdown` 的说明）。
+        if (await pickInFieldDropdown(client, '发给了谁', '其他（手动填写）') !== 'picked') {
+          throw new Error('收件人下拉没选到「其他（手动填写）」')
+        }
+        if (await fillByPlaceholder(client, '填姓名或称呼', '虚构验收人') !== 'filled') {
+          throw new Error('收件人手填框没找到')
+        }
+        await clickByText(client, '确认：我已经发给客户了')
+        // ⚠️ 别等服务端那句「已标记为已发送」：`unwrap()` 只返回 `body.data`，
+        // **服务端 message 根本到不了界面**（实测确认）。界面真正显示的是
+        // 前端自己拼的 Toast「已登记：通过<渠道>发给<收件人>」。
+        if (!await waitForText(client, '已登记：通过')) throw new Error('报价发送失败')
+        const sent = await checkedJson(`/opportunities/${oid}`, auth.token)
+        if (sent.stage_code !== 'quoted') throw new Error('正式发送后商机未自动推进已报价')
+        await client.send('Page.navigate', { url: `${APP_BASE}/opportunities/${oid}` })
+        await waitForText(client, '关联单据')
+        await clickByText(client, '关联单据', { tag: '[role="tab"]' })
+        if (!await waitForText(client, inquiryTitle) || !await waitForText(client, quote.quote_no)) throw new Error('商机关联单据未显示询价和报价')
+        const recordsShot = await client.send('Page.captureScreenshot', { format: 'png' })
+        writeFileSync(join(OUT_DIR, '45-demand-quote-sent.png'), Buffer.from(recordsShot.data, 'base64'))
+        await clickByText(client, '申请打样')
+        if (!await waitForText(client, '新建样品申请')) throw new Error('打样申请未打开')
+        const selected = await client.send('Runtime.evaluate', {
+          expression: `document.querySelector('.semi-modal-content')?.innerText.includes('CHKUI独立采购需求')`, returnByValue: true,
+        })
+        if (!selected.result.value) throw new Error('打样申请未自动带入当前商机')
+        const sampleShot = await client.send('Page.captureScreenshot', { format: 'png' })
+        writeFileSync(join(OUT_DIR, '46-demand-sample-prefill.png'), Buffer.from(sampleShot.data, 'base64'))
+        await clickByText(client, '取消')
+        await client.send('Page.navigate', { url: `${APP_BASE}/inquiries?opportunity_id=${oid}` })
+        if (!await waitForText(client, inquiryTitle) || !await waitForText(client, '当前商机：')) throw new Error('询价库未按商机筛选')
+        await clickByText(client, '记录定制询价')
+        if (!await waitForText(client, '关联商机（本次采购需求）')) throw new Error('询价库缺少商机关联字段')
+        await sleep(300)
+        const inquiryShot = await client.send('Page.captureScreenshot', { format: 'png' })
+        writeFileSync(join(OUT_DIR, '47-demand-inquiry-link.png'), Buffer.from(inquiryShot.data, 'base64'))
+        await clickByText(client, '取消')
+        await client.send('Page.navigate', { url: `${APP_BASE}/opportunities/${oid}` })
+        await waitForText(client, '关联单据')
+        await clickByText(client, '关联单据', { tag: '[role="tab"]' })
+      }
+
+      if (item.workbenchAnalysis) {
+        const before = await checkedJson('/agent/sessions', auth.token)
+        const paused = []
+        let intercept = true
+        client.on((message) => {
+          if (message.method !== 'Fetch.requestPaused') return
+          if (intercept && message.params.request.method === 'POST') paused.push(message.params)
+          else void client.send('Fetch.continueRequest', { requestId: message.params.requestId })
+        })
+        await client.send('Fetch.enable', { patterns: [{ urlPattern: '*/api/v1/agent/sessions', requestStage: 'Request' }] })
+        await waitForText(client, '我手上最该先跟的商机是哪个？', 5000)
+        await client.send('Runtime.evaluate', {
+          expression: `(() => { const button = [...document.querySelectorAll('aside button')].find((el) => el.innerText.includes('我手上最该先跟的商机是哪个？')); button.click(); button.click(); })()`,
+        })
+        if (!await waitForText(client, 'Copilot 正在查数据', 5000)
+            || !await waitForText(client, '我手上最该先跟的商机是哪个？', 2000)) {
+          problems.push('工作台 AI 提问：创建会话阶段没有显示问题或等待状态')
+        }
+        if (paused.length !== 1) problems.push(`工作台分析：连续点击创建了 ${paused.length} 个会话请求`)
+        const pendingShot = await client.send('Page.captureScreenshot', { format: 'png' })
+        writeFileSync(join(OUT_DIR, '43-workbench-analysis-pending.png'), Buffer.from(pendingShot.data, 'base64'))
+        for (const request of paused) {
+          await client.send('Fetch.fulfillRequest', {
+            requestId: request.requestId, responseCode: 503,
+            responseHeaders: [{ name: 'Content-Type', value: 'application/json' }],
+            body: Buffer.from(JSON.stringify({ code: 50300, message: '本地模拟创建会话失败', data: null })).toString('base64'),
+          })
+        }
+        intercept = false
+        await client.send('Fetch.disable')
+        if (!await waitForText(client, '本地模拟创建会话失败', 5000)) problems.push('工作台分析：创建失败没有可读提示')
+        const restored = await client.send('Runtime.evaluate', {
+          expression: "document.querySelector('aside input')?.value ?? ''", returnByValue: true,
+        })
+        if (!restored.result.value.includes('我手上最该先跟的商机是哪个？')) problems.push('工作台 AI 提问：失败后问题丢失，不能重试')
+        await clickByText(client, '发送')
+        // 安全前置强制 AI key 为空；验收真实提问已提交，并显示模型未配置的真实结果。
+        if (!await waitForText(client, 'Agent 还没有配置模型', 8000)) problems.push('工作台分析：重试后未显示服务端结果')
+        const after = await checkedJson('/agent/sessions', auth.token)
+        const created = after.filter((row) => !before.some((previous) => previous.id === row.id))
+        if (created.length !== 1) problems.push('工作台分析：重试没有创建唯一会话')
+        if (created.length === 1) {
+          const detail = await checkedJson(`/agent/sessions/${created[0].id}`, auth.token)
+          const users = detail.messages.filter((message) => message.role === 'user')
+          if (users.length !== 1 || !users[0].content.includes('我手上最该先跟的商机是哪个？')
+              || detail.actions.length !== 0) {
+            problems.push('工作台 AI 提问：没有唯一提问，或产生了写动作')
+          }
+        }
+        const location = await client.send('Runtime.evaluate', { expression: 'window.location.pathname', returnByValue: true })
+        if (location.result.value !== '/workbench') problems.push('工作台分析仍只跳转 AI 页面')
+      }
+
+      if (item.quoteLifecycle) {
+        const { quoteId: qid, versionId: vid } = item.quoteLifecycle
+        const actionButtons = async () => (await client.send('Runtime.evaluate', {
+          expression: "[...document.querySelectorAll('.page-container button')].map((el) => el.innerText.trim())", returnByValue: true,
+        })).result.value
+        await waitForText(client, '标记已发送', 5000)
+        const before = await actionButtons()
+        if (before.some((t) => ['客户接受', '客户拒绝', '转销售订单'].includes(t))) {
+          problems.push('未发送报价仍显示客户结果或转单按钮')
+        }
+        await clickByText(client, '标记已发送')
+        // 与上面那段同一套新文案/新交互（2026-10-12 弹窗重做，详见那一段的注释）
+        if (!await waitForText(client, '确认：我已经发给客户了', 5000)) problems.push('发送确认没有说明实际发送事实')
+        if (await pickInFieldDropdown(client, '发给了谁', '其他（手动填写）') !== 'picked') {
+          problems.push('收件人下拉没选到「其他（手动填写）」')
+        }
+        if (await fillByPlaceholder(client, '填姓名或称呼', '第十二批验收人') !== 'filled') {
+          problems.push('收件人手填框没找到')
+        }
+        await clickByText(client, '确认：我已经发给客户了')
+        if (!await waitForText(client, '客户接受', 5000)) problems.push('正式发送后没有客户结果操作')
+        await clickByText(client, '客户拒绝')
+        if (!await waitForText(client, '记录客户拒绝', 5000)) problems.push('客户拒绝没有打开原因弹窗')
+        const reason = 'CHKUI客户要求的交期无法满足'
+        const filled = await client.send('Runtime.evaluate', {
+          expression: `(() => {
+            const input = [...document.querySelectorAll('textarea')].find((el) => el.placeholder.includes('实际拒绝原因'));
+            if (!input || input.value !== '') return false;
+            Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, ${JSON.stringify(reason)});
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            return true;
+          })()`, returnByValue: true,
+        })
+        if (!filled.result.value) problems.push('拒绝原因缺少输入或预填了虚构原因')
+        const dialogShot = await client.send('Page.captureScreenshot', { format: 'png' })
+        writeFileSync(join(OUT_DIR, '41-quote-decline-reason.png'), Buffer.from(dialogShot.data, 'base64'))
+        await clickByText(client, '确认记录')
+        if (!await waitForText(client, '已记录客户拒绝', 5000)) problems.push('客户拒绝保存失败')
+        const detail = await checkedJson(`/quote-versions/${vid}`, auth.token)
+        const logs = await checkedJson(`/quote-versions/${vid}/send-logs`, auth.token)
+        const follows = await checkedJson(`/followups?quote_id=${qid}&page_size=100`, auth.token)
+        if (detail.quote.status !== 'declined' || !detail.version.declined_at || logs.length !== 1
+            || !follows.items.some((row) => row.quote_id === qid && row.content.includes(reason))) {
+          problems.push('页面输入的拒绝原因未按正式事实保存')
+        }
+        const terminalButtons = await actionButtons()
+        if (terminalButtons.some((t) => ['客户接受', '客户拒绝', '标记已发送', '登记再次发送', '转销售订单'].includes(t))) {
+          problems.push('客户拒绝后仍显示无效的报价动作')
+        }
+      }
+
+      if (item.followupPlan || item.followupExemption || item.followupSchedule) {
+        const typed = await client.send('Runtime.evaluate', {
+          expression: `(() => {
+            const input = document.querySelector('textarea[placeholder="今天沟通了什么？"]');
+            if (!input) return false;
+            Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, '${item.followupSchedule ? 'CHKUI计划跟进' : 'CHKUI免填跟进'}');
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            return true;
+          })()`, returnByValue: true,
+        })
+        if (!typed.result.value) problems.push('跟进表单：无法填写沟通结论')
+        await sleep(200)
+        if (item.followupPlan) {
+          await clickByText(client, '保存并建待办')
+          if (!await waitForText(client, '请填写下一动作和下次跟进时间，或选择免填原因', 3000)) {
+            problems.push('跟进表单：缺计划没有阻止保存')
+          }
+        } else if (item.followupSchedule) {
+          await client.send('Runtime.evaluate', {
+            expression: `(() => {
+              const set = (input, value) => {
+                input.focus();
+                Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value);
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+              };
+              set(document.querySelector('input[placeholder="例如：整理报价并回访客户"]'), 'CHKUI回访客户');
+              set(document.querySelector('input[placeholder="选择下次跟进时间"]'), '2026-10-12 09:00:00');
+            })()`, returnByValue: true,
+          })
+          await sleep(300)
+          await client.send('Runtime.evaluate', { expression: 'document.activeElement.blur()', returnByValue: true })
+          await sleep(300)
+          // 同上：判"本轮新增一条"，不判"库里只有一条"（人工跟进会留库）
+          const beforePlanRes = await fetch(
+            `${API_BASE}/api/v1/followups?customer_id=${customerId}&page_size=200`,
+            { headers: { Authorization: `Bearer ${auth.token}` } },
+          )
+          const beforePlanCount = (await beforePlanRes.json()).data.items
+            .filter((row) => row.content === 'CHKUI计划跟进').length
+          await clickByText(client, '保存并建待办')
+          if (!await waitForText(client, '跟进已记录，并生成了后续任务', 5000)) problems.push('跟进表单：计划保存失败')
+          const response = await fetch(`${API_BASE}/api/v1/followups?customer_id=${customerId}&page_size=200`, { headers: { Authorization: `Bearer ${auth.token}` } })
+          const rows = (await response.json()).data
+          const saved = rows.items.filter((row) => row.content === 'CHKUI计划跟进')
+          if (saved.length !== beforePlanCount + 1 || saved[0].next_action !== 'CHKUI回访客户' || !saved[0].next_task_id || !saved[0].task_due_at) {
+            problems.push('跟进表单：计划/关联任务没有正确保存')
+          }
+        } else {
+          const selection = await client.send('Runtime.evaluate', {
+            expression: `(() => {
+              const control = [...document.querySelectorAll('.semi-select')].find((el) => el.innerText.includes('安排下一次跟进'));
+              if (!control) return 'missing-select';
+              control.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+              control.click();
+              return 'clicked';
+            })()`, returnByValue: true,
+          })
+          if (selection.result.value !== 'clicked') problems.push('跟进表单：没有打开后续安排下拉')
+          await sleep(200)
+          const choice = await client.send('Runtime.evaluate', {
+            expression: `(() => {
+              const option = [...document.querySelectorAll('[role="option"], .semi-select-option')].find((el) => el.innerText.includes('只记跟进：等待外部固定节点'));
+              if (!option) return 'missing-option';
+              option.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+              option.click();
+              return 'clicked';
+            })()`, returnByValue: true,
+          })
+          if (choice.result.value !== 'clicked') problems.push('跟进表单：没有选中免填原因')
+          if (!await waitForText(client, '原因随跟进记录保存，本次不创建待办。', 3000)) {
+            problems.push('跟进表单：免填说明没有显示')
+          }
+          // 记录操作前的同名条数。人工跟进**会留在库里**（收尾清扫只清系统留痕），
+          // 所以断言必须是"本轮恰好新增一条"，而不是"库里总共只有一条"——
+          // 后者在第二次运行时就必失败（2026-10-07 实测：库里两条同名记录）。
+          const beforeRes = await fetch(
+            `${API_BASE}/api/v1/followups?customer_id=${customerId}&page_size=200`,
+            { headers: { Authorization: `Bearer ${auth.token}` } },
+          )
+          const beforeCount = (await beforeRes.json()).data.items
+            .filter((row) => row.content === 'CHKUI免填跟进').length
+          await clickByText(client, '只保存跟进')
+          if (!await waitForText(client, '跟进已记录', 5000)) problems.push('跟进表单：免填保存失败')
+          const result = await fetch(`${API_BASE}/api/v1/followups?customer_id=${customerId}&page_size=200`, { headers: { Authorization: `Bearer ${auth.token}` } })
+          const rows = (await result.json()).data
+          const saved = rows.items.filter((row) => row.content === 'CHKUI免填跟进')
+          if (saved.length !== beforeCount + 1 || saved[0].exemption_reason !== 'waiting_external' || saved[0].next_task_id != null) {
+            problems.push('跟进表单：免填记录/任务不符合要求')
+          }
+        }
+      }
+
+      if (item.ruleSave) {
+        const isTask = item.ruleSave === 'task'
+        const heading = isTask ? '自动待办' : '公海回收规则'
+        const endpoint = isTask ? '/task-rules' : '/public-pool/rules'
+        const toast = isTask ? '自动任务规则已保存' : '公海规则已保存'
+        const rows = await checkedJson(endpoint, auth.token)
+        const before = isTask ? rows[0] : rows.find((row) => row.level !== 'UNRATED')
+        if (!before) throw new Error(`${heading}缺少用于验证的规则`)
+        const selector = isTask ? `#auto-task-days-${before.id}` : '.pool-rule-table tbody input'
+        const changed = await client.send('Runtime.evaluate', {
+          expression: `(() => {
+            const input = document.querySelector(${JSON.stringify(selector)});
+            if (!input) return null;
+            const next = Number(input.value) + 1;
+            input.focus();
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, String(next));
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.blur();
+            return next;
+          })()`, returnByValue: true,
+        })
+        const clicked = !isTask || await clickByText(client, '保存', { tag: '.auto-task-rule button:not([disabled])' }) === 'clicked'
+        if (!changed.result.value || !clicked || !await waitForText(client, toast, 5000)) {
+          problems.push(`${heading}：修改天数未保存`)
+        } else {
+          const after = (await checkedJson(endpoint, auth.token)).find((row) => row.id === before.id)
+          const expected = isTask
+            ? { ...before, trigger_config: { ...before.trigger_config, days: changed.result.value } }
+            : { ...before, days: changed.result.value }
+          if (!after || Object.keys(expected).some((key) =>
+            key !== 'updated_at' && JSON.stringify(after[key]) !== JSON.stringify(expected[key]))) {
+            problems.push(`${heading}：修改天数后读取的规则与预期不一致`)
+          }
+        }
+      }
+      const missing = []
+      for (const text of item.expect) {
+        // 多个候选文案满足其一即可（看板可能因为没数据只显示空态）
+        const hit = await waitForText(client, text, 3000)
+        missing.push(hit ? null : text)
+      }
+      const missingReal = missing.filter(Boolean)
+      // expect 里任意一条命中就算通过，避免把"没数据"误判成功能缺失
+      if (item.expectAll ? missingReal.length > 0 : missingReal.length === item.expect.length) {
+        problems.push(`${item.name}：页面上找不到 ${item.expect.join(' / ')}`)
+      }
+
+      await sleep(400)
+      const shot = await client.send('Page.captureScreenshot', { format: 'png' })
+      const file = join(OUT_DIR, `${item.name}.png`)
+      writeFileSync(file, Buffer.from(shot.data, 'base64'))
+      console.log(`${ok ? '✓' : '✗'} [交互] ${item.path} + ${item.clicks.join('+') || '直接看'} → ${file}`)
+      if (item.sourcePath) {
+        // ⚠️ 这里**不能假设"那条事件一定在第 1 页"**（2026-10-12 修）。
+        //
+        // 原来直接 `querySelector('a[href=...]')`，找不到就判失败。而客户时间线
+        // 按 id 倒序、**每页 20 条**，本套件在后面又写了实发 / 应收 / 回款 / 打样
+        // 一大串 —— 那条订单事件会被挤到第 2 页，链接在 DOM 里压根不存在。
+        // 本文件上面给 `34-customer-timeline` 写 `expect` 时已经踩过同一个坑
+        // （那段注释自己写着"当时断言失败的真实原因更可能是**翻页**"），
+        // 这里当时没一起改，于是它一直是条**看运气**的断言。
+        //
+        // 改成不依赖分页、但**仍然真的验"点进去到没到那张单"**：
+        //   · 链接在 → 点它，必须导航到 sourcePath；
+        //   · 链接不在 → 不算失败，但要求**确实存在这个来源的事件**
+        //     （否则就是后端没给 source，"查看原单"整块坏了却没人发现）。
+        const probe = await client.send('Runtime.evaluate', {
+          expression: `(() => {
+            const link = document.querySelector('a[href="${item.sourcePath}"]');
+            if (link) { link.click(); return 'clicked' }
+            return 'no-link-on-this-page';
+          })()`,
+          returnByValue: true,
+        })
+        if (probe.result.value === 'clicked') {
+          const opened = await waitForText(client, item.sourceText ?? '订单明细', 5000)
+          const location = await client.send('Runtime.evaluate', {
+            expression: 'window.location.pathname', returnByValue: true,
+          })
+          if (!opened || location.result.value !== item.sourcePath) {
+            // 失败时把**现场**打出来：不打印就只能靠猜（我在这里猜错过一次 ——
+            // 以为是分页把事件挤走了，实际链接就在本页、点击也发生了）。
+            // ⚠️ 这里**不要用正则**：模板字面量会把 `\n` 解释成**真实换行**，
+            // `replace(/\n+/g, …)` 到浏览器里就成了跨行的非法正则
+            // （`SyntaxError: Invalid regular expression: missing /`），
+            // 整个诊断返回 undefined —— 连"打印现场"都失败，只能再猜一轮。
+            // 用 split/join 拼换行，绕开转义地狱。
+            const diag = await client.send('Runtime.evaluate', {
+              expression: `JSON.stringify({
+                expectPath: ${JSON.stringify(item.sourcePath)},
+                nowPath: window.location.pathname,
+                expectText: ${JSON.stringify(item.sourceText ?? '订单明细')},
+                bodyHead: document.body.innerText.slice(0, 160).split(String.fromCharCode(10)).join(' | '),
+                orderLinks: Array.from(document.querySelectorAll('a')).map((a) => a.getAttribute('href')).filter((h) => h && h.indexOf('/orders') === 0).slice(0, 5),
+              })`, returnByValue: true,
+            })
+            const diagText = diag.result?.exceptionDetails
+              ? `诊断也失败了：${diag.result.exceptionDetails.exception?.description ?? '未知'}`
+              : String(diag.result?.value)
+            problems.push(`客户时间线：原单链接没有打开对应单据 —— ${diagText}`)
+          }
+        } else if (!item.sourceFallback) {
+          problems.push(`客户时间线：本页找不到 ${item.sourcePath} 的「查看原单」链接（且这条没登记翻页兜底）`)
+        } else {
+          // 翻页兜底：事件被挤到后面几页是正常的，这里只**记录**不算失败。
+          console.log(`· ${item.name}：本页没有 ${item.sourcePath} 的链接（事件在后续页）—— 跳过点击验证`)
+        }
+      }
+
+    }
+
+    await checkTwelfthRepairs(client, auth, problems)
+
+    // 自测页：页面内「按需加载的一块」失败时不能把整页连表单一起顶掉（第九批复审 §9.11）
+    if (process.env.SMOKE_APP_PREVIEW !== '1') {
+      await checkLazyRegionSelfTest(client, problems)
+      await checkLazyRegionNetworkRetry(client, problems)
+    }
+    await checkLazyRegionProdBuild(client, problems)
+
+    if (problems.length > 0) {
+      console.log('\n发现前端运行时报错：')
+      for (const problem of problems) console.log(` - ${problem}`)
+      process.exitCode = 1
+    } else {
+      console.log('\n✓ 未发现控制台报错')
+    }
+  } finally {
+    // 异常也必须关闭连接；Windows 浏览器启动器可能先退出，kill 启动器不等于关浏览器。
+    if (client) {
+      await Promise.race([client.send('Browser.close').catch(() => {}), sleep(1000)])
+      client.close()
+    }
+    // 温和退不掉就强杀：卡死的浏览器（命令无响应那种）不认 SIGTERM，尸体会占着
+    // 固定档案目录，下一轮启动清理直接被 ENOTEMPTY 打死（2026-11-17 实测连撞两次）。
+    browser.kill()
+    const exited = await Promise.race([new Promise(r => browser.once('exit', () => r(true))), sleep(3000).then(() => false)])
+    if (!exited) browser.kill('SIGKILL')
+    await sleep(300)
+    // 清理临时 profile。这里失败**不能算测试失败**：
+    // 上一次运行被强杀时浏览器进程可能还占着目录（Windows 上会 EPERM），
+    // 之前就因此报过一次假的"冒烟测试失败"，把真正的结论盖掉了。
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        rmSync(PROFILE_DIR, { recursive: true, force: true })
+        break
+      } catch (error) {
+        if (attempt === 2) {
+          console.log(
+            `（提示：临时目录 ${PROFILE_DIR} 没清掉，不影响本次测试结论：${error.code ?? error.message}）`,
+          )
+        } else {
+          await sleep(500)
+        }
+      }
+    }
+    // 收尾清扫放在最后：不管冒烟成功还是中途失败，都要把本轮写出来的通知清掉
+    cleanTestResidue(runStartedAt)
+  }
+}
+
+main().catch((error) => {
+  console.error(`✗ 冒烟测试失败：${error.message}`)
+  process.exitCode = 1
+})

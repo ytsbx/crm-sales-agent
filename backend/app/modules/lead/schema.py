@@ -1,11 +1,12 @@
 from datetime import date
+from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field
-from app.core.patch_schema import PatchModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from app.core.patch_schema import CreateModel, PatchModel
 
 
 
-class LeadCreate(BaseModel):
+class LeadCreate(CreateModel):
     name: str = Field(min_length=1, max_length=200)
     company_name: str | None = None
     contact_name: str | None = None
@@ -42,14 +43,24 @@ class LeadUpdate(PatchModel):
     region: str | None = None
     remark: str | None = None
 
+    @field_validator("name")
+    @classmethod
+    def _name_not_null(cls, value):
+        # B19-07：显式传 name:null/空白 会写非空列 500，提前拒（不传=不改，跳过）
+        if value is None or not value.strip():
+            raise ValueError("线索名称不能为空")
+        return value.strip()
+
 
 class LeadAssign(BaseModel):
     owner_id: int | None = None
-    reason: str | None = None
+    #: 直接写进 `lead_assignments.reason`（`String(255)`）——原来**没有任何上限**，
+    #: 超长会撞列宽报 500（2026-10-14 审查修）。
+    reason: str | None = Field(default=None, max_length=255)
 
 
 class LeadDiscard(BaseModel):
-    reason: str = Field(min_length=1, max_length=255)
+    reason: str = Field(min_length=1, max_length=252)
 
 
 class LeadConvert(BaseModel):
@@ -66,7 +77,11 @@ class LeadConvert(BaseModel):
     """
     create_opportunity: bool = False
     opportunity_title: str | None = None
-    expected_amount: float | None = None
+    # 金额字段必须拒绝 NaN/Infinity，并与 opportunities.expected_amount
+    # 的 Numeric(16,2) 列保持同一精度；float 会把非有限值放进请求模型。
+    expected_amount: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=2
+    )
     expected_close_date: date | None = None
 
 
@@ -76,12 +91,12 @@ class LeadBatchAssign(BaseModel):
     公海里的线索经常一次来几十条，逐条点分配不现实。
     """
 
-    lead_ids: list[int]
+    lead_ids: list[int] = Field(min_length=1, max_length=500)
     owner_id: int
-    reason: str | None = None
+    reason: str | None = Field(default=None, max_length=255)
 
 
 class LeadBatchIds(BaseModel):
     """按 id 批量操作（导出 / 批量废弃等复用）。"""
 
-    lead_ids: list[int]
+    lead_ids: list[int] = Field(min_length=1, max_length=500)

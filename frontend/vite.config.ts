@@ -5,14 +5,15 @@ import { defineConfig } from 'vite'
 export default defineConfig({
   plugins: [react()],
   server: {
-    // 局域网演示：监听所有网卡，并放行按 IP / 主机名进来的 Host 头（Vite 6+ 默认只认 localhost）
+    // 开发使用 5274；5173 留给生产静态构建。
     host: true,
     allowedHosts: true,
-    port: 5173,
+    port: 5274,
+    strictPort: true,
     proxy: {
       // 开发期把 /api 代理到后端，避免跨域配置
       '/api': {
-        target: 'http://127.0.0.1:8000',
+        target: process.env.VITE_API_PROXY_TARGET ?? 'http://127.0.0.1:8008',
         changeOrigin: true,
       },
     },

@@ -1,0 +1,3 @@
+results: ['PG-DUP-A: committed id=5', 'PG-DUP-B: committed id=4']
+same erp_order_id count: 2
+rows: [(4, 'PG-DUP-B', 'ERP-CONCURRENT-DUP-001'), (5, 'PG-DUP-A', 'ERP-CONCURRENT-DUP-001')]

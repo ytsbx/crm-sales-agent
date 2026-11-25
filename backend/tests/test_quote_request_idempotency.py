@@ -32,34 +32,14 @@ from app.core.idempotency import RequestKey
 from app.modules.quote import router as quote_router
 from app.modules.quote.schema import QuoteCreate
 from app.modules.user.model import User
+from tests.conftest import SyncSessionAsAsync
 
 
-class _FakeSession:
+class _FakeSession(SyncSessionAsAsync):
     """只包出路由与幂等助手真正用到的几个方法（其余一律 AttributeError）。"""
-
-    def __init__(self, session: Session) -> None:
-        self._session = session
-
-    async def execute(self, stmt, *args, **kwargs):
-        return self._session.execute(stmt, *args, **kwargs)
-
-    async def get(self, entity, ident, *args, **kwargs):
-        return self._session.get(entity, ident, *args, **kwargs)
 
     async def delete(self, obj) -> None:
         self._session.delete(obj)
-
-    def add(self, obj) -> None:
-        self._session.add(obj)
-
-    async def flush(self) -> None:
-        self._session.flush()
-
-    async def commit(self) -> None:
-        self._session.commit()
-
-    async def rollback(self) -> None:
-        self._session.rollback()
 
 
 def _request(headers: dict[str, str] | None = None) -> Request:

@@ -1,7 +1,7 @@
 """定制询价库接口（领导模块③：产品知识库 · 定制询价类）。"""
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -23,7 +23,7 @@ from app.modules.user.model import User
 router = APIRouter(tags=["CustomInquiry"])
 
 
-async def _ctx_names(session: AsyncSession, rows: list[CustomInquiry]) -> dict[int, dict]:
+async def _ctx_names(session: AsyncSession, rows: list[CustomInquiry], *, viewer_id: int) -> dict[int, dict]:
     customer_ids = [r.customer_id for r in rows if r.customer_id]
     creator_ids = [r.created_by for r in rows if r.created_by]
     customer_names: dict[int, str] = {}
@@ -36,10 +36,12 @@ async def _ctx_names(session: AsyncSession, rows: list[CustomInquiry]) -> dict[i
     if creator_ids:
         rows_ = await session.execute(select(User.id, User.name).where(User.id.in_(creator_ids)))
         creator_names = {uid: name for uid, name in rows_.all()}
+    quote_links = await svc.linked_quotes_for(session, [r.id for r in rows], viewer_id=viewer_id) if rows else {}
     return {
         r.id: {
             "customer_name": customer_names.get(r.customer_id),
             "creator_name": creator_names.get(r.created_by),
+            "linked_quotes": quote_links.get(r.id, []),
         }
         for r in rows
     }
@@ -55,8 +57,11 @@ async def list_inquiries(
     page_size: int = Query(20, ge=1, le=200),
     user: CurrentUser = Depends(require_permission("quote:view")),
     session: AsyncSession = Depends(get_db),
+    inquiry_id: int | None = None,
 ):
     stmt = svc.not_deleted(select(CustomInquiry))
+    if inquiry_id is not None:
+        stmt = stmt.where(or_(CustomInquiry.id == inquiry_id, CustomInquiry.root_id == inquiry_id))
     if opportunity_id is not None:
         stmt = stmt.where(CustomInquiry.opportunity_id == opportunity_id)
     if customer_id is not None:
@@ -65,11 +70,17 @@ async def list_inquiries(
         svc.ensure_status(status)
         stmt = stmt.where(CustomInquiry.status == status)
     if keyword:
-        stmt = stmt.where(CustomInquiry.title.ilike(f"%{keyword}%"))
+        # 下拉里显示的是「需求编号 · 标题」，所以编号也要能搜 —— 只搜标题时，
+        # 用户照着编号找第 101 条以后的需求永远搜不到（服务端搜索 + 下拉的入口）。
+        _kw = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        stmt = stmt.where(or_(
+            CustomInquiry.title.ilike(f"%{_kw}%", escape="\\"),
+            CustomInquiry.inquiry_no.ilike(f"%{_kw}%", escape="\\"),
+        ))
     stmt = await svc.apply_scope(stmt, user, session)
     stmt = stmt.order_by(CustomInquiry.id.desc())
     rows, total = await paginate(session, stmt, page, page_size)
-    ctx = await _ctx_names(session, rows)
+    ctx = await _ctx_names(session, rows, viewer_id=user.id)
     return ok(
         page_data(
             [svc.serialize(r, **ctx.get(r.id, {})) for r in rows],
@@ -123,6 +134,7 @@ async def create_inquiry(
         remark=payload.remark,
         status="open",
         created_by=user.id,
+        extra={"oa_draft": payload.oa_draft.model_dump()} if payload.oa_draft else None,
     )
     session.add(inquiry)
     await session.flush()
@@ -184,13 +196,22 @@ async def create_quote_from_inquiry(
         {
             "quote_id": quote.id,
             "quote_no": quote.quote_no,
+            "quote_status": quote.status,
+            "is_draft": quote.status == "draft",
+            "notice": "内部报价草稿已生成，原需求保留供追溯；正式对外报价前须完成同序核价/报价复核",
             "version_id": version.id,
             "opportunity_id": created["opportunity"].id,
             "inquiry_no": inquiry.inquiry_no,
             # 直接把"这一价是不是低了"告诉界面，省得销售回报价页才发现要审批
-            "quoted_price": float(item.quoted_price),
+            "quoted_price": item.quoted_price,
+            "quoted_price_exact": format(item.quoted_price, 'f'),
             "minimum_price": (
-                float(item.minimum_price_snapshot)
+                item.minimum_price_snapshot
+                if item.minimum_price_snapshot is not None
+                else None
+            ),
+            "minimum_price_exact": (
+                format(item.minimum_price_snapshot, 'f')
                 if item.minimum_price_snapshot is not None
                 else None
             ),
@@ -213,17 +234,44 @@ async def update_inquiry(
         CustomInquiry.id == (inquiry.root_id or inquiry.id)
     ).with_for_update())
     await session.refresh(inquiry)
+    if inquiry.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "这一版已被删除", 404)
+    await svc.get_visible_or_404(session, user, inquiry_id)
     data = payload.model_dump(exclude_unset=True)
     if "status" in data and data["status"] is not None:
         svc.ensure_status(data["status"])
     # 改归属同样要过数据范围：不然先把需求建在自己客户上、再 PATCH 客户/商机编号，
     # 一样能把别人的客户与商机挂进来（创建路径的校验挡不住这一步）
     if any(field in data for field in ("customer_id", "opportunity_id", "contact_id")):
-        data["customer_id"] = await svc.validate_links(
-            session, user, customer_id=data.get("customer_id", inquiry.customer_id),
-            opportunity_id=data.get("opportunity_id", inquiry.opportunity_id),
-            contact_id=data.get("contact_id", inquiry.contact_id),
+        # ⚠️ **必须用校验函数的返回值，不能回读请求里的原值**（2026-10-16 修）：
+        # `validate_links` 会从商机推导出**权威的** customer_id 并 return 它，
+        # 而这里原先写 `data.get("customer_id", …)` —— 请求显式带
+        # `customer_id: null` 时 `model_dump(exclude_unset=True)` 会保留这个 null，
+        # 于是推导出来的正确客户被覆盖成 None：需求存下"商机属于客户 B、
+        # customer_id 为 NULL"。而 NULL 客户会落进 apply_scope 的
+        # "无客户 ⇒ 同事可见"分支，一条本只该归 A 负责人的需求变成全公司可见。
+        # 下面那句"指定了商机却给不出客户"的拦截保留：正常商机一定有客户，
+        # 拿不到说明商机数据本身不完整，宁可明确报错也不静默存 NULL。
+        existing_customer = (
+            data["customer_id"] if "customer_id" in data else inquiry.customer_id
         )
+        existing_opportunity = (
+            data["opportunity_id"] if "opportunity_id" in data else inquiry.opportunity_id
+        )
+        existing_contact = (
+            data["contact_id"] if "contact_id" in data else inquiry.contact_id
+        )
+        validated_customer = await svc.validate_links(
+            session, user, customer_id=existing_customer,
+            opportunity_id=existing_opportunity, contact_id=existing_contact,
+        )
+        if existing_opportunity is not None and validated_customer is None:
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                "关联商机必须同时有客户；这个商机没有客户归属，请先补全商机资料或改选商机",
+                422,
+            )
+        data["customer_id"] = validated_customer
     # 字段归属（口径 2026-10-04）：链级字段（客户/联系人/商机/对接报价员）对整条
     # 需求生效，写到链条每一版；版本级字段（标题/描述/数量/目标价/状态/备注）只许
     # 改当前版——历史版本已被新版取代，直接改它等于"悄悄改历史"，要改请走修订。
@@ -231,6 +279,9 @@ async def update_inquiry(
 
     chain_data = {k: v for k, v in data.items() if k in CHAIN_FIELDS}
     version_data = {k: v for k, v in data.items() if k not in CHAIN_FIELDS}
+    if "oa_draft" in version_data:
+        draft = version_data.pop("oa_draft")
+        version_data["extra"] = {**(inquiry.extra or {}), "oa_draft": draft}
     if version_data and inquiry.superseded_at is not None:
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
@@ -275,6 +326,12 @@ async def delete_inquiry(
     session: AsyncSession = Depends(get_db),
 ):
     inquiry = await svc.get_visible_or_404(session, user, inquiry_id)
+    if inquiry.source_insight_id is not None:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "这张询价是新品洞察的原始需求，请用「归档」结束处理，保留来源记录",
+            409,
+        )
     root_id = inquiry.root_id or inquiry.id
     # 与修订抢同一把链级锁：一边删、一边修订错开跑，"当前版是谁"就会算错。
     await session.execute(
@@ -375,6 +432,8 @@ async def revise_inquiry(
         customer_id=old.customer_id,
         contact_id=old.contact_id,
         opportunity_id=old.opportunity_id,
+        oa_quote_user_id=old.oa_quote_user_id,
+        oa_quote_user_name=old.oa_quote_user_name,
         quantity=payload.quantity if payload.quantity is not None else old.quantity,
         target_price=(
             payload.target_price if payload.target_price is not None else old.target_price
@@ -463,7 +522,7 @@ async def inquiry_history(
             stmt.order_by(CustomInquiry.version.asc(), CustomInquiry.id.asc())
         )
     ).scalars().all()
-    ctx = await _ctx_names(session, rows)
+    ctx = await _ctx_names(session, rows, viewer_id=user.id)
     return ok([svc.serialize(r, **ctx.get(r.id, {})) for r in rows])
 
 
@@ -475,5 +534,5 @@ async def get_inquiry(
 ):
     """单条详情（前端修订表单用它回填当前版内容）。"""
     inquiry = await svc.get_visible_or_404(session, user, inquiry_id)
-    ctx = await _ctx_names(session, [inquiry])
+    ctx = await _ctx_names(session, [inquiry], viewer_id=user.id)
     return ok(svc.serialize(inquiry, **ctx.get(inquiry.id, {})))

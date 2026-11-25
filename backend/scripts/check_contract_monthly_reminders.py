@@ -94,6 +94,14 @@ async def main():
                 "expiry_date": expiry.isoformat(),
                 **({"parent_id": parent_id} if parent_id else {}),
                 **({"supersede_parent": True} if supersede else {}),
+                # 续签（带 parent_id）**必须**填生效日（第三批审查 P2）：
+                # 只记到期日分不清"新版从哪天开始适用"、旧协议还要适用到哪一天。
+                # 生效日取**今天**（与上面 `soon` 同一把 UTC 尺子），不晚于到期日。
+                **(
+                    {"effective_date": datetime.now(UTC).date().isoformat()}
+                    if parent_id
+                    else {}
+                ),
             },
         )
         doc_ids.append(doc["id"])
@@ -106,7 +114,9 @@ async def main():
                 file_name=f"{MARKER}-{doc['id']}.pdf",
                 mime_type="application/pdf",
                 size=8,
-                checksum="0" * 64,
+                # checksum 必须逐份不同：bdd6efc9 起回签文件按「同 id 或同 checksum」
+                # 查重（42206），夹具全用 0×64 会让第二份合同起签署被拒。
+                checksum=f"{doc['id']:064d}",
                 uploaded_by=zhangsan_id,
             )
             session.add(record)
@@ -122,8 +132,9 @@ async def main():
             await session.commit()
             file_ids.append(record.id)
             sign_file_id = record.id
+        # 合同是 admin 建的：私人草稿只对创建人开放，签署也用创建人身份。
         api("POST", f"/contract-documents/{doc['id']}/sign",
-            body={"file_id": sign_file_id}, token=zhangsan)
+            body={"file_id": sign_file_id}, token=admin)
         return doc
 
     def find_task(doc_id: int) -> dict | None:

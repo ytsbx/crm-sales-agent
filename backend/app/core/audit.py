@@ -34,21 +34,36 @@ class AuditLog(Base, IdMixin):
     )
 
 
-def json_safe(value: Any) -> Any:
+def json_safe(value: Any, *, decimal_as_str: bool | None = True) -> Any:
     """把审计数据转成能进 JSONB 的形状。
 
     踩过的坑：报价单的 valid_until 是 date 类型，直接塞进 JSON 列会在
     flush 时抛 "Object of type date is not JSON serializable"，
     而且报错出现在 commit 阶段，看调用栈很难一眼定位。
+
+    Decimal 默认按原值存字符串（float→Decimal 专项批1，B12-01）：转 float
+    会在 16 位边界差一分，审计留痕就对不上账；字符串可精确复算，与 bizdoc
+    快照先例一致。`decimal_as_str=None` 保留 Decimal 原值，供精确渲染器
+    exact_json_dumps 使用（Q4 决策2：幂等快照存精确原文，不再经 float）。
+    **float 复印模式（decimal_as_str=False）已拆除**（2026-11-24 主人批准）：
+    Q4 后全 app/测试零调用方，属没人按的老按钮；再有人传 False 显式报错，
+    而不是静默走丢精度的老路。
     """
     if isinstance(value, dict):
-        return {key: json_safe(item) for key, item in value.items()}
+        return {key: json_safe(item, decimal_as_str=decimal_as_str) for key, item in value.items()}
     if isinstance(value, (list, tuple, set)):
-        return [json_safe(item) for item in value]
+        return [json_safe(item, decimal_as_str=decimal_as_str) for item in value]
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     if isinstance(value, Decimal):
-        return float(value)
+        if decimal_as_str is None:
+            return value
+        if not decimal_as_str:
+            raise ValueError(
+                "json_safe 的 float 复印模式（decimal_as_str=False）已拆除："
+                "转 float 会在 16 位边界差一分，审计留痕必须原文照抄"
+            )
+        return str(value)
     return value
 
 

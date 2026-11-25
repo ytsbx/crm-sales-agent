@@ -1,7 +1,7 @@
 """用户 / 部门 / 角色接口（03-API §3 / §4 / §5）。
 
 共 20 个路径，其中读接口 5 个、写接口 15 个。全部要求 `user:manage`
-（`GET /users` 例外：分配客户时也要能选人，所以对 `customer:assign` 放开）。
+（`GET /users` 例外：分配客户/线索时需要选人，对 `customer:assign` / `lead:assign` 放开）。
 
 注册顺序：`/departments/tree` 必须排在 `/departments/{dept_id}` 之前，
 否则会被动态路由抢先匹配（项目里这个坑踩过三次了）。
@@ -46,11 +46,12 @@ router = APIRouter(tags=["System"])
 async def list_users(
     keyword: str | None = None,
     status: str | None = None,
+    omit_archived: bool = False,
     department_id: int | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
-    # 有分配客户权限的人也需要选人，所以这里放开给 customer:assign
-    _: CurrentUser = Depends(require_permission("user:manage", "customer:assign")),
+    # 用户确认复用完整员工列表：分配客户/线索的角色可读，用户管理写接口仍单独授权。
+    user: CurrentUser = Depends(require_permission("user:manage", "customer:assign", "lead:assign")),
     session: AsyncSession = Depends(get_db),
 ):
     stmt = svc.base_user_query()
@@ -59,6 +60,8 @@ async def list_users(
         stmt = stmt.where(User.name.ilike(like) | User.username.ilike(like))
     if status:
         stmt = stmt.where(User.status == status)
+    elif omit_archived:
+        stmt = stmt.where(User.status != "archived")
     if department_id:
         stmt = stmt.where(User.department_id == department_id)
 
@@ -66,12 +69,15 @@ async def list_users(
     dept_map = await svc.department_names(session, [u.department_id for u in rows])
     role_map = await svc.roles_of_users(session, [u.id for u in rows])
     items = [
-        svc.serialize_user(
-            user,
-            department_name=dept_map.get(user.department_id) if user.department_id else None,
-            roles=role_map.get(user.id, []),
-        )
-        for user in rows
+        {
+            **svc.serialize_user(
+                row,
+                department_name=dept_map.get(row.department_id) if row.department_id else None,
+                roles=role_map.get(row.id, []),
+            ),
+            **({"oa_user_id": row.oa_user_id} if "admin" in user.roles else {}),
+        }
+        for row in rows
     ]
     return ok(page_data(items, total, page, page_size))
 
@@ -131,8 +137,12 @@ async def update_user(
     session: AsyncSession = Depends(get_db),
 ):
     target = await svc.get_user_or_404(session, user_id)
-    before = svc.serialize_user(target)
     data = payload.model_dump(exclude_unset=True)
+    roles = None
+    if "role_ids" in data:
+        roles = await _save_user_roles(session, target, data.pop("role_ids"), user.id, request)
+        await session.refresh(target)
+    before = svc.serialize_user(target)
     await svc.update_user(session, target, data)
 
     after = svc.serialize_user(target)
@@ -150,7 +160,7 @@ async def update_user(
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(after, "已保存")
+    return ok(after if roles is None else {**after, "roles": roles}, "已保存")
 
 
 @router.post("/users/{user_id}/enable")
@@ -201,6 +211,44 @@ async def disable_user(
     return ok(svc.serialize_user(target), "账号已停用")
 
 
+@router.post("/users/{user_id}/archive")
+async def archive_user(
+    user_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("user:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    if "admin" not in user.roles:
+        raise AppError(ErrorCode.FORBIDDEN, "只有管理员可以归档员工账号", 403)
+    target = await svc.get_user_or_404(session, user_id)
+    before_status = target.status
+    await svc.set_user_status(session, target, status="archived", operator_id=user.id)
+    await write_audit(session, operator_id=user.id, action="archive", business_type="user",
+                      business_id=user_id, before={"status": before_status},
+                      after={"status": "archived"}, ip=client_ip(request))
+    await session.commit()
+    return ok(svc.serialize_user(target), "账号已离职归档")
+
+
+@router.delete("/users/{user_id}")
+async def delete_unused_user(
+    user_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("user:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    if "admin" not in user.roles:
+        raise AppError(ErrorCode.FORBIDDEN, "只有管理员可以删除空账号", 403)
+    if user_id == user.id:
+        raise AppError(ErrorCode.PARAM_ERROR, "不能删除自己的账号", 422)
+    target = await svc.get_user_or_404(session, user_id)
+    await svc.delete_unused_user(session, target)
+    await write_audit(session, operator_id=user.id, action="delete", business_type="user",
+                      business_id=user_id, before=svc.serialize_user(target), ip=client_ip(request))
+    await session.commit()
+    return ok(None, "空账号已删除")
+
+
 @router.get("/users/{user_id}/roles")
 async def get_user_roles(
     user_id: int,
@@ -217,6 +265,30 @@ async def get_user_roles(
     )
 
 
+async def _save_user_roles(
+    session: AsyncSession,
+    target: User,
+    role_ids: list[int],
+    operator_id: int,
+    request: Request,
+) -> list[dict]:
+    before, roles = await svc.set_user_roles(session, target, role_ids)
+    await write_audit(
+        session,
+        operator_id=operator_id,
+        action="set_roles",
+        business_type="user",
+        business_id=target.id,
+        before={"roles": before},
+        after={"roles": [r.code for r in roles]},
+        ip=client_ip(request),
+    )
+    return [
+        {"id": r.id, "code": r.code, "name": r.name, "data_scope": r.data_scope, "status": r.status}
+        for r in roles
+    ]
+
+
 @router.put("/users/{user_id}/roles")
 async def set_user_roles(
     user_id: int,
@@ -226,27 +298,9 @@ async def set_user_roles(
     session: AsyncSession = Depends(get_db),
 ):
     target = await svc.get_user_or_404(session, user_id)
-    before = [r.code for r in await svc.roles_of_user(session, target.id)]
-    roles = await svc.set_user_roles(session, target, payload.role_ids)
-    after = [r.code for r in roles]
-    await write_audit(
-        session,
-        operator_id=user.id,
-        action="set_roles",
-        business_type="user",
-        business_id=target.id,
-        before={"roles": before},
-        after={"roles": after},
-        ip=client_ip(request),
-    )
+    roles = await _save_user_roles(session, target, payload.role_ids, user.id, request)
     await session.commit()
-    return ok(
-        [
-            {"id": r.id, "code": r.code, "name": r.name, "data_scope": r.data_scope, "status": r.status}
-            for r in roles
-        ],
-        "角色已更新",
-    )
+    return ok(roles, "角色已更新")
 
 
 @router.get("/users/{user_id}/data-scope")
@@ -505,9 +559,13 @@ async def list_permissions(
             {
                 "id": p.id,
                 "code": p.code,
-                "name": p.name,
+                "name": f"{p.name}（可授管理员）" if p.code == "user:manage" else p.name,
                 "resource": p.resource,
                 "action": p.action,
+                **(
+                    {"warning": "授予后，持有人可以重置他人密码、分配管理员角色，以及修改角色权限和数据范围。请确认授权对象。"}
+                    if p.code == "user:manage" else {}
+                ),
             }
             for p in rows
         ]

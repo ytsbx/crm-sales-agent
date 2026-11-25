@@ -7,6 +7,7 @@ from sqlalchemy import String, cast, delete, literal, or_, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.draft_visibility import draft_scope
 from app.core.errors import AppError, ErrorCode
 from app.core.response import paginate
 from app.modules.cases import redaction
@@ -27,6 +28,12 @@ def is_reviewer(user) -> bool:
     return any(role in REVIEWER_ROLES for role in user.roles) or user.has("settings:manage")
 
 
+def _share_customer_label(label: str | None, customer_name: str | None) -> str:
+    if customer_name and label and customer_name in label:
+        return "某客户"
+    return redaction.mask_text(label)[0] or "某客户"
+
+
 def serialize_case(
     case: SalesCase,
     *,
@@ -35,6 +42,7 @@ def serialize_case(
     reviewer_name: str | None = None,
     reveal_customer: bool = False,
     evidence_scope: set[str] | None = None,
+    visible_evidence: set[tuple[str, int]] | None = None,
     superseded_by: int | None = None,
     evidences: list | None = None,
     reviewer_names: dict[int, str] | None = None,
@@ -52,6 +60,8 @@ def serialize_case(
     """
     share_view = not reveal_customer
     label = case.customer_label or "某客户"
+    if share_view:
+        label = _share_customer_label(case.customer_label, customer_name)
 
     def _replace_customer_name(text: str) -> str:
         """把**客户全称**换成代称并计数（分享版专用）。
@@ -125,9 +135,13 @@ def serialize_case(
         field: getattr(case, field) for field in redaction.EVIDENCE_PERMISSIONS
     }
     hidden_evidence: list[str] = []
-    if share_view and evidence_scope is not None:
-        for field, value in evidence.items():
-            if value is not None and field not in evidence_scope:
+    if share_view:
+        for kind, field in LEGACY_EVIDENCE_FIELDS.items():
+            value = evidence[field]
+            if value is not None and (
+                (evidence_scope is not None and field not in evidence_scope)
+                or (visible_evidence is not None and (kind, value) not in visible_evidence)
+            ):
                 evidence[field] = None
                 hidden_evidence.append(field)
 
@@ -135,32 +149,34 @@ def serialize_case(
     # 权限过滤与旧字段**同一套判据**：按类别要对应的查看权限（`quote:view` 等），
     # 没有权限的那几条不下发 —— 但要在 `hidden_evidence` 里留个记号，
     # 让读者知道"这里少了东西"，而不是以为作者没挂证据。
+    def evidence_text(raw: str | None) -> str | None:
+        if not share_view or not raw:
+            return raw
+        masked, hits = redaction.mask_text(raw)
+        for hit_label, count in hits.items():
+            counters[hit_label] = counters.get(hit_label, 0) + count
+        return _replace_customer_name(masked)
+
     evidence_items: list[dict] = []
     for row in evidences or []:
         kind = row.kind
         field = LEGACY_EVIDENCE_FIELDS.get(kind)
         if kind not in CASE_EVIDENCE_KINDS or row.business_id is None:
             continue
-        if share_view and evidence_scope is not None and field and field not in evidence_scope:
+        if share_view and (
+            (evidence_scope is not None and field not in evidence_scope)
+            or (visible_evidence is not None and (kind, row.business_id) not in visible_evidence)
+        ):
             if kind not in hidden_evidence:
                 hidden_evidence.append(kind)
             continue
-        # **证据标签也要脱敏**（2026-10-06 修 R01）：标签是作者手写的自由文本，
-        # 写「某某集团 138… 成本 12 元」是常事。此前只有正文/标题/审核意见走脱敏，
-        # 标签原样下发——正文遮得严严实实，证据那一行的客户全名照样露着。
-        # 规则与其它自由文本完全相同：先抹金额/联系方式，再把客户全称换成代称。
-        item_label = row.label
-        if share_view and item_label:
-            item_label, label_hits = redaction.mask_text(item_label)
-            for hit_label, count in label_hits.items():
-                counters[hit_label] = counters.get(hit_label, 0) + count
-            item_label = _replace_customer_name(item_label)
         evidence_items.append(
             {
                 "kind": kind,
                 "kind_label": CASE_EVIDENCE_KINDS[kind],
                 "business_id": row.business_id,
-                "label": item_label,
+                "label": evidence_text(row.label),
+                "note": evidence_text(row.note),
             }
         )
 
@@ -418,21 +434,35 @@ async def validate_evidences(
     }
     seen: set[tuple[str, int]] = set()
     for item in valid:
-        kind = str(item["kind"])
+        # ⚠️ 必须与上面**第一遍校验**用同一个取值（2026-10-14 审查修）。
+        # 校验那遍是 `str(raw_kind or "").strip()`，而这里原来用**原值** ——
+        # 于是 `" quote"`（或 `"quote "`）能过校验，却在 `loaders[kind]` 上
+        # 抛未捕获的 `KeyError` → **HTTP 500**（本该是 422 说"类型不认识"）。
+        # 同一个值两处两种形态，是这一类的典型分叉。
+        kind = str(item.get("kind") or "").strip()
         business_id = int(item["business_id"])
         key = (kind, business_id)
         if key in seen:
             raise AppError(
                 ErrorCode.PARAM_ERROR,
-                f"{CASE_EVIDENCE_KINDS[kind]} #{business_id} 重复挂了两次",
+                f"{CASE_EVIDENCE_KINDS[kind]} 编号 {business_id} 重复挂了两次",
                 422,
             )
         seen.add(key)
-        record = await loaders[kind](session, user, business_id)
+        loader = loaders.get(kind)
+        if loader is None:
+            # 第二道兜底：万一将来又出现"校验与派发不一致"，
+            # 也应当是明确的参数错误，而不是 500。
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                f"证据类型「{kind}」不认识，只能从这几类里选："
+                + "、".join(sorted(CASE_EVIDENCE_KINDS)),
+            )
+        record = await loader(session, user, business_id)
         if getattr(record, "customer_id", None) != customer_id:
             raise AppError(
                 ErrorCode.PARAM_ERROR,
-                f"{CASE_EVIDENCE_KINDS[kind]} #{business_id} 不属于本案例的客户，"
+                f"{CASE_EVIDENCE_KINDS[kind]} 编号 {business_id} 不属于本案例的客户，"
                 f"不能作为证据挂上来",
                 422,
             )
@@ -500,7 +530,7 @@ async def validate_evidence(
         if actual_customer.get(name) != customer_id:
             raise AppError(
                 ErrorCode.PARAM_ERROR,
-                f"{label} #{value} 不属于本案例的客户，不能作为证据挂上来",
+                f"{label} 编号 {value} 不属于本案例的客户，不能作为证据挂上来",
                 422,
             )
 
@@ -524,7 +554,7 @@ def visible_text_for_search(
         parts += [getattr(case, field) or "" for field in redaction.NARRATIVE_FIELDS]
         return "\n".join(parts)
 
-    label = case.customer_label or "某客户"
+    label = _share_customer_label(case.customer_label, customer_name)
 
     def replace_name(text: str) -> str:
         if not customer_name or customer_name not in text:
@@ -545,6 +575,37 @@ async def get_case_or_404(session: AsyncSession, case_id: int) -> SalesCase:
     return case
 
 
+async def _visible_evidence_for(
+    session: AsyncSession, user, cases: list[SalesCase], evidence_by_case: dict, scope: set[str]
+) -> set[tuple[str, int]]:
+    if not cases or not scope:
+        return set()
+    from app.core.data_scope import scoped_owner_ids
+    from app.modules.opportunity.model import Opportunity
+    from app.modules.order.model import SalesOrder
+    from app.modules.quote.model import Quote
+    from app.modules.sample.model import SampleRequest
+
+    owner_ids = await scoped_owner_ids(session, user)
+    visible: set[tuple[str, int]] = set()
+    for kind, model in (("quote", Quote), ("order", SalesOrder), ("sample", SampleRequest), ("opportunity", Opportunity)):
+        field = LEGACY_EVIDENCE_FIELDS[kind]
+        if field not in scope:
+            continue
+        ids = {getattr(case, field) for case in cases if getattr(case, field) is not None}
+        ids.update(item.business_id for case in cases for item in evidence_by_case.get(case.id, [])
+                   if item.kind == kind and item.business_id is not None)
+        if not ids:
+            continue
+        stmt = select(model.id).where(model.id.in_(ids))
+        if kind != "order":
+            stmt = stmt.where(model.deleted_at.is_(None))
+        if owner_ids is not None:
+            stmt = stmt.where(model.owner_id.in_(owner_ids))
+        visible.update((kind, row_id) for row_id in (await session.execute(stmt)).scalars())
+    return visible
+
+
 async def list_cases(
     session: AsyncSession, *, user, status: str | None, industry: str | None,
     product_line: str | None, stage: str | None, keyword: str | None,
@@ -563,7 +624,7 @@ async def list_cases(
     改成真分页并返回总数，前端才可能知道自己少看了多少。
     """
     reviewer = is_reviewer(user)
-    stmt = select(SalesCase).where(SalesCase.deleted_at.is_(None))
+    stmt = select(SalesCase).where(SalesCase.deleted_at.is_(None), draft_scope(SalesCase, user.id))
     if not reviewer:
         # 已发布 + **被修订版取代的旧版**都人尽可读：旧版只是不能再改，
         # 它还是培训资料。修订稿上线就把旧版从读者视野里抹掉，等于把资料弄丢了
@@ -636,7 +697,7 @@ async def list_cases(
         # 现在的边界：修订稿还在草稿/待审/被驳回 → 原版照常显示（它才是当前发布版）；
         # 修订稿发布并把原版置为 `superseded` 之后，原版才从默认列表退场
         # （仍可用 include_history=true 列出，详情也照样打得开）。
-        stmt = stmt.where(SalesCase.status != "superseded")
+        stmt = stmt.where(SalesCase.status.not_in(("superseded", "withdrawn")))
 
     if keyword and not reviewer:
         # ---- 无原文权限：按**看得见的脱敏文字**匹配（返工单 P1-6）----
@@ -693,6 +754,8 @@ async def list_cases(
                 select(SalesCase.id, SalesCase.revision_of_id).where(
                     SalesCase.revision_of_id.in_(row_ids),
                     SalesCase.deleted_at.is_(None),
+                    SalesCase.status == "published",
+                    draft_scope(SalesCase, user.id),
                 )
             )
         ).all():
@@ -725,6 +788,10 @@ async def list_cases(
         }
     scope = redaction.evidence_scope_for(user)
     evidence_by_case = await load_evidences(session, [row.id for row in rows])
+    visible_evidence = await _visible_evidence_for(
+        session, user, [row for row in rows if not reviewer and row.author_id != user.id],
+        evidence_by_case, scope,
+    )
     items = [
         serialize_case(
             row,
@@ -733,6 +800,7 @@ async def list_cases(
             customer_name=customers.get(row.customer_id) if row.customer_id else None,
             reveal_customer=reviewer or row.author_id == user.id,
             evidence_scope=scope,
+            visible_evidence=visible_evidence,
             superseded_by=child_of.get(row.id),
             evidences=evidence_by_case.get(row.id, []),
             reviewer_names=users,
@@ -742,7 +810,13 @@ async def list_cases(
     return items, total
 
 
+def ensure_case_draft_access(case, user) -> None:
+    if case.status in ("draft", "rejected") and case.author_id != user.id:
+        raise AppError(ErrorCode.NOT_FOUND, "案例不存在", 404)
+
+
 async def get_case_detail(session: AsyncSession, *, case: SalesCase, user) -> dict:
+    ensure_case_draft_access(case, user)
     reviewer = is_reviewer(user)
     # `superseded`（被修订版取代的旧版）与 published 一样**人尽可读、只读**：
     # 修订稿上线不代表旧版要消失——培训资料得翻得到（返工单第 6 条的口径）。
@@ -767,19 +841,31 @@ async def get_case_detail(session: AsyncSession, *, case: SalesCase, user) -> di
     child_id = (
         await session.execute(
             select(SalesCase.id)
-            .where(SalesCase.revision_of_id == case.id, SalesCase.deleted_at.is_(None))
+            .where(
+                SalesCase.revision_of_id == case.id,
+                SalesCase.deleted_at.is_(None),
+                SalesCase.status == "published",
+                draft_scope(SalesCase, user.id),
+            )
+            .order_by(SalesCase.id.desc())
             .limit(1)
         )
     ).scalar_one_or_none()
+    scope = redaction.evidence_scope_for(user)
+    evidence_by_case = await load_evidences(session, [case.id])
+    visible_evidence = await _visible_evidence_for(
+        session, user, [] if reveal else [case], evidence_by_case, scope
+    )
     return serialize_case(
         case,
         author_name=author.name if author else None,
         reviewer_name=reviewer_user.name if reviewer_user else None,
         customer_name=customer_name,
         reveal_customer=reveal,
-        evidence_scope=redaction.evidence_scope_for(user),
+        evidence_scope=scope,
+        visible_evidence=visible_evidence,
         superseded_by=child_id,
-        evidences=(await load_evidences(session, [case.id])).get(case.id, []),
+        evidences=evidence_by_case.get(case.id, []),
         reviewer_names=(
             {reviewer_user.id: reviewer_user.name} if reviewer_user else None
         ),
@@ -788,14 +874,16 @@ async def get_case_detail(session: AsyncSession, *, case: SalesCase, user) -> di
 
 async def submit_case(session: AsyncSession, *, case: SalesCase, user) -> None:
     """提交审核。发布不制造业绩或跟进记录——这里刻意只改状态。"""
+    ensure_case_draft_access(case, user)
     if case.author_id != user.id and not is_reviewer(user):
         raise AppError(ErrorCode.FORBIDDEN, "只有作者能提交审核")
     # 行锁 + 锁内重读状态（返工单 P1-5）：不加锁时，作者提交的同时主管在驳回，
     # 两边都按"自己读到的旧状态"写，最后谁后提交谁说了算，中间那次操作白做。
     case = await _lock_case(session, case.id)
+    ensure_case_draft_access(case, user)
     if case.status not in ("draft", "rejected"):
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, f"当前状态（{CASE_STATUS_LABEL.get(case.status, case.status)}）不能提交审核")
-    if not case.title or not (case.lessons or case.key_actions):
+    if not (case.title or "").strip() or not (case.lessons or case.key_actions):
         raise AppError(ErrorCode.PARAM_ERROR, "提交前至少填写「标题」和「关键动作/可复用做法」")
     case.status = "pending_review"
     await session.flush()
@@ -862,7 +950,7 @@ async def review_case(session: AsyncSession, *, case: SalesCase, user, approve: 
         original = await session.get(SalesCase, case.revision_of_id)
         if original is not None and original.deleted_at is None:
             original = await _lock_case(session, original.id)
-            if original.status != "superseded":
+            if original.status == "published":
                 original.status = "superseded"
                 original.updated_at = datetime.now(UTC)
     await session.flush()
@@ -946,7 +1034,7 @@ async def revise_case(session: AsyncSession, *, case: SalesCase, user) -> SalesC
     }
     revision = SalesCase(
         title=case.title,
-        author_id=case.author_id,
+        author_id=user.id,  # 修订稿归开稿人（主管代开时归主管，不再复制原作者）
         status="draft",
         version=(case.version or 1) + 1,
         revision_of_id=case.id,

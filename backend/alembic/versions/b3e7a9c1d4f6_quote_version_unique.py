@@ -12,7 +12,7 @@ Create Date: 2026-09-27
 """
 from typing import Sequence, Union
 
-from alembic import op
+from alembic import context, op
 import sqlalchemy as sa
 
 
@@ -23,15 +23,20 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    conn = op.get_bind()
-    dupes = conn.execute(sa.text(
-        "select quote_id, version_no, count(*) from quote_versions "
-        "group by quote_id, version_no having count(*) > 1"
-    )).all()
-    if dupes:
-        raise RuntimeError(
-            f"quote_versions 存在同号版本，先人工合并后再升级：{dupes}"
-        )
+    # Offline SQL generation has no live connection to inspect. Keep the
+    # preflight check for real upgrades, where it prevents the constraint from
+    # failing with an opaque database error; the generated SQL still needs to
+    # be run against a database whose duplicate data was checked separately.
+    if not context.is_offline_mode():
+        conn = op.get_bind()
+        dupes = conn.execute(sa.text(
+            "select quote_id, version_no, count(*) from quote_versions "
+            "group by quote_id, version_no having count(*) > 1"
+        )).all()
+        if dupes:
+            raise RuntimeError(
+                f"quote_versions 存在同号版本，先人工合并后再升级：{dupes}"
+            )
     op.create_unique_constraint(
         'uq_quote_versions_quote_version', 'quote_versions',
         ['quote_id', 'version_no'],

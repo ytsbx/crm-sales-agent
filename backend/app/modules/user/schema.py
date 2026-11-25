@@ -2,8 +2,9 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
-from app.core.patch_schema import PatchModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from app.core.security import BCRYPT_MAX_PASSWORD_BYTES, password_too_long_bytes
+from app.core.patch_schema import CreateModel, PatchModel
 
 
 # 数据范围枚举，与 roles.data_scope 的取值一致（见 02-ER §3 的补充说明）
@@ -13,13 +14,30 @@ DATA_SCOPES = ("self", "department", "department_and_sub", "all")
 DataScope = Literal["self", "department", "department_and_sub", "all"]
 
 
-class UserCreate(BaseModel):
+class UserCreate(CreateModel):
     model_config = ConfigDict(extra="ignore")
 
     name: str
     username: str
     password: str = Field(min_length=6)
     """密码至少 6 位；存库前会 bcrypt 哈希，接口永不回显。"""
+
+    @field_validator("password")
+    @classmethod
+    def _password_within_bcrypt(cls, value: str) -> str:
+        """上限按**字节**算，不是字符数（C5-06，2026-10-10 修）。
+
+        bcrypt 硬限制 72 字节：25 个中文只有 25 个字符，却是 75 字节 —— 按字符数
+        校验永远拦不住它。从前这里只写 `min_length=6`，于是 73 个 ASCII 或 25 个
+        中文这种"看起来合法"的入参会让 `bcrypt.hashpw` 抛 `ValueError` 冒成 500。
+        """
+        size = password_too_long_bytes(value)
+        if size is not None:
+            raise ValueError(
+                f"密码过长（{size} 字节，最多 {BCRYPT_MAX_PASSWORD_BYTES} 字节；"
+                f"一个中文按 3 字节算）"
+            )
+        return value
     mobile: str | None = None
     email: str | None = None
     department_id: int | None = None
@@ -38,6 +56,22 @@ class UserUpdate(PatchModel):
     wecom_userid: str | None = None
     password: str | None = Field(default=None, min_length=6)
     """传了才重置密码；不传保持原密码。"""
+    role_ids: list[int] = Field(default_factory=list)
+    """省略时保留角色；空列表表示移除所有角色。"""
+
+    @field_validator("password")
+    @classmethod
+    def _password_within_bcrypt(cls, value: str | None) -> str | None:
+        """重置密码与创建同一口径（C5-06）：都是喂给 bcrypt，上限自然一样。"""
+        if value is None:
+            return None
+        size = password_too_long_bytes(value)
+        if size is not None:
+            raise ValueError(
+                f"密码过长（{size} 字节，最多 {BCRYPT_MAX_PASSWORD_BYTES} 字节；"
+                f"一个中文按 3 字节算）"
+            )
+        return value
 
 
 class UserRolesUpdate(BaseModel):
@@ -46,7 +80,7 @@ class UserRolesUpdate(BaseModel):
     role_ids: list[int]
 
 
-class DepartmentCreate(BaseModel):
+class DepartmentCreate(CreateModel):
     model_config = ConfigDict(extra="ignore")
 
     name: str
@@ -63,13 +97,14 @@ class DepartmentUpdate(PatchModel):
     status: str | None = None
 
 
-class RoleCreate(BaseModel):
+class RoleCreate(CreateModel):
     model_config = ConfigDict(extra="ignore")
 
     code: str
     name: str
     description: str | None = None
     data_scope: str = "self"
+    status: Literal["active", "disabled"] = "active"
     permission_codes: list[str] = []
     """按权限码授权，比传 id 直观（权限码是稳定的，id 会随重建变化）。"""
 

@@ -6,10 +6,12 @@ import { Button, Card, Input, Tag, Toast } from '@douyinfe/semi-ui'
 import {
   confirmAgentAction,
   createAgentSession,
+  getAgentOlderMessages,
   getAgentSession,
   rejectAgentAction,
   sendAgentMessage,
   type AgentActionRow,
+  type AgentMessageRow,
 } from '../../shared/api/agent'
 import { useCopilotStore } from '../../shared/store/copilot'
 import type { TagTone } from '../../shared/types'
@@ -74,7 +76,7 @@ function resolveContext(pathname: string): PageContext {
   }
 
   const byList: Array<[RegExp, PageContext]> = [
-    [/^\/workbench/, { title: '工作台', questions: ['分析本月成交冲刺机会', '我手上最该先跟的商机是哪个？', '这个月还有多少应收没回来？'] }],
+    [/^\/workbench/, { title: '工作台', questions: ['我手上最该先跟的商机是哪个？', '这个月还有多少应收没回来？'] }],
     [/^\/customers/, { title: '客户中心', questions: ['我手上有哪些客户很久没跟进了？', '帮我查一下客户「宏远包装」'] }],
     [/^\/leads/, { title: '线索中心', questions: ['有哪些新线索还没分配？'] }],
     [/^\/opportunities/, { title: '商机中心', questions: ['我手上最该先跟的商机是哪个？', '这个月能成几单？'] }],
@@ -124,6 +126,47 @@ export default function CopilotDrawer() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [detailQuery.data?.messages.length])
+
+  // 与 /agent 页同一口径：详情只给最新 200 条，更早的按消息 id 往上游标加载。
+  const [olderMessages, setOlderMessages] = useState<AgentMessageRow[]>([])
+  const [olderHasMore, setOlderHasMore] = useState(false)
+  const [olderLoading, setOlderLoading] = useState(false)
+  const [olderError, setOlderError] = useState<string | null>(null)
+  const copilotScrollRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    setOlderMessages([])
+    setOlderHasMore(false)
+    setOlderError(null)
+  }, [sessionId, contextKey])
+  useEffect(() => {
+    if (olderMessages.length === 0 && detailQuery.data?.session.id === sessionId) {
+      setOlderHasMore(Boolean(detailQuery.data.messages_has_more))
+    }
+  }, [detailQuery.data, olderMessages.length, sessionId])
+  const loadOlderMessages = async () => {
+    if (!sessionId || olderLoading) return
+    const oldest = olderMessages[0] ?? detailQuery.data?.messages?.[0]
+    if (!oldest) return
+    const scroller = copilotScrollRef.current
+    const distanceFromBottom = scroller ? scroller.scrollHeight - scroller.scrollTop : 0
+    setOlderLoading(true)
+    setOlderError(null)
+    try {
+      const page = await getAgentOlderMessages(sessionId, { before_id: oldest.id, limit: 100 })
+      setOlderMessages((current) => {
+        const known = new Set(current.map((message) => message.id))
+        return [...page.items.filter((message) => !known.has(message.id)), ...current]
+      })
+      setOlderHasMore(page.has_more)
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (scroller) scroller.scrollTop = scroller.scrollHeight - distanceFromBottom
+      }))
+    } catch (error) {
+      setOlderError(error instanceof Error ? error.message : '加载失败')
+    } finally {
+      setOlderLoading(false)
+    }
+  }
 
   const sendMutation = useMutation({
     mutationFn: ({ id, content }: { id: number; content: string }) => sendAgentMessage(id, content),
@@ -204,9 +247,30 @@ export default function CopilotDrawer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, seed, sending])
 
-  if (!open) return null
+  // 进出场：关闭后先播 240ms 滑出、再卸载 —— 保住原来「关掉即重置」的语义，
+  // 又不至于「说没就没」。这两个 state 与 effect 必须放在下面提前 return 之前。
+  const [mounted, setMounted] = useState(open)
+  const [entered, setEntered] = useState(false)
+  useEffect(() => {
+    if (open) {
+      setMounted(true)
+      // 先按「屏外」渲染一帧、再切到「就位」，transition 才会真的跑起来
+      const raf = requestAnimationFrame(() => setEntered(true))
+      return () => cancelAnimationFrame(raf)
+    }
+    setEntered(false)
+    const timer = window.setTimeout(() => setMounted(false), 240)
+    return () => window.clearTimeout(timer)
+  }, [open])
 
-  const messages = detailQuery.data?.messages ?? []
+  if (!mounted) return null
+
+  const messages = (() => {
+    const detailMessages = detailQuery.data?.messages ?? []
+    const byId = new Map<number, AgentMessageRow>()
+    for (const message of [...olderMessages, ...detailMessages]) byId.set(message.id, message)
+    return [...byId.values()].sort((a, b) => a.id - b.id)
+  })()
   // L2 待确认 + L3 需审批都要出确认按钮——只认 awaiting_confirmation 的话，
   // 挂在全局抽屉里的 L3 动作永远确认不了（Agent 页才有完整状态列表）
   const pending = (detailQuery.data?.actions ?? []).filter(
@@ -235,8 +299,8 @@ export default function CopilotDrawer() {
         </div>
       ))}
       <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-        <Button
-          theme="solid"
+        <Button type="primary"
+          theme="outline"
           size="small"
           loading={confirmMutation.isPending}
           onClick={() => confirmMutation.mutate(action.id)}
@@ -259,6 +323,9 @@ export default function CopilotDrawer() {
           inset: 0,
           background: 'rgba(24, 28, 35, 0.28)',
           zIndex: 900,
+          opacity: entered ? 1 : 0,
+          pointerEvents: entered ? 'auto' : 'none',
+          transition: 'opacity var(--crm-dur-panel) var(--crm-ease)',
         }}
       />
       <aside
@@ -274,6 +341,9 @@ export default function CopilotDrawer() {
           zIndex: 901,
           display: 'flex',
           flexDirection: 'column',
+          transform: entered ? 'translateX(0)' : 'translateX(100%)',
+          transition: 'transform var(--crm-dur-panel) var(--crm-ease)',
+          willChange: 'transform',
         }}
       >
         <div
@@ -290,7 +360,8 @@ export default function CopilotDrawer() {
             <div style={{ fontWeight: 600, fontSize: 14 }}>Sales Copilot</div>
             <div style={{ fontSize: 11, color: 'var(--crm-text-3)' }}>
               当前上下文：{context.title}
-              {context.id ? ` #${context.id}` : ''}
+              {/* 这个编号是给用户确认「AI 现在看的是哪一条」用的，所以带上是什么的编号 */}
+              {context.id ? ` ${context.title}编号 ${context.id}` : ''}
             </div>
           </div>
           <div style={{ flex: 1 }} />
@@ -302,7 +373,19 @@ export default function CopilotDrawer() {
           </Button>
         </div>
 
-        <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
+        <div ref={copilotScrollRef} style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
+          {(olderHasMore || olderError) && (
+            <div style={{ textAlign: 'center', marginBottom: 12 }}>
+              <Button
+                size="small"
+                theme="borderless"
+                loading={olderLoading}
+                onClick={() => void loadOlderMessages()}
+              >
+                {olderError ? '加载失败，点击重试' : '加载更早的消息'}
+              </Button>
+            </div>
+          )}
           {messages.length === 0 && !sending && (
             <div style={{ display: 'grid', gap: 8 }}>
               <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>
@@ -389,7 +472,7 @@ export default function CopilotDrawer() {
             onEnterPress={() => send(input)}
             disabled={sending}
           />
-          <Button theme="solid" loading={sending} onClick={() => send(input)}>
+          <Button type="primary" theme="outline" loading={sending} onClick={() => send(input)}>
             发送
           </Button>
         </div>

@@ -68,7 +68,8 @@ async def main():
         source = request('GET', f'/samples/source?quote_version_id={vid}')
         assert source['items'][0]['original_quantity'] == '10000.000' and not source['source']['is_historical']
         assert 'quoted_price' not in source['items'][0] and source['customer_id'] == cids[0]
-        request('GET', f'/samples/source?quote_version_id={vid}', token=salesman, expected=403)
+        # 越权读取按产品口径**隐藏存在性**（404），不是 403。
+        request('GET', f'/samples/source?quote_version_id={vid}', token=salesman, expected=404)
         request('GET', '/samples/source', expected=422)
         request('GET', f'/samples/source?quote_version_id={vid}&inquiry_id={iid}', expected=422)
         body={'quote_version_id':vid, 'request_key':str(uuid4()), 'items':[{'source_item_id':itemid}]}
@@ -87,7 +88,7 @@ async def main():
             instance=ApprovalInstance(definition_id=definition,business_type='quote_version',business_id=vid,
                 applicant_id=uid,status='pending',current_node='manager',summary={'quote_no':marker,'version_no':1})
             s.add(instance); await s.flush(); aid=instance.id; await s.commit()
-        v2=request('POST',f'/quotes/{qid}/versions'); assert v2['version_no']==2
+        v2=request('POST',f'/quotes/{qid}/versions?confirm=true'); assert v2['version_no']==2
         history=request('GET',f'/quotes/{qid}/approval-history')
         old=next(row for row in history if row['version_id']==vid)['instance']
         assert old['status']=='withdrawn' and old['finished_at'] and old['summary']['closed_reason']=='superseded'
@@ -138,7 +139,7 @@ async def main():
             s.add(instance); await s.flush(); race_aid=instance.id; await s.commit()
         race=await asyncio.gather(
             asyncio.to_thread(call,'POST',f'/approvals/{race_aid}/approve',token=admin,body={}),
-            asyncio.to_thread(call,'POST',f'/quotes/{qid}/versions',token=admin,body={}))
+            asyncio.to_thread(call,'POST',f'/quotes/{qid}/versions?confirm=true',token=admin,body={}))
         assert race[1][0]==200 and race[0][0] in (200,400,422), race
         async with SessionLocal() as s:
             instance=await s.get(ApprovalInstance,race_aid)

@@ -83,7 +83,7 @@ class CustomInquiry(Base, IdMixin):
     opportunity_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     quantity: Mapped[Decimal | None] = mapped_column(Numeric(16, 3), nullable=True)
     target_price: Mapped[Decimal | None] = mapped_column(Numeric(16, 2), nullable=True)
-    status: Mapped[str] = mapped_column(String(16), default="open", index=True)
+    status: Mapped[str] = mapped_column(String(16), default="open")
     remark: Mapped[str | None] = mapped_column(Text, nullable=True)
     extra: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     # ---- 钉钉询价审批的对接报价员（场景11）----

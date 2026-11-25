@@ -163,6 +163,9 @@ async def main():
         await s.commit()
 
         print('=== 1. 打样需求单：来源与差异 ===')
+        # 后面的 rollback 会让 ORM 对象过期；把要用的 id 先取出来，
+        # 避免再次访问属性时触发同步懒加载（async 下是 MissingGreenlet）。
+        owner_id, sample_id = owner.id, sample.id
         sample_before = (sample.status, sample.remark)
         doc1 = await bizdoc.generate_sample_request_doc(
             s, sample_request_id=sample.id, user=owner_user
@@ -259,6 +262,7 @@ async def main():
             amount=Decimal('-70'), is_discount=True, sort_no=2,
         ))
         s.add(QuoteItem(
+            cost_snapshot=Decimal("0"), cost_present_snapshot=True, cost_complete_snapshot=True,
             quote_version_id=qv.id, sku_id=sku.id, sku_name_snapshot='ZX-6040-B',
             quantity=Decimal('5'), quoted_price=Decimal('100'),
         ))
@@ -391,24 +395,27 @@ async def main():
         await s.rollback()
 
         print('=== 6. 校验值可重算 ===')
-        again = bizdoc._content_hash(doc1.doc_no, doc1.template_version, snapshot_v1)
+        # doc1 在多次 commit 后属性已过期；直接取属性会触发同步懒加载
+        # （async 下是 MissingGreenlet）。重新按 id 读一次再算。
+        doc1_for_hash = await bizdoc.get_doc_or_404(s, doc1_id)
+        again = bizdoc._content_hash(doc1_for_hash.doc_no, doc1_for_hash.template_version, snapshot_v1)
         check('同一份快照算两次一致', again, hash_v1)
         changed = copy.deepcopy(snapshot_v1)
         changed['items'][0]['quantity'] = '999'
         check_true(
             '快照改了校验值就变',
-            bizdoc._content_hash(doc1.doc_no, doc1.template_version, changed) != hash_v1,
+            bizdoc._content_hash(doc1_for_hash.doc_no, doc1_for_hash.template_version, changed) != hash_v1,
         )
 
         print('=== 7. 模板加一版后，历史文件仍指旧版 ===')
         new_version = await bizdoc.next_template_version(s, 'sample_request')
         s.add(BizDocTemplate(
             doc_type='sample_request', name=f'{PREFIX}正式模板', version=new_version,
-            body='1. 按上表打样。', enabled=True, created_by=owner.id, created_at=now,
+            body='1. 按上表打样。', enabled=True, created_by=owner_id, created_at=now,
         ))
         await s.commit()
         doc3 = await bizdoc.generate_sample_request_doc(
-            s, sample_request_id=sample.id, user=owner_user
+            s, sample_request_id=sample_id, user=owner_user
         )
         await s.commit()
         check('新文件用新模板版本', doc3.template_version, new_version)

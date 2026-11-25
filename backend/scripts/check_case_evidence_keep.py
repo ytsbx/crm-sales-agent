@@ -118,25 +118,31 @@ async def main() -> int:
     admin = login("admin", "admin123")
 
     from app.modules.customer.model import Customer
+    from app.modules.opportunity.model import Opportunity
 
     async with SessionLocal() as session:
-        customer = (
+        pair = (
             await session.execute(
-                select(Customer).where(Customer.deleted_at.is_(None)).order_by(Customer.id).limit(1)
+                select(Customer, Opportunity)
+                .join(Opportunity, Opportunity.customer_id == Customer.id)
+                .where(
+                    Customer.deleted_at.is_(None),
+                    Opportunity.deleted_at.is_(None),
+                )
+                .order_by(Customer.id, Opportunity.id)
+                .limit(1)
             )
-        ).scalars().first()
-    assert customer is not None, "隔离库要先跑 scripts/seed.py"
+        ).first()
+    assert pair is not None, "隔离库要先跑 scripts/seed.py（需要同一客户下的商机）"
+    customer, opportunity = pair
 
     try:
         print("=== 0. 造夹具：两张报价 + 两张订单（同一客户）===")
         status, res = call("GET", "/pricing/sku-options", token=admin)
         sku_id = res["data"][0]["id"]
 
-        # 报价**必须挂商机**（接口明确拒了"只给客户"的报价），所以先把种子里的商机取出来
-        status, res = call("GET", "/opportunities?page_size=1", token=admin)
-        opp_items = (res.get("data") or {}).get("items") or []
-        assert opp_items, "隔离库要先跑 scripts/seed.py（需要一条商机才能建报价）"
-        opportunity_id = opp_items[0]["id"]
+        # 报价**必须挂商机**（接口明确拒了"只给客户"的报价），且证据必须与案例同客户。
+        opportunity_id = opportunity.id
 
         quotes: list[int] = []
         for _ in range(3):
@@ -150,6 +156,15 @@ async def main() -> int:
                 # `quote_id` —— 只收不同的单，别把"版本"当"另一张报价"。
                 if qid and qid not in quotes:
                     quotes.append(qid)
+                    version_id = (res.get("data") or {}).get("version_id")
+                    if version_id:
+                        # 正式发送口径要求报价版本显式确认物流费用；证据套件本身不测金额，
+                        # 用明确的 0 元物流费用让夹具保持可发送状态。
+                        charge_status, charge_res = call(
+                            "POST", f"/quote-versions/{version_id}/charges", token=admin,
+                            body={"charge_type": "logistics", "description": "测试夹具零运费", "amount": 0},
+                        )
+                        assert charge_status == 200, charge_res
             if len(quotes) >= 2:
                 break
         orders: list[int] = []

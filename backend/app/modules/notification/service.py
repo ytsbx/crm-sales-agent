@@ -14,6 +14,8 @@
 """
 
 import logging
+import math
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import and_, func, or_, select
@@ -70,15 +72,22 @@ async def retry_policy(session: AsyncSession) -> dict:
     value = await settings_service.get_setting(session, "notification_retry")
     default_max = len(DEFAULT_RETRY_BACKOFF_MINUTES)
     try:
-        max_attempts = max(1, int(value.get("max_attempts", default_max)))
-    except (TypeError, ValueError):
+        raw_max_attempts = value.get("max_attempts", default_max)
+        numeric_max_attempts = float(raw_max_attempts)
+        if not math.isfinite(numeric_max_attempts):
+            raise ValueError("通知最大重试次数必须是有限数")
+        max_attempts = max(1, int(raw_max_attempts))
+    except (OverflowError, TypeError, ValueError):
         max_attempts = default_max
     raw_backoff = value.get("backoff_minutes")
     if not isinstance(raw_backoff, list) or not raw_backoff:
         raw_backoff = list(DEFAULT_RETRY_BACKOFF_MINUTES)
     try:
-        backoff = [max(0.0, float(minutes)) for minutes in raw_backoff]
-    except (TypeError, ValueError):
+        parsed_backoff = [float(minutes) for minutes in raw_backoff]
+        if not all(math.isfinite(minutes) for minutes in parsed_backoff):
+            raise ValueError("通知重试间隔必须是有限数")
+        backoff = [max(0.0, minutes) for minutes in parsed_backoff]
+    except (OverflowError, TypeError, ValueError):
         backoff = list(DEFAULT_RETRY_BACKOFF_MINUTES)
     return {
         "enabled": bool(value.get("enabled", True)),
@@ -125,7 +134,20 @@ async def channel_settings(session: AsyncSession) -> dict:
     return await settings_service.get_setting(session, "notification_channels")
 
 
-def _wecom_enabled(settings: dict, type_: str) -> bool:
+def wecom_event_enabled(settings: dict, type_: str) -> bool:
+    """某一类通知**是否走企微** —— 全项目只此一处判据（展示侧也调它）。
+
+    ⚠️ 2026-10-14 审查修：原来展示侧（`notification/router.py` 的设置面板）
+    自己又写了一遍 `bool(events.get(k, True))`，而这里是 `events.get(type_, False)` ——
+    **同一个"键缺失算不算开"给了相反默认值**。库里 `wecom_events` 缺 `followup`
+    （升级前写入的行就是这个形状：`DEFAULT_SETTINGS` 当时只有 approval/task/payment）时，
+    面板显示"业务过程通知＝开"，投递侧却判为关 → 该类通知**永远不发企微**，
+    界面上还看不出来（站内还在，所以更难发现）。
+    现在展示侧改为调用本函数，两处不可能再分叉。
+
+    默认取 `False` 的理由：漏配一个新事件类型时应当"先不发、等显式开启"，
+    而不是悄悄开始往企微推消息。
+    """
     if not settings.get("wecom_enabled"):
         return False
     events = settings.get("wecom_events") or {}
@@ -198,7 +220,7 @@ async def notify(
             policy = await level_policy(session)
         level = resolve_level(policy, type_)
 
-    to_wecom = _wecom_enabled(settings, type_)
+    to_wecom = wecom_event_enabled(settings, type_)
     inapp_enabled = bool(settings.get("inapp_enabled", True))
     # 企微开着但站内关着时，站内那一行仍然要写：它是投递记录本身，
     # 否则"发过没有"就无处可查。
@@ -225,15 +247,28 @@ async def approver_user_ids(session: AsyncSession, permission_code: str) -> list
 
     只算**启用中**的角色：角色停用后就不该再往它的人身上推审批通知，
     否则"停用角色"等于没停（第十批 10.10）。
+
+    ⚠️ **账号也必须是在职的**（2026-10-14 审查修）。原来只判了 `Role.status`，
+    漏了 `User.status` —— 而同一个文件里的 `notify_roles` 是**两个都判**的
+    （`.where(Role.code.in_(...), Role.status == ROLE_ACTIVE, User.status == "active")`）。
+    判据只铺开了一半，后果是实打实的：停用账号时**既不清 `wecom_userid`、
+    也不摘角色**，所以离职/停用的人仍满足这条 SQL，持续收到审批类**企微**消息
+    （含报价金额、客户名）。这些行 `business_event_id is None`，
+    `_check_process_recipients` 只复查有事件的行、拦不住；通知中心里他们看不到，
+    运营也发现不了"还在发"。
     """
     stmt = (
         select(user_roles.c.user_id)
+        # 多这一跳只为拿到 `User.status`（下面 where 里要用）
+        .join(User, User.id == user_roles.c.user_id)
         .join(Role, Role.id == user_roles.c.role_id)
         .outerjoin(role_permissions, role_permissions.c.role_id == Role.id)
         .outerjoin(Permission, Permission.id == role_permissions.c.permission_id)
         .where(
             (Permission.code == permission_code) | (Role.code == "admin"),
             Role.status == ROLE_ACTIVE,
+            # 与 `notify_roles` 同源：停用/离职账号不再收审批通知
+            User.status == "active",
         )
         .distinct()
     )
@@ -414,23 +449,30 @@ async def materialize_business_notifications(
 
 async def _check_process_recipients(session: AsyncSession, rows: list[Notification]) -> set[int]:
     from app.core.deps import CurrentUser
-    from app.modules.notification.visibility import process_notification_filter
+    from app.modules.notification.visibility import direct_notification_visible, process_notification_filter
     from app.modules.user.service import get_user_permission_codes, get_user_roles, resolve_data_scope
 
-    allowed = {row.id for row in rows if row.business_event_id is None}
-    recipients = {row.user_id for row in rows if row.business_event_id is not None}
-    for uid in recipients:
+    allowed = {row.id for row in rows if row.business_event_id is None and row.business_id is None}
+    recipients = {}
+    for row in rows:
+        if row.id not in allowed:
+            recipients.setdefault(row.user_id, []).append(row)
+    for uid, recipient_rows in recipients.items():
         user = await session.get(User, uid)
         if user is None or user.status != 'active':
             continue
         roles = await get_user_roles(session, uid)
         viewer = CurrentUser(user, await get_user_permission_codes(session, uid),
                              [r.code for r in roles], resolve_data_scope(roles))
-        ids = (await session.execute(select(Notification.id).where(
-            Notification.id.in_([row.id for row in rows if row.user_id == uid]),
-            await process_notification_filter(session, viewer),
-        ))).scalars().all()
-        allowed.update(ids)
+        process_ids = [row.id for row in recipient_rows if row.business_event_id is not None]
+        if process_ids:
+            ids = (await session.execute(select(Notification.id).where(
+                Notification.id.in_(process_ids), await process_notification_filter(session, viewer),
+            ))).scalars().all()
+            allowed.update(ids)
+        for row in recipient_rows:
+            if row.business_event_id is None and await direct_notification_visible(session, viewer, row):
+                allowed.add(row.id)
     for row in rows:
         if row.id not in allowed:
             row.wecom_status = 'skipped'
@@ -456,10 +498,13 @@ async def dispatch_pending(
     """
     from app.core.config import settings as app_settings
     from app.core.database import SessionLocal
-    from app.modules.wecom.client import WeComError, WeComNotConfigured, get_client
+    from app.modules.wecom.client import WeComError, WeComNotConfigured, get_client, safe_error_text
+
+    if only_ids is not None and not only_ids:
+        return {"attempted": 0, "sent": 0, "skipped": 0, "failed": 0}
 
     async with SessionLocal() as own:
-        if not only_ids:
+        if only_ids is None:
             await materialize_business_notifications(own, limit=limit)
             await own.commit()
         policy = await retry_policy(own)
@@ -471,16 +516,27 @@ async def dispatch_pending(
         immediate = and_(
             Notification.wecom_status == "pending", Notification.level != LEVEL_DIGEST
         )
-        if only_ids:
-            stmt = stmt.where(Notification.id.in_(only_ids))
+        if only_ids is not None:
+            # 人工补投先把 failed/skipped 排成 pending，再独立开会话投递。
+            # 两步之间自动 worker 可能已发完；仅按 id 查会再次发送已 sent 的行。
+            stmt = stmt.where(
+                Notification.id.in_(only_ids), Notification.wecom_status == "pending"
+            )
         elif include_failed and policy["enabled"]:
             # 待投递 ∪ 到期可重试的失败行：重试要"到期"才捞，
             # 否则退避形同虚设、失败一次就立刻再打一次企微接口
             stmt = stmt.where(or_(immediate, retry_due_clause(policy, now)))
         else:
             stmt = stmt.where(immediate)
+        # 投递会话可能由多个 worker、调度器和人工补投同时触发；必须先锁住
+        # 待投递行，否则它们会同时把同一条消息发到企微。skip_locked 让其它
+        # worker 继续处理剩余消息，不会被一条慢的网络发送卡住。
         rows = (
-            await own.execute(stmt.order_by(Notification.id.asc()).limit(limit))
+            await own.execute(
+                stmt.order_by(Notification.id.asc())
+                .with_for_update(skip_locked=True)
+                .limit(limit)
+            )
         ).scalars().all()
         if not rows:
             return {"attempted": 0, "sent": 0, "skipped": 0, "failed": 0}
@@ -511,6 +567,11 @@ async def dispatch_pending(
                 skipped += 1
                 continue
             user = users.get(row.user_id)
+            if user is not None and user.status != "active":
+                row.wecom_status = "skipped"
+                row.wecom_error = "接收账号已停用"
+                skipped += 1
+                continue
             if not ready or user is None or not user.wecom_userid:
                 # 没配置或这个人没绑企微：标 skipped 而不是 failed，
                 # 否则会把"还没配好"和"真发失败了"混在一起。
@@ -529,10 +590,10 @@ async def dispatch_pending(
                     description=(row.content or row.title)[:120],
                 )
             except (WeComNotConfigured, WeComError) as error:
-                _mark_failed(row, str(error), policy, now)
+                _mark_failed(row, safe_error_text(error), policy, now)
                 failed += 1
             except Exception as error:  # 网络等其它异常同样要落痕
-                _mark_failed(row, f"{type(error).__name__}: {error}", policy, now)
+                _mark_failed(row, safe_error_text(error), policy, now)
                 failed += 1
             else:
                 row.wecom_status = "sent"
@@ -548,6 +609,14 @@ async def dispatch_pending(
             "skipped": skipped,
             "failed": failed,
         }
+
+
+async def dispatch_after_commit(session: AsyncSession) -> None:
+    """已保存的业务照常回应，待处理通知由定时投递继续处理。"""
+    try:
+        await dispatch_pending(session)
+    except Exception:
+        logging.getLogger(__name__).exception("业务已提交，通知投递暂未完成")
 
 
 def build_digest(rows: list[Notification], *, max_items: int = 20) -> tuple[str, str]:
@@ -578,21 +647,36 @@ async def send_digest(
     """
     from app.core.config import settings as app_settings
     from app.core.database import SessionLocal
-    from app.modules.wecom.client import WeComError, WeComNotConfigured, get_client
+    from app.modules.wecom.client import WeComError, WeComNotConfigured, get_client, safe_error_text
 
     async with SessionLocal() as own:
         policy = await retry_policy(own)
         now = datetime.now(UTC)
-        rows = (
-            await own.execute(
-                select(Notification)
-                .where(
-                    Notification.wecom_status == "pending",
-                    Notification.level == LEVEL_DIGEST,
-                )
-                .order_by(Notification.id.asc())
+        pending = (Notification.wecom_status == "pending", Notification.level == LEVEL_DIGEST)
+        recipients = (
+            select(Notification.user_id).where(*pending).distinct()
+            .order_by(Notification.user_id).limit(max(limit_users, 0))
+        )
+        candidates = (
+            select(
+                Notification.id,
+                func.count().over(partition_by=Notification.user_id).label("expected_count"),
             )
-        ).scalars().all()
+            .where(*pending, Notification.user_id.in_(recipients))
+            .subquery()
+        )
+        locked = (
+            await own.execute(
+                select(Notification, candidates.c.expected_count)
+                .join(candidates, Notification.id == candidates.c.id)
+                .where(*pending)
+                .order_by(Notification.id.asc())
+                .with_for_update(of=Notification, skip_locked=True)
+            )
+        ).all()
+        # 任一行已被其他投递占用时，整位收件人延后，避免把一份日报拆开发。
+        locked_counts = Counter(row.user_id for row, _ in locked)
+        rows = [row for row, expected_count in locked if locked_counts[row.user_id] == expected_count]
         if not rows:
             return {"users": 0, "messages": 0, "items": 0, "sent": 0, "skipped": 0, "failed": 0}
 
@@ -605,7 +689,7 @@ async def send_digest(
         grouped: dict[int, list[Notification]] = {}
         for row in rows:
             grouped.setdefault(row.user_id, []).append(row)
-        user_ids = sorted(grouped)[:limit_users]
+        user_ids = sorted(grouped)
         users = {
             user.id: user
             for user in (
@@ -624,12 +708,14 @@ async def send_digest(
             messages += 1
             items += len(batch)
             user = users.get(uid)
-            if app_settings.wecom_push_off or not ready or user is None or not user.wecom_userid:
+            if app_settings.wecom_push_off or not ready or user is None or user.status != "active" or not user.wecom_userid:
                 reason = (
                     "推送已临时关闭（WECOM_PUSH_OFF）"
                     if app_settings.wecom_push_off
                     else "未配置企微应用"
                     if not ready
+                    else "接收账号已停用"
+                    if user is not None and user.status != "active"
                     else "该用户没有绑定企业微信 userid"
                 )
                 for row in batch:
@@ -644,12 +730,12 @@ async def send_digest(
                 )
             except (WeComNotConfigured, WeComError) as error:
                 for row in batch:
-                    _mark_failed(row, str(error), policy, now)
+                    _mark_failed(row, safe_error_text(error), policy, now)
                     row.digest_at = now
                 failed += len(batch)
             except Exception as error:  # 网络等其它异常同样要落痕
                 for row in batch:
-                    _mark_failed(row, f"{type(error).__name__}: {error}", policy, now)
+                    _mark_failed(row, safe_error_text(error), policy, now)
                     row.digest_at = now
                 failed += len(batch)
             else:
@@ -694,7 +780,11 @@ async def requeue_for_redispatch(
     if ids:
         stmt = stmt.where(Notification.id.in_(ids))
     rows = (
-        await session.execute(stmt.order_by(Notification.id.asc()).limit(limit))
+        await session.execute(
+            stmt.order_by(Notification.id.asc())
+            .with_for_update(skip_locked=True)
+            .limit(limit)
+        )
     ).scalars().all()
     for row in rows:
         row.wecom_status = "pending"

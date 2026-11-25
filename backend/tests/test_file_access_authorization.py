@@ -22,7 +22,7 @@ import asyncio
 from datetime import UTC, datetime
 
 from app.core.deps import CurrentUser
-from app.modules.file.access import can_access_file, visible_object
+from app.modules.file.access import can_access_file, visible_no_owner_ids, visible_object
 from app.modules.user.model import User
 
 
@@ -159,6 +159,40 @@ def test_admin_bypasses_module_permission():
     )
 
     assert allowed is True
+
+
+def test_product_batch_visibility_uses_one_query_and_filters_deleted_rows():
+    """产品/SKU 批量附件检查应合并为一次存在性查询。"""
+    session = _FakeSession(results=[_Result(rows=[(3,), (1,)])])
+
+    visible = asyncio.run(
+        visible_no_owner_ids(
+            session,
+            _user("file:view", "product:view"),
+            business_type="product",
+            business_ids=[1, 2, 3, 3],
+        )
+    )
+
+    assert visible == {1, 3}
+    assert session.executed == 1
+    assert "deleted_at IS NULL" in str(session.statements[0])
+
+
+def test_product_batch_visibility_checks_permission_before_query():
+    session = _FakeSession()
+
+    visible = asyncio.run(
+        visible_no_owner_ids(
+            session,
+            _user("file:view"),
+            business_type="product",
+            business_ids=[1, 2],
+        )
+    )
+
+    assert visible == set()
+    assert session.executed == 0
 
 
 # ------------------------------------------------- 客户/报价：来源模块权限 + 范围 + 未删除

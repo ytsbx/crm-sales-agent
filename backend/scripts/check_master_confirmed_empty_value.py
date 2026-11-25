@@ -48,11 +48,10 @@ import time
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime
-from _test_support import require_api_base, require_isolated_db
+from _test_support import confirm_freight_before_submit, require_api_base, require_isolated_db
 
 require_isolated_db()
 
-import app.main  # noqa: F401  保证所有模型都注册进 metadata
 
 from sqlalchemy import text
 
@@ -272,8 +271,13 @@ async def main() -> None:
                     f"/skus/{sku_id}/costs",
                     admin,
                     body={
+                        # 四项填全（第七批 P1-1）：本套件验的是主数据确认，
+                        # 不该被"成本不完整"这条新闸拦住。原来只填采购与包装，
+                        # 属于不完整成本 → 报价需要人工审批 → "能正式发送"变红。
                         "purchase_cost": 10,
+                        "production_cost": 0,
                         "package_cost": 2,
+                        "processing_cost": 0,
                         "effective_from": "2026-01-01",
                         "remark": f"{PREFIX} 临时成本",
                     },
@@ -325,7 +329,15 @@ async def main() -> None:
                 if res.get("code") != 0:
                     raise SystemExit(f"建报价失败：{res.get('message')}")
                 ids["quotes"].append(res["data"]["quote_id"])
-                return res["data"]["version_id"]
+                version_id = res["data"]["version_id"]
+                # 正式发送前必须显式确认物流费用；0 元代表确认无需收取运费。
+                status, charge = call(
+                    "POST", f"/quote-versions/{version_id}/charges", admin,
+                    body={"charge_type": "logistics", "description": "测试夹具零运费", "amount": 0},
+                )
+                if charge.get("code") != 0:
+                    raise SystemExit(f"填入夹具运费失败：{charge.get('message')}")
+                return version_id
 
             def add_item(version_id: int, sku_id: int, spec: str | None = None):
                 body: dict = {"sku_id": sku_id, "quantity": 1, "quoted_price": 100}
@@ -342,7 +354,13 @@ async def main() -> None:
                 return rows[0] if rows else {}
 
             def approve_and_send(version_id: int):
-                """提交审批 → 标记发送。返回发送那一步的响应（dict）。"""
+                """提交审批 → 标记发送。返回发送那一步的响应（dict）。
+
+                ⚠️ 提交前先确认运费：运费闸已前置到提交审批（2026-10-12）。
+                本函数测的是"主数据未确认时发送被拦"，与运费是两道**独立**的闸 ——
+                不先过掉运费那道，就会拦在错误的闸上、看起来像主数据那条没生效。
+                """
+                confirm_freight_before_submit(call, admin, version_id)
                 call("POST", f"/quote-versions/{version_id}/submit-approval", admin, body={})
                 _, res = call(
                     "POST",

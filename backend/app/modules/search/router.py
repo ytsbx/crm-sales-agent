@@ -20,6 +20,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.data_scope import scoped_owner_ids
+from app.core.draft_visibility import draft_scope
 from app.core.database import get_db
 from app.core.deps import CurrentUser, get_current_user
 from app.core.response import ok
@@ -142,7 +143,7 @@ async def global_search(
             }
         )
 
-    like = f"%{keyword_key}%"
+    like = f"%{keyword_key.replace(chr(92), chr(92)*2).replace('%', chr(92)+'%').replace('_', chr(92)+'_')}%"
     items_by_group: dict[str, list[dict]] = {key: [] for key in GROUP_ORDER}
 
     if not _group_denied("customer", user):
@@ -151,9 +152,9 @@ async def global_search(
             .where(
                 Customer.deleted_at.is_(None),
                 or_(
-                    Customer.name.ilike(like),
-                    Customer.short_name.ilike(like),
-                    Customer.region.ilike(like),
+                    Customer.name.ilike(like, escape="\\"),
+                    Customer.short_name.ilike(like, escape="\\"),
+                    Customer.region.ilike(like, escape="\\"),
                 ),
             )
             .order_by(Customer.id.desc())
@@ -186,9 +187,9 @@ async def global_search(
                 Contact.deleted_at.is_(None),
                 Customer.deleted_at.is_(None),
                 or_(
-                    Contact.name.ilike(like),
-                    Contact.mobile.ilike(like),
-                    Contact.email.ilike(like),
+                    Contact.name.ilike(like, escape="\\"),
+                    Contact.mobile.ilike(like, escape="\\"),
+                    Contact.email.ilike(like, escape="\\"),
                 ),
             )
             .order_by(Contact.id.desc())
@@ -227,9 +228,9 @@ async def global_search(
             .where(
                 Lead.deleted_at.is_(None),
                 or_(
-                    Lead.name.ilike(like),
-                    Lead.company_name.ilike(like),
-                    Lead.mobile.ilike(like),
+                    Lead.name.ilike(like, escape="\\"),
+                    Lead.company_name.ilike(like, escape="\\"),
+                    Lead.mobile.ilike(like, escape="\\"),
                 ),
             )
             .order_by(Lead.id.desc())
@@ -253,7 +254,7 @@ async def global_search(
             select(Opportunity, OpportunityStage.name, Customer.name)
             .join(OpportunityStage, OpportunityStage.id == Opportunity.stage_id)
             .join(Customer, Customer.id == Opportunity.customer_id)
-            .where(Opportunity.deleted_at.is_(None), Opportunity.title.ilike(like))
+            .where(Opportunity.deleted_at.is_(None), Opportunity.title.ilike(like, escape="\\"))
             .order_by(Opportunity.id.desc())
             .limit(limit),
             user,
@@ -273,7 +274,7 @@ async def global_search(
         quote_stmt = await _scope(
             select(Quote, Customer.name)
             .join(Customer, Customer.id == Quote.customer_id)
-            .where(Quote.deleted_at.is_(None), Quote.quote_no.ilike(like))
+            .where(Quote.deleted_at.is_(None), Quote.quote_no.ilike(like, escape="\\"), draft_scope(Quote, user.id))
             .order_by(Quote.id.desc())
             .limit(limit),
             user,
@@ -293,7 +294,7 @@ async def global_search(
         order_stmt = await _scope(
             select(SalesOrder, Customer.name)
             .join(Customer, Customer.id == SalesOrder.customer_id)
-            .where(SalesOrder.order_no.ilike(like))
+            .where(SalesOrder.order_no.ilike(like, escape="\\"))
             .order_by(SalesOrder.id.desc())
             .limit(limit),
             user,
@@ -320,6 +321,7 @@ async def global_search(
                     "route": _GROUP_ROUTE[key],
                     "denied": _group_denied(key, user),
                     "items": items_by_group[key],
+                    "truncated": len(items_by_group[key]) >= limit,
                 }
                 for key in GROUP_ORDER
             ],

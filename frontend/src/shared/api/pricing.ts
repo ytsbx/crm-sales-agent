@@ -23,15 +23,24 @@ export interface PriceRuleRow {
   id: number
   sku_id: number
   sku_code?: string | null
+  /** SKU 名称：列表接口现在会返回（价目表上只有编码认不出是哪个产品） */
+  sku_name?: string | null
   customer_level?: string | null
   min_qty: number
+  min_qty_exact?: string | null
   max_qty?: number | null
+  max_qty_exact?: string | null
   standard_price?: number | null
+  standard_price_exact?: string | null
   guide_price?: number | null
+  guide_price_exact?: string | null
   minimum_price?: number | null
+  minimum_price_exact?: string | null
   target_margin?: number | null
   status: string
   effective_from?: string | null
+  /** 后端一直有返回（`serialize_price_rule`），此前类型漏了它 —— 编辑弹窗要回填 */
+  effective_to?: string | null
   remark?: string | null
 }
 
@@ -41,10 +50,19 @@ export interface CustomerPriceRow {
   customer_name?: string | null
   sku_id: number
   sku_code?: string | null
+  /** SKU 名称：列表接口现在会返回 */
+  sku_name?: string | null
   min_qty: number
+  min_qty_exact?: string | null
   max_qty?: number | null
+  max_qty_exact?: string | null
   agreed_price: number
+  agreed_price_exact?: string | null
   minimum_price?: number | null
+  minimum_price_exact?: string | null
+  /** 后端一直有返回（`serialize_customer_price`），此前类型漏了 —— 编辑弹窗要回填 */
+  effective_from?: string | null
+  effective_to?: string | null
   remark?: string | null
 }
 
@@ -94,6 +112,7 @@ export interface LogisticsOption {
   origin_region?: string | null
   destination_region?: string | null
   amount: number
+  amount_exact?: string
   currency: string
   by_weight_amount: number
   by_volume_amount: number
@@ -110,6 +129,7 @@ export interface LogisticsOption {
 export interface LogisticsCalculateResult {
   sku: { id: number; sku_code: string; name?: string | null; specification?: string | null; unit?: string | null; package_type?: string | null }
   quantity: number
+  quantity_exact?: string
   origin?: string | null
   destination?: string | null
   shipping_method?: string | null
@@ -118,6 +138,8 @@ export interface LogisticsCalculateResult {
   options: LogisticsOption[]
   selected?: LogisticsOption | null
   quoted_id?: number | null
+  match_level?: number
+  match_warnings?: string[]
   warnings: string[]
 }
 
@@ -136,6 +158,8 @@ export interface LogisticsQuoteRow {
   opportunity_id?: number | null
   sku_id?: number | null
   quantity?: number | null
+  quantity_exact?: string | null
+  quantity_unit?: string | null
   origin?: string | null
   destination?: string | null
   shipping_method: string
@@ -144,6 +168,7 @@ export interface LogisticsQuoteRow {
   volume: number
   currency: string
   amount: number
+  amount_exact?: string
   unit_price?: number | null
   eta_days?: number | null
   provider?: string | null
@@ -162,6 +187,8 @@ export interface LogisticsRouteRow {
 export interface PricingSkuOption {
   id: number
   sku_code: string
+  /** SKU 名称。下拉选项用它区分同一产品下的不同 SKU（与 product_name 不同层） */
+  name?: string | null
   specification?: string | null
   product_name?: string | null
   moq?: number | null
@@ -170,6 +197,10 @@ export interface PricingSkuOption {
 }
 
 export interface PricingResult {
+  inputs?: {
+    target_profit_price?: number | null
+    profit_target_met?: boolean | null
+  }
   sku: { id: number; sku_code: string; name?: string | null; specification?: string | null; unit?: string | null; moq?: number | null }
   quantity: number
   customer_id?: number | null
@@ -190,7 +221,7 @@ export interface PricingResult {
   target_margin: number
   standard_price: number
   recommended_price: number
-  recommended_range: [number, number]
+  recommended_range: [number, number] | null
   /** 公司口径的最低价（保护价）：低于它必须走审批，与下面的授权底价分开看。 */
   protection_price?: number | null
   /** 当前用户权限内的底价。 */
@@ -247,11 +278,45 @@ export function createPriceRule(payload: Record<string, unknown>) {
   return api.post<PriceRuleRow>('/price-rules', payload)
 }
 
+/**
+ * 恢复启用一条被停用的价格规则（2026-10-09 审查建议）。
+ *
+ * 后端本来就走 `PATCH /price-rules/{id}` 的 `status` 字段（**没有**单独的
+ * "启用"端点），所以这里只是把这条既有能力接到界面上：
+ * 误点「停用」之后可以自己恢复，不必再新增一条。
+ *
+ * 恢复时后端**仍会做区间冲突校验**：与某条启用规则撞了区间会被拒（40901），
+ * 状态保持停用 —— 这一点由后端保证，界面不自行判断。
+ */
+export function restorePriceRule(id: number) {
+  return api.patch<PriceRuleRow>(`/price-rules/${id}`, { status: 'active' })
+}
+
 export function disablePriceRule(id: number) {
   return api.delete<null>(`/price-rules/${id}`)
 }
 
-export function listCustomerPriceRules(query: { customer_id?: number; page?: number; page_size?: number }) {
+/**
+ * 改价格规则 —— 部分更新，只传要改的字段（API §16）。
+ *
+ * ⚠️ **能改与不能改是刻意的**（口径 2026-10-09 与主人确认）：
+ * - 能改：数量区间 / 有效期 / 客户等级 / 备注 / 状态 —— 即「这条规则在什么条件下适用」；
+ * - **不能改价钱**（标准价 / 指导价 / 最低保护价 / 目标利润率）：改价钱等于换了一套定价，
+ *   正确做法是「停用旧的 + 新增一条」，这样生效时序在单据上看得见。
+ *   后端会**明确拒绝并点名是哪个字段**（400），不是静默忽略 ——
+ *   所以传了不该传的字段会被拦下，别指望它被吞掉。
+ */
+export function updatePriceRule(id: number, payload: Record<string, unknown>) {
+  return api.patch<PriceRuleRow>(`/price-rules/${id}`, payload)
+}
+
+export function listCustomerPriceRules(query: {
+  customer_id?: number
+  /** 编码 / SKU 名称 / 规格 / 产品名 / 产品线 / 品牌 / 客户名 都能搜到 */
+  keyword?: string
+  page?: number
+  page_size?: number
+}) {
   return api.get<PageResult<CustomerPriceRow>>('/customer-price-rules', query)
 }
 
@@ -319,10 +384,17 @@ export function compareLogistics(payload: Record<string, unknown>) {
   return api.post<LogisticsCompareResult>('/logistics/compare', payload)
 }
 
-export function listLogisticsQuotes(params?: Record<string, unknown>) {
+export function listLogisticsQuotes(params?: {
+  customer_id?: number
+  opportunity_id?: number
+  page?: number
+  page_size?: number
+}) {
+  // 与其它列表接口一致：查询参数直接交给 axios；再包一层 `{ params }`
+  // 会变成 `params[page]=…`，后端读不到，分页永远停在第 1 页。
   return api.get<{ items: LogisticsQuoteRow[]; total: number; page: number; page_size: number }>(
     '/logistics/quotes',
-    { params },
+    params,
   )
 }
 
@@ -354,7 +426,7 @@ export interface PricePermissionVerdict {
   authorized_min_margin: number | null
   standard_price: number | null
   recommended_price: number | null
-  recommended_range: [number | null, number | null]
+  recommended_range: [number | null, number | null] | null
   profit: number | null
   profit_rate: number | null
   cost_in_quote_currency: number | null
@@ -363,10 +435,19 @@ export interface PricePermissionVerdict {
 }
 
 export interface PricingScenario {
+  /** 兼容字段：浮点单价，仅供旧代码读取；展示请优先用 `quoted_price_exact`。 */
   quoted_price: number | null
+  /**
+   * 单价的十进制字符串（后端 2026-11-17 起返回）。
+   * 浮点会带出 1.234499999 这种尾数，前端一律读这个再交给 formatUnitPrice。
+   */
+  quoted_price_exact?: string | null
   profit: number | null
   profit_rate: number | null
+  /** 兼容字段：浮点订单金额，展示请优先用 `amount_exact`。 */
   amount: number | null
+  /** 订单金额的十进制字符串（后端按 line_amount 逐行到分），带两位到分。 */
+  amount_exact?: string | null
   approval_required: boolean
   reasons: string[]
 }
@@ -378,7 +459,7 @@ export interface PricingSimulationResult {
   cost_in_quote_currency: number | null
   standard_price: number | null
   recommended_price: number | null
-  recommended_range: [number | null, number | null]
+  recommended_range: [number | null, number | null] | null
   minimum_price: number | null
   protection_price: number | null
   scenarios: PricingScenario[]
@@ -430,6 +511,7 @@ export interface PriceLookupResult {
   source: 'customer_specific' | 'level' | 'general' | null
   source_label: string | null
   unit_price: number | null
+  unit_price_exact?: string | null
   standard_price?: number | null
   minimum_price?: number | null
   currency: string
@@ -438,7 +520,7 @@ export interface PriceLookupResult {
   effective_to?: string | null
   fallback_note?: string | null
   customer: { id: number; name: string; level?: string | null }
-  sku: { id: number; sku_code: string; name?: string | null }
+  sku: { id: number; sku_code: string; name?: string | null; unit?: string | null }
   quantity: number
   can_see_cost?: boolean
   cost?: number | null

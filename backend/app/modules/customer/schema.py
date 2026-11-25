@@ -1,16 +1,18 @@
 """客户与联系人的入参结构。"""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
-from app.core.patch_schema import PatchModel
+from pydantic import BaseModel, ConfigDict, Field, model_validator, field_validator
+from app.core.patch_schema import CreateModel, PatchModel
+from app.core.tax_no import validate_tax_no
 
 
-
-class CustomerCreate(BaseModel):
+class CustomerCreate(CreateModel):
     name: str = Field(min_length=1, max_length=200, description="客户名称")
-    short_name: str | None = None
+    #: 与 `customers.short_name` 的 `String(100)` 对齐 —— 不写上限会撞库列报 500
+    #: （2026-10-14 审查补。同项目 `PatchModel` 是从列定义现读 length 的，Create 类漏了）
+    short_name: str | None = Field(default=None, max_length=100)
     customer_type: str | None = "企业"
     country: str | None = "中国"
     region: str | None = None
@@ -25,6 +27,12 @@ class CustomerCreate(BaseModel):
     #: 不给也不报错（老客户端照常工作），但响应里会说明这次没有幂等保护 ——
     #: 不能让人以为"重试一定安全"。
     request_key: str | None = Field(default=None, max_length=128)
+
+    @field_validator("tax_no")
+    @classmethod
+    def _check_tax_no(cls, value: str | None) -> str | None:
+        # 税号是"公司身份证号"：查重、合并、回款认客户都靠它，按国标校验（GB 32100-2015）。
+        return validate_tax_no(value)
 
 
 class CustomerUpdate(PatchModel):
@@ -48,10 +56,25 @@ class CustomerUpdate(PatchModel):
     #: 业务核对出真实时间后填这里，标记随之清掉、重新回到回收视野。
     last_followup_at: datetime | None = None
 
+    @field_validator("last_followup_at")
+    @classmethod
+    def past_contact(cls, value):
+        if value is not None:
+            value = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+            if value > datetime.now(UTC):
+                raise ValueError("最近联系时间不能在未来；未来联系请登记跟进任务")
+        return value
+
+    @field_validator("tax_no")
+    @classmethod
+    def _check_tax_no(cls, value: str | None) -> str | None:
+        return validate_tax_no(value)
+
 
 class CustomerTransfer(BaseModel):
     owner_id: int | None = None
-    reason: str | None = None
+    #: 直接写进 `customer_owner_history.reason`（`String(255)`）—— 超长撞列宽 500
+    reason: str | None = Field(default=None, max_length=255)
 
 
 class CustomerRestore(BaseModel):
@@ -76,7 +99,8 @@ class PoolRelease(BaseModel):
     这时才放行，并把保护事项与原因一起写进审计（返工单 6.3）。
     """
 
-    reason: str | None = None
+    #: 同样写进 `customer_owner_history.reason`（`String(255)`）
+    reason: str | None = Field(default=None, max_length=255)
 
 
 class CustomerExportPurpose(str, Enum):
@@ -111,14 +135,16 @@ class CustomerExportFilter(BaseModel):
         return self
 
 
-class ContactCreate(BaseModel):
+class ContactCreate(CreateModel):
     name: str = Field(min_length=1, max_length=64)
     title: str | None = None
     department: str | None = None
-    mobile: str | None = None
-    phone: str | None = None
-    email: str | None = None
-    wechat: str | None = None
+    # 这四个按 `contacts` 的列宽给上限（2026-10-14 审查补）：
+    # mobile/phone `String(32)`、email `String(128)`、wechat `String(64)`
+    mobile: str | None = Field(default=None, max_length=32)
+    phone: str | None = Field(default=None, max_length=32)
+    email: str | None = Field(default=None, max_length=128)
+    wechat: str | None = Field(default=None, max_length=64)
     is_primary: bool = False
     remark: str | None = None
 

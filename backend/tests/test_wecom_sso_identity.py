@@ -47,7 +47,7 @@ def _forbid_signing(monkeypatch):
     def boom(*args, **kwargs):
         raise AssertionError("关闭的企微 SSO 通道不得签发令牌或写成功审计")
 
-    monkeypatch.setattr(auth_router, "create_access_token", boom)
+    monkeypatch.setattr(auth_router, "issue_session_token", boom)
     monkeypatch.setattr(auth_router, "write_audit", boom)
 
 

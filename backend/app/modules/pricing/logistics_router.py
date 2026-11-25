@@ -121,7 +121,7 @@ async def calculate(
     )
 
     options = prepared["options"]
-    if not options:
+    if not options and payload.selected_rate_id is None:
         return ok(
             {
                 **prepared,
@@ -132,7 +132,11 @@ async def calculate(
         )
 
     selected = None
-    if payload.selected_provider:
+    if payload.selected_rate_id is not None:
+        selected = next((opt for opt in options if opt["rate_id"] == payload.selected_rate_id), None)
+        if selected is None:
+            raise AppError(ErrorCode.PARAM_ERROR, "这条承运方案已不可用，请重新试算", 409)
+    elif payload.selected_provider:
         selected = next(
             (opt for opt in options if opt["provider"] == payload.selected_provider), None
         )
@@ -147,6 +151,8 @@ async def calculate(
 
     quoted_id = None
     if payload.save:
+        if payload.expected_amount is not None and Decimal(selected["amount_exact"]) != payload.expected_amount:
+            raise AppError(ErrorCode.PARAM_ERROR, "这条方案的运费已变化，请重新试算后再保存", 409)
         quote = await svc.save_quote(
             session,
             user=user,
@@ -171,6 +177,7 @@ async def calculate(
         {
             "sku": prepared["sku"],
             "quantity": prepared["quantity"],
+            "quantity_exact": prepared["quantity_exact"],
             "origin": prepared["origin"],
             "destination": prepared["destination"],
             "shipping_method": payload.shipping_method,
@@ -260,6 +267,16 @@ async def get_quote(
         from app.modules.customer import service as customer_service
 
         await customer_service.get_visible_customer(session, user, quote.customer_id)
+    elif getattr(quote, "opportunity_id", None):
+        # 兼容修复前只保存 opportunity_id 的历史行：不能把它当成无客户
+        # 临时试算放行，必须按商机所属客户重新校验范围。
+        from app.modules.opportunity.model import Opportunity
+        from app.modules.customer import service as customer_service
+
+        opportunity = await session.get(Opportunity, quote.opportunity_id)
+        if opportunity is None or opportunity.deleted_at is not None:
+            raise AppError(ErrorCode.NOT_FOUND, "物流试算关联的商机不存在", 404)
+        await customer_service.get_visible_customer(session, user, opportunity.customer_id)
     return ok(svc.serialize_quote(quote))
 
 

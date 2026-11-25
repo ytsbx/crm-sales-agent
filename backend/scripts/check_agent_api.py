@@ -474,7 +474,7 @@ async def main():
             await agent_tools.request_quote_approval(ctx_zs, outsider_version)
             check_true('张三提交范围外报价版本审批被拒', False, '没有抛错')
         except AppError as exc:
-            check('张三提交范围外报价版本审批被拒', exc.code, 40302)
+            check('张三提交范围外报价版本审批被拒（不可见按 404 处理，避免泄露版本存在）', exc.code, 40401)
         # 对照：admin 对同一对象必须照常可用（否则就是把功能改坏了）
         data_next = await agent_tools.update_opportunity_next_action(
             ctx_admin, outsider_opp, 'admin 正常改动作'

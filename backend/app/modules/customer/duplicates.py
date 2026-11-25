@@ -18,8 +18,32 @@ from app.modules.customer.model import (
     Customer,
     CustomerDuplicateCase,
 )
+from app.modules.user.model import ROLE_ACTIVE, Role, user_roles
 
 DECISIONS = tuple(DECISION_LABEL)
+MERGED_DECISION = "merged"
+IMPORTED_ADMIN_OWNER_MESSAGE = (
+    "新导入的客户目前由管理员负责。请选「指定同一位负责人」，未完成待办会随档案转交。"
+)
+
+
+def _imported_owner_needing_selection(
+    case: CustomerDuplicateCase, imported_owner: int | None, existing_owner: int | None
+) -> int | None:
+    if case.source == "import" and existing_owner is not None and imported_owner != existing_owner:
+        return imported_owner
+    return None
+
+
+async def _admin_owner_ids(session: AsyncSession, owner_ids: set[int]) -> set[int]:
+    if not owner_ids:
+        return set()
+    stmt = (
+        select(user_roles.c.user_id)
+        .join(Role, Role.id == user_roles.c.role_id)
+        .where(user_roles.c.user_id.in_(owner_ids), Role.code == "admin", Role.status == ROLE_ACTIVE)
+    )
+    return set((await session.execute(stmt)).scalars().all())
 
 
 async def is_disputed(session: AsyncSession, customer_id: int) -> bool:
@@ -48,6 +72,9 @@ async def is_disputed(session: AsyncSession, customer_id: int) -> bool:
 
 
 def serialize_case(case: CustomerDuplicateCase, names: dict[int, str]) -> dict:
+    decision_label = (
+        "客户档案已合并" if case.decision == MERGED_DECISION else DECISION_LABEL.get(case.decision or "")
+    )
     return {
         "id": case.id,
         "customer_id": case.customer_id,
@@ -59,7 +86,7 @@ def serialize_case(case: CustomerDuplicateCase, names: dict[int, str]) -> dict:
         "source": case.source,
         "status": case.status,
         "decision": case.decision,
-        "decision_label": DECISION_LABEL.get(case.decision or "", None),
+        "decision_label": decision_label,
         "resolved_owner_id": case.resolved_owner_id,
         "resolved_by": case.resolved_by,
         "resolved_at": case.resolved_at.isoformat() if case.resolved_at else None,
@@ -90,10 +117,21 @@ async def open_cases_for_customer(
         tax_no=customer.tax_no,
         domain=customer.domain,
     )
+    candidate_ids = {match["id"] for match in matches if match.get("id") is not None}
+    if not candidate_ids - {customer.id}:
+        return []
+    # 等待合并完成后复查档案是否仍在用，再创建撞单。
+    active_ids = set(await session.scalars(
+        select(Customer.id)
+        .where(Customer.id.in_(candidate_ids | {customer.id}), Customer.deleted_at.is_(None))
+        .order_by(Customer.id).with_for_update(read=True, key_share=True)
+    ))
+    if customer.id not in active_ids:
+        return []
     opened: list[CustomerDuplicateCase] = []
     for match in matches:
         candidate_id = match.get("id")
-        if candidate_id is None or candidate_id == customer.id:
+        if candidate_id not in active_ids or candidate_id == customer.id:
             continue
         existing = (
             await session.execute(
@@ -174,6 +212,7 @@ async def list_cases(
     *,
     user: CurrentUser,
     status: str | None = "pending",
+    customer_id: int | None = None,
     page: int = 1,
     page_size: int = 20,
 ) -> tuple[list[dict], int]:
@@ -189,6 +228,11 @@ async def list_cases(
     conditions = []
     if status:
         conditions.append(CustomerDuplicateCase.status == status)
+    if customer_id is not None:
+        conditions.append(or_(
+            CustomerDuplicateCase.customer_id == customer_id,
+            CustomerDuplicateCase.candidate_id == customer_id,
+        ))
     owner_ids = await scoped_owner_ids(session, user)
     if owner_ids is not None:
         visible_customers = select(Customer.id).where(
@@ -215,13 +259,30 @@ async def list_cases(
         ).scalars().all()
     )
     ids = {c.customer_id for c in cases} | {c.candidate_id for c in cases}
-    names = {
-        row.id: row.name
+    customers = {
+        row.id: row
         for row in (
             await session.execute(select(Customer).where(Customer.id.in_(ids)))
         ).scalars().all()
     } if ids else {}
-    return [serialize_case(case, names) for case in cases], int(total)
+    names = {cid: customer.name for cid, customer in customers.items()}
+    owners_to_check = {
+        case.id: _imported_owner_needing_selection(
+            case, customers[case.customer_id].owner_id, customers[case.candidate_id].owner_id
+        )
+        for case in cases
+        if case.status == "pending" and case.customer_id in customers and case.candidate_id in customers
+    }
+    admins = await _admin_owner_ids(session, {uid for uid in owners_to_check.values() if uid is not None})
+    return [
+        {
+            **serialize_case(case, names),
+            "assign_existing_blocked_reason": (
+                IMPORTED_ADMIN_OWNER_MESSAGE if owners_to_check.get(case.id) in admins else None
+            ),
+        }
+        for case in cases
+    ], int(total)
 
 
 async def resolve_case(
@@ -245,16 +306,19 @@ async def resolve_case(
       **待办一条都没跟着走** —— 新负责人看不到该做的动作，老负责人还在被
       一个已经不属于他的客户提醒（返工单 6.5）。两处各写一遍必然漂移。
     """
-    # **加行锁**后再判状态：两个人同时点"裁定"时，后到的会等前面提交完再读，
-    # 读到的就是 `resolved`，于是被下面这条挡下 —— 只有一个能成功。
-    # 不加锁的话两个请求都会通过 `status != pending` 检查，各改一遍归属。
-    #
-    # ⚠️ `populate_existing=True` 不能省：本项目 session 是
-    # `expire_on_commit=False`，SQLAlchemy 默认**不会用结果覆盖已加载对象的属性**。
-    # 路由那边已经 `session.get()` 过一次这个案件，所以光加锁读到的是库里那一行、
-    # 但拿回来的是**内存里的旧对象**（status 还是 pending）——
-    # 并发裁定会两个都成功（实测：不加这句时两个请求都返回 200）。
-    # 这个坑本项目文档里记过一次（identity map 挡读），这里是它在"锁"场景的翻版。
+    from app.modules.customer import service as customer_service
+
+    if case.status != "pending":
+        raise AppError(ErrorCode.PARAM_ERROR, "该撞单已裁定过", 422)
+    if decision not in DECISIONS:
+        raise AppError(ErrorCode.PARAM_ERROR, f"裁定类型不合法：{decision}", 422)
+
+    # 与合并同序：按编号锁客户、复查范围，然后锁撞单并重读状态。
+    locked_customers = {}
+    for cid in sorted({case.customer_id, case.candidate_id}):
+        locked_customers[cid] = await customer_service.get_visible_customer(
+            session, actor, cid, for_update=True
+        )
     locked = (
         await session.execute(
             select(CustomerDuplicateCase)
@@ -269,23 +333,25 @@ async def resolve_case(
 
     if case.status != "pending":
         raise AppError(ErrorCode.PARAM_ERROR, "该撞单已裁定过", 422)
-    if decision not in DECISIONS:
-        raise AppError(ErrorCode.PARAM_ERROR, f"裁定类型不合法：{decision}", 422)
 
     # 裁定**前**两条客户的归属：与下面的 `resolved_owner_id`（裁定后）配成一对，
     # 事后回看才答得出"这次裁定把谁从谁手里改到了谁名下"。
-    before_owners = {}
-    for cid in (case.customer_id, case.candidate_id):
-        row = await session.get(Customer, cid)
-        before_owners[str(cid)] = row.owner_id if row is not None else None
+    before_owners = {
+        str(cid): customer.owner_id for cid, customer in locked_customers.items()
+    }
 
     if decision in ("assign_existing", "assign_new"):
         if decision == "assign_existing":
-            target = await session.get(Customer, case.candidate_id)
-            if target is None or target.owner_id is None:
+            target = locked_customers[case.candidate_id]
+            if target.owner_id is None:
                 raise AppError(
                     ErrorCode.PARAM_ERROR, "已有客户没有负责人，无法按它归属", 422
                 )
+            imported_owner = _imported_owner_needing_selection(
+                case, locked_customers[case.customer_id].owner_id, target.owner_id
+            )
+            if imported_owner is not None and await _admin_owner_ids(session, {imported_owner}):
+                raise AppError(ErrorCode.PARAM_ERROR, IMPORTED_ADMIN_OWNER_MESSAGE, 422)
             owner_id = target.owner_id
         elif owner_id is None:
             raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "裁定归属必须指定负责人", 422)
@@ -296,16 +362,14 @@ async def resolve_case(
         from app.modules.customer import service as customer_service
 
         for cid in (case.customer_id, case.candidate_id):
-            customer = await session.get(Customer, cid)
-            if customer is None:
-                continue
+            customer = locked_customers[cid]
             if customer.owner_id != owner_id:
                 await customer_service.transfer_customer(
                     session,
                     actor,
                     customer,
                     owner_id,
-                    f"撞单裁定 #{case.id}（{DECISION_LABEL[decision]}）",
+                    f"撞单裁定编号 {case.id}（{DECISION_LABEL[decision]}）",
                 )
             elif customer.pool_status != "private":
                 # 归属本来就是这个人，但客户还在公海状态：把状态掰回来

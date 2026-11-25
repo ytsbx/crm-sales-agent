@@ -34,11 +34,20 @@
 正好把"免重复录入"这条验收标准踩没。所以 `build_form_component_values`
 只认调用方给的字段映射，映射从模板字段清单来（见 21-交接说明-2026-10-04.md §7.1 的待外部输入）。
 """
+from collections import deque
 
+
+import json
+import logging
+import secrets
+import threading
+import time
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+import httpx
+from sqlalchemy import or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -46,21 +55,29 @@ from app.core.deps import CurrentUser
 from app.core.config import settings as app_settings
 from app.core.errors import AppError, ErrorCode
 from app.modules.dingtalk.client import (
+    DingTalkUnknownOutcome,
     DINGTALK_DISABLED_MESSAGE,
+    DINGTALK_LOGIN_DISABLED_MESSAGE,
     OUTCOME_NOT_SENT,
     OUTCOME_REJECTED,
     OUTCOME_UNKNOWN,
+    DingTalkDisabled,
     DingTalkError,
+    DingTalkNotConfigured,
     classify_outcome,
     get_client,
 )
 from app.modules.dingtalk.model import (
     OA_ACTION_LABEL,
     OA_STATUS_LABEL,
+    OA_TYPE_LABEL,
     RESOLVE_STATE_LABEL,
     OaInstance,
     allowed_actions,
 )
+from app.modules.user.model import Department, User, Role, user_roles
+
+logger = logging.getLogger(__name__)
 
 #: 停在 `submitting` / 核定占用超过这个时长，就认为那次尝试已经死了
 #: （进程被杀、机器重启、调用方再也没回来），允许重新发起或重新占用。
@@ -105,8 +122,9 @@ _OUTCOME_HINT = {
 _STATUS_MAP = {
     "RUNNING": "pending",
     "COMPLETED": "approved",
-    "TERMINATED": "rejected",
+    "TERMINATED": "withdrawn",
     "CANCELED": "withdrawn",
+    "CANCELLED": "withdrawn",
 }
 
 
@@ -122,12 +140,14 @@ def _as_utc(value: datetime | None) -> datetime | None:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
-def build_form_component_values(field_map: dict[str, Any]) -> list[dict[str, Any]]:
+def build_form_component_values(
+    field_map: dict[str, Any], *, field_definitions: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
     """把 CRM 字段拼成钉钉的 `formComponentValues`（发起审批实例的请求体）。
 
     - `field_map` 的 key 必须是**模板控件的 id**（不是中文名）；
-    - `name` 和 `id` 都填控件 id：新版接口以 `id` 认控件，而 `name` 按官方文档
-      也允许填 id——两个都带上，任一判据都能命中；
+    - 提供当前模板定义时，`name` 使用 label，`id` 使用控件 id。
+      官方创建接口要求 name 与模板 label 一致；旧调用方未提供定义时保留原键。
     - `componentType` 从控件 id 的前缀推导（`TextField_XXX` → `TextField`）。
       **这不是猜的**：实测两张模板共 69 个控件，服务端返回的 `componentType`
       与 id 前缀**全部一致**；推导不出来的（id 里没有下划线）就不带这个字段；
@@ -135,12 +155,29 @@ def build_form_component_values(field_map: dict[str, Any]) -> list[dict[str, Any
       这在"驳回后重提"时会把上一次填的内容抹掉。
     """
     items: list[dict[str, Any]] = []
+    definitions = {field['id']: field for field in (field_definitions or [])}
     for component_id, value in field_map.items():
         if value in (None, "", [], {}):
             continue
-        item: dict[str, Any] = {"name": component_id, "id": component_id, "value": value}
-        if "_" in component_id:
-            item["componentType"] = component_id.split("_", 1)[0]
+        if isinstance(value, bool):
+            # 布尔值不是钉钉表单控件支持的文本类型，跳过它，避免把
+            # Python 的 True/False 误提交成用户可见的表单内容。
+            continue
+        definition = definitions.get(component_id, {})
+        kind = definition.get('type') or (component_id.split('_', 1)[0] if '_' in component_id else None)
+        if kind == 'InnerContactField':
+            # 创建接口的单人联系人同样使用 userId 数组字符串；详情中的显示姓名不能回填。
+            if isinstance(value, str):
+                value = json.loads(value) if value.lstrip().startswith('[') else [value]
+            if not isinstance(value, list) or not value or not all(isinstance(v, str) and v.strip() for v in value):
+                raise ValueError(f'审批字段 {component_id} 需要真实 userId 数组')
+        if isinstance(value, (list, dict)):
+            value = json.dumps(value, ensure_ascii=False, allow_nan=False)
+        else:
+            value = str(value)
+        item: dict[str, Any] = {"name": definition.get('label') or component_id, "id": component_id, "value": value}
+        if kind:
+            item["componentType"] = kind
         items.append(item)
     return items
 
@@ -210,7 +247,7 @@ def demote_stuck_submitting(row: OaInstance) -> bool:
     if started is not None and (datetime.now(UTC) - started) <= SUBMITTING_STUCK_AFTER:
         return False
     row.status = "needs_review"
-    row.error = (
+    row.error = "上次发起过程中断，请到同序 OA 核对是否已经建单。" if getattr(row, "provider", None) == "self_oa" else (
         "上次发起结果不明（发起过程中断）：钉钉那边可能已经建了审批单。"
         "已转人工核对——请先去钉钉确认，再选择「认领 / 重发 / 作废」"
     )
@@ -284,6 +321,7 @@ async def _call_create_and_record(
     component_values: list[dict[str, Any]],
     process_code: str,
     originator_user_id: str,
+    dept_id: int | None = None,
     resolve_action: str | None = None,
 ) -> OaInstance:
     """真正调一次外部发起，并按**三种后果**落状态（调用前占用已由调用方占到）。
@@ -297,10 +335,12 @@ async def _call_create_and_record(
     row.attempt_count = int(row.attempt_count or 0) + 1
     row.last_attempt_at = now
     try:
+        department_args = {'dept_id': dept_id} if dept_id is not None else {}
         instance_id = await get_client().create_process_instance(
             process_code=process_code,
             form_component_values=component_values,
             originator_user_id=originator_user_id,
+            **department_args,
         )
     except Exception as exc:  # noqa: BLE001 —— 外部怎么炸都要落痕，绝不能假装成功
         outcome = classify_outcome(exc)
@@ -340,6 +380,8 @@ async def create_inquiry_instance(
     field_map: dict[str, Any],
     oa_type: str = "inquiry",
     resubmit: bool = False,
+    field_definitions: list[dict[str, Any]] | None = None,
+    dept_id: int | None = None,
 ) -> OaInstance:
     """发起询价审批。
 
@@ -393,7 +435,10 @@ async def create_inquiry_instance(
     submit_round = (int(latest.submit_round) + 1) if (resubmit and latest) else 1
     idempotency_key = f"{inquiry_id}:{inquiry_version}:{oa_type}:{submit_round}"
 
-    component_values = build_form_component_values(field_map)
+    component_values = build_form_component_values(field_map, field_definitions=field_definitions)
+    form_snapshot = {"formComponentValues": component_values}
+    if dept_id is not None:
+        form_snapshot['deptId'] = dept_id
 
     # 推送总闸（默认关）：测试期绝不向外部系统发起真实审批单。
     # 与企微同一套语义——记 skipped 并写明原因，"没发"不等于"发失败"。
@@ -407,7 +452,7 @@ async def create_inquiry_instance(
             submit_round=submit_round,
             process_code=process_code,
             originator_user_id=originator_user_id,
-            form_snapshot={"formComponentValues": component_values},
+            form_snapshot=form_snapshot,
             status="skipped",
             error=f"{DINGTALK_DISABLED_MESSAGE}；未发起审批",
             created_by=user.id,
@@ -436,7 +481,7 @@ async def create_inquiry_instance(
         row = claimed
         # 刷新报文快照，保证"本次实际发出去的"与记录一致（复用同一行，
         # 所以不需要再走一次"占业务键"的插入与唯一约束处理）
-        row.form_snapshot = {"formComponentValues": component_values}
+        row.form_snapshot = form_snapshot
         row.originator_user_id = originator_user_id
         row.process_code = process_code
         await session.commit()
@@ -446,6 +491,7 @@ async def create_inquiry_instance(
             component_values=component_values,
             process_code=process_code,
             originator_user_id=originator_user_id,
+            dept_id=dept_id,
         )
 
     row = OaInstance(
@@ -457,7 +503,7 @@ async def create_inquiry_instance(
         submit_round=submit_round,
         process_code=process_code,
         originator_user_id=originator_user_id,
-        form_snapshot={"formComponentValues": component_values},
+        form_snapshot=form_snapshot,
         status="pending",
         created_by=user.id,
         created_at=now,
@@ -492,6 +538,7 @@ async def create_inquiry_instance(
         component_values=component_values,
         process_code=process_code,
         originator_user_id=originator_user_id,
+        dept_id=dept_id,
     )
 
 
@@ -633,27 +680,81 @@ async def resolve_reviewed_instance(
         raise
 
 
-async def _verify_instance_source(
-    session: AsyncSession, row: OaInstance, payload: dict
-) -> None:
-    """核实"这张钉钉单确实是这条需求发起的那一张"（7.8）。
+@dataclass(frozen=True)
+class BusinessKey:
+    """一条 OA 记录指向的业务对象。
 
-    为什么要核实：`instance_id` 是人手输进来的字符串。不核实就采纳，等于让一个
-    字符串决定"哪张审批单的结果回到哪条需求"——输错一位就认了别人的单，
-    而后续轮询/回调会把那张单的审批结果写进这条需求（价格、交期都可能跟着变），
-    同时真正属于这条需求的那张单变成没人管的挂单。
-
-    **fail-closed**：模板、发起人、来源需求三项里任何一项拿不到或对不上都拒绝采纳。
-    真实的字段名（`processCode` / `originatorUserId` / `businessId`）需要与钉钉联调
-    确认后才能收紧，所以在拿不到字段时只能拒绝——**默认放行**才是这里最危险的做法。
+    `oa_instances.inquiry_id` 这一列**是复用的**：询价存需求 id、打样存打样单 id、
+    合同存合同文档 id。读取侧一律按 `oa_type` 分派，不能假定它是需求
+    —— 早先核定（认领/重发/作废）只认"需求"，于是合同与打样那两种单在
+    "结果待人工核对"时没有任何出口，而认领时的来源核对还会拿错表的主键去比。
     """
+
+    label: str          # 给人看的对象名，出现在报错与日志里
+    accepted_ids: set[str]   # 钉钉单上的 businessId 可能是这几个值中的任意一个
+    display: str        # 报错里用的"是哪一条"描述（编号或 id）
+
+
+async def resolve_business_key(session: AsyncSession, row: OaInstance) -> BusinessKey:
+    """按 `oa_type` 把 `inquiry_id` 解释成真正的业务对象。
+
+    带上"对象自己的编号"（需求编号 / 合同编号）一起作为可接受的 businessId：
+    钉钉模板里填的可能是编号而不是数据库主键，两种都得认，否则合法认领会被拒。
+    """
+    if row.oa_type == "contract":
+        from app.modules.contract.model import ContractDocument
+
+        doc = await session.get(ContractDocument, row.inquiry_id)
+        accepted = {str(row.inquiry_id)}
+        if doc is not None and getattr(doc, "doc_no", None):
+            accepted.add(str(doc.doc_no))
+        return BusinessKey(
+            label="合同",
+            accepted_ids=accepted,
+            display=(doc.doc_no if doc is not None else f"合同 {row.inquiry_id}"),
+        )
+    if row.oa_type == "sample":
+        from app.modules.sample.model import SAMPLE_STATUS_LABEL, SampleRequest
+
+        sample = await session.get(SampleRequest, row.inquiry_id)
+        state = SAMPLE_STATUS_LABEL.get(getattr(sample, "status", None), None)
+        return BusinessKey(
+            label="打样单",
+            accepted_ids={str(row.inquiry_id)},
+            display=f"打样单编号 {row.inquiry_id}" + (f"（{state}）" if state else ""),
+        )
     from app.modules.inquiry.model import CustomInquiry
 
     inquiry = await session.get(CustomInquiry, row.inquiry_id)
     inquiry_no = getattr(inquiry, "inquiry_no", None)
-    accepted_business = {str(row.inquiry_id)}
+    accepted = {str(row.inquiry_id)}
     if inquiry_no:
-        accepted_business.add(str(inquiry_no))
+        accepted.add(str(inquiry_no))
+    return BusinessKey(
+        label="需求",
+        accepted_ids=accepted,
+        display=f"需求 {row.inquiry_id}（编号 {inquiry_no or '—'}）",
+    )
+
+
+async def _verify_instance_source(
+    session: AsyncSession, row: OaInstance, payload: dict
+) -> None:
+    """核实"这张钉钉单确实是这一条业务记录发起的那一张"（7.8）。
+
+    为什么要核实：`instance_id` 是人手输进来的字符串。不核实就采纳，等于让一个
+    字符串决定"哪张审批单的结果回到哪条记录"——输错一位就认了别人的单，
+    而后续轮询/回调会把那张单的审批结果写进这条记录（价格、交期都可能跟着变），
+    同时真正属于这条记录的那张单变成没人管的挂单。
+
+    **fail-closed**：模板、发起人、来源对象三项里任何一项拿不到或对不上都拒绝采纳。
+    真实的字段名（`processCode` / `originatorUserId` / `businessId`）需要与钉钉联调
+    确认后才能收紧，所以在拿不到字段时只能拒绝——**默认放行**才是这里最危险的做法。
+
+    ⚠️ 来源对象按 `oa_type` 解析（2026-10-16）：这一列对合同/打样存的是另一张表的
+    主键，直接当需求查会拿别人的编号去比对，合法认领永远过不了。
+    """
+    business = await resolve_business_key(session, row)
 
     problems: list[str] = []
 
@@ -679,11 +780,11 @@ async def _verify_instance_source(
 
     got_business = str(payload.get("businessId") or payload.get("business_id") or "").strip()
     if not got_business:
-        problems.append("响应里没有来源需求编号 businessId，无法确认这张单属于哪条需求")
-    elif got_business not in accepted_business:
+        problems.append(f"响应里没有来源{business.label}编号 businessId，无法确认这张单属于哪一条{business.label}")
+    elif got_business not in business.accepted_ids:
         problems.append(
-            f"来源需求对不上：钉钉这张单是 {got_business}，这条记录是需求 "
-            f"{row.inquiry_id}（编号 {inquiry_no or '—'}）"
+            f"来源{business.label}对不上：钉钉这张单是 {got_business}，这条记录是 "
+            f"{business.display}"
         )
 
     if problems:
@@ -719,7 +820,8 @@ async def _adopt_instance(
     if taken is not None:
         raise AppError(
             ErrorCode.DUPLICATE,
-            f"审批单 {instance_id} 已经关联到需求 {taken.inquiry_id} 的第 "
+            f"审批单 {instance_id} 已经关联到"
+            f"{OA_TYPE_LABEL.get(taken.oa_type, taken.oa_type)} {taken.inquiry_id} 的第 "
             f"{taken.submit_round} 轮审批记录，同一个钉钉单不能被两条记录同时认领",
             409,
         )
@@ -777,39 +879,205 @@ async def resend_instance(
         component_values=component_values,
         process_code=row.process_code or "",
         originator_user_id=row.originator_user_id or "",
+        dept_id=(row.form_snapshot or {}).get('deptId'),
         resolve_action="resend",
     )
 
 
-async def sync_pending_instances(session: AsyncSession, *, limit: int = 50) -> dict:
-    """轮询回写：把还在审批中的实例拉一次状态与结果。
+async def lock_oa_business_then_instance(session: AsyncSession, row: OaInstance) -> OaInstance | None:
+    """Follow submission's lock order. A busy row is retried by the caller."""
+    from app.modules.contract.model import ContractDocument
+    from app.modules.inquiry.model import CustomInquiry
+    from app.modules.sample.model import SampleRequest
 
-    为什么先做轮询而不是事件订阅：轮询**不需要公网回调地址、也不需要管理员
-    在 OA 后台额外授权**，而且天然不会丢消息——这一轮没查到，下一轮还会查。
-    代价只是延迟几分钟，而询价审批本来就要几小时到几天。
+    model = {"contract": ContractDocument, "sample": SampleRequest}.get(row.oa_type)
+    if row.oa_type == "inquiry" and row.provider == "self_oa":
+        model = CustomInquiry
+    if model is not None:
+        business = select(model).where(model.id == row.inquiry_id)
+        locked = await session.scalar(business.with_for_update(skip_locked=True).execution_options(populate_existing=True))
+        if locked is None and await session.scalar(select(model.id).where(model.id == row.inquiry_id)) is not None:
+            return None
+    return (await session.execute(
+        select(OaInstance).where(OaInstance.id == row.id)
+        .with_for_update(skip_locked=True).execution_options(populate_existing=True)
+    )).scalars().first()
+
+
+async def query_oa_without_locks(session, row, fetch):
+    """Release the preflight locks and discard a snapshot if a newer write won."""
+    from app.modules.oa.client import OaError
+
+    instance_id = row.instance_id
+    stamp = (row.status, _as_utc(row.updated_at))
+    await session.commit()
+    try:
+        data, error = await fetch(instance_id), None
+    except (OaError, DingTalkError, DingTalkUnknownOutcome) as exc:
+        data, error = None, exc
+    current = await lock_oa_business_then_instance(session, row)
+    if current is None or current.instance_id != instance_id or (current.status, _as_utc(current.updated_at)) != stamp:
+        return None, None, None
+    return current, data, error
+
+
+def settle_withdrawal_snapshot(row, status):
+    attempt = (row.result or {}).get("withdraw_attempt")
+    if not attempt:
+        return True
+    if status in {"approved", "rejected", "withdrawn"}:
+        row.result = {key: value for key, value in row.result.items() if key != "withdraw_attempt"}
+        return True
+    if status == "pending" and datetime.now(UTC).timestamp() - attempt["started"] > SUBMITTING_STUCK_AFTER.total_seconds():
+        row.result = {key: value for key, value in row.result.items() if key != "withdraw_attempt"}
+        return True
+    return False
+
+
+async def withdraw_oa_without_locks(session, row, send, *, reload_business=None):
+    """Reserve one withdrawal before sending. Keep uncertain attempts for synchronization."""
+    from uuid import uuid4
+    from app.modules.oa.client import OaError, OaUnknownOutcome
+
+    if (row.result or {}).get("withdraw_attempt"):
+        raise AppError(ErrorCode.VERSION_CONFLICT, "上次撤回尚待确认，请先同步 OA 审批", 409)
+    token = uuid4().hex
+    instance_id = row.instance_id
+    row.result = {**(row.result or {}), "withdraw_attempt": {"token": token, "started": datetime.now(UTC).timestamp()}}
+    row.updated_at = datetime.now(UTC)
+    await session.commit()
+    try:
+        summary, error = await send(instance_id), None
+    except (OaError, DingTalkError, DingTalkUnknownOutcome) as exc:
+        summary, error = None, exc
+    if reload_business is not None:
+        await reload_business()
+    current = await lock_oa_business_then_instance(session, row)
+    if current is None or current.instance_id != instance_id:
+        raise AppError(ErrorCode.VERSION_CONFLICT, "撤回结果请在 OA 同步后核对", 409)
+    if current.status == "withdrawn":
+        return current, None
+    if (current.result or {}).get("withdraw_attempt", {}).get("token") != token:
+        raise AppError(ErrorCode.VERSION_CONFLICT, "审批状态已变化，请同步后核对撤回结果", 409)
+    if isinstance(error, (OaUnknownOutcome, DingTalkUnknownOutcome)):
+        current.error = "撤回结果暂未确认，请等待同步或到 OA 核对原单"
+        current.updated_at = datetime.now(UTC)
+        await session.commit()
+        raise AppError(ErrorCode.EXTERNAL_ERROR, current.error, 502) from error
+    current.result = {key: value for key, value in current.result.items() if key != "withdraw_attempt"}
+    if error is not None:
+        await session.commit()
+        raise AppError(ErrorCode.EXTERNAL_ERROR, "OA 未接受撤回，请核对审批状态及发起人权限", 422) from error
+    return current, summary
+
+
+async def sync_pending_instances(session: AsyncSession, *, limit: int = 50, oa_id: int | None = None) -> dict:
+    """统一回收钉钉快照：事件和手动同步指定单条，定时任务公平轮询未完成记录。
+
+    同一行只允许一个查询者持锁写回，事件重复投递不会重复创建业务流程。
     """
+    # 钉钉总闸关着且自研 OA 也没配置时，一行都不用查（旧回归明确要求
+    # “关闸时不得访问数据库”）。OA 配置了才需要继续，去处理 self_oa 行。
     if app_settings.dingtalk_push_off:
-        return {"checked": 0, "changed": 0, "disabled": True, "message": DINGTALK_DISABLED_MESSAGE}
+        from app.modules.oa import client as oa_client
+        if not oa_client.configured():
+            return {"checked": 0, "changed": 0, "disabled": True, "message": DINGTALK_DISABLED_MESSAGE}
+    pending = or_(
+        OaInstance.status == "pending",
+        (OaInstance.status == "withdrawn") &
+        (OaInstance.result['withdraw_snapshot_pending'].as_boolean().is_(True)),
+    )
+    cutoff = datetime.now(UTC) - SUBMITTING_STUCK_AFTER
+    interrupted = (
+        (OaInstance.provider == "self_oa") & (OaInstance.status == "submitting")
+        & ((OaInstance.last_attempt_at < cutoff) |
+           (OaInstance.last_attempt_at.is_(None) & (OaInstance.created_at < cutoff)))
+    )
     rows = (
         await session.execute(
             select(OaInstance)
-            .where(OaInstance.status == "pending", OaInstance.instance_id.is_not(None))
-            .order_by(OaInstance.id.asc())
-            .limit(limit)
+            .where(OaInstance.id == oa_id if oa_id is not None else (pending | interrupted),
+                   OaInstance.instance_id.is_not(None) | interrupted,
+                   OaInstance.provider == "self_oa" if app_settings.dingtalk_push_off else True)
+            .order_by(OaInstance.updated_at.asc().nullsfirst(), OaInstance.id.asc())
+            .limit(1 if oa_id is not None else limit)
         )
     ).scalars().all()
     if not rows:
         return {"checked": 0, "changed": 0}
+    if app_settings.dingtalk_push_off and not any(
+        getattr(row, "provider", "dingtalk") == "self_oa" for row in rows
+    ):
+        return {"checked": 0, "changed": 0, "disabled": True, "message": DINGTALK_DISABLED_MESSAGE}
 
-    client = get_client()
+    client = None
     changed = 0
-    for row in rows:
-        try:
-            data = await client.get_process_instance(row.instance_id or "")
-        except DingTalkError as exc:
-            # 单条查失败不影响其他单：记在行上，下一轮还会再试
-            row.error = str(exc)[:500]
+    checked = 0
+    for candidate in rows:
+        row = await lock_oa_business_then_instance(session, candidate)
+        if row is None:
             continue
+        if getattr(row, "provider", None) == "self_oa" and demote_stuck_submitting(row):
+            checked += 1
+            changed += 1
+            continue
+        if not row.instance_id:
+            continue
+        if oa_id is None and not (
+            row.status == "pending" or
+            (row.status == "withdrawn" and (row.result or {}).get("withdraw_snapshot_pending"))
+        ):
+            continue
+        checked += 1
+        if getattr(row, "provider", "dingtalk") == "self_oa":
+            from app.modules.oa import client as oa_client
+            from app.modules.oa import service as oa_service
+
+            try:
+                synced = await oa_service.sync_self_oa_row(session, row)
+                if synced is not None:
+                    changed += 1
+                else:
+                    checked -= 1
+            except (oa_client.OaError, oa_client.OaUnknownOutcome) as exc:
+                # 单条失败不影响其它单；下一轮继续。
+                row.error = str(exc)[:500]
+                row.updated_at = datetime.now(UTC)
+            except Exception as exc:  # noqa: BLE001 - 调度不能因单条异常整批中断
+                if row is not None:
+                    row.error = f"OA 同步失败：{exc.__class__.__name__}"[:500]
+                    row.updated_at = datetime.now(UTC)
+            continue
+        if app_settings.dingtalk_push_off:
+            continue
+        if client is None:
+            client = get_client()
+        row, data, error = await query_oa_without_locks(session, row, client.get_process_instance)
+        if row is None:
+            checked -= 1
+            continue
+        if error:
+            # 单条查失败不影响其他单：记在行上，下一轮还会再试。
+            #
+            # ⚠️ **两类都要捕**（2026-10-14 审查修）：
+            # `DingTalkError` = 对方明确答复了（4xx/业务错）；
+            # `DingTalkUnknownOutcome` = 请求发出去了但读不出结果（超时/连接断/响应不可解析）。
+            # 两者**不是父子关系**（`classify_outcome` 靠这个区别决定"能不能重试"），
+            # 而这里原来只捕前者 —— 于是一条超时就会打断整批（后面几十条不再轮询），
+            # 且本轮改动要到循环末尾才落库，异常路径事务回滚 →
+            # **前面已取回的状态全部丢失**，手工触发还会 500。
+            # 这与本函数的承诺（"单条查失败不影响其他单"）直接矛盾。
+            row.error = str(error)[:500]
+            row.updated_at = datetime.now(UTC)
+            continue
+        linked_sample = None
+        linked_contract = None
+        if row.oa_type == 'sample':
+            from app.modules.sample.model import SampleRequest
+            linked_sample = await session.get(SampleRequest, row.inquiry_id, with_for_update=True)
+        elif row.oa_type == 'contract':
+            from app.modules.contract.model import ContractDocument
+            linked_contract = await session.get(ContractDocument, row.inquiry_id, with_for_update=True)
         raw_status = str(data.get("status") or "").upper()
         # 审批**走完**之后，通过还是驳回要看 `result`（agree / refuse）——
         # 只看 status 的话 COMPLETED 会被一律记成"已通过"，
@@ -824,19 +1092,154 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50) -> d
                 new_status = None
         else:
             new_status = _STATUS_MAP.get(raw_status)
-        row.result = {"raw_status": raw_status, "raw_result": raw_result, "payload": data}
+        if not settle_withdrawal_snapshot(row, new_status):
+            continue
+        row.error = None
+        if row.status in ('approved', 'rejected', 'withdrawn') and new_status == 'pending':
+            # 保留已确认终态及完整快照，等待外部数据收敛。
+            row.updated_at = datetime.now(UTC)
+            continue
+        previous_result = row.result or {}
+        withdrawal_pending = bool(previous_result.get('withdraw_snapshot_pending'))
+        if withdrawal_pending and new_status == 'pending':
+            # 撤回接口已明确成功；钉钉查询短暂返回旧快照时不能退回审批中。
+            new_status = None
+        row.result = {**previous_result, "raw_status": raw_status, "raw_result": raw_result, "payload": data}
+        if withdrawal_pending:
+            row.result = {**row.result, 'withdraw_snapshot_pending': new_status is None}
         row.synced_at = datetime.now(UTC)
         row.updated_at = datetime.now(UTC)
         if new_status and new_status != row.status:
             row.status = new_status
             changed += 1
+        if linked_sample is not None or linked_contract is not None:
+            # Stream may deliver an old round after the same business was resubmitted.
+            # Keep that round's snapshot, but only the latest round owns the main record.
+            latest = await get_by_business_key(
+                session, inquiry_id=row.inquiry_id, inquiry_version=row.inquiry_version,
+                oa_type=row.oa_type,
+            )
+            if latest is None or latest.id != row.id:
+                continue
+        if linked_sample is not None and linked_sample.deleted_at is None and int(linked_sample.version or 1)==row.inquiry_version:
+            meta=(linked_sample.source_context or {}).get('dingtalk_oa') or {}
+            if meta.get('mode')=='standalone' and meta.get('submitted') and linked_sample.status=='pending' and new_status in ('approved','rejected','withdrawn'):
+                # 样品主表没有单独的 withdrawn 状态；钉钉撤回后按“已拒绝/可重新提交”
+                # 处理，避免 CRM 继续显示“待审批”并把撤回单当成仍在流转。
+                linked_sample.status='rejected' if new_status=='withdrawn' else new_status
+                linked_sample.approved_at=datetime.now(UTC)
+                linked_sample.reject_reason=(
+                    '钉钉打样审批已撤回，可重新提交；详情见钉钉审批记录'
+                    if new_status=='withdrawn' else
+                    '钉钉打样审批已拒绝，处理意见见钉钉审批记录'
+                    if new_status=='rejected' else None
+                )
+        if linked_contract is not None and linked_contract.deleted_at is None:
+            old_meta = (linked_contract.filled_data or {}).get('_dingtalk_oa') or {}
+            linked_contract.filled_data = {
+                **(linked_contract.filled_data or {}),
+                '_dingtalk_oa': {
+                    **old_meta,
+                    'oa_instance_id': row.id,
+                    'instance_id': row.instance_id,
+                    'status': row.status,
+                    'synced_at': row.synced_at.isoformat() if row.synced_at else None,
+                    'result': row.result,
+                },
+            }
+            # 审批**真的走到终态**时，提醒负责人去追客户回签，并把那张
+            # 「上传客户回签合同」待办的截止日往前推（客户起草合同，2026-10-16）。
+            #
+            # 为什么必须有这一段：待办是**生成合同那一刻**就建好的，此后任凭审批
+            # 通过、客户一直不回签，它都不会再响一声 —— 而这一刻才是真正该去追的
+            # 时点（合同刚获批、客户手上还没盖章）。原先只有"登记回签件自动完成"
+            # 和"作废取消"两个时点，中间全程静默。
+            #
+            # 去重靠**上面那句** `new_status != row.status`：只有状态真的从
+            # pending 翻到终态的那一次才进得来（`changed` 也是同一个判据），
+            # 所以每份合同每个终态只提醒一次，轮询反复回写同一状态不会重复推送。
+            marker = f'{row.id}:{row.status}'
+            if new_status in ('approved', 'rejected') and (linked_contract.filled_data or {}).get('_oa_notified') != marker:
+                # B11-08：单行隔离——一份合同的通知/待办失败不打断整批同步；
+                # savepoint 回滚半截写入，marker 不落、下轮轮询重试
+                try:
+                    async with session.begin_nested():
+                        await _notify_contract_review_outcome(session, linked_contract, new_status)
+                    linked_contract.filled_data = {**linked_contract.filled_data, '_oa_notified': marker}
+                except Exception:
+                    logger.warning(
+                        "合同审批结果通知失败，本轮跳过、下轮重试 contract=%s",
+                        linked_contract.id, exc_info=True,
+                    )
+
     await session.flush()
-    return {"checked": len(rows), "changed": changed}
+    return {"checked": checked, "changed": changed}
+
+
+async def _notify_contract_review_outcome(
+    session: AsyncSession, doc, new_status: str
+) -> None:
+    """合同审批出结果后提醒负责人，并刷新回签待办的截止日。
+
+    ❗ 只负责**提醒**，不改合同状态：合同要等客户盖章的回签件登记上来才算签成
+    （`contract/service.sign_document`），审批通过只是"可以寄给客户签了"。
+    所以这里既不把 doc 置成 signed，也不结束待办 —— 待办的结束仍归登记签署那一步。
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    from app.core.timebase import business_day_end, today_business
+    from app.modules.settings import service as settings_service
+    from app.modules.task.model import Task
+
+    task = (
+        await session.execute(
+            select(Task).where(
+                Task.source_business_type == 'contract',
+                Task.source_business_id == doc.id,
+                Task.source_key == f'contract:signed-upload:{doc.id}',
+                Task.status.in_(('pending', 'doing')),
+            ).limit(1)
+        )
+    ).scalars().first()
+    if task is None:
+        return
+
+    approver_label = '已通过' if new_status == 'approved' else '已被驳回'
+    if new_status == 'approved':
+        # 截止日按配置的天数往前推（默认 7 天），并且**必须走业务时区**：
+        # 直接 `datetime.combine(day, time(23,59), tzinfo=UTC)` 会把北京时间
+        # 当成 UTC，截止时刻早 8 小时还跨一天（`timebase.business_day_end` 的说明）。
+        days = int(
+            await settings_service.get_number(session, 'contract', 'countersign_days', 7)
+        )
+        task.due_at = business_day_end(today_business() + timedelta(days=days))
+        task.priority = 'high'
+    content = (
+        f'合同 {doc.doc_no} 的钉钉签署审批{approver_label}。'
+        + (
+            '请跟进客户盖章并登记回签文件，登记后这条待办会自动完成。'
+            if new_status == 'approved'
+            else '请到钉钉查看处理意见；要重新发起请回到合同台账。'
+        )
+    )
+    from app.modules.notification import service as notification_service
+
+    await notification_service.notify(
+        session,
+        user_id=task.owner_id,
+        type_='system',
+        title=f'合同 {doc.doc_no} 的钉钉审批{approver_label}',
+        content=content,
+        business_type='contract',
+        business_id=doc.id,
+    )
 
 
 async def first_image_attachment(
     session: AsyncSession, *, business_type: str, business_id: int
-) -> tuple[str, bytes] | None:
+) -> tuple[int, str, bytes] | None:
     """取某个业务对象挂的第一张图片附件，返回 (文件名, 内容)。
 
     钉钉模板里「产品参考图片」是**必填的图片控件**，所以发起前必须有一张图。
@@ -845,6 +1248,7 @@ async def first_image_attachment(
     """
     from app.modules.file.model import BusinessFile, FileRecord
     from app.modules.file.storage import absolute_path
+    from app.modules.file.router import preview_media_type
 
     rows = (
         await session.execute(
@@ -853,29 +1257,43 @@ async def first_image_attachment(
             .where(
                 BusinessFile.business_type == business_type,
                 BusinessFile.business_id == business_id,
+                or_(BusinessFile.category.is_(None), BusinessFile.category != "oa_attachment"),
             )
             .order_by(BusinessFile.id.asc())
         )
     ).scalars().all()
     for row in rows:
-        mime = (row.mime_type or "").lower()
-        if row.mime_type and not mime.startswith("image/"):
+        # 与公开图片出口使用同一判据，避免选中 SVG 等文件后生成不安全或不可读链接。
+        mime = preview_media_type(row)
+        if mime is None or not mime.startswith("image/"):
             continue
         path = absolute_path(row.object_key)
         if path.exists():
-            return row.file_name, path.read_bytes()
+            return row.id, row.file_name, path.read_bytes()
     return None
 
 
 def serialize(row: OaInstance) -> dict:
+    provider = getattr(row, "provider", "dingtalk")
+    auto_sync = app_settings.scheduler_enabled or app_settings.scheduler_oa_sync_enabled
+    sync_notice = None
+    if provider == "self_oa":
+        if not auto_sync:
+            sync_notice = '同序 OA 未开启自动同步，记录可能滞后，可点击「立即同步」。'
+    elif app_settings.dingtalk_push_off:
+        sync_notice = '历史审批记录仅供查看。'
+    elif not auto_sync:
+        sync_notice = '当前服务未开启审批自动同步，记录可能滞后，请联系管理员确认。'
     return {
         "id": row.id,
         "inquiry_id": row.inquiry_id,
         "inquiry_version": row.inquiry_version,
         "oa_type": row.oa_type,
+        "provider": provider,
         "instance_id": row.instance_id,
         "status": row.status,
         "status_label": OA_STATUS_LABEL.get(row.status, row.status),
+        "sync_notice": sync_notice,
         # 请求号 / 轮次 / 尝试次数：7.7 要求"保留请求编号、次数与每轮历史"。
         # 轮次看 submit_round（每轮一行，历史不删），同轮内试过几次看 attempt_count。
         "request_no": row.idempotency_key,
@@ -889,10 +1307,643 @@ def serialize(row: OaInstance) -> dict:
         "resolve_state_label": RESOLVE_STATE_LABEL.get(row.resolve_state, row.resolve_state),
         "resolved_at": row.resolved_at.isoformat() if row.resolved_at else None,
         "resolved_action": row.resolved_action,
-        "allowed_actions": allowed_actions(row.status, row.resolve_state),
+        "allowed_actions": [
+            action for action in allowed_actions(row.status, row.resolve_state)
+            if (provider == "self_oa" and action != "resolve_resend")
+            or (provider != "self_oa" and not app_settings.dingtalk_push_off)
+        ],
         "synced_at": row.synced_at.isoformat() if row.synced_at else None,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "last_attempt_at": (
             row.last_attempt_at.isoformat() if row.last_attempt_at else None
         ),
     }
+
+
+# ====================================================== 人员绑定（钉钉登录用）==
+#
+# 目的：把「钉钉成员」和「CRM 账号」对上，结果写进 `users.dingtalk_userid`。
+# 有了这一列，以后从钉钉扫码 / 工作台免登进来的人，系统才知道他是**谁**。
+#
+# 三条纪律（与 `wecom/service.py::sync_users` 是**同一套**，不是另写一份）：
+#
+# 1. **通讯录同步只绑定、不建账号。** 首次登录可为全新员工建业务员账号；
+#    同步本身不创建账号，已有未绑定账号仍交管理员明确绑定。
+# 2. **匹配顺序：已绑定 → 手机号 → 姓名。** 手机号在前，因为它唯一性强；
+#    姓名只做兜底，且**只有唯一命中才算**——重名时宁可留给人工判，也不猜。
+# 3. **已绑定的不覆盖。** 一个人已经绑了钉钉号，后续同步不因手机号变了就改绑：
+#    改绑等于把别人的登录身份换掉，那必须由管理员在界面上明确操作。
+#
+# ⚠️ 与企微那套的差别只有"数据从哪来"：企微是先落一张 `wecom_users` 映射表、
+# 人再慢慢归一；钉钉这里**不留中间表**——点一次按钮当场对完，对不上的直接列给
+# 管理员看。绑定的全部内容就是"一个人 ↔ 一个编号"，不需要中间态。
+
+#: 对不上的原因。**分开报**，不能笼统说一句"未匹配"——
+#: 「CRM 里没这个账号」和「重名判不了」要做的事完全不同（前者去建号，后者去核人）。
+BIND_REASON_LABEL: dict[str, str] = {
+    "no_account": "尚无 CRM 账号，全新员工首次钉钉登录会自动建为业务员",
+    "ambiguous_mobile": "手机号在系统里对到了多个账号",
+    "ambiguous_name": "姓名重复，无法判断是哪一位",
+}
+
+
+def _norm_mobile(value: Any) -> str:
+    """手机号比对口径：只留数字。
+
+    钉钉给的是 `13800000000`，人工在 CRM 里可能填成 `138 0000 0000`。
+    不归一化就会冒出"明明是同一个人却说对不上"。
+
+    **只去非数字字符，不剥区号**：`+86` 前缀在两边不一致时，宁可对不上留给人工，
+    也不能把 `8613800000000` 猜成同一个人——猜错就是把两个人绑串了，
+    而绑串的后果是"张三用李四的身份登录"。
+    """
+    return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+
+def _norm_name(value: Any) -> str:
+    return str(value or "").strip()
+
+
+async def fetch_directory(api: Any) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    """一次走完部门树，返回（去重后的成员, 部门编号 -> {name,parent_id}）。
+
+    为什么要自己走树：钉钉**没有**"全公司成员"这一个接口，只有"某部门的直属成员"，
+    而一个人可以同时挂在多个部门下 —— 不去重的话他会以多个身份出现，
+    匹配阶段自己和自己撞（第一次绑上了，第二次又把它判成"已占用"）。
+    """
+    members: dict[str, dict[str, Any]] = {}
+    departments: dict[str, dict[str, Any]] = {}
+    # deque 避免在大型部门树上反复 pop(0) 造成 O(n²) 扫描。
+    pending: deque[int] = deque([1])
+    seen: set[int] = set()
+    while pending:
+        dept_id = pending.popleft()
+        if dept_id in seen:
+            continue
+        seen.add(dept_id)
+
+        for sub in await api.list_sub_departments(dept_id):
+            try:
+                sub_id = int(sub.get("dept_id"))
+            except (TypeError, ValueError):
+                # 少 dept_id 的节点没法继续往下走，跳过；
+                # 不为一个坏节点中断整棵树（否则全公司的人都拉不到）
+                continue
+            departments[str(sub_id)] = {
+                "id": str(sub_id),
+                "name": str(sub.get("name") or "").strip(),
+                "parent_id": str(sub.get("parent_id") or ""),
+            }
+            if sub_id not in seen:
+                pending.append(sub_id)
+
+        cursor = 0
+        while True:
+            page = await api.list_department_users(dept_id, cursor=cursor)
+            for item in page.get("list") or []:
+                uid = str(item.get("userid") or "")
+                if uid and uid not in members:
+                    members[uid] = item
+            if not page.get("has_more"):
+                break
+            next_cursor = page.get("next_cursor")
+            # 反复给同一个 cursor 会死循环（接口异常时的兜底），宁可少拉一页
+            if next_cursor in (None, cursor):
+                break
+            # 外部接口返回值不可信；非法 cursor 不应让整次通讯录同步因
+            # ValueError 直接失败，也不能继续请求一个无法确认的分页位置。
+            try:
+                next_cursor = int(next_cursor)
+            except (TypeError, ValueError):
+                break
+            if next_cursor == cursor:
+                break
+            cursor = next_cursor
+    return list(members.values()), departments
+
+
+async def fetch_all_members(api: Any) -> list[dict[str, Any]]:
+    members, _departments = await fetch_directory(api)
+    return members
+
+
+def _member_department(member: dict[str, Any], departments: dict[str, dict[str, Any]]) -> tuple[str, str]:
+    ids = member.get("dept_id_list") or []
+    for dept_id in ids:
+        row = departments.get(str(dept_id))
+        if row and row["name"]:
+            return str(dept_id), row["name"]
+    return "", ""
+
+
+async def ensure_dingtalk_department(
+    session: AsyncSession, departments: dict[str, dict[str, Any]], dept_id: str,
+) -> tuple[Department, bool]:
+    """按同序部门编号取/建 CRM 部门，**只处理真实用到的那一个**。
+
+    不导入整套组织树（主人 2026-11-23：不是所有部门都会用 CRM）。同名部门
+    优先复用已经存在的顶级部门；同名且无法确定时才新建，避免把两个「财务部」
+    并错。返回（部门行, 是否本次新建）。
+    """
+    if not dept_id:
+        raise AppError(ErrorCode.PARAM_ERROR, "同序身份缺少部门", 422)
+    dt = departments.get(str(dept_id)) or {}
+    name = (dt.get("name") or "").strip()
+    if not name:
+        raise AppError(ErrorCode.PARAM_ERROR, "同序身份缺少部门", 422)
+    existing = (await session.execute(
+        select(Department).where(Department.dingtalk_department_id == str(dept_id))
+    )).scalars().first()
+    if existing is not None:
+        return existing, False
+
+    same_name = list((await session.execute(
+        select(Department).where(
+            Department.name == name,
+            Department.status == "active",
+            # 已经映射到**另一个**同序部门的同名部门不能拿来复用，
+            # 否则两个「财务部」会互相抢同一个 dingtalk_department_id。
+            or_(Department.dingtalk_department_id.is_(None),
+                Department.dingtalk_department_id == str(dept_id)),
+        )
+    )).scalars().all())
+    if same_name:
+        top = [row for row in same_name if row.parent_id is None]
+        chosen = top[0] if len(top) == 1 else (same_name[0] if len(same_name) == 1 else None)
+        if chosen is not None:
+            chosen.dingtalk_department_id = str(dept_id)
+            await session.flush()
+            return chosen, False
+
+    # 父部门只有在 CRM 里已经有同序编号映射时才挂上；否则建成顶级，
+    # 避免为了一个用户把整条上级链都导入。
+    parent_dt = dt.get("parent_id") or ""
+    parent = None
+    if parent_dt:
+        parent = (await session.execute(
+            select(Department).where(Department.dingtalk_department_id == parent_dt)
+        )).scalars().first()
+    row = Department(name=name, parent_id=parent.id if parent else None,
+                     dingtalk_department_id=str(dept_id), status="active")
+    session.add(row)
+    await session.flush()
+    return row, True
+
+
+async def ensure_oa_department(
+    session: AsyncSession, departments: dict[str, dict[str, Any]], dept_id: str,
+) -> tuple[Department, bool]:
+    """按同序部门 UUID 取/建 CRM 部门；规则与钉钉目录一致，编号分开存。"""
+    if not dept_id:
+        raise AppError(ErrorCode.PARAM_ERROR, "同序身份缺少部门", 422)
+    dt = departments.get(str(dept_id)) or {}
+    name = (dt.get("name") or "").strip()
+    if not name:
+        raise AppError(ErrorCode.PARAM_ERROR, "同序身份缺少部门", 422)
+    existing = (await session.execute(
+        select(Department).where(Department.oa_department_id == str(dept_id))
+    )).scalars().first()
+    if existing is not None:
+        return existing, False
+    same_name = list((await session.execute(
+        select(Department).where(
+            Department.name == name,
+            Department.status == "active",
+            or_(Department.oa_department_id.is_(None),
+                Department.oa_department_id == str(dept_id)),
+        )
+    )).scalars().all())
+    if same_name:
+        top = [row for row in same_name if row.parent_id is None]
+        chosen = top[0] if len(top) == 1 else (same_name[0] if len(same_name) == 1 else None)
+        if chosen is not None:
+            chosen.oa_department_id = str(dept_id)
+            await session.flush()
+            return chosen, False
+    parent_dt = str(dt.get("parent_id") or "")
+    parent = None
+    if parent_dt:
+        parent = (await session.execute(
+            select(Department).where(Department.oa_department_id == parent_dt)
+        )).scalars().first()
+    row = Department(name=name, parent_id=parent.id if parent else None,
+                     oa_department_id=str(dept_id), status="active")
+    session.add(row)
+    await session.flush()
+    return row, True
+
+
+async def sync_users(session: AsyncSession) -> dict:
+    """把 CRM 账号与钉钉成员对上，写 `users.dingtalk_userid`。**不建账号。**
+
+    判据顺序见本段开头三条纪律。返回里把"对不上的"和"还没绑的"分开列出来：
+    前者要管理员去处理，后者只是提示"这个人还进不来"。
+    """
+    if app_settings.dingtalk_login_off:
+        return {
+            "disabled": True,
+            "message": DINGTALK_LOGIN_DISABLED_MESSAGE,
+            "total": 0,
+            "bound": 0,
+            "already_bound": 0,
+            "unmatched": [],
+            "unbound_crm": [],
+        }
+
+    api = get_client()
+    try:
+        members, directory_departments = await fetch_directory(api)
+    except DingTalkDisabled as exc:
+        # 走到这里说明闸是在**取通讯录的过程中**才关掉的（比如刚被人关掉）。
+        # 用异常自己那句话：它认得清是哪把闸，别硬套审批总闸的文案。
+        return {
+            "disabled": True,
+            "message": str(exc),
+            "total": 0,
+            "bound": 0,
+            "already_bound": 0,
+            "unmatched": [],
+            "unbound_crm": [],
+        }
+    except DingTalkNotConfigured as exc:
+        # 缺凭据是"服务端没配好"，不是对方的错 → 503，并把缺哪一项说清楚
+        raise AppError(ErrorCode.EXTERNAL_ERROR, str(exc), 503) from exc
+    except DingTalkError as exc:
+        raise AppError(
+            ErrorCode.EXTERNAL_ERROR, f"读取钉钉通讯录失败：{exc}", 502
+        ) from exc
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError) as exc:
+        # 通讯录分页是外部响应边界；网络中断、非 JSON 或结构异常都应翻译成
+        # 可重试的外部错误，不能让设置页直接收到 500。
+        raise AppError(
+            ErrorCode.EXTERNAL_ERROR,
+            f"读取钉钉通讯录失败（{type(exc).__name__}）：{exc}",
+            502,
+        ) from exc
+
+    await _lock_login_binding(session)
+    crm_users = list((await session.execute(select(User))).scalars().all())
+
+    bound: dict[str, User] = {}
+    free_by_mobile: dict[str, list[User]] = {}
+    free_by_name: dict[str, list[User]] = {}
+    for row in crm_users:
+        if row.dingtalk_userid:
+            bound[str(row.dingtalk_userid)] = row
+            continue
+        if row.status == "archived":
+            continue
+        mobile = _norm_mobile(row.mobile)
+        if mobile:
+            free_by_mobile.setdefault(mobile, []).append(row)
+        name = _norm_name(row.name)
+        if name:
+            free_by_name.setdefault(name, []).append(row)
+
+    newly_bound = 0
+    already_bound = 0
+    unmatched: list[dict[str, Any]] = []
+
+    def _bind(target: User, dingtalk_userid: str) -> None:
+        nonlocal newly_bound
+        target.dingtalk_userid = dingtalk_userid
+        bound[dingtalk_userid] = target
+        # 立刻从"待匹配"里摘掉：同一次同步内，一个人只能被绑一次，
+        # 否则后面同一个姓名的成员会把它当成候选再次命中。
+        mobile = _norm_mobile(target.mobile)
+        if mobile and target in free_by_mobile.get(mobile, []):
+            free_by_mobile[mobile].remove(target)
+        name = _norm_name(target.name)
+        if name and target in free_by_name.get(name, []):
+            free_by_name[name].remove(target)
+        newly_bound += 1
+
+    for member in members:
+        dingtalk_userid = str(member.get("userid") or "")
+        if not dingtalk_userid:
+            continue
+        if dingtalk_userid in bound:
+            # 这个钉钉号已经有主了：**保持不动**（含本次刚绑的，见纪律 1）
+            already_bound += 1
+            continue
+
+        name = _norm_name(member.get("name"))
+        mobile = _norm_mobile(member.get("mobile"))
+        display_mobile = str(member.get("mobile") or "")
+        department = _member_department(member, directory_departments)[1]
+
+        candidates = free_by_mobile.get(mobile, []) if mobile else []
+        if len(candidates) == 1:
+            _bind(candidates[0], dingtalk_userid)
+            continue
+        if len(candidates) > 1:
+            unmatched.append(
+                {
+                    "name": name,
+                    "mobile": display_mobile,
+                    "dingtalk_userid": dingtalk_userid,
+                    "department": department,
+                    "reason": "ambiguous_mobile",
+                    "reason_label": BIND_REASON_LABEL["ambiguous_mobile"],
+                }
+            )
+            continue
+
+        candidates = free_by_name.get(name, []) if name else []
+        if len(candidates) == 1:
+            _bind(candidates[0], dingtalk_userid)
+            continue
+        if len(candidates) > 1:
+            unmatched.append(
+                {
+                    "name": name,
+                    "mobile": display_mobile,
+                    "dingtalk_userid": dingtalk_userid,
+                    "department": department,
+                    "reason": "ambiguous_name",
+                    "reason_label": BIND_REASON_LABEL["ambiguous_name"],
+                }
+            )
+            continue
+
+        unmatched.append(
+            {
+                "name": name,
+                "mobile": display_mobile,
+                "dingtalk_userid": dingtalk_userid,
+                "department": department,
+                "reason": "no_account",
+                "reason_label": BIND_REASON_LABEL["no_account"],
+            }
+        )
+
+    await session.flush()
+
+    # 还没绑上钉钉的 CRM 账号：不是错误，但管理员要知道"还有谁进不来"。
+    # 只列**在用**的账号——停用的人绑不绑都不影响登录。
+    unbound_crm = [
+        {"id": row.id, "name": row.name, "username": row.username}
+        for row in crm_users
+        if not row.dingtalk_userid and row.status == "active"
+    ]
+
+    return {
+        "disabled": False,
+        "total": len(members),
+        "bound": newly_bound,
+        "already_bound": already_bound,
+        "unmatched": unmatched,
+        "unbound_crm": unbound_crm,
+    }
+
+
+async def align_departments(session: AsyncSession) -> dict:
+    """按同序目录把**已有账号**的部门也改成同序部门（不只是空白的）。
+
+    管理员显式操作：只动 `users.department_id`，不改角色/数据范围逻辑；
+    返回逐人变更，供界面核对。
+    """
+    from app.modules.oa import client as oa_client
+
+    users = list((await session.execute(
+        select(User).where(User.status == "active")
+    )).scalars().all())
+    department_names = {
+        row.id: row.name for row in (await session.execute(select(Department))).scalars().all()
+    }
+    changes: list[dict[str, Any]] = []
+    matched = 0
+
+    def _apply(row: User, dept: Department) -> None:
+        nonlocal matched
+        matched += 1
+        if row.department_id == dept.id:
+            return
+        changes.append({
+            "id": row.id, "name": row.name, "username": row.username,
+            "current_department": department_names.get(row.department_id, ""),
+            "dingtalk_department": dept.name,
+        })
+        row.department_id = dept.id
+
+    try:
+        data = await oa_client.list_directory()
+    except oa_client.OaError as exc:
+        raise AppError(ErrorCode.EXTERNAL_ERROR, "无法读取同序人员目录，请检查同序 OA 连接后重试", 502) from exc
+    departments = {str(row["id"]): row for row in (data.get("departments") or [])}
+    by_identity = {
+        str(row["dingtalk_user_id"]): row
+        for row in (data.get("users") or []) if row.get("dingtalk_user_id")
+    }
+    by_oa_id = {str(row["id"]): row for row in (data.get("users") or []) if row.get("id")}
+    for row in users:
+        oa_user_id = getattr(row, "oa_user_id", None)
+        target = by_oa_id.get(oa_user_id) if oa_user_id else by_identity.get(str(row.dingtalk_userid or ""))
+        if target is None:
+            continue
+        dept, _created = await ensure_oa_department(
+            session, departments, str(target.get("department_id") or ""))
+        _apply(row, dept)
+    await session.flush()
+    return {"source": "oa", "matched": matched, "changes": changes}
+
+
+# ---- 扫码登录 -------------------------------------------------------------
+#
+# 两样**短期信物**，寿命都是几十秒：
+#
+# - `state`：发起扫码时生成，回调时校验并**消费**。防的是"别人换个 code 把回调
+#   塞给你"——只有我们自己发出去过的 state 才认。
+# - `ticket`：回调处理完之后，把**已经签好的令牌**装进去，交给前端那一步用。
+#   走 URL 的绝不能是令牌本身（会进浏览器历史、会进服务器访问日志），
+#   所以用一层一次性信物过渡，60 秒内不来换就作废。
+#
+# 为什么放进程内、不加表：本项目部署口径是**单实例**（与 `core/rate_limit.py`
+# 同一理由），而这两样只活几十秒。为它们建表 + 加迁移，换来的不过是"重启后
+# 正在扫码的人不用重来"，不划算。将来真上多实例，整体换 Redis 即可，
+# 下面四个函数的签名不用变。
+#
+# ⚠️ 与会话有效性（`auth/session.py::load_active_session`）**不是一回事**：
+# 那个决定"一把令牌还能不能用"，必须只存库、绝不能有内存缓存；
+# 这里的 state/ticket 只是"两步之间的一次性信物"，用完即弃。
+
+LOGIN_STATE_TTL_SECONDS = 300
+LOGIN_TICKET_TTL_SECONDS = 60
+
+_short_lock = threading.Lock()
+#: state -> 过期时刻（monotonic 秒）
+_login_states: dict[str, float] = {}
+#: ticket -> (已签发的令牌, 过期时刻)
+_login_tickets: dict[str, tuple[str, float]] = {}
+
+
+def _sweep_states(now: float) -> None:
+    for k in [k for k, exp in _login_states.items() if exp <= now]:
+        _login_states.pop(k, None)
+
+
+def _sweep_tickets(now: float) -> None:
+    for k in [k for k, (_, exp) in _login_tickets.items() if exp <= now]:
+        _login_tickets.pop(k, None)
+
+
+def issue_login_state() -> str:
+    """发起一次扫码登录：生成并记住一个一次性 state。"""
+    now = time.monotonic()
+    state = secrets.token_urlsafe(24)
+    with _short_lock:
+        _sweep_states(now)
+        _login_states[state] = now + LOGIN_STATE_TTL_SECONDS
+    return state
+
+
+def consume_login_state(state: str | None) -> bool:
+    """校验并**消费** state：用过一次即作废（防重放）。"""
+    if not state:
+        return False
+    now = time.monotonic()
+    with _short_lock:
+        expires = _login_states.pop(state, None)
+        _sweep_states(now)
+    return expires is not None and expires > now
+
+
+def issue_login_ticket(token: str) -> str:
+    """把一张**已经签好的令牌**装进一次性 ticket，交给前端换走。"""
+    now = time.monotonic()
+    ticket = secrets.token_urlsafe(32)
+    with _short_lock:
+        _sweep_tickets(now)
+        _login_tickets[ticket] = (token, now + LOGIN_TICKET_TTL_SECONDS)
+    return ticket
+
+
+def consume_login_ticket(ticket: str | None) -> str | None:
+    """取走 ticket 里的令牌；用过 / 过期 / 不认识一律返回 None。"""
+    if not ticket:
+        return None
+    now = time.monotonic()
+    with _short_lock:
+        item = _login_tickets.pop(ticket, None)
+        _sweep_tickets(now)
+    if item is None:
+        return None
+    token, expires = item
+    return token if expires > now else None
+
+
+#: 扫码登录被拒的原因 → 给人看的说明。**拒绝理由要分开报**：
+#: "钉钉那边出错了"和"你这个人进不来"是两件事，混成一句"登录失败"让人无从下手。
+LOGIN_REASON_LABEL: dict[str, str] = {
+    "not_in_contact": "这个钉钉账号不在企业通讯录里，请联系管理员把你加进部门",
+    "not_bound": "这个钉钉账号还没和系统账号绑定，请管理员先在「系统设置」里点一次「同步钉钉人员」",
+    "disabled": "这个账号已停用，请联系管理员",
+    "ambiguous": "这个钉钉账号对上了多个系统账号，请联系管理员处理",
+    "no_unionid": "钉钉没有返回这个人的身份标识，请重试或联系管理员",
+    "role_unavailable": "默认业务员角色未启用或数据范围不是本人，请管理员检查角色设置",
+    "invalid_profile": "企业通讯录身份资料不完整，请管理员核对姓名和成员编号",
+}
+
+
+async def resolve_login_user(
+    session: AsyncSession, *, code: str
+) -> tuple[User | None, str]:
+    """用一次性授权码换出 CRM 用户，返回 `(user, reason)`。
+
+    `reason == "ok"` 时 user 一定有值；否则 user 为 None，reason 是
+    `LOGIN_REASON_LABEL` 里的键。外部调用本身失败会直接抛 `DingTalkError`，
+    由接口层翻成"钉钉那边出错了"——与"这个人进不来"分开报。
+
+    链路：code → 用户级令牌 → unionId → userid → `users.dingtalk_userid`。
+    **身份只由服务端换**，调用方给什么都不信。
+    """
+    api = get_client()
+    user_token = await api.exchange_user_token(code)
+    info = await api.get_login_userinfo(user_token)
+    unionid = str(info.get("unionId") or "").strip()
+    if not unionid:
+        return None, "no_unionid"
+
+    userid = await api.userid_by_unionid(unionid)
+    if not userid:
+        return None, "not_in_contact"
+
+    # 一个钉钉号只该对上一个人；真出现多条，宁可明确拒绝也不"取第一个"
+    # （取第一个 = 把别人的账号登进来，与 `sync_users` 的"重名一律不猜"同一条纪律）。
+    rows = (
+        (await session.execute(select(User).where(User.dingtalk_userid == userid).limit(2)))
+        .scalars()
+        .all()
+    )
+    if not rows:
+        # 已有账号由管理员绑定，不根据扫码昵称自动认领。企业资料只用来
+        # 排除已有账号/冲突，以及给真正的新员工建立最低默认角色。
+        member = await api.get_login_contact_user(userid)
+        if str(member.get("userid") or "").strip() != str(userid):
+            return None, "invalid_profile"
+        if member.get("unionid") and str(member["unionid"]) != unionid:
+            return None, "invalid_profile"
+        return await _signup_login_user(session, userid=str(userid), member=member)
+    if len(rows) > 1:
+        return None, "ambiguous"
+    user = rows[0]
+    if user.status != "active":
+        return None, "disabled"
+    return user, "ok"
+
+
+async def _lock_login_binding(session: AsyncSession) -> None:
+    """首次建号与管理员通讯录绑定互斥，避免同一个钉钉号并发造两个人。"""
+    try:
+        dialect = session.get_bind().dialect.name
+    except AttributeError:  # 内存数据库测试适配器
+        dialect = ""
+    if dialect == "postgresql":
+        await session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended('crm:dingtalk-binding', 0))"))
+
+
+async def _signup_login_user(session: AsyncSession, *, userid: str, member: dict) -> tuple[User | None, str]:
+    from app.core.audit import write_audit
+    from app.core.security import hash_password
+
+    name = _norm_name(member.get("name"))
+    mobile = _norm_mobile(member.get("mobile"))
+    if not name or len(name) > 64 or len(userid) > 128 or (mobile and len(mobile) > 32):
+        return None, "invalid_profile"
+    await _lock_login_binding(session)
+    # 网络请求期间可能已被其他扫码/同步绑定。拿锁后重新读取，不靠旧快照。
+    users = list((await session.execute(select(User).execution_options(populate_existing=True))).scalars())
+    bound = [u for u in users if str(u.dingtalk_userid or "") == userid]
+    if len(bound) > 1:
+        return None, "ambiguous"
+    if bound:
+        return (bound[0], "ok") if bound[0].status == "active" else (None, "disabled")
+    # 同名未绑定账号、停用账号和手机号冲突交管理员处理，不自动认领角色。
+    # 已绑定且启用的同名同事是另一个身份，允许建号，由登录名编号区分。
+    if any((_norm_name(u.name) == name and (not u.dingtalk_userid or u.status != "active"))
+           or (mobile and _norm_mobile(u.mobile) == mobile) for u in users):
+        return None, "not_bound"
+    role = (await session.execute(select(Role).where(Role.code == "salesperson")
+                .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
+    if role is None or role.status != "active" or role.data_scope != "self":
+        return None, "role_unavailable"
+    from app.modules.user.usernames import allocate_username
+    username = await allocate_username(session, name)
+    if any(u.username == username for u in users):
+        return None, "not_bound"
+    # 用户明确指定：姓名全拼登录名、初始密码 123456，首次进入告知本人。
+    user = User(username=username, name=name, mobile=mobile or None,
+                password_hash=hash_password("123456"), initial_password_pending=True, status="active",
+                dingtalk_userid=userid, department_id=None)
+    try:
+        async with session.begin_nested():
+            session.add(user)
+            await session.flush()
+            await session.execute(user_roles.insert().values(user_id=user.id, role_id=role.id))
+    except IntegrityError:
+        # 管理员也能建同名登录名，唯一冲突应拒绝本次建号而非冒成 500。
+        return None, "not_bound"
+    await write_audit(session, operator_id=user.id, action="create", business_type="user", business_id=user.id,
+                      after={"username": user.username, "name": user.name, "roles": [role.code],
+                             "data_scope": "self", "source": "钉钉首次登录自动建号"})
+    return user, "ok"

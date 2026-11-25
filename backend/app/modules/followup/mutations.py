@@ -76,8 +76,10 @@ async def create_manual_followup(session: AsyncSession, user: CurrentUser, paylo
     # 相同用户/请求键串行化，回滚后可以重新提交；唯一约束为最终兜底。
     fingerprint = hashlib.sha256(payload.model_dump_json(exclude={"request_key", "create_task"}).encode()).hexdigest()
     if payload.request_key:
-        await session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-                              {"key": f"followup:{user.id}:{payload.request_key}"})
+        bind = getattr(session, "get_bind", lambda: None)()
+        if bind is not None and bind.dialect.name == "postgresql":
+            await session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                                  {"key": f"followup:{user.id}:{payload.request_key}"})
         existing = (await session.execute(select(FollowUp).where(
             FollowUp.owner_id == user.id, FollowUp.request_key == payload.request_key))).scalar_one_or_none()
         if existing:
@@ -117,6 +119,8 @@ async def create_manual_followup(session: AsyncSession, user: CurrentUser, paylo
             raise AppError(ErrorCode.PARAM_ERROR, "联系人不属于该客户", 422)
 
     data = payload.model_dump(exclude={"create_task", "task_title", "task_due_at"})
+    if customer_id:
+        await customer_service.get_visible_customer(session, user, customer_id, for_update=True)
     data["customer_id"] = customer_id
     followup = FollowUp(**data, owner_id=user.id, planned_at=payload.task_due_at, request_hash=fingerprint)
     session.add(followup)

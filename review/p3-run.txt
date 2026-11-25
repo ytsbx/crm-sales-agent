@@ -1,0 +1,1371 @@
+FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF [ 67%]
+FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF                                      [100%]
+=================================== FAILURES ===================================
+___________________ test_b01_04_probe_log_should_be_removed ____________________
+
+    def test_b01_04_probe_log_should_be_removed():
+        src = inspect.getsource(quote_service)
+>       assert 'getLogger("probe")' not in src, "生产代码仍向 probe 打底价派生值"
+E       AssertionError: 生产代码仍向 probe 打底价派生值
+E       assert 'getLogger("probe")' not in '"""报价业务逻辑：编...t)).all()]\n'
+E         
+E         'getLogger("probe")' is contained here:
+E           g
+E               _lg.getLogger("probe").warning("RECALC item=%s sku=%s prev_floor=%s", item.id, item.sku_id, item.minimum_price_snapshot)
+E         ?         ++++++++++++++++++
+E               price = item.quoted_price or ZERO
+E               basis_cost = item_unit_product_cost(...
+E         
+E         ...Full output truncated (1864 lines hidden), use '-vv' to show
+
+../review/repro/test_b01_b05_p3.py:23: AssertionError
+__________ test_b01_05_approval_reason_should_say_divide_not_multiply __________
+
+    def test_b01_05_approval_reason_should_say_divide_not_multiply():
+        src = inspect.getsource(quote_service)
+>       assert "×(1+" not in src, "审批理由把成本÷(1-r)写成成本×(1+r)，误导审批人"
+E       AssertionError: 审批理由把成本÷(1-r)写成成本×(1+r)，误导审批人
+E       assert '×(1+' not in '"""报价业务逻辑：编...t)).all()]\n'
+E         
+E         '×(1+' is contained here:
+E           0.00（成本 ¥…×(1+…))」—— 不含上面任一词，
+E         ?           ++++
+E           #     于是**底价与成本原样下发**给只有 `quote:view` 的销售；
+E           #     实测：`定制项报价 ¥100.00（折人民币）低于最低保护价 ¥120.00（含定制项保护价）`
+E           #     在 hide=True 时**没有**被脱敏。...
+E         
+E         ...Full output truncated (3154 lines hidden), use '-vv' to show
+
+../review/repro/test_b01_b05_p3.py:28: AssertionError
+_____________ test_b01_06_margin_delta_should_not_use_float_round ______________
+
+    def test_b01_06_margin_delta_should_not_use_float_round():
+        src = inspect.getsource(quote_service)
+>       assert 'round(current["margin"] - previous["margin"], 6)' not in src, (
+            "版本对比毛利率差额用 float round，和 exact 口径不一致"
+        )
+E       AssertionError: 版本对比毛利率差额用 float round，和 exact 口径不一致
+E       assert 'round(curre...margin"], 6)' not in '"""报价业务逻辑：编...t)).all()]\n'
+E         
+E         'round(current["mar...vious["margin"], 6)' is contained here:
+E           n_delta": round(current["margin"] - previous["margin"], 6),
+E                           "changes": changes,
+E                       }
+E                   )
+E           ...
+E         
+E         ...Full output truncated (236 lines hidden), use '-vv' to show
+
+../review/repro/test_b01_b05_p3.py:33: AssertionError
+__________ test_b01_09_create_version_should_verify_source_visibility __________
+
+    def test_b01_09_create_version_should_verify_source_visibility():
+        src = inspect.getsource(quote_service.create_version)
+>       assert "ensure_draft_access" in src or "private_draft" in src, (
+            "service 内不复核源版本可见性，未来新调用方可复制他人私密草稿"
+        )
+E       AssertionError: service 内不复核源版本可见性，未来新调用方可复制他人私密草稿
+E       assert ('ensure_draft_access' in 'async def create_version(\n    session: AsyncSession, *, quote: Quote, user, source_version_id: int | None = None\n) ...aft"\n    await close_superseded_approvals(session, quote=quote, new_version=version, user=user)\n    return version\n' or 'private_draft' in 'async def create_version(\n    session: AsyncSession, *, quote: Quote, user, source_version_id: int | None = None\n) ...aft"\n    await close_superseded_approvals(session, quote=quote, new_version=version, user=user)\n    return version\n')
+
+../review/repro/test_b01_b05_p3.py:40: AssertionError
+_____________ test_b01_11_quote_audit_should_not_write_float_money _____________
+
+    def test_b01_11_quote_audit_should_not_write_float_money():
+        src = inspect.getsource(quote_router.update_item)
+>       assert "float(item.quoted_price)" not in src, "改价审计写 float，复算会差 1 分"
+E       AssertionError: 改价审计写 float，复算会差 1 分
+E       assert 'float(item.quoted_price)' not in '@router.pat...age\n    )\n'
+E         
+E         'float(item.quoted_price)' is contained here:
+E           d_price = float(item.quoted_price)
+E               manual_price_changed = "quoted_price" in data and price != item.quoted_price
+E               logistics = data.get("logistics_cost")
+E               if logistics is not None:
+E                   item.logistics_cost_snapshot = logistics...
+E         
+E         ...Full output truncated (102 lines hidden), use '-vv' to show
+
+../review/repro/test_b01_b05_p3.py:47: AssertionError
+_______ test_b02_08_refund_and_freight_quantize_should_specify_rounding ________
+
+    def test_b02_08_refund_and_freight_quantize_should_specify_rounding():
+        src = inspect.getsource(pricing_service)
+>       assert 'quantize(Decimal("0.0001"))' not in src, "退税/运费单价量化仍用默认 HALF_EVEN"
+E       AssertionError: 退税/运费单价量化仍用默认 HALF_EVEN
+E       assert 'quantize(De...l("0.0001"))' not in '"""核价引擎。\n\..._rule",\n]\n'
+E         
+E         'quantize(Decimal("0.0001"))' is contained here:
+E           quantity).quantize(Decimal("0.0001"))
+E               return unit, "；".join(notes)
+E           
+E           
+E           async def calculate_price(...
+E         
+E         ...Full output truncated (562 lines hidden), use '-vv' to show
+
+../review/repro/test_b01_b05_p3.py:55: AssertionError
+________ test_b02_09_historical_version_should_not_fill_current_fields _________
+
+    def test_b02_09_historical_version_should_not_fill_current_fields():
+        src = inspect.getsource(quote_service.serialize_quote)
+>       assert '"current_version_no": version.version_no' not in src, (
+            "查看历史版本时 current_version_no/amount 填的是被查看版本"
+        )
+E       AssertionError: 查看历史版本时 current_version_no/amount 填的是被查看版本
+E       assert '"current_ve...n.version_no' not in 'def seriali...at,\n    }\n'
+E         
+E         '"current_version_no": version.version_no' is contained here:
+E           ,
+E                   "current_version_no": version.version_no if version else None,
+E                   "current_version_amount": _f(version.total_amount) if version else None,
+E                   "current_version_amount_exact": str(version.total_amount) if version and version.total_amount is not None else None,
+E                   # 币种跟着金额一起给（第九批 §9.9）：前端不能假设是人民币。...
+E         
+E         ...Full output truncated (8 lines hidden), use '-vv' to show
+
+../review/repro/test_b01_b05_p3.py:60: AssertionError
+_______________ test_b02_10_send_email_log_should_be_idempotent ________________
+
+    def test_b02_10_send_email_log_should_be_idempotent():
+        src = inspect.getsource(quote_router.send_email)
+>       assert "request_key" in src, "邮件发送记录无请求键，重复点击会多登记"
+E       AssertionError: 邮件发送记录无请求键，重复点击会多登记
+E       assert 'request_key' in '@router.post("/quote-versions/{version_id}/send-email")\nasync def send_email(\n    version_id: int,\n    payload: Se..."delivered": False,\n            "reason": "尚未配置邮件服务，已登记发送记录",\n        },\n        "已登记发送记录（邮件服务未配置，未实际投递）",\n    )\n'
+
+../review/repro/test_b01_b05_p3.py:67: AssertionError
+___________________ test_b02_11_router_all_should_be_removed ___________________
+
+    def test_b02_11_router_all_should_be_removed():
+        src = inspect.getsource(quote_router)
+>       assert '__all__ = ["date", "QuoteItem"]' not in src, "路由文件尾部残留错误 __all__"
+E       AssertionError: 路由文件尾部残留错误 __all__
+E       assert '__all__ = [..."QuoteItem"]' not in '"""报价中心接口（对...）",\n    )\n'
+E         
+E         '__all__ = ["date", "QuoteItem"]' is contained here:
+E           ,
+E               )
+E           
+E           
+E           __all__ = ["date", "QuoteItem"]...
+E         
+E         ...Full output truncated (395 lines hidden), use '-vv' to show
+
+../review/repro/test_b01_b05_p3.py:72: AssertionError
+_______ test_b02_13_product_cost_should_have_same_day_unique_constraint ________
+
+    def test_b02_13_product_cost_should_have_same_day_unique_constraint():
+        constraints = [c for c in pricing_model.ProductCost.__table__.constraints if type(c).__name__ == "UniqueConstraint"]
+        names = {tuple(col.name for col in c.columns) for c in constraints}
+>       assert ("sku_id", "effective_from") in names, "同日成本只能等核价时 409"
+E       AssertionError: 同日成本只能等核价时 409
+E       assert ('sku_id', 'effective_from') in set()
+
+../review/repro/test_b01_b05_p3.py:78: AssertionError
+________ test_b02_16_session_dialect_should_not_swallow_all_exceptions _________
+
+    def test_b02_16_session_dialect_should_not_swallow_all_exceptions():
+        src = inspect.getsource(pricing_service._session_dialect)
+>       assert "except Exception" not in src, "get_bind 异常被吞后返回空串，会静默跳过 advisory 锁"
+E       AssertionError: get_bind 异常被吞后返回空串，会静默跳过 advisory 锁
+E       assert 'except Exception' not in 'def _sessio... return ""\n'
+E         
+E         'except Exception' is contained here:
+E           .name
+E               except Exception:  # noqa: BLE001
+E                   return ""
+
+../review/repro/test_b01_b05_p3.py:83: AssertionError
+______ test_b02_17_create_quote_release_failure_should_not_mask_original _______
+
+    def test_b02_17_create_quote_release_failure_should_not_mask_original():
+        src = inspect.getsource(quote_router.create_quote)
+        block = src[src.index("except Exception"):]
+>       assert "await idempotency.release" not in block, "release 自身失败会替换原始异常"
+E       AssertionError: release 自身失败会替换原始异常
+E       assert 'await idempotency.release' not in 'except Exce...能产生重复报价）")\n'
+E         
+E         'await idempotency.release' is contained here:
+E                     await idempotency.release(session, reservation)
+E                   raise
+E           
+E               message = "报价单已生成"
+E               if unconfirmed_master:...
+E         
+E         ...Full output truncated (8 lines hidden), use '-vv' to show
+
+../review/repro/test_b01_b05_p3.py:89: AssertionError
+___________ test_b03_08_draft_confirm_should_check_source_version_id ___________
+
+    def test_b03_08_draft_confirm_should_check_source_version_id():
+>       src = inspect.getsource(drafts.confirm_draft)
+                                ^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'app.modules.order.drafts' has no attribute 'confirm_draft'
+
+../review/repro/test_b01_b05_p3.py:96: AttributeError
+____________ test_b03_09_logistics_quantize_should_specify_rounding ____________
+
+    def test_b03_09_logistics_quantize_should_specify_rounding():
+        src = inspect.getsource(logistics)
+>       assert 'quantize(Decimal("0.01"))' not in src or "rounding" in src, (
+            "物流金额量化仍用默认 HALF_EVEN"
+        )
+E       AssertionError: 物流金额量化仍用默认 HALF_EVEN
+E       assert ('quantize(Decimal("0.01"))' not in '"""物流试算（PRD...ratio",\n]\n'
+E         
+E         'quantize(Decimal("0.01"))' is contained here:
+E           e_per_kg).quantize(Decimal("0.01"))
+E               by_volume = ZERO
+E               if rate.unit_price_per_volume:
+E                   by_volume = (volume * rate.unit_price_per_volume).quantize(Decimal("0.01"))
+E           ...
+E         
+E         ...Full output truncated (278 lines hidden), use '-vv' to show or 'rounding' in '"""物流试算（PRD §14、02-ER §10）。\n\n内贸口径：起运地 + 目的地 + 运输方式 → 匹配运费费率 → 算计费重 → 出费用与时效。\n\n为什么不能只按重量算：抛货（体积大、重量轻）按重量报价会严重低估成本。...    "save_quote",\n    "serialize_quote",\n    "serialize_rate",\n    "sku_unit_volume",\n    "volumetric_ratio",\n]\n')
+
+../review/repro/test_b01_b05_p3.py:104: AssertionError
+______________ test_b03_10_exchange_rate_should_require_cny_base _______________
+
+    def test_b03_10_exchange_rate_should_require_cny_base():
+        src = inspect.getsource(pricing_router.create_exchange_rate)
+>       assert 'if base != "CNY"' in src or "base_currency" == "CNY" in src, (
+            "汇率接口允许任意基准币种，USD→EUR 可入库"
+        )
+E       AssertionError: 汇率接口允许任意基准币种，USD→EUR 可入库
+E       assert ('if base != "CNY"' in '@router.post("/exchange-rates")\nasync def create_exchange_rate(\n    payload: ExchangeRateCreate,\n    request: Requ...quest),\n    )\n    await session.commit()\n    return ok(_serialize_exchange_rate(row), f"已维护 {base} → {quote} 汇率")\n' or 'base_currency' == 'CNY'
+E         
+E         - CNY
+E         + base_currency)
+
+../review/repro/test_b01_b05_p3.py:111: AssertionError
+__________ test_b03_11_logistics_rate_strings_should_have_max_length ___________
+
+    def test_b03_11_logistics_rate_strings_should_have_max_length():
+        fields = pricing_schema.LogisticsRateCreate.model_fields
+        checks = {"provider": 64, "remark": 255}
+        missing = [n for n, limit in checks.items() if not any(getattr(m, "max_length", None) == limit for m in fields[n].metadata)]
+>       assert not missing, f"费率字符串无 max_length，超长到 DB 才 500：{missing}"
+E       AssertionError: 费率字符串无 max_length，超长到 DB 才 500：['provider', 'remark']
+E       assert not ['provider', 'remark']
+
+../review/repro/test_b01_b05_p3.py:120: AssertionError
+___________ test_b03_12_price_rule_customer_level_should_be_literal ____________
+
+    def test_b03_12_price_rule_customer_level_should_be_literal():
+        src = inspect.getsource(pricing_schema.PriceRuleCreate)
+>       assert "Literal" in src, "客户等级/状态是自由字符串，E/whatever 可静默不生效"
+E       AssertionError: 客户等级/状态是自由字符串，E/whatever 可静默不生效
+E       assert 'Literal' in 'class PriceRuleCreate(BaseModel):\n    sku_id: int\n    #: 与库列 `varchar(8)` 对齐（审查 R07 同类）：从前没有长度约束，\n    #: 超长会一路走到数据...，\n    #: 超长会一路走到数据库撞 `value too long`，用户看到 500 而不是提示。\n    remark: str | None = Field(default=None, max_length=255)\n'
+
+../review/repro/test_b01_b05_p3.py:125: AssertionError
+______________ test_b03_13_batch_calculate_should_have_item_limit ______________
+
+    def test_b03_13_batch_calculate_should_have_item_limit():
+        src = inspect.getsource(pricing_router.batch_calculate)
+>       assert "max_length" in src, "批量核价 items 无条数上限，可单请求打满负载"
+E       AssertionError: 批量核价 items 无条数上限，可单请求打满负载
+E       assert 'max_length' in '@router.post("/pricing/batch-calculate")\nasync def batch_calculate(\n    items: list[PricingRequest],\n    user: Cur...rms=item.payment_terms,\n                ),\n                user,\n            )\n        )\n    return ok(results)\n'
+
+../review/repro/test_b01_b05_p3.py:130: AssertionError
+___________ test_b03_14_logistics_calculate_should_have_request_key ____________
+
+    def test_b03_14_logistics_calculate_should_have_request_key():
+        src = inspect.getsource(logistics_router.calculate)
+>       assert "request_key" in src, "物流试算保存无幂等键，双击多留一条"
+E       AssertionError: 物流试算保存无幂等键，双击多留一条
+E       assert 'request_key' in '@router.post("/logistics/calculate")\nasync def calculate(\n    payload: LogisticsCalculateRequest,\n    request: Req...认它\n            # （别让调用方去认提示文字 —— 文案一改就悄悄失效）。\n            "match_level": prepared["match_level"],\n        }\n    )\n'
+
+../review/repro/test_b01_b05_p3.py:135: AssertionError
+_____________________ test_b03_15_ratios_should_be_decimal _____________________
+
+    def test_b03_15_ratios_should_be_decimal():
+        src = inspect.getsource(payment_schema)
+>       assert "list[float]" not in src, "收款比例用 float 且拆分默认 HALF_EVEN"
+E       AssertionError: 收款比例用 float 且拆分默认 HALF_EVEN
+E       assert 'list[float]' not in '"""应收与回款入参。...one = None\n'
+E         
+E         'list[float]' is contained here:
+E           te(value: list[float]) -> list[float]:
+E         ?           +++++++++++
+E               bad = [ratio for ratio in value if not math.isfinite(ratio)]
+E               if bad:
+E                   raise ValueError(...
+E         
+E         ...Full output truncated (110 lines hidden), use '-vv' to show
+
+../review/repro/test_b01_b05_p3.py:140: AssertionError
+__________ test_b03_16_logistics_quote_unit_price_should_match_basis ___________
+
+    def test_b03_16_logistics_quote_unit_price_should_match_basis():
+        src = inspect.getsource(logistics.save_quote)
+        block = src[src.index("unit_price="):src.index("eta_days")]
+>       assert "unit_price_per_volume" in block, "体积计价仍存元/kg 单价，留痕语义错"
+E       AssertionError: 体积计价仍存元/kg 单价，留痕语义错
+E       assert 'unit_price_per_volume' in 'unit_price=(\n            Decimal(str(option["unit_price_per_kg"]))\n            if option.get("unit_price_per_kg") is not None\n            else None\n        ),\n        '
+
+../review/repro/test_b01_b05_p3.py:146: AssertionError
+______________ test_b03_17_delete_rate_should_take_advisory_lock _______________
+
+    def test_b03_17_delete_rate_should_take_advisory_lock():
+        src = inspect.getsource(pricing_router.delete_logistics_rate)
+>       assert "_lock_logistics_rate_changes" in src, "删除费率绕过增改锁，可与修改并发 500"
+E       AssertionError: 删除费率绕过增改锁，可与修改并发 500
+E       assert '_lock_logistics_rate_changes' in '@router.delete("/logistics/rates/{rate_id}")\nasync def delete_logistics_rate(\n    rate_id: int,\n    request: Reque...     before=before,\n        ip=client_ip(request),\n    )\n    await session.commit()\n    return ok(None, "费率已删除")\n'
+
+../review/repro/test_b01_b05_p3.py:151: AssertionError
+__________________ test_b03_18_erp_order_id_should_be_unique ___________________
+
+    def test_b03_18_erp_order_id_should_be_unique():
+        col = order_model.SalesOrder.__table__.columns["erp_order_id"]
+>       assert col.unique is True, "SalesOrder.erp_order_id 无唯一约束"
+E       AssertionError: SalesOrder.erp_order_id 无唯一约束
+E       assert None is True
+E        +  where None = Column('erp_order_id', String(length=64), table=<sales_orders>).unique
+
+../review/repro/test_b01_b05_p3.py:156: AssertionError
+__________ test_b03_22_pricing_import_should_log_unexpected_exception __________
+
+    def test_b03_22_pricing_import_should_log_unexpected_exception():
+        src = inspect.getsource(pricing_io_router)
+>       assert "logger.exception" in src, "逐行 except Exception 把编程错误降级成行失败且无堆栈"
+E       AssertionError: 逐行 except Exception 把编程错误降级成行失败且无堆栈
+E       assert 'logger.exception' in '"""价格资料的批量导入（产品报价中心 · 方案 §6）。\n\n覆盖三类：价格规则（含等级价）、客户专属价、SKU 成本。\n单独成 router 的原因与产品/客户一致：`/price-rules/import` 这类静态路径\n...uest),\n        preview=preview,\n        preview_token=preview_token,\n        business_type="product_cost",\n    )\n'
+
+../review/repro/test_b01_b05_p3.py:161: AssertionError
+___________________ test_b04_09_cancel_should_accept_reason ____________________
+
+    def test_b04_09_cancel_should_accept_reason():
+        params = inspect.signature(order_router.cancel_order).parameters
+>       assert "reason" in params or "remark" in params, "取消接口无理由入参，completed 无法取消"
+E       AssertionError: 取消接口无理由入参，completed 无法取消
+E       assert ('reason' in mappingproxy(OrderedDict({'order_id': <Parameter "order_id: int">, 'request': <Parameter "request: starlette.requests....xt.asyncio.session.AsyncSession = Depends(dependency=<function get_db at 0x10b529300>, use_cache=True, scope=None)">})) or 'remark' in mappingproxy(OrderedDict({'order_id': <Parameter "order_id: int">, 'request': <Parameter "request: starlette.requests....xt.asyncio.session.AsyncSession = Depends(dependency=<function get_db at 0x10b529300>, use_cache=True, scope=None)">})))
+
+../review/repro/test_b01_b05_p3.py:169: AssertionError
+__________________ test_b04_10_cancel_should_drop_batch_nodes __________________
+
+    def test_b04_10_cancel_should_drop_batch_nodes():
+        src = inspect.getsource(order_router.cancel_order)
+>       assert "drop_batch_node" in src, "取消订单不撤动态批次节点"
+E       AssertionError: 取消订单不撤动态批次节点
+E       assert 'drop_batch_node' in '@router.post("/orders/{order_id}/cancel")\nasync def cancel_order(\n    order_id: int,\n    request: Request,\n    us...turn ok(\n        svc.serialize_order(order),\n        "订单已取消（应收计划已同步取消；已有的回款记录保留，"\n        "但不能再新登记或确认回款）",\n    )\n'
+
+../review/repro/test_b01_b05_p3.py:174: AssertionError
+_______________ test_b04_11_manual_order_items_should_have_limit _______________
+
+    def test_b04_11_manual_order_items_should_have_limit():
+        field = order_schema.OrderCreate.model_fields["items"]
+>       assert any(getattr(m, "max_length", None) for m in field.metadata), "手工建单明细无条数上限"
+E       AssertionError: 手工建单明细无条数上限
+E       assert False
+E        +  where False = any(<generator object test_b04_11_manual_order_items_should_have_limit.<locals>.<genexpr> at 0x10da9b760>)
+
+../review/repro/test_b01_b05_p3.py:179: AssertionError
+__________ test_b04_12_manual_order_payment_milestone_should_complete __________
+
+    def test_b04_12_manual_order_payment_milestone_should_complete():
+        src = inspect.getsource(milestones.sync_payment_milestones)
+>       assert "planned > 0" not in src, "手工单无应收计划，收款节点永远不完成"
+E       AssertionError: 手工单无应收计划，收款节点永远不完成
+E       assert 'planned > 0' not in 'async def s...on.flush()\n'
+E         
+E         'planned > 0' is contained here:
+E           ount) and planned > 0 and not unsettled
+E         ?           +++++++++++
+E                   cash = (await payment_service.allocation_totals(session, [order_id])).get(order_id, {})
+E                   actual_cash = cash.get("received_amount", Decimal(0))
+E                   unallocated_cash = cash.get("unallocated_amount", Decimal(0))...
+E         
+E         ...Full output truncated (18 lines hidden), use '-vv' to show
+
+../review/repro/test_b01_b05_p3.py:184: AssertionError
+____________ test_b04_13_convert_retry_should_replay_existing_order ____________
+
+    def test_b04_13_convert_retry_should_replay_existing_order():
+        src = inspect.getsource(order_service.create_order_from_quote)
+>       assert "return existing" in src, "转单重试返回 409，不是幂等回放"
+E       AssertionError: 转单重试返回 409，不是幂等回放
+E       assert 'return existing' in 'async def create_order_from_quote(\n    session: AsyncSession,\n    *,\n    version: QuoteVersion,\n    user_id: int,..._user_id=user_id,\n        event_key=f"order:create:{order.id}",\n    )\n    await session.flush()\n    return order\n'
+
+../review/repro/test_b01_b05_p3.py:189: AssertionError
+_______________ test_b04_14_receivable_should_have_unique_and_fk _______________
+
+    def test_b04_14_receivable_should_have_unique_and_fk():
+        constraints = [c for c in payment_model.ReceivablePlan.__table__.constraints if type(c).__name__ == "UniqueConstraint"]
+        names = {tuple(col.name for col in c.columns) for c in constraints}
+>       assert ("order_id", "plan_name") in names, "应收计划无 (order_id, plan_name) 唯一约束"
+E       AssertionError: 应收计划无 (order_id, plan_name) 唯一约束
+E       assert ('order_id', 'plan_name') in set()
+
+../review/repro/test_b01_b05_p3.py:195: AssertionError
+_______ test_b04_16_convert_integrity_error_should_not_rollback_outer_tx _______
+
+    def test_b04_16_convert_integrity_error_should_not_rollback_outer_tx():
+        src = inspect.getsource(order_service.create_order_from_quote)
+        block = src[src.index("except IntegrityError"):]
+>       assert "session.rollback()" not in block, "并发兜底回滚整个外层事务"
+E       AssertionError: 并发兜底回滚整个外层事务
+E       assert 'session.rollback()' not in 'except Inte...turn order\n'
+E         
+E         'session.rollback()' is contained here:
+E               await session.rollback()
+E                   raise AppError(
+E                       ErrorCode.DUPLICATE_CONVERT,
+E                       "该报价版本已转过订单（或正在并发转单），请刷新后重试",
+E                       409,...
+E         
+E         ...Full output truncated (106 lines hidden), use '-vv' to show
+
+../review/repro/test_b01_b05_p3.py:204: AssertionError
+__________ test_b04_21_status_audit_should_capture_before_and_remark ___________
+
+    def test_b04_21_status_audit_should_capture_before_and_remark():
+        src = inspect.getsource(order_router.change_status)
+        block = src[src.index('action="change_status"'):src.index("ip=client_ip")]
+>       assert "before=" in block, "状态变更审计只写新状态，旧状态/理由不在通用审计"
+E       AssertionError: 状态变更审计只写新状态，旧状态/理由不在通用审计
+E       assert 'before=' in 'action="change_status",\n        business_type="order",\n        business_id=order.id,\n        after={"status": payload.status},\n        '
+
+../review/repro/test_b01_b05_p3.py:210: AssertionError
+_________ test_b05_11_finance_summary_should_zero_cancelled_unreceived _________
+
+    def test_b05_11_finance_summary_should_zero_cancelled_unreceived():
+        src = inspect.getsource(payment_service.order_finance_summary)
+>       assert 'status == "cancelled"' in src, "取消订单仍返回未收金额，超收显示负数"
+E       AssertionError: 取消订单仍返回未收金额，超收显示负数
+E       assert 'status == "cancelled"' in 'async def order_finance_summary(session: AsyncSession, order_id: int) -> dict:\n    """订单的应收/回款概览，给订单详情页顶部用。"""\n    ...         due_date=p.due_date,\n                    today=today,\n                )\n            ]\n        ),\n    }\n'
+
+../review/repro/test_b01_b05_p3.py:218: AssertionError
+______________ test_b05_13_auto_allocation_should_check_currency _______________
+
+    def test_b05_13_auto_allocation_should_check_currency():
+        src = inspect.getsource(payment_service.allocate_payment)
+>       assert "plan.currency != record.currency" in src, "自动分配不校验应收节点与回款币种"
+E       AssertionError: 自动分配不校验应收节点与回款币种
+E       assert 'plan.currency != record.currency' in 'async def allocate_payment(\n    session: AsyncSession, record: PaymentRecord, *, operator_id: int | None\n) -> Decim... )\n        )\n        allocated += take\n        remaining -= take\n    await session.flush()\n    return allocated\n'
+
+../review/repro/test_b01_b05_p3.py:223: AssertionError
+_______________ test_b05_14_require_confirmation_should_be_used ________________
+
+    def test_b05_14_require_confirmation_should_be_used():
+        src = inspect.getsource(confirmation.require_confirmation)
+        assert "CONFIRM_REQUIRED" in src
+        # 路由各自拼文案，函数没有调用点
+>       assert "require_confirmation(" in inspect.getsource(order_router), (
+            "require_confirmation 是死代码，各路由自行拼确认文案"
+        )
+E       AssertionError: require_confirmation 是死代码，各路由自行拼确认文案
+E       assert 'require_confirmation(' in '"""订单中心接口（对齐 03-API §27 / §28）。"""\n\nfrom datetime import UTC, datetime\nfrom decimal import Decimal\n\nfrom fastapi...": batch.batch_no},\n        ip=client_ip(request),\n    )\n    await session.commit()\n    return ok(None, "批次已取消")\n'
+E        +  where '"""订单中心接口（对齐 03-API §27 / §28）。"""\n\nfrom datetime import UTC, datetime\nfrom decimal import Decimal\n\nfrom fastapi...": batch.batch_no},\n        ip=client_ip(request),\n    )\n    await session.commit()\n    return ok(None, "批次已取消")\n' = <function getsource at 0x1041abce0>(order_router)
+E        +    where <function getsource at 0x1041abce0> = inspect.getsource
+
+../review/repro/test_b01_b05_p3.py:230: AssertionError
+________ test_b05_15_voucher_upload_should_not_hold_lock_during_disk_io ________
+
+    def test_b05_15_voucher_upload_should_not_hold_lock_during_disk_io():
+        src = inspect.getsource(payment_router.upload_payment_voucher)
+        lock_idx = src.index("for_update=True")
+        save_idx = src.index("save_upload")
+>       assert not (lock_idx < save_idx), "持订单/节点/回款锁做磁盘写入，慢存储会卡住财务操作"
+E       AssertionError: 持订单/节点/回款锁做磁盘写入，慢存储会卡住财务操作
+E       assert not 388 < 663
+
+../review/repro/test_b01_b05_p3.py:239: AssertionError
+______________ test_b05_20_overdue_refresh_should_record_progress ______________
+
+    def test_b05_20_overdue_refresh_should_record_progress():
+        src = inspect.getsource(payment_service.refresh_overdue_plans)
+>       assert "commit_per_order" not in src or "last_order_id" in src, (
+            "逐笔 commit 中途失败留下半批次，无断点/进度"
+        )
+E       AssertionError: 逐笔 commit 中途失败留下半批次，无断点/进度
+E       assert ('commit_per_order' not in 'async def r...rn changed\n'
+E         
+E         'commit_per_order' is contained here:
+E           ssion, *, commit_per_order: bool = False) -> int:
+E         ?           ++++++++++++++++
+E               """刷新新逾期以及延期后仍显示为自动逾期的节点。"""
+E               candidates = or_(
+E                   and_(ReceivablePlan.status != "overdue", plan_overdue_expression()),...
+E         
+E         ...Full output truncated (26 lines hidden), use '-vv' to show or 'last_order_id' in 'async def refresh_overdue_plans(session: AsyncSession, *, commit_per_order: bool = False) -> int:\n    """刷新新逾期以及延期后仍...anged += plan.status != before\n        if commit_per_order:\n            await session.commit()\n    return changed\n')
+
+../review/repro/test_b01_b05_p3.py:244: AssertionError
+_______________ test_b06_11_serialize_record_should_expose_exact _______________
+
+    def test_b06_11_serialize_record_should_expose_exact():
+        src = inspect.getsource(collection.serialize_record)
+>       assert "amount_exact" in src and "quantity_exact" in src, "外部记录只出 float，无 exact"
+E       AssertionError: 外部记录只出 float，无 exact
+E       assert ('amount_exact' in 'def serialize_record(row: ExternalRecord) -> dict:\n    return {\n        "id": row.id,\n        "system_type": row.s...  "last_batch_id": row.last_batch_id,\n        "raw_digest": row.raw_digest,\n        "payload": row.payload,\n    }\n')
+
+../review/repro/test_b06_b10_p3.py:18: AssertionError
+______________ test_b06_12_exception_queue_should_include_failed _______________
+
+    def test_b06_12_exception_queue_should_include_failed():
+>       assert "FAILED" in erp_service.EXCEPTION_QUEUE_STATUS, "被状态守卫拦下的 failed 事件不进异常队列"
+E       AssertionError: 被状态守卫拦下的 failed 事件不进异常队列
+E       assert 'FAILED' in ('conflict', 'unmatched', 'unknown', 'skipped', 'not_sent')
+E        +  where ('conflict', 'unmatched', 'unknown', 'skipped', 'not_sent') = erp_service.EXCEPTION_QUEUE_STATUS
+
+../review/repro/test_b06_b10_p3.py:22: AssertionError
+________ test_b06_13_push_payload_shop_id_should_not_be_hardcoded_none _________
+
+    def test_b06_13_push_payload_shop_id_should_not_be_hardcoded_none():
+>       src = inspect.getsource(erp_service._build_push_payload)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'app.modules.erp.service' has no attribute '_build_push_payload'. Did you mean: '_build_event_payload'?
+
+../review/repro/test_b06_b10_p3.py:26: AttributeError
+____________ test_b06_14_list_mappings_should_show_scoped_unmatched ____________
+
+    def test_b06_14_list_mappings_should_show_scoped_unmatched():
+        src = inspect.getsource(collection.list_mappings)
+>       assert "internal_id is None" in src or "external_code" in src, "有限范围用户看不到范围内待匹配订单"
+E       AssertionError: 有限范围用户看不到范围内待匹配订单
+E       assert ('internal_id is None' in 'async def list_mappings(\n    session: AsyncSession,\n    *,\n    owner_ids: list[int] | None,\n    match_status: str...     .limit(page_size)\n        )\n    ).scalars().all()\n    return [serialize_mapping(row) for row in rows], total\n' or 'external_code' in 'async def list_mappings(\n    session: AsyncSession,\n    *,\n    owner_ids: list[int] | None,\n    match_status: str...     .limit(page_size)\n        )\n    ).scalars().all()\n    return [serialize_mapping(row) for row in rows], total\n')
+
+../review/repro/test_b06_b10_p3.py:32: AssertionError
+________ test_b06_17_fail_quietly_should_log_when_failure_persist_fails ________
+
+    def test_b06_17_fail_quietly_should_log_when_failure_persist_fails():
+        src = inspect.getsource(collection._fail_quietly)
+>       assert "logger.exception" in src or "logger.error" in src, "失败落盘再失败被 pass 吞掉，无日志/告警"
+E       AssertionError: 失败落盘再失败被 pass 吞掉，无日志/告警
+E       assert ('logger.exception' in 'async def _fail_quietly(\n    session: AsyncSession,\n    cursor_id: int,\n    *,\n    status: str,\n    error: Excep...        )\n        await session.commit()\n    except Exception:  # noqa: BLE001 - 见 docstring：不覆盖原始异常\n        pass\n' or 'logger.error' in 'async def _fail_quietly(\n    session: AsyncSession,\n    cursor_id: int,\n    *,\n    status: str,\n    error: Excep...        )\n        await session.commit()\n    except Exception:  # noqa: BLE001 - 见 docstring：不覆盖原始异常\n        pass\n')
+
+../review/repro/test_b06_b10_p3.py:37: AssertionError
+__________ test_b06_18_push_success_audit_should_be_same_transaction ___________
+
+    def test_b06_18_push_success_audit_should_be_same_transaction():
+>       src = inspect.getsource(erp_router.push_order)
+                                ^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'app.modules.erp.router' has no attribute 'push_order'
+
+../review/repro/test_b06_b10_p3.py:41: AttributeError
+____________ test_b07_11_reconcile_audit_should_be_same_transaction ____________
+
+    def test_b07_11_reconcile_audit_should_be_same_transaction():
+        src = inspect.getsource(reconcile.run_reconciliation)
+>       assert "await session.commit()" not in src or "write_audit" in src, (
+            "对账服务先 commit，路由后审计，失败留下无审计批次"
+        )
+E       AssertionError: 对账服务先 commit，路由后审计，失败留下无审计批次
+E       assert ('await session.commit()' not in 'async def r... ),\n    }\n'
+E         
+E         'await session.commit()' is contained here:
+E           ounts
+E               await session.commit()
+E               return {
+E                   "run": serialize_run(run),
+E                   "counters": counts,...
+E         
+E         ...Full output truncated (12 lines hidden), use '-vv' to show or 'write_audit' in 'async def run_reconciliation(\n    session: AsyncSession,\n    *,\n    period_start: date,\n    period_end: date,\n  ...被排除，详情见 ERP 同步日志。"\n               if excluded else "")\n            + "外部售后事实只进待核定队列，不会自动冲减本地回款"\n        ),\n    }\n')
+
+../review/repro/test_b06_b10_p3.py:53: AssertionError
+___________ test_b07_12_contract_request_key_should_have_orm_unique ____________
+
+    def test_b07_12_contract_request_key_should_have_orm_unique():
+        constraints = [c for c in contract_model.ContractDocument.__table__.constraints if type(c).__name__ == "UniqueConstraint"]
+        names = {tuple(col.name for col in c.columns) for c in constraints}
+>       assert ("request_key",) in names, "合同 request_key 唯一约束只在迁移，ORM/测试建表没有"
+E       AssertionError: 合同 request_key 唯一约束只在迁移，ORM/测试建表没有
+E       assert ('request_key',) in {('doc_no',)}
+
+../review/repro/test_b06_b10_p3.py:61: AssertionError
+______________ test_b07_13_erp_webhook_should_use_hmac_timestamp _______________
+
+    def test_b07_13_erp_webhook_should_use_hmac_timestamp():
+        src = inspect.getsource(erp_router)
+>       assert "hmac" in src.lower() or "X-ERP-Timestamp" in src, "ERP 回调只共享密钥，无 HMAC/时间戳/事件签名"
+E       AssertionError: ERP 回调只共享密钥，无 HMAC/时间戳/事件签名
+E       assert ('hmac' in '"""erp/mes 集成接口（03-api §28，6 个接口）。\n\n  post /integrations/erp/orders                  按订单号推送（外部系统调用入口）\n  post /inte..._raw_event(request),\n    )\n    return ok(result, result.get("message") or ("已处理" if result["matched"] else "未处理"))\n' or 'X-ERP-Timestamp' in '"""ERP/MES 集成接口（03-API §28，6 个接口）。\n\n  POST /integrations/erp/orders                  按订单号推送（外部系统调用入口）\n  POST /inte..._raw_event(request),\n    )\n    return ok(result, result.get("message") or ("已处理" if result["matched"] else "未处理"))\n')
+E        +  where '"""erp/mes 集成接口（03-api §28，6 个接口）。\n\n  post /integrations/erp/orders                  按订单号推送（外部系统调用入口）\n  post /inte..._raw_event(request),\n    )\n    return ok(result, result.get("message") or ("已处理" if result["matched"] else "未处理"))\n' = <built-in method lower of str object at 0x91ca14000>()
+E        +    where <built-in method lower of str object at 0x91ca14000> = '"""ERP/MES 集成接口（03-API §28，6 个接口）。\n\n  POST /integrations/erp/orders                  按订单号推送（外部系统调用入口）\n  POST /inte..._raw_event(request),\n    )\n    return ok(result, result.get("message") or ("已处理" if result["matched"] else "未处理"))\n'.lower
+
+../review/repro/test_b06_b10_p3.py:66: AssertionError
+________ test_b07_14_sync_approval_should_lock_document_before_snapshot ________
+
+    def test_b07_14_sync_approval_should_lock_document_before_snapshot():
+        src = inspect.getsource(customer_flow.sync_approval)
+>       assert "for_update=True" in src, "同步审批先读文档不加锁，可能写已签/已作废合同"
+E       AssertionError: 同步审批先读文档不加锁，可能写已签/已作废合同
+E       assert 'for_update=True' in '@router.post("/contract-documents/{doc_id}/approval-sync")\nasync def sync_approval(doc_id: int, user: CurrentUser = ...ait store_snapshot(session, doc, row, data)\n    await session.commit()\n    return ok(oa.serialize(row), "已同步钉钉审批")\n'
+
+../review/repro/test_b06_b10_p3.py:71: AssertionError
+__________ test_b08_04_cancel_safe_should_not_reshield_same_coroutine __________
+
+    def test_b08_04_cancel_safe_should_not_reshield_same_coroutine():
+        src = inspect.getsource(contract_service._cancel_safe)
+>       assert "asyncio.shield(coro)" not in src or "factory" in src or "task" in src, (
+            "_cancel_safe 重试复用同一个 coroutine，第二次 shield 必 RuntimeError"
+        )
+E       AssertionError: _cancel_safe 重试复用同一个 coroutine，第二次 shield 必 RuntimeError
+E       assert ('asyncio.shield(coro)' not in 'async def _...eturn None\n'
+E         
+E         'asyncio.shield(coro)' is contained here:
+E           urn await asyncio.shield(coro)
+E                   except asyncio.CancelledError:
+E                       if attempt >= _retries:
+E                           logger.warning("%s：清理被连续取消，放弃（登记已注销，对象成为孤儿）", label)
+E                           return None...
+E         
+E         ...Full output truncated (5 lines hidden), use '-vv' to show or 'factory' in 'async def _cancel_safe(coro, *, label: str, _retries: int = 2):\n    """跑一段清理逻辑，**即使被取消也要跑完**（第四批复审 P2，2026-10-12）。\n...的失败不许盖过原来的错误/取消\n            logger.exception("%s：清理失败（保留对象，避免误删）", label)\n            return None\n    return None\n' or 'task' in 'async def _cancel_safe(coro, *, label: str, _retries: int = 2):\n    """跑一段清理逻辑，**即使被取消也要跑完**（第四批复审 P2，2026-10-12）。\n...的失败不许盖过原来的错误/取消\n            logger.exception("%s：清理失败（保留对象，避免误删）", label)\n            return None\n    return None\n')
+
+../review/repro/test_b06_b10_p3.py:79: AssertionError
+____________ test_b09_04_rule_version_should_have_unique_constraint ____________
+
+    def test_b09_04_rule_version_should_have_unique_constraint():
+        constraints = [c for c in approval_model.ApprovalRuleVersion.__table__.constraints if type(c).__name__ == "UniqueConstraint"]
+        names = {tuple(col.name for col in c.columns) for c in constraints}
+>       assert ("rule_id", "version_no") in names, "规则发布快照无唯一约束，只靠咨询锁防重"
+E       AssertionError: 规则发布快照无唯一约束，只靠咨询锁防重
+E       assert ('rule_id', 'version_no') in set()
+
+../review/repro/test_b06_b10_p3.py:90: AssertionError
+______ test_b10_08_uploaded_attachments_should_be_cleaned_on_state_change ______
+
+    def test_b10_08_uploaded_attachments_should_be_cleaned_on_state_change():
+        src = inspect.getsource(oa_service.send_prepared_approval)
+        block = src[src.index("uploads.fill"):]
+>       assert "delete_approval" in block or "cleanup" in block, "附件先上传后状态变化，OA 侧孤儿文件无清理"
+E       AssertionError: 附件先上传后状态变化，OA 侧孤儿文件无清理
+E       assert ('delete_approval' in 'uploads.fill(payload)\n        fresh_business, current = await lock_receipt()\n        if (fresh_business is None or ...ge}", 502) from exc\n    fresh_business, current = await lock_receipt()\n    return fresh_business, current, summary\n' or 'cleanup' in 'uploads.fill(payload)\n        fresh_business, current = await lock_receipt()\n        if (fresh_business is None or ...ge}", 502) from exc\n    fresh_business, current = await lock_receipt()\n    return fresh_business, current, summary\n')
+
+../review/repro/test_b06_b10_p3.py:99: AssertionError
+______________ test_b10_09_sample_status_should_follow_oa_return _______________
+
+    def test_b10_09_sample_status_should_follow_oa_return():
+        src = inspect.getsource(oa_sample.start_sample_approval)
+>       assert 'summary["status"]' in src and "approved" in src, (
+            "OA 创建返回 approved/rejected 时本地打样单仍置 pending"
+        )
+E       AssertionError: OA 创建返回 approved/rejected 时本地打样单仍置 pending
+E       assert ('summary["status"]' in 'async def start_sample_approval(session: AsyncSession, current_user, sample: SampleRequest, payload_fields: dict) -> ...e_id": row.id, "instance_id": row.instance_id},\n        }\n    await session.flush()\n    return row, "已发起 OA 打样审批"\n')
+
+../review/repro/test_b06_b10_p3.py:104: AssertionError
+__________ test_b10_10_send_should_catch_unexpected_and_mark_failure ___________
+
+    def test_b10_10_send_should_catch_unexpected_and_mark_failure():
+        src = inspect.getsource(oa_service.send_prepared_approval)
+>       assert "except Exception" in src, "只捕 OaError，意外异常留下 submitting 且失败无审计"
+E       AssertionError: 只捕 OaError，意外异常留下 submitting 且失败无审计
+E       assert 'except Exception' in 'async def send_prepared_approval(session, business, row, payload, uploads: ApprovalUploads):\n    """Commit the reser...ge}", 502) from exc\n    fresh_business, current = await lock_receipt()\n    return fresh_business, current, summary\n'
+
+../review/repro/test_b06_b10_p3.py:111: AssertionError
+_______________ test_b11_12_role_scope_and_status_should_be_enum _______________
+
+    def test_b11_12_role_scope_and_status_should_be_enum():
+        create_src = inspect.getsource(user_schema.RoleCreate)
+        update_src = inspect.getsource(user_schema.RoleUpdate)
+>       assert "Literal" in create_src and "Literal" in update_src, (
+            "RoleCreate/RoleUpdate 的 data_scope/status 只是字符串，非法值静默退回 self"
+        )
+E       AssertionError: RoleCreate/RoleUpdate 的 data_scope/status 只是字符串，非法值静默退回 self
+E       assert ('Literal' in 'class RoleCreate(CreateModel):\n    model_config = ConfigDict(extra="ignore")\n\n    code: str\n    name: str\n    de...e\n    data_scope: str = "self"\n    permission_codes: list[str] = []\n    """按权限码授权，比传 id 直观（权限码是稳定的，id 会随重建变化）。"""\n')
+
+../review/repro/test_b11_b15_p3.py:20: AssertionError
+________ test_b12_06_upload_should_validate_metadata_before_disk_write _________
+
+    def test_b12_06_upload_should_validate_metadata_before_disk_write():
+        src = inspect.getsource(file_router.upload_file)
+        save_idx = src.index("save_upload")
+        head = src[:save_idx]
+>       assert "len(file.filename" in head or "max_length" in head, (
+            "上传文件名/MIME/category 未按列宽前置校验，先写盘再 500"
+        )
+E       AssertionError: 上传文件名/MIME/category 未按列宽前置校验，先写盘再 500
+E       assert ('len(file.filename' in '@router.post("/files/upload")\nasync def upload_file(\n    request: Request,\n    file: UploadFile = File(...),\n    ...    )\n\n    category = _attachment_category(business_type, category)\n    object_key, size, checksum = await storage.' or 'max_length' in '@router.post("/files/upload")\nasync def upload_file(\n    request: Request,\n    file: UploadFile = File(...),\n    ...    )\n\n    category = _attachment_category(business_type, category)\n    object_key, size, checksum = await storage.')
+
+../review/repro/test_b11_b15_p3.py:32: AssertionError
+________ test_b13_10_single_customer_create_should_require_request_key _________
+
+    def test_b13_10_single_customer_create_should_require_request_key():
+        src = inspect.getsource(customer_router.create_customer)
+>       assert "if not request_key" in src or "request_key 不能为空" in src, (
+            "单建客户允许不带 request_key，双击仍会产生重复客户"
+        )
+E       AssertionError: 单建客户允许不带 request_key，双击仍会产生重复客户
+E       assert ('if not request_key' in '@router.post("/customers")\nasync def create_customer(\n    payload: CustomerCreate,\n    request: Request,\n    user...  raise\n\n    if request_key:\n        return ok(body, "客户已创建")\n    return ok(body, "客户已创建（本次未带请求键，弱网重试可能产生重复客户）")\n' or 'request_key 不能为空' in '@router.post("/customers")\nasync def create_customer(\n    payload: CustomerCreate,\n    request: Request,\n    user...  raise\n\n    if request_key:\n        return ok(body, "客户已创建")\n    return ok(body, "客户已创建（本次未带请求键，弱网重试可能产生重复客户）")\n')
+
+../review/repro/test_b11_b15_p3.py:42: AssertionError
+_________ test_b13_11_tag_write_should_use_savepoint_not_full_rollback _________
+
+    def test_b13_11_tag_write_should_use_savepoint_not_full_rollback():
+        src = inspect.getsource(customer_tags.create_tag)
+        block = src[src.index("except IntegrityError"):]
+>       assert "session.rollback()" not in block, "标签撞唯一约束回滚整个 session"
+E       AssertionError: 标签撞唯一约束回滚整个 session
+E       assert 'session.rollback()' not in 'except Inte...return tag\n'
+E         
+E         'session.rollback()' is contained here:
+E               await session.rollback()
+E                   raise AppError(ErrorCode.DUPLICATE, f"标签「{name}」已存在", 409) from exc
+E               return tag
+
+../review/repro/test_b11_b15_p3.py:50: AssertionError
+__________ test_b14_06_wecom_create_customer_should_validate_lengths ___________
+
+    def test_b14_06_wecom_create_customer_should_validate_lengths():
+        fields = wecom_schema.CreateCustomerRequest.model_fields
+        checks = {"name": 200, "short_name": 100, "region": 64, "address": 255, "level": 8, "source": 32}
+        missing = [n for n, limit in checks.items()
+                   if not any(getattr(m, "max_length", None) == limit for m in fields[n].metadata)]
+>       assert not missing, f"企微建客户字段无 max_length，超长到 DB 才 500：{missing}"
+E       AssertionError: 企微建客户字段无 max_length，超长到 DB 才 500：['name', 'short_name', 'region', 'address', 'level', 'source']
+E       assert not ['name', 'short_name', 'region', 'address', 'level', 'source']
+
+../review/repro/test_b11_b15_p3.py:61: AssertionError
+__________ test_b14_07_token_cache_should_be_locked_and_secret_aware ___________
+
+    def test_b14_07_token_cache_should_be_locked_and_secret_aware():
+        src = inspect.getsource(wecom_client.WeComClient.access_token)
+>       assert "asyncio.Lock" in src or "lock" in src, "token 缓存无锁，并发首次取 token 会重复请求"
+E       AssertionError: token 缓存无锁，并发首次取 token 会重复请求
+E       assert ('asyncio.Lock' in '    async def access_token(self, *, external: bool = False) -> str:\n        """取 access_token 并进程内缓存。\n\n        `ex...ResponseError("gettoken")\n        _token_cache[cache_key] = (token, time.time() + _TOKEN_TTL)\n        return token\n' or 'lock' in '    async def access_token(self, *, external: bool = False) -> str:\n        """取 access_token 并进程内缓存。\n\n        `ex...ResponseError("gettoken")\n        _token_cache[cache_key] = (token, time.time() + _TOKEN_TTL)\n        return token\n')
+
+../review/repro/test_b11_b15_p3.py:66: AssertionError
+__________ test_b14_08_batch_tag_replace_audit_should_capture_before ___________
+
+    def test_b14_08_batch_tag_replace_audit_should_capture_before():
+        src = inspect.getsource(tags_router.batch_tag)
+        block = src[src.index('action=f"batch_tag_'):src.index("ip=client_ip")]
+>       assert "before" in block, "批量 replace 审计只记目标 tag_ids，不记变更前标签集合"
+E       AssertionError: 批量 replace 审计只记目标 tag_ids，不记变更前标签集合
+E       assert 'before' in 'action=f"batch_tag_{payload.mode}",\n        business_type="customer",\n        business_id=None,\n        after={"customer_ids": payload.customer_ids, "tag_ids": payload.tag_ids},\n        '
+
+../review/repro/test_b11_b15_p3.py:75: AssertionError
+_________ test_b15_07_contact_sync_success_should_not_override_partial _________
+
+    def test_b15_07_contact_sync_success_should_not_override_partial():
+        src = inspect.getsource(wecom_service.sync_contact_events)
+>       assert 'job.status = "success"' not in src, (
+            "成功分支强制 status=success，但 fail_count 仍保留，任务成功与失败次数矛盾"
+        )
+E       AssertionError: 成功分支强制 status=success，但 fail_count 仍保留，任务成功与失败次数矛盾
+E       assert 'job.status = "success"' not in 'async def s...n.commit()\n'
+E         
+E         'job.status = "success"' is contained here:
+E                     job.status = "success"
+E                   await session.commit()
+
+../review/repro/test_b11_b15_p3.py:83: AssertionError
+____ test_b15_08_notification_materialize_should_filter_all_deleted_sources ____
+
+    def test_b15_08_notification_materialize_should_filter_all_deleted_sources():
+        src = inspect.getsource(notification_service.materialize_business_notifications)
+>       assert "source_type == 'quote' and source.deleted_at" not in src, (
+            "materialize 只对 quote 判 deleted_at，其他已删单据仍发通知"
+        )
+E       AssertionError: materialize 只对 quote 判 deleted_at，其他已删单据仍发通知
+E       assert 'source_type...e.deleted_at' not in 'async def m...urn result\n'
+E         
+E         "source_type == 'qu...d source.deleted_at" is contained here:
+E                  if source_type == 'quote' and source.deleted_at is not None:
+E                                   continue
+E                               owner_ids = await scoped_owner_ids(session, viewer)
+E                               if owner_ids is not None and source.owner_id not in owner_ids:
+E                                   if source_type not in ('customer', 'lead') or source.owner_id is not None:...
+E         
+E         ...Full output truncated (25 lines hidden), use '-vv' to show
+
+../review/repro/test_b11_b15_p3.py:90: AssertionError
+_______ test_b16_07_search_like_should_escape_wildcards_and_count_total ________
+
+    def test_b16_07_search_like_should_escape_wildcards_and_count_total():
+        src = inspect.getsource(search_router.global_search)
+>       assert "escape" in src or "replace(\"%\"" in src, "搜索关键词未转义 %/_，用户可做宽匹配"
+E       AssertionError: 搜索关键词未转义 %/_，用户可做宽匹配
+E       assert ('escape' in '@router.get("/search")\nasync def global_search(\n    keyword: str = Query(min_length=1, max_length=64),\n    limit: ...": items_by_group[key],\n                }\n                for key in GROUP_ORDER\n            ],\n        }\n    )\n' or 'replace("%"' in '@router.get("/search")\nasync def global_search(\n    keyword: str = Query(min_length=1, max_length=64),\n    limit: ...": items_by_group[key],\n                }\n                for key in GROUP_ORDER\n            ],\n        }\n    )\n')
+
+../review/repro/test_b16_b20_p3.py:24: AssertionError
+_______________ test_b18_05_superseded_by_should_order_by_latest _______________
+
+    def test_b18_05_superseded_by_should_order_by_latest():
+        src = inspect.getsource(case_service.list_cases)
+        block = src[src.index("child_of.setdefault"):]
+>       assert "order_by" in block, "superseded_by 先到先得，可能指向 withdrawn/rejected 修订稿"
+E       AssertionError: superseded_by 先到先得，可能指向 withdrawn/rejected 修订稿
+E       assert 'order_by' in 'child_of.setdefault(parent_id, child_id)\n\n    author_ids = {row.author_id for row in rows}\n    reviewer_ids = {row...(row.id, []),\n            reviewer_names=users,\n        )\n        for row in rows\n    ]\n    return items, total\n'
+
+../review/repro/test_b16_b20_p3.py:34: AssertionError
+______________ test_b18_06_timing_report_should_have_upper_bounds ______________
+
+    def test_b18_06_timing_report_should_have_upper_bounds():
+        fields = analytics_router.TimingReport.model_fields
+        checks = {
+            "business_type": ("max_length", 32),
+            "business_id": ("le", 2**63 - 1),
+            "typed_fields": ("le", 2**31 - 1),
+            "rework_count": ("le", 2**31 - 1),
+        }
+        missing = []
+        for name, (attr, limit) in checks.items():
+            if not any(getattr(m, attr, None) == limit for m in fields[name].metadata):
+                missing.append(name)
+>       assert not missing, f"耗时接口字段无上限，超大值到 DB 才 500：{missing}"
+E       AssertionError: 耗时接口字段无上限，超大值到 DB 才 500：['business_type', 'business_id', 'typed_fields', 'rework_count']
+E       assert not ['business_type', 'business_id', 'typed_fields', 'rework_count']
+
+../review/repro/test_b16_b20_p3.py:49: AssertionError
+_______________ test_b18_07_sales_target_year_should_have_bounds _______________
+
+    def test_b18_07_sales_target_year_should_have_bounds():
+        src = inspect.getsource(analytics_router.list_sales_targets)
+>       assert "ge=" in src and "le=" in src, "year 无上下界，GET /sales-targets/bases 可对任意历史年份惰性冻结"
+E       AssertionError: year 无上下界，GET /sales-targets/bases 可对任意历史年份惰性冻结
+E       assert ('ge=' in '@router.get("/sales-targets")\nasync def list_sales_targets(\n    year: int = Query(...),\n    user: CurrentUser = De...   """目标 vs 实际：非 admin 只看自己 + 全公司目标行。"""\n    return ok(await targets_svc.targets_with_actuals(session, user, year))\n')
+
+../review/repro/test_b16_b20_p3.py:54: AssertionError
+______________ test_b18_08_case_audit_should_capture_before_after ______________
+
+    def test_b18_08_case_audit_should_capture_before_after():
+        create_src = inspect.getsource(case_router.create_case)
+        update_src = inspect.getsource(case_router.update_case)
+>       assert "evidence_ids" in create_src, "案例创建审计只记 title，不记客户/证据"
+E       AssertionError: 案例创建审计只记 title，不记客户/证据
+E       assert 'evidence_ids' in '@router.post("/cases")\nasync def create_case(\n    payload: CaseCreate,\n    request: Request,\n    user: CurrentUse...it session.commit()\n    return ok(svc.serialize_case(case, author_name=user.name, reveal_customer=True), "案例草稿已保存")\n'
+
+../review/repro/test_b16_b20_p3.py:60: AssertionError
+_____________ test_b18_09_case_inputs_should_reject_zero_and_blank _____________
+
+    def test_b18_09_case_inputs_should_reject_zero_and_blank():
+        create_src = inspect.getsource(case_router.create_case)
+>       assert "if payload.customer_id is not None" in create_src, "customer_id=0 被 if payload.customer_id 跳过校验"
+E       AssertionError: customer_id=0 被 if payload.customer_id 跳过校验
+E       assert 'if payload.customer_id is not None' in '@router.post("/cases")\nasync def create_case(\n    payload: CaseCreate,\n    request: Request,\n    user: CurrentUse...it session.commit()\n    return ok(svc.serialize_case(case, author_name=user.name, reveal_customer=True), "案例草稿已保存")\n'
+
+../review/repro/test_b16_b20_p3.py:66: AssertionError
+___________ test_b18_10_contact_dedupe_like_should_escape_wildcards ____________
+
+    def test_b18_10_contact_dedupe_like_should_escape_wildcards():
+        src = inspect.getsource(contact_util)
+>       assert 'ilike(f"%{' not in src or "escape" in src, "客户/联系人查重 LIKE 未转义，%/_ 会放大候选范围"
+E       AssertionError: 客户/联系人查重 LIKE 未转义，%/_ 会放大候选范围
+E       assert ('ilike(f"%{' not in '"""跨模块复用的联系...[:limit]\n\n'
+E         
+E         'ilike(f"%{' is contained here:
+E           omer.name.ilike(f"%{company_name.strip()}%"))
+E         ?           ++++++++++
+E                   conditions.append(Customer.short_name.ilike(f"%{company_name.strip()}%"))
+E                   # 名称相似但不相含的（例如只差后缀），用前几个字再捞一轮候选
+E                   head = company_name.strip()[:4]...
+E         
+E         ...Full output truncated (258 lines hidden), use '-vv' to show or 'escape' in '"""跨模块复用的联系人工具与客户查重。"""\n\nimport re\nfrom collections.abc import Iterable\n\nfrom sqlalchemy import case, or_, selec...m.update(mask_contact_fields(item))\n\n    scored.sort(key=lambda item: -item["score"])\n    return scored[:limit]\n\n')
+
+../review/repro/test_b16_b20_p3.py:75: AssertionError
+____________ test_b19_06_followup_type_should_have_enum_and_length _____________
+
+    def test_b19_06_followup_type_should_have_enum_and_length():
+        fields = followup_schema.FollowUpCreate.model_fields
+>       assert any(getattr(m, "max_length", None) == 32 for m in fields["followup_type"].metadata), (
+            "followup_type 无 max_length，33 字符到 DB 才 500"
+        )
+E       AssertionError: followup_type 无 max_length，33 字符到 DB 才 500
+E       assert False
+E        +  where False = any(<generator object test_b19_06_followup_type_should_have_enum_and_length.<locals>.<genexpr> at 0x10dc752a0>)
+
+../review/repro/test_b16_b20_p3.py:83: AssertionError
+___________ test_b19_07_lead_fields_should_have_lengths_and_name_min ___________
+
+    def test_b19_07_lead_fields_should_have_lengths_and_name_min():
+        fields = lead_schema.LeadUpdate.model_fields
+>       assert any(getattr(m, "min_length", None) == 1 for m in fields["name"].metadata), "LeadUpdate.name 可空"
+E       AssertionError: LeadUpdate.name 可空
+E       assert False
+E        +  where False = any(<generator object test_b19_07_lead_fields_should_have_lengths_and_name_min.<locals>.<genexpr> at 0x10dc75a80>)
+
+../review/repro/test_b16_b20_p3.py:90: AssertionError
+________ test_b19_08_opportunity_fields_should_have_lengths_and_limits _________
+
+    def test_b19_08_opportunity_fields_should_have_lengths_and_limits():
+        fields = opp_schema.OpportunityUpdate.model_fields
+>       assert any(getattr(m, "min_length", None) == 1 for m in fields["title"].metadata), "OpportunityUpdate.title 可空"
+E       AssertionError: OpportunityUpdate.title 可空
+E       assert False
+E        +  where False = any(<generator object test_b19_08_opportunity_fields_should_have_lengths_and_limits.<locals>.<genexpr> at 0x10dc76260>)
+
+../review/repro/test_b16_b20_p3.py:97: AssertionError
+___ test_b19_09_lead_inquiry_create_should_have_request_key_and_status_guard ___
+
+    def test_b19_09_lead_inquiry_create_should_have_request_key_and_status_guard():
+        lead_src = inspect.getsource(lead_router.create_lead)
+        inquiry_src = inspect.getsource(inquiry_router.create_inquiry)
+>       assert "request_key" in lead_src, "创建线索无 request_key，双击重复"
+E       AssertionError: 创建线索无 request_key，双击重复
+E       assert 'request_key' in '@router.post("/leads")\nasync def create_lead(\n    payload: LeadCreate,\n    request: Request,\n    user: CurrentUse...n        ip=client_ip(request),\n    )\n    await session.commit()\n    return ok(svc.serialize_lead(lead), "线索已创建")\n'
+
+../review/repro/test_b16_b20_p3.py:105: AssertionError
+______________ test_b19_10_lead_inquiry_audit_should_have_before _______________
+
+    def test_b19_10_lead_inquiry_audit_should_have_before():
+        inq = inspect.getsource(inquiry_router.update_inquiry)
+        lead = inspect.getsource(lead_router.release_lead)
+>       assert "before=" in inq, "询价更新审计只有 after，目标价改前值丢失"
+E       AssertionError: 询价更新审计只有 after，目标价改前值丢失
+E       assert 'before=' in '@router.patch("/custom-inquiries/{inquiry_id}")\nasync def update_inquiry(\n    inquiry_id: int,\n    payload: Custom...y),\n        ip=client_ip(request),\n    )\n    await session.commit()\n    return ok(svc.serialize(inquiry), "已保存")\n'
+
+../review/repro/test_b16_b20_p3.py:114: AssertionError
+__________ test_b19_11_lead_opportunity_like_should_escape_wildcards ___________
+
+    def test_b19_11_lead_opportunity_like_should_escape_wildcards():
+        src = inspect.getsource(lead_service.build_lead_stmt)
+>       assert "escape" in src, "线索/商机关键词 LIKE 未转义 %/_"
+E       AssertionError: 线索/商机关键词 LIKE 未转义 %/_
+E       assert 'escape' in 'def build_lead_stmt(\n    keyword: str | None = None,\n    status: str | None = None,\n    source: str | None = None,...d)\n    if unassigned:\n        stmt = stmt.where(Lead.owner_id.is_(None))\n    return stmt.order_by(Lead.id.desc())\n'
+
+../review/repro/test_b16_b20_p3.py:120: AssertionError
+____________ test_b19_12_business_event_duplicate_should_be_caught _____________
+
+    def test_b19_12_business_event_duplicate_should_be_caught():
+        src = inspect.getsource(followup_service.record_progress_event)
+>       assert "IntegrityError" in src, "BusinessEvent 并发重放撞唯一约束直接 500"
+E       AssertionError: BusinessEvent 并发重放撞唯一约束直接 500
+E       assert 'IntegrityError' in 'async def record_progress_event(\n    session: AsyncSession,\n    *,\n    customer_id: int | None,\n    operator_id: ...    order_id=order_id,\n        opportunity_id=opportunity_id,\n        sample_id=sample_id,\n    )\n    return True\n'
+
+../review/repro/test_b16_b20_p3.py:125: AssertionError
+___________ test_b20_07_product_physical_values_should_expose_exact ____________
+
+    def test_b20_07_product_physical_values_should_expose_exact():
+        src = inspect.getsource(product_service)
+>       assert "_exact" in src, "SKU 物理量序列化只有 float，无 exact"
+E       AssertionError: SKU 物理量序列化只有 float，无 exact
+E       assert '_exact' in '"""产品与 SKU 业务逻辑。"""\n\nfrom datetime import UTC, datetime\nfrom decimal import Decimal\nfrom uuid import uuid4\n\nfro...品当前不能用于新业务，本次操作已整单取消（没有写入任何数据）："\n            + "；".join(problems),\n            404 if missing else 409,\n        )\n'
+
+../review/repro/test_b16_b20_p3.py:133: AssertionError
+__________ test_b20_08_stage_status_should_be_enum_and_reorder_locked __________
+
+    def test_b20_08_stage_status_should_be_enum_and_reorder_locked():
+        src = inspect.getsource(opp_schema.StageUpdate)
+>       assert "Literal" in src, "阶段 status 是自由字符串"
+E       AssertionError: 阶段 status 是自由字符串
+E       assert 'Literal' in 'class StageUpdate(PatchModel):\n    model_config = ConfigDict(extra="ignore")\n\n    name: str | None = None\n    seq...e: int | None = None\n    is_win: bool | None = None\n    is_loss: bool | None = None\n    status: str | None = None\n'
+
+../review/repro/test_b16_b20_p3.py:140: AssertionError
+____________ test_b20_09_opportunity_create_should_have_request_key ____________
+
+    def test_b20_09_opportunity_create_should_have_request_key():
+        src = inspect.getsource(opp_router.create_opportunity)
+>       assert "request_key" in src, "创建商机/明细/克隆无 request_key，双击重复"
+E       AssertionError: 创建商机/明细/克隆无 request_key，双击重复
+E       assert 'request_key' in '@router.post("/opportunities")\nasync def create_opportunity(\n    payload: OpportunityCreate,\n    request: Request,...ge=stage, customer_name=customer.name, owner_name=owner.name if owner else None\n        ),\n        "商机已创建",\n    )\n'
+
+../review/repro/test_b16_b20_p3.py:147: AssertionError
+_________ test_b20_10_reopen_should_clear_loss_remark_and_audit_before _________
+
+    def test_b20_10_reopen_should_clear_loss_remark_and_audit_before():
+        src = inspect.getsource(opp_router.reopen_opportunity)
+>       assert "loss_remark = None" in src, "重开不清 loss_remark，旧失单理由残留"
+E       AssertionError: 重开不清 loss_remark，旧失单理由残留
+E       assert 'loss_remark = None' in '@router.post("/opportunities/{opportunity_id}/reopen")\nasync def reopen_opportunity(\n    opportunity_id: int,\n    ...),\n    )\n    await session.commit()\n    return ok(svc.serialize_opportunity(opportunity, stage=stage), "商机已重新激活")\n'
+
+../review/repro/test_b16_b20_p3.py:152: AssertionError
+________________ test_b20_11_single_update_should_take_row_lock ________________
+
+    def test_b20_11_single_update_should_take_row_lock():
+        src = inspect.getsource(opp_router.update_opportunity)
+>       assert "for_update=True" in src, "商机单条更新无行锁，并发最后写入覆盖"
+E       AssertionError: 商机单条更新无行锁，并发最后写入覆盖
+E       assert 'for_update=True' in '@router.patch("/opportunities/{opportunity_id}")\nasync def update_opportunity(\n    opportunity_id: int,\n    payloa...client_ip(request),\n    )\n    await session.commit()\n    return ok(svc.serialize_opportunity(opportunity), "已保存")\n'
+
+../review/repro/test_b16_b20_p3.py:158: AssertionError
+___________ test_b20_12_replace_copy_audit_should_have_item_details ____________
+
+    def test_b20_12_replace_copy_audit_should_have_item_details():
+>       replace_src = inspect.getsource(opp_router.replace_items)
+                                        ^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'app.modules.opportunity.router' has no attribute 'replace_items'
+
+../review/repro/test_b16_b20_p3.py:164: AttributeError
+_________ test_b20_13_ingest_external_sku_should_not_commit_internally _________
+
+    def test_b20_13_ingest_external_sku_should_not_commit_internally():
+        src = inspect.getsource(product_master.ingest_external_sku)
+>       assert "await session.commit()" not in src, "ingest 自己提交，调用方审计可能落空"
+E       AssertionError: ingest 自己提交，调用方审计可能落空
+E       assert 'await session.commit()' not in 'async def i...urn result\n'
+E         
+E         'await session.commit()' is contained here:
+E           )
+E                   await session.commit()
+E                   return result
+E           
+E               sku = await get_sku_or_404(session, source.sku_id)...
+E         
+E         ...Full output truncated (18 lines hidden), use '-vv' to show
+
+../review/repro/test_b16_b20_p3.py:173: AssertionError
+_____________ test_b20_14_delete_item_should_check_quote_reference _____________
+
+    def test_b20_14_delete_item_should_check_quote_reference():
+        src = inspect.getsource(opp_router.delete_item)
+>       assert "QuoteItem" in src or "quote_item" in src, "硬删商机明细不查报价引用，opportunity_item_id 悬空"
+E       AssertionError: 硬删商机明细不查报价引用，opportunity_item_id 悬空
+E       assert ('QuoteItem' in '@router.delete("/opportunity-items/{item_id}")\nasync def delete_item(\n    item_id: int,\n    request: Request,\n   ...   before=before,\n        ip=client_ip(request),\n    )\n    await session.commit()\n    return ok(None, "需求明细已删除")\n' or 'quote_item' in '@router.delete("/opportunity-items/{item_id}")\nasync def delete_item(\n    item_id: int,\n    request: Request,\n   ...   before=before,\n        ip=client_ip(request),\n    )\n    await session.commit()\n    return ok(None, "需求明细已删除")\n')
+
+../review/repro/test_b16_b20_p3.py:178: AssertionError
+____________ test_b21_05_product_export_should_use_schema_and_limit ____________
+
+    def test_b21_05_product_export_should_use_schema_and_limit():
+        src = inspect.getsource(product_io_router.export_products_filtered)
+>       assert "payload: dict" not in src, "产品导出用裸 dict，keyword 非 str 会 500"
+E       AssertionError: 产品导出用裸 dict，keyword 非 str 会 500
+E       assert 'payload: dict' not in '@router.pos...keyword"))\n'
+E         
+E         'payload: dict' is contained here:
+E           ered(
+E               payload: dict,
+E               user: CurrentUser = Depends(require_permission("product:view")),
+E               session: AsyncSession = Depends(get_db),
+E           ):
+E               """按筛选条件导出产品（03-API §14）。"""
+E               return await _export_products(session, keyword=payload.get("keyword"))
+
+../review/repro/test_b21_b24_p3.py:21: AssertionError
+____________ test_b21_06_insight_review_request_key_should_be_used _____________
+
+    def test_b21_06_insight_review_request_key_should_be_used():
+        src = inspect.getsource(insight_router.review_insight)
+>       assert "request_key" in src, "InsightReview.request_key 定义了但评审不使用，重试返回 422"
+E       AssertionError: InsightReview.request_key 定义了但评审不使用，重试返回 422
+E       assert 'request_key' in '@router.post("/product-insights/{insight_id}/review")\nasync def review_insight(\n    insight_id: int,\n    payload: ...       },\n        ip=client_ip(request),\n    )\n    await session.commit()\n    return ok(_serialize(row), "评审完成")\n'
+
+../review/repro/test_b21_b24_p3.py:27: AssertionError
+______________ test_b21_07_insight_create_should_have_request_key ______________
+
+    def test_b21_07_insight_create_should_have_request_key():
+        fields = insight_schema.InsightCreate.model_fields
+>       assert "request_key" in fields, "洞察创建无 request_key，双击生成重复记录"
+E       AssertionError: 洞察创建无 request_key，双击生成重复记录
+E       assert 'request_key' in {'title': FieldInfo(annotation=str, required=True, metadata=[MaxLen(max_length=200)]), 'source': FieldInfo(annotation=...=[MaxLen(max_length=128)]), 'direction': FieldInfo(annotation=Union[str, NoneType], required=False, default=None), ...}
+
+../review/repro/test_b21_b24_p3.py:32: AssertionError
+________________ test_b21_08_sku_audit_should_have_before_after ________________
+
+    def test_b21_08_sku_audit_should_have_before_after():
+        src = inspect.getsource(product_router.enable_sku)
+>       assert "before=" in src and "after=" in src, "SKU 启用审计只有 action，无 before/after"
+E       AssertionError: SKU 启用审计只有 action，无 before/after
+E       assert ('before=' in '@router.post("/skus/{sku_id}/enable")\nasync def enable_sku(\n    sku_id: int,\n    user: CurrentUser = Depends(requi..."enable", business_type="sku", business_id=sku.id\n    )\n    await session.commit()\n    return ok(None, "SKU 已启用")\n')
+
+../review/repro/test_b21_b24_p3.py:37: AssertionError
+___________ test_b21_09_sample_insight_like_should_escape_wildcards ____________
+
+    def test_b21_09_sample_insight_like_should_escape_wildcards():
+        src = inspect.getsource(sample_service.build_list_stmt)
+>       assert "escape" in src, "打样列表 LIKE 未转义 %/_"
+E       AssertionError: 打样列表 LIKE 未转义 %/_
+E       assert 'escape' in 'def build_list_stmt(\n    *,\n    keyword: str | None = None,\n    status: str | None = None,\n    customer_id: int |...              select(Opportunity.id).where(Opportunity.title.ilike(like))\n            )\n        )\n    return stmt\n'
+
+../review/repro/test_b21_b24_p3.py:42: AssertionError
+_______________ test_b21_10_sample_source_should_validate_owner ________________
+
+    def test_b21_10_sample_source_should_validate_owner():
+        src = inspect.getsource(sample_sources.create_from_source)
+>       assert "_assert_assignee" in src or "scoped_owner_ids" in src, "打样来源建单不校验 owner 在职/范围"
+E       AssertionError: 打样来源建单不校验 owner 在职/范围
+E       assert ('_assert_assignee' in "async def create_from_source(session, user, payload, *, ip=None):\n    key = str(payload.request_key)\n    content = ...eate:{sample.id}')\n    await customer_service.touch_progress(session, sample.customer_id)\n    return sample, False\n" or 'scoped_owner_ids' in "async def create_from_source(session, user, payload, *, ip=None):\n    key = str(payload.request_key)\n    content = ...eate:{sample.id}')\n    await customer_service.touch_progress(session, sample.customer_id)\n    return sample, False\n")
+
+../review/repro/test_b21_b24_p3.py:47: AssertionError
+___________ test_b21_11_product_attachment_should_have_length_limits ___________
+
+    def test_b21_11_product_attachment_should_have_length_limits():
+        src = inspect.getsource(product_router.attach_product_file)
+>       assert "max_length=32" in src and "max_length=255" in src, "产品附件 category/remark 无列宽前置校验"
+E       AssertionError: 产品附件 category/remark 无列宽前置校验
+E       assert ('max_length=32' in '@router.post("/products/{product_id}/files")\nasync def attach_product_file(\n    product_id: int,\n    request: Requ...urn ok(\n        {"business_file_id": link.id, "file_id": file_id, "name": record.file_name},\n        "已关联",\n    )\n')
+
+../review/repro/test_b21_b24_p3.py:52: AssertionError
+________________ test_b21_12_insight_images_should_have_limits _________________
+
+    def test_b21_12_insight_images_should_have_limits():
+        fields = insight_schema.InsightCreate.model_fields
+        meta = fields["images"].metadata
+>       assert any(getattr(m, "max_length", None) for m in meta), "洞察 images 无条数/单条长度上限"
+E       AssertionError: 洞察 images 无条数/单条长度上限
+E       assert False
+E        +  where False = any(<generator object test_b21_12_insight_images_should_have_limits.<locals>.<genexpr> at 0x10da3bae0>)
+
+../review/repro/test_b21_b24_p3.py:58: AssertionError
+___________ test_b21_13_manual_sample_create_should_have_request_key ___________
+
+    def test_b21_13_manual_sample_create_should_have_request_key():
+        fields = sample_schema.SampleCreate.model_fields
+>       assert "request_key" in fields, "手动打样创建无 request_key，双击生成重复申请单"
+E       AssertionError: 手动打样创建无 request_key，双击生成重复申请单
+E       assert 'request_key' in {'use_dingtalk': FieldInfo(annotation=bool, required=False, default=False), 'opportunity_id': FieldInfo(annotation=Uni...ired=False, default=None), 'contact_id': FieldInfo(annotation=Union[int, NoneType], required=False, default=None), ...}
+
+../review/repro/test_b21_b24_p3.py:63: AssertionError
+___________ test_b22_07_revision_should_have_request_key_and_unique ____________
+
+    def test_b22_07_revision_should_have_request_key_and_unique():
+        src = inspect.getsource(sample_router.revise_sample)
+>       assert "request_key" in src, "修订版无 request_key，双击出两份 V2"
+E       AssertionError: 修订版无 request_key，双击出两份 V2
+E       assert 'request_key' in '@router.post("/samples/{sample_id}/revise")\nasync def revise_sample(\n    sample_id: int,\n    request: Request,\n  ...wait notification_service.dispatch_after_commit(session)\n    return ok(after, f"已开第 {child.version} 版（原版冻结保留，等审批）")\n'
+
+../review/repro/test_b21_b24_p3.py:71: AssertionError
+_________ test_b22_08_task_inputs_should_be_enum_bounded_and_stripped __________
+
+    def test_b22_08_task_inputs_should_be_enum_bounded_and_stripped():
+        priority_src = inspect.getsource(task_schema.TaskCreate)
+>       assert "Literal" in priority_src, "任务 priority 是自由字符串"
+E       AssertionError: 任务 priority 是自由字符串
+E       assert 'Literal' in 'class TaskCreate(CreateModel):\n    title: str = Field(min_length=1, max_length=200)\n    task_type: str | None = Non...int | None = None\n    owner_id: int | None = None\n    priority: str = "normal"\n    due_at: datetime | None = None\n'
+
+../review/repro/test_b21_b24_p3.py:79: AssertionError
+__________________ test_b22_09_task_audit_should_have_before ___________________
+
+    def test_b22_09_task_audit_should_have_before():
+        src = inspect.getsource(task_router)
+        complete_src = src[src.index("async def complete_task"):src.index("async def cancel_task")]
+>       assert "before=" in complete_src, "任务完成审计只有 action，无 before 状态"
+E       AssertionError: 任务完成审计只有 action，无 before 状态
+E       assert 'before=' in 'async def complete_task(\n    task_id: int,\n    payload: TaskComplete,\n    request: Request,\n    user: CurrentUser... )\n    await session.commit()\n    return ok(serialize(task), "任务已完成")\n\n\n@router.post("/tasks/{task_id}/cancel")\n'
+
+../review/repro/test_b21_b24_p3.py:89: AssertionError
+_________________ test_b22_10_sample_audit_should_have_before __________________
+
+    def test_b22_10_sample_audit_should_have_before():
+        src = inspect.getsource(sample_router.approve_sample)
+>       assert "before=" in src, "打样审批/寄样审计只有 after，无 before 状态/金额"
+E       AssertionError: 打样审批/寄样审计只有 after，无 before 状态/金额
+E       assert 'before=' in '@router.post("/samples/{sample_id}/approve")\nasync def approve_sample(\n    sample_id: int,\n    payload: SampleAppr... notification_service.dispatch_after_commit(session)\n    return ok(after, "样品已批准" if payload.approved else "样品已拒绝")\n'
+
+../review/repro/test_b21_b24_p3.py:94: AssertionError
+______________ test_b22_11_numbering_prefix_should_be_whitelisted ______________
+
+    def test_b22_11_numbering_prefix_should_be_whitelisted():
+        src = inspect.getsource(numbering.period_max_number)
+>       assert "escape_like" in src or "escape=" in src, "编号前缀参与 LIKE 探测未转义 %/_"
+E       AssertionError: 编号前缀参与 LIKE 探测未转义 %/_
+E       assert ('escape_like' in 'async def period_max_number(\n    session: AsyncSession,\n    *,\n    model: Any,\n    column: Any,\n    rule: Number...:\n        return 0\n    try:\n        return int(str(latest)[len(head):])\n    except ValueError:\n        return 0\n' or 'escape=' in 'async def period_max_number(\n    session: AsyncSession,\n    *,\n    model: Any,\n    column: Any,\n    rule: Number...:\n        return 0\n    try:\n        return int(str(latest)[len(head):])\n    except ValueError:\n        return 0\n')
+
+../review/repro/test_b21_b24_p3.py:99: AssertionError
+_____________ test_b22_12_scanning_dialect_should_not_swallow_all ______________
+
+    def test_b22_12_scanning_dialect_should_not_swallow_all():
+        src = inspect.getsource(scanning)
+>       assert "except Exception" not in src, "扫描锁方言探测吞异常，静默跳过 advisory lock"
+E       AssertionError: 扫描锁方言探测吞异常，静默跳过 advisory lock
+E       assert 'except Exception' not in '"""定时与手动扫描共...\', 0))"))\n'
+E         
+E         'except Exception' is contained here:
+E           .name
+E               except Exception:  # noqa: BLE001
+E                   dialect = ""
+E               if dialect == "postgresql":
+E                   await session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended('crm:task-scan', 0))"))
+
+../review/repro/test_b21_b24_p3.py:104: AssertionError
+_______________ test_b23_04_settings_strings_should_have_lengths _______________
+
+    def test_b23_04_settings_strings_should_have_lengths():
+        checks = [
+            (settings_schema.SettingInput, "key", 64),
+            (settings_schema.SettingInput, "description", 255),
+            (settings_schema.DictionaryItemCreate, "type", 32),
+            (settings_schema.DictionaryItemCreate, "label", 128),
+            (settings_schema.CustomerLevelCreate, "code", 64),
+            (settings_schema.CustomerLevelCreate, "name", 128),
+        ]
+        missing = [f"{m.__name__}.{n}" for m, n, limit in checks
+                   if not any(getattr(x, "max_length", None) == limit for x in m.model_fields[n].metadata)]
+>       assert not missing, f"设置/字典/等级字段无 max_length，超长到 DB 才 500：{missing}"
+E       AssertionError: 设置/字典/等级字段无 max_length，超长到 DB 才 500：['SettingInput.key', 'SettingInput.description', 'DictionaryItemCreate.type', 'DictionaryItemCreate.label', 'CustomerLevelCreate.code', 'CustomerLevelCreate.name']
+E       assert not ['SettingInput.key', 'SettingInput.description', 'DictionaryItemCreate.type', 'DictionaryItemCreate.label', 'CustomerLevelCreate.code', 'CustomerLevelCreate.name']
+
+../review/repro/test_b21_b24_p3.py:121: AssertionError
+_________________ test_b23_05_approval_levels_should_lock_row __________________
+
+    def test_b23_05_approval_levels_should_lock_row():
+        src = inspect.getsource(settings_router)
+>       idx = src.index("approval_levels")
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       ValueError: substring not found
+
+../review/repro/test_b21_b24_p3.py:126: ValueError
+____ test_b23_06_auto_task_scan_should_not_write_next_followup_without_lock ____
+
+    def test_b23_06_auto_task_scan_should_not_write_next_followup_without_lock():
+        src = inspect.getsource(settings_service.run_auto_tasks)
+>       assert "next_followup_at" not in src or "lock_customer_row" in src, (
+            "扫描直接写 next_followup_at 不加客户锁，可能覆盖用户新约定"
+        )
+E       AssertionError: 扫描直接写 next_followup_at 不加客户锁，可能覆盖用户新约定
+E       assert ('next_followup_at' not in 'async def r...rs,\n    }\n'
+E         
+E         'next_followup_at' is contained here:
+E            customer.next_followup_at = next_due.get(customer.id)
+E         ?           ++++++++++++++++
+E                           # 同一活跃时钟口径：业务进展（报价/打样/下单/回款）也算"有联系"
+E                           last = _last_active_at(customer)
+E                           if last is None:...
+E         
+E         ...Full output truncated (106 lines hidden), use '-vv' to show or 'lock_customer_row' in 'async def run_auto_tasks(\n    session: AsyncSession, operator_id: int | None, source: str = "WEB"\n) -> dict:\n    "...ed_skipped": agreed_skipped[:100],\n        "failed_rule_count": len(errors),\n        "rule_errors": errors,\n    }\n')
+
+../review/repro/test_b21_b24_p3.py:133: AssertionError
+____________ test_b23_07_protection_detail_should_pass_customer_id _____________
+
+    def test_b23_07_protection_detail_should_pass_customer_id():
+        src = inspect.getsource(settings_service.decide_candidate)
+>       assert "protection_detail(session, customer_id=" in src, "单客户复核扫全库 protection_detail"
+E       AssertionError: 单客户复核扫全库 protection_detail
+E       assert 'protection_detail(session, customer_id=' in 'async def decide_candidate(\n    session: AsyncSession,\n    *,\n    candidate: PublicPoolRecycleCandidate,\n    deci...None,\n            "note": note,\n        },\n    )\n    await session.commit()\n    return serialize_candidate(row)\n'
+
+../review/repro/test_b21_b24_p3.py:140: AssertionError
+______________ test_b23_08_batch_candidate_ids_should_be_bounded _______________
+
+    def test_b23_08_batch_candidate_ids_should_be_bounded():
+        fields = settings_router.BatchCandidateDecision.model_fields
+        field = fields["candidate_ids"]
+>       assert any(getattr(m, "max_length", None) for m in field.metadata), "批量复核 candidate_ids 无上限"
+E       AssertionError: 批量复核 candidate_ids 无上限
+E       assert False
+E        +  where False = any(<generator object test_b23_08_batch_candidate_ids_should_be_bounded.<locals>.<genexpr> at 0x10dde43c0>)
+
+../review/repro/test_b21_b24_p3.py:146: AssertionError
+_________ test_b23_09_preview_token_decompress_should_have_max_length __________
+
+    def test_b23_09_preview_token_decompress_should_have_max_length():
+        src = inspect.getsource(importing)
+        block = src[src.index("zlib.decompress"):]
+>       assert "max_length" in block[:200], "preview_token 解压无上限，可构造内存/CPU 消耗"
+E       AssertionError: preview_token 解压无上限，可构造内存/CPU 消耗
+E       assert 'max_length' in 'zlib.decompress(compressed).decode("utf-8"))\n    except Exception as exc:  # noqa: BLE001\n        raise AppError(ErrorCode.PARAM_ERROR, "预览快照无法解析，请重新预览", 422) from exc\n    if data.get("m") != module:\n'
+
+../review/repro/test_b21_b24_p3.py:152: AssertionError
+__________ test_b24_01_cors_wildcard_should_conflict_with_credentials __________
+
+    def test_b24_01_cors_wildcard_should_conflict_with_credentials():
+        src = inspect.getsource(main_module)
+>       assert "allow_credentials=False" in src or 'if "*" in' in src, "CORS 允许 * 且 allow_credentials=True，无启动校验"
+E       AssertionError: CORS 允许 * 且 allow_credentials=True，无启动校验
+E       assert ('allow_credentials=False' in '"""FastAPI 入口。"""\n\nimport logging\nfrom contextlib import asynccontextmanager\n\nfrom fastapi import FastAPI\nfrom ...aded",\n            "app": settings.app_name,\n            "database": "ok" if db_ok else "error",\n        }\n    )\n' or 'if "*" in' in '"""FastAPI 入口。"""\n\nimport logging\nfrom contextlib import asynccontextmanager\n\nfrom fastapi import FastAPI\nfrom ...aded",\n            "app": settings.app_name,\n            "database": "ok" if db_ok else "error",\n        }\n    )\n')
+
+../review/repro/test_b21_b24_p3.py:160: AssertionError
+___________________ test_b24_02_health_should_log_db_failure ___________________
+
+    def test_b24_02_health_should_log_db_failure():
+        src = inspect.getsource(main_module)
+        block = src[src.index('database": "ok"'):]
+>       assert "logger.exception" in block or "logger.error" in block, "健康检查吞 DB 异常不打日志"
+E       AssertionError: 健康检查吞 DB 异常不打日志
+E       assert ('logger.exception' in 'database": "ok" if db_ok else "error",\n        }\n    )\n' or 'logger.error' in 'database": "ok" if db_ok else "error",\n        }\n    )\n')
+
+../review/repro/test_b21_b24_p3.py:166: AssertionError
+____________ test_b24_03_normalize_name_should_strip_all_whitespace ____________
+
+    def test_b24_03_normalize_name_should_strip_all_whitespace():
+        src = inspect.getsource(similarity.normalize_name)
+>       assert "\\t" in src or "split()" in src or "\\s" in src, "公司名归一化只清普通空格，制表符/换行会漏判"
+E       AssertionError: 公司名归一化只清普通空格，制表符/换行会漏判
+E       assert ('\\t' in 'def normalize_name(name: str | None) -> str:\n    """公司名归一化：去空白 + **只削结尾的企业后缀** + 转小写。\n\n    ⚠️ **必须只削结尾**（2026-10-1...         text = text[: -len(suffix)]\n                changed = True\n                break\n    return text.lower()\n' or 'split()' in 'def normalize_name(name: str | None) -> str:\n    """公司名归一化：去空白 + **只削结尾的企业后缀** + 转小写。\n\n    ⚠️ **必须只削结尾**（2026-10-1...         text = text[: -len(suffix)]\n                changed = True\n                break\n    return text.lower()\n' or '\\s' in 'def normalize_name(name: str | None) -> str:\n    """公司名归一化：去空白 + **只削结尾的企业后缀** + 转小写。\n\n    ⚠️ **必须只削结尾**（2026-10-1...         text = text[: -len(suffix)]\n                changed = True\n                break\n    return text.lower()\n')
+
+../review/repro/test_b21_b24_p3.py:171: AssertionError
+=========================== short test summary info ============================
+FAILED ../review/repro/test_b01_b05_p3.py::test_b01_04_probe_log_should_be_removed
+FAILED ../review/repro/test_b01_b05_p3.py::test_b01_05_approval_reason_should_say_divide_not_multiply
+FAILED ../review/repro/test_b01_b05_p3.py::test_b01_06_margin_delta_should_not_use_float_round
+FAILED ../review/repro/test_b01_b05_p3.py::test_b01_09_create_version_should_verify_source_visibility
+FAILED ../review/repro/test_b01_b05_p3.py::test_b01_11_quote_audit_should_not_write_float_money
+FAILED ../review/repro/test_b01_b05_p3.py::test_b02_08_refund_and_freight_quantize_should_specify_rounding
+FAILED ../review/repro/test_b01_b05_p3.py::test_b02_09_historical_version_should_not_fill_current_fields
+FAILED ../review/repro/test_b01_b05_p3.py::test_b02_10_send_email_log_should_be_idempotent
+FAILED ../review/repro/test_b01_b05_p3.py::test_b02_11_router_all_should_be_removed
+FAILED ../review/repro/test_b01_b05_p3.py::test_b02_13_product_cost_should_have_same_day_unique_constraint
+FAILED ../review/repro/test_b01_b05_p3.py::test_b02_16_session_dialect_should_not_swallow_all_exceptions
+FAILED ../review/repro/test_b01_b05_p3.py::test_b02_17_create_quote_release_failure_should_not_mask_original
+FAILED ../review/repro/test_b01_b05_p3.py::test_b03_08_draft_confirm_should_check_source_version_id
+FAILED ../review/repro/test_b01_b05_p3.py::test_b03_09_logistics_quantize_should_specify_rounding
+FAILED ../review/repro/test_b01_b05_p3.py::test_b03_10_exchange_rate_should_require_cny_base
+FAILED ../review/repro/test_b01_b05_p3.py::test_b03_11_logistics_rate_strings_should_have_max_length
+FAILED ../review/repro/test_b01_b05_p3.py::test_b03_12_price_rule_customer_level_should_be_literal
+FAILED ../review/repro/test_b01_b05_p3.py::test_b03_13_batch_calculate_should_have_item_limit
+FAILED ../review/repro/test_b01_b05_p3.py::test_b03_14_logistics_calculate_should_have_request_key
+FAILED ../review/repro/test_b01_b05_p3.py::test_b03_15_ratios_should_be_decimal
+FAILED ../review/repro/test_b01_b05_p3.py::test_b03_16_logistics_quote_unit_price_should_match_basis
+FAILED ../review/repro/test_b01_b05_p3.py::test_b03_17_delete_rate_should_take_advisory_lock
+FAILED ../review/repro/test_b01_b05_p3.py::test_b03_18_erp_order_id_should_be_unique
+FAILED ../review/repro/test_b01_b05_p3.py::test_b03_22_pricing_import_should_log_unexpected_exception
+FAILED ../review/repro/test_b01_b05_p3.py::test_b04_09_cancel_should_accept_reason
+FAILED ../review/repro/test_b01_b05_p3.py::test_b04_10_cancel_should_drop_batch_nodes
+FAILED ../review/repro/test_b01_b05_p3.py::test_b04_11_manual_order_items_should_have_limit
+FAILED ../review/repro/test_b01_b05_p3.py::test_b04_12_manual_order_payment_milestone_should_complete
+FAILED ../review/repro/test_b01_b05_p3.py::test_b04_13_convert_retry_should_replay_existing_order
+FAILED ../review/repro/test_b01_b05_p3.py::test_b04_14_receivable_should_have_unique_and_fk
+FAILED ../review/repro/test_b01_b05_p3.py::test_b04_16_convert_integrity_error_should_not_rollback_outer_tx
+FAILED ../review/repro/test_b01_b05_p3.py::test_b04_21_status_audit_should_capture_before_and_remark
+FAILED ../review/repro/test_b01_b05_p3.py::test_b05_11_finance_summary_should_zero_cancelled_unreceived
+FAILED ../review/repro/test_b01_b05_p3.py::test_b05_13_auto_allocation_should_check_currency
+FAILED ../review/repro/test_b01_b05_p3.py::test_b05_14_require_confirmation_should_be_used
+FAILED ../review/repro/test_b01_b05_p3.py::test_b05_15_voucher_upload_should_not_hold_lock_during_disk_io
+FAILED ../review/repro/test_b01_b05_p3.py::test_b05_20_overdue_refresh_should_record_progress
+FAILED ../review/repro/test_b06_b10_p3.py::test_b06_11_serialize_record_should_expose_exact
+FAILED ../review/repro/test_b06_b10_p3.py::test_b06_12_exception_queue_should_include_failed
+FAILED ../review/repro/test_b06_b10_p3.py::test_b06_13_push_payload_shop_id_should_not_be_hardcoded_none
+FAILED ../review/repro/test_b06_b10_p3.py::test_b06_14_list_mappings_should_show_scoped_unmatched
+FAILED ../review/repro/test_b06_b10_p3.py::test_b06_17_fail_quietly_should_log_when_failure_persist_fails
+FAILED ../review/repro/test_b06_b10_p3.py::test_b06_18_push_success_audit_should_be_same_transaction
+FAILED ../review/repro/test_b06_b10_p3.py::test_b07_11_reconcile_audit_should_be_same_transaction
+FAILED ../review/repro/test_b06_b10_p3.py::test_b07_12_contract_request_key_should_have_orm_unique
+FAILED ../review/repro/test_b06_b10_p3.py::test_b07_13_erp_webhook_should_use_hmac_timestamp
+FAILED ../review/repro/test_b06_b10_p3.py::test_b07_14_sync_approval_should_lock_document_before_snapshot
+FAILED ../review/repro/test_b06_b10_p3.py::test_b08_04_cancel_safe_should_not_reshield_same_coroutine
+FAILED ../review/repro/test_b06_b10_p3.py::test_b09_04_rule_version_should_have_unique_constraint
+FAILED ../review/repro/test_b06_b10_p3.py::test_b10_08_uploaded_attachments_should_be_cleaned_on_state_change
+FAILED ../review/repro/test_b06_b10_p3.py::test_b10_09_sample_status_should_follow_oa_return
+FAILED ../review/repro/test_b06_b10_p3.py::test_b10_10_send_should_catch_unexpected_and_mark_failure
+FAILED ../review/repro/test_b11_b15_p3.py::test_b11_12_role_scope_and_status_should_be_enum
+FAILED ../review/repro/test_b11_b15_p3.py::test_b12_06_upload_should_validate_metadata_before_disk_write
+FAILED ../review/repro/test_b11_b15_p3.py::test_b13_10_single_customer_create_should_require_request_key
+FAILED ../review/repro/test_b11_b15_p3.py::test_b13_11_tag_write_should_use_savepoint_not_full_rollback
+FAILED ../review/repro/test_b11_b15_p3.py::test_b14_06_wecom_create_customer_should_validate_lengths
+FAILED ../review/repro/test_b11_b15_p3.py::test_b14_07_token_cache_should_be_locked_and_secret_aware
+FAILED ../review/repro/test_b11_b15_p3.py::test_b14_08_batch_tag_replace_audit_should_capture_before
+FAILED ../review/repro/test_b11_b15_p3.py::test_b15_07_contact_sync_success_should_not_override_partial
+FAILED ../review/repro/test_b11_b15_p3.py::test_b15_08_notification_materialize_should_filter_all_deleted_sources
+FAILED ../review/repro/test_b16_b20_p3.py::test_b16_07_search_like_should_escape_wildcards_and_count_total
+FAILED ../review/repro/test_b16_b20_p3.py::test_b18_05_superseded_by_should_order_by_latest
+FAILED ../review/repro/test_b16_b20_p3.py::test_b18_06_timing_report_should_have_upper_bounds
+FAILED ../review/repro/test_b16_b20_p3.py::test_b18_07_sales_target_year_should_have_bounds
+FAILED ../review/repro/test_b16_b20_p3.py::test_b18_08_case_audit_should_capture_before_after
+FAILED ../review/repro/test_b16_b20_p3.py::test_b18_09_case_inputs_should_reject_zero_and_blank
+FAILED ../review/repro/test_b16_b20_p3.py::test_b18_10_contact_dedupe_like_should_escape_wildcards
+FAILED ../review/repro/test_b16_b20_p3.py::test_b19_06_followup_type_should_have_enum_and_length
+FAILED ../review/repro/test_b16_b20_p3.py::test_b19_07_lead_fields_should_have_lengths_and_name_min
+FAILED ../review/repro/test_b16_b20_p3.py::test_b19_08_opportunity_fields_should_have_lengths_and_limits
+FAILED ../review/repro/test_b16_b20_p3.py::test_b19_09_lead_inquiry_create_should_have_request_key_and_status_guard
+FAILED ../review/repro/test_b16_b20_p3.py::test_b19_10_lead_inquiry_audit_should_have_before
+FAILED ../review/repro/test_b16_b20_p3.py::test_b19_11_lead_opportunity_like_should_escape_wildcards
+FAILED ../review/repro/test_b16_b20_p3.py::test_b19_12_business_event_duplicate_should_be_caught
+FAILED ../review/repro/test_b16_b20_p3.py::test_b20_07_product_physical_values_should_expose_exact
+FAILED ../review/repro/test_b16_b20_p3.py::test_b20_08_stage_status_should_be_enum_and_reorder_locked
+FAILED ../review/repro/test_b16_b20_p3.py::test_b20_09_opportunity_create_should_have_request_key
+FAILED ../review/repro/test_b16_b20_p3.py::test_b20_10_reopen_should_clear_loss_remark_and_audit_before
+FAILED ../review/repro/test_b16_b20_p3.py::test_b20_11_single_update_should_take_row_lock
+FAILED ../review/repro/test_b16_b20_p3.py::test_b20_12_replace_copy_audit_should_have_item_details
+FAILED ../review/repro/test_b16_b20_p3.py::test_b20_13_ingest_external_sku_should_not_commit_internally
+FAILED ../review/repro/test_b16_b20_p3.py::test_b20_14_delete_item_should_check_quote_reference
+FAILED ../review/repro/test_b21_b24_p3.py::test_b21_05_product_export_should_use_schema_and_limit
+FAILED ../review/repro/test_b21_b24_p3.py::test_b21_06_insight_review_request_key_should_be_used
+FAILED ../review/repro/test_b21_b24_p3.py::test_b21_07_insight_create_should_have_request_key
+FAILED ../review/repro/test_b21_b24_p3.py::test_b21_08_sku_audit_should_have_before_after
+FAILED ../review/repro/test_b21_b24_p3.py::test_b21_09_sample_insight_like_should_escape_wildcards
+FAILED ../review/repro/test_b21_b24_p3.py::test_b21_10_sample_source_should_validate_owner
+FAILED ../review/repro/test_b21_b24_p3.py::test_b21_11_product_attachment_should_have_length_limits
+FAILED ../review/repro/test_b21_b24_p3.py::test_b21_12_insight_images_should_have_limits
+FAILED ../review/repro/test_b21_b24_p3.py::test_b21_13_manual_sample_create_should_have_request_key
+FAILED ../review/repro/test_b21_b24_p3.py::test_b22_07_revision_should_have_request_key_and_unique
+FAILED ../review/repro/test_b21_b24_p3.py::test_b22_08_task_inputs_should_be_enum_bounded_and_stripped
+FAILED ../review/repro/test_b21_b24_p3.py::test_b22_09_task_audit_should_have_before
+FAILED ../review/repro/test_b21_b24_p3.py::test_b22_10_sample_audit_should_have_before
+FAILED ../review/repro/test_b21_b24_p3.py::test_b22_11_numbering_prefix_should_be_whitelisted
+FAILED ../review/repro/test_b21_b24_p3.py::test_b22_12_scanning_dialect_should_not_swallow_all
+FAILED ../review/repro/test_b21_b24_p3.py::test_b23_04_settings_strings_should_have_lengths
+FAILED ../review/repro/test_b21_b24_p3.py::test_b23_05_approval_levels_should_lock_row
+FAILED ../review/repro/test_b21_b24_p3.py::test_b23_06_auto_task_scan_should_not_write_next_followup_without_lock
+FAILED ../review/repro/test_b21_b24_p3.py::test_b23_07_protection_detail_should_pass_customer_id
+FAILED ../review/repro/test_b21_b24_p3.py::test_b23_08_batch_candidate_ids_should_be_bounded
+FAILED ../review/repro/test_b21_b24_p3.py::test_b23_09_preview_token_decompress_should_have_max_length
+FAILED ../review/repro/test_b21_b24_p3.py::test_b24_01_cors_wildcard_should_conflict_with_credentials
+FAILED ../review/repro/test_b21_b24_p3.py::test_b24_02_health_should_log_db_failure
+FAILED ../review/repro/test_b21_b24_p3.py::test_b24_03_normalize_name_should_strip_all_whitespace
+107 failed in 1.13s

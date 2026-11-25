@@ -61,6 +61,8 @@ from __future__ import annotations
 from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.audit import write_audit
+
 #: 跟着客户负责人走的单据类别。
 #: 与离职交接的类别名单（`wecom/model.py` 的 `TRANSFER_KIND_LABEL`）同一口径：
 #: 商机、打样（跟单/生产两个责任字段）、报价单、订单草稿、销售订单。
@@ -109,6 +111,7 @@ async def reassign_customer_documents(
     customer_id: int,
     from_owner_id: int | None,
     to_owner_id: int | None,
+    operator_id: int,
 ) -> dict:
     """把客户名下、原本挂在 `from_owner_id` 名下的单据改成 `to_owner_id`。
 
@@ -137,7 +140,7 @@ async def reassign_customer_documents(
     from app.modules.quote.model import Quote
     from app.modules.sample.model import SampleRequest
 
-    moved: dict[str, int] = {}
+    moved_by_kind: dict[str, list[int]] = {}
     skipped: dict[str, int] = {}
 
     async def move(kind: str, model, *conditions, **values) -> list[int]:
@@ -165,7 +168,7 @@ async def reassign_customer_documents(
         moved_ids = list(result.scalars().all())
         taken_over = sorted(candidates - set(moved_ids))
         if moved_ids:
-            moved[kind] = len(moved_ids)
+            moved_by_kind[kind] = sorted(moved_ids)
         if taken_over:
             skipped[kind] = len(taken_over)
         return moved_ids
@@ -189,6 +192,9 @@ async def reassign_customer_documents(
         SampleRequest,
         SampleRequest.customer_id == customer_id,
         SampleRequest.owner_id == from_owner_id,
+        # 已软删的不跟着交接（2026-10-15）：它已经不在任何人的待办里，
+        # 搬过去只会让"交接了 N 张打样单"这个数字虚高。
+        SampleRequest.deleted_at.is_(None),
         owner_id=to_owner_id,
     )
     await move(
@@ -196,6 +202,7 @@ async def reassign_customer_documents(
         SampleRequest,
         SampleRequest.customer_id == customer_id,
         SampleRequest.production_owner_id == from_owner_id,
+        SampleRequest.deleted_at.is_(None),
         production_owner_id=to_owner_id,
     )
 
@@ -248,6 +255,16 @@ async def reassign_customer_documents(
         or_(*biz_conditions),
         owner_id=to_owner_id,
     )
+
+    moved = {kind: len(ids) for kind, ids in moved_by_kind.items()}
+    if moved or skipped:
+        await write_audit(
+            session, operator_id=operator_id, action="transfer_documents",
+            business_type="customer", business_id=customer_id,
+            before={"owner_id": from_owner_id},
+            after={"owner_id": to_owner_id, "moved": moved, "skipped": skipped,
+                   "moved_document_ids": moved_by_kind},
+        )
 
     return {
         "moved": moved,

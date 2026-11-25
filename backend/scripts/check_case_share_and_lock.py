@@ -127,12 +127,26 @@ async def main():
         # （输入校验另有断言覆盖，这里刻意用最短路径造出"库里已有一条带敏感信息的标签"）
         raw_label = f"{customer.name} 13800138000 成本12元"
         async with SessionLocal() as session:
+            # 证据引用的单据必须对读者可见，否则详情会按设计把它收进
+            # hidden_evidence（防止借案例绕过单据权限）。这里给分享读者
+            # 造一张本人名下的真实报价，既保留"标签来自快照"的断言，
+            # 又不触发可见性过滤。
+            zs_id = (await session.execute(
+                text("select id from users where username = 'zhangsan'")
+            )).scalar_one()
+            evidence_quote_id = (await session.execute(
+                text(
+                    "insert into quotes (quote_no, customer_id, owner_id, status, created_by)"
+                    " values (:no, :c, :o, 'draft', :o) returning id"
+                ),
+                {"no": f"{MARKER}-EV", "c": customer.id, "o": zs_id},
+            )).scalar_one()
             await session.execute(
                 text(
                     "insert into case_evidences (case_id, kind, business_id, label)"
                     " values (:c, 'quote', :b, :l)"
                 ),
-                {"c": case_id, "b": 999001, "l": raw_label},
+                {"c": case_id, "b": evidence_quote_id, "l": raw_label},
             )
             await session.commit()
 
@@ -227,6 +241,9 @@ async def main():
         async with SessionLocal() as session:
             await session.execute(
                 text("delete from sales_cases where title like :p"), {"p": f"{MARKER}%"}
+            )
+            await session.execute(
+                text("delete from quotes where quote_no like :q"), {"q": f"{MARKER}-EV%"}
             )
             await session.commit()
         print()

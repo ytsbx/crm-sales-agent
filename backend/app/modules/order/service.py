@@ -1,13 +1,15 @@
 """订单业务逻辑。"""
 
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
+from app.core.money import line_amount
+from app.modules.quote.service import _assert_money_in_range
 from app.core.trade_mode import ensure_currency_allowed
 from app.modules.customer.model import Customer
 from app.modules.integration.model import ExternalMapping
@@ -31,8 +33,12 @@ from app.modules.quote.model import QuoteItem, QuoteVersion
 from app.modules.user.model import User
 
 
-def _f(value: Decimal | None) -> float | None:
-    return None if value is None else float(value)
+def _f(value: Decimal | None) -> Decimal | None:
+    """序列化总闸：保留 Decimal 原值（float→Decimal 专项批3）。
+
+    JSON 出口（core/jsonio）按原值渲染精确数字；数量/金额不再经 float 丢尾数。
+    """
+    return value
 
 
 def serialize_order(
@@ -59,8 +65,32 @@ def serialize_order(
         "sales_owner_id": order.sales_owner_id,
         "sales_owner_name": sales_owner_name,
         "total_amount": _f(order.total_amount),
+        **{f"{name}_exact": str(getattr(order, name)) if getattr(order, name) is not None else None
+           for name in ("total_amount", "goods_amount", "logistics_amount", "other_charge_amount", "discount_amount")},
+        # 金额组成（2026-10-09 运费分离）：订单页要能解释总额是怎么来的。
+        # 这四个值**已经含在** `total_amount` 里，只做拆分展示，不要再相加。
+        # 可空 = 历史订单没留存 → 前端写"待核实"，不回查报价拿今天的数来填。
+        "goods_amount": _f(order.goods_amount) if order.goods_amount is not None else None,
+        "logistics_amount": (
+            _f(order.logistics_amount) if order.logistics_amount is not None else None
+        ),
+        "other_charge_amount": (
+            _f(order.other_charge_amount) if order.other_charge_amount is not None else None
+        ),
+        "discount_amount": (
+            _f(order.discount_amount) if order.discount_amount is not None else None
+        ),
+        "pricing_basis": order.pricing_basis,
         "received_amount": _f(received),
-        "unreceived_amount": _f((order.total_amount or Decimal(0)) - received),
+        "received_amount_exact": str(received),
+        # 取消是终态：应收计划已随单作废，订单不再有待收金额。
+        # 继续按 `总额 - 已收` 算会让已取消订单在详情/列表里显示"还要收 17 万"。
+        "unreceived_amount_exact": str(
+            Decimal(0) if order.status == "cancelled" else (order.total_amount or Decimal(0)) - received
+        ),
+        "unreceived_amount": _f(
+            Decimal(0) if order.status == "cancelled" else (order.total_amount or Decimal(0)) - received
+        ),
         "currency": order.currency,
         "status": order.status,
         "status_label": ORDER_STATUS_LABEL.get(order.status, order.status),
@@ -98,8 +128,11 @@ def serialize_item(item: SalesOrderItem, sku_code: str | None = None) -> dict:
         "sku_snapshot": item.sku_snapshot,
         "specification": item.specification,
         "quantity": _f(item.quantity),
+        "quantity_exact": format(item.quantity, 'f') if item.quantity is not None else None,
         "unit_price": _f(item.unit_price),
+        "unit_price_exact": str(item.unit_price) if item.unit_price is not None else None,
         "amount": _f(item.amount),
+        "amount_exact": str(item.amount) if item.amount is not None else None,
         "remark": item.remark,
     }
 
@@ -167,15 +200,46 @@ async def received_amount(session: AsyncSession, order_id: int) -> Decimal:
     return Decimal(total)
 
 
+async def active_order_for_quote(session: AsyncSession, quote_id: int) -> SalesOrder | None:
+    stmt = select(SalesOrder).where(
+        SalesOrder.quote_id == quote_id, SalesOrder.status != "cancelled",
+    ).order_by(SalesOrder.id).limit(1)
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def quote_order_reference(session: AsyncSession, user, order: SalesOrder) -> dict | None:
+    from app.core.data_scope import ensure_in_scope
+
+    if "admin" not in user.roles and not user.has("order:view"):
+        return None
+    try:
+        await ensure_in_scope(session, user, owner_id=order.owner_id, label="订单")
+    except AppError as error:
+        if error.code != ErrorCode.DATA_SCOPE_DENIED:
+            raise
+        return None
+    return {"id": order.id, "order_no": order.order_no}
+
+
+async def ensure_no_active_order_for_quote(session: AsyncSession, quote_id: int, *, user=None) -> None:
+    order = await active_order_for_quote(session, quote_id)
+    if order is not None:
+        reference = await quote_order_reference(session, user, order) if user is not None else None
+        number = f"（{reference['order_no']}）" if reference else ""
+        raise AppError(ErrorCode.DUPLICATE_CONVERT, f"这张报价已生成有效订单{number}，请在原订单中处理", 409)
+
+
 async def create_order_from_quote(
     session: AsyncSession,
     *,
     version: QuoteVersion,
     user_id: int,
+    user=None,
     delivery_date: date | None = None,
     remark: str | None = None,
+    receivable_plan=None,
 ) -> SalesOrder:
-    """报价版本转销售订单：必须已通过审批；同一版本只能转一次（幂等）。"""
+    """已接受的报价只保留一张有效订单。取消后重新确认新版才能补单。"""
     from app.modules.quote.model import Quote
     from app.modules.quote.lifecycle import ensure_current_version
 
@@ -189,12 +253,16 @@ async def create_order_from_quote(
         raise AppError(ErrorCode.NOT_FOUND, "报价单不存在或已删除", 404)
     version = (await session.execute(select(QuoteVersion).where(QuoteVersion.id == version.id)
                .with_for_update().execution_options(populate_existing=True))).scalar_one()
+    # 持有报价行锁后检查，跨版本及不同转单入口共用同一个互斥点。
+    await ensure_no_active_order_for_quote(session, quote.id, user=user)
     existing = (
         await session.execute(
             select(SalesOrder).where(SalesOrder.quote_version_id == version.id)
         )
     ).scalar_one_or_none()
     if existing is not None:
+        if existing.status == "cancelled":
+            raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "此版本的订单已取消，请新建报价版本并让客户重新确认后再下单", 422)
         raise AppError(
             ErrorCode.DUPLICATE_CONVERT,
             f"该报价版本已经转过订单（{existing.order_no}）",
@@ -202,11 +270,14 @@ async def create_order_from_quote(
         )
 
     ensure_current_version(quote, version)
+    currency = await ensure_currency_allowed(session, version.currency, label="报价币种")
     customer = await session.get(Customer, quote.customer_id)
     if customer is None or customer.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "报价关联客户不存在或已删除，不能正式下单", 404)
     if version.approval_status != "approved":
         raise AppError(ErrorCode.APPROVAL_PENDING, "报价未通过审批，不能转订单", 422)
+    from app.modules.quote.service import ensure_items_cost_complete
+    await ensure_items_cost_complete(session, version_id=version.id)
     if quote.status != "accepted" or version.accepted_at is None or version.sent_at is None or version.declined_at is not None:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "只有客户已接受的当前报价版本才能正式下单", 422)
     # 已失效报价不能转单（方案 A13：有效性校验；此前的口子允许过期报价转单）。
@@ -239,6 +310,19 @@ async def create_order_from_quote(
             )
         ).scalar_one_or_none()
 
+    items = (
+        await session.execute(
+            select(QuoteItem).where(QuoteItem.quote_version_id == version.id)
+        )
+    ).scalars().all()
+    goods_amount = sum((line_amount(item.quantity, item.quoted_price) for item in items), Decimal(0))
+    if goods_amount != version.subtotal_amount:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "报价货款与逐行金额合计不一致，请新建版本重新核对金额并取得客户确认后再下单",
+            422,
+        )
+
     order = SalesOrder(
         order_no=await generate_order_no(session),
         customer_id=quote.customer_id,
@@ -249,7 +333,16 @@ async def create_order_from_quote(
         # 签单归属此刻写死（文档 :61）：往后交接或手工改负责人，业绩都算这一个人
         sales_owner_id=quote.owner_id,
         total_amount=version.total_amount,
-        currency=version.currency,
+        # 总额组成快照（2026-10-09 运费分离）：订单页要能解释总额是怎么来的，
+        # 而报价之后可能还会改 —— 所以在这里**冻结**一份，订单读自己的快照。
+        # 这四个值都已含在 total_amount 里（拆分展示用，不再相加）。
+        goods_amount=version.subtotal_amount,
+        logistics_amount=version.logistics_amount,
+        other_charge_amount=version.other_charge_amount,
+        discount_amount=version.discount_amount,
+        #: 口径随单冻结：历史订单为 NULL（当时是旧口径）。
+        pricing_basis=version.pricing_basis,
+        currency=currency,
         status="pending",
         delivery_date=effective_delivery,
         payment_terms=version.payment_terms,
@@ -269,11 +362,6 @@ async def create_order_from_quote(
             409,
         )
 
-    items = (
-        await session.execute(
-            select(QuoteItem).where(QuoteItem.quote_version_id == version.id)
-        )
-    ).scalars().all()
     for item in items:
         session.add(
             SalesOrderItem(
@@ -295,7 +383,7 @@ async def create_order_from_quote(
                 specification=item.spec_snapshot,
                 quantity=item.quantity,
                 unit_price=item.quoted_price,
-                amount=(item.quantity * item.quoted_price).quantize(Decimal("0.01")),
+                amount=line_amount(item.quantity, item.quoted_price),
                 remark=item.remark,
             )
         )
@@ -310,20 +398,54 @@ async def create_order_from_quote(
             created_at=datetime.now(UTC),
         )
     )
-    # 订单→应收（方案 §6）：转单即生成一条全款应收计划，避免"建单靠记性建应收"；
-    # 需要拆定金/尾款时在订单详情页删除后按比例重生成
-    session.add(
-        ReceivablePlan(
-            order_id=order.id,
-            plan_name="全款",
-            due_date=effective_delivery or (today + timedelta(days=30)),
-            amount=version.total_amount.quantize(Decimal("0.01")),
-            currency=version.currency,
-            status="pending",
-            remark="转单自动生成，可在订单详情调整或拆分",
-            created_at=datetime.now(UTC),
+    # 订单→应收（方案 §6）：转单即生成应收计划，避免"建单靠记性建应收"。
+    #
+    # 2026-10-13 起支持在转单时**直接选收款方式**（主人：改动三）：
+    #   · 不传 `receivable_plan` → 一条「全款」（沿用老行为，向后兼容）；
+    #   · 传了 → 按比例分多期，名称/到期日按下标对齐，缺的回落。
+    # 金额算法与 `POST /orders/{id}/receivables/generate` **同一口径**：
+    # 前期四舍五入到分、**末期补差额**，所以各期之和严格等于订单总额。
+    default_due = effective_delivery or (today + timedelta(days=30))
+    total_amount = version.total_amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if receivable_plan is None or not getattr(receivable_plan, "ratios", None):
+        session.add(
+            ReceivablePlan(
+                order_id=order.id,
+                plan_name="全款",
+                due_date=default_due,
+                amount=total_amount,
+                currency=currency,
+                status="pending",
+                remark="转单自动生成，可在订单详情调整或拆分",
+                created_at=datetime.now(UTC),
+            )
         )
-    )
+    else:
+        ratios = [Decimal(str(r)) for r in receivable_plan.ratios]
+        due_dates = list(receivable_plan.due_dates or [])
+        names = list(receivable_plan.names or [])
+        # 金额拆法与"有没有非正数期"的校验**复用后建应收计划那一处**
+        # （第九批问题 ①）。这里原来自己算了一遍、**漏了非正数校验**：
+        # 实测 0.03 元分 5×20% 会生成 `0.01、0.01、0.01、0.01、−0.01`，
+        # 负数额的应收会让财务核销与催收都对不上。
+        # 抛错时整个转单事务回滚（本函数由路由的事务包裹）。
+        from app.modules.payment import service as payment_service
+
+        amounts = payment_service.split_amounts(total_amount, ratios)
+        for index in range(len(ratios)):
+            session.add(
+                ReceivablePlan(
+                    order_id=order.id,
+                    plan_name=(names[index] if index < len(names) and str(names[index]).strip()
+                               else f"第 {index + 1} 期"),
+                    due_date=(due_dates[index] if index < len(due_dates) else default_due),
+                    amount=amounts[index],
+                    currency=currency,
+                    status="pending",
+                    remark="转单时按收款方式生成，可在订单详情调整",
+                    created_at=datetime.now(UTC),
+                )
+            )
     # 领导六阶段口径"过程记录"：转单即下单事实，自动留痕 + 推业务主管
     # （confirm-win 与 convert-to-order 两条路都汇到这里）
     from app.modules.followup import service as followup_service
@@ -333,7 +455,7 @@ async def create_order_from_quote(
         customer_id=quote.customer_id,
         owner_id=order.owner_id,
         title=f"订单已创建 {order.order_no}",
-        content=f"{order.order_no} 金额 ¥{float(version.total_amount):,.2f}（由报价转单）",
+        content=f"{order.order_no} 金额 ¥{version.total_amount:,.2f}（由报价转单）",
         business_type="order",
         business_id=order.id,
         order_id=order.id,
@@ -346,6 +468,28 @@ async def create_order_from_quote(
     return order
 
 
+#: `sales_order_items.quantity` 的列精度是 `Numeric(16,3)` —— 计算前先按它归一
+QUANTITY_SCALE = Decimal("0.001")
+
+
+def normalized_quantity(quantity: Decimal | None) -> Decimal:
+    """把数量按**库列精度**（三位小数）归一后再参与计价（审查 B2-02）。
+
+    为什么需要：`create_order` 从前拿**入参原值**算货款，而落库时数据库按
+    `Numeric(16,3)` 又舍了一次 —— 两个数对不上。实测：
+      - 数量 `1.23456`、单价 `150` → 落库数量 `1.235`，货款却算成 `185.18`；
+        "落库数量 × 单价" 应为 `185.25`。同一张单两个数，对账时必然扯皮。
+      - 数量 `0.0001` → 落库 `0.000`（零数量），货款却是 `0.02`。
+
+    入参侧已经拦住超过三位小数的数量（`OrderItemInput.decimal_places=3`），
+    这里的归一是**第二道保险**，同时保证"算货款用的数量"与"落库的数量"
+    逐位一致（与报价模块 `quote.service.normalized_quantity` 同一写法）。
+    """
+    if quantity is None:
+        return Decimal("0")
+    return Decimal(quantity).quantize(QUANTITY_SCALE, rounding=ROUND_HALF_UP)
+
+
 async def create_order(
     session: AsyncSession,
     *,
@@ -354,6 +498,7 @@ async def create_order(
     items: list,
     opportunity_id: int | None = None,
     quote_id: int | None = None,
+    user=None,
     owner_id: int | None = None,
     currency: str = "CNY",
     delivery_date: date | None = None,
@@ -371,23 +516,52 @@ async def create_order(
     # （继承），不经过这里 —— 源头在报价那一侧已经拦住了。
     currency = await ensure_currency_allowed(session, currency, label="订单币种")
 
-    from app.modules.product.model import Sku
+    if quote_id is not None:
+        from app.modules.quote.model import Quote
+
+        quote = (await session.execute(select(Quote).where(Quote.id == quote_id)
+                 .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
+        if quote is None or quote.deleted_at is not None:
+            raise AppError(ErrorCode.NOT_FOUND, "报价单不存在或已删除", 404)
+        await ensure_no_active_order_for_quote(session, quote_id, user=user)
+        if (await session.execute(select(SalesOrder.id).where(SalesOrder.quote_id == quote_id)
+                                  .limit(1))).scalar_one_or_none() is not None:
+            raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "原订单已取消，请在报价中新建版本并让客户重新确认后再下单", 422)
 
     total = Decimal(0)
     rows: list[SalesOrderItem] = []
+    from app.modules.product.service import require_sku_for_new_business
+
     for entry in items:
-        sku = await session.get(Sku, entry.sku_id)
-        if sku is None or sku.deleted_at is not None:
-            raise AppError(ErrorCode.NOT_FOUND, f"SKU id={entry.sku_id} 不存在", 404)
-        amount = (entry.quantity * entry.unit_price).quantize(Decimal("0.01"))
+        # 停用/删除的 SKU 不能手工建单（issue #7：从前只判 `deleted_at`）
+        sku = await require_sku_for_new_business(session, entry.sku_id)
+        # 先归一再看金额：货款必须等于"**落库的那个数量** × 单价"，
+        # 否则接口报的金额与库里能算出来的金额对不上（审查 B2-02）。
+        quantity = normalized_quantity(entry.quantity)
+        amount = line_amount(quantity, entry.unit_price)
+        # 金额范围（第九批问题 ⑧）：数量与单价各自有 `max_digits` 约束，
+        # 但**乘出来的金额**可能越界，落库时是 `numeric field overflow` → 500。
+        # 复用报价侧那一个助手（它连报错文案都已经写好），别在这里再手写一份 ——
+        # 两份判据必然漂移，而"同一判据铺 N 处只改 M 处"正是本项目最高频的病程。
+        _assert_money_in_range(amount, label=f"明细 {sku.sku_code or sku.name} 的金额")
         total += amount
+        # ⚠️ **整单合计也要查**（2026-10-14 审查修）。原来只查逐行：
+        # `quantity`（`max_digits=16, decimal_places=3`）与 `unit_price`
+        # （`decimal_places=4`）各自合法时，单行可以到 5e13 —— 单行不越界，
+        # 但**两行合计 1e14 就超过 `Numeric(16,2)` 的上限**（99999999999999.99），
+        # INSERT 抛 `numeric field overflow`，用户只看到"服务器内部错误"。
+        # 实测（两个明细各 1e7 × 5e6）：HTTP 500 + NumericValueOutOfRangeError。
+        # 报价侧对"逐行 + 整单合计"都查（`quote/service.py` 里那句
+        # `_assert_money_in_range(subtotal + charge_amount + discount, label="订单总额")`），
+        # 订单这条路漏了合计这道 —— 现在补上，`items` 也没有条数上限，合计是唯一能兜住的地方。
+        _assert_money_in_range(total, label="订单总额")
         rows.append(
             SalesOrderItem(
                 order_id=0,  # flush 后回填
                 sku_id=sku.id,
                 sku_snapshot=sku.name or sku.sku_code,
                 specification=entry.specification or sku.specification,
-                quantity=entry.quantity,
+                quantity=quantity,
                 unit_price=entry.unit_price,
                 amount=amount,
                 remark=entry.remark,
@@ -404,6 +578,13 @@ async def create_order(
         # 签单归属此刻写死（文档 :61）：往后交接或手工改负责人，业绩都算这一个人
         sales_owner_id=owner_id or user_id,
         total_amount=total,
+        # 手工创建的订单没有报价来源，全部金额就是产品货款本身 ——
+        # 拆分列如实填满（货款=总额、其余为 0），而不是留 NULL：
+        # 留空会让订单页把"手工单"显示成"金额组成待核实"，那是另一回事。
+        goods_amount=total,
+        logistics_amount=Decimal(0),
+        other_charge_amount=Decimal(0),
+        discount_amount=Decimal(0),
         currency=currency,
         status="pending",
         delivery_date=delivery_date,
@@ -439,28 +620,79 @@ async def change_status(
     operator_id: int | None,
     source: str = "WEB",
     remark: str | None = None,
+    allow_cancel: bool = False,
 ) -> None:
     if new_status not in ORDER_STATUS_LABEL:
         raise AppError(ErrorCode.PARAM_ERROR, f"未知的订单状态：{new_status}")
+    # 取消订单不是普通履约状态切换：它还要校验已确认回款、驳回待确认回款、
+    # 取消应收节点和未发货批次。ERP 回调/刷新以及普通状态接口只能走这里的
+    # 履约状态闸门，不能借 `status=cancelled` 绕过这些财务副作用。
+    if new_status == "cancelled" and not allow_cancel:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "取消订单必须走专用取消流程，以同步处理回款、应收计划和发货批次",
+            422,
+        )
     if order.status == new_status:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "订单已经是该状态")
     if order.status == "cancelled":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已取消的订单不能再变更状态")
     if new_status == "completed":
-        # 发货批次闸门（§3.5/场景13）：建了批次的订单，未发完不许整单完成——
-        # "首批发货不能把整单标为完成"。没建批次的订单沿用老行为（历史口径）。
+        # 「已完成」必须有**履约依据**：实发数量要盖住订单数量（issue #10）。
+        #
+        # ⚠️ 从前这里是 `if overview["batches"]:` —— **没建批次就整段跳过**，
+        # 于是"待生产、没有任何发货批次"的订单可以直接改成已完成
+        # （实测库内 status=completed 而 shipped=0、remaining=1）。
+        # 判据不能依赖"有没有建过批次"，否则绕过方式就是"什么都不建"。
         overview = await order_shipments(session, order)
-        if overview["batches"]:
-            short = [row for row in overview["items"] if Decimal(str(row["remaining"])) > 0]
-            if short:
-                detail = "；".join(
-                    f"{row['sku']} 还差 {row['remaining']}" for row in short[:5]
-                )
+        summary = overview["summary"]
+        ordered = Decimal(summary["ordered_exact"])
+        # 履约凭据里不许有**未来日期**（第三批审查 P2，2026-10-12）：
+        # 登记那一关已经不许填未来发货日，但历史数据（或别的写入口）可能已经留下，
+        # 这里再挡一道，否则"未来才发出去的货"能当成完成的依据。
+        future = [
+            row for row in overview["batches"]
+            if row.get("actual_ship_date") is not None
+            and row["actual_ship_date"] > today_business()
+        ]
+        if future:
+            detail = "、".join(
+                f"第 {row['batch_no']} 批（{row['actual_ship_date']}）" for row in future
+            )
+            raise AppError(
+                ErrorCode.STATUS_NOT_ALLOWED,
+                f"有发货批次的实发日期在未来（{detail}），不能作为履约凭据，"
+                "订单不能标记完成。请先把这些批次的实发日期改回真实发生的那天。",
+            )
+        if ordered > 0 and not summary["all_shipped"]:
+            if not overview["batches"]:
                 raise AppError(
                     ErrorCode.STATUS_NOT_ALLOWED,
-                    f"整单还有未发量，不能标记完成（{detail}）——"
-                    "请先登记发货批次或调整批次计划",
+                    f"这张订单还没有任何发货记录（订 {ordered}、实发 0），"
+                    "不能标记完成 —— 请先在「发货」里登记发货批次。"
+                    "确属历史补录的，请走补录入口并在备注里写明依据。",
                 )
+            detail = "；".join(
+                f"{row['sku']} 还差 {row['remaining']}"
+                for row in overview["items"]
+                if Decimal(row["remaining_exact"]) > 0
+            )
+            raise AppError(
+                ErrorCode.STATUS_NOT_ALLOWED,
+                f"整单还有未发量，不能标记完成（{detail}）——"
+                "请先登记发货批次或调整批次计划",
+            )
+    # 「已完成」是**履约事实的结论**，回退等于推翻它 —— 必须留理由（issue #10：
+    # 从前已完成改成"生产中"也一路放行，看板上的完成率可以被手工改来改去）。
+    # 这里只要求"说清为什么"，不额外发明审批流：理由进 `order_status_history`，
+    # 谁、什么时候、为什么都能查。
+    if order.status == "completed" and new_status != "completed":
+        if not (remark or "").strip():
+            raise AppError(
+                ErrorCode.STATUS_NOT_ALLOWED,
+                f"「已完成」的订单回退为「{ORDER_STATUS_LABEL.get(new_status, new_status)}」"
+                "属于纠错动作，必须填写理由（会记入状态变更留痕）",
+            )
     session.add(
         OrderStatusHistory(
             order_id=order.id,
@@ -489,7 +721,7 @@ def _sku_label(item: SalesOrderItem) -> str:
     return (
         item.sku_snapshot
         or item.inquiry_no_snapshot
-        or (f"SKU#{item.sku_id}" if item.sku_id else f"明细#{item.id}")
+        or (f"SKU编号 {item.sku_id}" if item.sku_id else f"明细编号 {item.id}")
     )
 
 
@@ -580,11 +812,13 @@ async def order_shipments(session: AsyncSession, order: SalesOrder) -> dict:
         else:
             entry["planned"] += _d(row.planned_qty)
     for entry in agg.values():
-        entry["ordered"] = _f(entry["ordered"])
-        entry["planned"] = _f(entry["planned"])
-        entry["shipped"] = _f(entry["shipped"])
-        entry["remaining"] = _f(max(_d(entry["ordered"]) - _d(entry["shipped"]), Decimal(0)))
-        entry["unplanned"] = _f(max(_d(entry["ordered"]) - _d(entry["planned"]), Decimal(0)))
+        # 库内数量是 Numeric(16,3)。先转 float 再相减会吞掉 0.001 尾数，
+        # 导致剩余货排不进批次，甚至未发完便能标记完成。
+        entry["remaining"] = max(entry["ordered"] - entry["shipped"], Decimal(0))
+        entry["unplanned"] = max(entry["ordered"] - entry["planned"], Decimal(0))
+        for field in ("ordered", "planned", "shipped", "remaining", "unplanned"):
+            entry[field + "_exact"] = format(entry[field], "f")
+            entry[field] = _f(entry[field])
 
     batch_by_id = {batch.id: batch for batch in batches}
     # "今天"取业务时区（第九批 §9.10）：下面算"未发批次已经逾期几天"要用它，
@@ -597,7 +831,9 @@ async def order_shipments(session: AsyncSession, order: SalesOrder) -> dict:
                 "order_item_id": row.order_item_id,
                 "sku": (agg[row.order_item_id]["sku"] if row.order_item_id in agg else row.sku_snapshot),
                 "planned_qty": _f(row.planned_qty),
+                "planned_qty_exact": format(_d(row.planned_qty), "f"),
                 "shipped_qty": _f(row.shipped_qty),
+                "shipped_qty_exact": format(_d(row.shipped_qty), "f"),
             }
             for row in batch_items
             if row.batch_id == batch.id
@@ -633,7 +869,7 @@ async def order_shipments(session: AsyncSession, order: SalesOrder) -> dict:
     # §9.8 复审的坑：订购 10、已发 6、剩 4 件**根本没排新批次**时
     # `pending_batch_count` 是 0 —— 拿它当"发完了"会提前下最终结论。
     settled = bool(agg) and all(
-        _d(v["ordered"]) - _d(v["shipped"]) <= 0 for v in agg.values()
+        Decimal(v["ordered_exact"]) - Decimal(v["shipped_exact"]) <= 0 for v in agg.values()
     )
 
     # 「最后一批 vs 交期」的两个输入（第九批 §9.8）：
@@ -656,10 +892,14 @@ async def order_shipments(session: AsyncSession, order: SalesOrder) -> dict:
         "batches": serialized_batches,
         "batch_by_id": batch_by_id,
         "summary": {
-            "ordered": _f(sum(_d(v["ordered"]) for v in agg.values())),
-            "planned": _f(sum(_d(v["planned"]) for v in agg.values())),
-            "shipped": _f(sum(_d(v["shipped"]) for v in agg.values())),
-            "remaining": _f(sum(_d(v["remaining"]) for v in agg.values())),
+            "ordered": _f(sum(Decimal(v["ordered_exact"]) for v in agg.values())),
+            "ordered_exact": format(sum((Decimal(v["ordered_exact"]) for v in agg.values()), Decimal(0)), "f"),
+            "planned": _f(sum(Decimal(v["planned_exact"]) for v in agg.values())),
+            "planned_exact": format(sum((Decimal(v["planned_exact"]) for v in agg.values()), Decimal(0)), "f"),
+            "shipped": _f(sum(Decimal(v["shipped_exact"]) for v in agg.values())),
+            "shipped_exact": format(sum((Decimal(v["shipped_exact"]) for v in agg.values()), Decimal(0)), "f"),
+            "remaining": _f(sum(Decimal(v["remaining_exact"]) for v in agg.values())),
+            "remaining_exact": format(sum((Decimal(v["remaining_exact"]) for v in agg.values()), Decimal(0)), "f"),
             "all_shipped": settled,
             # 分批口径的汇总：场景13 要能回答"是不是分批拖了交期"
             "batch_count": len(serialized_batches),
@@ -726,7 +966,7 @@ async def create_shipment_batch(
         ).scalars().all()
     }
     overview = await order_shipments(session, order)
-    unplanned = {row["order_item_id"]: _d(row["unplanned"]) for row in overview["items"]}
+    unplanned = {row["order_item_id"]: Decimal(row["unplanned_exact"]) for row in overview["items"]}
 
     # 先把整张计划**全部校验完**再落库（第九批 §9.7）：中途报错时不留半张批次。
     for row in payload.items:
@@ -819,6 +1059,24 @@ async def ship_shipment_batch(
     if batch.status == "cancelled":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该批次已取消")
 
+    # ---- 实际发货日不得晚于**业务今天**（第三批审查 P2，2026-10-12）----
+    #
+    # 从前这一行是直接写的（`batch.actual_ship_date = payload.actual_ship_date or 今天`），
+    # 于是填一个"十天以后"的日期：批次立刻算已发货、整单随后能标已完成 ——
+    # 一个还没发生的日期被当成履约证据，发货统计与交付准时率全跟着它走。
+    #
+    # 校验必须放在**改数量与改状态之前**：否则拦下来时 `shipped_qty` 已经被写过，
+    # 留下一半的脏数量（与第九批 §9.7 同一个道理）。
+    ship_date = payload.actual_ship_date or today_business()
+    if ship_date > today_business():
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"实际发货日（{ship_date}）不能晚于今天（{today_business()}）："
+            "还没发生的日期不是发货事实。要提前排产请填「计划发货日」；"
+            "确已发货、只是日期填错了，请按真实发生的那天补录。",
+            422,
+        )
+
     batch_items = (
         await session.execute(
             select(OrderShipmentBatchItem).where(
@@ -829,22 +1087,12 @@ async def ship_shipment_batch(
     if not batch_items:
         raise AppError(ErrorCode.PARAM_ERROR, "批次没有明细，先补计划量")
 
-    overview = await order_shipments(session, order)
-    shipped_before = {
-        row["order_item_id"]: _d(row["shipped"]) for row in overview["items"]
-    }
-    ordered = {
-        row["order_item_id"]: _d(row["ordered"]) for row in overview["items"]
-    }
     ship_inputs = (
         {row.order_item_id: _d(row.shipped_qty) for row in payload.items}
         if payload.items is not None
         else None
     )
-    # 第九批 §9.7：报上来的明细必须**属于本批次**。
-    # 原来循环遍历的是本批自己的明细、用 `ship_inputs.get(id, 计划量)` 取值 ——
-    # 传一个不属于本批的明细号时它匹配不到，就被**静默丢弃**，本批明细反而按
-    # 计划量全发（"给错误明细登记发 1 件"，结果把正确明细的计划 10 件全发出去）。
+    # 明确提供实发明细时必须覆盖整个批次，避免漏传一行就被记成按计划发货。
     if ship_inputs is not None:
         unknown = sorted(set(ship_inputs) - {row.order_item_id for row in batch_items})
         if unknown:
@@ -853,13 +1101,29 @@ async def ship_shipment_batch(
                 f"明细 {unknown[0]} 不属于本批次，请刷新页面后重新选择",
                 422,
             )
+        missing = next((row for row in batch_items if row.order_item_id not in ship_inputs), None)
+        if missing is not None:
+            label = missing.sku_snapshot or f"订单明细 {missing.order_item_id}"
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                f"「{label}」缺少实发数量。请填齐本批实发数量，未发货请填 0",
+                422,
+            )
+
+    overview = await order_shipments(session, order)
+    shipped_before = {
+        row["order_item_id"]: Decimal(row["shipped_exact"]) for row in overview["items"]
+    }
+    ordered = {
+        row["order_item_id"]: Decimal(row["ordered_exact"]) for row in overview["items"]
+    }
 
     # **先把整批算完并校验，再落数量**（第九批 §9.7）：原来是边算边写，
     # 中途报错时前面的明细已经改过 `shipped_qty`，留下一半的脏数量。
     resolved: dict[int, Decimal] = {}
     for row in batch_items:
         qty = (
-            ship_inputs.get(row.order_item_id, _d(row.planned_qty))
+            ship_inputs[row.order_item_id]
             if ship_inputs is not None
             else _d(row.planned_qty)
         )
@@ -874,11 +1138,18 @@ async def ship_shipment_batch(
             )
         resolved[row.order_item_id] = qty
 
+    # 一张批次登记后必须代表真实发货；整批都是 0 只会制造一个“已发货”
+    # 状态和实际数量全为零的假事实。允许多明细批次中某一行明确为 0，
+    # 但至少要有一行实际发出正数。
+    if not any(qty > 0 for qty in resolved.values()):
+        raise AppError(ErrorCode.PARAM_ERROR, "整批实发量不能为 0，请填写实际发货数量", 422)
+
     for row in batch_items:
         row.shipped_qty = resolved[row.order_item_id]
 
     batch.status = "shipped"
-    batch.actual_ship_date = payload.actual_ship_date or today_business()
+    # 用上面校验过的那个日期（不再在这里重新算一遍：两处各算一次必然会漂）
+    batch.actual_ship_date = ship_date
     batch.logistics_company = payload.logistics_company
     batch.tracking_no = payload.tracking_no
     # 逾期原因是"归因"，不是装饰：晚发了就把为什么晚记在这一批上，

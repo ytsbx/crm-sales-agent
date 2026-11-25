@@ -1,31 +1,51 @@
 """合同模板与文档接口的请求体。"""
 
 from datetime import date
+from typing import Literal, Any
 
 from pydantic import BaseModel, Field, field_validator
+from app.core.patch_schema import CreateModel
 
 
-class TemplateCreate(BaseModel):
-    """新增模板=新增版本：同名同类型自动 version+1，旧版本保留。"""
+class TemplateFileCreate(CreateModel):
+    """合同模板库：保存一版标准合同/月结协议原文件。
+
+    只有"类型 + 名称 + 已上传的文件"，**没有正文与启用开关**——
+    系统模板生成已删除，这里存的是给人下载后按客户填写的原件。
+    """
 
     doc_type: str = "contract"  # contract / monthly
     name: str = Field(min_length=1, max_length=128)
-    body: str = Field(min_length=1)
-    enabled: bool = True
+    file_id: int = Field(gt=0)
 
 
 class DocumentCreate(BaseModel):
-    """从模板生成合同草稿。extra_fields 是"空白的地方业务员自己填"的部分。"""
+    """上传合同原文件；历史模板字段保留用于兼容，新增入口只接受上传。"""
 
-    template_id: int
+    template_id: int | None = None
+    original_file_id: int | None = Field(default=None, gt=0)
+    contract_origin: Literal["company", "customer"] | None = None
     customer_id: int
     order_id: int | None = None
     quote_id: int | None = None
     # 合同钉死的报价**版本**。报价可以出 V2/V3，只记报价单号无法证明金额依据的是哪一版。
-    # 不传也能生成（提前备合同），但不传就没有金额——登记签署前必须补上正式依据。
+    # 不传也能上传，但不传就没有冻结金额——登记签署前必须补上正式依据。
     # 只传 order_id 时，后端会按订单依据的那一版自动带出来。
     quote_version_id: int | None = None
-    title: str | None = None
+    #: 与 `contract_documents.title` 的 `String(200)` 对齐（2026-10-14 审查补）：
+    #: 原来完全不限长，传 201+ 字必撞列宽报 500（服务端拼的默认标题也会超，
+    #: 那条在 `service.generate_document` 里用 `fit_column` 收进列宽）。
+    title: str | None = Field(default=None, max_length=200)
+    #: 合同编号（钉钉表单里的“合同编号”）：经办人手动填写时用这个；
+    #: 留空则沿用 CRM 自动生成的编号（doc_no）。
+    contract_number: str | None = Field(default=None, max_length=64)
+    #: 签约主体（钉钉/OA 表单的“我方信息/对方信息”）：上传时由经办人填写
+    our_company: str | None = Field(default=None, max_length=200)
+    counterparty_name: str | None = Field(default=None, max_length=200)
+    #: 钉钉/OA 表单的「合同编号生成方式」：manual=手动填写，rule=选择已有规则
+    contract_number_rule_type: str | None = Field(default=None, max_length=32)
+    #: 「选择已有规则」时的规则名（智能合同目前只提供“系统默认规则”）
+    contract_number_rule_fix: str | None = Field(default=None, max_length=64)
     extra_fields: dict[str, str] = Field(default_factory=dict)
     expiry_date: date | None = None
     # 协议生效日。续签时必填（业务口径 2026-10-05）：只记到期日处理不了
@@ -36,9 +56,30 @@ class DocumentCreate(BaseModel):
     # 默认不勾——提前续签、旧协议还在适用期是很常见的情况，
     # 一登记就掐掉旧提醒会让还在生效的协议没人管。
     supersede_parent: bool = False
-    # 幂等键：前端打开生成弹窗时生成一个，重复提交 / 网络重试带同一个值。
+    # 幂等键：前端打开上传弹窗时生成一个，重复提交 / 网络重试带同一个值。
     # 不传也能用，但那样重复提交就防不住——所以前端必须带。
     request_key: str | None = Field(default=None, max_length=64)
+    source_type: str = Field(default="crm_template", pattern="^(crm_template|customer_drafted)$")
+
+
+class ContractOaStart(BaseModel):
+    """发起 OA 合同审批时，由经办人明确填写的两个签约主体。
+
+    2026-11-13 用户明确：主体信息改成**由人填**，不再由系统按客户/公司抬头自动写。
+    """
+
+    extra_fields: dict[str, Any] = Field(default_factory=dict)
+
+    our_company: str = Field(min_length=1, max_length=200)
+    counterparty_name: str = Field(min_length=1, max_length=200)
+
+    @field_validator("our_company", "counterparty_name")
+    @classmethod
+    def strip_and_require(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("签约主体不能为空")
+        return value
 
 
 class DocumentSign(BaseModel):
@@ -46,6 +87,7 @@ class DocumentSign(BaseModel):
 
     file_id: int
     note: str | None = None
+    reuse_reason: str | None = Field(default=None, max_length=255)
 
 
 class DocumentVoid(BaseModel):

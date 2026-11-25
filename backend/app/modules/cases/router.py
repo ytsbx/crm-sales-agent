@@ -150,9 +150,12 @@ async def update_case(
     # 不写 status，"已发布"这个状态保留着，正文却已经换了）。
     # 与 submit / review 用同一把锁：**凡是会改案例的动作都从同一个加锁入口进**。
     case = await svc._lock_case(session, case_id)
+    svc.ensure_case_draft_access(case, user)
     is_author = case.author_id == user.id
     if not is_author and not svc.is_reviewer(user):
         _forbid("只有作者或主管能修改案例")
+    if case.status == "withdrawn":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已撤下的案例仅供历史查阅", 422)
     # **已发布 / 已被取代的版本只读**（§5.1.5，已确认口径＝修订稿）：
     # 审核批的是"这一版内容"，改完内容还挂着"已发布"，等于复用了一个对不上号的
     # 审核结论。连主管也不能原地改——要改就开修订稿重新走审核。
@@ -171,6 +174,7 @@ async def update_case(
     if payload.customer_id is not None and payload.customer_id != case.customer_id:
         await customer_service.get_visible_customer(session, user, payload.customer_id)
     changed_fields = payload.model_dump(exclude_unset=True)
+    before = svc.serialize_case(case, reveal_customer=True)  # B18-08：改前快照
     svc._apply_update(case, payload)
     # 用**改完之后的**关联值再校验一遍（§5.1.3）：换客户的同时可能把旧客户的
     # 报价/订单留在身上，或者新挂了不属于该客户的证据——两种情况都要拦住。
@@ -237,6 +241,8 @@ async def update_case(
         action="update",
         business_type="case",
         business_id=case.id,
+        before=before,
+        after=svc.serialize_case(case, reveal_customer=True),
         ip=client_ip(request),
     )
     await session.commit()
@@ -251,6 +257,7 @@ async def submit_case(
     session: AsyncSession = Depends(get_db),
 ):
     case = await svc.get_case_or_404(session, case_id)
+    before_status = case.status  # B18-08：提交前状态
     await svc.submit_case(session, case=case, user=user)
     await write_audit(
         session,
@@ -258,6 +265,8 @@ async def submit_case(
         action="submit",
         business_type="case",
         business_id=case.id,
+        before={"status": before_status},
+        after={"status": case.status},
         ip=client_ip(request),
     )
     await session.commit()
@@ -307,6 +316,7 @@ async def review_case(
     session: AsyncSession = Depends(get_db),
 ):
     case = await svc.get_case_or_404(session, case_id)
+    before_status = case.status  # B18-08：审核前状态
     await svc.review_case(session, case=case, user=user, approve=payload.approve, note=payload.note)
     await write_audit(
         session,
@@ -314,7 +324,8 @@ async def review_case(
         action="review",
         business_type="case",
         business_id=case.id,
-        after={"approve": payload.approve, "note": payload.note},
+        before={"status": before_status},
+        after={"approve": payload.approve, "note": payload.note, "status": case.status},
         ip=client_ip(request),
     )
     await session.commit()
@@ -327,18 +338,37 @@ async def delete_case(
     request: Request,
     user: CurrentUser = Depends(require_permission("quote:view")),
     session: AsyncSession = Depends(get_db),
+    *,
+    draft_only: bool = False,
 ):
-    case = await svc.get_case_or_404(session, case_id)
-    if case.author_id != user.id and not svc.is_reviewer(user):
-        _forbid("只有作者或主管能删除案例")
-    case.deleted_at = datetime.now(UTC)
+    case = await svc._lock_case(session, case_id)
+    reviewer = svc.is_reviewer(user)
+    before = case.status
+    before_snap = svc.serialize_case(case, reveal_customer=True)  # B18-08：删前快照
+    svc.ensure_case_draft_access(case, user)
+    if draft_only and before not in ("draft", "rejected"):
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "案例状态已变化，请刷新列表后再操作", 409)
+    if before in ("published", "superseded", "withdrawn"):
+        if not reviewer:
+            raise AppError(ErrorCode.FORBIDDEN, "已发布案例须由有审核权限的人撤下", 403)
+        if before == "withdrawn":
+            return ok(None, "案例已撤下，历史已保留")
+        case.status = "withdrawn"
+        case.updated_at = datetime.now(UTC)
+    else:
+        if case.author_id != user.id and not reviewer:
+            _forbid("只有作者或主管能删除案例")
+        case.deleted_at = datetime.now(UTC)
+    withdrawn = case.status == "withdrawn"
     await write_audit(
         session,
         operator_id=user.id,
-        action="delete",
+        action="update" if withdrawn else "delete",
         business_type="case",
         business_id=case.id,
+        before={"status": before} if withdrawn else before_snap,
+        after={"status": case.status} if withdrawn else {"status": case.status, "deleted": True},
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(None, "案例已删除")
+    return ok(None, "案例已撤下，历史已保留" if withdrawn else "案例已删除")

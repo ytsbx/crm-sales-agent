@@ -51,6 +51,29 @@ SAMPLE_TRANSITIONS: dict[str, set[str]] = {
 #: 责任仍然要有人接。
 SAMPLE_OPEN_STATUSES: tuple[str, ...] = ("pending", "approved", "shipped", "signed")
 
+#: 允许**软删**的状态（2026-10-15 补）。
+#:
+#: 打样单是留痕单据（审批轮次、车间依据、图纸版本都挂在它上面），所以不是谁都能删。
+#: 只有还没走流程的两种能删：
+#:   - `pending`  刚建出来 / 被驳回后重报，还没批；
+#:   - `rejected` 审批驳回了，跟单决定"就此作罢"（见上面那条注释：驳回单不算未完成打样）。
+#: `approved` / `shipped` / `signed` **一律拒绝**：它们已经进了生产 / 寄样环节，
+#: 删掉会让审批留痕与实际做出来的东西对不上（与「已转订单的报价不能删」同一个道理）。
+#:
+#: 判据**只在这一处**：路由按它把关，列表按它给前端下发 `can_delete` ——
+#: 前端不要自己再拼一份"什么状态能删"，那份迟早和后端分叉。
+SAMPLE_DELETABLE_STATUSES: tuple[str, ...] = ("pending", "rejected")
+
+
+def can_delete_sample(sample) -> bool:
+    """已拒绝/撤回的钉钉申请可软删；审批中和已制作、寄送的单据仍受保护。"""
+    if sample.deleted_at is not None or sample.status not in SAMPLE_DELETABLE_STATUSES:
+        return False
+    if sample.made_at is not None or sample.shipped_at is not None:
+        return False
+    submitted = ((sample.source_context or {}).get('dingtalk_oa') or {}).get('submitted')
+    return not submitted or sample.status == 'rejected'
+
 #: 客户确认状态（文档 §3.5：「客户收到样品不等于样品被接受」）。
 #:
 #: 签收（signed）是物流事实，客户确认才是业务事实——把两者混在一个字段里，
@@ -125,11 +148,57 @@ class SampleRequest(Base, IdMixin):
     # 早先这三项挂在这里（单头），一单多样时只能写进备注，车间拿到的单子看不出区别。
     purpose: Mapped[str | None] = mapped_column(String(255), nullable=True)  # 用途
     target_completion_date: Mapped[date | None] = mapped_column(Date, nullable=True)  # 目标完成日
+    # 「交样时间」——申请表 H2 那一格。**与 `target_completion_date` 是两件事**
+    # （主人 2026-10-16：「要求完成时间和交样时间不一定是一个时间」）：
+    #   · `target_completion_date` = 钉钉单上的「要求完成日期」：车间**什么时候做完**；
+    #   · `deliver_date`           = 申请表上的「交样时间」：**什么时候交给客户**。
+    # 我原来把前者直接当后者写进 Excel，等于把两个日期合并成一个 —— 语义就错了。
+    deliver_date: Mapped[date | None] = mapped_column(Date, nullable=True)  # 交样时间
+    # 「打样人」——申请表 H3 那一格：**谁动手打的样**。
+    # 与第 17 行那个「打样人」（打样部回复内容区，打样部在钉钉里填）不是同一格；
+    # 与 `production_owner_id`（CRM 里的制作责任人，是个用户外键）也不是一回事：
+    # 这里存的是**写在纸上的名字**（可能是外部师傅，CRM 里没有账号）。
+    sample_maker: Mapped[str | None] = mapped_column(String(64), nullable=True)  # 打样人
     acceptance_criteria: Mapped[str | None] = mapped_column(Text, nullable=True)  # 验收标准
     # 打样费用：**空着 = 未填**，与"免费（0 元）"是两回事，所以列可空、不设默认值。
     # 之前是 NOT NULL + default 0，前端清空输入框传 null 会直接撞非空约束。
     sample_fee: Mapped[Decimal | None] = mapped_column(Numeric(16, 2), nullable=True)  # 打样费用
     production_owner_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # 责任人
+    # ---- 打样申请单（钉钉「定制打样审批」那份单子）上的字段 ----
+    # 缘由（2026-10-15）：CRM 原来缺这些格，业务员每次要**手打一遍**再去钉钉传
+    # Excel（钉钉那份《打样申请单》是公司现有表单，格式不能改）。
+    # 补上这些字段后，CRM 可以**一键生成填好的申请单**，业务员下载即传。
+    #
+    # 这四项与钉钉模板一一对应（选项就是钉钉下拉里的那几项，不要自造）：
+    sample_type: Mapped[str | None] = mapped_column(String(32), nullable=True)  # 打样类型
+    product_category: Mapped[str | None] = mapped_column(String(32), nullable=True)  # 打样产品大类
+    maker_unit: Mapped[str | None] = mapped_column(String(32), nullable=True)  # 样品制作单位
+    # 打样积分：口径是**师傅用时 1 小时 = 10 积分**（钉钉表上就这么写的）。
+    # 为什么存两个字段而不是只存积分：积分是**派生值**，存了工时才能解释
+    # "这 30 分是怎么来的"；将来口径若从 ×10 改成别的也能重算。
+    # 申请时填的是**预计**工时（与钉钉表单位置一致：积分格就在申请单上）。
+    estimated_hours: Mapped[Decimal | None] = mapped_column(Numeric(8, 2), nullable=True)  # 预计工时
+    craft_points: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)  # 打样积分
+    # 申请单上的三个勾选项（存中文原文，与钉钉单据上的字面一致，便于肉眼对账）
+    sample_purpose: Mapped[str | None] = mapped_column(String(32), nullable=True)  # 打样目的
+    urgency: Mapped[str | None] = mapped_column(String(16), nullable=True)  # 紧急程度
+    sample_situation: Mapped[str | None] = mapped_column(String(32), nullable=True)  # 样品情况
+    # ---- 「打样具体要求」那 6 格 ----
+    # ⚠️ 与明细上的 `material`(材质) / `craft`(工艺) **不是一回事，别合并**：
+    #   明细那两项是**逐行**的短值（一单两个盒子可能不同），是报价/生产用的结构化数据；
+    #   这 6 项是**申请单上整段的文字要求**（要填进 Excel 的 B8~B13 六个格），
+    #   内容是自由文本、面向车间阅读。
+    # 为避免业务员两遍录入，前端在填这 6 格时**默认带出明细里的材质/工艺**，允许改。
+    material_spec: Mapped[str | None] = mapped_column(Text, nullable=True)  # 主要材质和规格
+    product_size: Mapped[str | None] = mapped_column(Text, nullable=True)  # 产品尺寸
+    printing: Mapped[str | None] = mapped_column(Text, nullable=True)  # 产品印刷
+    accessories: Mapped[str | None] = mapped_column(Text, nullable=True)  # 主要辅料
+    packaging: Mapped[str | None] = mapped_column(Text, nullable=True)  # 包装要求
+    craft_requirement: Mapped[str | None] = mapped_column(Text, nullable=True)  # 做法要求
+    # 导出申请单时「产品名称」用哪个（B2/G2 那格）：
+    # 明细可以一行多样（名称不同），而申请单只有一格 —— 所以**显式存一份**，
+    # 不让导出时去猜"取第一条还是拼起来"。空 = 回退用第一条明细的名称。
+    product_name: Mapped[str | None] = mapped_column(String(200), nullable=True)  # 申请单上的产品名称
     # 制作完成时间：由跟单登记（CRM 管不到车间，所以只记录事实、不当闸门）
     made_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # 制作事件（结构化，第一批返修 §3.4）：每条 {key, at, note, by, recorded_at}。
@@ -181,6 +250,19 @@ class SampleRequest(Base, IdMixin):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
+
+    # ---- 软删（2026-10-15）----
+    # 这个模块**原来刻意不做软删**（理由见 `service.py` 里那两处注释：打样单是留痕单据）。
+    # 但用起来有个死角 —— 误建的、或者刚建就发现选错客户的单子**一点办法都没有**，
+    # 只能永远挂在列表里（主人 2026-10-15：「样品管理没有删除吗，就一直待在那？」）。
+    #
+    # 补上删除，但**收了闸**：只有还没走流程的（`pending` / `rejected`）能删；
+    # 已批准 / 已寄出 / 已签收的不给删 —— 那几张连着审批轮次、车间依据和图纸，
+    # 删掉等于把追溯链弄断（与「已转订单的报价不能删」是同一个道理）。
+    #
+    # **软删，不是物理删**：行还在、审计还在；列表默认看不见，需要时按「已删除」
+    # 筛出来还能恢复（对齐客户回收站的做法）。
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class SampleItem(Base, IdMixin):

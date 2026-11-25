@@ -4,7 +4,9 @@
 
 1. **企微外部联系人不等于 CRM 客户**。`wecom_external_contacts` 是企微侧的事实，
    `crm_contact_id` 为空就表示"还没归一"，必须由人在「待归一」页面确认后
-   才关联到已有客户或创建新客户——不给任何自动绑定兜底。
+   才关联到已有客户或创建新客户。2026-10-15 用户追加批准预览确认后的
+   批量建档：明确公司全称按公司合并，无公司信息按个人；负责人未绑定或
+   公司身份不明确的继续待确认，不能默认放公海或挂到管理员。
 2. **跟进关系单独建模**。同一个外部联系人可能被多个员工添加，
    一个员工也可能加了很多客户，所以是 1:N 关系表，不往联系人表塞字段。
 3. **同步任务留痕**。每次同步写一条 `wecom_sync_jobs`，
@@ -13,7 +15,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, String, Text, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, String, Text, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base import Base, IdMixin, JSONType
@@ -23,7 +25,10 @@ SYNC_JOB_TYPES = {
     "user": "成员同步",
     "external_contact": "外部联系人同步",
     "follow_relation": "跟进关系同步",
+    "contact_event": "企微联系人变更同步",
+    "event_callback": "企微事件接收",
     "transfer": "离职继承",
+    "customer_import": "客户中心导入",
 }
 
 SYNC_JOB_STATUS = {
@@ -128,7 +133,17 @@ class WeComSyncJob(Base, IdMixin):
     """同步任务流水（API §10 的 sync-jobs / transfer 都读这张表）。"""
 
     __tablename__ = "wecom_sync_jobs"
-    __table_args__ = (Index("ix_wecom_sync_jobs_type", "job_type", "status"),)
+    __table_args__ = (
+        Index("ix_wecom_sync_jobs_type", "job_type", "status"),
+        # 与迁移 d1e4f7a9c2b6 一致：非空事件指纹唯一，防并发回调重复落任务。
+        Index(
+            "uq_wecom_sync_event_fingerprint",
+            "event_fingerprint",
+            unique=True,
+            postgresql_where=text("event_fingerprint IS NOT NULL"),
+            sqlite_where=text("event_fingerprint IS NOT NULL"),
+        ),
+    )
 
     job_type: Mapped[str] = mapped_column(String(32))
     status: Mapped[str] = mapped_column(String(16), default="running")
@@ -140,6 +155,8 @@ class WeComSyncJob(Base, IdMixin):
     success_count: Mapped[int] = mapped_column(BigInteger, default=0)
     fail_count: Mapped[int] = mapped_column(BigInteger, default=0)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 企微回调的密文指纹：独立列并加唯一索引，避免并发回调绕过 JSON 查询去重。
+    event_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # 同步/转交的业务明细：拉了哪些页、跳过了哪些人、转交清单等
     detail: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
 

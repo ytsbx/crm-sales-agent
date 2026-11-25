@@ -14,14 +14,30 @@ from uuid import uuid4
 from datetime import UTC, datetime
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.followup.model import FollowUp
+from app.modules.notification.model import BusinessEvent
 
 logger = logging.getLogger("crm.followup")
 
 #: "业务主管"的角色。要给别的角色也推，改这里
 MANAGER_ROLE_CODES = ["sales_manager"]
+
+
+async def _insert_business_event_once(
+    session: AsyncSession, *, event_key: str, business_type: str | None,
+    business_id: int | None, customer_id: int | None, title: str,
+) -> BusinessEvent | None:
+    insert = sqlite_insert if session.get_bind().dialect.name == "sqlite" else postgresql_insert
+    # 只忽略事件键重复；其他数据库错误仍交由外层事务处理。
+    statement = insert(BusinessEvent).values(
+        event_key=event_key, business_type=business_type, business_id=business_id,
+        customer_id=customer_id, title=title, created_at=datetime.now(UTC),
+    ).on_conflict_do_nothing(index_elements=[BusinessEvent.event_key]).returning(BusinessEvent)
+    return await session.scalar(statement)
 
 
 async def record_system_event(
@@ -69,28 +85,14 @@ async def record_progress_event(
     event_key: str | None = None,
 ) -> bool:
     """同事务记录业务事实及进展时钟；不通知、不刷新客户联系时钟。"""
-    from app.modules.notification.model import BusinessEvent
-
     if event_key:
-        existing = (
-            await session.execute(
-                select(BusinessEvent.id).where(BusinessEvent.event_key == event_key)
-            )
-        ).scalar_one_or_none()
-        if existing is not None:
+        event = await _insert_business_event_once(
+            session, event_key=event_key, business_type=business_type,
+            business_id=business_id, customer_id=customer_id, title=title,
+        )
+        if event is None:
             logger.info("业务事件重放跳过（event_key=%s）", event_key)
             return False
-        session.add(
-            BusinessEvent(
-                event_key=event_key,
-                business_type=business_type,
-                business_id=business_id,
-                customer_id=customer_id,
-                title=title,
-                created_at=datetime.now(UTC),
-            )
-        )
-        await session.flush()
 
     # 业务进展时钟（文档 §2.3/§11.2）：走到这里的动作（建/转订单、报价提交、
     # 打样建/寄、确认交期、实发、确认回款）都算客户活跃，冷落扫描与公海回收不应只盯手工跟进
@@ -135,6 +137,13 @@ async def record_and_notify(
     在业务事务内调用：留痕随业务一起 commit；企微投递由调用方
     commit 后 `dispatch_pending`。通知环节异常只告警，不回滚业务。
     """
+    identity = sample_id or (business_id if business_type == "sample" else None)
+    if identity is not None:
+        from app.core.draft_visibility import private_draft
+        from app.modules.sample.model import SampleRequest
+
+        if await session.scalar(select(private_draft(SampleRequest)).where(SampleRequest.id == identity)):
+            return
     event_key = event_key or f"progress:{uuid4().hex}"
     recorded = await record_progress_event(
         session, customer_id=customer_id,
@@ -169,18 +178,20 @@ async def queue_manager_notification(
 ) -> None:
     """持久化通知待办；生成失败留在事件上，重试不再创建跟进或业务单。"""
     from app.modules.customer.model import Customer
-    from app.modules.notification.model import BusinessEvent
     from app.modules.notification import service as notification_service
     from app.modules.user.model import User
 
-    event = (await session.execute(select(BusinessEvent).where(
-        BusinessEvent.event_key == event_key))).scalar_one_or_none()
+    event_stmt = select(BusinessEvent).where(
+        BusinessEvent.event_key == event_key,
+    ).with_for_update().execution_options(populate_existing=True)
+    event = await session.scalar(event_stmt)
     if event is None:
-        event = BusinessEvent(event_key=event_key, customer_id=customer_id,
-                              business_type=source_type, business_id=source_id,
-                              title=title, created_at=datetime.now(UTC))
-        session.add(event)
-        await session.flush()
+        event = await _insert_business_event_once(
+            session, event_key=event_key, customer_id=customer_id,
+            business_type=source_type, business_id=source_id, title=title,
+        )
+        if event is None:
+            event = (await session.execute(event_stmt)).scalar_one()
     if event.notification_payload is not None:
         return
     owner = await session.get(User, owner_id) if owner_id else None

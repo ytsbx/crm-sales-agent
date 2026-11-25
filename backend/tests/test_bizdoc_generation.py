@@ -16,12 +16,15 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from unittest.mock import patch
 
+import pytest
+from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session
 
 from app.modules.bizdoc import service as bizdoc
 from app.modules.bizdoc.model import BizDocTemplate
+from app.modules.bizdoc.router import TemplateCreate
 from app.modules.customer.model import Contact, Customer
 from app.modules.product.model import Product, Sku
 from app.modules.quote.model import Quote, QuoteCharge, QuoteItem, QuoteVersion
@@ -29,6 +32,13 @@ from app.modules.user.model import User
 
 _BIGINT_REGISTERED = False
 _JSONB_REGISTERED = False
+
+
+def test_business_document_template_remark_has_a_storage_limit():
+    assert TemplateCreate(doc_type="sample", name="示例", remark="字" * 255).remark == "字" * 255
+    with pytest.raises(ValidationError) as captured:
+        TemplateCreate(doc_type="sample", name="示例", remark="字" * 256)
+    assert captured.value.errors()[0]["loc"] == ("remark",)
 
 
 def _sqlite_compat() -> None:
@@ -218,6 +228,10 @@ def _fixture(session):
         charge_amount=Decimal("80"),
         discount_amount=Decimal("-20"),
         total_amount=Decimal("480"),
+        # 2026-10-12（第二轮审查 P1）：Excel 对客文件现在与正式 PDF 同口径，
+        # **未通过审批的版本只能落草稿**。本文件的用例测的是"正式件"的内容冻结与幂等，
+        # 所以夹具要落成"已审批"状态 —— 补夹具，不去放宽刚加上的闸门。
+        approval_status="approved",
         created_at=datetime.now(UTC),
     )
     session.add(version)
@@ -225,6 +239,7 @@ def _fixture(session):
     quote.current_version_id = version.id
     session.add(
         QuoteItem(
+            cost_present_snapshot=True, cost_complete_snapshot=True,
             quote_version_id=version.id,
             sku_id=sku.id,
             sku_code_snapshot=sku.sku_code,
@@ -246,6 +261,10 @@ def _fixture(session):
             amount=Decimal("80"),
             is_discount=False,
             sort_no=1,
+            # 2026-10-12（第二轮审查 P1）：Excel 对客文件也要求"运费已确认具体金额"
+            # （`QuoteCharge.logistics_confirmed_at`，0 元也要显式确认）。
+            # 夹具里的运费是**确认过的实际金额**，如实带上确认时刻。
+            logistics_confirmed_at=datetime.now(UTC),
         )
     )
     session.add(
@@ -404,6 +423,7 @@ def test_old_version_terms_unaffected_by_current_data_changes():
         await session.flush()
         session.add(
             QuoteItem(
+            cost_present_snapshot=True, cost_complete_snapshot=True,
                 quote_version_id=new_version.id,
                 sku_id=sku.id,
                 sku_name_snapshot=sku.name,
@@ -669,6 +689,18 @@ def test_template_analysis_rejects_typo_and_lists_available_variables():
     assert preview["status"] == "has_unresolved"
     assert {item["token"] for item in preview["unresolved"]} == {"customer.nmae", "extra.x"}
     assert "{{" not in preview["body"]
+
+
+def test_customer_level_not_printable_on_external_docs():
+    """2026-11-25 主人拍板：客户等级是内部评级，禁止出现在对客/对工厂单据上。"""
+    from app.modules.bizdoc import tokens as token_rules
+
+    assert "level" not in token_rules.SOURCE_FIELDS["customer"]
+    analysis = token_rules.analyze_template("客户：{{customer.name}}，等级：{{customer.level}}")
+    assert [item["token"] for item in analysis["unsupported"]] == ["customer.level"]
+    assert "不受支持" in analysis["unsupported"][0]["message"]
+    # 可用变量清单里不能再把它推荐给模板作者
+    assert not any("customer.level" in item for item in analysis["available"])
 
 
 def test_resolve_tokens_never_leaves_template_syntax():

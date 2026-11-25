@@ -1,7 +1,6 @@
 """线索中心接口（对齐 03-API §6）。"""
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -13,7 +12,6 @@ from app.modules.contact_util import (
     create_contact_for_customer,
     find_contact_in_customer,
     find_duplicate_customers,
-    lock_customer_row,
 )
 from app.modules.customer.model import Customer
 from app.modules.lead import service as svc
@@ -147,7 +145,7 @@ async def assign_lead(
     user: CurrentUser = Depends(require_permission("lead:assign")),
     session: AsyncSession = Depends(get_db),
 ):
-    lead = await svc.get_visible_lead(session, user, lead_id)
+    lead = await svc.lock_lead(session, user, lead_id)
     before_owner = lead.owner_id
     await svc.assign_lead(
         session, lead, to_user_id=payload.owner_id, operator_id=user.id, reason=payload.reason
@@ -196,20 +194,10 @@ async def batch_assign_leads(
 
     assigned: list[int] = []
     skipped: list[dict] = []
-    for lead_id in unique_ids:
+    for lead_id in sorted(unique_ids):
         try:
             async with session.begin_nested():  # SAVEPOINT：这一条失败只回滚这一条
-                lead = (
-                    await session.execute(
-                        select(Lead).where(
-                            Lead.id == lead_id, Lead.deleted_at.is_(None)
-                        )
-                    )
-                ).scalars().first()
-                if lead is None:
-                    raise AppError(ErrorCode.NOT_FOUND, "线索不存在", 404)
-                # 与单条入口同口径的范围校验（无权的那条在这里被拦下）
-                await svc.assert_lead_visible(session, user, lead)
+                lead = await svc.lock_lead(session, user, lead_id)
                 await svc.assign_lead(
                     session,
                     lead,
@@ -239,6 +227,9 @@ async def batch_assign_leads(
     message = f"已分配 {len(assigned)} 条"
     if skipped:
         message += f"，跳过 {len(skipped)} 条"
+    input_order = {lead_id: index for index, lead_id in enumerate(unique_ids)}
+    assigned.sort(key=input_order.__getitem__)
+    skipped.sort(key=lambda row: input_order[row["lead_id"]])
     return ok({"assigned": assigned, "skipped": skipped}, message)
 
 
@@ -263,6 +254,7 @@ async def claim_lead(
             action="claim",
             business_type="lead",
             business_id=lead.id,
+            before={"owner_id": None},
             after={"owner_id": user.id},
             ip=client_ip(request),
         )
@@ -280,9 +272,12 @@ async def release_lead(
     user: CurrentUser = Depends(require_permission("lead:assign")),
     session: AsyncSession = Depends(get_db),
 ):
-    lead = await svc.get_visible_lead(session, user, lead_id)
+    lead = await svc.lock_lead(session, user, lead_id)
+    converted = lead.status == "converted"
+    before_owner, before_status = lead.owner_id, lead.status
     await svc.assign_lead(
-        session, lead, to_user_id=None, operator_id=user.id, reason="释放回线索池"
+        session, lead, to_user_id=None, operator_id=user.id,
+        reason="解除已转化线索的负责人关联" if converted else "释放回线索池",
     )
     await write_audit(
         session,
@@ -290,10 +285,12 @@ async def release_lead(
         action="release",
         business_type="lead",
         business_id=lead.id,
+        before={"owner_id": before_owner, "status": before_status},
+        after={"owner_id": None},
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(svc.serialize_lead(lead), "已释放回线索池")
+    return ok(svc.serialize_lead(lead), "已解除线索负责人" if converted else "已释放回线索池")
 
 
 @router.post("/leads/{lead_id}/discard")
@@ -304,15 +301,19 @@ async def discard_lead(
     user: CurrentUser = Depends(require_permission("lead:assign")),
     session: AsyncSession = Depends(get_db),
 ):
-    lead = await svc.get_visible_lead(session, user, lead_id)
-    svc.mark_discarded(session, lead, reason=payload.reason, operator_id=user.id)
+    lead = await svc.lock_lead(session, user, lead_id)
+    if lead.status == "converted":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已转化的线索不能废弃", 422)
+    before_status, before_owner = lead.status, lead.owner_id
+    svc.mark_discarded(lead, reason=payload.reason)
     await write_audit(
         session,
         operator_id=user.id,
         action="discard",
         business_type="lead",
         business_id=lead.id,
-        after={"reason": payload.reason},
+        before={"status": before_status, "owner_id": before_owner},
+        after={"reason": payload.reason, "owner_id": lead.owner_id},
         ip=client_ip(request),
     )
     await session.commit()
@@ -376,7 +377,7 @@ async def convert_lead(
             country=lead.country or "中国",
             region=lead.region,
             source=lead.source or "其他渠道",
-            level="C",
+            level=None,
             status="active",
             pool_status="private" if lead.owner_id else "public",
             owner_id=lead.owner_id,
@@ -393,7 +394,12 @@ async def convert_lead(
         # 锁住客户行（持有到本函数末尾 commit）之后，后到的那个请求会重新查一遍，
         # 就能看见前一个刚建的那条、改为复用它。
         # 新建客户的模式不用锁：那个客户是刚创建的，别人还看不见。
-        await lock_customer_row(session, customer.id)
+        from app.modules.customer import service as customer_service
+
+        customer = await customer_service.get_visible_customer(
+            session, user, customer.id, for_update=True
+        )
+        await ensure_in_scope(session, user, owner_id=customer.owner_id, label="客户")
     if payload.reuse_contact_id is not None:
         # 用户明确指定复用哪一条。只接受**已经挂在这个客户下**的 ——
         # 拿别人的联系人 id 过来复用，等于借转化做一次越权的改挂。

@@ -1,24 +1,27 @@
 """样品接口（03-API §26、PRD §19）。
 
-12 个接口：
+主要接口：
   GET    /samples                 列表
   POST   /samples                 新建申请
   GET    /samples/{id}            详情
   PATCH  /samples/{id}            编辑
-  POST   /samples/{id}/approve    审批（批准/拒绝）
-  POST   /samples/{id}/resubmit   已驳回原样重新提交
+  POST   /samples/{id}/transfer  转交打样单
   POST   /samples/{id}/ship       寄样
   POST   /samples/{id}/sign       签收
   POST   /samples/{id}/feedback   登记反馈
   GET    /samples/{id}/items      明细列表
   POST   /samples/{id}/items      加明细
   PATCH  /samples/{id}/items/{iid} 改明细的车间依据（材质/工艺/图纸版本）
+  DELETE /samples/{id}            软删（只允许还没走流程的）
+  POST   /samples/{id}/restore    恢复一张被软删的
 
-最后两个不在文档 §26 里，都是口径落地时必需的写入口：
+后四个不在文档 §26 里，都是口径落地时必需的写入口：
   - PATCH .../items/{iid}：「材质 / 工艺 / 图纸版本逐行不同」——没有它，
     明细上这三项建完就再也不能改；
-  - POST .../resubmit：「驳回不是终态」——没有它，认为驳回理由不成立的跟单
-    只能去改个无关字段"骗"系统回到待审批，那条审计留痕是假的。
+  - DELETE / restore（2026-10-15）：这个模块**原来刻意不做软删**（打样单要留痕），
+    结果误建的单子永远清不掉（主人：「样品管理没有删除吗，就一直待在那？」）。
+    补的是「软删 + 收闸」——只允许 `pending` / `rejected` 删，已批准之后的拒绝，
+    判据见 `model.SAMPLE_DELETABLE_STATUSES`。
 """
 
 from datetime import UTC, datetime
@@ -26,35 +29,50 @@ import hashlib
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from urllib.parse import quote
+
 from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import Response
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.data_scope import ensure_in_scope, scoped_owner_ids
 from app.core.audit import write_audit
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
+from app.core.timebase import business_day_start, to_business, today_business
+from app.modules.sample.application_form import render_application_form
+from app.modules.user.model import Department
 from app.modules.customer import service as customer_service
+from app.modules.customer.model import Contact
+from app.modules.user.model import Permission, Role, User, role_permissions, user_roles
 from app.modules.file.model import BusinessFile, FileRecord
 from app.modules.followup import service as followup_service
 from app.modules.notification import service as notification_service
 from app.modules.opportunity import service as opportunity_service
 from app.modules.product.model import Sku
 from app.modules.sample import service as svc
-from app.modules.sample.model import SAMPLE_STATUS_LABEL, SampleItem, SampleRequest, SampleShipment
+from app.modules.sample.model import (
+    can_delete_sample,
+    SAMPLE_STATUS_LABEL,
+    SampleItem,
+    SampleRequest,
+    SampleShipment,
+)
 from app.modules.sample.schema import (
-    SampleApprove,
     SampleConfirm,
     SampleCreate,
     SampleFeedback,
     SampleItemAdd,
     SampleItemPatch,
     SampleMade,
-    SampleResubmit,
     SampleRevise,
     SampleShip,
     SampleSign,
+    SampleTransfer,
     SampleUpdate,
     SampleFromSource,
     SampleSource,
@@ -67,6 +85,9 @@ router = APIRouter(tags=["Sample"])
 #: 用什么材质、走什么工艺、按哪版图纸、什么时候要、按什么标准验收。
 PART_LOCK_FIELDS: tuple[str, ...] = ("target_completion_date", "acceptance_criteria")
 PART_LOCK_LABEL = "材质、工艺、图纸版本、目标完成日、验收标准"
+#: B22-03（用户已确认退）：费用/工时/制作负责人是审批批过的要点，
+#: 已批准（未制作）时改动须退回重审；但不带"已寄样阻断"（那是车间依据的口径）。
+REVIEW_LOCK_FIELDS: tuple[str, ...] = ("sample_fee", "estimated_hours", "production_owner_id")
 
 
 def _gate_part_lock(sample: SampleRequest) -> bool:
@@ -145,8 +166,8 @@ async def create_sample_from_source(payload: SampleFromSource, request: Request,
     from app.modules.sample import sources
     sample, replayed = await sources.create_from_source(session, user, payload, ip=client_ip(request))
     await session.commit()
-    await notification_service.dispatch_pending(session)
-    result = await svc.detail(session, sample)
+    await notification_service.dispatch_after_commit(session)
+    result = await svc.detail(session, sample, user)
     return ok({**result, 'replayed': replayed}, '此前已创建该打样申请' if replayed else '打样申请已创建')
 
 
@@ -177,6 +198,9 @@ async def list_samples(
     include_history: bool = Query(
         False, description="是否包含被新修订版取代的历史版本（默认只看当前版本）"
     ),
+    include_deleted: bool = Query(
+        False, description="只看已软删的（默认只看没删的）"
+    ),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     user: CurrentUser = Depends(require_permission("sample:view")),
@@ -188,20 +212,94 @@ async def list_samples(
         customer_id=customer_id,
         opportunity_id=opportunity_id,
         owner_id=owner_id,
+        include_deleted=include_deleted,
     )
     if not include_history:
         # 默认只列**当前版本**：开过修订版的单子（§3.3）否则会在列表里出现两份，
         # 看着像重复造单。历史版本仍可按 id 打开、也可显式传 include_history=true 列出——
         # "历史版本可核对"这条要求不受影响。
-        stmt = stmt.where(
-            SampleRequest.id.not_in(
-                select(SampleRequest.parent_id).where(SampleRequest.parent_id.is_not(None))
-            )
+        visible_parent_ids = await svc.apply_data_scope(
+            select(SampleRequest.parent_id).where(SampleRequest.parent_id.is_not(None)),
+            user, session,
         )
+        stmt = stmt.where(SampleRequest.id.not_in(visible_parent_ids))
     stmt = await svc.apply_data_scope(stmt, user, session)
     rows, total = await paginate(session, stmt.order_by(SampleRequest.id.desc()), page, page_size)
 
-    return ok(page_data(await svc.list_payload(session, rows), total, page, page_size))
+    return ok(page_data(await svc.list_payload(session, rows, user), total, page, page_size))
+
+
+@router.delete("/samples/{sample_id}")
+async def delete_sample(
+    sample_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("sample:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """软删一张样品申请（2026-10-15 补，03-API §26 之外的写入口）。
+
+    只允许**还没走流程**的（`SAMPLE_DELETABLE_STATUSES`）：刚建出来的，
+    或者被驳回后决定就此作罢的。已批准 / 已寄出 / 已签收的**拒绝** ——
+    那几张连着审批留痕与车间依据，删掉会对不上账。
+
+    **软删、不是物理删**：行、审计、附件、审批轮次全留着（`deleted_at` 只是打个标记），
+    列表默认看不见；需要时按「已删除」筛出来还能恢复。
+    """
+    sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True, allow_external_flow=True)
+    if not can_delete_sample(sample):
+        label = SAMPLE_STATUS_LABEL.get(sample.status, sample.status)
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"这张打样单当前为「{label}」，不能删除（移入回收站）。"
+            "仅未提交审批的草稿，或已拒绝、已撤回且未制作和寄送的申请可以删除",
+            400,
+        )
+    before = await svc.detail(session, sample, user)
+    sample.deleted_at = datetime.now(UTC)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="delete",
+        business_type="sample",
+        business_id=sample.id,
+        before=before,
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(None, "样品申请已删除（需要的话可在「已删除」里恢复）")
+
+
+@router.post("/samples/{sample_id}/restore")
+async def restore_sample(
+    sample_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("sample:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """恢复一张被软删的样品申请（2026-10-15 补）。
+
+    与删除**共用同一把钥匙**（`sample:manage`）：谁有样品管理权限谁就能捡回来，
+    不为它单开权限码 —— 客户的恢复也是复用删除那档既有权限码
+    （`customer:delete` / `customer:delete_own`）。
+    """
+    sample = await svc.get_visible_or_404(
+        session, user, sample_id, for_update=True, allow_deleted=True, allow_external_flow=True
+    )
+    if sample.deleted_at is None:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "这张单没有被删除，不需要恢复", 400)
+    before = await svc.detail(session, sample, user)
+    sample.deleted_at = None
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="restore",
+        business_type="sample",
+        business_id=sample.id,
+        before=before,
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(None, "样品申请已恢复")
 
 
 @router.post("/samples")
@@ -212,6 +310,19 @@ async def create_sample(
     session: AsyncSession = Depends(get_db),
 ):
     """新建样品申请。明细可一次带上，也可稍后用 /samples/{id}/items 追加。"""
+    # B21-13：同请求键回放 → 直接返回已建的那单，双击/弱网重试不重复建。
+    if payload.request_key:
+        existing = (
+            await session.execute(
+                select(SampleRequest).where(
+                    SampleRequest.request_key == payload.request_key,
+                    SampleRequest.deleted_at.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            existing = await svc.get_visible_or_404(session, user, existing.id)
+            return ok(await svc.detail(session, existing, user), "样品申请已创建")
     opportunity = None
     customer_id = payload.customer_id
     if payload.opportunity_id:
@@ -229,13 +340,28 @@ async def create_sample(
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "必须指定商机或客户")
 
     # 负责人：传入 > 商机负责人 > 当前用户
-    owner_id = payload.owner_id or (opportunity.owner_id if opportunity else None) or user.id
+    owner_id = payload.owner_id
+    if owner_id is None:
+        owner_id = (opportunity.owner_id if opportunity else None) or user.id
+    # 落库前校验关联完整性（审查 C3-02）：以前"不存在的负责人"要到 flush 才炸成 500，
+    # "已停用的负责人"更是直接 200 落库
+    await _assert_active_owner(session, user, owner_id, "负责人")
+    source_context = {"dingtalk_oa": {"mode": "standalone", "fields": {}}}
+    if payload.owner_id is not None and owner_id != user.id:
+        await _assert_sample_recipient(session, owner_id)
+        source_context["handover_owner_id"] = owner_id
+    await _assert_contact_belongs(session, payload.contact_id, customer_id)
+    if payload.production_owner_id is not None:
+        await _assert_active_owner(session, user, payload.production_owner_id, "制作负责人")
 
     sample = SampleRequest(
+        source_context=source_context,
+        request_key=payload.request_key,
         opportunity_id=payload.opportunity_id,
         customer_id=customer_id,
         contact_id=payload.contact_id,
         owner_id=owner_id,
+        production_owner_id=payload.production_owner_id,
         status="pending",
         remark=payload.remark,
         requested_at=svc.now(),
@@ -243,7 +369,24 @@ async def create_sample(
         created_at=svc.now(),
     )
     session.add(sample)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError:
+        # B21-13：并发同键撞唯一约束 → 回滚后返回已建的那单（幂等），不 500
+        await session.rollback()
+        if payload.request_key:
+            existing = (
+                await session.execute(
+                    select(SampleRequest).where(
+                        SampleRequest.request_key == payload.request_key,
+                        SampleRequest.deleted_at.is_(None),
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                existing = await svc.get_visible_or_404(session, user, existing.id)
+                return ok(await svc.detail(session, existing, user), "样品申请已创建")
+        raise
 
     for item in payload.items:
         await _add_item(
@@ -255,6 +398,13 @@ async def create_sample(
             item.remark,
             inquiry_id=item.inquiry_id,
             item_name=item.item_name,
+            # ⚠️ 这三项以前**没往下传**，于是"新建时带明细"的 craft/material/
+            # drawing_version 被静默丢弃（库内三项全 NULL），而"后续追加明细"
+            # 那条路是传的 —— 同一份数据两条路两个结果（审查 C3-01）。
+            # 打样制作依据（工艺/材质/图纸版本）就靠这三个字段，丢了车间没法干活。
+            craft=item.craft,
+            material=item.material,
+            drawing_version=item.drawing_version,
         )
 
     await session.flush()
@@ -264,27 +414,29 @@ async def create_sample(
         action="create",
         business_type="sample",
         business_id=sample.id,
-        after=await svc.detail(session, sample),
+        after=await svc.detail(session, sample, user),
         ip=client_ip(request),
     )
-    # 领导六阶段口径"过程记录"：打样动作自动写跟进并推送业务主管
-    await followup_service.record_and_notify(
-        session,
-        customer_id=sample.customer_id,
-        owner_id=sample.owner_id,
-        title="打样申请已创建",
-        content=f"样品申请 #{sample.id} 已创建（{len(payload.items)} 条明细）",
-        business_type="sample",
-        business_id=sample.id,
-        opportunity_id=sample.opportunity_id,
-        sample_id=sample.id,
-        operator_id=user.id,
-        exclude_user_id=user.id,
-        event_key=f"sample:create:{sample.id}",
-    )
     await session.commit()
-    await notification_service.dispatch_pending(session)
-    return ok(await svc.detail(session, sample), "样品申请已创建")
+    await notification_service.dispatch_after_commit(session)
+    return ok(await svc.detail(session, sample, user), "样品申请已创建")
+
+
+@router.get("/samples/application-form-template")
+async def download_application_form_template(
+    user: CurrentUser = Depends(require_permission("sample:view")),
+):
+    """下载空白的《样品明细明细表》三表模板，供经办人填好后再上传同序审批。"""
+    from app.modules.sample.application_form import TEMPLATE_FILENAME, TEMPLATE_PATH
+    if not TEMPLATE_PATH.is_file():
+        raise AppError(ErrorCode.NOT_FOUND, "打样申请单模板文件不存在，请联系管理员", 404)
+    return Response(
+        content=TEMPLATE_PATH.read_bytes(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(TEMPLATE_FILENAME)}",
+        },
+    )
 
 
 @router.get("/samples/{sample_id}")
@@ -294,7 +446,64 @@ async def get_sample(
     session: AsyncSession = Depends(get_db),
 ):
     sample = await svc.get_visible_or_404(session, user, sample_id)
-    return ok(await svc.detail(session, sample))
+    return ok(await svc.detail(session, sample, user))
+
+
+@router.get("/samples/{sample_id}/application-form")
+async def download_application_form(
+    sample_id: int,
+    user: CurrentUser = Depends(require_permission("sample:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """导出**填好的**《打样申请单》Excel（钉钉「定制打样审批」那份单子）。
+
+    为什么要有这个出口（2026-10-15 主人口径）：
+    - 发起打样**在 CRM**，而流程**回到钉钉**走 —— 钉钉那份申请单是公司现有表单
+      （表头印着"表单编码：D01-003"），格式不能改；
+    - CRM 原来缺它上面一大半的格，业务员每次都要**手打一遍**再去钉钉上传。
+    这里把 CRM 已有的数据填进原版式的底稿，业务员**下载即传**。
+
+    ⚠️ 生成的单子上**采购回复、打样部回复、打样人/完成时间/样品确认人**是空的 ——
+    那是**生产部与采购在钉钉里填**的（批注原文："此处为采购填写"），
+    生产部不在 CRM 里，CRM 填了反而是假的。这不是漏了。
+
+    权限用 `sample:view`：能看这单的人就该能导出它，不需要写权限
+    （导出不改数据）。数据范围由 `get_visible_or_404` 兜住。
+    """
+    sample = await svc.get_visible_or_404(session, user, sample_id)
+    items = (
+        await session.execute(
+            select(SampleItem).where(SampleItem.sample_request_id == sample.id)
+        )
+    ).scalars().all()
+
+    # 申请人与部门：单子上 G3/I3/K3 三格要印
+    applicant_name = ""
+    department_name = ""
+    if sample.created_by:
+        applicant = await session.get(User, sample.created_by)
+        if applicant is not None:
+            applicant_name = applicant.name or applicant.username or ""
+            if applicant.department_id:
+                dept = await session.get(Department, applicant.department_id)
+                if dept is not None:
+                    department_name = dept.name or ""
+
+    content = render_application_form(
+        sample, list(items), applicant_name=applicant_name, department_name=department_name
+    )
+    from app.modules.sample.application_form import TEMPLATE_FILENAME
+    filename = TEMPLATE_FILENAME
+    # 导出是**读操作**，不写审计：审计表记的是"谁改了数据"，
+    # 把每次下载都记进去只会把真正要紧的改动淹掉（项目里 PDF 下载同样不记）。
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            # 中文文件名必须走 RFC 5987（`filename*=`），否则某些客户端会乱码
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"
+        },
+    )
 
 
 @router.patch("/samples/{sample_id}")
@@ -306,8 +515,30 @@ async def update_sample(
     session: AsyncSession = Depends(get_db),
 ):
     sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
-    before = await svc.detail(session, sample)
+    from app.modules.sample.dingtalk import ensure_editable
+    ensure_editable(sample)
+    before = await svc.detail(session, sample, user)
     data = payload.model_dump(exclude_unset=True)
+    # ---- 落库前校验关联完整性（审查 C3-02）----
+    #
+    # 以前这里直接把传进来的值 setattr 上去，于是：
+    #   · `owner_id: null` → 200 落库，**原负责人立刻读不到这张单**
+    #     （服务端报「该样品申请没有负责人，无法判定可见范围，已拒绝访问」——
+    #      拦是拦住了，但入口没堵，单子就成了谁都进不去的孤儿）；
+    #   · 不存在的负责人 → flush 时外键炸成 **500**；
+    #   · 已停用的负责人 → 200 落库，单子挂在一个登不上系统的人名下；
+    #   · 别人家的联系人 → 200 落库，打样通知发给别家联系人。
+    # 这里把四种都变成明确的 4xx。
+    if "owner_id" in data:
+        await _assert_active_owner(session, user, data["owner_id"], "负责人")
+        if data["owner_id"] != sample.owner_id:
+            await _assert_sample_recipient(session, data["owner_id"])
+            _set_handover_owner(sample, data["owner_id"])
+    if "production_owner_id" in data and data["production_owner_id"] is not None:
+        await _assert_active_owner(session, user, data["production_owner_id"], "制作负责人")
+    if "contact_id" in data:
+        await _assert_contact_belongs(session, data["contact_id"], sample.customer_id)
+
     # 生产打样资料（文档 §3.5）与联系人/负责人/备注走同一个"改了留痕"的入口：
     # 跟单在这里补资料，打样需求单出图时逐项带给车间。
     # 材质 / 工艺 / 图纸版本**不在这个列表里**：它们逐行不同，走明细接口
@@ -321,11 +552,30 @@ async def update_sample(
         "acceptance_criteria",
         "sample_fee",
         "production_owner_id",
+        # ---- 钉钉《打样申请单》上的格（2026-10-15）----
+        # 不在这个白名单里的字段会被**静默忽略**（PATCH 回 200「没有变化」）——
+        # 与 `extra="ignore"` 是同一类毛病，加字段时**必须同时改这里**。
+        "sample_type",
+        "product_category",
+        "maker_unit",
+        "estimated_hours",
+        "sample_purpose",
+        "urgency",
+        "sample_situation",
+        "material_spec",
+        "product_size",
+        "printing",
+        "accessories",
+        "packaging",
+        "craft_requirement",
+        "product_name",
+        "deliver_date",
+        "sample_maker",
     ):
         if field in data:
             setattr(sample, field, data[field])
     await session.flush()
-    after = await svc.detail(session, sample)
+    after = await svc.detail(session, sample, user)
     changed = [field for field in data if before.get(field) != after.get(field)]
     if not changed:
         return ok(after, "打样资料没有变化")
@@ -346,7 +596,17 @@ async def update_sample(
         _reopen(sample)
         reopened = True
         await session.flush()
-        after = await svc.detail(session, sample)
+        after = await svc.detail(session, sample, user)
+
+    # B22-03：已批准（未制作）改费用/工时/制作负责人 → 退回重审，批过的数字不能悄悄换
+    if not reopened and sample.status == "approved" and sample.made_at is None:
+        review_changed = [f for f in changed if f in REVIEW_LOCK_FIELDS]
+        if review_changed:
+            _reopen(sample)
+            reopened = True
+            locked = review_changed
+            await session.flush()
+            after = await svc.detail(session, sample, user)
 
     await write_audit(
         session,
@@ -363,7 +623,7 @@ async def update_sample(
             session, customer_id=sample.customer_id, owner_id=sample.owner_id, operator_id=user.id,
             title="打样单重新提交审批" if was_rejected else "打样单退回待审批",
             content=(
-                f"打样 #{sample.id} 的资料被修改（{'、'.join(locked)}），"
+                f"打样编号 {sample.id} 的资料被修改（{'、'.join(locked)}），"
                 + ("该单已重新提交至「待审批」" if was_rejected else "该单已退回「待审批」")
                 + "，需要重新审批后才能投产"
             ),
@@ -374,127 +634,99 @@ async def update_sample(
     else:
         await followup_service.record_and_notify(
             session, customer_id=sample.customer_id, owner_id=sample.owner_id, operator_id=user.id,
-            title="打样资料已修改", content=f"打样 #{sample.id} 已修改资料字段：{'、'.join(changed)}",
+            title="打样资料已修改", content=f"打样编号 {sample.id} 已修改资料字段：{'、'.join(changed)}",
             business_type="sample", business_id=sample.id, sample_id=sample.id,
             opportunity_id=sample.opportunity_id, exclude_user_id=user.id, event_key=f"sample:update:{sample.id}:{uuid4().hex}",
         )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     if reopened:
         message = "已重新提交，需重新审批" if was_rejected else "已退回待审批，需重新审批"
     else:
         message = "已保存"
-    return ok(await svc.detail(session, sample), message)
+    return ok(await svc.detail(session, sample, user), message)
 
 
-@router.post("/samples/{sample_id}/approve")
-async def approve_sample(
+def _sample_recipient_filter():
+    """Users who can read and work on an assigned sample."""
+    active_roles = (
+        select(user_roles.c.user_id)
+        .join(Role, Role.id == user_roles.c.role_id)
+        .where(Role.status == "active")
+    )
+    admins = active_roles.where(Role.code == "admin")
+    sample_permissions = (
+        active_roles.join(role_permissions, role_permissions.c.role_id == Role.id)
+        .join(Permission, Permission.id == role_permissions.c.permission_id)
+    )
+    viewers = sample_permissions.where(Permission.code == "sample:view")
+    managers = sample_permissions.where(Permission.code == "sample:manage")
+    return User.id.in_(admins) | (User.id.in_(viewers) & User.id.in_(managers))
+
+
+async def _assert_sample_recipient(session: AsyncSession, owner_id: int) -> None:
+    eligible = await session.scalar(select(User.id).where(User.id == owner_id, _sample_recipient_filter()))
+    if eligible is None:
+        raise AppError(ErrorCode.PARAM_ERROR, "接手人需要有查看和管理打样单的权限", 422)
+
+
+def _set_handover_owner(sample: SampleRequest, owner_id: int) -> None:
+    sample.source_context = {**(sample.source_context or {}), "handover_owner_id": owner_id}
+
+
+@router.get("/samples/{sample_id}/transfer-options")
+async def sample_transfer_options(
     sample_id: int,
-    payload: SampleApprove,
+    keyword: str = Query("", max_length=64),
+    user: CurrentUser = Depends(require_permission("sample:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    await svc.get_visible_or_404(session, user, sample_id)
+    stmt = select(User.id, User.name).where(User.status == "active", _sample_recipient_filter())
+    # B22-01：候选只给操作者范围内的人，与转交落库校验同口径，不展示选不了的选项
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is not None:
+        stmt = stmt.where(User.id.in_(owner_ids))
+    if keyword.strip():
+        stmt = stmt.where(User.name.icontains(keyword.strip(), autoescape=True))
+    rows = (await session.execute(stmt.order_by(User.name, User.id).limit(50))).all()
+    return ok([{"id": row.id, "name": row.name} for row in rows])
+
+
+@router.post("/samples/{sample_id}/transfer")
+async def transfer_sample(
+    sample_id: int,
+    payload: SampleTransfer,
     request: Request,
     user: CurrentUser = Depends(require_permission("sample:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """审批样品申请：批准或拒绝（PRD §19 的「样品申请」环节）。"""
-    sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
-    target = "approved" if payload.approved else "rejected"
-    svc.ensure_transition(sample.status, target)
-
-    if not payload.approved and not (payload.reject_reason or "").strip():
-        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "拒绝时必须填写原因")
-
-    sample.status = target
-    sample.approved_at = svc.now()
-    sample.reject_reason = None if payload.approved else payload.reject_reason
-    await svc.record_opportunity_touch(
-        session, sample, "已批准" if payload.approved else "被拒绝"
+    sample = await svc.get_visible_or_404(
+        session, user, sample_id, for_update=True, allow_external_flow=True
     )
-    await session.flush()
-
-    after = await svc.detail(session, sample)
+    old_owner_id = sample.owner_id
+    if old_owner_id == payload.owner_id:
+        return ok(None, "这位同事已经是负责人")
+    await _assert_active_owner(session, user, payload.owner_id, "接手人")
+    await _assert_sample_recipient(session, payload.owner_id)
+    _set_handover_owner(sample, payload.owner_id)
+    sample.owner_id = payload.owner_id
     await write_audit(
-        session,
-        operator_id=user.id,
-        action="approve" if payload.approved else "reject",
-        business_type="sample",
-        business_id=sample.id,
-        after=after,
-        ip=client_ip(request),
-    )
-    await followup_service.record_and_notify(
-        session, customer_id=sample.customer_id, owner_id=sample.owner_id, operator_id=user.id,
-        title="打样审批结果", content=f"打样 #{sample.id} 已{'批准' if payload.approved else '拒绝'}" + (f"；原因：{payload.reject_reason}" if not payload.approved else ""),
-        business_type="sample", business_id=sample.id, sample_id=sample.id,
-        opportunity_id=sample.opportunity_id, exclude_user_id=user.id, event_key=f"sample:approve:{sample.id}:r{sample.review_round}",
+        session, operator_id=user.id, action="transfer", business_type="sample",
+        business_id=sample.id, before={"owner_id": old_owner_id},
+        after={"owner_id": sample.owner_id}, ip=client_ip(request),
     )
     await session.commit()
-    await notification_service.dispatch_pending(session)
-    return ok(after, "样品已批准" if payload.approved else "样品已拒绝")
+    return ok(None, "打样单已转交")
 
 
-@router.post("/samples/{sample_id}/resubmit")
-async def resubmit_sample(
+@router.post("/samples/{sample_id}/approve", include_in_schema=False)
+@router.post("/samples/{sample_id}/resubmit", include_in_schema=False)
+async def obsolete_local_sample_review(
     sample_id: int,
-    request: Request,
-    payload: SampleResubmit | None = None,
     user: CurrentUser = Depends(require_permission("sample:manage")),
-    session: AsyncSession = Depends(get_db),
 ):
-    """把已驳回的打样单**原样**重新提交审批（业务方 2026-10-05 定）。
-
-    为什么需要一个专门的接口：「改资料会自动回到待审批」只覆盖了"改完再报"。
-    跟单如果认为驳回理由不成立、一个字都不想改，就**没有任何入口** ——
-    只能去改个无关字段"骗"系统回待审批，那条留痕是假的（审计里写着改了备注，
-    实际上什么都没改）。
-
-    与"改资料重提"的分工：
-    - 改了东西 → 走 PATCH，自动回待审批，审计里记着改了什么；
-    - 什么都没改 → 走这里，明确表达"原样再报一次"。
-
-    资料一字不动、`reject_reason` 也保留 —— 主管重审时要知道上一轮为什么被打回。
-    """
-    sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
-    request_key = payload.request_key if payload else None
-    if (request_key and sample.status == "pending"
-            and sample.review_request_key == request_key):
-        # **同一次提交的弱网重试**（第一批返修 §3.2）：幂等返回，不再加一轮、不重复通知。
-        # 只有**带了同一个键**才认幂等——不带键（或换了一把键）时行为完全不变，
-        # 下面 ensure_transition 照旧拦住"待审批的单子又来重提"。
-        # 用状态本身当幂等信号是错的，那会把这条既有口径悄悄改掉。
-        return ok(await svc.detail(session, sample), "已重新提交，等待审批")
-    # 状态规则的唯一出处是 SAMPLE_TRANSITIONS，这里不另写一套判断。
-    # 非"已驳回"的单子调到这儿会被它拦住（待审批/已批准不支持这个动作）。
-    svc.ensure_transition(sample.status, "pending")
-    before = await svc.detail(session, sample)
-
-    # 走 _reopen：轮次自增与状态回流是同一件事，别在这里再写一遍
-    _reopen(sample)
-    # _reopen 会把键清空（新的一轮），这里再登记本次提交的键
-    sample.review_request_key = request_key
-    await session.flush()
-    after = await svc.detail(session, sample)
-
-    await write_audit(
-        session,
-        operator_id=user.id,
-        action="resubmit",
-        business_type="sample",
-        business_id=sample.id,
-        before=before,
-        after=after,
-        ip=client_ip(request),
-    )
-    await followup_service.record_and_notify(
-        session, customer_id=sample.customer_id, owner_id=sample.owner_id, operator_id=user.id,
-        title="打样单重新提交审批",
-        content=f"打样 #{sample.id} 已原样重新提交至「待审批」，等待审批",
-        business_type="sample", business_id=sample.id, sample_id=sample.id,
-        opportunity_id=sample.opportunity_id, exclude_user_id=user.id,
-        event_key=f"sample:resubmit:{sample.id}:r{sample.review_round}",
-    )
-    await session.commit()
-    await notification_service.dispatch_pending(session)
-    return ok(after, "已重新提交，等待审批")
+    raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "打样审批统一在同序 OA 办理，请打开同序 OA 申请", 409)
 
 
 @router.post("/samples/{sample_id}/revise")
@@ -519,7 +751,12 @@ async def revise_sample(
     没有制作/寄出事实时不给开：那种情况直接改就行（改完自动退回重审），
     多开一版只会让台账变脏。要开就得先有"必须冻结"的事实。
     """
-    parent = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
+    from app.modules.oa.business_gates import require_sample_approved
+    from app.modules.sample.dingtalk import META_KEY, metadata
+
+    parent = await svc.get_visible_or_404(
+        session, user, sample_id, for_update=True, allow_external_flow=True
+    )
     if parent.made_at is None and parent.status not in ("shipped", "signed"):
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
@@ -527,6 +764,24 @@ async def revise_sample(
             "不必开修订版",
             422,
         )
+
+    source_context = {key: value for key, value in (parent.source_context or {}).items()
+                      if key != "handover_owner_id"}
+    parent_oa = metadata(parent)
+    draft_fields = {}
+    if parent_oa:
+        await require_sample_approved(session, parent)
+        # 部分同序表单内容只保存在旧申请快照里。只带可编辑申请字段。
+        parent_fields = parent_oa.get("fields") or {}
+        draft_fields = {
+            key: parent_fields[key] for key in (
+                "sample_type", "product_category", "maker_unit", "target_date", "score", "sample_note",
+                "_estimated_hours", "_sample_purpose", "_urgency", "_sample_situation", "_sample_fee",
+                "_deliver_date", "_sample_maker", "_product_name", "_material_spec", "_product_size",
+                "_printing", "_accessories", "_packaging", "_craft_requirement",
+            ) if key in parent_fields
+        }
+    source_context[META_KEY] = {"mode": "standalone", "fields": draft_fields, "requires_self_oa": True}
 
     parent_items = (
         await session.execute(
@@ -542,7 +797,7 @@ async def revise_sample(
         # 新版本从待审批开始：它的资料还没被主管批过
         status="pending",
         remark=(payload.remark if payload and payload.remark else parent.remark),
-        source_context=parent.source_context,
+        source_context=source_context,
         version=(parent.version or 1) + 1,
         parent_id=parent.id,
         purpose=parent.purpose,
@@ -550,6 +805,23 @@ async def revise_sample(
         acceptance_criteria=parent.acceptance_criteria,
         sample_fee=parent.sample_fee,
         production_owner_id=parent.production_owner_id,
+        sample_type=parent.sample_type,
+        product_category=parent.product_category,
+        maker_unit=parent.maker_unit,
+        estimated_hours=parent.estimated_hours,
+        craft_points=parent.craft_points,
+        sample_purpose=parent.sample_purpose,
+        urgency=parent.urgency,
+        sample_situation=parent.sample_situation,
+        deliver_date=parent.deliver_date,
+        sample_maker=parent.sample_maker,
+        material_spec=parent.material_spec,
+        product_size=parent.product_size,
+        printing=parent.printing,
+        accessories=parent.accessories,
+        packaging=parent.packaging,
+        craft_requirement=parent.craft_requirement,
+        product_name=parent.product_name,
         created_by=user.id,
         requested_at=svc.now(),
     )
@@ -574,7 +846,7 @@ async def revise_sample(
             )
         )
     await session.flush()
-    after = await svc.detail(session, child)
+    after = await svc.detail(session, child, user)
 
     await write_audit(
         session,
@@ -586,18 +858,8 @@ async def revise_sample(
         after={"id": child.id, "version": child.version, "parent_id": parent.id},
         ip=client_ip(request),
     )
-    await followup_service.record_and_notify(
-        session, customer_id=child.customer_id, owner_id=child.owner_id,
-        operator_id=user.id,
-        title="打样单开了新修订版",
-        content=f"打样 #{parent.id}（第 {parent.version or 1} 版）已开第 "
-                f"{child.version} 版待审批；原版制作/寄送事实冻结保留",
-        business_type="sample", business_id=child.id, sample_id=child.id,
-        opportunity_id=child.opportunity_id, exclude_user_id=user.id,
-        event_key=f"sample:revise:{parent.id}:v{child.version}",
-    )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(after, f"已开第 {child.version} 版（原版冻结保留，等审批）")
 
 
@@ -610,14 +872,16 @@ async def ship_sample(
     session: AsyncSession = Depends(get_db),
 ):
     """寄样：登记承运商与快递单号（PRD §19 的「寄样 / 快递单号」）。"""
-    sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
+    sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True, allow_external_flow=True)
+    from app.modules.oa.business_gates import require_sample_approved
+    await require_sample_approved(session, sample)
     svc.ensure_transition(sample.status, "shipped")
 
-    shipped_at = (
-        datetime.combine(payload.shipped_at, datetime.min.time(), tzinfo=UTC)
-        if payload.shipped_at
-        else svc.now()
-    )
+    # 日期口径与校验（审查 C3-04）：北京日历日 → UTC 瞬时；不能晚于今天
+    _assert_not_future(payload.shipped_at, "寄出日期")
+    shipped_at = _parse_business_date(payload.shipped_at) if payload.shipped_at else svc.now()
+    _assert_not_before(shipped_at, sample.made_at, "寄出日期", "制作完成时间")
+    before_status = sample.status
     shipment = SampleShipment(
         sample_request_id=sample.id,
         carrier=payload.carrier,
@@ -632,13 +896,14 @@ async def ship_sample(
     await svc.record_opportunity_touch(session, sample, "已寄出")
     await session.flush()
 
-    after = await svc.detail(session, sample)
+    after = await svc.detail(session, sample, user)
     await write_audit(
         session,
         operator_id=user.id,
         action="ship",
         business_type="sample",
         business_id=sample.id,
+        before={"status": before_status},
         after=after,
         ip=client_ip(request),
     )
@@ -657,7 +922,7 @@ async def ship_sample(
         event_key=f"sample:ship:{sample.id}",
     )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(after, "已登记寄样")
 
 
@@ -670,14 +935,16 @@ async def sign_sample(
     session: AsyncSession = Depends(get_db),
 ):
     """签收确认（PRD §19 的「签收」）。"""
-    sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
+    sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True, allow_external_flow=True)
+    from app.modules.oa.business_gates import require_sample_approved
+    await require_sample_approved(session, sample)
     svc.ensure_transition(sample.status, "signed")
 
-    signed_at = (
-        datetime.combine(payload.signed_at, datetime.min.time(), tzinfo=UTC)
-        if payload.signed_at
-        else svc.now()
-    )
+    # 签收不能早于寄出（审查 C3-04）；只比前后顺序，保留历史补录能力
+    _assert_not_future(payload.signed_at, "签收日期")
+    signed_at = _parse_business_date(payload.signed_at) if payload.signed_at else svc.now()
+    _assert_not_before(signed_at, sample.shipped_at, "签收日期", "寄出日期")
+    before_status = sample.status
     sample.status = "signed"
     sample.signed_at = signed_at
 
@@ -689,24 +956,25 @@ async def sign_sample(
     await svc.record_opportunity_touch(session, sample, "客户已签收")
     await session.flush()
 
-    after = await svc.detail(session, sample)
+    after = await svc.detail(session, sample, user)
     await write_audit(
         session,
         operator_id=user.id,
         action="sign",
         business_type="sample",
         business_id=sample.id,
+        before={"status": before_status},
         after=after,
         ip=client_ip(request),
     )
     await followup_service.record_and_notify(
         session, customer_id=sample.customer_id, owner_id=sample.owner_id, operator_id=user.id,
-        title="样品已签收", content=f"打样 #{sample.id} 已签收，签收时间 {_event_time(sample.signed_at)}",
+        title="样品已签收", content=f"打样编号 {sample.id} 已签收，签收时间 {_event_time(sample.signed_at)}",
         business_type="sample", business_id=sample.id, sample_id=sample.id,
         opportunity_id=sample.opportunity_id, exclude_user_id=user.id, event_key=f"sample:sign:{sample.id}",
     )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(after, "已登记签收")
 
 
@@ -719,34 +987,38 @@ async def feedback_sample(
     session: AsyncSession = Depends(get_db),
 ):
     """登记客户反馈（PRD §19 的「反馈」）。"""
-    sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
+    sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True, allow_external_flow=True)
+    from app.modules.oa.business_gates import require_sample_approved
+    await require_sample_approved(session, sample)
     if not payload.feedback.strip():
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "反馈内容不能为空")
 
     if sample.feedback == payload.feedback:
-        return ok(await svc.detail(session, sample), "反馈没有变化")
+        return ok(await svc.detail(session, sample, user), "反馈没有变化")
+    before_feedback = sample.feedback
     sample.feedback = payload.feedback
     await svc.record_opportunity_touch(session, sample, "客户已反馈")
     await session.flush()
 
-    after = await svc.detail(session, sample)
+    after = await svc.detail(session, sample, user)
     await write_audit(
         session,
         operator_id=user.id,
         action="feedback",
         business_type="sample",
         business_id=sample.id,
+        before={"feedback": before_feedback},
         after=after,
         ip=client_ip(request),
     )
     await followup_service.record_and_notify(
         session, customer_id=sample.customer_id, owner_id=sample.owner_id, operator_id=user.id,
-        title="客户样品反馈", content=f"打样 #{sample.id} 客户反馈：{sample.feedback}",
+        title="客户样品反馈", content=f"打样编号 {sample.id} 客户反馈：{sample.feedback}",
         business_type="sample", business_id=sample.id, sample_id=sample.id,
         opportunity_id=sample.opportunity_id, exclude_user_id=user.id, event_key=f"sample:feedback:{sample.id}:{uuid4().hex}",
     )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(after, "反馈已登记")
 
 
@@ -766,7 +1038,9 @@ async def register_sample_made(
     """
     from datetime import UTC, datetime
 
-    sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
+    sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True, allow_external_flow=True)
+    from app.modules.oa.business_gates import require_sample_approved
+    await require_sample_approved(session, sample)
     if sample.status in ("pending", "rejected"):
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED, "还没批准的打样申请不能登记制作完成", 422
@@ -778,12 +1052,31 @@ async def register_sample_made(
     # 现在：带 request_key 就用它；不带则按 (完成时间, 说明) **精确**算一个键。
     # 说明只要不同就是一次**新事件**，照常追加、照常通知。
     made_at = payload.made_at or sample.made_at or datetime.now(UTC)
+    # 日期闸（第七批 P2-8）：制作完成是**已发生的事实**，不能填未来。
+    #
+    # 同一个文件里，寄出（`shipped_at`）、签收（`signed_at`）、客户确认
+    # （`confirmed_at`）三处本来就都有 `_assert_not_future` —— 唯独"制作完成"
+    # 这一处漏了。实测：填 30 天后的完成时间，接口照常 200 保存，
+    # 于是留痕里出现"未来的既成事实"，后面按时间轴做的逾期与周期统计全被带偏。
+    _assert_not_future(made_at, "制作完成时间")
+    # 顺序闸：已有寄出/签收事实时，制作必须在它们**之前或当天**（做完了才能寄）。
+    # 复用那三处同一套 `_assert_not_before`，不另写比较（免得时区口径漂移）。
+    _assert_not_before(sample.shipped_at, made_at, "寄出日期", "制作完成时间")
+    _assert_not_before(sample.signed_at, made_at, "签收日期", "制作完成时间")
     note = (payload.remark or "").strip()
     event_key = payload.request_key or _fingerprint(made_at.isoformat(), note)
     events = list(sample.made_events or [])
     if any((item or {}).get("key") == event_key for item in events):
         # 重发同一个请求（弱网下客户端重试很常见）：不重复留痕、不重复通知。
-        return ok(await svc.detail(session, sample), "制作完成记录没有变化")
+        return ok(await svc.detail(session, sample, user), "制作完成记录没有变化")
+    basis_ids = [int(fid) for fid in (payload.basis_file_ids or [])]
+    if basis_ids and sample.basis_files is not None:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "这张打样单已经登记过制作依据，不能改。要换依据请开修订版——"
+            "新版用新依据，旧版的凭证原样留着，这样每批样按什么做的都查得到",
+            422,
+        )
     events.append(
         {
             "key": event_key,
@@ -794,6 +1087,7 @@ async def register_sample_made(
         }
     )
     sample.made_events = events
+    before_made_at = sample.made_at
     sample.made_at = made_at
     # ---- 制作依据快照（2026-10-06）----
     # 显式指定"这次照哪几份文件做的"。校验三点：
@@ -801,15 +1095,7 @@ async def register_sample_made(
     #   ② 文件本身存在；
     #   ③ 之前没登记过（登记即固化，要换开修订版）。
     # 快照里存 sha256：光有文件名证明不了是哪一份，文件可以被同名替换。
-    basis_ids = [int(fid) for fid in (payload.basis_file_ids or [])]
     if basis_ids:
-        if sample.basis_files:
-            raise AppError(
-                ErrorCode.STATUS_NOT_ALLOWED,
-                "这张打样单已经登记过制作依据，不能改。要换依据请开修订版——"
-                "新版用新依据，旧版的凭证原样留着，这样每批样按什么做的都查得到",
-                422,
-            )
         attached = {
             link.file_id: link.category
             for link in (
@@ -872,24 +1158,25 @@ async def register_sample_made(
         prefix = f"{sample.remark}\n" if sample.remark else ""
         sample.remark = f"{prefix}制作说明：{note}"
     await session.flush()
-    after = await svc.detail(session, sample)
+    after = await svc.detail(session, sample, user)
     await write_audit(
         session,
         operator_id=user.id,
         action="sample_made",
         business_type="sample",
         business_id=sample.id,
+        before={"made_at": before_made_at.isoformat() if before_made_at else None},
         after={"made_at": sample.made_at.isoformat()},
         ip=client_ip(request),
     )
     await followup_service.record_and_notify(
         session, customer_id=sample.customer_id, owner_id=sample.owner_id, operator_id=user.id,
-        title="样品制作完成", content=f"打样 #{sample.id} 制作完成，完成时间 {_event_time(sample.made_at)}",
+        title="样品制作完成", content=f"打样编号 {sample.id} 制作完成，完成时间 {_event_time(sample.made_at)}",
         business_type="sample", business_id=sample.id, sample_id=sample.id,
         opportunity_id=sample.opportunity_id, exclude_user_id=user.id, event_key=f"sample:made:{sample.id}:{event_key}",
     )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(after, "已登记制作完成")
 
 
@@ -898,6 +1185,7 @@ async def confirm_sample(
     sample_id: int,
     payload: SampleConfirm,
     request: Request,
+    confirm: bool = False,
     user: CurrentUser = Depends(require_permission("sample:manage")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -906,12 +1194,47 @@ async def confirm_sample(
     规则只有一条，但它是这条流程的重点：**必须先签收才能确认**。
     客户没收到样品就"确认接受"在业务上是假数据；签收是物流事实、
     确认是业务事实，分开记才答得了"这批样到底过没过"。
+
+    ⚠️ **必须先确认**（审查 2026-10-10）：这是**登记客户商务事实**
+    （客户接受 / 未通过），不是改一个自己的字段 —— 登记完会影响
+    这条打样单的后续判断。所以先让用户核对样品与结果再登记。
     """
     from datetime import UTC, datetime
 
+    if not confirm:
+        from app.core.confirmation import confirmation_message
+
+        from app.modules.customer.model import Customer
+
+        probe = await svc.get_visible_or_404(session, user, sample_id)
+        customer = (
+            await session.get(Customer, probe.customer_id) if probe.customer_id else None
+        )
+        result_label = "客户接受" if payload.accepted else "客户未通过"
+        parts = [
+            f"样品编号 {probe.id}"
+            + (f"（客户 {customer.name}）" if customer is not None else ""),
+            f"将登记结果：{result_label}",
+        ]
+        remark = (payload.remark or "").strip()
+        if remark:
+            parts.append(f"反馈：{remark}")
+        elif not payload.accepted:
+            parts.append("未填反馈")
+        parts.append("这是客户侧商务事实，登记后影响这条打样单的后续判断")
+        raise AppError(
+            ErrorCode.CONFIRM_REQUIRED,
+            confirmation_message(
+                action=f"登记样品结果（{result_label}）", detail="；".join(parts)
+            ),
+            422,
+        )
+
     from app.modules.sample.model import CONFIRM_ACCEPTED, CONFIRM_REJECTED
 
-    sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
+    sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True, allow_external_flow=True)
+    from app.modules.oa.business_gates import require_sample_approved
+    await require_sample_approved(session, sample)
     if sample.signed_at is None:
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
@@ -920,9 +1243,17 @@ async def confirm_sample(
         )
     decision = CONFIRM_ACCEPTED if payload.accepted else CONFIRM_REJECTED
     if sample.customer_confirmed_at and sample.confirm_status == decision and sample.confirm_remark == payload.remark and (payload.confirmed_at is None or payload.confirmed_at == sample.customer_confirmed_at):
-        return ok(await svc.detail(session, sample), "客户确认记录没有变化")
+        return ok(await svc.detail(session, sample, user), "客户确认记录没有变化")
+    # 客户确认不能早于签收（审查 C3-04）
+    confirmed_at = (
+        _parse_business_date(payload.confirmed_at) if payload.confirmed_at else datetime.now(UTC)
+    )
+    if payload.confirmed_at is not None:
+        _assert_not_future(payload.confirmed_at, "客户确认时间")
+    _assert_not_before(confirmed_at, sample.signed_at, "客户确认时间", "签收时间")
+    before_confirm = {"confirm_status": sample.confirm_status, "customer_confirmed_at": sample.customer_confirmed_at.isoformat() if sample.customer_confirmed_at else None}
     sample.confirm_status = decision
-    sample.customer_confirmed_at = payload.confirmed_at or datetime.now(UTC)
+    sample.customer_confirmed_at = confirmed_at
     sample.confirm_remark = payload.remark
     if payload.remark:
         # 客户说的话留进反馈里：这是"为什么过/不过"的原始依据
@@ -931,13 +1262,14 @@ async def confirm_sample(
         session, sample, "客户已确认样品" if payload.accepted else "客户未通过样品"
     )
     await session.flush()
-    after = await svc.detail(session, sample)
+    after = await svc.detail(session, sample, user)
     await write_audit(
         session,
         operator_id=user.id,
         action="sample_confirm",
         business_type="sample",
         business_id=sample.id,
+        before=before_confirm,
         after={
             "confirm_status": sample.confirm_status,
             "customer_confirmed_at": sample.customer_confirmed_at.isoformat(),
@@ -946,12 +1278,12 @@ async def confirm_sample(
     )
     await followup_service.record_and_notify(
         session, customer_id=sample.customer_id, owner_id=sample.owner_id, operator_id=user.id,
-        title="客户确认样品结果", content=f"打样 #{sample.id} 客户确认：{'接受' if payload.accepted else '未通过'}；{payload.remark or '无补充说明'}",
+        title="客户确认样品结果", content=f"打样编号 {sample.id} 客户确认：{'接受' if payload.accepted else '未通过'}；{payload.remark or '无补充说明'}",
         business_type="sample", business_id=sample.id, sample_id=sample.id,
         opportunity_id=sample.opportunity_id, exclude_user_id=user.id, event_key=f"sample:confirm:{sample.id}:{uuid4().hex}",
     )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(after, "客户确认已登记")
 
 
@@ -1022,7 +1354,7 @@ async def add_sample_item(
             else ("打样单退回待审批" if reopened else "打样明细已添加")
         ),
         content=(
-            f"打样 #{sample.id} 新增明细 #{item.id}，数量 {item.quantity}"
+            f"打样编号 {sample.id} 新增明细编号 {item.id}，数量 {item.quantity}"
             + (
                 "；该单已重新提交至「待审批」"
                 if (reopened and was_rejected)
@@ -1034,8 +1366,138 @@ async def add_sample_item(
         opportunity_id=sample.opportunity_id, exclude_user_id=user.id, event_key=f"sample:item_create:{item.id}",
     )
     await session.commit()
-    await notification_service.dispatch_pending(session)
-    return ok(await svc.detail(session, sample), "明细已添加")
+    await notification_service.dispatch_after_commit(session)
+    return ok(await svc.detail(session, sample, user), "明细已添加")
+
+
+def _parse_business_date(value) -> datetime:
+    """把"用户填的日期/时间"统一换算成 UTC 瞬时。
+
+    ⚠️ 这里修两件事（审查 C3-04）：
+
+    1. **口径**：用户填的是**北京日历日**。原写法
+       `datetime.combine(d, min.time(), tzinfo=UTC)` 把它当成 UTC 零点，
+       存进去的时刻比实际**早 8 小时**（北京 10-09 00:00 存成了 UTC 10-09 00:00
+       = 北京 10-09 08:00）。项目已有 `timebase.business_day_start`，
+       注释写明口径是"年/月/今天这些业务口径一律先换算到北京时间再看"，改用它。
+    2. **datetime 入参**（`confirmed_at`）也走同一套，naive 视为北京时间。
+
+    历史数据保持原样不动：只改"以后新填的"，不迁移已落库的（在途单据不该被改）。
+    """
+    if isinstance(value, datetime):
+        # naive datetime 按**项目既有口径视为 UTC**（与 `timebase.to_business` 一致），
+        # 不能当北京时间 —— 两处口径不一致会差 8 小时，是最难查的一类 bug。
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    # date（用户填的日历日）→ 该北京日的 00:00 对应 UTC 瞬时
+    return business_day_start(value.year, value.month, value.day)
+
+
+def _business_date(value):
+    """把 date / datetime 统一取成"北京日历日"，供比较用。
+
+    ⚠️ 必须统一：(`signed_at` 是 date，`confirmed_at` 是 datetime)。
+    我第一版直接 `value > today_business()`，datetime 与 date 比较会抛
+    `TypeError: can't compare datetime.datetime to datetime.date` —— 实测 500。
+    用户填的是哪一天，就按"北京那一天的日历日"比，不看具体时刻。
+    """
+    if isinstance(value, datetime):
+        # ⚠️ 用 `to_business` 而不是 `.date()`：项目口径是**naive datetime 视为 UTC**
+        # （见 `timebase.to_business` 的 `replace(tzinfo=UTC)`）。naive 直接取 .date()
+        # 会把"UTC 的 23:59"当成北京同一天，实际那是北京的次日 07:59。
+        return to_business(value).date()
+    return value
+
+
+def _assert_not_future(value, field: str) -> None:
+    """业务日期不能晚于**北京时间今天**（审查 C3-04 主人的口径：A+B）。
+
+    为什么要按北京时间：服务器跑在 UTC，比北京晚 8 小时。北京时间凌晨 0-8 点
+    提交"今天"，按 UTC 比会被判成未来、把正常操作拒掉。
+    """
+    # ⚠️ 括号不能省：写 `if value is None or x > y: raise` 会把 **None 也拒掉**
+    # （or 左边为真就直接 raise）—— 我第一版就是这么写的，实测"不填日期"被拒。
+    if value is not None and _business_date(value) > today_business():
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"{field}不能晚于今天（{today_business().isoformat()}）",
+            422,
+        )
+
+
+def _assert_not_before(earlier, later, early_label: str, late_label: str) -> None:
+    """`early_label` 不能早于 `late_label`。
+
+    **保留历史补录能力**：只比前后顺序，不比"是不是今天"——
+    寄出 8/20、签收 9/1 这种全是过去的补录照常放行（主人明确要求）。
+    """
+    if earlier is None or later is None:
+        return
+    e, later_date = _business_date(earlier), _business_date(later)
+    if e < later_date:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"{early_label}（{e.isoformat()}）不能早于{late_label}（{later_date.isoformat()}）",
+            422,
+        )
+
+
+async def _assert_active_owner(
+    session: AsyncSession, user: CurrentUser, owner_id: int | None, field: str
+) -> None:
+    """负责人必须**存在且在岗且在我的数据范围内**（审查 C3-02 + B22-01）。
+
+    实测过的后果：传不存在的 id → **500**（外键炸在 flush 时）；传已停用的人 → 200 落库，
+    于是这张单挂在一个登不上系统的人名下。两者都该是明确的 4xx。
+    B22-01：只判 active 不判范围时，sample:manage 能把负责人指到范围外用户，
+    单子连同通知一起送出自己的可见边界 —— 范围校验与 task/customer 同口径。
+
+    与 `task._active_owner`、`customer` 的负责人校验同一口径。
+    """
+    if owner_id is None:
+        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, f"{field}不能为空", 422)
+    target = await session.get(User, owner_id)
+    if target is None:
+        raise AppError(ErrorCode.NOT_FOUND, f"{field} id={owner_id} 不存在", 404)
+    if target.status != "active":
+        raise AppError(ErrorCode.PARAM_ERROR, f"{field}「{target.name}」已停用", 422)
+    await ensure_in_scope(session, user, owner_id=owner_id, label=field)
+
+
+async def _assert_contact_belongs(session: AsyncSession, contact_id: int | None, customer_id: int | None) -> None:
+    """联系人必须**未被删除、存在、且属于本申请的客户**（审查 C3-02）。
+
+    实测过的两条反例：
+      1. 给甲客户的单挂乙客户的联系人 → 200 并落库，打样通知会发给**别人家**的联系人；
+      2. **已删除**的联系人 → 读它自己返回 404，但拿它的 id 建/改打样单却 200 并落库
+         （补修，漏在 `deleted_at` 上）。
+
+    ⚠️ 为什么第 2 条特别要防：联系人是**软删除**（`deleted_at` 置时间戳，
+    `delete_contact` 就是这么做的），而 `session.get()` **不走软删除过滤** ——
+    列表、详情那些走 `Contact.deleted_at.is_(None)` 的地方看不到它，
+    只有"按 id 直取"的这条校验看得到。于是形成一个**只有内行才知道的入口**：
+    界面上选不到这个联系人，但拿 id 就能挂上去，打样通知就会发给一个
+    "已经被删掉、本不该再联系"的人。
+
+    历史关联**保持原样不迁移**：以前挂上的联系人即使后来被删，那张单的联系人
+    仍然显示（那是当时的事实），这里只拦**新的**关联。
+    """
+    if contact_id is None:
+        return
+    contact = await session.get(Contact, contact_id)
+    if contact is None:
+        raise AppError(ErrorCode.NOT_FOUND, f"联系人 id={contact_id} 不存在", 404)
+    if contact.deleted_at is not None:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"联系人「{contact.name}」已被删除，不能再关联到打样单；请从该客户的有效联系人里选",
+            422,
+        )
+    if contact.customer_id != customer_id:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"联系人「{contact.name}」不属于该客户（申请客户 id={customer_id}）",
+            422,
+        )
 
 
 async def _add_item(
@@ -1054,15 +1516,22 @@ async def _add_item(
 ) -> SampleItem:
     """加一条打样明细。
 
-    两条路径（场景09）：有 SKU 走 SKU；定制件尚无 SKU 时给需求编号——
-    定制件本来就要先打样再定 SKU，强制先建档等于把顺序反过来。
-    两个都不给直接拒：这条明细得说得清打的是什么。
+    **三条路径**：
+    - 有 SKU 走 SKU（现成产品）；
+    - 定制件尚无 SKU 时给需求编号 —— 定制件本来就要先打样再定 SKU，
+      强制先建档等于把顺序反过来；
+    - **只写产品名称**（2026-10-16 主人）：业务员手上那张《打样申请单》上
+      就只有「产品名称」一格，**没有"现货还是定制"这个区分**。所以允许只给名字 ——
+      名字打了样之后才可能建 SKU，要求先选 SKU 是把顺序反过来。
+      这一条与上面那条的区别：不给需求编号时**没有** inquiry 关联（不校验客户/商机归属），
+      但**必须**有个名字，否则这条明细说不清打的是什么。
 
     车间依据（材质/工艺/图纸版本）随明细一起存：一单多样时每行可以不同。
     """
-    if sku_id is None and inquiry_id is None:
+    named = (item_name or "").strip()
+    if sku_id is None and inquiry_id is None and not named:
         raise AppError(
-            ErrorCode.PARAM_ERROR, "打样明细必须关联 SKU 或定制需求编号", 422
+            ErrorCode.PARAM_ERROR, "打样明细要写清打的是什么：选产品，或填产品名称", 422
         )
     if sku_id is not None:
         sku = await session.get(Sku, sku_id)
@@ -1071,6 +1540,30 @@ async def _add_item(
         item = SampleItem(
             sample_request_id=sample_id,
             sku_id=sku_id,
+            # 把当时的产品名称一起冻结，申请表导出时不依赖实时 SKU 名称。
+            item_name=sku.name,
+            quantity=quantity,
+            remark=remark,
+        )
+    elif inquiry_id is None:
+        # 只写了产品名称：产品库/定制需求里都还没有它（往往是新品，打完样才建档）。
+        # 不关联任何 SKU / 需求 —— 申请表上的「产品名称」就是这一格。
+        item = SampleItem(
+            sample_request_id=sample_id,
+            sku_id=None,
+            inquiry_id=None,
+            item_name=named,
+            quantity=quantity,
+            remark=remark,
+        )
+    elif inquiry_id is None:
+        # 只写了产品名称：产品库/定制需求里都还没有它（往往是新品，打完样才建档）。
+        # 不关联任何 SKU / 需求 —— 申请表上的「产品名称」就是这一格。
+        item = SampleItem(
+            sample_request_id=sample_id,
+            sku_id=None,
+            inquiry_id=None,
+            item_name=named,
             quantity=quantity,
             remark=remark,
         )
@@ -1135,6 +1628,8 @@ async def update_sample_item(
     而"哪一档能改"是业务口径，只该有一个出处。
     """
     sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
+    from app.modules.sample.dingtalk import ensure_editable
+    ensure_editable(sample)
     item = await _get_item_or_404(session, sample_id, item_id)
 
     before = svc.serialize_item(item)
@@ -1145,7 +1640,7 @@ async def update_sample_item(
     after = svc.serialize_item(item)
     changed = [field for field in data if before.get(field) != after.get(field)]
     if not changed:
-        return ok(await svc.detail(session, sample), "车间依据没有变化")
+        return ok(await svc.detail(session, sample, user), "车间依据没有变化")
 
     # 闸门放在"确实有改动"之后：同一个值重发一次不该被判违规（它什么都没改）
     reopened = _gate_part_lock(sample)
@@ -1166,7 +1661,7 @@ async def update_sample_item(
         session, customer_id=sample.customer_id, owner_id=sample.owner_id, operator_id=user.id,
         title="打样单退回待审批" if reopened else "打样车间依据已修改",
         content=(
-            f"打样 #{sample.id} 明细 #{item.id} 的车间依据已修改（{'、'.join(changed)}）"
+            f"打样编号 {sample.id} 明细编号 {item.id} 的车间依据已修改（{'、'.join(changed)}）"
             + ("；该单已退回「待审批」，需要重新审批后才能投产" if reopened else "")
         ),
         business_type="sample", business_id=sample.id, sample_id=sample.id,
@@ -1174,8 +1669,8 @@ async def update_sample_item(
         event_key=f"sample:item_update:{item.id}:{uuid4().hex}",
     )
     await session.commit()
-    await notification_service.dispatch_pending(session)
+    await notification_service.dispatch_after_commit(session)
     return ok(
-        await svc.detail(session, sample),
+        await svc.detail(session, sample, user),
         "已退回待审批，需重新审批" if reopened else "已保存",
     )

@@ -1,3 +1,5 @@
+import { showDownloadResult } from '../download-feedback'
+import { formatBeijingTime } from '../beijing-time'
 /**
  * 对外单据面板（打样需求单 / 下单文件）——文档 §3.5、场景12。
  *
@@ -37,6 +39,21 @@ interface Props {
   /** 当前选中的报价版本 id（生成时按这一版的快照出图） */
   quoteVersionId?: number
   canManage: boolean
+  /**
+   * 紧凑模式：一份都没生成过时，只留一行「还没有生成过 + 生成一份」，
+   * 不画那张 9 列的空表头。9 列表头 + 一行"还没有生成过"占 90px、
+   * 信息量为零 —— 就是主人说的"内容少却给大卡"。
+   * 默认关，只有调用方确认自己要紧凑时才开。
+   */
+  compact?: boolean
+  /** 紧凑模式下的空态文案（不传用通用的） */
+  compactEmptyText?: string
+  /**
+   * 紧凑空态但容器本身很宽（订单详情、样品抽屉这类整块区）：
+   * 说明一句话放得下，按钮就该留在右上同行，不要再折到第二行去。
+   * 不传则按窄列处理（说明在上、按钮在下）。
+   */
+  emptyInline?: boolean
 }
 
 const SOURCE_LABEL: Record<string, string> = {
@@ -51,6 +68,9 @@ export default function BizDocPanel({
   quoteId,
   quoteVersionId,
   canManage,
+  compact = false,
+  compactEmptyText = '还没有生成过',
+  emptyInline = false,
 }: Props) {
   const queryClient = useQueryClient()
   const queryKey = ['biz-docs', docType, sampleRequestId ?? orderId ?? quoteId]
@@ -100,37 +120,57 @@ export default function BizDocPanel({
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  const rows = listQuery.data ?? []
+  // 紧凑模式 + 一份都没生成过 → 只留一行，不画空表头
+  const compactEmpty = compact && !listQuery.isLoading && rows.length === 0
+
   return (
     <div>
       <div
         style={{
+          // 紧凑空态（归档区那一列 310px 宽）：原来按钮和说明并排，
+          // 说明只剩 ~210px，一句话被拆成四行、还挤在按钮左边。
+          // 空态没有表格要并排，改成"说明在上、按钮在下"，
+          // 说明能用满整列宽（两行），和旁边「合同文档」那列的排法一致。
           display: 'flex',
-          alignItems: 'center',
-          gap: 12,
-          marginBottom: 10,
+          // 宽容器里空态也保持"说明在左、按钮在右"同行
+          flexDirection: compactEmpty && !emptyInline ? 'column' : 'row',
+          alignItems: compactEmpty && !emptyInline ? 'flex-start' : 'center',
+          gap: compactEmpty && !emptyInline ? 10 : 12,
+          marginBottom: compactEmpty ? 0 : 10,
           fontSize: 12,
-          color: 'var(--crm-text-3)',
+          color: 'var(--crm-text-2)',
           lineHeight: 1.7,
         }}
       >
         <span style={{ flex: 1 }}>
-          正文取生成时的快照：之后改客户资料、价格或交期，已出的文件不会跟着变。
-          需要更新请再生成一份，旧版会保留（不覆盖）。下载默认给**生成时存档的原件**，
-          重复下载内容一致；标了「无存档原件」的历史件拿到的是按快照重建的副本。
+          {compactEmpty ? (
+            compactEmptyText
+          ) : (
+            <>
+              正文取生成时的快照：之后改客户资料、价格或交期，已出的文件不会跟着变。
+              需要更新请再生成一份，旧版会保留（不覆盖）。下载默认给「生成时存档的原件」，
+              重复下载内容一致；标了「无存档原件」的历史件拿到的是按快照重建的副本。
+            </>
+          )}
         </span>
+        {/* 描边按钮（白底 + 主色细边 + 主色文字）：这块是归档区里的次要动作。
+            主人 2026-11-17「只是不喜欢深蓝」—— 实心/浅底都是色块，描边不是：
+            蓝色仍在，但不再是一整块颜色压在灰白页面上。 */}
         {canManage && (
-          <Button theme="solid" loading={generateMutation.isPending} onClick={() => generateMutation.mutate()}>
+          <Button theme="outline" type="primary" loading={generateMutation.isPending} onClick={() => generateMutation.mutate()}>
             生成一份
           </Button>
         )}
       </div>
 
+      {compactEmpty ? null : (
       <Table<BizDocRow>
         size="small"
         rowKey="id"
         pagination={false}
         loading={listQuery.isLoading}
-        dataSource={listQuery.data ?? []}
+        dataSource={rows}
         empty="还没有生成过"
         columns={[
           { title: '单号', dataIndex: 'doc_no', width: 170 },
@@ -182,22 +222,25 @@ export default function BizDocPanel({
             title: '生成时间',
             dataIndex: 'created_at',
             width: 170,
-            render: (v: string | null) => (v ? v.slice(0, 19).replace('T', ' ') : '-'),
+            // ⚠️ 原来是 `v.slice(0,19).replace('T',' ')` —— 切 ISO 串等于按 **UTC** 显示。
+            // `doc.created_at` 存的是 UTC 瞬时（本项目自己为生成文件印日期修过同类问题），
+            // 北京时间 11:00 生成的文件会显示成 03:00。
+            render: (v: string | null) => (v ? formatBeijingTime(v) : '-'),
           },
           {
             title: '操作',
             width: 200,
             render: (_: unknown, r: BizDocRow) => (
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                <a onClick={() => void downloadBizDoc(r)}>下载原件</a>
+                <button type="button" className="crm-text-action" onClick={() => void showDownloadResult(downloadBizDoc(r))}>下载原件</button>
                 {r.status === 'void' && (
                   // 作废件：原件上印的是生成当时的"有效"。要看到"已作废"必须走状态副本，
                   // 而且那份是**重出的**，不能和原件混为一谈。
-                  <a onClick={() => void downloadBizDoc(r, { mode: 'state' })}>状态副本</a>
+                  <button type="button" className="crm-text-action" onClick={() => void showDownloadResult(downloadBizDoc(r, { mode: 'state' }))}>状态副本</button>
                 )}
                 {canManage && r.status === 'active' && (
                   <Popconfirm title="作废这份文件？（内容与校验值不变）" onConfirm={() => voidMutation.mutate(r.id)}>
-                    <a style={{ color: 'var(--crm-error)' }}>作废</a>
+                    <button type="button" className="crm-text-action" style={{ color: 'var(--crm-error)' }}>作废</button>
                   </Popconfirm>
                 )}
               </div>
@@ -205,6 +248,7 @@ export default function BizDocPanel({
           },
         ]}
       />
+      )}
     </div>
   )
 }

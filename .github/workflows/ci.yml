@@ -69,16 +69,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Unified release safety tests (isolated filesystem, no production)
+        working-directory: .
+        run: python3 ops/shared_checks.py release-safety --profile ci
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: pip
-          cache-dependency-path: backend/requirements.txt
+          cache-dependency-path: |
+            backend/requirements.lock.txt
+            backend/requirements-dev.txt
 
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt -r requirements-dev.txt pyflakes
+          pip install -r requirements.lock.txt -r requirements-dev.txt pyflakes
 
       - name: 迁移到最新表结构（空库 → head）
         run: |
@@ -91,21 +97,35 @@ jobs:
       - name: 启动后端（8001）
         run: |
           PYTHONPATH=. nohup python -m uvicorn app.main:app --host 127.0.0.1 --port 8001 > /tmp/backend.log 2>&1 &
-          for i in $(seq 1 30); do
-            curl -s -o /dev/null http://127.0.0.1:8001/docs && break
-            sleep 1
-          done
-          curl -sf -o /dev/null http://127.0.0.1:8001/docs || { tail -n 40 /tmp/backend.log; exit 1; }
+          python scripts/wait_backend.py http://127.0.0.1:8001 || { tail -n 40 /tmp/backend.log; exit 1; }
           echo "backend ready"
 
       - name: 静态检查（pyflakes / 模型列 / 权限码）
         run: |
-          python -m pyflakes app
-          PYTHONPATH=. python scripts/check_model_attrs.py
-          PYTHONPATH=. python scripts/check_permissions.py
+          PYTHONPATH=. python ../ops/shared_checks.py backend-static --profile ci
 
       - name: 单元测试（pytest，纯函数，不依赖数据库）
         run: PYTHONPATH=. python -m pytest
+
+      - name: 登记项自检（清单里的套件脚本、前端单测文件是否都在仓库里）
+        # ⚠️ 为什么要这一步（2026-10-14 复盘：CI 连红十几次，全是同一类）
+        #
+        # 这个仓库经常有**多个会话同时改**。反复出现的病程是：
+        # **登记项与其对应物被拆到不同的提交里** ——
+        # 有人往 ops/check_suites.txt 或本文件加了一行、或先写了断言，
+        # 而脚本/测试文件/实现还在他工作区；另一个人提交时把登记项一起带上主干
+        # → CI 跑分支上的一切 → **所有人的 CI 红**，且红在下游
+        # （"找不到脚本/文件"、"旧负责人仍能删除客户"），指向受害者而不是漏提交的人。
+        #
+        # ⚠️ 判定写在 `backend/scripts/check_registered_files.py` 里，**不要塞回 bash**：
+        # 我第一版就是写成这里的一段 bash（`while read` + 嵌套 `$(grep … | sed …)`），
+        # 本地与干净检出都过、**CI 上却红且不打印缺哪个文件** —— 嵌套命令替换 +
+        # sed 转义在不同 shell 下行为不同，是最难查的一类红。
+        # 现在它是个能离线跑、能自己测的脚本（`--list` 只列不判失败）。
+        working-directory: backend
+        run: |
+          # 共用项目清单保留CI原有顺序；此阶段仍在pytest之后、接口回归之前。
+          PYTHONPATH=. python ../ops/shared_checks.py backend-guards --profile ci
 
       - name: 接口回归（顺序跑，套件间互不冲突；清单见 ops/check_suites.txt）
         # 三处刻意的写法（2026-10-07 排查 CI 长期失败的产物）：
@@ -129,14 +149,24 @@ jobs:
           failed=""
           while read -r suite; do
             case "$suite" in '' | '#'*) continue ;; esac
-            if [ ! -f "scripts/$suite.py" ]; then
-              echo "::error::清单里的套件找不到脚本：scripts/$suite.py"
-              failed="$failed $suite"
+            if [ ! -f "scripts/${suite}.py" ]; then
+              # ⚠️ 这条最容易出现在**多人同时改仓库**的时候（2026-10-14 实测踩到）：
+              # 有人往 `ops/check_suites.txt` 加了一行、脚本却还没提交；而另一个人
+              # 提交时整文件 `git add ops/check_suites.txt`，把那一行一起带上了主干
+              # → CI 找不到脚本、红。
+              #
+              # ⚠️⚠️ 文案里的变量**必须用 `${}` 定界**：我第一版写的是
+              # `"scripts/$suite.py"` —— bash 会把它当成变量名 `suite.py` 展开，
+              # 在 `set -u` 下直接报 unbound variable，**整个跑套件的循环当场崩掉**
+              # （于是 CI 红的表象是"清单里的套件找不到脚本"，而其实一条套件都没跑）。
+              # 我为了这条 CI 提示反而让 CI 更坏了 —— 记在这里别再犯。
+              echo "::error::清单里的套件找不到脚本：scripts/${suite}.py —— 多半是有人加了清单行但脚本还没提交（共享文件整文件 add 时被带进来）。请确认脚本是否在别人工作区，跑通后补交。"
+              failed="$failed ${suite}"
               continue
             fi
             echo "::group::=== $suite ==="
             out="$(mktemp)"
-            if PYTHONPATH=. python -u "scripts/$suite.py" 2>&1 | tee "$out"; then
+            if PYTHONPATH=. python -u "scripts/${suite}.py" 2>&1 | tee "$out"; then
               echo "OK  $suite"
             else
               echo "::error::套件失败：$suite"
@@ -168,17 +198,28 @@ jobs:
         env:
           POSTGRES_USER: crm
           POSTGRES_PASSWORD: crm123456
-          POSTGRES_DB: crm_sales_agent_smoke
+          POSTGRES_DB: crm_iso_smoke
           POSTGRES_INITDB_ARGS: "--encoding=UTF8"
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U crm -d crm_sales_agent_smoke"
+          --health-cmd "pg_isready -U crm -d crm_iso_smoke"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 12
     env:
-      DATABASE_URL: postgresql+asyncpg://crm:crm123456@127.0.0.1:5432/crm_sales_agent_smoke
+      # ⚠️ 库名必须能过 `backend/scripts/_test_support.py` 的防呆：以 crm_iso /
+      # crm_check / crm_test 开头，或以 _test 结尾。**原来这里叫
+      # `crm_sales_agent_smoke`** —— 它既不以那三个前缀开头、也不以 _test 结尾，
+      # 所以冒烟末尾的收尾清扫（`clean_test_run_leftovers.py`，它也调 require_isolated_db）
+      # 一直被拒跑 → 「✗ 收尾清扫失败」→ UI 冒烟 job 恒红（2026-10-10 修）。
+      # 光把 crm_sales_agent 加进 DEV_DATABASES 也救不了它：卡住它的是**前缀规则**。
+      DATABASE_URL: postgresql+asyncpg://crm:crm123456@127.0.0.1:5432/crm_iso_smoke
+      # smoke_ui.mjs 会把 API_BASE 作为后端根地址；本 job 的后端监听 8000。
+      API_BASE: http://127.0.0.1:8000
+      # Vite dev server 在本 job 监听 5173；冒烟脚本的默认开发端口是 5274。
+      APP_BASE: http://127.0.0.1:5173
+      VITE_API_PROXY_TARGET: http://127.0.0.1:8000
       JWT_SECRET: ci-only-secret-key-at-least-32-bytes!
       DEEPSEEK_API_KEY: ""
       DINGTALK_PUSH_OFF: "1"
@@ -193,7 +234,7 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-          cache-dependency-path: backend/requirements.txt
+          cache-dependency-path: backend/requirements.lock.txt
 
       - uses: actions/setup-node@v4
         with:
@@ -211,15 +252,11 @@ jobs:
       - name: 后端：装依赖 → 迁移 → 种子 → 启动
         working-directory: backend
         run: |
-          pip install -r requirements.txt
+          pip install -r requirements.lock.txt
           PYTHONPATH=. python -m alembic upgrade head
           PYTHONPATH=. python scripts/seed.py
           PYTHONPATH=. nohup python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/backend.log 2>&1 &
-          for i in $(seq 1 30); do
-            curl -s -o /dev/null http://127.0.0.1:8000/docs && break
-            sleep 1
-          done
-          curl -sf -o /dev/null http://127.0.0.1:8000/docs || { tail -n 40 /tmp/backend.log; exit 1; }
+          python scripts/wait_backend.py http://127.0.0.1:8000 || { tail -n 40 /tmp/backend.log; exit 1; }
           echo "backend ready"
 
       - name: 前端：类型检查 + 构建（白屏根因防线，解析错误在这里先红）
@@ -227,11 +264,17 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm build
+          # 与本地共用检查项目；保留CI顺序，遇错仍由当前步骤立即失败。
+          python3 ../ops/shared_checks.py frontend-tests --profile ci
+          # 真实构建 + 隔离浏览器 + 内存模拟 API：取消不提交，确认对象/版本正确。
+          node ../ops/confirmation_browser_smoke.mjs dist
+          # 此阶段仍在构建/确认浏览器之后，顺序登记在共用清单中。
+          python3 ../ops/shared_checks.py frontend-static --profile ci
 
       - name: 前端：启动 dev server
         working-directory: frontend
         run: |
-          nohup pnpm exec vite --host 127.0.0.1 > /tmp/frontend.log 2>&1 &
+          nohup pnpm exec vite --host 127.0.0.1 --port 5173 > /tmp/frontend.log 2>&1 &
           for i in $(seq 1 40); do
             curl -s -o /dev/null http://localhost:5173/ && break
             sleep 1

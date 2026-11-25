@@ -161,12 +161,19 @@ async def main():
 
     async with SessionLocal() as s:
         # 夹具：Z 级客户 100 天没活跃 + 一条**已发出**且有效期内的报价
+        #
+        # ⚠️ 冷落天数**刻意取 70**（2026-10-13 加"最长保护期"之后）：
+        #    规则门槛 60 天 < 70 < 保护上限 90 天 —— 刚好落在"够冷落、但保护还没过期"
+        #    的那条缝里，这条断言才验得到"有效报价确实保护住了客户"。
+        #    原来写 100 天，配上 90 天上限后保护会被判过期、客户照样被提名，
+        #    断言就变成"因为口径变了"而红。改口径的用例在
+        #    `check_pool_recycle_and_merge.py` §2（那里验的就是 70 天 vs 400 天）。
         prot = Customer(
             name=f'CHK-RECYCLE-保护-{datetime.now(UTC).timestamp():.0f}',
             level='Z', status='active', pool_status='private',
             owner_id=1, source='回归', customer_type='企业', country='中国',
-            last_followup_at=datetime.now(UTC) - timedelta(days=100),
-            last_progress_at=datetime.now(UTC) - timedelta(days=100),
+            last_followup_at=datetime.now(UTC) - timedelta(days=70),
+            last_progress_at=datetime.now(UTC) - timedelta(days=70),
             created_at=datetime.now(UTC) - timedelta(days=200),
         )
         s.add(prot)

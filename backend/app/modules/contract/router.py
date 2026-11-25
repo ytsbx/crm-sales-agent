@@ -1,18 +1,126 @@
 """合同/月结协议接口：模板维护（管理）、生成/签署/作废与台账（销售/主管）。"""
 
+import logging
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, Query, Request
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
 from app.core.data_scope import ensure_in_scope, scoped_owner_ids
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
+from app.core.draft_visibility import ensure_draft_access
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data
 from app.modules.contract import service as svc
-from app.modules.contract.schema import DocumentCreate, DocumentSign, DocumentVoid, TemplateCreate
+from app.modules.contract.schema import (
+    ContractOaStart,
+    DocumentCreate,
+    DocumentSign,
+    DocumentVoid,
+    TemplateFileCreate,
+)
+from app.modules.dingtalk import service as dingtalk_service
+from app.modules.dingtalk.model import OaInstance
 
 router = APIRouter(tags=["Contract"])
+
+
+@router.post("/contract-documents/{doc_id}/oa-approval")
+async def start_oa_contract_approval(
+    doc_id: int,
+    payload: ContractOaStart,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("order:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """发起自研 OA 合同审批；审批在 OA 完成，CRM 负责同步与回签。"""
+    from app.modules.oa import client as oa_client
+    from app.modules.oa import service as oa_service
+
+    prepared_template = None
+    if payload.extra_fields:
+        from app.modules.oa.contract_form import active_template
+        from app.modules.user.model import User
+
+        draft = await svc.get_doc_or_404(session, doc_id)
+        await _ensure_doc_in_scope(session, user, draft)
+        if draft.status != "draft":
+            raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "只有待签草稿合同可以发起审批", 422)
+        account = await session.get(User, user.id)
+        if not oa_client.applicant_identity(account):
+            raise AppError(ErrorCode.PARAM_ERROR, "请联系管理员为当前账号绑定同序人员后再提交", 422)
+        prepared_template = await active_template(account)
+    doc = await svc.get_doc_or_404(session, doc_id, for_update=True, protect_transfer=True)
+    await _ensure_doc_in_scope(session, user, doc)
+    if doc.status != "draft":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "只有待签草稿合同可以发起审批", 422)
+    row, message = await oa_service.start_contract_approval(
+        session, user, doc,
+        our_company=payload.our_company,
+        counterparty_name=payload.counterparty_name,
+        extra_fields=payload.extra_fields,
+        prepared_template=prepared_template,
+    )
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="start_contract_oa",
+        business_type="contract",
+        business_id=doc.id,
+        after={"oa_instance_id": row.id, "instance_id": row.instance_id, "status": row.status},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(oa_service.serialize(row), message)
+
+
+@router.post("/contract-documents/{doc_id}/oa-withdraw")
+async def withdraw_contract_oa_approval(
+    doc_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("order:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """撤回仍在同序 OA 流转中的合同审批；已完成的审批不能从 CRM 撤回。"""
+    from app.modules.dingtalk.model import OaInstance
+
+    doc = await svc.get_doc_or_404(session, doc_id, for_update=True)
+    await _ensure_doc_in_scope(session, user, doc)
+    row = (
+        await session.execute(
+            select(OaInstance)
+            .where(OaInstance.inquiry_id == doc.id, OaInstance.oa_type == "contract")
+            .order_by(OaInstance.submit_round.desc())
+            .limit(1)
+            .with_for_update()
+        )
+    ).scalars().first()
+    if row is None or not row.instance_id:
+        raise AppError(ErrorCode.NOT_FOUND, "这份合同还没有可撤回的 OA 审批", 404)
+    if row.status != "pending":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, f"当前 OA 审批状态为「{row.status}」，不能撤回", 422)
+    if getattr(row, "provider", "dingtalk") == "self_oa":
+        from app.modules.oa import client as oa_client
+        from app.modules.oa import service as oa_service
+        from app.modules.user.model import User
+        actor = await session.get(User, user.id)
+        if not oa_client.owns_approval(actor, row):
+            raise AppError(ErrorCode.FORBIDDEN, "请由该 OA 审批的发起人先撤回，确认后再作废合同", 403)
+        row = await oa_service.withdraw_contract_row(session, row, "CRM 撤回合同审批")
+        await _ensure_doc_in_scope(session, user, doc)
+        await write_audit(
+            session, operator_id=user.id, action="withdraw_contract_oa", business_type="contract",
+            business_id=doc.id,
+            after={"oa_instance_id": row.id, "instance_id": row.instance_id, "status": row.status},
+            ip=client_ip(request),
+        )
+        await session.commit()
+        return ok(oa_service.serialize(row), "已撤回 OA 合同审批")
+    # 历史钉钉审批记录不再调外部；旧钉钉审批入口已于 2026-11-25 删除。
+    raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "历史钉钉审批仅供查看，请核对原审批结果", 422)
 
 
 @router.get("/contract-templates")
@@ -24,25 +132,40 @@ async def list_templates(
 
 
 @router.post("/contract-templates")
-async def create_template(
-    payload: TemplateCreate,
+async def save_template_file(
+    payload: TemplateFileCreate,
     request: Request,
-    user: CurrentUser = Depends(require_permission("settings:manage")),
+    user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """新增模板=新增版本；旧版本保留，已生成的文档钉死当时的版本。"""
-    template = await svc.create_template(session, payload=payload, user_id=user.id)
-    await write_audit(
-        session,
-        operator_id=user.id,
-        action="create_template",
-        business_type="contract_template",
-        business_id=template.id,
-        after={"name": template.name, "doc_type": template.doc_type, "version": template.version},
-        ip=client_ip(request),
+    """资料库：保存一版标准合同/月结协议原文件（只存档，不参与系统生成）。
+
+    系统模板生成已删除：这里不收正文，落库的模板 `enabled=False`，
+    生成入口仍然只接受上传的合同原文件。
+    """
+    template, file_row, created = await svc.create_file_template(
+        session, payload=payload, user_id=user.id
     )
-    await session.commit()
-    return ok(svc.serialize_template(template, is_current=True), "模板版本已保存")
+    if created:
+        await write_audit(
+            session,
+            operator_id=user.id,
+            action="create",
+            business_type="contract_template",
+            business_id=template.id,
+            after={
+                "doc_type": template.doc_type,
+                "name": template.name,
+                "version": template.version,
+                "file_id": file_row.id,
+            },
+            ip=client_ip(request),
+        )
+        await session.commit()
+    return ok(
+        svc.serialize_template(template, file=file_row),
+        "资料已保存" if created else "这份文件已经在资料库里，未重复建版本",
+    )
 
 
 @router.get("/contract-documents")
@@ -61,6 +184,7 @@ async def list_documents(
     items, total = await svc.list_documents(
         session,
         owner_ids=owner_ids,
+        viewer_id=user.id,
         customer_id=customer_id,
         status=status,
         order_id=order_id,
@@ -71,6 +195,9 @@ async def list_documents(
     return ok(page_data(items, total, page, page_size))
 
 
+logger = logging.getLogger(__name__)
+
+
 @router.post("/contract-documents")
 async def generate_document(
     payload: DocumentCreate,
@@ -78,6 +205,19 @@ async def generate_document(
     user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
+    if payload.source_type != "customer_drafted" or not payload.original_file_id or payload.template_id is not None:
+        raise AppError(ErrorCode.PARAM_ERROR, "系统模板生成已停用，请上传合同 Word 或 PDF 原文件", 422)
+    if not payload.contract_origin:
+        raise AppError(ErrorCode.PARAM_ERROR, "请选择合同来源：我方合同或客户合同", 422)
+    if not (payload.title or "").strip():
+        raise AppError(ErrorCode.PARAM_ERROR, "请填写合同名称", 422)
+    if payload.parent_id is not None or payload.supersede_parent:
+        raise AppError(ErrorCode.PARAM_ERROR, "请将补充或续签合同作为新合同原文件上传", 422)
+    return await create_document_record(payload, request, user, session)
+
+
+async def create_document_record(payload: DocumentCreate, request: Request, user: CurrentUser, session: AsyncSession):
+    """创建与归档共用实现；历史模板仅供内部迁移和隔离回归夹具使用，不挂 HTTP 路由。"""
     from app.modules.customer import service as customer_service
     from app.modules.order.model import SalesOrder
     from app.modules.quote.model import Quote
@@ -103,10 +243,14 @@ async def generate_document(
             raise AppError(ErrorCode.NOT_FOUND, "报价单不存在", 404)
         if quote.customer_id != customer.id:
             raise AppError(ErrorCode.PARAM_ERROR, "所选报价不属于该客户", 422)
-        await ensure_in_scope(session, user, owner_id=quote.owner_id, label="报价单")
+        if not await ensure_draft_access(session, Quote, quote.id, user.id):
+            await ensure_in_scope(session, user, owner_id=quote.owner_id, label="报价单")
     if payload.order_id is not None and payload.quote_id is not None:
         if order.quote_id is not None and order.quote_id != quote.id:
             raise AppError(ErrorCode.PARAM_ERROR, "所选报价与订单不匹配", 422)
+    if payload.original_file_id:
+        from app.modules.contract.support import verify_original
+        await verify_original(session, user, payload.original_file_id)
     doc, replayed = await svc.generate_document(session, payload=payload, user_id=user.id)
     if replayed:
         # 重复请求（重试 / 连点两次）：既不建新单，也不再写一条审计 ——
@@ -115,48 +259,74 @@ async def generate_document(
             svc.serialize_document(doc, customer_name=customer.name),
             "这份合同刚才已经生成过了，返回的是同一份",
         )
-    # 生成即把 PDF 渲染一次落盘（带 sha256）。之后无论客户改几次名，
-    # 下载拿到的都是这一份——同一编号两次下载内容不同是对外文件的硬伤。
-    await svc.attach_generated_pdf(session, doc, user_id=user.id)
-    # 补充协议 / 续签是**一次真实的业务动作**，要进客户时间线；
-    # 普通草稿生成不记——草稿不代表签约（审查第 9 条明确要求）。
-    if doc.parent_id:
-        parent_doc = await svc.get_doc_or_404(session, doc.parent_id)
-        supersedes = (doc.filled_data or {}).get("_supersedes") or {}
-        label = "月结协议续签" if doc.doc_type == "monthly" else "新增补充协议"
-        extra = ""
-        if supersedes:
-            extra = f"；已替代原协议 {supersedes.get('doc_no')}"
-            if supersedes.get("cancelled_tasks"):
-                extra += f"，同时结束了 {supersedes['cancelled_tasks']} 条在办提醒"
-        await _record_contract_event(
-            session,
-            doc,
-            user=user,
-            action="amend",
-            title=label,
-            content=f"{label} {doc.doc_no}，基于 {parent_doc.doc_no}{extra}",
-        )
+    # 唯一键保证重试不会重复创建“上传客户回签文件”待办。
+    from app.modules.task.model import Task
+    owner_id = customer.owner_id or user.id
+    exists = await session.execute(
+        select(Task.id).where(Task.source_key == f"contract:signed-upload:{doc.id}").limit(1)
+    )
+    if exists.scalar_one_or_none() is None:
+        session.add(Task(
+            title=f"上传客户回签合同：{doc.doc_no}",
+            task_type="contract_signed_upload",
+            customer_id=doc.customer_id,
+            owner_id=owner_id,
+            priority="high",
+            status="pending",
+            source="system",
+            source_business_type="contract",
+            source_business_id=doc.id,
+            source_key=f"contract:signed-upload:{doc.id}",
+        ))
+    from app.modules.file.model import BusinessFile
+    session.add(BusinessFile(business_type="contract", business_id=doc.id,
+                             file_id=payload.original_file_id, category="contract_original"))
     await write_audit(
         session,
         operator_id=user.id,
-        action="generate",
+        action="upload",
         business_type="contract",
         business_id=doc.id,
-        after={"doc_no": doc.doc_no, "template_id": doc.template_id,
-               "customer_id": doc.customer_id, "order_id": doc.order_id,
-               "quote_id": doc.quote_id, "quote_version_id": doc.quote_version_id,
-               "generated_file_id": doc.generated_file_id},
+        after={"doc_no": doc.doc_no, "customer_id": doc.customer_id,
+               "order_id": doc.order_id, "quote_id": doc.quote_id,
+               "quote_version_id": doc.quote_version_id,
+               "contract_origin": payload.contract_origin},
         ip=client_ip(request),
     )
     await session.commit()
+
     result = svc.serialize_document(doc, customer_name=customer.name)
-    missing = result.get("missing_fields") or {}
-    if missing:
-        # 缺项必须说出来：正文里留着 {{...}}，不报一声用户会以为模板坏了、或者数据丢了。
-        # 这里只提示、不拦——"必填项不齐就不许生成对外文件"是模板级配置，属于下一批。
-        return ok(result, f"合同草稿已生成；有 {len(missing)} 处没填上（正文里保留了占位符）")
-    return ok(result, "合同草稿已生成")
+    return ok(result, "合同已上传，已创建客户回签待办")
+
+
+@router.get("/contract-documents/oa-field-options")
+async def contract_oa_field_options(
+    user: CurrentUser = Depends(require_permission("order:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """上传合同弹窗用的同序合同模板字段（只要定义，不需要合同 id）。
+
+    读不到模板时返回空字段和原因，不挡上传：文件分类等字段可以在发起审批时再补。
+    """
+    from app.modules.oa import client as oa_client
+    from app.modules.oa.contract_form import active_template
+    from app.modules.user.model import User
+
+    account = await session.get(User, user.id)
+    if not oa_client.applicant_identity(account):
+        return ok({"fields": [], "message": "当前账号还没绑定同序 OA，上传后可先保存，审批前再补字段"})
+    try:
+        template = await active_template(account)
+    except AppError as exc:
+        return ok({"fields": [], "message": exc.message})
+    return ok({"fields": [{
+        "id": field["id"], "label": field.get("label", field["id"]),
+        "type": field.get("type", "text"), "required": bool(field.get("required")),
+        "options": field.get("options") or [],
+        "presentation": field.get("presentation"),
+        "multiline": field.get("multiline"),
+        "help_text": field.get("help_text"),
+    } for field in template.get("fields") or []]})
 
 
 @router.get("/contract-documents/{doc_id}")
@@ -178,10 +348,27 @@ async def get_document(
 
         parent = await session.get(ContractDocument, doc.parent_id)
         result["parent_doc_no"] = parent.doc_no if parent else None
-    result["amendments"] = await svc.list_amendments(session, doc.id)
+    result["amendments"] = await svc.list_amendments(session, doc.id, viewer_id=user.id)
     # 签署原件清单：已签状态下前端要有"看签回来的那一份"的入口。
     # 不给的话，用户点「下载」拿到的是生成稿，却以为拿的是签署件。
     result["signed_files"] = await svc.list_signed_files(session, doc.id)
+    # **OA 行的活数据**（2026-10-16 加）：`filled_data._dingtalk_oa` 只是快照，
+    # 里面没有行 id、也没有 `allowed_actions` —— 而"结果待人工核对"时的
+    # 认领/重发/作废三个按钮**必须**按服务端给的动作清单渲染（前端自己判状态
+    # 就是重复建实例的入口）。这里把最新一轮整行给出，口径与合同详情一致。
+    latest_oa = (
+        await session.execute(
+            select(OaInstance)
+            .where(OaInstance.inquiry_id == doc.id, OaInstance.oa_type == "contract")
+            .order_by(OaInstance.submit_round.desc(), OaInstance.id.desc())
+            .limit(1)
+        )
+    ).scalars().first()
+    if latest_oa is not None:
+        result["dingtalk_oa_row"] = dingtalk_service.serialize(latest_oa)
+    if result.get("dingtalk_oa"):
+        from app.modules.contract.support import named_history
+        result["dingtalk_oa"] = await named_history(session, result["dingtalk_oa"])
     return ok(result)
 
 
@@ -193,13 +380,23 @@ async def sign_document(
     user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    doc = await svc.get_doc_or_404(session, doc_id, for_update=True)
+    doc = await svc.get_doc_or_404(session, doc_id, for_update=True, protect_transfer=True)
     await _ensure_doc_in_scope(session, user, doc)
     from app.modules.file.access import can_access_file
 
     if not await can_access_file(session, user, payload.file_id):
         raise AppError(ErrorCode.DATA_SCOPE_DENIED, "无权将该文件登记为此合同的签署件", 403)
-    await svc.sign_document(session, doc, file_id=payload.file_id, note=payload.note)
+    before_status = doc.status
+    # B07-15/B07-03：签署审计要能回答"签的是哪一版、多少钱、走的哪条 OA"。
+    # 金额统一读合同冻结快照；老合同才回退实时，且回退顺序也统一为报价版本优先。
+    from app.modules.oa import service as oa_service
+    from app.modules.contract.amounts import contract_amount
+
+    sign_amount = await contract_amount(session, doc)
+    sign_oa = await oa_service.latest_contract_row(session, doc.id)
+    await svc.sign_document(
+        session, doc, file_id=payload.file_id, note=payload.note, reuse_reason=payload.reuse_reason,
+    )
     # 接入客户时间线与通知（审查第 9 条）：审计回答"谁动了这个接口"，
     # 客户时间线回答"这个客户身上发生了什么"——两者用途不同，只写审计不够。
     # 复用打样/订单在用的同一套机制（写客户留痕 + 排主管通知），不另起一套。
@@ -217,7 +414,14 @@ async def sign_document(
         action="sign",
         business_type="contract",
         business_id=doc.id,
-        after={"doc_no": doc.doc_no, "file_id": payload.file_id},
+        before={"status": before_status},
+        after={
+            "doc_no": doc.doc_no, "file_id": payload.file_id,
+            "amount": sign_amount, "quote_version_id": doc.quote_version_id,
+            "oa_instance_id": sign_oa.id if sign_oa else None,
+            **({"reuse_reason": doc.filled_data["_signed_file_reuse_reason"]}
+               if (doc.filled_data or {}).get("_signed_file_reuse_reason") else {}),
+        },
         ip=client_ip(request),
     )
     await session.commit()
@@ -230,108 +434,44 @@ async def download_document(
     user: CurrentUser = Depends(require_permission("order:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    """下载**生成稿**（§3.6）。
+    """下载合同原件：只返回上传的那份 Word/PDF，不再现场渲染模板稿。
 
-    生成的时候就把 PDF 渲染一次落盘了，这里返回当时那一份——客户后来改名、
-    公司换抬头、报价出了 V2，都不会让已经发出去的那份合同跟着变。
-    只有本批之前生成的老数据（没有 `generated_file_id`）才回落到实时渲染。
-
-    这是**生成稿**，不是签署原件：签回来的扫描件在详情接口的 `signed_files` 里，
-    下载不等于已签，签了才算签。
+    这是**合同原文件**，不是签署件：签回来的扫描件在详情接口的 `signed_files` 里。
     """
-    import asyncio
-    import hashlib
-
     from fastapi import Response
+    from urllib.parse import quote
 
-    from app.modules.contract.pdf import render_contract_pdf
-    from app.modules.file import storage
+    from app.modules.contract.support import verified_content
     from app.modules.file.model import FileRecord
 
     doc = await svc.get_doc_or_404(session, doc_id)
     await _ensure_doc_in_scope(session, user, doc)
+    original_id = (doc.filled_data or {}).get("_original_file_id")
+    if not original_id:
+        raise AppError(
+            ErrorCode.NOT_FOUND,
+            "这份合同还没有上传原件，请先上传合同 Word 或 PDF",
+            410,
+        )
 
-    content: bytes | None = None
-    source = "generated"
-    if doc.generated_file_id:
-        record = await session.get(FileRecord, doc.generated_file_id)
-        missing: str | None = None
-        if record is None:
-            missing = "存档的文件记录已不存在"
-        else:
-            try:
-                path = storage.absolute_path(record.object_key)
-                content = await asyncio.to_thread(path.read_bytes)
-            except OSError:
-                missing = "存档文件已不在磁盘上"
-        # 校验值也要比：它是"这份原件没被换过"的唯一依据，光有文件不够
-        if content is not None and record is not None and record.checksum:
-            actual = hashlib.sha256(content).hexdigest()
-            if actual != record.checksum:
-                content = None
-                missing = "存档文件与登记时的校验值不一致（内容被改动过）"
-        if content is None:
-            # **明确报错，不再静默重新渲染**（第十一批 11.3）。
-            # 原实现是"读不到就当场重新排一份给你、HTTP 200"——用户会以为自己拿到的
-            # 就是当初那份存档，台账上"同一编号永远同一份"这句承诺也就破了。
-            # 先把这次异常**单独提交**记进审计（报错会把事务回滚掉，不先落库就查不到），
-            # 便于事后从备份恢复。
-            await write_audit(
-                session,
-                operator_id=user.id,
-                action="download_original_missing",
-                business_type="contract",
-                business_id=doc.id,
-                after={
-                    "doc_no": doc.doc_no,
-                    "reason": missing,
-                    "generated_file_id": doc.generated_file_id,
-                },
-            )
-            await session.commit()
-            raise AppError(
-                ErrorCode.NOT_FOUND,
-                f"这份合同的存档原件不可用（{missing}）。"
-                "为免把重新生成的稿子当成原件，这里不再返回 PDF；请从备份恢复原件",
-                410,
-            )
-    else:
-        # 本批之前生成的旧记录**本来就没有存档**（当时还没落盘这一步）。
-        # 这类仍按历史数据渲染一份，但必须在文件名与响应头里标明它是**副本**，
-        # 不能让它看起来像原存档（11.3 第 4 条）。
-        source = "legacy_rendered"
-        data = await svc.build_pdf_data(session, doc)
-        # reportlab 渲染是同步 CPU 密集操作，丢线程池避免卡住事件循环（与报价 PDF 同）
-        content = await asyncio.to_thread(render_contract_pdf, data)
-
-    # 下载留痕：合同是含价格与条款的对客文件，谁在什么时候取了哪一份要能查
-    # （作废件也一样取得到，只是纸上必须带"已作废"，所以这里记状态）。
-    # `source` 记的是"这份内容从哪来"，用于分辨有没有回落到重新渲染。
+    record = await session.get(FileRecord, int(original_id))
+    content = verified_content(record)
     await write_audit(
         session,
         operator_id=user.id,
         action="download",
         business_type="contract",
         business_id=doc.id,
-        after={"doc_no": doc.doc_no, "status": doc.status, "source": source},
+        after={"doc_no": doc.doc_no, "source": "customer_original", "file_id": original_id},
     )
     await session.commit()
-    from urllib.parse import quote
-
-    filename = (
-        f"{doc.doc_no}（依据历史数据生成的副本）.pdf"
-        if source == "legacy_rendered"
-        else f"{doc.doc_no}.pdf"
-    )
     return Response(
         content=content,
-        media_type="application/pdf",
+        media_type=record.mime_type or "application/octet-stream",
         headers={
-            # `filename*` 走 RFC 5987 编码：副件的文件名带中文，直接塞进
-            # `filename=` 会乱码或被截断
-            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
-            # 页面/调用方据此分辨拿到的是"当时的存档"还是"后来的副本"
-            "X-Contract-Source": source,
+            # `filename*` 走 RFC 5987 编码：中文文件名直接塞进 `filename=` 会乱码
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(record.file_name)}",
+            "X-Contract-Source": "customer_original",
         },
     )
 
@@ -354,6 +494,13 @@ async def void_document(
             "已签署的合同要作废，需要主管权限；未签草稿你自己处理即可",
             403,
         )
+    from app.modules.contract.support import withdraw_before_void
+    await withdraw_before_void(session, user, doc)
+    doc = await svc.get_doc_or_404(session, doc_id)
+    await _ensure_doc_in_scope(session, user, doc)
+    if doc.status == "signed" and not _is_manager(user):
+        raise AppError(ErrorCode.FORBIDDEN, "已签署的合同要作废，需要主管权限", 403)
+    before_status = doc.status
     cancelled = await svc.void_document(session, doc, reason=payload.reason)
     await _record_contract_event(
         session,
@@ -372,11 +519,84 @@ async def void_document(
         action="void",
         business_type="contract",
         business_id=doc.id,
+        before={"status": before_status},
         after={"doc_no": doc.doc_no, "reason": payload.reason},
         ip=client_ip(request),
     )
     await session.commit()
     return ok(svc.serialize_document(doc), "文档已作废")
+
+
+@router.delete("/contract-documents/{doc_id}")
+async def delete_document(doc_id: int, request: Request, user: CurrentUser = Depends(require_permission("order:manage")), session: AsyncSession = Depends(get_db)):
+    doc = await svc.get_doc_or_404(session, doc_id, for_update=True)
+    await _ensure_doc_in_scope(session, user, doc)
+    if doc.status == "signed":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已签署合同不能删除，请使用作废流程", 422)
+    from app.modules.oa.service import latest_contract_row
+
+    approval = await latest_contract_row(session, doc.id)
+    if approval is not None and approval.status in ("pending", "submitting", "needs_review"):
+        message = (
+            "合同审批正在进行，请先撤回审批并确认结果，再删除合同"
+            if approval.status == "pending" else
+            "合同审批状态尚未确认，请先核对审批进度，再删除合同"
+        )
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, message, 409)
+    doc.deleted_at = datetime.now(UTC)
+    # 合同回签待办的生命周期跟随文档：文档进回收站后，继续显示“去登记回签”
+    # 会把用户带到一个不可见的对象，形成任务数与文档数不一致。
+    from app.modules.task.model import Task
+    await session.execute(
+        update(Task)
+        .where(
+            Task.source_business_type == "contract",
+            Task.source_business_id == doc.id,
+            Task.source_key == f"contract:signed-upload:{doc.id}",
+            Task.status.in_(("pending", "doing")),
+        )
+        .values(
+            status="cancelled",
+            completed_at=datetime.now(UTC),
+            completion_note="合同已移入回收站，待办自动取消",
+        )
+    )
+    await write_audit(session, operator_id=user.id, action="delete", business_type="contract", business_id=doc.id,
+                      after={"doc_no": doc.doc_no, "status": doc.status}, ip=client_ip(request))
+    await session.commit()
+    return ok(None, "合同已移入回收站")
+
+
+@router.post("/contract-documents/{doc_id}/restore")
+async def restore_document(doc_id: int, request: Request, user: CurrentUser = Depends(require_permission("order:manage")), session: AsyncSession = Depends(get_db)):
+    from app.modules.contract.model import ContractDocument
+    from app.modules.customer.model import Customer
+    doc = (await session.execute(select(ContractDocument).where(ContractDocument.id == doc_id).with_for_update())).scalar_one_or_none()
+    if doc is None:
+        raise AppError(ErrorCode.NOT_FOUND, "合同不存在", 404)
+    await _ensure_doc_in_scope(session, user, doc)
+    customer = await session.get(Customer, doc.customer_id)
+    if customer is None or customer.deleted_at is not None:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "请先恢复该合同所属客户", 422)
+    if doc.deleted_at is not None:
+        doc.deleted_at = None
+        # 只恢复由“删除合同”自动取消的待办；人工取消或已完成的任务不能被恢复。
+        from app.modules.task.model import Task
+        await session.execute(
+            update(Task)
+            .where(
+                Task.source_business_type == "contract",
+                Task.source_business_id == doc.id,
+                Task.source_key == f"contract:signed-upload:{doc.id}",
+                Task.status == "cancelled",
+                Task.completion_note == "合同已移入回收站，待办自动取消",
+            )
+            .values(status="pending", completed_at=None, completion_note=None)
+        )
+        await write_audit(session, operator_id=user.id, action="restore", business_type="contract", business_id=doc.id,
+                          after={"doc_no": doc.doc_no}, ip=client_ip(request))
+        await session.commit()
+    return ok(None, "合同已恢复")
 
 
 #: 主管口径：与新品洞察 / 案例库评审共用同一套判断（见 product_insight/router.py）。
@@ -421,26 +641,57 @@ async def _record_contract_event(
         owner_id=customer.owner_id if customer else None,
         title=title,
         content=content,
-        business_type="contract",
-        business_id=doc.id,
+        # ⚠️ **必须传 `customer`，不能传 `contract`**（2026-10-14 审查修）。
+        #
+        # 这两个值会被 `record_and_notify` 原样当成通知的 `source_type/source_id`，
+        # 而通知侧靠 `source_type` 做两件事：
+        #   ① `notification/service.py` 的 `models` 字典里取来源对象 —— 里面只有
+        #      customer/lead/opportunity/quote/order/sample，**没有 contract**
+        #      → `source=None` → 每个收件人都被 `continue`，`count=0`，
+        #      而事件仍被标 `notification_processed_at`；
+        #   ② 收件人权限判据 `viewer.has(f"{source_type}:view")` —— 全仓**没有
+        #      `contract:view` 这个权限码**（合同用的是 order:view / order:manage），
+        #      所以把 contract 加进字典也照样全被刷掉。
+        #
+        # 后果：合同签署/作废/续签的"推业务主管"**完全失效且无声无息** ——
+        # 业务留痕已先写入，客户时间线看着一切正常，也不会进
+        # `delivery_failure_summary` 的 business_pending。
+        #
+        # 走 `customer` 这条已有通路是对的：客户一定存在、`customer:view` 是真实权限、
+        # 数据范围判据（含公海 `owner_id IS NULL`）自动生效，且通知中心可见性与
+        # 生成侧共用同一份 `process_notification_filter`。
+        # `event_key` 仍用 `contract:{action}:{doc.id}`，幂等不受影响。
+        #
+        # 注意：本文件另外 5 处 `business_type="contract"` 是 `write_audit` 的参数，
+        # 那是**审计**的 business_type（按 doc.id 记流水），语义正确，**不要一起改**。
+        business_type="customer",
+        business_id=doc.customer_id,
         operator_id=user.id,
         event_key=f"contract:{action}:{doc.id}",
     )
 
 
 async def _ensure_doc_in_scope(session: AsyncSession, user, doc) -> None:
-    from app.modules.customer.model import Customer
+    """详情/生成稿/签署附件**共用**的归属判据（第三批审查 P2，2026-10-12）。
 
-    customer = await session.get(Customer, doc.customer_id)
-    owner_id = customer.owner_id if customer else None
-    # 客户可能被"超期未跟进自动回收"进公海、或被合并而清空负责人。合同本身是已签
-    # 事实，不能因为客户进了公海就**谁都点不开**（口径 A）：有订单就跟订单负责人，
-    # 没订单就跟当初创建这份合同的人。都没有才落回"无归属默认拒绝"。
-    if owner_id is None and doc.order_id:
-        from app.modules.order.model import SalesOrder
+    规则只留一份，落在 `contract/visibility.py`：客户当前负责人 → 订单负责人
+    → 创建人。抽出来的原因：附件走的是通用文件入口，那边原来只认客户当前
+    负责人，于是"客户进公海、负责人清空"时详情能看、原件下不了。
+    """
+    from app.modules.contract.model import ContractDocument
+    from app.modules.contract.visibility import contract_scope_owner_id
 
-        order = await session.get(SalesOrder, doc.order_id)
-        owner_id = order.owner_id if order else None
-    if owner_id is None:
-        owner_id = doc.created_by
+    if await ensure_draft_access(session, ContractDocument, doc.id, user.id):
+        return
+    owner_id = await contract_scope_owner_id(session, doc)
     await ensure_in_scope(session, user, owner_id=owner_id, label="合同文档")
+
+
+@router.get("/contract-documents/{doc_id}/oa-form")
+async def contract_oa_form(doc_id: int,
+    user: CurrentUser = Depends(require_permission("order:manage")),
+    session: AsyncSession = Depends(get_db)):
+    from app.modules.oa.contract_form import submission_form
+    doc = await svc.get_doc_or_404(session, doc_id)
+    await _ensure_doc_in_scope(session, user, doc)
+    return ok(await submission_form(session, user, doc))

@@ -68,14 +68,14 @@ Write-Host '[install] done. Waiting for the services to come up...'
 $ok = $false
 for ($i = 0; $i -lt 40; $i++) {
     Start-Sleep -Seconds 2
-    $api = Get-NetTCPConnection -State Listen -LocalPort 8000 -ErrorAction SilentlyContinue
-    $web = Get-NetTCPConnection -State Listen -LocalPort 5173 -ErrorAction SilentlyContinue
+    $api = Get-NetTCPConnection -State Listen -LocalPort 8008 -ErrorAction SilentlyContinue
+    $web = Get-NetTCPConnection -State Listen -LocalPort 5274 -ErrorAction SilentlyContinue
     if ($api -and $web) { $ok = $true; break }
 }
 
 if ($ok) {
-    Write-Host '[install] backend  http://127.0.0.1:8000  OK'
-    Write-Host '[install] frontend http://127.0.0.1:5173  OK'
+    Write-Host '[install] backend  http://127.0.0.1:8008  OK'
+    Write-Host '[install] frontend http://127.0.0.1:5274  OK'
 } else {
     Write-Host '[install] services did not both come up. Check logs in ops\logs and run:'
     Write-Host '          Get-ScheduledTaskInfo -TaskName CRM-Backend'

@@ -7,7 +7,7 @@
    保留两行** —— 同额同日的两笔真实回款不能被"金额+日期相同"这种猜测合并掉
    （这是本条最容易修过头的方向，所以它和幂等一起断言）。
 2. **币种**：从应收节点继承，不再落到列默认的 CNY；给了不一致的币种要拒绝。
-3. **锁的接线**：确认/改回款必须先锁共同应收节点再锁回款记录，且"汇总已确认
+3. **锁的接线**：涉及订单的回款写入必须按订单→应收节点→回款记录取锁，且"汇总已确认
    金额"的查询发生在拿到节点锁之后；生成计划必须先锁订单行再做"查无再插"；
    删/改节点也要在锁内做判断。
 
@@ -20,23 +20,33 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
+from fastapi import FastAPI
+
+from app.core.jsonio import DecimalJSONResponse
+from httpx import ASGITransport, AsyncClient
 from starlette.requests import Request
 
 from tests.conftest import SyncSessionAsAsync, make_user
 
 from app.core.audit import AuditLog
 from app.core.base import Base
-from app.core.errors import AppError, ErrorCode
+from app.core.database import get_db
+from app.core.deps import get_current_user
+from app.core.errors import AppError, ErrorCode, register_exception_handlers
 from app.core.idempotency import RequestKey
 from app.modules.customer.model import Customer
 from app.modules.order.model import SalesOrder
+from app.modules.order.schema import ReceivablePlanIn
 from app.modules.payment import service as payment_service
 from app.modules.payment.model import PaymentRecord, ReceivablePlan
 from app.modules.payment.router import (
     confirm_payment,
+    create_order_receivable,
     create_payment,
+    create_receivable,
     delete_receivable,
     generate_receivables,
+    router as payment_router,
     update_payment,
     update_receivable,
 )
@@ -44,6 +54,7 @@ from app.modules.payment.schema import (
     PaymentAction,
     PaymentCreate,
     PaymentUpdate,
+    ReceivableCreate,
     ReceivableGenerate,
     ReceivableUpdate,
 )
@@ -117,7 +128,7 @@ def quiet_notifications(monkeypatch):
 
 
 def make_request(request_key: str | None = None) -> Request:
-    """最小可用 Request：`client_ip` 读 x-forwarded-for / client.host。"""
+    """最小可用 Request：`client_ip` 读取 TCP 对端地址。"""
     headers = []
     if request_key is not None:
         headers.append((b"x-request-key", request_key.encode()))
@@ -221,6 +232,104 @@ def create_payload(plan, **overrides) -> PaymentCreate:
 
 
 # ------------------------------------------------------ 1. 请求键：一行 vs 两行
+
+
+@pytest.mark.anyio
+async def test_manual_receivable_retries_across_both_routes_create_one_plan(pay_db, pay):
+    order = make_order(pay_db, total="100")
+    other = make_order(pay_db, total="200")
+    pay_db.commit()
+    form = {"plan_name": "定金", "due_date": DAY, "amount": "30.00"}
+    request = make_request("manual-plan-retry")
+    first = await create_order_receivable(order.id, ReceivableCreate(**form), request, operator(), pay)
+    replay = await create_receivable(
+        ReceivableCreate(order_id=order.id, **{**form, "amount": "30"}), request, operator(), pay
+    )
+    assert replay["data"]["id"] == first["data"]["id"]
+    assert pay_db.query(ReceivablePlan).count() == 1
+    assert pay_db.query(AuditLog).filter_by(action="create", business_type="receivable_plan").count() == 1
+
+    with pytest.raises(AppError, match="内容不一致"):
+        await create_order_receivable(other.id, ReceivableCreate(**form), request, operator(), pay)
+    with pytest.raises(AppError, match="内容不一致"):
+        revised = ReceivableCreate(**{**form, "amount": "31"})
+        await create_order_receivable(order.id, revised, request, operator(), pay)
+
+    order.owner_id = 42
+    pay_db.commit()
+    with pytest.raises(AppError, match="数据范围"):
+        restricted = make_user(101, permissions={"payment:manage"}, data_scope="self")
+        await create_order_receivable(order.id, ReceivableCreate(**form), request, restricted, pay)
+
+    second = await create_order_receivable(
+        order.id, ReceivableCreate(request_key="another-plan", **form), make_request(), operator(), pay
+    )
+    assert second["data"]["id"] != first["data"]["id"]
+    await create_order_receivable(order.id, ReceivableCreate(**form), make_request(), operator(), pay)
+    assert pay_db.query(ReceivablePlan).count() == 3
+
+
+@pytest.mark.anyio
+async def test_failed_manual_receivable_save_rolls_back_plan_and_key(pay_db, pay, monkeypatch):
+    from app.modules.order import milestones
+
+    order_id = make_order(pay_db).id
+    pay_db.commit()
+    # SQLite needs an explicit outer transaction before the reservation savepoint.
+    pay_db.connection().exec_driver_sql("BEGIN")
+    form = ReceivableCreate(plan_name="定金", due_date=DAY, amount=30, request_key="retry-after-error")
+
+    async def fail_sync(*args, **kwargs):
+        raise RuntimeError("测试：跟单同步中断")
+
+    with monkeypatch.context() as fault:
+        fault.setattr(milestones, "sync_payment_milestones", fail_sync)
+        with pytest.raises(RuntimeError, match="跟单同步中断"):
+            await create_order_receivable(order_id, form, make_request(), operator(), pay)
+
+    assert pay_db.query(ReceivablePlan).count() == 0
+    assert pay_db.query(RequestKey).count() == 0
+    await create_order_receivable(order_id, form, make_request(), operator(), pay)
+    assert pay_db.query(ReceivablePlan).count() == 1
+
+
+@pytest.mark.anyio
+async def test_manual_receivable_limit_on_create_and_increase(pay_db, pay):
+    order = make_order(pay_db, total="100")
+    existing = make_plan(pay_db, order, amount="75")
+    cancelled = make_plan(pay_db, order, amount="50", name="已取消")
+    cancelled.status = "cancelled"
+    pay_db.commit()
+    request = make_request()
+    payload = ReceivableCreate(order_id=order.id, plan_name="尾款", due_date=DAY, amount="25.01")
+    with pytest.raises(AppError, match="本期最多可填 ¥25.00") as caught:
+        await create_receivable(payload, request, operator(), pay)
+    assert caught.value.http_status == 422
+    assert pay_db.query(ReceivablePlan).count() == 2
+    order_locks = lock_indexes(pay.statements, "sales_orders")
+    sum_queries = indexes(pay.statements, "sum(receivable_plans.amount)")
+    assert order_locks and sum_queries and order_locks[-1] < sum_queries[-1]
+
+    await create_order_receivable(order.id, payload.model_copy(update={"amount": Decimal("25")}), request, operator(), pay)
+    with pytest.raises(AppError, match="本期最多可填 ¥75.00"):
+        await update_receivable(existing.id, ReceivableUpdate(amount="75.01", remark="不应保存"),
+                                request, operator(), pay)
+    assert existing.amount == Decimal("75") and existing.remark is None
+
+
+@pytest.mark.anyio
+async def test_legacy_receivable_overage_can_be_reduced_and_rescheduled(pay_db, pay):
+    order = make_order(pay_db, total="100")
+    plan = make_plan(pay_db, order, amount="80")
+    make_plan(pay_db, order, amount="50", name="尾款")
+    pay_db.commit()
+    request = make_request()
+    with pytest.raises(AppError, match="超过订单总额"):
+        await update_receivable(plan.id, ReceivableUpdate(amount="81"), request, operator(), pay)
+    await update_receivable(plan.id, ReceivableUpdate(due_date=date(2026, 12, 20)), request, operator(), pay)
+    await update_receivable(plan.id, ReceivableUpdate(amount="70"), request, operator(), pay)
+    assert plan.due_date == date(2026, 12, 20)
+    assert sum(row.amount for row in pay_db.query(ReceivablePlan)) == Decimal("120")
 
 
 @pytest.mark.anyio
@@ -377,7 +486,7 @@ async def test_plan_without_currency_is_refused_not_defaulted(pay_db, pay):
 
 @pytest.mark.anyio
 async def test_confirm_locks_shared_plan_before_payment_record(pay_db, pay, quiet_notifications):
-    """确认：先锁共同应收节点，再锁回款记录，最后才汇总。
+    """确认：先锁订单、再锁共同应收节点，再锁回款记录，最后才汇总。
 
     修前只有 `payment_records ... FOR UPDATE`：两个各 50 的并发确认锁不到彼此，
     各自读到"已确认 50"写成 partial。顺序错了同样危险 —— 先锁回款再锁节点，
@@ -392,12 +501,15 @@ async def test_confirm_locks_shared_plan_before_payment_record(pay_db, pay, quie
         first.id, PaymentAction(comment="核对通过"), make_request(), operator(), pay
     )
 
+    order_locks = lock_indexes(pay.statements, "sales_orders")
     plan_locks = lock_indexes(pay.statements, "receivable_plans")
     payment_locks = lock_indexes(pay.statements, "payment_records")
-    sums = indexes(pay.statements, "sum(payment_records.received_amount)")
+    sums = indexes(pay.statements, "sum(effective_payment_allocations.amount)")
 
+    assert order_locks, "确认必须先锁所属订单"
     assert plan_locks, "确认必须先锁共同应收节点（修前完全没有这把锁）"
     assert payment_locks, "回款记录本身仍要锁"
+    assert order_locks[0] < plan_locks[0], "统一锁序：订单在应收节点之前"
     assert plan_locks[0] < payment_locks[0], "统一锁序：应收节点在回款记录之前"
     assert sums and sums[0] > plan_locks[0], "汇总必须在节点锁内发生，否则读旧数写覆盖"
 
@@ -454,7 +566,7 @@ async def test_update_payment_amount_recalcs_inside_plan_lock(pay_db, pay):
 
     plan_locks = lock_indexes(pay.statements, "receivable_plans")
     payment_locks = lock_indexes(pay.statements, "payment_records")
-    sums = indexes(pay.statements, "sum(payment_records.received_amount)")
+    sums = indexes(pay.statements, "sum(effective_payment_allocations.amount)")
     assert plan_locks and payment_locks
     assert plan_locks[0] < payment_locks[0]
     assert sums and sums[0] > plan_locks[0]
@@ -486,6 +598,50 @@ async def test_generate_locks_order_before_checking_existing_plans(pay_db, pay):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("names", [None, ["定金", "进度款", "尾款"]])
+async def test_generate_three_periods_requires_each_due_date(pay_db, pay, names):
+    order = make_order(pay_db, total="1000")
+    pay_db.commit()
+    app = FastAPI(default_response_class=DecimalJSONResponse)
+    register_exception_handlers(app)
+    app.include_router(payment_router)
+
+    async def database():
+        return pay
+
+    async def current_user():
+        return operator()
+
+    app.dependency_overrides[get_db] = database
+    app.dependency_overrides[get_current_user] = current_user
+    path = f"/orders/{order.id}/receivables/generate"
+    dates = ["2026-12-01", "2027-01-01", "2027-02-01"]
+    payload = {"ratios": [0.3, 0.3, 0.4], "first_due_date": dates[0], "second_due_date": dates[1]}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        for body, expected in (
+            (payload, "三期及以上的应收计划必须提供每一期的到期日"),
+            ({**payload, "due_dates": dates[:2]}, "从第 3 期起缺少到期日"),
+            ({**payload, "due_dates": [dates[0], None, dates[2]]}, "第 2 期缺少到期日"),
+        ):
+            response = await client.post(path, json=body)
+            assert response.status_code == 400
+            assert expected in response.json()["message"]
+            assert pay_db.query(ReceivablePlan).filter_by(order_id=order.id).count() == 0
+
+        response = await client.post(path, json={**payload, "due_dates": dates, "names": names})
+        assert response.status_code == 200
+        rows = response.json()["data"]
+        assert [row["due_date"] for row in rows] == dates
+        assert [row["plan_name"] for row in rows] == (names or ["第 1 期", "第 2 期", "第 3 期"])
+
+
+def test_convert_three_periods_keeps_delivery_date_fallback():
+    plan = ReceivablePlanIn(ratios=[0.3, 0.3, 0.4])
+    assert plan.due_dates is None
+
+
+@pytest.mark.anyio
 async def test_generate_with_request_key_replays_instead_of_conflict(pay_db, pay):
     """双击"生成计划"：同一把键第二次回放第一次的结果，而不是报"已有计划"。"""
     order = make_order(pay_db, total="1000")
@@ -503,7 +659,7 @@ async def test_generate_with_request_key_replays_instead_of_conflict(pay_db, pay
 
 @pytest.mark.anyio
 async def test_plan_writes_take_the_plan_lock(pay_db, pay):
-    """改节点、删节点都要在锁内判断：否则与"正在登记回款"互相踩。"""
+    """改节点、删节点都要按订单→节点在锁内判断：否则与回款登记互相踩。"""
     order = make_order(pay_db, total="100")
     plan = make_plan(pay_db, order, amount="100")
     spare = make_plan(pay_db, order, amount="1", name="另一期")
@@ -532,11 +688,26 @@ async def test_delete_receivable_refuses_when_payment_exists(pay_db, pay):
 
 
 @pytest.mark.anyio
-async def test_create_payment_locks_plan_before_insert(pay_db, pay):
-    """登记回款：先锁应收节点（防"回款挂到已删节点上"）。
+@pytest.mark.parametrize("cancelled_entity", ["order", "plan"])
+async def test_cancelled_receivable_cannot_be_deleted(pay_db, pay, cancelled_entity):
+    order = make_order(pay_db)
+    plan = make_plan(pay_db, order)
+    entity = order if cancelled_entity == "order" else plan
+    entity.status = "cancelled"
+    pay_db.commit()
+
+    with pytest.raises(AppError) as exc:
+        await delete_receivable(plan.id, make_request(), operator(), pay)
+    assert exc.value.code == ErrorCode.STATUS_NOT_ALLOWED
+    assert pay_db.get(ReceivablePlan, plan.id) is not None
+
+
+@pytest.mark.anyio
+async def test_create_payment_locks_order_then_plan_before_insert(pay_db, pay):
+    """登记回款：按订单→应收节点顺序取锁（防取消并发死锁）。
 
     插入语句走 ORM flush、不经过 `Session.execute`，所以这里只断言"节点锁存在
-    且发生在任何回款读写之前"——同步 SQLite 认不出真并发，能钉的就是这道接线。
+    且排在订单锁之后"——同步 SQLite 认不出真并发，能钉的就是这道接线。
     """
     order = make_order(pay_db, total="100")
     plan = make_plan(pay_db, order, amount="100")
@@ -544,7 +715,35 @@ async def test_create_payment_locks_plan_before_insert(pay_db, pay):
 
     await create_payment(create_payload(plan), make_request(), operator(), pay)
 
+    order_locks = lock_indexes(pay.statements, "sales_orders")
     plan_locks = lock_indexes(pay.statements, "receivable_plans")
+    assert order_locks, "登记回款要先锁所属订单"
     assert plan_locks, "登记回款要先锁应收节点"
-    assert plan_locks == [0], f"节点锁必须是第一条语句，实际：{pay.statements}"
+    assert order_locks[0] < plan_locks[0], f"锁序必须是订单→节点，实际：{pay.statements}"
     assert pay_db.query(PaymentRecord).filter(PaymentRecord.receivable_plan_id == plan.id).count() == 1
+
+
+def test_order_serialization_preserves_exact_amounts_and_one_cent_balance():
+    from app.modules.order.model import SalesOrder
+    from app.modules.order.service import serialize_order
+
+    order = SalesOrder(id=1, order_no='EXACT-1', customer_id=1, currency='CNY',
+                       total_amount=Decimal('99999999999999.99'),
+                       discount_amount=Decimal('-0.01'), status='pending')
+    result = serialize_order(order, received_amount=Decimal('99999999999999.98'))
+    assert result['total_amount_exact'] == '99999999999999.99'
+    assert result['received_amount_exact'] == '99999999999999.98'
+    assert result['unreceived_amount_exact'] == '0.01'
+    assert result['discount_amount_exact'] == '-0.01'
+    assert result['goods_amount_exact'] is None
+
+
+def test_order_item_serialization_preserves_four_decimal_unit_price():
+    from app.modules.order.model import SalesOrderItem
+    from app.modules.order.service import serialize_item
+
+    item = SalesOrderItem(id=1, order_id=1, quantity=Decimal('1000.000'),
+                          unit_price=Decimal('33.3333'), amount=Decimal('33333.30'))
+    result = serialize_item(item)
+    assert result['unit_price_exact'] == '33.3333'
+    assert result['amount_exact'] == '33333.30'

@@ -6,16 +6,18 @@
 """
 
 import hashlib
+import re
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
-from app.core.csvio import csv_bytes, parse_csv_bytes
+from app.core.csvio import csv_bytes, parse_csv_bytes, read_upload_bytes
+from app.core.data_scope import scoped_owner_ids
 from app.core.database import get_db
-from app.core.deps import CurrentUser, client_ip, require_permission
+from app.core.deps import CurrentUser, client_ip, ensure_permission, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.importing import (
     ImportReport,
@@ -133,15 +135,29 @@ async def import_leads(
     第七批 7.1 / 7.6：每行一个 SAVEPOINT（坏行不再把后续行一起拖死）、
     支持 `preview=1`、失败清单全量返回且按唯一行号计数。
     """
-    raw = await file.read()
+    raw = await read_upload_bytes(file)
     file_sha256 = hashlib.sha256(raw).hexdigest()
     rows = parse_csv_bytes(raw, required_headers=["线索名称"], label="文件")
     report = ImportReport("lead", len(rows))
+    #: 「同公司但联系人不同」这类**提示**（放行但要让用户知道），最后附到该行的 note 上。
+    #: 用行号做键，避免与 RowSkipped 的语义混在一起（那是"没进来"，这是"进来了但有情况"）。
+    company_hints: dict[int, str] = {}
+
+    can_view_leads = "admin" in getattr(user, "roles", ()) or "lead:view" in getattr(user, "permissions", ())
+    visible_owners = await scoped_owner_ids(session, user) if can_view_leads else set()
+
+    def can_identify(lead: Lead) -> bool:
+        return can_view_leads and (
+            visible_owners is None or lead.owner_id is None or lead.owner_id in visible_owners
+        )
 
     for index, row in enumerate(rows, start=2):  # 第 1 行是表头
         name = (row.get("线索名称") or "").strip()
         company = (row.get("公司名称") or "").strip() or None
         mobile = (row.get("手机号") or "").strip() or None
+        # 只还原导出时加了防公式前缀的国际号码。
+        if mobile and re.fullmatch(r"'\+[0-9][0-9 ()-]*[0-9]", mobile):
+            mobile = mobile[1:]
         errs = RowErrors(index, name)
         if not name:
             errs.add("线索名称不能为空")
@@ -151,27 +167,71 @@ async def import_leads(
 
         try:
             async with row_savepoint(session):
-                conditions = []
-                if company:
-                    conditions.append(Lead.company_name == company)
+                # ⚠️ 判重分两级，**不能把两个条件 OR 起来一起当"重复"**（2026-10-14 审查）：
+                # 原来写的是 `or_(company_name == X, mobile == Y)`，于是
+                # 「同一家公司要录 3 个联系人（张总/李总/采购）」时**只有第一行进得来**，
+                # 后两行全被当成"已存在同名公司"跳过 —— 而用户的原意恰恰是有多个联系人。
+                # 现在：
+                #   · 手机号相同 → **强判重**（几乎必然是同一个人的重复录入），提示写明撞的是哪一项；
+                #   · 仅公司名相同而手机号不同 → **放行**，但记一条提示让用户自己判断
+                #     （宁可多进一条让人删，也不要静默丢数据）。
                 if mobile:
-                    conditions.append(Lead.mobile == mobile)
-                if conditions:
-                    duplicate = (
+                    dup_mobile = (
                         await session.execute(
-                            select(Lead).where(
-                                Lead.deleted_at.is_(None), or_(*conditions)
-                            ).limit(1)
+                            select(Lead)
+                            .where(Lead.deleted_at.is_(None), Lead.mobile == mobile)
+                            .order_by(Lead.id.asc())
+                            .limit(1)
                         )
                     ).scalars().first()
-                    if duplicate is not None:
-                        raise RowSkipped(
-                            f"已存在同名公司或同号线索（id={duplicate.id}）"
+                    if dup_mobile is not None:
+                        reason = "该手机号已存在，已跳过"
+                        if can_identify(dup_mobile):
+                            reason = (
+                                f"手机号「{mobile}」已存在（{dup_mobile.name or '未命名'}，"
+                                f"id={dup_mobile.id}）"
+                            )
+                        raise RowSkipped(reason)
+                if company:
+                    dup_company = (
+                        await session.execute(
+                            select(Lead)
+                            .where(
+                                Lead.deleted_at.is_(None),
+                                Lead.company_name == company,
+                                # 同公司同联系人姓名 = 同一行重复录，直接跳过
+                                Lead.contact_name == ((row.get("联系人") or "").strip() or None),
+                            )
+                            .order_by(Lead.id.asc())
+                            .limit(1)
+                        )
+                    ).scalars().first()
+                    if dup_company is not None:
+                        reason = "该公司的同一联系人已存在，已跳过"
+                        if can_identify(dup_company):
+                            reason = f"「{company}」的同一联系人已存在（id={dup_company.id}）"
+                        raise RowSkipped(reason)
+                    # 同公司但联系人不同：放行，只汇报当前可见的线索。
+                    same_company = 0
+                    if can_view_leads:
+                        count_stmt = select(func.count(Lead.id)).where(
+                            Lead.deleted_at.is_(None), Lead.company_name == company
+                        )
+                        if visible_owners is not None:
+                            count_stmt = count_stmt.where(
+                                or_(Lead.owner_id.is_(None), Lead.owner_id.in_(visible_owners))
+                            )
+                        same_company = (await session.execute(count_stmt)).scalar_one()
+                    if same_company:
+                        company_hints[index] = (
+                            f"「{company}」已有 {int(same_company)} 条线索，"
+                            "本次按新联系人导入（请确认是否同一家）"
                         )
 
-                owner_id = await svc.resolve_owner(
-                    session, row.get("负责人登录名"), user.id
-                )
+                owner_login = (row.get("负责人登录名") or "").strip()
+                if owner_login:
+                    ensure_permission(user, "lead:assign")
+                owner_id = await svc.resolve_owner(session, owner_login, user.id)
                 lead = Lead(
                     name=name,
                     company_name=company,
@@ -183,17 +243,22 @@ async def import_leads(
                     remark=(row.get("备注") or "").strip() or None,
                     country="中国",
                     status="pending",
-                    owner_id=owner_id,
+                    owner_id=None if owner_login else owner_id,
                     created_by=user.id,
                 )
                 session.add(lead)
                 await session.flush()
+                if owner_login:
+                    await svc.assign_lead(session, lead, to_user_id=owner_id, operator_id=user.id,
+                                          reason="导入线索时指定负责人")
                 lead_id = lead.id
-            report.created_row(index, name, id=lead_id)
+            report.created_row(
+                index, name, id=lead_id, note=company_hints.get(index)
+            )
         except RowSkipped as skipped:
             report.skipped_row(index, name, str(skipped))
         except Exception as exc:  # 单行失败不影响其它行
-            report.failed_row(index, name, f"写入失败：{str(exc)[:160]}")
+            report.write_failed_row(index, name, exc)
 
     return await finalize(
         session,
@@ -250,13 +315,13 @@ async def restore_lead(
     session: AsyncSession = Depends(get_db),
 ):
     """从回收站恢复线索。"""
-    lead = await session.get(Lead, lead_id)
-    if lead is None:
-        raise AppError(ErrorCode.NOT_FOUND, "线索不存在", 404)
+    lead = await svc.lock_lead(session, user, lead_id, include_deleted=True)
     if lead.deleted_at is None:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该线索没有被删除，无需恢复")
-    # 恢复也是写操作，同样要过数据范围（先恢复再校验会让越权者得手）
-    await svc.assert_lead_visible(session, user, lead)
+    before = svc.serialize_lead(lead)
+    if lead.status == "invalid":
+        lead.status = "assigned" if lead.owner_id is not None else "pending"
+        lead.invalid_reason = None
     lead.deleted_at = None
     await session.flush()
     await write_audit(
@@ -265,6 +330,7 @@ async def restore_lead(
         action="restore",
         business_type="lead",
         business_id=lead.id,
+        before=before,
         after=svc.serialize_lead(lead),
         ip=client_ip(request),
     )

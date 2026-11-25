@@ -1,12 +1,11 @@
 """跨模块复用的联系人工具与客户查重。"""
 
 import re
-from collections.abc import Iterable
 
-from sqlalchemy import or_, select
+from sqlalchemy import case, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.similarity import similarity_score
+from app.core.similarity import CUSTOMER_SCORE_FALLBACKS, similarity_score
 from app.modules.customer.model import Contact, Customer
 
 #: 显式授权码：拿到它的人可以看**完整**联系方式（不限于自己负责/本团队的客户）。
@@ -103,6 +102,26 @@ def mask_contact_fields(payload: dict) -> dict:
     return masked
 
 
+def is_masked_contact_value(field: str, value: str | None) -> bool:
+    """这个值是不是**脱敏后的形状**（而不是用户真的这么填）。
+
+    为什么要有这个判据（2026-10-12，第四轮）：脱敏是对外响应口径，可是
+    `PATCH /contacts/{id}` 的入参**从来没挡过它** —— 对无权看完整号码的人是
+    "读出来是 `138****8000`、改个职位再保存"，那条 UPDATE 会把
+    **真实号码覆盖成星号串**，而且不可逆（审计里 before 也已经是星号）。
+    前端补上编辑入口之后这条路第一次真的会被走到，所以在这里兜一道。
+
+    判据故意**简单**：这几个字段里出现 `*` 就认定是脱敏形状 ——
+    手机号、座机、邮箱、微信号里 `*` 本来就不是合法字符，真人不会这么填；
+    而星号的具体形状（`138****8000` / `12*34` / `z***@x.com` / `ab***`）
+    由 `_mask_digits` 的档位决定，将来改档位也不会让这条判据失效
+    （**不要**在这里复刻打码规则：两处规则一定会走散）。
+    """
+    if field not in _MASKED_FIELDS:
+        return False
+    return "*" in (value or "")
+
+
 async def can_view_full_contact(
     session: AsyncSession,
     user,
@@ -190,18 +209,6 @@ async def lock_customer_row(session: AsyncSession, customer_id: int | None) -> N
     await session.execute(
         select(Customer.id).where(Customer.id == customer_id).with_for_update()
     )
-
-
-async def lock_customers_in_order(
-    session: AsyncSession, customer_ids: Iterable[int | None]
-) -> None:
-    """按 id 升序锁住这几个客户行（**全项目统一的锁序**）。
-
-    改绑联系人会同时碰到两个客户（原来的、目标）。两个方向相反的改绑并发跑时，
-    各自只锁"目标客户"就会互相等对方的行锁、甚至绕成环。按 id 升序取锁就没有这个环。
-    """
-    for cid in sorted({int(c) for c in customer_ids if c is not None}):
-        await lock_customer_row(session, cid)
 
 
 async def take_primary_slot(
@@ -325,37 +332,38 @@ async def find_duplicate_customers(
     from app.modules.settings import service as settings_service
 
     weights = await settings_service.get_setting(session, "dedup_scoring")
-    threshold = int(weights.get("threshold", 50))
+    threshold = int(weights.get("threshold", CUSTOMER_SCORE_FALLBACKS["threshold"]))
 
     conditions = []
+    exact = []
     if company_name:
-        conditions.append(Customer.name.ilike(f"%{company_name.strip()}%"))
-        conditions.append(Customer.short_name.ilike(f"%{company_name.strip()}%"))
+        _cn = company_name.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        conditions.append(Customer.name.ilike(f"%{_cn}%", escape="\\"))
+        conditions.append(Customer.short_name.ilike(f"%{_cn}%", escape="\\"))
         # 名称相似但不相含的（例如只差后缀），用前几个字再捞一轮候选
-        head = company_name.strip()[:4]
+        head = _cn[:4]
         if len(head) >= 2:
-            conditions.append(Customer.name.ilike(f"%{head}%"))
+            conditions.append(Customer.name.ilike(f"%{head}%", escape="\\"))
     if mobile:
         contact_customer_ids = select(Contact.customer_id).where(
             Contact.mobile == mobile, Contact.deleted_at.is_(None)
         )
-        conditions.append(Customer.id.in_(contact_customer_ids))
+        exact.append(Customer.id.in_(contact_customer_ids))
     for value, column in ((tax_no, Customer.tax_no), (domain, Customer.domain)):
         if value:
-            conditions.append(column == value.strip())
+            exact.append(column == value.strip())
+    conditions.extend(exact)
     if not conditions:
         return []
 
-    stmt = (
-        select(Customer)
-        .where(Customer.deleted_at.is_(None), or_(*conditions))
-        .limit(max(limit * 4, 20))
-    )
+    stmt = select(Customer).where(Customer.deleted_at.is_(None), or_(*conditions))
+    if exact:
+        stmt = stmt.order_by(case((or_(*exact), 0), else_=1))
     if owner_ids is not None:
         # 范围内的 + 公海（无负责人）。公海对所有人可见，漏掉它会让"我查重查不到、
         # 但列表里翻得到"，用户会以为系统丢数据。
         stmt = stmt.where(or_(Customer.owner_id.in_(owner_ids), Customer.owner_id.is_(None)))
-    rows = (await session.execute(stmt)).scalars().all()
+    rows = (await session.execute(stmt.order_by(Customer.id).limit(max(limit * 4, 20)))).scalars().all()
 
     # 取候选客户的主联系人手机号，参与打分
     candidate_ids = [row.id for row in rows]
@@ -497,49 +505,28 @@ async def find_duplicate_contacts(
     email_key = (email or "").strip().lower()
     name_key = (name or "").strip()
 
-    conditions = []
+    exact = []
+    if mobile_key:
+        exact.append(Contact.mobile == mobile_key)
+    if email_key:
+        exact.append(Contact.email == email_key)
+    conditions = [*exact]
     if name_key:
         conditions.append(Contact.name.ilike(f"%{name_key}%"))
-    if mobile_key:
-        conditions.append(Contact.mobile == mobile_key)
-    if email_key:
-        conditions.append(Contact.email == email_key)
     if not conditions:
         return []
 
-    stmt = (
-        select(Contact)
-        .where(Contact.deleted_at.is_(None), or_(*conditions))
-        .limit(max(limit * 4, 20))
-    )
-    rows = (await session.execute(stmt)).scalars().all()
-
+    stmt = select(Contact).where(Contact.deleted_at.is_(None), or_(*conditions))
+    if exact:
+        stmt = stmt.order_by(case((or_(*exact), 0), else_=1))
     # 数据范围：联系人跟着客户走；没客户的也放行
-    visible: list[Contact] = []
     owner_ids = await scoped_owner_ids(session, user)
-    if owner_ids is None:
-        visible = list(rows)
-    else:
-        customer_ids = {row.customer_id for row in rows if row.customer_id}
-        allowed_customers: set[int] = set()
-        if customer_ids:
-            owner_rows = (
-                await session.execute(
-                    select(Customer.id, Customer.owner_id).where(
-                        Customer.id.in_(customer_ids)
-                    )
-                )
-            ).all()
-            allowed_customers = {
-                int(cid)
-                for cid, owner in owner_rows
-                if owner is None or int(owner) in owner_ids
-            }
-        visible = [
-            row
-            for row in rows
-            if row.customer_id is None or int(row.customer_id) in allowed_customers
-        ]
+    if owner_ids is not None:
+        allowed_customers = select(Customer.id).where(
+            or_(Customer.owner_id.is_(None), Customer.owner_id.in_(owner_ids))
+        )
+        stmt = stmt.where(or_(Contact.customer_id.is_(None), Contact.customer_id.in_(allowed_customers)))
+    visible = (await session.execute(stmt.order_by(Contact.id).limit(max(limit * 4, 20)))).scalars().all()
 
     scored: list[dict] = []
     for contact in visible:
@@ -582,6 +569,33 @@ async def find_duplicate_contacts(
                     "reasons": reasons,
                 }
             )
+
+    # ⚠️ **联系方式要脱敏**（2026-10-14 审查修）。
+    #
+    # 这个出口原来把 `contact.mobile` / `contact.email` 原样放进响应，
+    # 完全没过 `mask_contact_fields` —— 于是它成了脱敏口径的**第六个出口**：
+    # `can_view_full_contact` 的注释写着“联系人列表、详情、搜索、AI 工具、导出
+    # 是五个入口，各写一份必然有一份忘了脱敏 —— 而『忘掉的那一份』就是泄漏面”，
+    # 而查重这一份就是漏掉的那个。
+    #
+    # 触发面不小：任何只有 `customer:view` 的人（含 self 范围的业务员）
+    # 在客户详情 → 联系人 → 新建联系人 → 「按已填内容查重」里输一个姓，
+    # `name_key in actual` 即命中（阈值 50），就能拿到数据范围内联系人的**完整手机号**，
+    # 而同一个人在联系人列表里显示的是 `138****8000`。
+    #
+    # 判据与其它出口**同一处**：`full_contact_customer_ids` 返回 `None` = 不受限
+    # （管理员 / 全量范围 / 显式授权 `customer:contact_full`）；
+    # 否则只有“负责人本人与其主管团队”的客户例外。
+    # `customer_id` 为空的联系人（线索转化中间态）按**脱敏**处理 ——
+    # 与 `full_contact_customer_ids` 的既有判据一致（无负责人的客户没有豁免档）。
+    full_ids = await full_contact_customer_ids(
+        session, user, {int(c.customer_id) for c in visible if c.customer_id}
+    )
+    if full_ids is not None:
+        for item in scored:
+            cid = item.get("customer_id")
+            if cid is None or int(cid) not in full_ids:
+                item.update(mask_contact_fields(item))
 
     scored.sort(key=lambda item: -item["score"])
     return scored[:limit]

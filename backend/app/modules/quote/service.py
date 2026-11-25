@@ -1,15 +1,19 @@
 """报价业务逻辑：编号、明细快照、金额汇总、审批判定。"""
 
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.audit import json_safe
+from app.core.textfit import fit_column
+from app.core.draft_visibility import ensure_draft_access, private_draft
 from app.core.errors import AppError, ErrorCode
+from app.core.money import line_amount, exact_decimal_text
 from app.core.timebase import today_business
-from app.core.trade_mode import ensure_currency_allowed
+from app.core.trade_mode import CNY, ensure_currency_allowed
 from app.modules.approval.model import ApprovalDefinition, ApprovalInstance, ApprovalRecord
 from app.modules.customer.model import Contact, Customer
 from app.modules.opportunity.model import Opportunity, OpportunityItem
@@ -18,6 +22,8 @@ from app.modules.pricing.model import ExchangeRate
 from app.modules.product import master as master_service
 from app.modules.product.model import Product, Sku
 from app.modules.quote.model import (
+    PRICING_BASIS_ACTUAL_PASS_THROUGH,
+    PRICING_BASIS_LABEL,
     QUOTE_STATUS_LABEL,
     Quote,
     QuoteCharge,
@@ -28,6 +34,204 @@ from app.modules.settings import service as settings_service
 from app.modules.user.model import User
 
 ZERO = Decimal("0")
+
+#: 运费的**费用分类码**。向客户收取的运费就是这一条 `QuoteCharge`
+#: （2026-10-09 口径：不另建一套运费金额，避免两套金额都被加进总额）。
+CHARGE_TYPE_LOGISTICS = "logistics"
+
+#: 明细数量的列精度（`quote_items.quantity` 是 `Numeric(16, 3)`）。
+QUANTITY_SCALE = Decimal("0.001")
+
+
+def normalized_quantity(quantity: Decimal | None) -> Decimal:
+    """把数量按**库列精度**（三位小数）归一后再参与计算（N01，2026-10-09 修）。
+
+    为什么需要：`recalc_version` 的版本合计与 `serialize_item` 的明细金额，
+    从前算的**不是同一个数** —— 合计拿 Python 内存里未落库的原值，
+    明细拿读回来（已被列精度舍入过）的值。于是"数量 1.23456、单价 150"
+    会出现明细 185.25、合计 185.18：同一张单两个数。
+
+    入参侧已经拦住超过三位小数的数量（`QuoteItemInput.decimal_places=3`），
+    这里再归一一次是**第二道保险**：任何绕过 schema 的写入路径（脚本、导入、
+    将来新增的入口）都不会再造成"两个数对不上"。
+
+    用 `ROUND_HALF_UP` 与 PostgreSQL 的 `numeric` 舍入保持一致，
+    避免 Python 默认的银行家舍入（ROUND_HALF_EVEN）造成新的错位。
+    """
+    if quantity is None:
+        return ZERO
+    return Decimal(quantity).quantize(QUANTITY_SCALE, rounding=ROUND_HALF_UP)
+
+
+def is_logistics_charge(charge: "QuoteCharge | dict | None") -> bool:
+    """这条费用是不是"向客户收取的运费"。
+
+    ⚠️ 只认分类码，**不按说明文字里含"运费"去识别**（口径明确要求）：
+    说明是自由文本，写成"宁波到苏州运费"或"物流费"都不该改变金额归属，
+    反过来把一句别的费用写成含"运费"的字样也不该被算成运费。
+    折扣行永远不算运费（`is_discount=True` 走折扣那一档，折扣在库里是负数）。
+
+    入参既接受 ORM 对象，也接受 `serialize_charge` 出来的**快照 dict**
+    （2026-10-14 加）：改费用时"改之前"的样子只有快照还留着 ——
+    原来把**同一个已被 setattr 改过**的对象当 before 传进来，判据形同虚设。
+    """
+    if charge is None:
+        return False
+    if isinstance(charge, dict):
+        return bool(
+            not charge.get("is_discount")
+            and (charge.get("charge_type") or "").strip().lower() == CHARGE_TYPE_LOGISTICS
+        )
+    return (
+        not charge.is_discount
+        and (charge.charge_type or "").strip().lower() == CHARGE_TYPE_LOGISTICS
+    )
+
+
+async def ensure_charge_change_allowed(
+    version: QuoteVersion, *, before: "QuoteCharge | dict | None", after: "QuoteCharge | dict | None"
+) -> None:
+    """改附加费用的闸：锁版之后**只放行运费**（主人 2026-10-12 拍板，方案 A+B）。
+
+    ## 要解决的那个死胡同
+
+    运费是在「附加费用」里加的，而这个入口**只在草稿开放**；正式发送又硬性要求
+    运费已确认。于是"报批时还没问准运费"的单子被两道闸夹住：
+
+        提交审批 →（审批**不校验运费**）→ 通过 → 版本锁死 → 发送时才发现缺运费
+        → 撤回也救不了（撤回只对「审批中」有效）
+
+    唯一的出路是"新建版本 + 补运费 + 重走一遍审批"，而新建版本会把
+    `approval_status` 重置成 `not_submitted` —— 一次重批就这么来的。
+
+    ## 为什么锁版之后可以放行运费（判据，别顺手放宽）
+
+    - **运费是代收代付**，不进产品价与利润：新报价口径下 `item_unit_product_cost`
+      取 `includes_freight=False`，底价与利润率判定**只用商品成本**；
+    - 审批分档用的是 `total_amount`（含运费），而**批的时候运费还是 0**
+      （这正是卡住的原因），所以档位本来就是按"不含运费"定的 ——
+      事后补运费**不会**追溯改变已定的档位，**不需要重审**（已确认口径）；
+    - 补完之后旧版仍能走「标记已发送 → 客户接受 → 转订单」，
+      所以这一放行真的能把死胡同解开，而不是让人再绕一圈。
+
+    ⚠️ **只放行运费**：折扣/税费/服务费在锁版后仍然一律拒绝。那些属于"批过的
+    总额能被事后改动"，会让审批白做 —— 它们没有"代收代付、不进产品价"这个性质。
+    判据必须同时看**改之前**和**改之后**：把一条运费改成"服务费"同样被拒。
+    ⚠️ **`before` 必须是"改之前"的样子**（2026-10-14 审查修）。
+    调用方原来把**同一个已经被 `setattr` 改过**的对象当 before 传进来，
+    于是第一道校验恒真、成了死判据 —— 表面上"两边都看了"，实际只看了一边。
+    现在允许传 `serialize_charge` 的快照 dict，调用方在赋值前取一份即可。
+
+    ## 和"标记已发送"的先后
+
+    已发送（`sent_at` 有值）时，改动意味着"客户手里那份文件和你系统里的不一致"，
+    所以放行成功后**必须重新登记一次发送**（把 `sent_at` 清掉），否则台账上是
+    "发过一版、内容是旧的"。前端会说明这一点。
+    """
+    if version.accepted_at is not None:
+        raise AppError(
+            ErrorCode.QUOTE_VERSION_LOCKED,
+            "客户已接受这版报价。要调整费用，请新建报价版本并请客户重新确认。",
+            422,
+        )
+    # ⚠️ **没锁版就直接放行**（`ensure_version_editable` 的判据，保持一处口径）：
+    # 草稿态什么都能改，这道闸只管锁版之后的例外。少了这一句会把草稿也拦下 ——
+    # 我第一版就漏了，实测"草稿态加折扣"被拒（消息还是"已提交审批或已发送"，
+    # 而那个版本其实是 `not_submitted`，排查时很误导）。
+    if not (version.approval_status in ("pending", "approved") or version.sent_at is not None):
+        return
+    if not (before is None or is_logistics_charge(before)):
+        raise AppError(
+            ErrorCode.QUOTE_VERSION_LOCKED,
+            "该版本已提交审批或已发送，只有「物流」类附加费用可以补填或修改"
+            "（运费代收代付、不进产品价，补齐不需要重新审批）；"
+            "其他费用与折扣要改动请新建版本。",
+            422,
+        )
+    if not (after is None or is_logistics_charge(after)):
+        raise AppError(
+            ErrorCode.QUOTE_VERSION_LOCKED,
+            "该版本已提交审批或已发送，附加费用不能再改成别的分类（只有运费能补填）——"
+            "改分类等于把批过的总额换成另一种费用，那是一笔新的钱，请新建版本。",
+            422,
+        )
+    # ⚠️ **两条校验都过了才动状态**（这一行必须在两个 `raise` 之后）。
+    #
+    # 我第一版把清空写在校验**之前**，于是**一次被拒绝的改动也会把 `sent_at` 清掉** ——
+    # 函数虽然抛了异常，但对象上的改动已经落在会话里，随后照样 flush 进库。
+    # 实测后果：一个"想改服务费、被正确拒绝"的请求，把这条报价变成"没发送过"，
+    # 前端从"登记再次发送"退回"标记已发送"，而客户手里明明有那份文件。
+    # **校验失败时不许留下任何副作用** —— 顺序就是这条规则本身。
+    if version.sent_at is not None:
+        # 见 docstring 最后一段：客户手里那份文件已经印了旧的运费，
+        # 改完必须重新登记发送，不能留着"已发送"的状态。
+        version.sent_at = None
+
+
+async def ensure_single_logistics_charge(
+    session: AsyncSession, *, version_id: int, keep_id: int | None
+) -> None:
+    """一个版本**最多一条运费** —— 多出来的那条会被静默累加进总额，必须在写入前拦住。
+
+    ## 为什么要这道闸（2026-10-14 从演示库的一张真单据上查出来的）
+
+    报价 V3 先被随手填了一条 **1 元**运费（没写说明），隔天要录真实运费时，
+    那一版已经审批通过 —— 界面上只有「补填运费」一个入口（没有"改"、也看不到"删"），
+    于是业务员**又加了一条 80 元**。汇总公式把**所有** `logistics` 条目相加
+    （见 `recalc_version`），版本总额于是变成 货款 500 + 1 + 80 = 581，
+    而实际运费只有 80 —— 多算 1 元；两条还并排躺在「附加费用」里，看不出哪条是废的。
+    更早转出的订单冻住的是 1 元那一版，于是「订单 501 / 报价 581」两个数一起出现。
+
+    这不是"改错了"，是**没有一道闸阻止重复录入**、界面又只给了"加"这一个动作。
+
+    ## 判据（只留这一份，别在路由里各写一遍）
+
+    同一版本里，**非折扣**的 `logistics` 条目最多一条。要改金额请改那一条
+    （`PATCH /quote-charges/{id}`），不要再新增。
+
+    - `keep_id`：**正在变更的那一条**（新增传 `None`）—— 它自己不算"已经有一条"。
+      这样"改运费"不会被自己挡住；而库里历史遗留的两条（演示库那单就是），
+      仍然可以逐条改掉、删掉，修复路径不会被这道闸堵死。
+    - 认的是**分类码**，与 `is_logistics_charge` 同一口径：说明文字里写"运费"不算数。
+    - SQL 里做同样的归一（`lower(trim(...))`）：`charge_type` 可空，NULL 不参与匹配。
+    """
+    stmt = (
+        select(QuoteCharge.id, QuoteCharge.amount, QuoteCharge.description)
+        .where(QuoteCharge.quote_version_id == version_id)
+        .where(QuoteCharge.is_discount.is_(False))
+        .where(func.lower(func.trim(QuoteCharge.charge_type)) == CHARGE_TYPE_LOGISTICS)
+    )
+    if keep_id is not None:
+        stmt = stmt.where(QuoteCharge.id != keep_id)
+    rows = (await session.execute(stmt)).all()
+    if not rows:
+        return
+    existing = rows[0]
+    where = f"（说明：{existing.description}）" if existing.description else ""
+    raise AppError(
+        ErrorCode.DUPLICATE,
+        f"这个报价版本已经有一条运费 ¥{existing.amount:.2f}{where}。"
+        "一个版本只能有一条运费 —— 请直接改那一条，不要再新增。"
+        "多条运费会各自累加进总额，看起来像「多收了一笔」。",
+        409,
+    )
+
+
+def mark_logistics_confirmed(charge: QuoteCharge, *, at: datetime | None = None) -> None:
+    """把这条费用标成"运费已由业务确认"；不是物流费用则清空确认时刻。
+
+    口径（2026-10-09）：**草稿允许尚未填写运费，正式发送时必须已经确认具体金额**。
+    金额列本身分不出"没填"和"明确是零运费"（都是 0），所以另记一个确认时刻。
+
+    - 是物流费用 → 打上确认时刻。**每次经接口保存都重新打一次**：改的是
+      "已确认的实际运费"这个事实本身，拿改动前的时刻去背书改动后的金额是错的。
+    - 不是物流费用（含折扣、或从物流改成了别的分类）→ 清空。留着旧的确认时刻
+      会让一条**已经不是运费**的费用继续被当成"已确认的运费"，进而把正式发送放过去。
+    """
+    if is_logistics_charge(charge):
+        charge.logistics_confirmed_at = at or datetime.now(UTC)
+    else:
+        charge.logistics_confirmed_at = None
 
 
 def quote_is_expired(valid_until, *, today=None) -> bool:
@@ -42,12 +246,73 @@ def quote_is_expired(valid_until, *, today=None) -> bool:
     return valid_until < (today or today_business())
 
 
-def _f(value: Decimal | None) -> float | None:
-    return None if value is None else float(value)
+def _f(value: Decimal | None) -> Decimal | None:
+    """序列化总闸：保留 Decimal 原值（float→Decimal 专项批2）。
+
+    从前转 float，16 位边界在出口丢一分；现在 JSON 出口（core/jsonio）按
+    原值渲染精确数字，这里原样透传。纯比率字段（利润率等）按 Q3 口径在
+    各自位置显式 float，不参与金额链。
+    """
+    return value
 
 
-def serialize_item(item: QuoteItem) -> dict:
-    return {
+#: 报价明细里**属于公司内部成本口径**的字段：无 `price:manage` 的操作人不该拿到。
+#:
+#: 为什么连**利润**也要一起隐（issue #5）：报价 100、利润 80 就能反推出成本 20 ——
+#: 只隐成本等于没隐。底价快照同理（它是由成本推出来的）。
+#: 查价接口早已按 `price:manage` 隐藏成本，这里是让**所有读出口**与它同一口径。
+_COST_ONLY_ITEM_FIELDS = (
+    "cost_snapshot",
+    "package_cost_snapshot",
+    "logistics_cost_snapshot",
+    "standard_price_snapshot",
+    "recommended_price_snapshot",
+    "minimum_price_snapshot",
+    "profit_snapshot",
+    "profit_rate_snapshot",
+)
+
+#: `approval_reason` 里出现这些词，说明它**带了底价/成本推导出来的数字**，无 `price:manage`
+#: 时必须整句换成"报价超出价格权限，需要审批"。
+#
+# ⚠️ 2026-10-14 审查修：这里原来只有 ("最低允许价", "利润率", "毛利率")，
+# 而**同一个函数里写出来的文案还有两种说法**：
+#   - 定制项那条写的是「低于**最低保护价** ¥120.00（成本 ¥…×(1+…))」—— 不含上面任一词，
+#     于是**底价与成本原样下发**给只有 `quote:view` 的销售；
+#     实测：`定制项报价 ¥100.00（折人民币）低于最低保护价 ¥120.00（含定制项保护价）`
+#     在 hide=True 时**没有**被脱敏。
+#   - 普通那条 `报价 … 低于最低允许价 ¥…，利润率 …%` 之所以看着"没事"，是因为它
+#     **恰好**还含"利润率"三个字撞上了 —— 判据并没真正生效，改一个字就会漏。
+# 所以判据不能靠"记得把这几个词抄全"，而是**把底价类说法都列进来**。
+# 判据只有这一处；将来新增文案若带 ¥ 数字，都应含下列任一词（或在 `check_output_criteria`
+# 里被点名）。
+_FLOOR_TERMS = (
+    "最低允许价",
+    "最低保护价",
+    "保护价",
+    "成本价",
+    "利润率",
+    "毛利率",
+)
+
+#: `price_source` 取这个值时，说明这条明细的成本是**业务员自己填的人工核价成本**
+#: （定制项，`_build_custom_item_snapshot` 落的就是它）——那是操作人自己的输入，
+#: 不是公司内部成本，隐了就没法编辑定制项。主人 2026-10-10 拍板：这一种不隐。
+_SELF_ENTERED_COST_SOURCE = "custom_manual"
+
+
+def serialize_item(item: QuoteItem, *, can_see_cost: bool = True) -> dict:
+    """一条报价明细。
+
+    `can_see_cost=False`（无 `price:manage`）时，**公司内部成本口径**的字段置空，
+    包含由成本推出的利润/底价（否则能反推成本）。
+    例外：`price_source='custom_manual'` 的人工核价成本是操作人自己的输入，照常返回。
+    """
+    # 无权限时默认全隐；`custom_manual` 只**放行成本本身**（业务员自己的输入），
+    # 利润/底价不跟着放行 —— 它们由成本推出，放行等于把成本又泄回去。
+    hide = not can_see_cost
+    own_cost_only = hide and (item.price_source or "") == _SELF_ENTERED_COST_SOURCE
+    data = {
         "id": item.id,
         "quote_version_id": item.quote_version_id,
         "opportunity_item_id": item.opportunity_item_id,
@@ -60,24 +325,56 @@ def serialize_item(item: QuoteItem) -> dict:
         "is_custom": item.sku_id is None,
         "specification": item.spec_snapshot,
         "quantity": _f(item.quantity),
+        "quantity_exact": format(item.quantity, "f"),
         "cost_snapshot": _f(item.cost_snapshot),
+        "cost_snapshot_exact": str(item.cost_snapshot) if item.cost_snapshot is not None else None,
         "package_cost_snapshot": _f(item.package_cost_snapshot),
+        "package_cost_snapshot_exact": str(item.package_cost_snapshot) if item.package_cost_snapshot is not None else None,
         "logistics_cost_snapshot": _f(item.logistics_cost_snapshot),
+        "logistics_cost_snapshot_exact": str(item.logistics_cost_snapshot) if item.logistics_cost_snapshot is not None else None,
         "standard_price_snapshot": _f(item.standard_price_snapshot),
+        "standard_price_snapshot_exact": str(item.standard_price_snapshot) if item.standard_price_snapshot is not None else None,
         "recommended_price_snapshot": _f(item.recommended_price_snapshot),
+        "recommended_price_snapshot_exact": str(item.recommended_price_snapshot) if item.recommended_price_snapshot is not None else None,
         "minimum_price_snapshot": _f(item.minimum_price_snapshot),
+        "minimum_price_snapshot_exact": str(item.minimum_price_snapshot) if item.minimum_price_snapshot is not None else None,
         "price_source": item.price_source,
         "customer_level_snapshot": item.customer_level_snapshot,
         # §8.14：这条明细按哪一版 SKU 主数据算的（空＝当时还没有确认记录）
         "master_version_no": item.master_version_no,
         "quoted_price": _f(item.quoted_price),
-        "amount": _f(item.quantity * item.quoted_price),
+        "quoted_price_exact": str(item.quoted_price) if item.quoted_price is not None else None,
+        "amount": _f(line_amount(item.quantity, item.quoted_price)),
+        "amount_exact": str(line_amount(item.quantity, item.quoted_price)),
         "profit_snapshot": _f(item.profit_snapshot),
-        "profit_rate_snapshot": _f(item.profit_rate_snapshot),
+        "profit_snapshot_exact": str(item.profit_snapshot) if item.profit_snapshot is not None else None,
+        "profit_rate_snapshot": (
+            float(item.profit_rate_snapshot) if item.profit_rate_snapshot is not None else None
+        ),  # 纯比率输出保留 float（Q3）；前端对其做 *100/toFixed
         "approval_required": item.approval_required,
-        "approval_reason": item.approval_reason,
+        "approval_reason": (
+            "报价超出价格权限，需要审批" if hide and item.approval_reason
+            and any(term in item.approval_reason for term in _FLOOR_TERMS)
+            else item.approval_reason
+        ),
         "remark": item.remark,
     }
+    if hide:
+        for field in _COST_ONLY_ITEM_FIELDS:
+            if own_cost_only and field == "cost_snapshot":
+                continue  # 业务员自己填的人工核价成本：照常回填，否则定制项没法编辑
+            data[field] = None
+            # 精确字符串键与数值键同口径隐掉，否则成为反推成本的新泄漏口
+            if f"{field}_exact" in data:
+                data[f"{field}_exact"] = None
+        if own_cost_only:
+            # 包装/运费成本不是他的输入（系统按 SKU 算的），一并隐掉，
+            # 免得从"成本 120 里含包装 5"这种拆分再反推内部口径
+            data["package_cost_snapshot"] = None
+            data["logistics_cost_snapshot"] = None
+            data["package_cost_snapshot_exact"] = None
+            data["logistics_cost_snapshot_exact"] = None
+    return data
 
 
 def serialize_charge(charge: QuoteCharge) -> dict:
@@ -86,8 +383,55 @@ def serialize_charge(charge: QuoteCharge) -> dict:
         "charge_type": charge.charge_type,
         "description": charge.description,
         "amount": _f(charge.amount),
+        "amount_exact": str(charge.amount) if charge.amount is not None else None,
         "is_discount": charge.is_discount,
         "sort_no": charge.sort_no,
+        "is_logistics": is_logistics_charge(charge),
+        # 运费是否已被业务确认（金额为 0 不等于"已确认零运费"）：
+        # 前端据此把"未填写"和"确认零运费"显示成两种状态。
+        "logistics_confirmed_at": (
+            charge.logistics_confirmed_at.isoformat()
+            if charge.logistics_confirmed_at
+            else None
+        ),
+    }
+
+
+def amount_summary(version: QuoteVersion) -> dict:
+    """金额汇总的**唯一一份公式**（页面、对客文件、订单共用，别在前端再算一遍）。
+
+    口径（2026-10-09 运费分离）：
+
+        产品货款   = Σ(产品单价 × 数量)          → `subtotal_amount`
+        运费       = 物流费用条目合计             → `logistics_amount`
+        其他费用   = 非物流、非折扣的费用合计      → `other_charge_amount`
+        优惠       = 折扣（**库里是负数**，保持这个约定）
+        应付合计   = 货款 + 运费 + 其他费用 + 优惠  → `total_amount`
+
+    ⚠️ `total_amount` **已经含**运费与其他费用，任何人都不许再把它加上一遍。
+    `charge_amount == logistics_amount + other_charge_amount` 是恒等式：
+    拆的是同一笔钱，不是又加了一笔。
+    """
+    return {
+        "goods_amount": _f(version.subtotal_amount),
+        "goods_amount_exact": format(version.subtotal_amount or ZERO, "f"),
+        "logistics_amount_exact": format(version.logistics_amount or ZERO, "f"),
+        "other_charge_amount_exact": format(version.other_charge_amount or ZERO, "f"),
+        "discount_amount_exact": format(version.discount_amount or ZERO, "f"),
+        "net_charge_amount_exact": format((version.charge_amount or ZERO) + (version.discount_amount or ZERO), "f"),
+        "logistics_amount": _f(version.logistics_amount),
+        "other_charge_amount": _f(version.other_charge_amount),
+        "charge_amount": _f(version.charge_amount),
+        "discount_amount": _f(version.discount_amount),
+        "total_amount": _f(version.total_amount),
+        "currency": version.currency,
+        # 单一口径（2026-10-09 统一）：一律"产品价不含运费、运费代收代付"。
+        # 从前这里 `or PRICING_BASIS_LEGACY` 兜底，会把口径未知的行**当成含运费**，
+        # 与统一后的实际算法相反 —— 改为按新口径兜底，兜底值只影响标签、不影响取数。
+        "pricing_basis": version.pricing_basis or PRICING_BASIS_ACTUAL_PASS_THROUGH,
+        "pricing_basis_label": PRICING_BASIS_LABEL.get(
+            version.pricing_basis or PRICING_BASIS_ACTUAL_PASS_THROUGH, ""
+        ),
     }
 
 
@@ -100,6 +444,18 @@ def serialize_version(version: QuoteVersion, items_total_profit: Decimal | None 
         "charge_amount": _f(version.charge_amount),
         "discount_amount": _f(version.discount_amount),
         "total_amount": _f(version.total_amount),
+        "total_amount_exact": str(version.total_amount) if version.total_amount is not None else None,
+        # 金额拆分（2026-10-09 运费分离）：运费从"附加费用"里单列出来。
+        # ⚠️ 这三列都**已经含在** `total_amount` 里了，前端只能拿来分项展示，
+        # 不要再加到总额上。恒等式：charge_amount == logistics + other_charge。
+        "logistics_amount": _f(version.logistics_amount),
+        "other_charge_amount": _f(version.other_charge_amount),
+        # 本版的产品核价口径。**单一口径**（2026-10-09 统一）：
+        # actual_pass_through = 产品价不含运费、运费原额代收代付。不再有 legacy 分支。
+        "pricing_basis": version.pricing_basis or PRICING_BASIS_ACTUAL_PASS_THROUGH,
+        "pricing_basis_label": PRICING_BASIS_LABEL.get(
+            version.pricing_basis or PRICING_BASIS_ACTUAL_PASS_THROUGH, ""
+        ),
         "currency": version.currency,
         # §8.7：**本版**对客有效期的快照（PDF / BizDoc 读的是它，不是主单）。
         # 单独输出是必要的：主单的 `valid_until` 与它快照是两个字段，
@@ -143,6 +499,7 @@ def serialize_quote(
         "current_version_id": quote.current_version_id,
         "current_version_no": version.version_no if version else None,
         "current_version_amount": _f(version.total_amount) if version else None,
+        "current_version_amount_exact": str(version.total_amount) if version and version.total_amount is not None else None,
         # 币种跟着金额一起给（第九批 §9.9）：前端不能假设是人民币。
         # 没有当前版本时给 null，由前端提示"币种待核实"。
         "currency": version.currency if version else None,
@@ -186,7 +543,8 @@ async def get_visible_quote(
         # 统一按商机 → 报价 → 版本加锁，与确认成交入口保持一致。
         # 正式发送会推进商机，反向加锁会与确认成交形成死锁。
         initial = await get_quote_or_404(session, quote_id)
-        await ensure_in_scope(session, user, owner_id=initial.owner_id, label="报价单")
+        if not await ensure_draft_access(session, Quote, initial.id, user.id):
+            await ensure_in_scope(session, user, owner_id=initial.owner_id, label="报价单")
         if initial.opportunity_id:
             await session.execute(select(Opportunity).where(
                 Opportunity.id == initial.opportunity_id
@@ -197,7 +555,8 @@ async def get_visible_quote(
             raise AppError(ErrorCode.NOT_FOUND, "报价单不存在", 404)
     else:
         quote = await get_quote_or_404(session, quote_id)
-    await ensure_in_scope(session, user, owner_id=quote.owner_id, label="报价单")
+    if not await ensure_draft_access(session, Quote, quote.id, user.id):
+        await ensure_in_scope(session, user, owner_id=quote.owner_id, label="报价单")
     return quote
 
 
@@ -213,11 +572,14 @@ async def get_visible_version(
 ) -> QuoteVersion:
     """取报价版本并校验其所属报价在数据范围内（版本自己没有负责人）。"""
     version = await get_version_or_404(session, version_id)
-    await get_visible_quote(session, user, version.quote_id, for_update=for_update)
+    quote = await get_visible_quote(session, user, version.quote_id, for_update=for_update)
     if for_update:
         # 先锁单据再锁版本；锁等待结束后重读，不能按等待前的状态执行。
         version = (await session.execute(select(QuoteVersion).where(QuoteVersion.id == version_id)
                    .with_for_update().execution_options(populate_existing=True))).scalar_one()
+    creator_id = version.created_by or quote.created_by or quote.owner_id
+    if version.approval_status == "not_submitted" and version.sent_at is None and creator_id != user.id:
+        raise AppError(ErrorCode.NOT_FOUND, "报价版本不存在", 404)
     return version
 
 
@@ -229,6 +591,44 @@ async def ensure_version_editable(version: QuoteVersion) -> None:
             "该版本已提交审批或已发送，请新建版本再修改",
             422,
         )
+
+
+async def reload_locked_child(
+    session: AsyncSession,
+    model,
+    row_id: int,
+    *,
+    version_id: int,
+    label: str,
+):
+    """抢到版本锁之后，**强制重读**这一条子行（明细 / 附加费用）。
+
+    为什么要单独一个函数（第二轮审查 P1，2026-10-12）：
+
+    端点必须按 id 读一次子行才知道它属于哪个版本，而那一读发生在**锁之前**
+    （锁的粒度是"报价单 + 版本"）。两次读之间另一个会话完全可能已经改掉这条子行
+    —— 典型场景是一条 +100 的费用被并发的第一个请求改成了 −100 的优惠，
+    第二个请求只改说明、沿用自己手里的旧对象重算，于是
+
+        货款 1000 + 旧值 100 = 1100（正确应为 900）
+
+    会话是 `expire_on_commit=False` 的，锁后普通重查会命中身份映射里的旧实例，
+    什么也刷新不了；`recalc_version` 的 SELECT 也一样拿旧值（同样不刷新）。
+    所以**必须** `populate_existing=True`。
+
+    子行在等待锁期间被删掉、或不再属于这一版时按"不存在"处理（404），
+    不能让调用方拿着一条已经不属于这里的记录继续写。
+    """
+    row = (
+        await session.execute(
+            select(model)
+            .where(model.id == row_id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalars().first()
+    if row is None or getattr(row, "quote_version_id", None) != version_id:
+        raise AppError(ErrorCode.NOT_FOUND, f"{label}不存在", 404)
+    return row
 
 
 async def resolve_exchange_rate(
@@ -283,7 +683,15 @@ async def resolve_exchange_rate(
                 f"币种 {code} 只有一条 {pending:%Y-%m-%d %H:%M} 才生效的汇率，"
                 "现在还没有生效的汇率；请维护一条当前生效的，或等它生效后再报价",
             )
-        return None, f"币种 {code} 没有维护汇率，请先在价格中心维护汇率后再报外币价"
+        # ⚠️ 这句从前是"请先在价格中心维护汇率后再报外币价" ——
+        # 而价格中心**没有汇率页**（后端有接口、前端 0 引用），等于把用户
+        # 指到一个不存在的界面。主人 2026-10-12 定稿：汇率不做、外币一律拒绝，
+        # 所以这里如实说"本系统不做外币"，并给出走得通的出路。
+        return None, (
+            f"币种 {code} 没有汇率记录，而本系统**不做外币业务**"
+            f"（没有汇率维护入口，也不打算做）。请把币种改回人民币（CNY）"
+            f"重新报价；这一版如果本来就是人民币，请检查是不是被误改成了 {code}。"
+        )
     return row.rate, row.source or "手工维护"
 
 
@@ -314,23 +722,35 @@ async def apply_exchange_rate_snapshot(
 
 
 def convert_cny_to(
-    value: Decimal | None, *, to_currency: str | None, rate: Decimal | None
+    value: Decimal | None, *, to_currency: str | None
 ) -> tuple[Decimal | None, str | None]:
     """把**人民币**金额折成目标币种，返回 (金额, 警告)。
 
     汇率表约定：`rate` 表示「1 单位目标币种 = rate 元人民币」，所以人民币 → 外币是除。
 
-    只支持「人民币 ↔ 某外币」这一种折算。这是因为系统只做国内业务、
-    汇率表也只维护对人民币的汇率；若将来真要报非人民币对非人民币的价，
-    必须先补一张交叉汇率表，届时这里应显式报错而不是硬算一个错数字。
-    缺汇率时不猜，返回警告交给调用方——静默按 1:1 会把人民币价当成美元价。
+    只支持人民币：外币折算死行已拆除（主人 2026-11-24 确认本部署无外币老单、
+    也不会存在外币），非 CNY 目标显式拒绝（项目规矩：非人民币明确拒绝），
+    不再静默算一个看着像真的数。
     """
     target = (to_currency or "CNY").upper()
     if value is None or target == "CNY":
         return value, None
-    if rate is None or rate <= 0:
-        return None, f"报价币种是 {target}，但该报价版本没有汇率快照，无法把人民币目标价折算过去，已忽略"
-    return (value / rate).quantize(Decimal("0.0001")), None
+    raise AppError(
+        ErrorCode.STATUS_NOT_ALLOWED,
+        f"报价币种是 {target}：本系统只支持人民币，外币折算已拆除",
+        400,
+    )
+
+
+async def require_quote_customer_contact(
+    session: AsyncSession, customer_id: int, contact_id: int,
+) -> Contact:
+    contact = await session.get(Contact, contact_id)
+    if contact is None:
+        raise AppError(ErrorCode.NOT_FOUND, "所选联系人不存在，请刷新后重试", 404)
+    if contact.customer_id != customer_id:
+        raise AppError(ErrorCode.PARAM_ERROR, "所选联系人不属于这家客户，请重新选择", 422)
+    return contact
 
 
 async def create_quote(
@@ -377,6 +797,25 @@ async def create_quote(
     if opportunity is not None:
         from app.modules.opportunity import service as opportunity_service
         opportunity = await opportunity_service.get_visible_opportunity(session, user, opportunity.id)
+        # 客户以**商机**为准（成交端点挂在商机上，漏斗/归因也按商机算）。
+        #
+        # ⚠️ 但请求里若同时给了 customer_id，那它必须跟商机一致 —— 不一致就是
+        # **调用方填错了**（前端选了 A 客户却挂着 B 的商机，或 Agent 工具参数串了）。
+        # 以前这里是**静默覆盖**：请求里的 customer_id 被无声丢掉，报价按商机建出来，
+        # 界面上看不出任何异常，直到有人发现"这单怎么记在另一家头上"。
+        # 主人 2026-10-12 定的口径：不一致就拒，并说清怎么办（与"联系人不属于客户"
+        # 同一套写法）。
+        #
+        # 核对说明：这一条**不是**在堵"能把 A 的商机挂进 B 的报价" —— 那种情况
+        # 本来就发生不了（客户跟着商机走）。它堵的是**参数互相矛盾还被当成成功**。
+        if customer_id is not None and customer_id != opportunity.customer_id:
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                f"这次请求里的客户（id={customer_id}）与所选商机「{opportunity.title}」"
+                f"所属的客户（id={opportunity.customer_id}）不是同一家 —— 报价的客户"
+                "以商机为准，请改选本客户的商机，或确认客户后再提交（两个参数必须一致）。",
+                422,
+            )
         customer_id = opportunity.customer_id
 
     # 客户/联系人必须存在。放在 service 而不是路由：Agent 工具
@@ -389,16 +828,24 @@ async def create_quote(
         opportunity.primary_contact_id if opportunity else None
     )
     contact = None
+    #: 报价**之前**就该攒的提醒（`item_warnings` 要到明细循环那里才建，所以分开攒，
+    #: 最后一起返回）。
+    early_warnings: list[str] = []
     if resolved_contact_id is not None:
-        contact = await session.get(Contact, resolved_contact_id)
-        if contact is None:
-            raise AppError(
-                ErrorCode.NOT_FOUND, f"联系人 id={resolved_contact_id} 不存在", 404
-            )
-        if contact.customer_id != customer_id:
-            raise AppError(
-                ErrorCode.PARAM_ERROR,
-                f"联系人 id={resolved_contact_id} 不属于客户 id={customer_id}",
+        contact = await require_quote_customer_contact(session, customer_id, resolved_contact_id)
+        # 已删除的联系人：**放行但显性提醒**（主人 2026-10-09 拍板的口径）。
+        #
+        # 为什么不硬拦：联系人不只由人手工选，还会从**定制需求**自动带过来
+        # （`inquiry.contact_id`）。如果那个人离职后被删，硬拦会让"从这条需求建报价"
+        # 这条**正常业务**直接卡死，出路只有把已删联系人重新加回来（留假数据）。
+        # 而报价后面本来就要人工过一遍（填明细、改价、提交审批），多一条提醒不增加负担。
+        #
+        # 与"主数据未确认"同一口径：**默认放行 + 如实提示**，不静默。
+        # 界面已经会逐条弹 `warnings`（`QuoteListPage` 的 onSuccess）。
+        if contact.deleted_at is not None:
+            early_warnings.append(
+                f"联系人「{contact.name}」已被删除，请确认是否仍要发给这位；"
+                f"如已换人，请在报价上改选该客户的有效联系人"
             )
     contact_id = resolved_contact_id
 
@@ -410,7 +857,13 @@ async def create_quote(
         session, "default_payment_terms", "text", "款到发货"
     )
     default_delivery = await settings_service.get_text(
-        session, "default_delivery_terms", "text", "含运费，送货上门"
+        session,
+        "default_delivery_terms",
+        "text",
+        # 代码回退值**直接取自配置默认值**，不手写第二遍：
+        # 从前这里是同一句话的副本，改口径时极易漏掉一处（种子脚本就漏过，
+        # 见 `settings_service.DEFAULT_DELIVERY_TERMS` 的说明）。
+        settings_service.DEFAULT_SETTINGS["default_delivery_terms"]["text"],
     )
 
     quote = Quote(
@@ -430,6 +883,9 @@ async def create_quote(
     version = QuoteVersion(
         quote_id=quote.id,
         version_no=1,
+        # 新报价一律用新口径：产品单价不含运费，运费按实际金额代收代付。
+        # 显式写出来而不是靠列默认值 —— 口径是业务决定，该在代码里看得见。
+        pricing_basis=PRICING_BASIS_ACTUAL_PASS_THROUGH,
         payment_terms=payment_terms or default_payment,
         delivery_terms=delivery_terms or default_delivery,
         # 抬头与有效期在这里**定格**（审查 2026-10-07 修）：出对客文件时不再实时读
@@ -463,7 +919,6 @@ async def create_quote(
             target_price, fx_warning = convert_cny_to(
                 opp_item.target_price,
                 to_currency=version.currency,
-                rate=version.exchange_rate_snapshot,
             )
             if fx_warning:
                 item_warnings.append(fx_warning)
@@ -490,21 +945,23 @@ async def create_quote(
                     f"SKU {sku_label}：需求含 {'、'.join(context_bits)}，"
                     f"物流/包装费用未计入拟报价，请在附加费用中补充"
                 )
+            lookup_values: dict[str, Decimal | None] = {}
             lookup = await pricing_service.lookup_applicable_price(
                 session,
                 customer=customer_obj,
                 sku_id=opp_item.sku_id,
                 quantity=opp_item.quantity,
-                # 公海客户（无负责人）不参与专属价匹配——与查价路由同一纪律，
-                # 协议价只对负责人可见，此前这里漏传导致公海也能吃到专属价
-                include_customer_specific=customer_obj.owner_id is not None,
+                snapshot_out=lookup_values,
+                # 公海客户不参与专属价：判据已收进
+                # `pricing_service.customer_specific_allowed`（**全项目只此一处**）——
+                # 不传即按客户自动判。原来这里与查价路由各写一份，
+                # 于是 `price_drift` / `refresh_prices` 两个出口漏了（见该函数说明）。
             )
             if lookup["status"] == "ok" and lookup["unit_price"] is not None:
                 quoted_price, _ = convert_cny_to(
-                    Decimal(str(lookup["unit_price"])),
+                    lookup_values["unit_price"],
                     to_currency=version.currency,
-                    rate=version.exchange_rate_snapshot,
-                )
+                    )
                 item_warnings.append(
                     f"SKU {sku_label}：拟报价取系统适用价 ¥{lookup['unit_price']}（{lookup['source_label']}），"
                     f"客户目标价 ¥{target_price} 已单独记录"
@@ -549,12 +1006,12 @@ async def create_quote(
         "quote_no": quote.quote_no,
         "version_id": version.id,
         "currency": version.currency,
-        "exchange_rate_snapshot": (
-            float(version.exchange_rate_snapshot) if version.exchange_rate_snapshot else None
-        ),
+        # 外币死行拆除（主人确认无外币数据）：CNY 版本汇率快照恒 None，float 转换半截删除
+        "exchange_rate_snapshot": None,
         "item_count": len(await version_items(session, version.id)),
-        "total_amount": float(version.total_amount),
-        "warnings": item_warnings,
+        "total_amount": version.total_amount,
+        # 先攒的（联系人已删除等）+ 明细循环里攒的，一起交出去
+        "warnings": early_warnings + item_warnings,
         # ORM 对象单独挂在下划线键下给路由用。
         # **不能混在要写审计/JSON 的字段里**：Agent 工具的返回值会直接进
         # audit_logs 的 JSON 列，带 ORM 对象会 "not JSON serializable"。
@@ -575,6 +1032,9 @@ async def create_version(
     同样抽到 service 供 Agent 工具复用。
     """
     quote = await get_visible_quote(session, user, quote.id, for_update=True)
+    from app.modules.order.service import ensure_no_active_order_for_quote
+
+    await ensure_no_active_order_for_quote(session, quote.id, user=user)
     latest = (
         await session.execute(
             select(QuoteVersion)
@@ -602,7 +1062,25 @@ async def create_version(
     version = QuoteVersion(
         quote_id=quote.id,
         version_no=latest.version_no + 1,
-        currency=source.currency,
+        # 建立新版一律切到新口径（2026-10-09）。这里是**刻意的转换点**：
+        # 历史版本的单价里可能含运费，但那些版本留在 legacy 上不动；
+        # 新版本是重新核过价的，所以按新口径来。复制旧明细时若旧单价含义
+        # 无法确认，由调用方提示人工核实（`version_logistics_in_base_cost` 管口径，
+        # 不替业务判断历史金额的含义）。
+        pricing_basis=PRICING_BASIS_ACTUAL_PASS_THROUGH,
+        # ⚠️ **新版本一律人民币**，哪怕源版本是历史外币单（主人 2026-10-12 口径：
+        # 「汇率不要管，完全不用做，谁用外币直接拒绝」）。
+        #
+        # 从前这里是 `source.currency`：历史 USD 单点「新建版本」时，
+        # 系统会拿 USD 去找汇率，找不到就抛
+        # 「币种 USD 没有维护汇率，请先在价格中心维护汇率后再报外币价」——
+        # 而价格中心**没有汇率页**（`GET/POST /exchange-rates` 前端 0 引用），
+        # 那句指路指向一个不存在的界面。实测：**新建版本是历史外币单唯一的出路**，
+        # 于是这条路被一句错话堵死。
+        #
+        # 落成人民币才是对的：口径已定"不做外币"，新版本来就该按人民币重新报价；
+        # 历史那份外币原件一个字不动，照旧看得到。
+        currency=CNY,
         payment_terms=source.payment_terms,
         delivery_terms=source.delivery_terms,
         customer_name_snapshot=customer.name if customer else None,
@@ -648,6 +1126,8 @@ async def create_version(
                 master_version_no=item.master_version_no,
                 quantity=item.quantity,
                 cost_snapshot=item.cost_snapshot,
+                cost_complete_snapshot=item.cost_complete_snapshot,
+                cost_present_snapshot=item.cost_present_snapshot,
                 package_cost_snapshot=item.package_cost_snapshot,
                 logistics_cost_snapshot=item.logistics_cost_snapshot,
                 standard_price_snapshot=item.standard_price_snapshot,
@@ -665,30 +1145,36 @@ async def create_version(
                 remark=item.remark,
             )
         )
-    for charge in await version_charges(session, source.id):
-        session.add(
-            QuoteCharge(
-                quote_version_id=version.id,
-                charge_type=charge.charge_type,
-                description=charge.description,
-                amount=charge.amount,
-                currency=charge.currency,
-                is_discount=charge.is_discount,
-                sort_no=charge.sort_no,
-            )
-        )
+    await copy_version_charges(session, source_id=source.id, target_version=version)
+    await session.flush()
+
+    # ---- 币种与汇率快照必须**先**落定，再重算利润（第二轮审查 P2，2026-10-12）----
+    #
+    # 从前这个 `apply_exchange_rate_snapshot` 排在最后（recalc 之后），于是复制出来的
+    # 外币版本在重算利润时 `version.exchange_rate_snapshot` 还是空的：
+    # `apply_current_basis_to_item` 拿不到汇率，把外币单价当人民币算 ——
+    # 人民币成本 70、售价 USD 20、汇率 7 的正确利润是 USD 10（50%），
+    # 实际却算出 −50 / −250%。快照一旦写错，后面所有展示与审批判定都跟着错。
+    #
+    # 顺序：先确定币种 + 汇率（拿不到汇率就直接 422，事务回滚不留半成品）
+    # → 再重算受口径影响的派生列 → 最后重算汇总。售价与来源版本一个字不动。
+    rate_warning = await apply_exchange_rate_snapshot(
+        session, version, currency=CNY, explicit_rate=None
+    )
+    if rate_warning:
+        raise AppError(ErrorCode.PARAM_ERROR, rate_warning, 422)
+
+    # 复制过来的明细快照是**按源版本口径**算的，而新版本已经切到当前口径
+    # （2026-10-09 统一后只有一套）。不重算就会留下"口径标着 A、数字是 B"的自相
+    # 矛盾数据（审查实测：显示利润 15、按新口径应为 20）。只重算受口径影响的四列，
+    # 售价与价格来源不动 —— 详见 `apply_current_basis_to_item` 的说明。
+    for copied in await version_items(session, version.id):
+        await apply_current_basis_to_item(session, copied, version, user=user)
     await session.flush()
     await recalc_version(session, version)
     quote.current_version_id = version.id
     quote.status = "draft"
     await close_superseded_approvals(session, quote=quote, new_version=version, user=user)
-
-    # 版本沿用报价的币种；汇率按「本版本创建时点」重新取快照。
-    rate_warning = await apply_exchange_rate_snapshot(
-        session, version, currency=source.currency, explicit_rate=None
-    )
-    if rate_warning:
-        raise AppError(ErrorCode.PARAM_ERROR, rate_warning, 422)
     return version
 
 
@@ -729,6 +1215,7 @@ async def _build_custom_item_snapshot(
     session: AsyncSession,
     *,
     version: QuoteVersion,
+    role_codes: list[str],
     inquiry_id: int | None,
     item_name: str | None,
     quantity: Decimal,
@@ -753,12 +1240,25 @@ async def _build_custom_item_snapshot(
 
     **币种口径（2026-09-30 修正，别改回去）**：成本与运费按**人民币**录入，
     落成 `cost_snapshot` / `logistics_cost_snapshot` / `minimum_price_snapshot`；
-    只有报价 `quoted_price` 按报价版本币种。外币单的利润先按汇率把成本折过去再算。
+    只有报价 `quoted_price` 按报价版本币种。2026-11-24（e7aeb4a3）起非 CNY
+    **显式拒收**（主人口径「有人用外币就给他报错」），不再折算。
     原文案说"成本按报价币种填"，但审批判定、前端标签（¥）与整单加权底价三处
     都按人民币读同一批快照——于是美元单上 7 美元成本被当成 7 人民币，与 50 人民币的
     报价一比永远不触发低价审批与绝对底价，还显示虚高毛利。**静默放行，最危险的那种错。**
     """
     from app.modules.inquiry.model import CustomInquiry
+
+    # 非 CNY 显式拒收（e7aeb4a3 的收口在定制行漏了这一路）：定制行显式
+    # unit_cost 不过 calculate_price，那个入口的拒收拦不到这里 —— 不拦就会
+    # 算出「10 美元 − 300 人民币」的假利润（check_custom_no_sku 3c 实证）。
+    # 与 convert_cny_to / calculate_price 入口 / 审批档位同款错误。
+    currency_code = (version.currency or "CNY").upper()
+    if currency_code != "CNY":
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"报价币种是 {currency_code}：本系统只支持人民币，外币折算已拆除",
+            400,
+        )
 
     if not inquiry_id:
         raise AppError(
@@ -767,6 +1267,29 @@ async def _build_custom_item_snapshot(
     inquiry = await session.get(CustomInquiry, inquiry_id)
     if inquiry is None or inquiry.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, f"定制需求 id={inquiry_id} 不存在", 404)
+    # 需求与报价**必须是同一个客户**（2026-10-12 主人提问核实）。
+    #
+    # 核实结果：此前**没有任何一处**判这件事 —— 这里只判"需求存在"，
+    # 路由层的 `_ensure_inquiry_visible` 只判"需求在我数据范围内"。
+    # 于是同一个人手里的两个客户可以互相挂（A 的需求挂进 B 的报价），
+    # 实测接口返回 0，并把需求编号/标题落进**快照**、跟着对客文件流出去。
+    #
+    # 判据落在**这里**（而不是各路由各判一次）是因为这是唯一的创建入口：
+    # 单条追加与整版替换两条路都经过它；而编辑明细走 `QuoteItemUpdate`，
+    # 那个入参里**根本没有 inquiry_id**（改不了挂哪条需求），
+    # 所以"建的时候判"就等于"全生命周期判"，也不会把历史脏数据变成改不动的死行。
+    #
+    # 顺带把"需求自己没挂客户"（customer_id 为空）也挡了：那种需求挂给谁都不算对。
+    version_customer_id = await session.scalar(
+        select(Quote.customer_id).where(Quote.id == version.quote_id)
+    )
+    if inquiry.customer_id != version_customer_id:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"定制需求「{inquiry.inquiry_no or inquiry.id}」属于别的客户，不能挂进这张报价。"
+            "请选择本客户的需求；如果确实要给这个客户做，请先为该客户建一条定制需求。",
+            422,
+        )
     if quoted_price is None:
         raise AppError(
             ErrorCode.PARAM_ERROR,
@@ -780,22 +1303,68 @@ async def _build_custom_item_snapshot(
             422,
         )
 
-    price = Decimal(str(quoted_price))
-    cost = Decimal(str(unit_cost))  # 人民币：与 SKU 路径、审批判定同一口径
-    freight = Decimal(str(logistics_cost or 0))  # 人民币
-    min_ratio = Decimal(
-        str(await settings_service.get_number(session, "default_min_margin", "ratio", 0.15))
+    # 该函数也会被报价模块内部路径直接调用，不能只依赖 HTTP schema。
+    # 负成本会制造虚假高毛利，非正报价会把版本总额做成零/负数；
+    # 超出列精度则会在落库时被静默舍入，导致明细与版本合计不一致。
+    from pydantic import ValidationError
+
+    from app.modules.quote.schema import QuoteItemInput
+
+    try:
+        validated = QuoteItemInput(
+            quantity=quantity, quoted_price=quoted_price,
+            unit_cost=unit_cost, logistics_cost=logistics_cost,
+        )
+    except ValidationError:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "定制项数量和报价必须大于 0，成本和运费不能小于 0；"
+            "数量最多 3 位小数，单价最多 4 位小数，且不能超出系统可保存范围",
+            422,
+        ) from None
+    quantity = validated.quantity
+    price = validated.quoted_price
+    cost = validated.unit_cost  # 人民币：与 SKU 路径、审批判定同一口径
+    freight = validated.logistics_cost or ZERO  # 人民币
+    # 这一版的口径：新报价的运费不进成本基数；历史版本沿用含运费的老口径。
+    basis_includes_freight = version_logistics_in_base_cost(version)
+    # ⚠️ 最低利润率必须与 SKU 路径、与审核引擎**同一个来源**（2026-10-09 与主人确认）。
+    #
+    # 从前这里读的是系统配置 `default_min_margin`，而"建立新版 / 复制报价"的重算
+    # 读的是**操作人角色权限**（`resolve_min_margin`）—— 同一个管理员、同一张定制
+    # 报价，换条路径就换一套算法：新建时底价 92（配置 15%），建新版变成 80（角色 0%）。
+    # 后果是**价格权限表里配的 0% 对新建报价不起作用、对建新版反而起作用**，
+    # 界面上看起来配好了、实际只在部分路径生效 —— 这不是设计选择，是漏改。
+    #
+    # "角色没配价格权限时退回系统配置"这层兜底在 `resolve_min_margin` 里已经有了，
+    # 所以统一之后并不会失去"没人配过就用 15%"的保护。
+    min_ratio, _can_approve = await pricing_service.resolve_min_margin(
+        session, role_codes or []
     )
-    minimum_price = (cost * (1 + min_ratio)).quantize(Decimal("0.01"))  # 人民币
+    # 保护价基础 = **商品成本**，不含运费（2026-10-09「产品价格与运费分离」）。
+    # 定制项的成本是人工填的"商品成本"，运费同样由客户全额承担、公司代收代付，
+    # 所以运费既不能抬高成本推高底价，也不能被当成利润。与 SKU 路径同一口径。
+    basis_cost = (cost + freight) if basis_includes_freight else cost
+    # ⚠️ 用**引擎那个公式**（成本 ÷ (1 − 最低利润率)），不是 成本 × (1 + 率)
+    # （2026-10-09 与主人确认"按角色权限统一"时一并纠正）。
+    #
+    # 乘法表达不出"最低利润率"这个下限：成本 80、率 15% 时它只给 92，
+    # 而 92 的利润率是 12/92 = **13.04%**，根本不到 15%；
+    # 除法给 94.12，利润率正好 15%。所以乘法那条**不是"另一种口径"，是算错**。
+    # 同一笔业务换条路径就换个数（新建 92 / 新版 94.12），根子就在这里。
+    minimum_price = (
+        (basis_cost / (Decimal(1) - min_ratio)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if min_ratio < 1
+        else basis_cost.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    )  # 人民币
+    _assert_floor_in_range(minimum_price)
     # 利润必须与报价同币种：外币单要先把人民币成本折过去再减，
     # 否则会算出"50 美元 − 350 人民币"这种假数字（与定价服务 cost_in_quote_currency 同口径）
-    fx = version.exchange_rate_snapshot
-    foreign = (version.currency or "CNY").upper() != "CNY" and bool(fx) and fx > 0
-    cost_in_quote = ((cost + freight) / fx) if foreign else (cost + freight)
+    cost_in_quote = basis_cost
     profit = price - cost_in_quote
     profit_rate = (profit / price) if price else ZERO
     # 比最低保护价同样要同币种：保护价是人民币，先把报价折过去
-    price_cny = (price * fx) if foreign else price
+    price_cny = price
     below_floor = price_cny < minimum_price
 
     # 需求被报价引用即视为已转下游（只在待评估/开发中时翻转，
@@ -812,9 +1381,20 @@ async def _build_custom_item_snapshot(
         # 快照占住 SKU 的位置：对客文件上要能看出这是哪条定制需求
         sku_code_snapshot=inquiry.inquiry_no or f"XQ{inquiry.id:04d}",
         sku_name_snapshot=item_name or inquiry.title,
-        spec_snapshot=spec_snapshot or inquiry.description,
+        # ⚠️ 必须收进 `String(200)`（2026-10-14 审查修，PG 上必现 500）。
+        # `custom_inquiries.description` 是 **Text 且入参无长度上限**
+        # （需求描述本来就是一整段自由文本），而 `quote_items.spec_snapshot`
+        # 只有 `String(200)` —— 实测一段 360 字的描述直接写进去会撞
+        # `value too long for type character varying(200)`，被全局兜底成
+        # **500「服务器内部错误」**，用户既不知道是哪一行也不知道该改什么；
+        # 而这不是"用户往报价里填超长"，是**从需求带过来的**，用户无从规避。
+        # （SQLite 单测不校验 varchar 长度，所以 CI 不会红。）
+        # 截断留 `…`（看得出来被截过），与合同标题同一处理手法。
+        spec_snapshot=fit_column(spec_snapshot or inquiry.description, 200),
         quantity=quantity,
         cost_snapshot=cost,
+        cost_present_snapshot=True,
+        cost_complete_snapshot=True,
         package_cost_snapshot=ZERO,
         logistics_cost_snapshot=freight,
         standard_price_snapshot=None,
@@ -827,7 +1407,7 @@ async def _build_custom_item_snapshot(
         customer_level_snapshot=None,
         quoted_price=price,
         profit_snapshot=profit,
-        profit_rate_snapshot=profit_rate.quantize(Decimal("0.000001")),
+        profit_rate_snapshot=_stored_profit_rate(profit_rate),
         tax_refund_snapshot=ZERO,
         profit_with_refund_snapshot=profit,
         approval_required=below_floor,
@@ -861,6 +1441,284 @@ def _pick_confirmed(confirmed: dict[str, str], field: str, fallback):
     return fallback
 
 
+def version_logistics_in_base_cost(version: QuoteVersion) -> bool:
+    """这一版的产品核价，运费要不要算进基础成本。
+
+    **2026-10-09 统一口径后恒为 `False`** —— 所有报价一律"产品单价不含运费、
+    运费按已确认的实际金额由公司代收代付"。从前这里按 `pricing_basis` 分两条路
+    （`legacy` 含运费 / `actual_pass_through` 不含），审查实测出四条缺陷，根因都是
+    "两套口径并存"：审批毛利率把"单价之和"与"整单运费"混着减、建新版时口径切了
+    快照照抄、对客文案不知道该不该写"不含运费"。
+
+    保留这个函数（而不是把调用点全删成常量）有两个原因：
+    ① 调用点集中在 8 处，留一个语义明确的名字比散落的 `False` 好读；
+    ② 将来若真要把"运费进产品价"作为**另一种可选计价方式**加回来，
+       改这一处即可，调用点不用动。
+
+    参数保留是为了调用点签名不变；`version` 现在不参与判断。
+    """
+    return False
+
+
+#: 金额列统一是 `Numeric(16,2)`：整数位 14、小数 2 位。
+#: 超过它 PostgreSQL 直接抛 `numeric field overflow` → 500（第九批问题 ⑧）。
+#: 逐行金额与整单合计**都要查**：数量与单价各自合法，乘出来仍可能越界
+#: （`100000000 × 1000000 = 1e14` 就出界了）。
+MONEY_MAX = Decimal("99999999999999.99")
+
+
+def _assert_money_in_range(amount: Decimal, *, label: str) -> None:
+    """金额（逐行或合计）必须能存进 `Numeric(16,2)`，否则给**明确参数错误**。
+
+    不查的后果是数据库报错冒成 500，用户只看到"服务器内部错误"，
+    既不知道是哪一行、也不知道该改什么。
+    """
+    if amount is not None and abs(amount) > MONEY_MAX:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"{label} 超出可保存范围（最大 {MONEY_MAX}，当前 {amount}）："
+            "请检查数量与单价是不是多打了几位",
+            422,
+        )
+
+
+def _assert_floor_in_range(value: Decimal | None) -> None:
+    """派生底价也必须能存入单价快照 Numeric(16,4)。"""
+    if value is not None and abs(value.quantize(Decimal("0.0001"))) >= Decimal("1000000000000"):
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "底价超出可保存范围，请检查成本和价格权限配置",
+            422,
+        )
+
+
+def _stored_profit_rate(value: Decimal) -> Decimal:
+    """校验最终六位快照能存入 Numeric(10,6)，避免写库时溢出。"""
+    rounded = value.quantize(Decimal("0.000001"))
+    if abs(rounded) >= Decimal("10000"):
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "亏损率超出可保存范围，请调整售价或成本",
+            422,
+        )
+    return rounded
+
+
+def item_cost_is_incomplete(item: QuoteItem) -> bool:
+    """有成本依据但缺项必须人工审批；金额为零也不能代表没有记录。
+
+    成本完整性为 NULL 的历史快照继续走旧判据。已标记不完整、但未保存
+    是否有记录的过渡快照不能凭零金额免审；重建后才能明确区分无记录。
+    """
+    if item.cost_present_snapshot is False:
+        return False
+    if item.cost_present_snapshot is True:
+        return item.cost_complete_snapshot is False
+    return item.cost_complete_snapshot is False
+
+
+def item_cost_is_complete(item: QuoteItem) -> bool:
+    """这条明细的成本快照**可不可信**（第七批 P1-1）。
+
+    审批的毛利判据必须问这一句，而不是只看金额：
+
+    - `cost_complete_snapshot is False` → 不完整。生成快照时产品成本四项里有
+      NULL，`goods_cost` 把 NULL 当 0 合计 —— "只填了采购 10、其余没填"
+      会算出正常的成本 10 与虚高的毛利率，正是审查实测那条免审放行。
+    - `True` → 四项填全（显式 0 也算填），照常算毛利。
+    - `None` → **历史明细**（本列 2026-10-13 上线前生成）。刻意回退到
+      "成本 ≤ 0 才算缺失"的老判据：老单当时四项填没填全已无法回溯，
+      若一律当不完整，等于把历史上所有老报价的毛利免审全部作废。
+    """
+    if item.cost_complete_snapshot is None:
+        return (item.cost_snapshot or ZERO) > 0
+    return bool(item.cost_complete_snapshot)
+
+
+def item_unit_product_cost(item: QuoteItem, *, includes_freight: bool) -> Decimal:
+    """一条明细的**单件产品核价成本**（审批判定、整单利润、摘要共用这一份）。
+
+    口径（2026-10-09「产品价格与运费分离」）：
+
+    - `includes_freight=False`（新报价）：只算 `cost_snapshot`（商品成本）。
+      运费由客户全额承担、公司代收代付，**不进产品利润**——拿它当成本会
+      把"运费收得多"变成"利润被吃掉"，进而误触低价审批；反过来也不能靠
+      高运费收入去抵消产品低价（口径明确禁止）。
+    - `includes_freight=True`（历史版本）：`cost_snapshot + logistics_cost_snapshot`。
+      老版本的 `logistics_cost_snapshot` 是"单件运费"、当时确实参与了产品定价，
+      回看/重算老版本必须沿用，否则会得出与当时不同的低价比对结论。
+
+    调用方一律用 `version_logistics_in_base_cost(version)` 传这个开关，
+    **不要在这个函数里自己去读 version** —— 审批引擎拿到的是明细列表 +
+    一个显式的 fx，它没有版本对象。
+    """
+    cost = item.cost_snapshot or ZERO
+    if includes_freight:
+        cost = cost + (item.logistics_cost_snapshot or ZERO)
+    return cost
+
+
+async def apply_current_basis_to_item(
+    session: AsyncSession,
+    item: QuoteItem,
+    version: QuoteVersion,
+    *,
+    user,
+) -> None:
+    """把**受核价口径影响**的派生快照按当前口径重算一遍（2026-10-09 缺陷③）。
+
+    为什么需要：建立新版 / 复制报价 / 改明细，这几条路都会沿用源明细的快照值。
+    口径切换时若照抄，会留下"口径标着 A、数字是 B"的自相矛盾数据
+    （审查实测：显示利润 15、按新口径应为 20）。
+
+    **只动受口径影响的四列**，其余快照（售价、标准价、建议价、价格来源、
+    客户等级、主数据版本号……）原样保留 —— 刻意**不**重跑 `calculate_price`：
+    它按**当前**价格规则与客户等级取值，复制一张旧报价时会顺手把售价改掉，
+    那是另一种数据损坏。
+
+    ## 底价必须沿用核价引擎的公式（2026-10-09 审查 P1 修）
+
+    我上一版把底价写成 `成本 × (1 + 最低利润率)`，**两处都错**：
+
+    1. **公式反了**：引擎用的是 `成本 ÷ (1 − 最低利润率)`
+       （`pricing/service.py` 的 `floor_from_margin`），不是乘 `(1 + 率)`；
+    2. **丢了公司保护价**：引擎的底价是
+       `max(利润率反推价, 保护价)`，而保护价来自价格规则/客户特殊价的
+       `minimum_price`。我上一版完全没考虑它。
+
+    后果不是"数字难看"，而是**降低审批门槛**：审查实测产品成本 80、公司保护价 99、
+    拟报价 95 —— 原版本底价 99 会触发审批，我那个错误公式算出 92，
+    于是"不需要审批、直接通过"。低价就这么被放过去了。
+
+    所以这里**照抄引擎的取数与公式**（`resolve_min_margin` / `find_price_rule` /
+    `find_customer_price` 全部复用，不另写一套）：
+    底价 = `max(成本 ÷ (1 − 最低利润率), 保护价)`，人民币、两位小数。
+
+    ## 已知局限（与上面那个 bug 不是一回事）
+
+    保护价取的是**当前生效**的规则，不是快照当时那一版。规则后来被改过时，
+    这里会得到"按今天的规则"的底价。选择这样做，而不是"用现价重跑整条核价"，
+    是因为前者只动底价、不改售价；后者会连带改掉已经报给客户的单价。
+    """
+    import logging as _lg
+    _lg.getLogger("probe").warning("RECALC item=%s sku=%s prev_floor=%s", item.id, item.sku_id, item.minimum_price_snapshot)
+    price = item.quoted_price or ZERO
+    basis_cost = item_unit_product_cost(
+        item, includes_freight=version_logistics_in_base_cost(version)
+    )
+    # 最低利润率也走引擎那一个函数：它按**操作人的角色价格权限**取最宽松值，
+    # 角色没配时退回 default_min_margin —— 自己读设置会与核价结果不一致。
+    min_margin, _can_approve = await pricing_service.resolve_min_margin(
+        session, getattr(user, "roles", None) or []
+    )
+
+    # ---- 底价：**逐步照抄核价引擎的取数与公式** ----
+    #
+    # 引擎（`pricing_service.calculate_price`）的算法是：
+    #   resolved_level = 客户等级（客户没等级时为空）
+    #   rule = find_price_rule(customer_level=resolved_level)
+    #   若命中的等级规则**没有指导价** → 回退取一般规则（customer_level=None）
+    #   protection_price = max(rule.minimum_price, customer_rule.minimum_price)
+    #   floor_from_margin = 成本 ÷ (1 − 最低利润率)
+    #   floor_price = max(floor_from_margin, protection_price)
+    #
+    # ⚠️ 我上一版只写了 `find_price_rule(customer_level=None)` —— 那取的是**一般规则**，
+    # 而保护价通常挂在**等级规则**上，于是保护价永远取不到、底价掉到利润率反推价
+    # （实测：成本 80、保护价 99、拟报价 95 —— 原版本底价 99，新版算出 80，
+    #  审批门槛被降低）。所以这里连"等级规则没指导价才回退一般规则"这一步也要照做。
+    floor_from_margin = (
+        basis_cost / (Decimal(1) - min_margin)
+        if item_cost_is_complete(item) and min_margin < 1 else None
+    )
+    protection_candidates: list[Decimal] = []
+    if item.sku_id is not None:
+        quantity = item.quantity or ZERO
+        quote_row = await session.get(Quote, version.quote_id)
+        customer_id = quote_row.customer_id if quote_row else None
+        customer = await session.get(Customer, customer_id) if customer_id else None
+        resolved_level = customer.level if customer else None
+
+        rule = await pricing_service.find_price_rule(
+            session,
+            sku_id=item.sku_id,
+            quantity=quantity,
+            customer_level=resolved_level,
+        )
+        if (
+            resolved_level
+            and rule is not None
+            and rule.customer_level == resolved_level
+            and rule.guide_price is None
+        ):
+            general_rule = await pricing_service.find_price_rule(
+                session,
+                sku_id=item.sku_id,
+                quantity=quantity,
+                customer_level=None,
+            )
+            if general_rule is not None and general_rule.guide_price is not None:
+                rule = general_rule
+        customer_rule = (
+            await pricing_service.find_customer_price(
+                session,
+                customer_id=customer_id,
+                sku_id=item.sku_id,
+                quantity=quantity,
+            )
+            if customer_id
+            else None
+        )
+        protection_candidates = [
+            value
+            for value in [
+                rule.minimum_price if rule else None,
+                customer_rule.minimum_price if customer_rule else None,
+            ]
+            if value is not None
+        ]
+    protection_price = max(protection_candidates) if protection_candidates else None
+    floors = [v for v in (floor_from_margin, protection_price) if v is not None]
+    fresh_floor = max(floors).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if floors else None
+    _assert_floor_in_range(fresh_floor)
+
+    # ---- 「只紧不松」：底价不得低于这条明细**原来那一版**（2026-10-09 与主人确认）----
+    #
+    # 保护价写在价格规则里，运营随时会改；而报价里冻住的那一份是**当年**的值。
+    # 两者不一致时取哪个，是个真实取舍（口径已与主人对齐：**只紧不松**）：
+    #
+    #   情形 A：保护价从 99 降到 92
+    #     · 只按今天的规则算 → 底价跟着降到 92 → 原来要审批的 95 元报价
+    #       **变成免审批直接过** —— 这就是主人要我修的那类"降低审批门槛"；
+    #     · 取 max(今天, 当年) → 仍是 99 → 门槛守住。
+    #   情形 B：保护价从 99 涨到 105
+    #     · max 取 105 → 门槛变严，守公司当前底线（这是应该的）。
+    #
+    # 所以这里用 `max(按今天算的, 原来那一版)`：**底价只会升或持平，绝不会降**。
+    # 代价：保护价降过之后，老报价仍按老底价卡着 —— 但它当初就是按那个底价批的，
+    # 这样反而自洽（"我批过的东西不该悄悄变便宜"）。
+    #
+    # 为什么拿 `item.minimum_price_snapshot` 当"当年那份"就够：
+    # 它本身已经是当年的 `max(成本反推, 保护价)`，所以再取一次 max 等价于
+    # `max(今天成本反推, 今天保护价, 当年成本反推, 当年保护价)` —— 语义正确且少查一次规则。
+    # 老数据该列为 NULL 时不参与比较（只按今天的算），不会凭空把底价抬起来。
+    previous_floor = item.minimum_price_snapshot
+    if previous_floor is not None and (
+        fresh_floor is None or previous_floor > fresh_floor
+    ):
+        item.minimum_price_snapshot = previous_floor
+    else:
+        item.minimum_price_snapshot = fresh_floor
+
+    # ---- 利润：与报价同币种（人民币成本折过去再减）----
+    cost_in_quote = basis_cost
+    profit = price - cost_in_quote
+    item.profit_snapshot = profit
+    item.profit_rate_snapshot = _stored_profit_rate(
+        (profit / price) if price else ZERO
+    )
+    item.profit_with_refund_snapshot = profit + (item.tax_refund_snapshot or ZERO)
+
+
 async def build_item_snapshot(
     session: AsyncSession,
     *,
@@ -891,8 +1749,16 @@ async def build_item_snapshot(
     成本口径（与 02-ER §11 的分层保持一致，别改坏）：
       cost_snapshot            = 商品成本（采购+生产+包装+加工）
       package_cost_snapshot    = 包装成本（是商品成本的组成部分，用于展示拆解，不重复计入）
-      logistics_cost_snapshot  = 单件运费（独立一层）
-    → 单件总成本 = cost_snapshot + logistics_cost_snapshot（审批判定用的就是这个）
+      logistics_cost_snapshot  = 单件运费（独立一层，**旧口径**的产物）
+
+    **产品核价成本怎么取，看这一版的口径**（2026-10-09「产品价格与运费分离」）：
+      - 新口径 `actual_pass_through`：= `cost_snapshot`（商品成本），运费不参与
+        产品定价与产品利润 —— 运费由客户全额承担、公司原额代收代付，不赚不赔；
+      - 旧口径 `legacy`：= `cost_snapshot + logistics_cost_snapshot`（当时运费
+        确实进了产品价，回看老版本必须沿用）。统一走 `item_unit_product_cost`。
+
+    所以 `logistics_cost_snapshot` 在新口径下**仍然照常落库**（保留这层信息、
+    也供历史口径回看），只是不再参与产品定价与利润计算。历史快照不批量清零。
 
     汇率与退税：按报价版本上快照的币种/汇率核价，并把结果一并落成快照，
     否则外贸报价会静默按人民币口径算（此前汇率快照字段一直没被写入）。
@@ -906,6 +1772,7 @@ async def build_item_snapshot(
         return await _build_custom_item_snapshot(
             session,
             version=version,
+            role_codes=role_codes,
             inquiry_id=inquiry_id,
             item_name=item_name,
             quantity=quantity,
@@ -916,19 +1783,27 @@ async def build_item_snapshot(
             remark=remark,
             opportunity_item_id=opportunity_item_id,
         )
-    sku = await session.get(Sku, sku_id)
-    if sku is None or sku.deleted_at is not None:
-        raise AppError(ErrorCode.NOT_FOUND, f"SKU {sku_id} 不存在", 404)
+    # 停用/删除的 SKU 不能进报价明细（issue #7：从前只判 `deleted_at`，
+    # 停用后仍能加进新报价）。
+    from app.modules.product.service import require_available_sku
+
+    sku = await require_available_sku(session, sku_id)
     product = await session.get(Product, sku.product_id)
 
     # §8.14 接线点。`resolve_confirmed_master` 与闸门版同源，只差"缺确认不抛错"。
-    master = await master_service.resolve_confirmed_master(session, sku_id)
+    # ⚠️ **显式传对客三字段**：默认是全部 13 个，会让"颜色/长宽高/起订量…"
+    # 也被算成"尚未确认"，从而提示用户一堆与报价无关的字段。
+    # 快照真正用的也只有这三个（见下面的 `_pick_confirmed`）。
+    master = await master_service.resolve_confirmed_master(
+        session, sku_id, list(master_service.QUOTE_DISPLAY_FIELDS)
+    )
     confirmed = master["values"]
     if unconfirmed_out is not None and master["unconfirmed"]:
         unconfirmed_out.add(
             f"{sku.sku_code} 的「{'、'.join(master['unconfirmed_labels'])}」主数据尚未确认"
         )
 
+    snapshot_values: dict[str, Decimal | None] = {}
     result = await pricing_service.calculate_price(
         session,
         sku_id=sku_id,
@@ -942,6 +1817,10 @@ async def build_item_snapshot(
         # A07：商机需求里的包装要求与目的地要传进核价，物流匹配才有依据
         package_type=package_type,
         country=country,
+        # 运费是否进产品核价基数 —— 由**这一版的口径**决定，不由全局开关决定。
+        # 新报价 False（运费代收代付，不抬高产品价与利润）；历史版本 True（老口径）。
+        logistics_in_base_cost=version_logistics_in_base_cost(version),
+        snapshot_out=snapshot_values,
     )
     if quoted_price is not None:
         if Decimal(str(quoted_price)) <= 0:
@@ -953,7 +1832,7 @@ async def build_item_snapshot(
     ) and result["recommended_price"] is not None:
         # 未传拟报价时只允许采用已维护的客户专属价/指导价；成本反推值仅供内部
         # 试算，不得因为它出现在 recommended_price 中就自动写成对客报价。
-        price = Decimal(str(result["recommended_price"]))
+        price = snapshot_values["recommended_price"]
     else:
         # A06/D5：缺少已批准销售价时，不能把成本推算建议变成正式报价。
         raise AppError(
@@ -964,12 +1843,14 @@ async def build_item_snapshot(
     # 利润必须与报价同币种，否则会拿美元价减人民币成本（曾算出 -452% 的利润率）。
     # cost_snapshot 等成本类快照仍按本币存：审批判定在人民币口径下做，
     # minimum_price_snapshot 也是人民币，混币种比较会得出错误结论。
-    cost_in_quote_currency = Decimal(str(result["cost_in_quote_currency"]))
+    cost_in_quote_currency = snapshot_values["cost_in_quote_currency"]
     profit = price - cost_in_quote_currency
     profit_rate = (profit / price) if price else ZERO
 
-    tax_refund = Decimal(str(result.get("tax_refund") or 0))
+    tax_refund = snapshot_values["tax_refund"] or ZERO
     profit_with_refund = profit + tax_refund
+    minimum_price = snapshot_values["minimum_price_cny"]
+    _assert_floor_in_range(minimum_price)
 
     return QuoteItem(
         quote_version_id=version.id,
@@ -995,23 +1876,23 @@ async def build_item_snapshot(
         # §8.14：把"这条明细用的是哪一版主数据"一并落快照（0 → NULL＝当时还没确认过）
         master_version_no=master["version_no"] or None,
         quantity=quantity,
-        cost_snapshot=Decimal(str(result["cost"]["goods_cost"])),
-        package_cost_snapshot=Decimal(str(result["cost"]["package_cost"])),
-        logistics_cost_snapshot=Decimal(str(result["cost"]["logistics_cost"] or 0)),
-        standard_price_snapshot=Decimal(str(result["standard_price"])),
-        recommended_price_snapshot=Decimal(str(result["recommended_price"])),
+        cost_snapshot=snapshot_values["goods_cost"],
+        # 完整性随快照一起存（第七批 P1-1）：审批读的是快照，不是活成本行；
+        # 不落这一列，"只填了一项成本"在审批侧就无法与"成本完整"区分。
+        cost_complete_snapshot=result["cost"].get("cost_complete"),
+        cost_present_snapshot=result["has_cost"],
+        package_cost_snapshot=snapshot_values["package_cost"],
+        logistics_cost_snapshot=snapshot_values["logistics_cost"] or ZERO,
+        standard_price_snapshot=snapshot_values["standard_price"],
+        recommended_price_snapshot=snapshot_values["recommended_price"],
         # 存**人民币**口径（result["minimum_price"] 在外币单上已折成计价币种，
         # 拿它落快照会让审批把 3.6 美元的保护价当成 3.6 人民币去比）
-        minimum_price_snapshot=(
-            Decimal(str(result["minimum_price_cny"]))
-            if result.get("minimum_price_cny") is not None
-            else None
-        ),
+        minimum_price_snapshot=minimum_price,
         price_source=price_source,
         customer_level_snapshot=customer_level_snapshot,
         quoted_price=price,
         profit_snapshot=profit,
-        profit_rate_snapshot=profit_rate.quantize(Decimal("0.000001")),
+        profit_rate_snapshot=_stored_profit_rate(profit_rate),
         tax_refund_snapshot=tax_refund,
         profit_with_refund_snapshot=profit_with_refund,
         approval_required=bool(result["approval_required"]),
@@ -1021,25 +1902,114 @@ async def build_item_snapshot(
 
 
 async def recalc_version(session: AsyncSession, version: QuoteVersion) -> None:
-    """重算版本金额：小计、附加费用、折扣、总额。"""
+    """重算版本金额：货款、运费、其他费用、折扣、总额（以及运费确认状态）。
+
+    总额公式**没有变**（与订单侧同一口径）：
+
+        应付合计 = 货款 + 附加费用 + 折扣
+                 = 货款 + (运费 + 其他费用) + 折扣
+
+    这里额外落两个**拆分**列（`logistics_amount` / `other_charge_amount`），
+    只是为了让页面和文件能把运费从"附加费用"里单列出来。
+
+    ⚠️ 三条恒等式，改这个函数时不要破坏：
+      1. `charge_amount == logistics_amount + other_charge_amount`
+         （拆的是同一笔钱，不是又加了一笔）；
+      2. `total_amount` 里**已经含**运费 —— 任何地方都不要再把 `logistics_amount`
+         加到 `total_amount` 上，那是重复计费；
+      3. 运费与折扣互斥：`is_discount=True` 的费用无论分类码是什么都进折扣，
+         不参与运费汇总（折扣在库里是负数，保持这个约定）。
+    """
     items = (
         await session.execute(
-            select(QuoteItem).where(QuoteItem.quote_version_id == version.id)
+            select(QuoteItem)
+            .where(QuoteItem.quote_version_id == version.id)
+            # 汇总必须按**库里的事实**算（第二轮审查 P1，2026-10-12）：
+            # 会话不刷新身份映射，普通重查会拿旧对象算合计（实测把 −100 的优惠
+            # 当 +100 算，货款 1000 得出 1100）。调用方都在 recalc 之前 flush，
+            # 所以这里强制重读不会丢掉未落库的改动。
+            .execution_options(populate_existing=True)
         )
     ).scalars().all()
-    subtotal = sum((item.quantity * item.quoted_price for item in items), ZERO)
+    # 数量按库列精度归一再求和：与 `serialize_item` 的明细金额取**同一个数**，
+    # 否则同一张单会出现"明细 185.25、合计 185.18"（N01）。
+    # 逐行金额先各自查范围（第九批问题 ⑧）：数量与单价**各自**都有
+    # `max_digits=16` 约束，但乘出来的金额可能越界。
+    line_amounts = [line_amount(item.quantity, item.quoted_price) for item in items]
+    for item, amount in zip(items, line_amounts):
+        _assert_money_in_range(
+            amount,
+            label=f"明细 {item.sku_code_snapshot or item.sku_name_snapshot or item.id} 的金额",
+        )
+    subtotal = sum(line_amounts, ZERO)
+    _assert_money_in_range(subtotal, label="货款合计")
     charges = (
         await session.execute(
-            select(QuoteCharge).where(QuoteCharge.quote_version_id == version.id)
+            select(QuoteCharge)
+            .where(QuoteCharge.quote_version_id == version.id)
+            .execution_options(populate_existing=True)
         )
     ).scalars().all()
     discount = sum((charge.amount for charge in charges if charge.is_discount), ZERO)
-    charge_amount = sum((charge.amount for charge in charges if not charge.is_discount), ZERO)
-    version.subtotal_amount = subtotal.quantize(Decimal("0.01"))
-    version.charge_amount = charge_amount.quantize(Decimal("0.01"))
-    version.discount_amount = discount.quantize(Decimal("0.01"))
+    # 运费只按**分类码**认，不按说明文字里含"运费"去猜（口径明确要求：
+    # 一句写错的说明不该改变金额归属）。
+    logistics = sum(
+        (charge.amount for charge in charges if is_logistics_charge(charge)), ZERO
+    )
+    other_charge = sum(
+        (
+            charge.amount
+            for charge in charges
+            if not charge.is_discount and not is_logistics_charge(charge)
+        ),
+        ZERO,
+    )
+    charge_amount = logistics + other_charge
+    # 总额可被折扣抵消，但各合计仍须独立存入 Numeric(16,2)。
+    for amount, label in (
+        (charge_amount, "附加费用合计"),
+        (logistics, "运费合计"),
+        (other_charge, "其他费用合计"),
+        (discount, "折扣合计"),
+    ):
+        _assert_money_in_range(amount, label=label)
+    version.subtotal_amount = subtotal.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    version.charge_amount = charge_amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    version.logistics_amount = logistics.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    version.other_charge_amount = other_charge.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    version.discount_amount = discount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     # 统一定点舍入（方案 §5）：与订单侧 amount 口径一致，避免出现 3 位小数的总额
-    version.total_amount = (subtotal + charge_amount + discount).quantize(Decimal("0.01"))
+    _assert_money_in_range(subtotal + charge_amount + discount, label="订单总额")
+    version.total_amount = (subtotal + charge_amount + discount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def quote_freight_unconfirmed_reason(charges: list[QuoteCharge]) -> str | None:
+    """正式发送前，运费是否"还没有被确认"（返回人话原因；None = 已确认，可以发）。
+
+    口径（2026-10-09）：**草稿允许尚未填写运费，正式发送时必须已经确认具体金额**。
+    所以判据不能是"运费金额是不是 0" —— 明确确认的零运费是合法的，
+    而空输入不能被当成已确认的零元。
+
+    判据分两种情况，都只看"有没有被确认过"：
+
+    - **这一版还没有任何物流费用条目**：说明业务员压根没填 → 拦住，让他去填；
+      确实零运费就新增一条 0 元并确认，走下面那一种。
+    - **有物流费用条目**：每一条都必须确认过（`logistics_confirmed_at` 非空）。
+      只要有一条没确认，就拦住 —— 有条目不等于金额已经确认。
+    """
+    logistics = [c for c in charges if is_logistics_charge(c)]
+    if not logistics:
+        return "尚未填写运费：请在「附加费用」里以「物流」类型填写已确认的实际运费金额"
+    unconfirmed = [c for c in logistics if c.logistics_confirmed_at is None]
+    if unconfirmed:
+        names = "、".join(
+            (c.description or f"物流费用编号 {c.id}") for c in unconfirmed
+        )
+        return (
+            f"以下运费尚未确认具体金额：{names}。"
+            "请确认后再正式发送；确属零运费也要显式确认（不能把空输入当作已确认的 0 元）"
+        )
+    return None
 
 
 async def moq_warning(session: AsyncSession, sku_id: int | None, quantity: Decimal) -> str | None:
@@ -1100,8 +2070,44 @@ async def master_confirmation_problems(
         blank = [m for m in missing if "（" not in m]
         drifted = [m for m in missing if "（" in m]
         parts = ([f"缺 {'、'.join(blank)}"] if blank else []) + drifted
-        problems.append(f"{code or f'SKU#{sku_id}'}：" + "；".join(parts))
+        problems.append(f"{code or f'SKU编号 {sku_id}'}：" + "；".join(parts))
     return problems
+
+
+def item_cost_problems(items: list[QuoteItem]) -> list[dict]:
+    """只返回完整性和定位信息，不返回成本金额。历史未知快照不能冒充完整。"""
+    problems = []
+    for item in items:
+        if item.cost_complete_snapshot is True and item.cost_present_snapshot is not False:
+            continue
+        label = item.sku_code_snapshot or item.sku_name_snapshot or f"明细 {item.id}"
+        reason = (
+            "成本未维护" if item.cost_present_snapshot is False
+            else "成本未填完整" if item.cost_complete_snapshot is False
+            else "历史成本完整性未确认"
+        )
+        problems.append({"item_id": item.id, "sku_id": item.sku_id,
+                         "label": label, "reason": reason})
+    return problems
+
+
+async def ensure_items_cost_complete(session: AsyncSession, *, version_id: int, check_inquiry_approval: bool = True) -> None:
+    items = await version_items(session, version_id)
+    from app.modules.oa.business_gates import require_inquiry_items_approved
+    if check_inquiry_approval:
+        await require_inquiry_items_approved(session, items)
+    problems = item_cost_problems(items)
+    if not items:
+        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "报价没有明细，不能正式报价", 422)
+    if problems:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "成本尚未完整确认，只能保存草稿，不能提交、发送、对客导出或转订单："
+            + "；".join(f"{p['label']}：{p['reason']}" for p in problems)
+            + "。请在价格中心补齐成本（确实没有的费用明确填0），再回报价更新草稿明细；"
+              "已锁定版本请新建版本核对，历史快照不会自动改写。",
+            422,
+        )
 
 
 async def ensure_items_master_confirmed(session: AsyncSession, *, version_id: int) -> None:
@@ -1124,6 +2130,75 @@ async def ensure_items_master_confirmed(session: AsyncSession, *, version_id: in
         + "。请先在这些 SKU 上确认主数据，再重新生成这版明细。",
         422,
     )
+
+
+async def ensure_freight_confirmed(session: AsyncSession, *, version_id: int) -> None:
+    """正式发送前的**硬校验**：运费必须已经确认具体金额（2026-10-09 口径）。
+
+    口径：**草稿允许尚未填写运费，正式发送时必须已经确认具体金额**。
+
+    为什么不能只看金额：`0` 同时代表"没填"和"明确是零运费"。空输入被默认当成
+    已确认的零元，客户文件上就会印出"运费 0.00"并声称"代收代付已确认" ——
+    实际运费一毛钱都还没确认，这是静默的错。所以判据是
+    `QuoteCharge.logistics_confirmed_at`（确认时刻），不是金额。
+
+    判据落在 `quote_freight_unconfirmed_reason` 一份上，与前端提示同源。
+    """
+    charges = await version_charges(session, version_id)
+    reason = quote_freight_unconfirmed_reason(charges)
+    if reason is None:
+        return
+    raise AppError(ErrorCode.STATUS_NOT_ALLOWED, f"{reason}。", 422)
+
+
+async def version_charges(session: AsyncSession, version_id: int) -> list[QuoteCharge]:
+    """这一版的所有附加费用（含折扣行），按排序号与 id 稳定排序。"""
+    return list(
+        (
+            await session.execute(
+                select(QuoteCharge)
+                .where(QuoteCharge.quote_version_id == version_id)
+                .order_by(QuoteCharge.sort_no.asc(), QuoteCharge.id.asc())
+            )
+        ).scalars().all()
+    )
+
+
+async def copy_version_charges(
+    session: AsyncSession, *, source_id: int, target_version: QuoteVersion
+) -> int:
+    """把源版本的费用行整份抄到目标版本，返回复制条数。
+
+    **两个复制入口共用这一份**（`create_version` 与 `POST /quotes/{id}/clone`）。
+    以前只有前者抄了费用，后者只抄明细 —— 于是"复制报价"出来的新单
+    货款对、**运费与折扣全丢**，而且因为缺运费，正式发送还会被
+    `ensure_freight_confirmed` 拦下，用户看到的是"这单发不出去"
+    （`/tmp/verify_freight_rules.py` 的场景6 就是这么发现的）。
+
+    运费的**确认时刻一并带过来**：源版本的运费是业务按承运商确认过的实际金额
+    （口径：客户全额承担、公司原额代收代付），这个事实对同一笔生意的新版本
+    仍然成立。金额对金额、口径对口径地照抄，不重新猜。
+    要改金额就改，`mark_logistics_confirmed` 会重新打确认时刻。
+
+    ⚠️ 折扣原样带过来（库里是负数），与 `recalc_version` 的代数相加约定一致；
+    这里**不重新归一符号**，否则一个已经是负数的折扣会被翻成正数、把总额加上去。
+    """
+    copied = 0
+    for charge in await version_charges(session, source_id):
+        session.add(
+            QuoteCharge(
+                quote_version_id=target_version.id,
+                charge_type=charge.charge_type,
+                description=charge.description,
+                amount=charge.amount,
+                currency=charge.currency,
+                is_discount=charge.is_discount,
+                sort_no=charge.sort_no,
+                logistics_confirmed_at=charge.logistics_confirmed_at,
+            )
+        )
+        copied += 1
+    return copied
 
 
 async def version_items(session: AsyncSession, version_id: int) -> list[QuoteItem]:
@@ -1151,7 +2226,6 @@ async def price_drift(
     quote = await session.get(Quote, version.quote_id)
     items = await version_items(session, version.id)
     customer = await session.get(Customer, quote.customer_id) if quote else None
-    fx = version.exchange_rate_snapshot
     rows: list[dict] = []
     any_drift = False
     for item in items:
@@ -1170,9 +2244,11 @@ async def price_drift(
                 }
             )
             continue
+        lookup_values: dict[str, Decimal | None] = {}
         lookup = (
             await pricing_service.lookup_applicable_price(
-                session, customer=customer, sku_id=item.sku_id, quantity=item.quantity
+                session, customer=customer, sku_id=item.sku_id, quantity=item.quantity,
+                snapshot_out=lookup_values,
             )
             if customer is not None
             else {"status": "pending", "unit_price": None, "source": None}
@@ -1180,9 +2256,8 @@ async def price_drift(
         current = None
         if lookup["status"] == "ok" and lookup["unit_price"] is not None:
             current, _ = convert_cny_to(
-                Decimal(str(lookup["unit_price"])),
+                lookup_values["unit_price"],
                 to_currency=version.currency,
-                rate=fx,
             )
         hand_priced = item.price_source is None
         drift = bool(
@@ -1213,7 +2288,6 @@ async def refresh_prices(
     quote = await session.get(Quote, version.quote_id)
     items = await version_items(session, version.id)
     customer = await session.get(Customer, quote.customer_id)
-    fx = version.exchange_rate_snapshot
     refreshed = 0
     skipped = 0
     for item in items:
@@ -1224,16 +2298,17 @@ async def refresh_prices(
         if item.price_source is None:
             skipped += 1
             continue
+        lookup_values: dict[str, Decimal | None] = {}
         lookup = await pricing_service.lookup_applicable_price(
-            session, customer=customer, sku_id=item.sku_id, quantity=item.quantity
+            session, customer=customer, sku_id=item.sku_id, quantity=item.quantity,
+            snapshot_out=lookup_values,
         )
         if lookup["status"] != "ok" or lookup["unit_price"] is None:
             skipped += 1
             continue
         new_price, _ = convert_cny_to(
-            Decimal(str(lookup["unit_price"])),
+            lookup_values["unit_price"],
             to_currency=version.currency,
-            rate=fx,
         )
         rebuilt = await build_item_snapshot(
             session,
@@ -1244,20 +2319,31 @@ async def refresh_prices(
             quoted_price=new_price,
             logistics_cost=None,
             opportunity_item_id=item.opportunity_item_id,
-            spec_snapshot=item.spec_snapshot,
+            # ⚠️ **传 None**：让 `build_item_snapshot` 走 `_pick_confirmed` 取
+            # **当前已确认的规格**。从前传的是 `item.spec_snapshot`，于是刷新把
+            # `master_version_no` 钉到新版本、**规格快照却还是旧值** ——
+            # 明细声称引用 v4、显示的还是 v3 的规格，发送校验照样拦（实测：
+            # 「规格（明细用的是「999×888」，与所引用确认版本的「555×444」不一致）」）。
+            # 传 None 而不是空串：函数里的判据是 `spec_snapshot if spec_snapshot else ...`，
+            # 空串会落到同一分支，但 None 才是"没有外部指定"的准确表达。
+            # 刷新这个动作的语义就是"按**当前已确认主数据**重建这一行"，
+            # 而且执行前会先给人看变化预览（`master-refresh-preview`），
+            # 所以不存在"悄悄改掉用户手填值"的问题。
+            spec_snapshot=None,
             remark=item.remark,
             role_codes=user.roles,
             price_source=lookup["source"],
             customer_level_snapshot=(customer.level or "").strip() or None if customer else None,
         )
         for field in (
-            "quantity", "quoted_price", "cost_snapshot", "logistics_cost_snapshot",
+            "quantity", "quoted_price", "cost_snapshot", "cost_complete_snapshot",
+            "cost_present_snapshot", "logistics_cost_snapshot",
             "standard_price_snapshot", "recommended_price_snapshot", "minimum_price_snapshot",
             "profit_snapshot", "profit_rate_snapshot", "price_source",
             "customer_level_snapshot", "approval_required", "approval_reason",
-            # 单位快照一并刷新：刷新重建的是"当前条件下这一版的价格与单位"，
-            # 不带上它会让刚刷新过的版本行反而显示"待核实"
             "unit_snapshot",
+            # 对客三字段：刷新按已确认主数据重建（issue 建议第 5 条）
+            "sku_name_snapshot", "spec_snapshot",
             # §8.14：刷新会重新经过主数据解析，版本号也要跟着刷新后的口径走
             "master_version_no",
         ):
@@ -1268,16 +2354,30 @@ async def refresh_prices(
     return {"refreshed": refreshed, "skipped": skipped}
 
 
-async def version_charges(session: AsyncSession, version_id: int) -> list[QuoteCharge]:
-    return list(
-        (
-            await session.execute(
-                select(QuoteCharge)
-                .where(QuoteCharge.quote_version_id == version_id)
-                .order_by(QuoteCharge.sort_no.asc(), QuoteCharge.id.asc())
-            )
-        ).scalars().all()
-    )
+async def refresh_cost_snapshots(session: AsyncSession, *, version: QuoteVersion, user) -> dict:
+    """显式更新草稿成本，保留成交单价、数量及对客主数据快照。"""
+    await ensure_version_editable(version)
+    quote = await session.get(Quote, version.quote_id)
+    items = await version_items(session, version.id)
+    refreshed = 0
+    for item in items:
+        if item.sku_id is None:
+            continue
+        rebuilt = await build_item_snapshot(
+            session, version=version, sku_id=item.sku_id, quantity=item.quantity,
+            customer_id=quote.customer_id, quoted_price=item.quoted_price,
+            logistics_cost=item.logistics_cost_snapshot,
+            opportunity_item_id=item.opportunity_item_id,
+            spec_snapshot=item.spec_snapshot, remark=item.remark, role_codes=user.roles,
+        )
+        for field in ("cost_snapshot", "package_cost_snapshot", "cost_complete_snapshot",
+                      "cost_present_snapshot", "minimum_price_snapshot", "profit_snapshot",
+                      "profit_rate_snapshot", "approval_required", "approval_reason"):
+            setattr(item, field, getattr(rebuilt, field))
+        refreshed += 1
+    await session.flush()
+    await recalc_version(session, version)
+    return {"refreshed": refreshed}
 
 
 async def submit_for_approval(
@@ -1300,12 +2400,49 @@ async def submit_for_approval(
     items = await version_items(session, version.id)
     if not items:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "报价单没有任何明细，不能提交")
+    await ensure_items_cost_complete(session, version_id=version.id)
+    # ⚠️ **运费闸提前到提交审批**（主人 2026-10-12 拍板，方案 A）。
+    #
+    # 从前这里对运费零要求，而「附加费用」入口在版本锁死之后一律拒绝 ——
+    # 两道闸错开一拍，于是"报批时还没问准运费"的单子必然死锁：
+    #
+    #     提交审批（不查运费）→ 通过 → 版本锁死 → 发送时才发现缺运费
+    #     → 撤回也救不了（撤回只对「审批中」有效）→ 只能新建版本重走审批
+    #
+    # 现在提前到这一环：**要么先确认运费再报批，要么批完用"只补运费"那条路**。
+    # 报关口径：运费代收代付、不进产品价（`version_logistics_in_base_cost` 恒 False），
+    # 所以"确认运费"是所有报价都要做的最后一步，与有没有超权限无关。
+    await ensure_freight_confirmed(session, version_id=version.id)
 
     min_margin, can_approve = await pricing_service.resolve_min_margin(session, user_roles)
+    discount_limit = await pricing_service.resolve_discount_limit(session, user_roles)
+    discount_limit_pct = (
+        Decimal(str(discount_limit)) * 100 if discount_limit is not None else None
+    )
     # 审批判定统一在**人民币口径**下做：成本快照与 minimum_price_snapshot 都是人民币存的，
     # 而 quoted_price 可能是外币。不折算就会拿 3.92 美元去比 25.44 人民币，必然误判需审批。
-    fx = version.exchange_rate_snapshot
-    foreign = (version.currency or "CNY").upper() != "CNY" and fx and fx > 0
+    # ---- 审批分档也要用**人民币**金额（第二轮审查 P2，2026-10-12）----
+    #
+    # `version.total_amount` 是**计价币种**的金额。外币报价直接拿它比档位，
+    # 会按原币数字选层级：USD 10000（折人民币 70000）会被落进"≤50000 主管"
+    # 那一档 —— 金额判定全对、授权层级整个错了。
+    # 折算只认**这一版快照里的汇率**（与上面所有金额判定同一个 fx），
+    # 缺汇率时不猜（按 1:1 顶上去等于把美元当人民币报批）。
+    currency_code = (version.currency or "CNY").upper()
+    # 外币死行拆除（主人确认无外币数据）：非 CNY 显式拒绝，档位金额直取人民币原值
+    if currency_code != "CNY":
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"版本币种是 {currency_code}：本系统只支持人民币，外币折算已拆除",
+            400,
+        )
+    tier_amount = version.total_amount or Decimal(0)
+    # 分档比较与留痕都用 Decimal 原值（float→Decimal 批2）：比较本已 Decimal
+    # （见下方 tier_amount <= Decimal(cap)），这里不再为留痕提前转 float 丢分。
+    total_amount_cny = tier_amount
+    # 产品核价是否含运费，由**这一版的口径**决定（见 `item_unit_product_cost`）。
+    # 新报价：运费代收代付，不进产品成本与利润；历史版本：沿用含运费的老口径。
+    cost_includes_freight = version_logistics_in_base_cost(version)
 
     # ---- 绝对底价（D7 判定层）：命中即 422 硬拒，不生成任何可批的审批单 ----
     # 必须排在审批规则引擎（免审/极速通道）之前：auto_pass 不能把低于硬底的价放过去，
@@ -1322,11 +2459,11 @@ async def submit_for_approval(
         weighted_floor_total = ZERO
         total_qty = ZERO
         for item in items:
-            item_cost = item.cost_snapshot + item.logistics_cost_snapshot
+            item_cost = item_unit_product_cost(item, includes_freight=cost_includes_freight)
             if item_cost <= 0:
                 # 无成本记录：硬底无从计算，由保护价/利润判定兜住（A06 同口径）
                 continue
-            price_cny = (item.quoted_price * fx) if foreign else item.quoted_price
+            price_cny = item.quoted_price
             floor_cny = item_cost * factor
             if price_cny < floor_cny - eps:
                 # 脱敏纪律：底价由成本推出（mode=cost 时就是成本本身），
@@ -1341,8 +2478,11 @@ async def submit_for_approval(
             total_qty += item.quantity
         # 整单优惠摊到单价后的加权均价同样不得低于加权硬底
         if not hard_hits and total_qty:
-            revenue_cny = (version.total_amount * fx) if foreign else version.total_amount
-            if revenue_cny and revenue_cny > 0:
+            revenue_cny = version.total_amount
+            if not cost_includes_freight:
+                revenue_cny -= version.logistics_amount
+            # 零/负产品收入也必须硬拒；代收运费不能抵消优惠后的产品亏损。
+            if revenue_cny is not None:
                 avg_price = revenue_cny / total_qty
                 avg_floor = weighted_floor_total / total_qty
                 if avg_price < avg_floor - eps:
@@ -1365,9 +2505,36 @@ async def submit_for_approval(
 
     offending: list[dict] = []
     for item in items:
-        base_cost = item.cost_snapshot + item.logistics_cost_snapshot
+        base_cost = item_unit_product_cost(item, includes_freight=cost_includes_freight)
         price = item.quoted_price
-        price_cny = (price * fx) if foreign else price
+        price_cny = price
+        # ⚠️ **成本不完整、且这条明细没有保护价可依据 → 必须审批**
+        # （第七批 P1-1 的最后一块）。
+        #
+        # 这一段是"提交审批时按快照**重判**一遍"——它会覆盖核价时得出的
+        # `item.approval_required`。核价引擎那边已经把"成本不完整"算进去了，
+        # 但**这里重判时没看完整性**，于是又被改回 False：实测
+        # "只填采购成本 10 + 报价 100"提交后仍然是
+        # `approval_required=False 未超出权限，报价已通过`。
+        #
+        # 有记录但缺项必须人工审批（包含合计为零）；无记录继续走保护价判据。
+        if item_cost_is_incomplete(item):
+            item.approval_required = True
+            item.approval_reason = (
+                "该明细的成本不完整（成本记录里有未填写的项），"
+                "按残缺成本算出的毛利不可信，"
+                "需要人工审批；补齐成本四项后自动恢复"
+            )
+            offending.append(
+                {
+                    "sku_code": item.sku_code_snapshot,
+                    "quoted_price": price,
+                    "quoted_price_cny": price_cny,
+                    "minimum_price": None,
+                    "profit_rate": None,
+                }
+            )
+            continue
         if base_cost <= 0:
             # A06/D5：成本快照为 0 说明"没有成本记录"而不是"成本为零"。
             # 利润类判定（授权底价/负利润/利润率）全部无从谈起，停用；
@@ -1382,9 +2549,9 @@ async def submit_for_approval(
                 offending.append(
                     {
                         "sku_code": item.sku_code_snapshot,
-                        "quoted_price": float(price),
-                        "quoted_price_cny": float(price_cny),
-                        "minimum_price": float(floor),
+                        "quoted_price": price,
+                        "quoted_price_cny": price_cny,
+                        "minimum_price": floor,
                         "profit_rate": None,
                     }
                 )
@@ -1399,36 +2566,110 @@ async def submit_for_approval(
             item.approval_required = True
             item.approval_reason = (
                 f"报价 ¥{price_cny:.2f}（折人民币）低于最低允许价 ¥{floor:.2f}，"
-                f"利润率 {profit_rate * 100:.2f}%（授权 {min_margin * 100:.0f}%）"
+                f"利润率 {exact_decimal_text(profit_rate * 100)}%（授权 {min_margin * 100:.0f}%）"
             )
             offending.append(
                 {
                     "sku_code": item.sku_code_snapshot,
-                    "quoted_price": float(price),
-                    "quoted_price_cny": float(price_cny),
-                    "minimum_price": float(floor),
-                    "profit_rate": float(profit_rate),
+                    "quoted_price": price,
+                    "quoted_price_cny": price_cny,
+                    "minimum_price": floor,
+                    "profit_rate": float(profit_rate),  # 纯比率保留 float（Q3）
                 }
             )
         else:
             item.approval_required = False
             item.approval_reason = None
 
+    # 成本缺失时折扣限制仍有效；所有明细都按申请人的当前角色重新判定。
+    if discount_limit_pct is not None:
+        for item in items:
+            discount_pct = pricing_service.discount_percentage(
+                item.quoted_price, item.standard_price_snapshot
+            )
+            if discount_pct <= discount_limit_pct:
+                continue
+            item.approval_required = True
+            discount_reason = (
+                f"折扣 {discount_pct:.2f}% 超过角色上限 {discount_limit_pct:.2f}%"
+            )
+            item.approval_reason = "；".join(
+                part for part in (item.approval_reason, discount_reason) if part
+            )
+            offending.append({"sku_code": item.sku_code_snapshot, "reason": discount_reason})
+        # 整单优惠也不得绕过折扣限制。没有标准价的定制项不假定标准价。
+        if all(item.standard_price_snapshot is not None and item.standard_price_snapshot > 0 for item in items):
+            standard_total = sum(
+                (line_amount(item.quantity, item.standard_price_snapshot) for item in items), ZERO
+            )
+            discount_pct = pricing_service.discount_percentage(
+                version.subtotal_amount + version.discount_amount, standard_total
+            )
+            if discount_pct > discount_limit_pct:
+                offending.append({"sku_code": "整单（优惠后）", "reason":
+                    f"整单折扣 {discount_pct:.2f}% 超过角色上限 {discount_limit_pct:.2f}%"})
+        elif version.discount_amount < 0:
+            offending.append({"sku_code": "整单（优惠后）", "reason":
+                "包含无标准价明细，无法核对整单优惠是否超出角色折扣上限，需审批"})
+
+    # ---- 整单金额必须为正（2026-10-10 修 issue #3）----
+    #
+    # ⚠️ 从前这里是 `if revenue and revenue > 0:` —— **总额为 0 或负数时整段跳过**，
+    # 于是整单优惠把应付打到 -66.29 元也照样 `approval_required=False` 直接批准
+    # （实测：明细 28.71、成本 20，优惠 95/100/150 → 总额 -66.29/-71.29/-121.29，
+    # 三次全部 `code=0 未超出权限，报价已通过`）。
+    # 业务上不存在"客户倒收钱"的报价，所以它跟"低于绝对底价"是同一类：
+    # **任何审批都不该放过**，因此在这里硬拒（422），不生成可批的审批单。
+    # 与下面硬底价那段同一个范式，出口文案也照它的写法给。
+    _total_for_check = (
+        version.total_amount
+    ) or ZERO
+    if _total_for_check <= 0:
+        raise AppError(
+            ErrorCode.PRICE_BELOW_HARD_FLOOR,
+            f"报价整单金额为 ¥{_total_for_check:.2f}，为零或负数，任何审批都无法通过，"
+            "已拒绝提交。请检查明细金额与整单优惠是否把总额打到了 0 以下；"
+            "合法出口：免费样品 / 清库存等特殊业务请走各自通道（另立零元单据），"
+            "不要在正常报价上用优惠把总额抵消掉。",
+            422,
+        )
+
     # A10（方案 §7.1）：整单有效金额判定。
     # 逐项全过 ≠ 整体能过：整单优惠（is_discount 附加费）摊下来后，
     # 整单利润率/加权均价可能已跌破授权——不能逐项检查后就直接放行。
+    #
+    # 运费分离口径（2026-10-09）：**收入与成本两边必须同时排除代收代付的运费**。
+    #   - 收入侧：应收总额里含运费，但那笔钱是替客户转交给承运商的，不是公司的收入；
+    #   - 成本侧：运费也不进产品成本。
+    # 只排除一边会算出一个假的利润率 —— 只排收入 → 利润率被压得极低（误触审批）；
+    # 只排成本 → 利润率被抬得极高（该拦的拦不住）。两边都不排 → 靠运费收入
+    # 抵消产品低价，正是口径明确禁止的。
+    #
+    # ⚠️ 老口径（legacy）版本**一个字不改**：那时运费本来就含在产品价里，
+    # 收入与成本的重心与今天不同，改了就成了改写历史结论。
     revenue = version.total_amount
     if revenue and revenue > 0:
         # 存在无成本明细时，整单利润率等于"拿 0 成本算出来的"，不可信——
         # 利润率维度跳过（D5），加权保护价是绝对口径仍生效
         any_missing_cost = any(
-            (item.cost_snapshot + item.logistics_cost_snapshot) <= 0 for item in items
+            item_unit_product_cost(item, includes_freight=cost_includes_freight) <= 0
+            for item in items
         )
-        revenue_cny = (revenue * fx) if foreign else revenue
+        revenue_cny = revenue
         cost_total = sum(
-            ((item.cost_snapshot + item.logistics_cost_snapshot) * item.quantity for item in items),
+            (
+                item_unit_product_cost(item, includes_freight=cost_includes_freight)
+                * item.quantity
+                for item in items
+            ),
             ZERO,
         )
+        # 非运费口径：收入与成本一起把运费剔除（用**本版拆分列**，不重新猜分类）
+        if not cost_includes_freight:
+            logistics_cny = (
+                version.logistics_amount
+            ) or ZERO
+            revenue_cny = revenue_cny - logistics_cny
         total_qty = sum((item.quantity for item in items), ZERO)
         whole_margin = ((revenue_cny - cost_total) / revenue_cny) if revenue_cny else ZERO
         weighted_floor_hit = False
@@ -1443,7 +2684,7 @@ async def submit_for_approval(
             and whole_margin < min_margin - Decimal("0.000001")
         ) or weighted_floor_hit:
             reason = (
-                f"整单有效金额 ¥{revenue_cny:.2f}（含整单优惠）利润率 {whole_margin * 100:.2f}%"
+                f"整单有效金额 ¥{revenue_cny:.2f}（含整单优惠）利润率 {exact_decimal_text(whole_margin * 100)}%"
                 f"（授权 {min_margin * 100:.0f}%）"
             )
             if weighted_floor_hit:
@@ -1451,7 +2692,7 @@ async def submit_for_approval(
             offending.append(
                 {
                     "sku_code": "整单（优惠后）",
-                    "quoted_price_cny": float(revenue_cny),
+                    "quoted_price_cny": revenue_cny,
                     "profit_rate": float(whole_margin),
                     "reason": reason,
                 }
@@ -1490,7 +2731,7 @@ async def submit_for_approval(
     from app.modules.approval import rules_engine
 
     decision = await rules_engine.route(
-        session, quote=quote, version=version, items=items, fx=fx
+        session, quote=quote, version=version, items=items
     )
     rule_trace: dict | None = None
     co_sign: dict | None = None
@@ -1498,7 +2739,11 @@ async def submit_for_approval(
     if decision is not None:
         rule_trace = decision.trace()
         rule_trace["effect"] = rules_engine.effect_summary(decision.kind, decision.action)
-        if decision.kind == "auto_pass":
+        incomplete_cost = any(item_cost_is_incomplete(i) for i in items)
+        if decision.kind == "auto_pass" and incomplete_cost:
+            rule_trace["blocked_reason"] = "成本记录缺项，必须人工审批"
+            rule_trace["effect"] = "免审未执行：成本记录缺项，转人工审批"
+        if decision.kind == "auto_pass" and not incomplete_cost:
             version.approval_status = "approved"
             version.approved_at = datetime.now(UTC)
             quote.status = "approved"
@@ -1510,15 +2755,20 @@ async def submit_for_approval(
                 status="approved",
                 current_node=None,
                 finished_at=datetime.now(UTC),
-                summary={
+                # JSONB 留痕：Decimal 按原值字符串存（批1 口径），可精确复算。
+                summary=json_safe({
                     "quote_no": quote.quote_no,
                     "version_no": version.version_no,
                     "reason": reason,
                     "offending": offending,
-                    "total_amount": float(version.total_amount or 0),
+                    # 免审留痕同样按人民币口径（与下面那条审批单同一份取数）
+                    "total_amount": total_amount_cny,
+                    "original_amount": version.total_amount or Decimal(0),
+                    "currency": currency_code,
+                    "exchange_rate": None,  # 外币死行拆除：CNY 恒 None，字段形状保留
                     "auto_passed": True,
                     "rule_trace": rule_trace,
-                },
+                }),
             )
             session.add(instance)
             await session.flush()
@@ -1536,22 +2786,25 @@ async def submit_for_approval(
             force_first_level = True
         elif decision.kind == "exception_route":
             co_sign = {
-                "role_codes": list(decision.action.get("add_node_role_codes") or ["finance"]),
+                "permission_code": "quote:finance_approve",
                 "label": decision.action.get("add_node_label") or "财务会签",
                 "veto": bool(decision.action.get("veto", True)),
                 "status": "pending",
             }
 
     # 审批分级：按报价总额决定走到哪一级，并记录这一级谁有权批（快照，避免中途改配置影响在途审批）
+    # ⚠️ 分档用的人民币金额来自上面 `total_amount_cny`（外币按下单版本快照汇率折算）：
+    # 拿原币数字比档位，USD 10000 会落进"≤50000"的主管档（第二轮审查 P2，2026-10-12）。
     levels = await settings_service.get_list(session, "approval_levels")
-    amount = float(version.total_amount or 0)
+    amount = total_amount_cny
     node = None
     if force_first_level and levels:
         node = levels[0]  # 极速通道：一律落到第一级（主管）
     else:
         for level in levels:
             max_amount = level.get("max_amount")
-            if max_amount is None or amount <= float(max_amount):
+            cap = "" if max_amount is None else str(max_amount).strip()
+            if not cap or tier_amount <= Decimal(cap):
                 node = level
                 break
     if node is None and levels:
@@ -1566,7 +2819,13 @@ async def submit_for_approval(
         "reason": reason,
         "offending": offending,
         "authorized_min_margin": float(min_margin),
+        # 分档金额（人民币）与原币金额分开留痕：审批人要能看出"客户那张单上是多少钱"，
+        # 也要能复算"为什么走到这一级"（第二轮审查 P2，2026-10-12）
         "total_amount": amount,
+        "tier_amount_cny": amount,
+        "original_amount": version.total_amount or Decimal(0),
+        "currency": currency_code,
+        "exchange_rate": None,  # 外币死行拆除：CNY 恒 None，字段形状保留
         "node_label": node_label,
         "node_role_codes": node_roles,
     }
@@ -1582,7 +2841,8 @@ async def submit_for_approval(
         applicant_id=applicant_id,
         status="pending",
         current_node=node_code,
-        summary=summary,
+        # JSONB 留痕：Decimal 按原值字符串存（批1 口径），可精确复算。
+        summary=json_safe(summary),
     )
     session.add(instance)
     await session.flush()
@@ -1654,22 +2914,54 @@ async def opportunity_items(session: AsyncSession, opportunity_id: int) -> list[
     )
 
 
-async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
+#: 版本对比里**由成本派生**的字段（第七批 P1-4）。没有 `price:manage` 的人
+#: 拿到它们就等于拿到了成本：`unit_cost` 直接是单位成本；`margin` 配合报价
+#: 也能反推；`unit_floor` / `unit_standard` 在无价格规则时正是"成本 ÷ (1−利润率)"。
+_COMPARISON_COST_FIELDS = (
+    "cost_total",
+    "profit_total",
+    "margin",
+    "avg_cost",
+    "unit_cost",
+    "unit_profit",
+    "unit_floor",
+    "unit_standard",
+)
+
+
+def strip_comparison_cost(payload: dict) -> dict:
+    """把版本对比里的成本派生字段清空（**就地**改，返回同一个 dict）。
+
+    版本汇总按 `serialize_item(can_see_cost=False)` 的口径隐藏成本与毛利。
+    用户于2026-10-28明确决定：`diffs` 中的毛利/毛利率差额维持可见，
+    即使它们可能用于推算成本；本函数不对这些差额执行脱敏。
+    """
+    for row in payload.get("versions", []):
+        for key in _COMPARISON_COST_FIELDS:
+            if key in row:
+                row[key] = None
+    return payload
+
+
+async def version_comparison(session: AsyncSession, quote_id: int, *,
+                             viewer_id: int | None = None, fallback_creator: int | None = None) -> dict:
     """报价多方案对比（PRD §15.2 + UI 设计稿 What-if A/B/C）。
 
     逐版本汇总「数量 / SKU 数 / 报价总额 / 成本 / 毛利 / 综合毛利率 / 均价」，
     并与**上一版**做逐项差异，让业务看清"改了什么导致利润变化"。
     全部基于版本内已落库的快照字段，不重算、不读当前价——历史版本必须可复现。
+
+    ⚠️ **成本类的字段由调用方按权限裁剪**（第七批 P1-4）：本函数照常算全，
+    路由层对没有 `price:manage` 的人调 `strip_comparison_cost`。
+    从前这个接口只要求 `quote:view`，普通销售能直接读到完整成本、单位成本、
+    利润与毛利率 —— 与核价接口的脱敏口径不一致，等于留了条后门。
     """
-    versions = list(
-        (
-            await session.execute(
-                select(QuoteVersion)
-                .where(QuoteVersion.quote_id == quote_id)
-                .order_by(QuoteVersion.version_no.asc())
-            )
-        ).scalars().all()
-    )
+    stmt = select(QuoteVersion).where(QuoteVersion.quote_id == quote_id)
+    if viewer_id is not None:
+        stmt = stmt.where(or_(
+            ~private_draft(QuoteVersion), func.coalesce(QuoteVersion.created_by, fallback_creator) == viewer_id,
+        ))
+    versions = list((await session.execute(stmt.order_by(QuoteVersion.version_no.asc()))).scalars().all())
     if not versions:
         return {"versions": [], "diffs": [], "latest_version_id": None}
 
@@ -1701,26 +2993,29 @@ async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
         charges_by_version.setdefault(charge.quote_version_id, []).append(charge)
 
     rows: list[dict] = []
+    profit_totals: dict[int, Decimal] = {}
     for version in versions:
         v_items = items_by_version.get(version.id, [])
         v_charges = charges_by_version.get(version.id, [])
         quantity = sum((item.quantity for item in v_items), ZERO)
-        # 单件总成本 = cost_snapshot（商品成本）+ logistics_cost_snapshot（单件运费），
-        # 这与 `build_item_snapshot` 里算 profit_snapshot 的口径以及
-        # `pricing` 的 base_cost = goods_cost + logistics 完全一致。
-        # 少加运费会让汇总毛利和明细的利润快照对不上。
+        # 单件产品核价成本：口径**逐版**取（新旧版本可以并存，见 `item_unit_product_cost`）。
+        # 新口径只算商品成本（运费代收代付，不进产品利润）；老版本仍含单件运费，
+        # 这样汇总毛利才与明细的 `profit_snapshot` 对得上 —— 两边的口径必须同源。
+        v_includes_freight = version_logistics_in_base_cost(version)
         cost_total = sum(
             (
-                (item.cost_snapshot + item.logistics_cost_snapshot) * item.quantity
+                item_unit_product_cost(item, includes_freight=v_includes_freight)
+                * item.quantity
                 for item in v_items
             ),
             ZERO,
         )
-        amount_total = sum((item.quantity * item.quoted_price for item in v_items), ZERO)
+        amount_total = sum((line_amount(item.quantity, item.quoted_price) for item in v_items), ZERO)
         # 毛利按明细的利润快照汇总，保证与报价明细表里逐条显示的数字完全对得上
         profit_total = sum((item.profit_snapshot * item.quantity for item in v_items), ZERO)
         if not v_items:
             profit_total = amount_total - cost_total
+        profit_totals[version.id] = profit_total
         margin = (profit_total / amount_total) if amount_total else ZERO
         skus = {item.sku_id for item in v_items}
         rows.append(
@@ -1733,12 +3028,13 @@ async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
                 "sku_count": len(skus),
                 "quantity": _f(quantity),
                 "amount_total": _f(amount_total),
+                "amount_total_exact": str(amount_total),
                 "charge_amount": _f(version.charge_amount),
                 "discount_amount": _f(version.discount_amount),
                 "total_amount": _f(version.total_amount),
                 "cost_total": _f(cost_total),
                 "profit_total": _f(profit_total),
-                "margin": _f(margin),
+                "margin": float(margin) if margin is not None else None,  # 纯比率保留 float（Q3）
                 "avg_price": _f(amount_total / quantity) if quantity else None,
                 "avg_cost": _f(cost_total / quantity) if quantity else None,
                 # 单件口径单独给一份，前端做滑杆测算时直接用，避免各自算错成本
@@ -1797,13 +3093,34 @@ async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
         )
 
     diffs: list[dict] = []
-    for previous, current in zip(rows, rows[1:], strict=False):
-        prev_items = {item.sku_id: item for item in items_by_version.get(previous["version_id"], [])}
-        curr_items = {item.sku_id: item for item in items_by_version.get(current["version_id"], [])}
+    for previous, current, previous_version, current_version in zip(
+        rows, rows[1:], versions, versions[1:], strict=False
+    ):
+        # No NULL/int sorting and no collapse of custom or repeated-SKU lines.
+        # Stable source ids match cloned versions; repeated source lines are paired
+        # in their preserved id/order sequence, rather than overwritten in a dict.
+        def index_items(version_id):
+            result, occurrences = {}, {}
+            for item in items_by_version.get(version_id, []):
+                if item.sku_id is not None:
+                    identity = ("sku", item.sku_id)
+                elif item.inquiry_id is not None:
+                    identity = ("custom", item.inquiry_id)
+                elif item.opportunity_item_id is not None:
+                    identity = ("opportunity_item", item.opportunity_item_id)
+                else:
+                    identity = ("unlinked_custom", item.id)
+                nth = occurrences.get(identity, 0)
+                occurrences[identity] = nth + 1
+                result[(*identity, nth)] = item
+            return result
+        prev_items = index_items(previous["version_id"])
+        curr_items = index_items(current["version_id"])
         changes: list[dict] = []
-        for sku_id in sorted(set(prev_items) | set(curr_items)):
-            before = prev_items.get(sku_id)
-            after = curr_items.get(sku_id)
+        for identity in sorted(set(prev_items) | set(curr_items)):
+            before = prev_items.get(identity)
+            after = curr_items.get(identity)
+            sku_id = (after or before).sku_id
             if before is None:
                 changes.append(
                     {
@@ -1812,6 +3129,8 @@ async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
                         "field": "added",
                         "before": None,
                         "after": _f(after.quoted_price) if after else None,
+                        "before_exact": None,
+                        "after_exact": str(after.quoted_price) if after.quoted_price is not None else None,
                     }
                 )
                 continue
@@ -1823,6 +3142,8 @@ async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
                         "field": "removed",
                         "before": _f(before.quoted_price),
                         "after": None,
+                        "before_exact": str(before.quoted_price) if before.quoted_price is not None else None,
+                        "after_exact": None,
                     }
                 )
                 continue
@@ -1834,6 +3155,8 @@ async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
                         "field": "quantity",
                         "before": _f(before.quantity),
                         "after": _f(after.quantity),
+                        "before_exact": str(before.quantity) if before.quantity is not None else None,
+                        "after_exact": str(after.quantity) if after.quantity is not None else None,
                     }
                 )
             if before.quoted_price != after.quoted_price:
@@ -1844,9 +3167,11 @@ async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
                         "field": "quoted_price",
                         "before": _f(before.quoted_price),
                         "after": _f(after.quoted_price),
+                        "before_exact": str(before.quoted_price) if before.quoted_price is not None else None,
+                        "after_exact": str(after.quoted_price) if after.quoted_price is not None else None,
                     }
                 )
-        if previous["charge_amount"] != current["charge_amount"]:
+        if previous_version.charge_amount != current_version.charge_amount:
             changes.append(
                 {
                     "sku_id": None,
@@ -1854,9 +3179,17 @@ async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
                     "field": "charge_amount",
                     "before": previous["charge_amount"],
                     "after": current["charge_amount"],
+                    "before_exact": (
+                        str(previous_version.charge_amount)
+                        if previous_version.charge_amount is not None else None
+                    ),
+                    "after_exact": (
+                        str(current_version.charge_amount)
+                        if current_version.charge_amount is not None else None
+                    ),
                 }
             )
-        if previous["discount_amount"] != current["discount_amount"]:
+        if previous_version.discount_amount != current_version.discount_amount:
             changes.append(
                 {
                     "sku_id": None,
@@ -1864,14 +3197,30 @@ async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
                     "field": "discount_amount",
                     "before": previous["discount_amount"],
                     "after": current["discount_amount"],
+                    "before_exact": (
+                        str(previous_version.discount_amount)
+                        if previous_version.discount_amount is not None else None
+                    ),
+                    "after_exact": (
+                        str(current_version.discount_amount)
+                        if current_version.discount_amount is not None else None
+                    ),
                 }
             )
+        amount_delta = (
+            Decimal(current["amount_total_exact"]) - Decimal(previous["amount_total_exact"])
+        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        profit_delta = (
+            profit_totals[current["version_id"]] - profit_totals[previous["version_id"]]
+        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         diffs.append(
             {
                 "from_version_no": previous["version_no"],
                 "to_version_no": current["version_no"],
-                "amount_delta": round(current["amount_total"] - previous["amount_total"], 2),
-                "profit_delta": round(current["profit_total"] - previous["profit_total"], 2),
+                "amount_delta": _f(amount_delta),
+                "amount_delta_exact": str(amount_delta),
+                "profit_delta": _f(profit_delta),
+                "profit_delta_exact": str(profit_delta),
                 "margin_delta": round(current["margin"] - previous["margin"], 6),
                 "changes": changes,
             }
@@ -1962,3 +3311,154 @@ async def notify_expired_quotes(session: AsyncSession) -> int:
     for customer_id in sorted({quote.customer_id for quote, _ in rows}):
         await refresh_next_followup_at(session, customer_id)
     return created
+
+
+async def link_master_only(
+    session: AsyncSession, *, version: QuoteVersion
+) -> dict:
+    """只把明细**接到最新已确认主数据**上，**不碰价格**（方案二：一键修复）。
+
+    为什么必须有这条独立的路（2026-10-10 实测）：
+
+    黄条说的是"这条明细没有可引用的已确认主数据版本"，用户去产品中心确认完
+    回来点「刷新主数据」，**黄条还在** —— 因为刷新走的是 `refresh_prices`，
+    而它在下面两种情况直接跳过整条明细：
+
+        `item.price_source is None`        （手工定价的明细）
+        `lookup["status"] != "ok"`         （没有价格规则、规则被停用、查不到价）
+
+    于是**"接主数据"被"查不到价"挡住了**：明明确认了，却接不上。
+    这两件事本来就不该绑在一起 —— 主数据版本号回答的是"这一行对着哪一版
+    名称/规格/单位"，与"这一行卖多少钱"无关。
+
+    所以这里只做一件事：按**当前已确认主数据**重建对客三字段快照 + 钉上版本号，
+    价格、成本、利润快照**一个字不动**（不重算、不覆盖手工价）。
+
+    没有可引用的已确认版本时**明确报缺哪些字段**，而不是静默跳过 ——
+    静默跳过正是"点了没反应、黄条还在"的来源。
+    """
+    from app.modules.product import master as master_service
+
+    items = await version_items(session, version.id)
+    linked = 0
+    already = 0
+    missing: list[dict] = []
+    for item in items:
+        # 定制项没有 SKU 主数据（名称是人工填的），不属于这条路
+        if item.sku_id is None:
+            continue
+        # ⚠️ **必须显式传对客三字段**：`resolve_confirmed_master` 的默认是
+        # `MASTER_FIELDS`（全部 13 个）。不传就会把"颜色/材质/长宽高/起订量…"
+        # 也算成"缺确认"，报出"还缺 10 个字段"—— 而报价根本不用它们。
+        # 实测踩到：接主数据返回 linked=0、missing 列了 10 个无关字段。
+        master = await master_service.resolve_confirmed_master(
+            session, item.sku_id, list(master_service.QUOTE_DISPLAY_FIELDS)
+        )
+        values = master.get("values") or {}
+        unconfirmed = master.get("unconfirmed") or []
+        if unconfirmed:
+            missing.append(
+                {
+                    "item_id": item.id,
+                    "sku_code": item.sku_code_snapshot or f"SKU编号 {item.sku_id}",
+                    "missing_labels": master.get("unconfirmed_labels") or [],
+                }
+            )
+            continue
+        version_no = master.get("version_no")
+        if version_no is None:
+            missing.append(
+                {
+                    "item_id": item.id,
+                    "sku_code": item.sku_code_snapshot or f"SKU编号 {item.sku_id}",
+                    "missing_labels": ["（没有可引用的已确认主数据版本）"],
+                }
+            )
+            continue
+        if item.master_version_no == version_no and not _display_fields_drift(item, values):
+            already += 1
+            continue
+        # 只动这三列 + 版本号；价格/成本/利润一律不碰
+        for field in ("name", "specification", "unit"):
+            value = values.get(field)
+            if field == "name":
+                item.sku_name_snapshot = None if value is None else str(value)
+            elif field == "specification":
+                item.spec_snapshot = None if value is None else str(value)
+            else:
+                item.unit_snapshot = None if value is None else str(value)
+        item.master_version_no = version_no
+        linked += 1
+    await session.flush()
+    return {
+        "linked": linked,
+        "already_linked": already,
+        "missing": missing,
+        "missing_count": len(missing),
+        "message": (
+            f"已把 {linked} 条明细接到最新已确认主数据"
+            + (f"（{already} 条本来就已接上）" if already else "")
+            + (f"；{len(missing)} 条还缺确认，请先去产品中心确认" if missing else "")
+            + "。价格与成本快照未改动。"
+        ),
+    }
+
+
+def _display_fields_drift(item: QuoteItem, values: dict) -> bool:
+    """明细的对客三字段快照是否与目标已确认值不一致。"""
+    pairs = (
+        (item.sku_name_snapshot, values.get("name")),
+        (item.spec_snapshot, values.get("specification")),
+        (item.unit_snapshot, values.get("unit")),
+    )
+    return any(
+        ("" if cur is None else str(cur)) != ("" if want is None else str(want))
+        for cur, want in pairs
+    )
+
+
+async def latest_version(session: AsyncSession, *, quote_id: int) -> QuoteVersion | None:
+    """这份报价单的最新一版（"再来一版"默认复制它）。"""
+    return (
+        await session.execute(
+            select(QuoteVersion)
+            .where(QuoteVersion.quote_id == quote_id)
+            .order_by(QuoteVersion.version_no.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+async def versions_with_pending_approval(
+    session: AsyncSession, *, quote_id: int, exclude_version_id: int | None = None
+) -> list[tuple[int, int]]:
+    """这份报价单上**还在待审批**的版本，返回 `[(version_id, version_no), ...]`。
+
+    给"新建版本"的确认弹窗用：新建版本会 `close_superseded_approvals` ——
+    把旧版还在走的审批流程**自动结束**，而系统里没有撤销入口。
+    用户点之前必须知道"会结束哪几版的审批"，所以这里如实列出来。
+    """
+    from app.modules.approval.model import ApprovalInstance
+
+    # 用**子查询**而不是 JOIN：只是想问"哪些版本有 pending 实例"，
+    # 子查询更直白，也少一层跨模块的联结条件（CI 上这个端点曾 500，
+    # 换掉 JOIN 是让这段更简单、更不容易在别的方言/数据状态下出意外）。
+    pending_version_ids = (
+        select(ApprovalInstance.business_id)
+        .where(
+            ApprovalInstance.business_type == "quote_version",
+            ApprovalInstance.status == "pending",
+        )
+        .scalar_subquery()
+    )
+    stmt = (
+        select(QuoteVersion.id, QuoteVersion.version_no)
+        .where(
+            QuoteVersion.quote_id == quote_id,
+            QuoteVersion.id.in_(pending_version_ids),
+        )
+        .order_by(QuoteVersion.version_no)
+    )
+    if exclude_version_id is not None:
+        stmt = stmt.where(QuoteVersion.id != exclude_version_id)
+    return [(int(vid), int(no)) for vid, no in (await session.execute(stmt)).all()]

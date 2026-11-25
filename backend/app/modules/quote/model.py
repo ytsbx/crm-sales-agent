@@ -38,6 +38,20 @@ QUOTE_STATUS_LABEL = {
     "expired": "已失效",
 }
 
+#: 产品核价口径（2026-10-09「产品价格与运费分离」）。
+#: 见 `QuoteVersion.pricing_basis` 上的说明。
+#:
+#: **2026-10-09 已统一为单一口径**：所有报价一律"产品单价不含运费、运费按已确认的
+#: 实际金额由公司代收代付"。`PRICING_BASIS_LEGACY` 不再被任何代码产生或写入
+#: （迁移 `b7d1f4a8c2e5` 已把存量行全部改成 `actual_pass_through`）。
+#: 保留这个常量与它的标签，只是为了"万一库里还留着历史值"时标签不至于显示成空白。
+PRICING_BASIS_LEGACY = "legacy"
+PRICING_BASIS_ACTUAL_PASS_THROUGH = "actual_pass_through"
+PRICING_BASIS_LABEL = {
+    PRICING_BASIS_LEGACY: "历史计算方式（成本含运费，已停用）",
+    PRICING_BASIS_ACTUAL_PASS_THROUGH: "产品价不含运费，运费原额代收代付",
+}
+
 
 class Quote(Base, IdMixin, TimestampMixin):
     __tablename__ = "quotes"
@@ -68,6 +82,25 @@ class QuoteVersion(Base, IdMixin):
     charge_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
     discount_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
     total_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
+    #: 这一版按哪种口径算产品价（2026-10-09 业务口径「产品价格与运费分离」）。
+    #:
+    #: - `legacy`：历史计算方式，`base_cost` **含**运费。历史版本一律留在这个口径上，
+    #:   否则拿今天的公式回算会得出不同的建议价与底价——等于改写已经发给客户的东西。
+    #: - `actual_pass_through`：产品价格不含运费，运费按**原额**代收代付（不赚不赔）。
+    #:
+    #: 存到版本上而不是全局开关：口径是**随版本**变的，同一张报价单的新旧版本可以
+    #: 分别处在两个口径上，事后必须能答出"这一版当时按什么算的"。
+    pricing_basis: Mapped[str] = mapped_column(
+        String(32), default=PRICING_BASIS_ACTUAL_PASS_THROUGH
+    )
+    #: 运费收费金额 = 客户承担的运费（代收代付）。与 `other_charge_amount` 一起
+    #: 把 `charge_amount` 拆开，只为**显示与对账**；三者关系恒为
+    #: `charge_amount == logistics_amount + other_charge_amount`。
+    #: ⚠️ 这三个都**已经含在** `total_amount` 里了（总额公式没变），
+    #: 前端/文件任何地方都**不能**再把它加到总额上——会重复计费。
+    logistics_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
+    #: 非运费、非折扣的附加费用合计（`charge_amount` 减去运费的那一部分）。
+    other_charge_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
     currency: Mapped[str] = mapped_column(String(8), default="CNY")
     # 外贸报价才用：报价时点的汇率快照（内贸留空）
     exchange_rate_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(16, 6), nullable=True)
@@ -136,6 +169,16 @@ class QuoteItem(Base, IdMixin):
     master_version_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
     quantity: Mapped[Decimal] = mapped_column(Numeric(16, 3), default=1)
     cost_snapshot: Mapped[Decimal] = mapped_column(Numeric(16, 4), default=0)
+    #: 生成快照时，产品成本四项是否**填全**（NULL 项 = 不完整）。
+    #:
+    #: `cost_snapshot` 是 NOT NULL default 0，"没成本/成本不全"与"成本真是 0"
+    #: 落库后长得一样 —— 少了这一列，审批就会把"只填了一项成本"当成完整成本，
+    #: 算出虚高的毛利率、命中免审（第七批 P1-1 实测：低于保护价却被自动批准）。
+    #:
+    #: `None` = 本列上线（2026-10-13）之前的历史明细，判据回退到旧的"成本≤0 视为缺失"。
+    cost_complete_snapshot: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    #: 是否存在成本依据；False=无记录，True=有记录（包含零元缺项），NULL=历史未知。
+    cost_present_snapshot: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     package_cost_snapshot: Mapped[Decimal] = mapped_column(Numeric(16, 4), default=0)
     logistics_cost_snapshot: Mapped[Decimal] = mapped_column(Numeric(16, 4), default=0)
     standard_price_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(16, 4), nullable=True)
@@ -172,6 +215,15 @@ class QuoteCharge(Base, IdMixin):
     currency: Mapped[str] = mapped_column(String(8), default="CNY")
     is_discount: Mapped[bool] = mapped_column(Boolean, default=False)
     sort_no: Mapped[int] = mapped_column(BigInteger, default=0)
+    #: 物流费用被业务确认的时刻（口径：运费按**已确认的实际金额**代收代付）。
+    #:
+    #: 为什么不能只看金额：`amount = 0` 同时代表「没填」和「明确是零运费」这两种
+    #: 完全不同的状态 —— 前者正式发送时必须拦住并提示先确认，后者可以直接发。
+    #: 金额列分不出来，只能单独记一个"确认过没有 + 什么时候确认的"。
+    #: 与 `product_costs.stopped_at` 同一手法：时间戳而不是布尔，翻记录能看出时刻。
+    logistics_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class QuoteSendLog(Base, IdMixin):

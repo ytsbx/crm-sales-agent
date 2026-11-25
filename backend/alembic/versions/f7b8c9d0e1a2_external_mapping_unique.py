@@ -17,7 +17,7 @@
 `external_id IS NULL` 的行**不冲突**（PostgreSQL 的唯一约束对 NULL 不比较）：
 "还没拿到外部单号"是合法状态。
 """
-from alembic import op
+from alembic import context, op
 import sqlalchemy as sa
 
 revision = "f7b8c9d0e1a2"
@@ -44,6 +44,8 @@ having count(*) > 1
 
 
 def _assert_no_duplicates(connection, *, sql: str, label: str) -> None:
+    if context.is_offline_mode():
+        return
     rows = connection.execute(sa.text(sql)).fetchall()
     if not rows:
         return

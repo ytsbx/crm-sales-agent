@@ -12,6 +12,7 @@ export interface Opportunity {
   stage_name?: string | null
   stage_code?: string | null
   expected_amount?: number | null
+  expected_amount_exact?: string | null
   currency: string
   expected_close_date?: string | null
   owner_id?: number | null
@@ -76,6 +77,7 @@ export interface FunnelRow {
 
 export function listOpportunities(query: {
   keyword?: string
+  search_customer_name?: boolean
   stage_id?: number
   status?: string
   owner_id?: number
@@ -84,6 +86,11 @@ export function listOpportunities(query: {
   page_size?: number
 }) {
   return api.get<PageResult<Opportunity>>('/opportunities', query)
+}
+
+/** 看板列头：按当前关键词、阶段与数据范围统计各阶段的完整条数与金额。 */
+export function getOpportunityBoardStats(query: { keyword?: string; stage_id?: number; search_customer_name?: boolean }) {
+  return api.get<FunnelRow[]>('/opportunities/board-stats', query)
 }
 
 export function getOpportunity(id: number) {
@@ -107,7 +114,16 @@ export function winOpportunity(id: number, payload: { remark?: string } = {}) {
 }
 
 /** 确认成交并生成订单（方案 §5 / A13）：接受→成交→建单一次完成，重试幂等。 */
-export function confirmWin(id: number, payload: { win_quote_version_id?: number; delivery_date?: string | null; remark?: string } = {}) {
+export function confirmWin(
+  id: number,
+  payload: {
+    win_quote_version_id?: number
+    delivery_date?: string | null
+    remark?: string
+    /** 收款计划（2026-10-13 改动三）：不传 = 一条「全款」。 */
+    receivable_plan?: { ratios: number[]; due_dates: string[]; names: string[] }
+  } = {},
+) {
   return api.post<{
     opportunity_id: number
     quote_id: number

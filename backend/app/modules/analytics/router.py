@@ -6,7 +6,7 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Request
 from fastapi import Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -62,10 +62,10 @@ class TimingReport(BaseModel):
 
     operation: str
     duration_ms: int
-    business_type: str | None = None
-    business_id: int | None = None
-    typed_fields: int = 0
-    rework_count: int = 0
+    business_type: str | None = Field(default=None, max_length=32)
+    business_id: int | None = Field(default=None, ge=-(2**63), le=2**63 - 1)
+    typed_fields: int = Field(default=0, le=2**31 - 1)
+    rework_count: int = Field(default=0, le=2**31 - 1)
 
 
 @router.post("/usage/timings")
@@ -103,15 +103,17 @@ async def operation_timing_summary(
     return ok(await usage_svc.timing_summary(session, user=user, days=days))
 class SalesTargetUpsert(BaseModel):
     period: str
-    user_id: int | None = None
+    user_id: int | None = Field(default=None, gt=0, le=9223372036854775807)
     # 团队目标（文档 §六 :121）：与 user_id 互斥——指定部门就是团队目标
-    department_id: int | None = None
-    new_customer_target: int = 0
-    sales_target: float = 0
+    department_id: int | None = Field(default=None, gt=0, le=9223372036854775807)
+    new_customer_target: int = Field(default=0, ge=0, le=2147483647)
+    sales_target: Decimal = Field(default=Decimal(0), ge=0, max_digits=16, decimal_places=2)
     # 复购（老客净额）目标：口径见 modules/analytics/target_bases.py，
     # 以前这个字段只存不算、也没有接口能写，等于设不了
-    repeat_customer_target: float = 0
-    remark: str | None = None
+    repeat_customer_target: Decimal = Field(
+        default=Decimal(0), ge=0, max_digits=16, decimal_places=2
+    )
+    remark: str | None = Field(default=None, max_length=255)
     #: 乐观并发（第三批 §4.1.2）：把列表里读到的 `updated_at` 带回来，
     #: 对不上说明这条目标中途被别人改过 → 409，不静默覆盖别人的改动。
     expected_updated_at: datetime | None = None
@@ -119,7 +121,7 @@ class SalesTargetUpsert(BaseModel):
 
 @router.get("/sales-targets")
 async def list_sales_targets(
-    year: int = Query(...),
+    year: int = Query(..., ge=targets_svc.MIN_REPORT_YEAR, le=targets_svc.MAX_REPORT_YEAR),
     user: CurrentUser = Depends(require_permission("customer:view")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -129,7 +131,7 @@ async def list_sales_targets(
 
 @router.get("/sales-targets/bases")
 async def sales_target_bases(
-    year: int = Query(...),
+    year: int = Query(..., ge=targets_svc.MIN_REPORT_YEAR, le=targets_svc.MAX_REPORT_YEAR),
     user: CurrentUser = Depends(require_permission("customer:view")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -147,7 +149,7 @@ async def sales_target_bases(
 @router.post("/sales-targets/bases/refreeze")
 async def refreeze_sales_target_bases(
     request: Request,
-    year: int = Query(...),
+    year: int = Query(..., ge=targets_svc.MIN_REPORT_YEAR, le=targets_svc.MAX_REPORT_YEAR),
     user: CurrentUser = Depends(require_permission("settings:manage")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -227,13 +229,13 @@ async def _collect_period_actuals(session: AsyncSession, user, period: str) -> d
         if row["period"] != period:
             continue
         key = target_actuals.scope_key_of(row.get("user_id"), row.get("department_id"))
-        values[(key, "sales")] = Decimal(str(row.get("sales_actual") or 0))
-        values[(key, "received")] = Decimal(str(row.get("assess_actual") or 0))
-        values[(key, "shipped")] = Decimal(str(row.get("shipped_actual") or 0))
+        values[(key, "sales")] = Decimal(str(row.get("sales_actual_exact") or row.get("sales_actual") or 0))
+        values[(key, "received")] = Decimal(str(row.get("received_actual_exact") or row.get("assess_actual") or 0))
+        values[(key, "shipped")] = Decimal(str(row.get("shipped_actual_exact") or row.get("shipped_actual") or 0))
         values[(key, "new_customer")] = Decimal(str(row.get("new_customer_actual") or 0))
         # 复购（老客净额）也要落档（返工单第 4 条）：同一行里的四个数就该一起冻，
         # 单留一个实时算的，结账之后它照样漂移，用户看到的是"冻结了一半的报表"。
-        values[(key, "repeat_net")] = Decimal(str(row.get("repeat_customer_actual") or 0))
+        values[(key, "repeat_net")] = Decimal(str(row.get("repeat_customer_actual_exact") or row.get("repeat_customer_actual") or 0))
     return values
 
 
@@ -295,14 +297,20 @@ async def freeze_sales_actuals(
             403,
         )
     _ensure_past_period(period)
-    values = await _collect_period_actuals(session, user, period)
-    if not values:
-        raise AppError(
-            ErrorCode.NOT_FOUND, f"{period} 没有任何目标或实绩，没有可结的数", 404
-        )
-    # 明细与汇总**同一次**写入（返工单第 4 条）：只冻汇总的话，
-    # 结账之后一张退货单就会让"点开明细"比"合计"少一笔，用户不知道该信哪个。
-    items = await _collect_period_items(session, user, period)
+    # ⚠️ **汇总与明细必须在同一个快照里读**（第五批审查 P1，2026-10-12）：
+    # 它们是两条独立查询，默认隔离级别下会看到**两个快照** —— 期间被别的会话
+    # 取消一张订单，就会存出"汇总 100、明细 0 条"这种永久对不上的账。
+    # 所以走 `consistent_snapshot`：一条独立连接（第一句就能设隔离级别）、
+    # REPEATABLE READ。期间锁由写事务持有到提交。
+    async with target_actuals.consistent_snapshot(session, period) as snap:
+        values = await _collect_period_actuals(snap, user, period)
+        if not values:
+            raise AppError(
+                ErrorCode.NOT_FOUND, f"{period} 没有任何目标或实绩，没有可结的数", 404
+            )
+        # 明细与汇总**同一次**写入（返工单第 4 条）：只冻汇总的话，
+        # 结账之后一张退货单就会让"点开明细"比"合计"少一笔，用户不知道该信哪个。
+        items = await _collect_period_items(snap, user, period)
     written = await target_actuals.freeze_period(
         session,
         period=period,
@@ -359,13 +367,21 @@ async def refreeze_sales_actuals(
     if user.data_scope != "all":
         raise AppError(ErrorCode.DATA_SCOPE_DENIED, "重算历史实绩需要全公司范围的权限", 403)
     _ensure_past_period(period)
-    before = await target_actuals.frozen_for(session, period)
-    if not before:
+    if not await target_actuals.is_frozen(session, period):
         raise AppError(ErrorCode.NOT_FOUND, f"{period} 还没结过账，请先结账", 404)
-    values = await _collect_period_actuals(session, user, period)
-    # 明细跟着一起重出（返工单第 4 条）：只换汇总不换明细，等于把
-    # "刚重算的合计"和"上一版的明细"摆在同一页上，比不重算还乱。
-    items = await _collect_period_items(session, user, period)
+    # 与结账同一条口径：汇总与明细在**同一个一致快照**里读（第五批审查 P1）
+    async with target_actuals.consistent_snapshot(session, period) as snap:
+        values = await _collect_period_actuals(snap, user, period)
+        # B17-P2：重算结果为空时拒绝 replace，避免把已结账期间的旧汇总/明细清空
+        # （与普通结账的空值保护同口径）。
+        if not values:
+            raise AppError(
+                ErrorCode.NOT_FOUND, f"{period} 重算结果为空，拒绝清空已结账期间的实绩", 404
+            )
+        # 明细跟着一起重出（返工单第 4 条）：只换汇总不换明细，等于把
+        # "刚重算的合计"和"上一版的明细"摆在同一页上，比不重算还乱。
+        items = await _collect_period_items(snap, user, period)
+    before = {}
     written = await target_actuals.freeze_period(
         session,
         period=period,
@@ -375,6 +391,7 @@ async def refreeze_sales_actuals(
         replace=True,
         note=reason,
         items=items,
+        before=before,
     )
     await write_audit(
         session,
@@ -475,8 +492,8 @@ async def upsert_sales_target(
             "department_id": row.department_id,
             "created": created,
             "new_customer_target": row.new_customer_target,
-            "sales_target": float(row.sales_target or 0),
-            "repeat_customer_target": float(row.repeat_customer_target or 0),
+            "sales_target": row.sales_target if row.sales_target is not None else Decimal(0),
+            "repeat_customer_target": row.repeat_customer_target if row.repeat_customer_target is not None else Decimal(0),
             # 回给前端，下次编辑时原样带回来就是乐观并发
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         },
@@ -497,6 +514,21 @@ async def dashboard_tasks(
     session: AsyncSession = Depends(get_db),
 ):
     return ok(await svc.my_tasks(session, user))
+
+
+@router.get("/dashboard/stale-customers")
+async def dashboard_stale_customers(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(200, ge=1, le=200),
+    user: CurrentUser = Depends(require_permission("customer:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """待跟进客户**清单**：与 `/dashboard/summary` 的 `stale_customer_count` 同口径。
+
+    工作台那个卡片此前只会报数、点进去跳到不带任何筛选的客户列表，
+    于是"报了警却不说哪里着火"（审查与主人确认后新增此接口）。
+    """
+    return ok(await svc.stale_customers(session, user, page=page, page_size=page_size))
 
 
 @router.get("/dashboard/risks")
@@ -615,7 +647,7 @@ async def analytics_leads(
     user: CurrentUser = Depends(require_permission("lead:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    """线索分析：来源分布、状态分布、转化率与平均转化时长。"""
+    """线索分析：来源、状态、转化率及单独统计的废弃原因。"""
     return ok(await svc.lead_stats(session, user))
 
 

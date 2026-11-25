@@ -3,11 +3,12 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
+from app.core.draft_visibility import draft_scope, ensure_draft_access
 from app.core.errors import AppError, ErrorCode
 # 附件写入的锁定判据只有一处（`file/access.py`），上传闸门与本处共用同一份
 from app.modules.file.access import sample_write_lock_label_for
@@ -16,6 +17,7 @@ from app.modules.opportunity.model import Opportunity
 from app.modules.product.model import Sku
 from app.modules.sample.model import (
     CONFIRM_STATUS_LABEL,
+    can_delete_sample,
     SAMPLE_STATUS_LABEL,
     SAMPLE_TRANSITIONS,
     SampleItem,
@@ -23,11 +25,16 @@ from app.modules.sample.model import (
     SampleShipment,
 )
 
+# 积分口径（工时 × 10）只在 schema 里定义一处，这里引用它算派生值
+from app.modules.sample.schema import POINTS_PER_HOUR  # noqa: E402
+
 ZERO = Decimal(0)
 
 
-def _f(value) -> float | None:
-    return None if value is None else round(float(value), 4)
+def _f(value) -> Decimal | None:
+    # 库刻度 Numeric(16,2)/(16,3)/(8,2)/(12,2)，原 round(float,4) 无损；
+    # 批7 改 Decimal 透传，JSON 出口按原值渲染（B21-01）。
+    return value
 
 
 #: 制作依据的四种状态（R06，2026-10-06）。光看 `basis_files` 空不空是分不出
@@ -93,6 +100,7 @@ def serialize_shipment(shipment: SampleShipment) -> dict:
         "carrier": shipment.carrier,
         "tracking_no": shipment.tracking_no,
         "shipping_fee": _f(shipment.shipping_fee),
+        "shipping_fee_exact": format(shipment.shipping_fee, "f") if shipment.shipping_fee is not None else None,
         "shipped_at": shipment.shipped_at.isoformat() if shipment.shipped_at else None,
         "signed_at": shipment.signed_at.isoformat() if shipment.signed_at else None,
     }
@@ -107,15 +115,16 @@ def serialize_request(
     items: list[dict] | None = None,
     shipments: list[dict] | None = None,
     superseded_by: int | None = None,
+    revision_locked: bool = False,
 ) -> dict:
     basis = basis_state(request)
     return {
         "id": request.id,
-        # 修订版（§3.3）：第几版、取代了谁、又被谁取代（superseded_by 有值即冻结只读）。
-        # 由调用方查好传进来——本函数是同步的，拿不到 session。
+        # 原版锁定与可打开的修订版分别判断。
         "version": request.version or 1,
         "parent_id": request.parent_id,
         "superseded_by": superseded_by,
+        "revision_locked": revision_locked,
         "source_context": request.source_context,
         "opportunity_id": request.opportunity_id,
         "opportunity_title": opportunity_title,
@@ -128,7 +137,7 @@ def serialize_request(
         # 审批轮次（§3.2）：驳回后重提 / 已批准后改车间依据会自增。
         # 界面据此显示"第 N 轮"，也让"被驳回过几次"数得出来。
         "review_round": request.review_round or 1,
-        "status_label": SAMPLE_STATUS_LABEL.get(request.status, request.status),
+        "status_label": ("打样草稿" if (request.source_context or {}).get("dingtalk_oa") and not (request.source_context or {})["dingtalk_oa"].get("submitted") else SAMPLE_STATUS_LABEL.get(request.status, request.status)),
         "remark": request.remark,
         "reject_reason": request.reject_reason,
         "requested_at": request.requested_at.isoformat() if request.requested_at else None,
@@ -139,11 +148,39 @@ def serialize_request(
         # ---- 生产打样资料（文档 §3.5）----
         # 材质 / 工艺 / 图纸版本不在这里：它们逐行不同，挂在明细上（见 items）。
         "purpose": request.purpose,
+        # ---- 钉钉《打样申请单》上的格（2026-10-15）----
+        # 不输出的话前端没法回显、也没法检查"导出前填全了没"。
+        "sample_type": request.sample_type,
+        "product_category": request.product_category,
+        "maker_unit": request.maker_unit,
+        "estimated_hours": _f(request.estimated_hours),
+        # 积分是**派生值**：前端要显示，但**不收它作为入参**（不让手填）。
+        # 这里按口径现算，避免"库里存的"和"该显示的"两套。
+        "craft_points": _f(
+            request.estimated_hours * POINTS_PER_HOUR
+            if request.estimated_hours is not None
+            else request.craft_points
+        ),
+        "sample_purpose": request.sample_purpose,
+        "urgency": request.urgency,
+        "sample_situation": request.sample_situation,
+        "material_spec": request.material_spec,
+        "product_size": request.product_size,
+        "printing": request.printing,
+        "accessories": request.accessories,
+        "packaging": request.packaging,
+        "craft_requirement": request.craft_requirement,
+        "product_name": request.product_name,
+        # 「交样时间」与「要求完成日」是两个不同的日期（主人 2026-10-16）；
+        # 「打样人」= 谁动手打的样（没填则申请表回落到申请人）。
+        "deliver_date": request.deliver_date.isoformat() if request.deliver_date else None,
+        "sample_maker": request.sample_maker,
         "target_completion_date": (
             request.target_completion_date.isoformat() if request.target_completion_date else None
         ),
         "acceptance_criteria": request.acceptance_criteria,
         "sample_fee": _f(request.sample_fee),
+        "sample_fee_exact": format(request.sample_fee, "f") if request.sample_fee is not None else None,
         "production_owner_id": request.production_owner_id,
         # 制作依据（2026-10-06）：登记制作完成时指定的那几份文件（含 sha256）。
         #
@@ -171,6 +208,10 @@ def serialize_request(
         "confirm_remark": request.confirm_remark,
         "created_by": request.created_by,
         "created_at": request.created_at.isoformat() if request.created_at else None,
+        # 软删（2026-10-15）：只下发布尔 + 时间给前端决定"显示删除还是恢复"，
+        # 不让前端自己解析或猜状态。
+        "is_deleted": request.deleted_at is not None,
+        "deleted_at": request.deleted_at.isoformat() if request.deleted_at else None,
         "items": items or [],
         "shipments": shipments or [],
     }
@@ -187,9 +228,8 @@ async def apply_data_scope(
 ) -> Select:
     """按负责人数据范围过滤，与其他业务模块一致（department_and_sub 会递归到下级）。"""
     owner_ids = await scoped_owner_ids(session, user)
-    if owner_ids is None:
-        return stmt
-    return stmt.where(SampleRequest.owner_id.in_(owner_ids))
+    scope = SampleRequest.owner_id.in_(owner_ids) if owner_ids is not None else None
+    return stmt.where(draft_scope(SampleRequest, user.id, scope))
 
 
 def build_list_stmt(
@@ -199,8 +239,17 @@ def build_list_stmt(
     customer_id: int | None = None,
     opportunity_id: int | None = None,
     owner_id: int | None = None,
+    include_deleted: bool = False,
 ) -> Select:
     stmt = base_query()
+    # 软删（2026-10-15）：默认只看**没删的**；`include_deleted=True` 时**只看删了的**。
+    # 刻意不做成"连删的一起列"—— 那样「已删除」筛出来的列表还是混着没删的，
+    # 跟不筛没区别，这个筛选项就白设了（客户回收站也是"只看被删的"这个口径）。
+    stmt = stmt.where(
+        SampleRequest.deleted_at.is_not(None)
+        if include_deleted
+        else SampleRequest.deleted_at.is_(None)
+    )
     if status:
         stmt = stmt.where(SampleRequest.status == status)
     if customer_id:
@@ -211,27 +260,41 @@ def build_list_stmt(
         stmt = stmt.where(SampleRequest.owner_id == owner_id)
     if keyword:
         # 样品单没有单号字段（ER §13 未定义），所以关键词只搜客户名与商机标题
-        like = f"%{keyword.strip()}%"
+        _kw = keyword.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = f"%{_kw}%"
         stmt = stmt.where(
             SampleRequest.customer_id.in_(
-                select(Customer.id).where(Customer.name.ilike(like))
+                select(Customer.id).where(Customer.name.ilike(like, escape="\\"))
             )
             | SampleRequest.opportunity_id.in_(
-                select(Opportunity.id).where(Opportunity.title.ilike(like))
+                select(Opportunity.id).where(Opportunity.title.ilike(like, escape="\\"))
             )
         )
     return stmt
 
 
-async def get_or_404(session: AsyncSession, sample_id: int) -> SampleRequest:
+async def get_or_404(
+    session: AsyncSession, sample_id: int, *, include_deleted: bool = False
+) -> SampleRequest:
+    """取样品申请（默认不含已软删的）。
+
+    `include_deleted=True` **只给「恢复」用**：恢复得先把那条已删的记录取出来；
+    其余所有入口一律看不见已删的单子 —— 否则「删了」等于没删。
+    """
     request = await session.get(SampleRequest, sample_id)
-    if request is None:
+    if request is None or (request.deleted_at is not None and not include_deleted):
         raise AppError(ErrorCode.NOT_FOUND, "样品申请不存在", 404)
     return request
 
 
 async def get_visible_or_404(
-    session: AsyncSession, user: CurrentUser, sample_id: int, *, for_update: bool = False
+    session: AsyncSession,
+    user: CurrentUser,
+    sample_id: int,
+    *,
+    for_update: bool = False,
+    allow_deleted: bool = False,
+    allow_external_flow: bool = False,
 ) -> SampleRequest:
     """取样品申请并校验数据范围（列表按 owner_id 过滤，单条此前没校验）。
 
@@ -239,20 +302,37 @@ async def get_visible_or_404(
     已经被新修订版取代、不能再动"的判断也放在这里——**一处把关胜过每个入口各写一遍**
     （第一批返修 §3.3 要求的正是"统一判断"，各写一遍迟早漏一个）。
     读接口（`for_update=False`）不受影响：历史版本永远查得到、对得上。
+
+    `allow_deleted=True` **只给「恢复」用**（2026-10-15 补软删时加的）：
+    已软删的单子对其它所有入口都应当**不存在** —— 写入口更要挡住，否则
+    "删掉的单子还能被改、被审批"，软删就是个摆设。
     """
     from app.core.data_scope import ensure_in_scope
 
     if for_update:
-        request = (await session.execute(select(SampleRequest).where(SampleRequest.id == sample_id)
-                   .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
+        where = [SampleRequest.id == sample_id]
+        if not allow_deleted:
+            where.append(SampleRequest.deleted_at.is_(None))
+        request = (
+            await session.execute(
+                select(SampleRequest)
+                .where(*where)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
         if request is None:
             raise AppError(ErrorCode.NOT_FOUND, "样品申请不存在", 404)
     else:
-        request = await get_or_404(session, sample_id)
-    await ensure_in_scope(session, user, owner_id=request.owner_id, label="样品申请")
+        request = await get_or_404(session, sample_id, include_deleted=allow_deleted)
+    if not await ensure_draft_access(session, SampleRequest, request.id, user.id):
+        await ensure_in_scope(session, user, owner_id=request.owner_id, label="样品申请")
+    if for_update and not allow_external_flow:
+        from app.modules.sample.dingtalk import ensure_editable
+        ensure_editable(request)
     if for_update:
-        # 注意：sample_requests **没有** deleted_at（这个模块不做软删），
-        # 别照其它模块的习惯加 `deleted_at.is_(None)`——那是运行期 AttributeError。
+        # 已被新修订版取代的那一版不能再改（读接口不受限：历史版本永远查得到）。
+        # 软删的过滤在上面那段 where 里已经做过，这里不重复。
         child = (
             await session.execute(
                 select(SampleRequest.id)
@@ -263,8 +343,7 @@ async def get_visible_or_404(
         if child is not None:
             raise AppError(
                 ErrorCode.STATUS_NOT_ALLOWED,
-                f"这是第 {request.version} 版，已被新修订版（#{child}）取代、不能再改。"
-                "制作与寄送事实已按当时资料冻结保留；要继续改请在新版本上操作",
+                "这张打样单的原版记录已锁定，仅可查看。请在打样管理查看可办理的版本，或联系负责人。",
                 422,
             )
     return request
@@ -386,7 +465,9 @@ async def skus_map(session: AsyncSession, items: list[SampleItem]) -> dict[int, 
     }
 
 
-async def list_payload(session: AsyncSession, rows: list[SampleRequest]) -> list[dict]:
+async def list_payload(
+    session: AsyncSession, rows: list[SampleRequest], user: CurrentUser
+) -> list[dict]:
     """列表用的批量序列化：把明细、寄样、客户/商机/负责人名一次补齐。
 
     之前列表直接调 serialize_request 却没传 items/shipments，导致接口返回的
@@ -398,18 +479,26 @@ async def list_payload(session: AsyncSession, rows: list[SampleRequest]) -> list
     all_items = [item for items in items_by_request.values() for item in items]
     skus = await skus_map(session, all_items)
     customers, opportunities, owners = await enrichment(session, rows)
-    # 一次查清"谁被谁取代了"（§3.3）：有子版本的那一版冻结只读，
-    # 界面上要标出来。批量一次查询，别在循环里逐条问。
+    locked_ids: set[int] = set()
     child_of: dict[int, int] = {}
     if ids:
-        # 同样注意：sample_requests 没有 deleted_at（本模块不做软删）
-        for child_id, parent_id in (
-            await session.execute(
-                select(SampleRequest.id, SampleRequest.parent_id)
-                .where(SampleRequest.parent_id.in_(ids))
-            )
-        ).all():
-            child_of.setdefault(parent_id, child_id)
+        visible_children = await apply_data_scope(
+            select(SampleRequest.id).where(
+                SampleRequest.parent_id.in_(ids), SampleRequest.deleted_at.is_(None),
+            ),
+            user, session,
+        )
+        # 删除或无权查看的修订版仍会锁住原版，但它的 ID 不进入响应。
+        visible_child_id = case((SampleRequest.id.in_(visible_children), SampleRequest.id))
+        revisions = await session.execute(
+            select(SampleRequest.parent_id, visible_child_id)
+            .where(SampleRequest.parent_id.in_(ids))
+            .order_by(SampleRequest.version.desc(), SampleRequest.id.desc())
+        )
+        for parent_id, child_id in revisions.all():
+            locked_ids.add(parent_id)
+            if child_id is not None:
+                child_of.setdefault(parent_id, child_id)
 
     payload = []
     for row in rows:
@@ -429,6 +518,7 @@ async def list_payload(session: AsyncSession, rows: list[SampleRequest]) -> list
                 for shipment in shipments_by_request.get(row.id, [])
             ],
             superseded_by=child_of.get(row.id),
+            revision_locked=row.id in locked_ids,
         )
         # 「这张单子的附件还能不能上传」（2026-10-08）：
         # 制作/寄出之后新附件只能标「后续补充资料」，界面据此决定上传时带什么类别。
@@ -438,13 +528,17 @@ async def list_payload(session: AsyncSession, rows: list[SampleRequest]) -> list
         lock = sample_write_lock_label_for(row)
         data["attachment_locked"] = lock is not None
         data["attachment_lock"] = lock
+        # 「这张单现在能不能删」（2026-10-15 加软删）：判据只在后端写一遍
+        # （`model.SAMPLE_DELETABLE_STATUSES`），这里下发一个布尔，前端据此决定
+        # 显示「删除」还是「恢复」—— 前端不要自己复刻一份状态清单。
+        data["can_delete"] = row.id not in locked_ids and can_delete_sample(row)
         payload.append(data)
     return payload
 
 
-async def detail(session: AsyncSession, request: SampleRequest) -> dict:
+async def detail(session: AsyncSession, request: SampleRequest, user: CurrentUser) -> dict:
     """单条详情：与列表共用同一套装配逻辑，避免两处字段漂移。"""
-    payload = await list_payload(session, [request])
+    payload = await list_payload(session, [request], user)
     return payload[0]
 
 
@@ -485,7 +579,7 @@ async def record_opportunity_touch(
     if opportunity is None or opportunity.deleted_at is not None:
         return
     label = SAMPLE_STATUS_LABEL.get(request.status, request.status)
-    opportunity.next_action = f"样品（#{request.id}）{action}：当前{label}"
+    opportunity.next_action = f"样品（编号 {request.id}）{action}：当前{label}"
 
 
 def now() -> datetime:
