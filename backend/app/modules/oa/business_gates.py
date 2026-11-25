@@ -12,11 +12,18 @@ async def require_latest_approved(session, *, kind, business_id, version=None, r
         query = query.where(OaInstance.provider == provider)
     row = (await session.execute(query.order_by(OaInstance.submit_round.desc(), OaInstance.id.desc()).limit(1))).scalars().first()
     label = {'inquiry': '定制询价', 'sample': '打样', 'contract': '合同'}[kind]
-    milestone = ((row.result or {}).get('business_stages') or {}).get(release_stage) if row and release_stage else None
     if row and release_stage:
-        # 项目未上线、无历史审批包袱：阶段小条缺失一律拒收，
-        # 不再退回"整体大章 approved 就算本阶段通过"（B09-01）。
-        allowed = row.status in {'pending', 'approved'} and isinstance(milestone, dict) and milestone.get('status') == 'approved'
+        # 实测结论（2026-11-25）：现行同序模板是单节点/两节点流程，不产出
+        # business_stages 摘要（无 sample_review 节点、"是否通过+报价方案"字段），
+        # OA 侧代码固定。整单 approved 就是该阶段真实走完 → 无阶段摘要时按整单判断。
+        stages = (row.result or {}).get('business_stages')
+        if not isinstance(stages, dict) or not stages:
+            allowed = row.status == 'approved'
+        else:
+            # 有阶段摘要却缺所需阶段：半截/异常回包，不放行（防呆）。
+            milestone = stages.get(release_stage)
+            allowed = (row.status in {'pending', 'approved'}
+                       and isinstance(milestone, dict) and milestone.get('status') == 'approved')
     else:
         allowed = bool(row and row.status == 'approved')
     if not allowed:
@@ -39,9 +46,15 @@ async def require_inquiry_items_approved(session, items):
             row = (await session.execute(select(OaInstance).where(
                 OaInstance.oa_type == 'inquiry', OaInstance.inquiry_id == identity
             ).order_by(OaInstance.submit_round.desc(), OaInstance.id.desc()).limit(1))).scalars().first()
-            quotation = ((row.result or {}).get('business_stages') or {}).get('quotation') if row else None
-            # 缺报价阶段小条同样拒收，不看整体大章（B09-01）。
-            approved = bool(row) and row.status in {'pending', 'approved'} and isinstance(quotation, dict) and quotation.get('status') == 'approved'
+            stages = (row.result or {}).get('business_stages') if row else None
+            if not isinstance(stages, dict) or not stages:
+                # 现行模板无阶段摘要：整单通过即可（2026-11-25 实测）。
+                approved = bool(row and row.status == 'approved')
+            else:
+                quotation = stages.get('quotation')
+                # 有摘要却缺报价段：异常回包，不放行（防呆）。
+                approved = (row.status in {'pending', 'approved'}
+                            and isinstance(quotation, dict) and quotation.get('status') == 'approved')
             if not approved:
                 raise AppError(ErrorCode.STATUS_NOT_ALLOWED,
                     '询价的核价/报价复核尚未通过，暂不能正式报价。可先保存内部草稿；请在同序完成报价阶段并在 CRM 同步结果，无需等待打样或备货结束', 422)

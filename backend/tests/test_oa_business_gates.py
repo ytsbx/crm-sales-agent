@@ -99,3 +99,25 @@ def test_sample_actions_use_review_milestone_not_whole_approval(overall, milesto
             assert asyncio.run(action).status == 'pending'
         else:
             with pytest.raises(AppError): asyncio.run(action)
+
+
+def test_overall_approved_without_stage_summary_is_accepted():
+    """现行同序模板（2026-11-25 实测）不产出 business_stages：整单通过即放行。"""
+    with Session(_engine()) as raw:
+        raw.add(OaInstance(oa_type='sample', inquiry_id=77, inquiry_version=1, status='approved',
+            result={}, idempotency_key='no-stage-summary', submit_round=1, created_at=datetime.now(UTC)))
+        raw.commit()
+        sample = SimpleNamespace(id=77, version=1, source_context={'dingtalk_oa': {'mode': 'standalone'}})
+        assert asyncio.run(gates.require_sample_approved(SyncSessionAsAsync(raw), sample)).status == 'approved'
+
+
+def test_stage_summary_present_but_requested_section_missing_is_rejected():
+    """有阶段摘要却缺所需阶段＝半截/异常回包，防呆拒收。"""
+    with Session(_engine()) as raw:
+        raw.add(OaInstance(oa_type='sample', inquiry_id=77, inquiry_version=1, status='approved',
+            result={'business_stages': {'quotation': {'status': 'approved'}}},
+            idempotency_key='wrong-section', submit_round=1, created_at=datetime.now(UTC)))
+        raw.commit()
+        sample = SimpleNamespace(id=77, version=1, source_context={'dingtalk_oa': {'mode': 'standalone'}})
+        with pytest.raises(AppError):
+            asyncio.run(gates.require_sample_approved(SyncSessionAsAsync(raw), sample))

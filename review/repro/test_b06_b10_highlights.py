@@ -173,6 +173,8 @@ class _FakeSession:
         return _FakeResult(self._row)
 
 
+@pytest.mark.skip(reason="2026-11-25 实测推翻：现行同序模板无阶段节点且 OA 代码固定，stage 摘要不会产出；"
+                         "主人决定改为『无摘要按整单通过、有摘要但缺所需段拒收』，本条断言作废")
 def test_b09_01_missing_stage_snapshot_should_not_fall_back_to_overall_approved():
     """传了 release_stage，但 result 里没有该阶段 → 应拒绝，不能降级成整体通过。"""
     from app.modules.oa.business_gates import require_latest_approved
@@ -212,6 +214,8 @@ class _SampleSession:
         return None
 
 
+@pytest.mark.skip(reason="2026-11-25 实测推翻：打样模板单节点、摘要无 business_stages；"
+                         "主人决定『无摘要按整单通过』，本条断言作废")
 def test_b10_01_sample_without_stage_snapshot_should_not_become_approved():
     """OA 只回整体 approved、没有 business_stages.sample 时，不能落成打样 approved。"""
     from app.modules.oa.sample import _apply_sample_summary

@@ -17,11 +17,17 @@ from test_batch7_cost_lifecycle import case  # noqa: F401
     ('pending','approved',True),('approved','approved',True),('pending','pending',False),
     ('approved','rejected',False),('withdrawn','approved',False),('rejected','approved',False),
     ('submitting','approved',False),('needs_review','approved',False),
-    ('approved',None,False),('pending',None,False)])
+    ('approved',None,True),('pending',None,False),
+    ('approved','missing_section',False)])
 def test_formal_quote_uses_pricing_phase_not_whole_request(monkeypatch,overall,milestone,allowed):
     monkeypatch.setattr(client,'configured',lambda:False)
     with Session(_engine()) as raw:
-        result={'business_stages':{'quotation':{'status':milestone}}} if milestone else {}
+        if milestone is None:
+            result={}  # 现行模板不产出阶段摘要 → 整单判断
+        elif milestone=='missing_section':
+            result={'business_stages':{'sample':{'status':'approved'}}}  # 有摘要却缺报价段 → 防呆拒收
+        else:
+            result={'business_stages':{'quotation':{'status':milestone}}}
         raw.add(OaInstance(oa_type='inquiry',inquiry_id=1,inquiry_version=1,idempotency_key='stage',submit_round=1,
             status=overall,result=result,created_at=datetime.now(UTC)))
         raw.commit()

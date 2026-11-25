@@ -661,6 +661,18 @@ def test_sync_sample_can_release_before_material_steps_end(milestone, expected):
         assert sample.source_context['dingtalk_oa']['submitted'] is True
 
 
+def test_sync_sample_without_stage_summary_follows_overall_approved():
+    """现行模板不产出阶段摘要（2026-11-25 实测）：整单通过即回写 approved。"""
+    with Session(_engine()) as raw:
+        sample = SampleRequest(id=92, owner_id=1, status='pending', version=1)
+        row = OaInstance(oa_type='sample', inquiry_id=92, inquiry_version=1, status='pending',
+            idempotency_key='release-sample-compat', submit_round=1, created_at=datetime.now(UTC))
+        raw.add_all([sample, row]); raw.commit()
+        asyncio.run(oa_sample._apply_sample_summary(SyncSessionAsAsync(raw), row, {'status': 'approved'}))
+        assert row.status == 'approved'
+        assert sample.status == 'approved'
+
+
 def test_sample_detail_upload_requires_files_from_the_same_sample():
     from app.modules.oa.sample import _selected_detail_files
 
