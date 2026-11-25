@@ -563,24 +563,35 @@ export default function DocumentsPage() {
         {/* 原来直接从卡片开始，没有标题区；其他模块都有「XX 中心 + 一句说明」，
             切过来会觉得少了一块（2026-11-16 巡检）。 */}
         <PageHeader
-          title="文档管理"
-          subtitle="我方合同、客户合同均上传原文件；审批在同序 OA 办理，CRM 同步进度并跟催回签归档"
+          title={templatesVisible ? '资料库' : '文档管理'}
+          subtitle={templatesVisible
+            ? '公司标准合同 / 月结协议等文件的存放处，不挂客户；业务员下载后按客户填写，再走「上传合同」进同序 OA 审批'
+            : '我方合同、客户合同均上传原文件；审批在同序 OA 办理，CRM 同步进度并跟催回签归档'}
           /* 2026-11-20：原来「上传合同」单独占卡片内左上角一行，右边一整排空白，
              和其它列表页"新建类按钮在页头右上"（案例库「新建案例」）也不一致。
              挪到页头 extra，卡片从表格直接开始。 */
           extra={(
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <Button theme="borderless" onClick={() => setTemplatesVisible(true)}>
-                资料库
-              </Button>
-              {canManage && (
-                <Button type="primary" theme="outline" onClick={() => openUploadModal()}>
-                  上传合同
+              {templatesVisible ? (
+                <Button theme="borderless" onClick={() => setTemplatesVisible(false)}>
+                  返回台账
                 </Button>
+              ) : (
+                <>
+                  <Button theme="borderless" onClick={() => setTemplatesVisible(true)}>
+                    资料库
+                  </Button>
+                  {canManage && (
+                    <Button type="primary" theme="outline" onClick={() => openUploadModal()}>
+                      上传合同
+                    </Button>
+                  )}
+                </>
               )}
             </div>
           )}
         />
+        {!templatesVisible && (
         <SectionCard
           className={(documents?.length ?? 0) <= 8 ? 'auto-height' : undefined}
         >
@@ -934,6 +945,7 @@ export default function DocumentsPage() {
             </div>
           )}
         </SectionCard>
+        )}
 
       <Modal
         title="上传合同"
@@ -1185,25 +1197,15 @@ export default function DocumentsPage() {
         </div>
       </Modal>
 
-      <Modal
-        width={860}
-        title={
-          <span className="crm-help-label">
-            资料库
+      {templatesVisible && (
+        <SectionCard className="auto-height">
+        <div style={{ display: 'grid', gap: 14 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--crm-text-3)' }}>
+            <span>同一份资料再存一次会自动成为新版本，旧版本保留可追溯；同一份文件重复保存不会建重复版本。</span>
             <HelpTip
               forLabel="资料库"
               text="公司标准合同 / 月结协议等文件的存放处，不挂客户。业务员下载后按客户填写，再走「上传合同」进同序 OA 审批；这里只存档，不参与系统自动生成。"
             />
-          </span>
-        }
-        style={{ maxWidth: 'calc(100vw - 32px)' }}
-        visible={templatesVisible}
-        onCancel={() => { if (!saveTemplateMutation.isPending) setTemplatesVisible(false) }}
-        footer={null}
-      >
-        <div style={{ display: 'grid', gap: 14 }}>
-          <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-            同一份资料再存一次会自动成为新版本，旧版本保留可追溯；同一份文件重复保存不会建重复版本。
           </div>
           {canUploadTemplateFile ? (
             <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 132px minmax(0, 1fr) auto', gap: 8, alignItems: 'center' }}>
@@ -1321,7 +1323,8 @@ export default function DocumentsPage() {
             ]}
           />
         </div>
-      </Modal>
+        </SectionCard>
+      )}
 
       <Modal
         width={520}
