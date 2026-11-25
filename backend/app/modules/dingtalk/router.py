@@ -27,6 +27,15 @@ from app.modules.dingtalk.model import OaInstance, allowed_actions
 
 router = APIRouter(tags=["DingTalk"])
 
+
+def _legacy_contract_readonly(row) -> bool:
+    """历史钉钉合同审批行：只读留痕（2026-11-25 主人拍板）。
+
+    旧钉钉合同通道已删除，这些行只剩查看价值；认领/重发/作废/撤回一律不允许，
+    且不依赖 DINGTALK_PUSH_OFF 总闸——总闸关只是其中一层，不能当永久保证。
+    """
+    return getattr(row, "oa_type", None) == "contract" and getattr(row, "provider", "dingtalk") != "self_oa"
+
 #: CRM 侧字段 → 取哪条需求的哪个属性。放在这里而不是散在业务代码里，
 #: 是因为"预填什么"是业务口径，改它不该动流程代码。
 INQUIRY_FIELDS = {
@@ -295,6 +304,8 @@ async def resolve_oa_instance(
     # ⚠️ 各分支调用的都是**该模块自己的**可见性判据，不是新写一套：
     # 少一处就等于给这些单据开了个跨人越权的后门。
     await ensure_oa_type_scope(session, user, row)
+    if _legacy_contract_readonly(row):
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "历史钉钉合同审批仅供查看，新合同审批请使用同序 OA", 409)
     if app_settings.dingtalk_push_off and getattr(row, "provider", "dingtalk") != "self_oa":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "历史审批仅供查看，新审批请使用同序 OA", 409)
 
@@ -437,6 +448,8 @@ async def sync_oa_instance(
     if row is None:
         raise AppError(ErrorCode.VERSION_CONFLICT, "审批记录正在处理，请稍后同步", 409)
     await ensure_oa_type_scope(session, user, row)
+    if _legacy_contract_readonly(row):
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "历史钉钉合同审批仅供查看，新合同审批请使用同序 OA", 422)
     if getattr(row, 'provider', 'dingtalk') == 'self_oa':
         from app.modules.oa import service as oa_service
         # 手动同步必须真查：原来 3 秒内复用快照，用户刚在 OA 批完就点同步，
@@ -529,6 +542,8 @@ async def withdraw_oa_instance(
     if row is None:
         raise AppError(ErrorCode.VERSION_CONFLICT, "审批记录正在处理，请稍后撤回", 409)
     await ensure_oa_type_scope(session, user, row)
+    if _legacy_contract_readonly(row):
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "历史钉钉合同审批仅供查看，新合同审批请使用同序 OA", 422)
     if row.status != "pending" or not row.instance_id:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, f"当前审批状态为「{row.status}」，不能撤回", 422)
     if getattr(row, "provider", "dingtalk") == "self_oa":

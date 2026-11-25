@@ -586,6 +586,15 @@ async def resolve_reviewed_instance(
     7.8：三种动作都要先**原子占住**这一行（`claim_external_call` + 请求键），
     否则两个并发核定会各自读到 `needs_review`、各建一张外部单。
     """
+    # 历史钉钉合同审批**只读**（2026-11-25 主人拍板）：通道已删除，这行是留痕，
+    # 不再提供认领/重发/作废。放在最前面、先于任何数据库访问：既避免占住行之后
+    # 才拒绝留下 processing 残留，也不受总闸开关影响（关闸只是其中一层）。
+    if row.oa_type == "contract" and getattr(row, "provider", "dingtalk") != "self_oa":
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "历史钉钉合同审批仅供查看，不能再认领、重发或作废；新合同审批请使用同序 OA",
+            409,
+        )
     # 关闸时**先于任何数据库访问**拒绝：既有的"关闸不得触碰数据库"用例靠这一条守住，
     # 而且认领也要向钉钉核实来源，关闸时同样做不了（fail-closed）。
     if action in ("adopt", "resend") and app_settings.dingtalk_push_off:
@@ -1299,9 +1308,12 @@ async def first_image_attachment(
 
 def serialize(row: OaInstance) -> dict:
     provider = getattr(row, "provider", "dingtalk")
+    legacy_contract = row.oa_type == "contract" and provider != "self_oa"
     auto_sync = app_settings.scheduler_enabled or app_settings.scheduler_oa_sync_enabled
     sync_notice = None
-    if provider == "self_oa":
+    if legacy_contract:
+        sync_notice = '历史钉钉合同审批仅供查看，新合同审批请使用同序 OA。'
+    elif provider == "self_oa":
         if not auto_sync:
             sync_notice = '同序 OA 未开启自动同步，记录可能滞后，可点击「立即同步」。'
     elif app_settings.dingtalk_push_off:
@@ -1331,7 +1343,8 @@ def serialize(row: OaInstance) -> dict:
         "resolve_state_label": RESOLVE_STATE_LABEL.get(row.resolve_state, row.resolve_state),
         "resolved_at": row.resolved_at.isoformat() if row.resolved_at else None,
         "resolved_action": row.resolved_action,
-        "allowed_actions": [
+        # 历史钉钉合同行只读：按钮一律不出现，不看总闸开关（2026-11-25 拍板）。
+        "allowed_actions": [] if legacy_contract else [
             action for action in allowed_actions(row.status, row.resolve_state)
             if (provider == "self_oa" and action != "resolve_resend")
             or (provider != "self_oa" and not app_settings.dingtalk_push_off)

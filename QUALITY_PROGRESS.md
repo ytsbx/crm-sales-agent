@@ -5743,3 +5743,11 @@
 - 验证：`tests/test_payment_void.py` 5 条、`tests/test_batch15_financial_lifecycle.py` 11 条（含新增 `test_completed_order_cancel_requires_reason_and_accepts_it`）全绿；隔离库 `crm_iso_flow_20261125` 真实接口回归：财务作废 8910 → 已收 0/未收 29700、两期应收回 `pending`、业务员 403、重复作废幂等、已完成订单带理由取消成功；前端 `pnpm build` 通过。
 - 未做：K2 退货、K3 打样终止、K4 草稿作废、K5 报价关闭仍待主人逐项拍板；报告与 `/guide` 已同步为“K1 已修复、剩四处”。
 
+
+
+## 2026-11-25 B07-02 收口：历史钉钉合同行只读化（主人拍板）
+
+- 现状：生产库 `oa_instances` 中 `provider=dingtalk AND oa_type=contract` 只有 3 行（id 2/9 已撤回、id 8 发起失败），没有待核对行；11-13 起合同审批已切同序 OA，旧通道删除。
+- 改动：`resolve_reviewed_instance` 最前拒绝这类行的 adopt/resend/abandon；`sync_oa_instance`、`withdraw_oa_instance` 同口径拒绝；`serialize` 对这类行返回 `allowed_actions=[]` 并提示"仅供查看"。判据不依赖 `DINGTALK_PUSH_OFF`，总闸打开也保持只读。
+- 验证：新增 2 条用例（三种动作均 409 且零外部调用；序列化无动作且带提示）；全量 pytest 通过；静态检查 pyflakes/模型列/权限码 OK。未部署。
+- 幂等类 8 条（B07-04/B13-06/B13-10/B19-09/B20-09/B21-06/B21-07/B22-07）仍待主人选择补法，本轮未动。

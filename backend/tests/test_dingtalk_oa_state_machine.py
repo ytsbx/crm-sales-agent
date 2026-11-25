@@ -725,3 +725,26 @@ async def test_polling_rotates_failed_old_record_without_claiming_success(db, se
     other=await session.get(OaInstance,second)
     assert other.synced_at and other.error is None
     assert other.result['payload']['tasks'][0]['status']=='RUNNING'
+
+
+def test_legacy_dingtalk_contract_rows_are_readonly(db, fake, monkeypatch):
+    """2026-11-25：历史钉钉合同行只读——认领/重发/作废都拒绝，不依赖总闸。"""
+    monkeypatch.setattr(app_settings, "dingtalk_push_off", False)
+    oa_id = make_row(db, oa_type="contract", provider="dingtalk", status="failed")
+    session = open_session(db)
+    row = asyncio.run(session.get(OaInstance, oa_id))
+    for action in ("resend", "adopt", "abandon"):
+        with pytest.raises(AppError) as caught:
+            asyncio.run(svc.resolve_reviewed_instance(session, row, action=action))
+        assert caught.value.http_status == 409
+        assert "仅供查看" in caught.value.message
+    assert fake.calls == 0
+    assert reload_row(db, oa_id).status == "failed"
+    session._session.close()
+
+
+def test_legacy_contract_serialization_is_readonly(db):
+    oa_id = make_row(db, oa_type="contract", provider="dingtalk", status="failed")
+    data = svc.serialize(reload_row(db, oa_id))
+    assert data["allowed_actions"] == []
+    assert "仅供查看" in (data["sync_notice"] or "")
