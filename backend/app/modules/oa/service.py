@@ -249,18 +249,9 @@ def serialize(row: OaInstance) -> dict:
 
 
 async def _contract_amount(session: AsyncSession, doc: ContractDocument) -> Decimal | None:
-    from app.modules.order.model import SalesOrder
-    from app.modules.quote.model import QuoteVersion
-
-    if doc.order_id:
-        order = await session.get(SalesOrder, doc.order_id)
-        if order is not None and order.total_amount is not None:
-            return Decimal(order.total_amount)
-    if doc.quote_version_id:
-        version = await session.get(QuoteVersion, doc.quote_version_id)
-        if version is not None and version.total_amount is not None:
-            return Decimal(version.total_amount)
-    return None
+    """合同金额统一走冻结快照；老合同没有 `_amount` 才回退实时（B07-03）。"""
+    from app.modules.contract.amounts import contract_amount
+    return await contract_amount(session, doc)
 
 
 async def _load_contract_file(session: AsyncSession, doc: ContractDocument) -> tuple[FileRecord, bytes]:

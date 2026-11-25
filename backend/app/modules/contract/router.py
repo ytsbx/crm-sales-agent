@@ -404,16 +404,12 @@ async def sign_document(
     if not await can_access_file(session, user, payload.file_id):
         raise AppError(ErrorCode.DATA_SCOPE_DENIED, "无权将该文件登记为此合同的签署件", 403)
     before_status = doc.status
-    # B07-15：签署审计要能回答"签的是哪一版、多少钱、走的哪条 OA"——证据链三键
-    from app.modules.order.model import SalesOrder
-    from app.modules.quote.model import QuoteVersion
+    # B07-15/B07-03：签署审计要能回答"签的是哪一版、多少钱、走的哪条 OA"。
+    # 金额统一读合同冻结快照；老合同才回退实时，且回退顺序也统一为报价版本优先。
     from app.modules.oa import service as oa_service
+    from app.modules.contract.amounts import contract_amount
 
-    sign_order = await session.get(SalesOrder, doc.order_id) if doc.order_id else None
-    sign_version = await session.get(QuoteVersion, doc.quote_version_id) if doc.quote_version_id else None
-    sign_amount = (sign_version.total_amount if sign_version else None) or (
-        sign_order.total_amount if sign_order else None
-    )
+    sign_amount = await contract_amount(session, doc)
     sign_oa = await oa_service.latest_contract_row(session, doc.id)
     await svc.sign_document(
         session, doc, file_id=payload.file_id, note=payload.note, reuse_reason=payload.reuse_reason,

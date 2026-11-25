@@ -5664,3 +5664,14 @@
 - 保留下单：钉钉登录/通讯录、自研 OA 共用的 `OaInstance` 台账与状态同步/撤回/核定接口（合同、打样、询价的自研 OA 分支仍在使用，`oa/sample.py`、`oa/inquiry.py`、`oa/service.py`）。
 - 测试适配：旧钉钉合同状态机与询价提交字段用例随功能删除；作废撤回用例改为自研 OA 口径（撤回成功、撤回失败不本地作废、非发起人拒绝、历史钉钉记录不再调外部）。
 - 验证：后端隔离全量 **2275 绿**。
+
+## 2026-11-25 B07-03 收口：合同金额生成时冻结（含报价 V2）
+
+- 问题：合同正文是生成时快照，但 OA 推送金额（`oa/service.py:251` 原实现）先读订单、签署审计（`contract/router.py:457` 原实现）先读报价版本，两处顺序相反，且都在发起/签署时查数据库现值。订单后续调整后，同一份合同会出现"纸面 10 万、OA 批 11 万、审计记 10 万"；即使订单没改，订单与报价版本不一致时也会当场分叉。
+- 改动：新增 `backend/app/modules/contract/amounts.py`：
+  - `resolve_generation_amount(order, quote_version)`：生成时定金额，**所选报价版本优先、订单兜底**；选了报价 V2 就冻 V2，不会因订单总额不同而回退订单。
+  - 生成合同写入 `filled_data` 内部键 `_amount`（无金额显式存 `None`）、`_currency="CNY"`、`_amount_source`（`quote_version:<id>` / `order` / `none`）。
+  - `contract_amount(session, doc)`：下游统一入口，先读冻结值；只有老合同没有 `_amount` 键才回退实时，回退同样报价版本优先。
+- 接入：`contract/service.py` 生成时冻结；`oa/service.py` 的 `_contract_amount` 改为委托 `contract_amount`；`contract/router.py` 签署审计金额同样走 `contract_amount`。
+- 口径：同一份合同内部纸面/OA/审计三处必须一致；V1、V2、续签、替代、补充协议各自生成时各冻各的，不继承父合同金额、也不追着最新报价跑。改金额就重新生成合同。
+- 验证：新增 `test_contract_amount_snapshot.py` 8 条（V2 优先、订单兜底、无金额显式冻结、冻结值不查库、老合同回退报价优先、OA 委托）；原稿合同补断言 `_amount=None`。相关 48 项通过；后端隔离全量 **2267 绿**。

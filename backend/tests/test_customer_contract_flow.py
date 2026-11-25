@@ -96,6 +96,10 @@ async def test_original_contract_has_no_generated_template_or_content(sql_sessio
     doc,replayed=await service.generate_document(sql_session,payload=p,user_id=1)
     assert doc.template_id is None and doc.generated_file_id is None
     assert doc.filled_data['_original_file_id']==88
+    # B07-03：无金额的原稿合同也要留下冻结键，后续不能因为订单补了金额就漂。
+    assert doc.filled_data['_amount'] is None
+    assert doc.filled_data['_currency']=='CNY'
+    assert doc.filled_data['_amount_source']=='none'
     assert '上传的合同原件' in doc.content_snapshot
     assert not replayed
 

@@ -645,6 +645,14 @@ async def generate_document(
         # 用 `_` 开头是跟项目里"内部键"的约定走，序列化时不会被当成业务字段。
         filled = {**filled, "_missing": missing}
     filled = {**filled, "_request_fingerprint": request_fingerprint, "_source_type": payload.source_type}
+    # B07-03：金额必须和正文一起冻结。所选报价版本优先（纸面 token 就是
+    # quote.total_amount），订单兜底；无金额也写 None，防止后续订单补金额后
+    # OA 审批单从"无金额"偷偷变成"收入"。
+    from app.modules.contract.amounts import CURRENCY_KEY, AMOUNT_KEY, SOURCE_KEY, resolve_generation_amount
+    _amount, _amount_source = resolve_generation_amount(order, quote_version)
+    filled[AMOUNT_KEY] = format(_amount, "f") if _amount is not None else None
+    filled[CURRENCY_KEY] = "CNY"
+    filled[SOURCE_KEY] = _amount_source
     if original_id:
         filled["_original_file_id"] = original_id
         if payload.contract_origin:
