@@ -121,3 +121,73 @@ def test_import_audit_rows_keep_changes_and_truncate():
     assert len(rows["created"]) == _AUDIT_ROWS_LIMIT
     assert rows["truncated"] is True
     assert rows["updated"][0]["changes"]["purchase_cost"]["after"] == D("2")
+
+
+@pytest.mark.anyio
+async def test_multi_role_margin_takes_strictest():
+    """B02-05：多角色时最低利润率取最严（最高要求），不能被宽松角色放宽。"""
+    from app.modules.pricing import service as pricing_service
+    from app.modules.pricing.model import PricePermission
+    from app.modules.settings.model import SystemSetting
+    from app.modules.user.model import Role
+
+    engine = _engine([Role, PricePermission, SystemSetting])
+    try:
+        with Session(engine, expire_on_commit=False) as raw:
+            raw.add_all([
+                Role(id=1, code="strict", name="严"),
+                Role(id=2, code="loose", name="宽"),
+                PricePermission(role_id=1, minimum_margin=D("0.30"), status="active"),
+                PricePermission(role_id=2, minimum_margin=D("0.10"), status="active"),
+            ])
+            raw.commit()
+            margin, _ = await pricing_service.resolve_min_margin(
+                SyncSessionAsAsync(raw), ["strict", "loose"]
+            )
+            assert margin == D("0.30")
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_completed_order_cannot_create_schedule_change(monkeypatch):
+    """B04-05：已完成订单不能再发起交期变更。"""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.modules.order import schedule
+
+    order = SimpleNamespace(id=1, status="completed", delivery_date=date(2026, 11, 1))
+    monkeypatch.setattr(schedule, "lock_order", AsyncMock(return_value=order))
+    actor = make_user(1, permissions=("order:manage",), data_scope="all")
+    with pytest.raises(AppError) as caught:
+        await schedule.create_change(
+            SimpleNamespace(), order, user=actor,
+            new_delivery_date=date(2026, 12, 1), reason="改期",
+        )
+    assert caught.value.http_status == 422
+    assert "已完成或已取消" in caught.value.message
+
+
+@pytest.mark.anyio
+async def test_cancelled_receivable_only_allows_remark(monkeypatch):
+    """B05-08：已取消的应收只允许改备注。"""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.modules.payment import router as payment_router
+    from app.modules.payment.schema import ReceivableUpdate
+
+    plan = SimpleNamespace(
+        id=1, status="cancelled", plan_name="一期", due_date=None,
+        amount=D("100"), remark=None, order_id=1,
+    )
+    monkeypatch.setattr(payment_router.svc, "get_visible_plan", AsyncMock(return_value=plan))
+    monkeypatch.setattr(payment_router.svc, "serialize_plan", AsyncMock(return_value={}))
+    actor = make_user(1, permissions=("payment:manage",), data_scope="all")
+    with pytest.raises(AppError) as caught:
+        await payment_router.update_receivable(
+            1, ReceivableUpdate(amount=D("5")), _request(), actor, SimpleNamespace()
+        )
+    assert caught.value.http_status == 422
+    assert "只能修改备注" in caught.value.message

@@ -188,8 +188,15 @@ async def create_change(
     plan_offsets: dict | None = None,
 ) -> OrderScheduleChange:
     order = await lock_order(session, order)
-    if order.status == "cancelled":
-        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "订单已取消，不能再创建或确认交期变更", 422)
+    if order.status in ("cancelled", "completed"):
+        # B04-05：已完成订单的履约事实（交期、批次计划日、准时率）不得事后改写；
+        # 需要纠正填错的完成单，走取消订单（需理由）后重建，不走普通变更入口。
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "订单已完成或已取消，不能再创建或确认交期变更；"
+            "如确实需要纠正，请先取消订单并重建（取消需填写理由）",
+            422,
+        )
     affected = await preview(session, order, new_delivery_date, delivery_kind=delivery_kind,
                              transit_days=transit_days, plan_offsets=plan_offsets)
     if not affected["nodes"] and not affected["batches"] and affected["planning"]["before"] == affected["planning"]["after"]:
@@ -254,8 +261,15 @@ async def confirm_change(
     # 行锁：两个人同时点"确认"时，第二个必须等第一个提交完再读状态，
     # 否则两边都读到 pending、都往下走，计划日被写两遍。
     order = await lock_order(session, order)
-    if order.status == "cancelled":
-        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "订单已取消，不能再创建或确认交期变更", 422)
+    if order.status in ("cancelled", "completed"):
+        # B04-05：已完成订单的履约事实（交期、批次计划日、准时率）不得事后改写；
+        # 需要纠正填错的完成单，走取消订单（需理由）后重建，不走普通变更入口。
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "订单已完成或已取消，不能再创建或确认交期变更；"
+            "如确实需要纠正，请先取消订单并重建（取消需填写理由）",
+            422,
+        )
     # ⚠️ 锁内重判**两道**判据，都挪到写操作**之前**：
     #
     #   ① 数据范围（`ensure_in_scope`）—— 我第一版只补了这一道；

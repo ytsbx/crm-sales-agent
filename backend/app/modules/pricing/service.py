@@ -809,7 +809,7 @@ async def resolve_discount_limit(session: AsyncSession, role_codes: list[str]) -
 
 
 async def resolve_min_margin(session: AsyncSession, role_codes: list[str]) -> tuple[Decimal, bool]:
-    """取当前用户角色中最宽松的最低利润率，以及他是否有审批权。
+    """取当前用户角色中**最严格**的最低利润率，以及他是否有审批权。
 
     角色没配价格权限时，退回系统配置里的 default_min_margin（默认 15%）。
     """
@@ -827,7 +827,9 @@ async def resolve_min_margin(session: AsyncSession, role_codes: list[str]) -> tu
     ).all()
     if not rows:
         return fallback, False
-    margin = min((perm.minimum_margin for perm, _ in rows), default=fallback)
+    # 多角色取**最严**（最高要求）：折扣上限已是最严，利润率取最松会让
+    # "多挂一个宽松角色"变成放权（B02-05，2026-11-25 主人拍板）。
+    margin = max((perm.minimum_margin for perm, _ in rows), default=fallback)
     can_approve = any(perm.can_approve for perm, _ in rows)
     return margin, can_approve
 

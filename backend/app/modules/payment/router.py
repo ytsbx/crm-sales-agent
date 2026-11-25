@@ -449,6 +449,19 @@ async def update_receivable(
     plan = await svc.get_visible_plan(session, user, plan_id, for_update=True)
     before = await svc.serialize_plan(session, plan)
     changes = payload.model_dump(exclude_unset=True)
+    # B05-08：已取消的应收是终态，只允许改备注。名称/到期日/金额都不许动，
+    # 否则会出现"已取消但金额变了"，改金额还会顺带重排整单回款分配。
+    if plan.status == "cancelled":
+        blocked = [
+            label for field, label in (("plan_name", "名称"), ("due_date", "到期日"), ("amount", "金额"))
+            if field in changes and changes[field] != getattr(plan, field)
+        ]
+        if blocked:
+            raise AppError(
+                ErrorCode.STATUS_NOT_ALLOWED,
+                f"已取消的应收只能修改备注，不能修改{'、'.join(blocked)}",
+                422,
+            )
     amount = changes.get("amount")
     amount_changed = amount is not None and amount != plan.amount
     if amount_changed and amount > plan.amount and plan.status != "cancelled":

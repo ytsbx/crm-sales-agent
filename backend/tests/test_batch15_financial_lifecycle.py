@@ -162,7 +162,7 @@ def order(db,status='pending'):
 
 def test_cancelled_order_cannot_create_schedule_change(db):
     s,u,*_=db;o=order(db,'cancelled')
-    with pytest.raises(AppError,match='订单已取消'):
+    with pytest.raises(AppError,match='已完成或已取消'):
         run(schedule.create_change(s,o,user=u,new_delivery_date=today_business()+timedelta(days=30),
             reason='不应放行',plan_offsets={key:1 for key,_,_ in contract_nodes()}))
     assert not run(s.execute(select(OrderScheduleChange))).scalars().all()
@@ -185,7 +185,7 @@ def test_order_cancel_keeps_voucher_and_closes_pending_change(db):
         'client':('127.0.0.1',1)}),u,s))
     assert o.status=='cancelled' and p.status=='rejected' and p.voucher_note==note
     assert change.status=='cancelled' and change.cancelled_by==u.id
-    with pytest.raises(AppError,match='订单已取消'):
+    with pytest.raises(AppError,match='已完成或已取消'):
         run(schedule.confirm_change(s,o,change,user=u,remark='不应放行'))
     audits=run(s.execute(select(AuditLog).where(AuditLog.business_type=='payment',AuditLog.business_id==p.id))).scalars().all()
     assert audits and audits[0].after_data['comment']=='订单取消，随单驳回'
