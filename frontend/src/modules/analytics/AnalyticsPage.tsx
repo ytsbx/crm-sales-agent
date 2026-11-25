@@ -904,7 +904,7 @@ export default function AnalyticsPage() {
               { query: receivableQuery, label: '已到账待分配',
                 tone: 'success',
                 value: money(receivable?.unallocated_amount),
-                help: '客户已经付款、但还没分配到具体应收期的钱。分配之后，才会冲减对应账期的应收。',
+                help: '客户已经付款、但还没分配到具体应收期的钱。分配之后，才会抵掉对应期客户欠款。',
                 // 只报口径，不带指令：一句"请先核对分配再催款"把卡片撑成两行，
                 // 也会让人以为这卡是个待办（2026-11-21 巡检）
                 // 值为 0 时还挂「应收期未结 131 万」读着像自相矛盾：0 就是没有

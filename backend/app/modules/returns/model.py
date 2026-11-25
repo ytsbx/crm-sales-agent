@@ -34,7 +34,7 @@ from app.core.base import Base, IdMixin, TimestampMixin
 RETURN_STATUS_LABEL = {
     "reviewing": "待主管复核",
     "pending": "待财务处理",
-    "completed": "已冲账",
+    "completed": "已处理",
     "refunded": "已退款",
     "rejected": "主管驳回",
     "cancelled": "已取消",

@@ -654,8 +654,8 @@ async def settle_return(
         title="财务已处理销售退货",
         content=(
             f"订单 {order.order_no} 退货 {row.return_no} 已处理："
-            f"冲应收 {format(row.offset_amount, '.2f')} 元，"
-            f"应退 {format(row.refund_amount, '.2f')} 元"
+            f"抵掉客户欠款 {format(row.offset_amount, '.2f')} 元，"
+            f"需退给客户 {format(row.refund_amount, '.2f')} 元"
             + ("，请财务实际退款后登记流水。" if row.refund_amount > 0 else "。")
         ),
         business_type="sales_return",
@@ -683,7 +683,7 @@ async def refund_return(
         )
     if row.refund_amount <= 0:
         raise AppError(
-            ErrorCode.STATUS_NOT_ALLOWED, "这张退货单没有应退金额，不需要登记退款", 422
+            ErrorCode.STATUS_NOT_ALLOWED, "这张退货单没有需要退给客户的钱，不用登记退款", 422
         )
     row.status = "refunded"
     row.refunded_by = user.id
@@ -715,7 +715,7 @@ async def void_return(
         if row.status == "refunded":
             raise AppError(
                 ErrorCode.STATUS_NOT_ALLOWED,
-                "这笔退货已经实际退款，不能直接作废；请走线下冲回并保留退款凭证",
+                "这笔退货已经实际退款，不能直接作废；请线下处理并保留退款凭证",
                 422,
             )
         raise AppError(
@@ -780,9 +780,9 @@ async def void_return(
         if _money(plan.amount or 0) != expected_amount:
             raise AppError(
                 ErrorCode.STATUS_NOT_ALLOWED,
-                f"第 {adjustment.plan_id} 期应收和退货冲减台账对不上"
-                f"（现在 {plan.amount}，按台账应为 {expected_amount}），"
-                "可能被手工改过或还有别的退货未处理；请先核对，再走线下冲回",
+                f"第 {adjustment.plan_id} 期客户欠款和退货记录对不上"
+                f"（现在 {plan.amount}，按记录应为 {expected_amount}），"
+                "可能被手工改过或还有别的退货未处理；请先核对，再线下处理",
                 409,
             )
         # 把本单的冲减加回去；如果后面还有别的退货，它们冲减的部分保留。
@@ -830,7 +830,7 @@ async def void_return(
         title="销售退货已作废",
         content=(
             f"订单 {order.order_no} 退货 {row.return_no} 已作废，"
-            f"原因：{row.void_reason}；原冲减的应收已恢复。"
+            f"原因：{row.void_reason}；原来抵掉的客户欠款已恢复。"
         ),
         business_type="sales_return",
         business_id=row.id,

@@ -151,7 +151,7 @@ async def settle_return(
     await session.commit()
     message = (
         f"退货单 {row.return_no} 已处理：确认退货货款 {row.settled_goods_amount:.2f} 元，"
-        f"冲应收 {row.offset_amount:.2f} 元"
+        f"抵掉客户欠款 {row.offset_amount:.2f} 元"
         + (f"，待退款 {row.refund_amount:.2f} 元" if row.refund_amount > 0 else "")
     )
     return ok(data, message)
@@ -188,4 +188,4 @@ async def void_return(
     )
     data = await svc.serialize_return(session, row)
     await session.commit()
-    return ok(data, f"退货单 {row.return_no} 已作废，原冲减应收已恢复")
+    return ok(data, f"退货单 {row.return_no} 已作废，原来抵掉的客户欠款已恢复")

@@ -586,7 +586,7 @@ export default function OrderDetailPage() {
     onSuccess: (row) => {
       Toast.success(
         `退货单 ${row.return_no} 已按 ${formatMoney(row.settled_goods_amount_exact ?? row.goods_amount_exact, row.currency)} 处理：`
-        + `冲应收 ${formatMoney(row.offset_amount_exact, row.currency)}`
+        + `抵客户欠款 ${formatMoney(row.offset_amount_exact, row.currency)}`
         + (Number(row.refund_amount_exact) > 0 ? `，待退款 ${formatMoney(row.refund_amount_exact, row.currency)}` : ''),
       )
       setSettleTarget(null)
@@ -608,7 +608,7 @@ export default function OrderDetailPage() {
   const voidReturnMutation = useMutation({
     mutationFn: (payload: { id: number; reason: string }) => voidReturn(payload.id, payload.reason),
     onSuccess: (row) => {
-      Toast.success(`退货单 ${row.return_no} 已作废，原冲减应收已恢复`)
+      Toast.success(`退货单 ${row.return_no} 已作废，原来抵掉的客户欠款已恢复`)
       setVoidReturnTarget(null)
       setVoidReturnReason('')
       refresh()
@@ -1252,12 +1252,12 @@ export default function OrderDetailPage() {
       ),
     },
     {
-      title: '冲应收 / 应退',
+      title: '抵客户欠款 / 退现金',
       width: 150,
       className: 'cell-right',
       render: (_: unknown, row: SalesReturn) => (
         <div>
-          <div>冲 {formatMoney(row.offset_amount_exact, row.currency)}</div>
+          <div>抵 {formatMoney(row.offset_amount_exact, row.currency)}</div>
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
             退 {formatMoney(row.refund_amount_exact, row.currency)}
             {row.refund_reference ? `（已退：${row.refund_reference}）` : ''}
@@ -1364,7 +1364,7 @@ export default function OrderDetailPage() {
         if (row.status === 'completed' && Number(row.refund_amount_exact) === 0) {
           actions.push(
             <span key="none" style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-              已冲应收，无退款
+              已抵完客户欠款，无退款
             </span>,
           )
         }
@@ -1425,7 +1425,7 @@ export default function OrderDetailPage() {
       ? [
           {
             label: '已退货货款',
-            help: '已冲账的退货货款（不含运费）；先冲未收应收，剩余为应退/已退。明细见「退货记录」。',
+            help: '已处理的退货货款（不含运费）；先把客户还没付的钱抵掉，剩余为待退/已退。明细见「退货记录」。',
             value: formatMoney(
               toTwoDecimals(summary?.returned_amount_exact ?? summary?.returned_amount ?? 0),
               order.currency,
@@ -1438,7 +1438,7 @@ export default function OrderDetailPage() {
       ? [
           {
             label: '已到账待分配',
-            help: '客户已经付款、但还没分到具体应收期的钱。分配后才会冲减对应账期。',
+            help: '客户已经付款、但还没分到具体收款期的钱。分配后才能抵掉对应期客户欠款。',
             value: formatMoney(
               summary?.unallocated_amount_exact ?? summary?.unallocated_amount ?? 0,
               order.currency,
@@ -1713,8 +1713,9 @@ export default function OrderDetailPage() {
           // 再加上逾期、已到账待分配、待确认回款，最多 7 张。
           // kpi-grid 的最小卡宽是 240px，1130 可用宽度下只排得下 4 列 ——
           // 5 张时第 5 张被甩到第二行、右边空出四分之三（2026-11-17 巡检）。
-          // 5 张走 kpi-cols-5、6 张走 kpi-cols-6，都是一行排满；7 张仍按 4+3，
-          // 再挤数字就认不出来了。这两个类自带窄屏断点（≤1370 三列、≤1000 两列）。
+          // 5 张走 kpi-cols-5、6 张走 kpi-cols-6；7 张仍按 4+3，再挤数字就认不出来了。
+          // 这两个类自带窄屏断点：≤1370 按 3 列，≤1000 按 230/240px 最小卡宽自动收列，
+          // 5 张的末张在窄屏横跨整行（2+2+整行），不会剩半行空白。
           className={`kpi-grid${orderKpis.length === 5 ? ' kpi-cols-5' : orderKpis.length === 6 ? ' kpi-cols-6' : ''}`}
           style={{ marginTop: 16, marginBottom: 0 }}
           items={orderKpis}
@@ -2316,7 +2317,7 @@ export default function OrderDetailPage() {
               <div className="toolbar">
                 <p className="workflow-guide">
                   只退已实发批次，原发货记录保留。登记后先由主管复核，通过后才到财务；
-                  财务按人工确认的最终货款处理，先冲未收应收，剩余转待退款。
+                  财务按人工确认的最终货款处理：先抵客户还没付的钱，剩余转待退款。
                   {returnReviewingCount > 0 ? ` 当前有 ${returnReviewingCount} 张待主管复核。` : ''}
                   {returnPendingCount > 0 ? ` 当前有 ${returnPendingCount} 张待财务处理。` : ''}
                   {returnRefundPendingCount > 0 ? ` 当前有 ${returnRefundPendingCount} 张待登记退款。` : ''}
@@ -3049,7 +3050,7 @@ export default function OrderDetailPage() {
                 {voidTarget.allocations
                   .map((a) => `${a.plan_name} ${formatMoney(a.amount_exact ?? a.amount, voidTarget.currency ?? order.currency)}`)
                   .join('；')}
-                。作废会把这些分配一起冲回。
+                。作废会把已经分配出去的钱退回未分配。
               </p>
             )}
             <p className="workflow-guide">
@@ -3262,7 +3263,7 @@ export default function OrderDetailPage() {
           {createReturnMutation.error && (
             <Banner type="danger" fullMode={false} closeIcon={null} title="登记未完成" description={createReturnMutation.error.message} />
           )}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))', gap: 12 }}>
             <div>
               <FormLabel required>退货原因分类</FormLabel>
               <Select
@@ -3416,7 +3417,7 @@ export default function OrderDetailPage() {
         )}
       </Modal>
 
-      {/* 财务处理退货：最终退多少钱由财务人工填；系统只管冲未收、拆待退款。 */}
+      {/* 财务处理退货：最终退多少钱由财务人工填；系统只管抵欠款、拆待退款。 */}
       <Modal
         width={560}
         style={{ maxWidth: 'calc(100vw - 32px)' }}
@@ -3463,7 +3464,7 @@ export default function OrderDetailPage() {
             <div className="workflow-guide">
               登记时按单价折出来的参考是 <strong>{formatMoney(settleTarget.goods_amount_exact, settleTarget.currency)}</strong>，
               这只是参考，不是必须退的钱。请按和客户谈定的最终金额直接填“退货货款”；
-              系统再拿这笔钱先冲未收应收，剩余部分转成“待退款”。退款实际付出后，再回来登记流水。
+              系统再拿这笔钱先抵客户还没付的欠款，剩余部分转成“待退款”。退款实际付出后，再回来登记流水。
             </div>
             <div>
               <FormLabel required>最终退货货款（人工填写）</FormLabel>
@@ -3533,7 +3534,7 @@ export default function OrderDetailPage() {
               <Banner type="danger" fullMode={false} closeIcon={null} title="登记未完成" description={refundReturnMutation.error.message} />
             )}
             <div className="workflow-guide">
-              应退 <strong>{formatMoney(refundTarget.refund_amount_exact, refundTarget.currency)}</strong>。
+              需退给客户 <strong>{formatMoney(refundTarget.refund_amount_exact, refundTarget.currency)}</strong>。
               只有钱实际付出后才登记；登记后这张退货单不能再作废。
             </div>
             <div>
@@ -3620,7 +3621,7 @@ export default function OrderDetailPage() {
               <Banner type="danger" fullMode={false} closeIcon={null} title="作废未完成" description={voidReturnMutation.error.message} />
             )}
             <div className="workflow-guide">
-              作废会把这张退货单冲减的应收原样恢复。若退款已经实际支付，系统不允许作废，只能线下冲回。
+              作废会把这张退货单抵掉的客户欠款原样恢复。若退款已经实际支付，系统不允许作废，只能线下处理。
             </div>
             <div>
               <FormLabel required>作废原因</FormLabel>
