@@ -357,7 +357,7 @@ export default function LogisticsPage() {
                 {/* SKU 和数量并排：数量格原来也拉满整列（440 宽的框里放 4 位数），
                     下面的分组因此多占一整行，左卡被撑高、右卡的空态跟着被拉到一样高
                     （2026-11-21 巡检）。SKU 给 2 份、数量 1 份，一行放下两格。 */}
-                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)', gap: 12 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))', gap: 12 }}>
                   <div>
                     <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>SKU</div>
                     <Select

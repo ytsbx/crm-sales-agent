@@ -1030,7 +1030,7 @@ export default function DocumentsPage() {
               </div>
             )}
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))', gap: 12 }}>
             <div>
               <div style={{ marginBottom: 4 }}>我方主体<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
               <Input value={ourCompany} onChange={setOurCompany} placeholder="请填写我方签约主体全称" />
@@ -1040,7 +1040,7 @@ export default function DocumentsPage() {
               <Input value={counterparty} onChange={setCounterparty} placeholder="请填写对方签约主体全称" />
             </div>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))', gap: 12 }}>
             <div>
               <div style={{ marginBottom: 4 }}>合同编号生成方式<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
               <Select
@@ -1113,7 +1113,7 @@ export default function DocumentsPage() {
               }}
             />
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))', gap: 12 }}>
             <div>
               <div style={{ marginBottom: 4 }}>关联订单（可选）</div>
               <Select
@@ -1159,7 +1159,7 @@ export default function DocumentsPage() {
               />
             </div>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))', gap: 12 }}>
             <div>
               <div style={{ marginBottom: 4 }}>报价版本（决定合同上的金额与条款）</div>
               <Select

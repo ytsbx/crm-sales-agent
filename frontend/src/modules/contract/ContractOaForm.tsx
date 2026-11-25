@@ -55,7 +55,7 @@ export default function ContractOaForm({ docId, values, onChange, onBusy }: { do
     return Boolean(parent && visible(parent, new Set([...trail, field.id])) &&
       rule.values.includes(String(fieldValues[rule.field] ?? '')))
   }
-  return <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 16 }}>
+  return <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))', gap: 16 }}>
     {data.fields.filter(field => visible(field) && !['contract_biz_id', 'external_ref', 'request_id', 'trace_id'].includes(field.id)).map(field => {
       const value = values[field.id] ?? data.defaults[field.id] ?? ''
       const wide = ['attachment', 'table'].includes(field.type) || field.multiline

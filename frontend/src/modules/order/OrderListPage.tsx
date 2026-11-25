@@ -763,7 +763,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
             <FormLabel required style={{ fontWeight: 600 }}>订单明细</FormLabel>
             <div style={{ display: 'grid', gap: 8 }}>
               {createForm.items.map((item, index) => (
-                <div key={index} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) 90px 110px minmax(0, 1.2fr) auto', gap: 8 }}>
+                <div key={index} className="order-item-grid" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) 90px 110px minmax(0, 1.2fr) auto', gap: 8 }}>
                   <Select
                     placeholder="选择 SKU"
                     value={item.sku_id ?? undefined}

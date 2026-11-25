@@ -237,7 +237,7 @@ export default function SampleDingTalkModal({sampleId,customerName,onClose}:{
             用户填了工时、积分还是旧值 —— 主人原话：「打样积分不还是要填几遍吗」。
             现在它由工时算出来（见上面的同步 effect），界面上只在「预计工时」旁边显示算出来的分。 */}
         {/* 模板控件：**两列网格**，字段名在上、控件在下（与下面那组同一套排法）。 */}
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px 12px'}}>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit, minmax(min(100%, 260px), 1fr))',gap:'10px 12px'}}>
           {query.data?.fields.filter(f=>query.data?.native_form || (!f.system && f.label!=='本次打样积分')).map(field=>
             <Field key={field.id} span={!(['DDSelectField','DDDateField','NumberField'].includes(field.type) || ['applicant_name','department'].includes(field.id))}
               label={field.label} required={field.required} hint={field.help_text}>
@@ -282,7 +282,7 @@ export default function SampleDingTalkModal({sampleId,customerName,onClose}:{
         <div style={{fontSize:12,lineHeight:1.7,color:'var(--crm-text-3)'}}>
           这些内容只用于 CRM 导出/打印《打样申请单》，不再随同序审批上传；同序审批要的《样品明细明细表》请在上方「样品明细明细表」处上传。
         </div>
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px 12px'}}>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit, minmax(min(100%, 260px), 1fr))',gap:'10px 12px'}}>
           {([['sample_purpose','打样目的',['客审确认样','报价核算样','定制改款样','送检上架样']],
              ['urgency','紧急程度',['普通','急','紧急']],
              ['sample_situation','样品情况',['首次设计新品','设计更改','客户首次要求','客户更改','其他']]] as const).map(([key,label,options])=>

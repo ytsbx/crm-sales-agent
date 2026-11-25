@@ -3056,10 +3056,79 @@ table:not(.semi-table) td {
   }
 }
 @media (max-width: 1000px) {
-  .kpi-cols-6,
-  .kpi-cols-5,
+  /* 不再写死两列：240px 是金额 + 卡内边距还能认得出的下限。
+     内容区放得下两张就两张，放不下（手机 480 宽约 408）自动落成一列，
+     不会出现截图里两张卡各 170 宽、¥1,000.00 被切到卡外的情况。 */
+  .kpi-cols-6 {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  }
+  .kpi-cols-5 {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr));
+  }
   .kpi-cols-4 {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  }
+  /* 工作台「团队概览」是卡中卡：4 格统计在 1000 以下保持两列（2×2），
+     不要按 220px 自动排成 3+1 —— 最后一张孤零零挂在第二行右边更难看。 */
+  .kpi-grid.kpi-inline.kpi-cols-4 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  /* 5 张卡落成两列时，第五张单独占一行会留下半行空白（640 宽实测像断了一截）。
+     让奇数张的最后一张横跨整行，2+2+整行，下面接「收款下一步」不再悬空。 */
+  .kpi-cols-5 > .kpi-card:last-child {
+    grid-column: 1 / -1;
+  }
+}
+
+/* 手工建订单的明细行：SKU / 数量 / 单价 / 规格 / 删除原来固定五列，
+   窄窗里五格挤在一行，SKU 名称会被压成一条。760 以下竖排，表单还能填。 */
+@media (max-width: 760px) {
+  .order-item-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+}
+
+@media (max-width: 560px) {
+  /* 手机/窄窗：卡片本身收一点内边距，金额字号降一档，给数字留整行。
+     这里不再强制多列——auto-fit 已经按 240 的最小可读宽度落成一列。 */
+  .kpi-card {
+    padding: 16px 18px;
+  }
+  .kpi-value {
+    font-size: 28px;
+    letter-spacing: -0.6px;
+  }
+  /* 工作台「团队概览」是卡中卡（kpi-inline），竖排时把左侧分隔线改成上边线 */
+  .kpi-grid.kpi-inline {
+    gap: 0;
+  }
+  .kpi-grid.kpi-inline.kpi-cols-4 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .kpi-grid.kpi-inline .kpi-card {
+    border-left: 0;
+    border-top: 1px solid var(--crm-surface-high);
+    padding: 12px 0;
+  }
+  .kpi-grid.kpi-inline .kpi-card:first-child {
+    border-top: 0;
+    padding-top: 0;
+  }
+  .kpi-grid.kpi-inline .kpi-card:last-child {
+    padding-bottom: 0;
+  }
+  /* 分析页指标组是 flex + 25% 基准，窄窗下同样落成一列，避免卡内金额顶破 */
+  .kpi-group .kpi-grid,
+  .kpi-group .kpi-grid.kpi-grid-fixed {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .kpi-pair {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .kpi-pair-cell + .kpi-pair-cell {
+    border-left: 0;
+    border-top: 1px solid var(--crm-border);
   }
 }
 
