@@ -11,7 +11,8 @@
 - 前后端只能从同一明确 Git SHA 构建；即使工作区有未提交文件，构建输入也全部来自 `git archive` 的指定提交。构建在临时目录执行，不复用工作区 dist 或 node_modules。
 - 标准库 Python 3.10+，本地另需 Git、Node 和 pnpm。前端按 pnpm 锁文件安装，默认只用离线缓存，显式 `--allow-downloads` 才下载锁定依赖。
 - 只携带 `backend/app`、原 requirements/alembic 文件及前端 dist。包的整体 SHA256 由操作者另行核对，manifest 的 SHA256 用于查漏/查篡改，**不提供数字签名或来源认证**。
-- 当前只支持无依赖变更、无迁移变更的发布。新旧 requirements、alembic.ini、alembic 全目录必须相同，且线上文件匹配；实际数据库必须已到安装的 migration head。变化时停止，另行设计并批准升级/回滚步骤。
+- 默认只支持无依赖变更、无迁移变更的发布：新旧 requirements、alembic.ini、alembic 全目录必须相同，且线上文件匹配；实际数据库必须已到安装的 migration head，变化时停止。
+- 迁移变更走**单独批准**的路径（见下方「迁移变更发布」）：`build --allow-migration-change` 生成 schema 2 包，部署时必须提供发布前完成的数据库备份路径（`--db-backup`）；依赖（requirements）仍必须无变化，工具不会安装新依赖。
 - 以基线提交的全部后端 app 文件核对服务器内容，拒绝覆盖未知热修或额外文件。历史备份文件若放在 app 源码内也会触发拒绝，不能为了通过检查直接删文件。先调查并决定如何保存/迁出。
 - 不修改 `.env`、虚拟环境、上传文件、业务数据或服务配置。服务器没有 Git 也可以通过源码哈希证明后端与 Git 提交一致。
 
@@ -44,6 +45,18 @@ python3 /tmp/crm-release-<commit>/release.py deploy --bundle /tmp/crm-release-<c
 ```
 
 执行人需要运行 systemctl/nginx 和写发布目录的权限。脚本不内置 SSH 连接、凭据或自动提权。
+
+## 迁移变更发布（每次单独批准）
+
+当两个版本之间存在 alembic 迁移差异时，默认流程会拒绝。经当次批准后可走以下路径；requirements 差异仍不支持（工具不安装依赖）。
+
+1. 构建时显式放行迁移差异：`release.py build --ref <commit> --baseline <线上基线> --allow-migration-change --output ...`，生成的 manifest 为 schema 2，同时记录新包 `guards` 与线上 `baseline_guards`。
+2. 在服务器上先做**数据库备份**并保留路径（工具不做数据库回滚，这份备份是唯一退路）：
+   `pg_dump --format=custom --file /opt/crm-sales-agent/backup/db-<commit>.dump <生产库>`
+3. 先跑默认预检（不带 `--apply`），确认线上文件、基线、服务与磁盘空间检查通过。
+4. 正式执行加 `--apply --db-backup <备份路径>`；缺少备份或备份为空会直接拒绝。
+5. 工具的执行顺序：备份后端 app / 前端 / guards → 停服务 → 替换 `backend/app` 与 guards（alembic 目录、requirements）→ 在新代码目录执行 `alembic upgrade head` → 启动服务 → 健康与公网核验 → 写版本记录。
+6. 迁移失败时：`alembic` 在 PostgreSQL 上整条 upgrade 单事务执行，数据库保持原版本；工具恢复旧 app 与 guards、重启旧服务并核验。数据库**不会**自动回滚；若迁移成功但后续核验失败，回滚只恢复代码，数据库停在已升级版本（迁移必须保持向后兼容），需要按备份人工处理。
 
 ## 成功与失败判据
 

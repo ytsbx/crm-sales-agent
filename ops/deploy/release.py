@@ -112,7 +112,10 @@ def build(args):
         source, baseline, package = base / 'source', base / 'baseline', base / 'package'
         sha = snapshot(repo, args.ref, source)
         old_sha = snapshot(repo, args.baseline, baseline)
-        if subset(source, GUARDS) != subset(baseline, GUARDS):
+        target_guards = subset(source, GUARDS)
+        baseline_guards = subset(baseline, GUARDS)
+        migration_change = target_guards != baseline_guards
+        if migration_change and not args.allow_migration_change:
             raise ValueError('Dependency/migration/config files changed; separate review required')
         install_args = ['pnpm', 'install', '--frozen-lockfile']
         if not args.allow_downloads:
@@ -131,10 +134,15 @@ def build(args):
                 shutil.copy2(src, dst)
         shutil.copytree(source / 'frontend/dist', package / 'web')
         manifest = {
-            'schema': 1, 'commit': sha, 'baseline_commit': old_sha,
+            # schema 2 = 含迁移变更的发布：新包自己的 guards 写入 `guards`，
+            # 线上旧版本的 guards 写入 `baseline_guards`（预检按它核对线上文件）。
+            'schema': 2 if migration_change else 1,
+            'commit': sha, 'baseline_commit': old_sha,
             'built_at_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
             'files': files(package), 'baseline_app': files(baseline / 'backend/app'),
-            'guards': subset(baseline, GUARDS),
+            'guards': target_guards,
+            'baseline_guards': baseline_guards,
+            'migration_change': migration_change,
         }
         (package / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
         # mode=x prevents overwriting an existing release.
@@ -146,8 +154,11 @@ def build(args):
 
 def verify_package(package):
     manifest = json.loads((package / 'manifest.json').read_text())
-    if manifest.get('schema') != 1:
+    if manifest.get('schema') not in (1, 2):
         raise ValueError('Unsupported manifest schema')
+    if manifest['schema'] == 2:
+        if manifest.get('migration_change') is not True or 'baseline_guards' not in manifest:
+            raise ValueError('Invalid migration manifest')
     for key in ('commit', 'baseline_commit'):
         if not re.fullmatch('[0-9a-f]{40}', manifest[key]):
             raise ValueError('Invalid commit')
@@ -210,6 +221,16 @@ class Host:
         except (ValueError, KeyError, OSError):
             return False
 
+    def migrate(self):
+        """用**新代码目录**里的 alembic 把数据库升到 head。
+
+        只允许在"代码已替换、服务尚未启动"的窗口执行：此时旧进程已停，
+        `.env` 未动，数据库连接仍指向原库。alembic 在 PostgreSQL 上以单事务
+        跑完整条 upgrade；失败时数据库保持原版本，调用方的回滚只需恢复代码。
+        """
+        python = str(self.app / 'backend/.venv/bin/python')
+        run(python, '-m', 'alembic', 'upgrade', 'head', cwd=self.app / 'backend')
+
     def wait_health(self):
         for _ in range(30):
             try:
@@ -244,7 +265,7 @@ def preflight(package, manifest, host):
     if files(host.app / 'backend/app') != manifest['baseline_app']:
         raise ValueError('Live backend differs from baseline; refusing unknown overwrite')
     files(host.app / 'web-dist')  # Reject links anywhere in the overlay destination.
-    if subset(host.app, GUARDS) != manifest['guards']:
+    if subset(host.app, GUARDS) != manifest.get('baseline_guards', manifest['guards']):
         raise ValueError('Live dependency/migration/config differs; separate review required')
     for name in RECORDS:
         p = host.app / name
@@ -298,12 +319,40 @@ def install(package, manifest, host):
     records = {name: (host.app / name).read_bytes() if (host.app / name).exists() else None for name in RECORDS}
     (backup / 'records.json').write_text(json.dumps({k: v.decode() if v is not None else None for k, v in records.items()}))
     (backup / 'manifest.json').write_text(json.dumps(manifest, indent=2))
+    # 迁移发布：guards（alembic 目录、requirements）也必须换到新包这一版，
+    # 否则新代码启动后 alembic 看到的还是旧脚本树。先在服务运行中备份，
+    # 回滚时原样恢复。
+    guards_backup = backup / 'guards'
+    if manifest.get('migration_change'):
+        for name in GUARDS:
+            source = host.app / name
+            target = guards_backup / name
+            if source.is_dir():
+                shutil.copytree(source, target)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
     staged = backup / 'new-app'
     shutil.copytree(package / 'backend/app', staged)
     try:
         host.control('stop')
         os.rename(host.app / 'backend/app', backup / 'previous-app')
         os.rename(staged, host.app / 'backend/app')
+        if manifest.get('migration_change'):
+            for name in GUARDS:
+                source, target = package / name, host.app / name
+                if target.is_dir():
+                    shutil.rmtree(target)
+                elif target.exists():
+                    target.unlink()
+                if source.is_dir():
+                    shutil.copytree(source, target)
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, target)
+            # 迁移失败会抛错进入下面的回滚：代码与 guards 恢复旧版、服务重开。
+            # 数据库因单事务保持旧版本，所以回滚后的旧代码仍能正常启动。
+            host.migrate()
         host.control('start')
         host.wait_health()
         # Keep old hashed assets for already-open browser tabs; index is replaced last.
@@ -332,6 +381,18 @@ def install(package, manifest, host):
             if (host.app / 'backend/app').exists():
                 os.rename(host.app / 'backend/app', backup / 'failed-app')
             shutil.copytree(backup / 'backend-app', host.app / 'backend/app')
+            if manifest.get('migration_change') and guards_backup.is_dir():
+                for name in GUARDS:
+                    live, saved = host.app / name, guards_backup / name
+                    if live.is_dir():
+                        shutil.rmtree(live)
+                    elif live.exists():
+                        live.unlink()
+                    if saved.is_dir():
+                        shutil.copytree(saved, live)
+                    elif saved.exists():
+                        live.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(saved, live)
             os.rename(host.app / 'web-dist', backup / 'failed-web')
             shutil.copytree(backup / 'web', host.app / 'web-dist')
             for name, value in records.items():
@@ -349,7 +410,8 @@ def install(package, manifest, host):
             raise RuntimeError(f'RELEASE FAILED AND ROLLBACK FAILED; backup={backup}; '
                                f'release={failure}; rollback={rollback}') from rollback
         raise RuntimeError(f'Release failed; rollback verified; backup={backup}; {failure}') from failure
-    print(json.dumps({'status': 'verified', 'commit': manifest['commit'], 'backup': str(backup)}))
+    print(json.dumps({'status': 'verified', 'commit': manifest['commit'], 'backup': str(backup),
+                      'migration_change': bool(manifest.get('migration_change'))}))
 
 
 @contextlib.contextmanager
@@ -359,6 +421,19 @@ def lock(root):
     with os.fdopen(fd, 'w') as handle:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         yield
+
+
+def check_db_backup(path):
+    """迁移发布的数据库备份闸门：备份必须在本次发布前由操作者完成并给出路径。
+
+    工具自己不做数据库备份/回滚（见 RELEASE.md）：数据库回滚依赖这份外部备份。
+    """
+    if not path:
+        raise ValueError('Migration release requires --db-backup taken before this run')
+    backup = Path(path)
+    if not backup.is_file() or backup.stat().st_size == 0:
+        raise ValueError(f'Database backup missing or empty: {backup}')
+    return backup
 
 
 def deploy(args):
@@ -374,11 +449,14 @@ def deploy(args):
             raise ValueError('Insufficient disk space to stage package safely')
         unpack(bundle, package)
         manifest = verify_package(package)
+        if args.apply and manifest.get('migration_change'):
+            check_db_backup(args.db_backup)
         preflight(package, manifest, host)
         if args.apply:
             install(package, manifest, host)
         else:
-            print(json.dumps({'status': 'preflight_only', 'commit': manifest['commit']}))
+            print(json.dumps({'status': 'preflight_only', 'commit': manifest['commit'],
+                              'migration_change': bool(manifest.get('migration_change'))}))
 
 
 def main():
@@ -393,11 +471,14 @@ def main():
     pack.add_argument('--baseline', required=True, help='Git commit of verified live backend')
     pack.add_argument('--output', required=True)
     pack.add_argument('--allow-downloads', action='store_true', help='Fetch missing lockfile-pinned dependencies')
+    pack.add_argument('--allow-migration-change', action='store_true',
+                      help='Explicitly allow dependency/migration/config changes (requires a separately approved upgrade plan)')
     pack.set_defaults(func=build)
     release = commands.add_parser('deploy')
     release.add_argument('--bundle', required=True)
     release.add_argument('--sha256', required=True)
     release.add_argument('--apply', action='store_true', help='Actually change production and restart')
+    release.add_argument('--db-backup', help='Path on this host to the database backup taken before a migration release')
     release.set_defaults(func=deploy)
     args = parser.parse_args()
     args.func(args)

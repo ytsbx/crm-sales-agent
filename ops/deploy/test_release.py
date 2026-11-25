@@ -28,6 +28,7 @@ class FakeHost(r.Host):
         self.health_failures = 0
         self.public_failures = 0
         self.starts_fail = False
+        self.migrate_fails = False
 
     def layout(self):
         self.events.append('layout')
@@ -51,6 +52,11 @@ class FakeHost(r.Host):
         if self.public_failures:
             self.public_failures -= 1
             raise ValueError('simulated public mismatch')
+
+    def migrate(self):
+        self.events.append('migrate')
+        if self.migrate_fails:
+            raise RuntimeError('simulated migration failure')
 
 
 class ReleaseTests(unittest.TestCase):
@@ -258,6 +264,67 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'rollback verified'):
                 self.apply()
         self.assertEqual(r.files(self.host.app), before)
+
+    def make_migration_manifest(self):
+        """新包比线上多一个迁移：schema 2，guards 与 baseline_guards 不同。"""
+        write(self.package, 'backend/alembic/versions/b.py', 'revision = "b"\n')
+        pkg_files = r.files(self.package)
+        pkg_files.pop('manifest.json', None)  # setUp 已写过旧 manifest.json
+        self.manifest = {
+            'schema': 2, 'commit': 'b' * 40, 'baseline_commit': 'a' * 40,
+            'files': pkg_files,
+            'baseline_app': r.files(self.host.app / 'backend/app'),
+            'guards': r.subset(self.package, r.GUARDS),
+            'baseline_guards': r.subset(self.host.app, r.GUARDS),
+            'migration_change': True,
+        }
+        self.save_manifest()
+
+    def test_migration_release_upgrades_after_swap_before_start(self):
+        self.make_migration_manifest()
+        self.apply()
+        self.assertLess(self.host.events.index('migrate'), self.host.events.index('start'))
+        self.assertEqual(self.host.events.index('migrate'), self.host.events.index('stop') + 1)
+        self.assertEqual((self.host.app / 'backend/alembic/versions/b.py').read_text(), 'revision = "b"\n')
+        self.assertEqual(json.loads((self.host.app / 'RELEASE.json').read_text())['status'], 'verified')
+
+    def test_migration_failure_rolls_back_code_and_does_not_start_new_code(self):
+        self.make_migration_manifest()
+        before = r.files(self.host.app)
+        self.host.migrate_fails = True
+        with self.assertRaisesRegex(RuntimeError, 'rollback verified'):
+            self.apply()
+        self.assertEqual(r.files(self.host.app), before)
+        # stop(发布) -> migrate(失败) -> stop(回滚) -> start(旧服务)
+        self.assertEqual(self.host.events.count('start'), 1)
+
+    def test_migration_manifest_must_be_explicit(self):
+        self.make_migration_manifest()
+        self.manifest.pop('migration_change')
+        self.save_manifest()
+        with self.assertRaisesRegex(ValueError, 'Invalid migration manifest'):
+            r.verify_package(self.package)
+
+    def test_migration_release_compares_live_against_baseline_guards(self):
+        self.make_migration_manifest()
+        write(self.host.app, 'backend/alembic/versions/a.py', 'changed')
+        with self.assertRaisesRegex(ValueError, 'differs'):
+            self.apply()
+        self.assertNotIn('stop', self.host.events)
+
+    def test_database_backup_required_for_migration_release(self):
+        with self.assertRaisesRegex(ValueError, 'requires --db-backup'):
+            r.check_db_backup(None)
+        missing = self.root / 'missing.dump'
+        with self.assertRaisesRegex(ValueError, 'missing or empty'):
+            r.check_db_backup(str(missing))
+        empty = self.root / 'empty.dump'
+        empty.write_bytes(b'')
+        with self.assertRaisesRegex(ValueError, 'missing or empty'):
+            r.check_db_backup(str(empty))
+        good = self.root / 'good.dump'
+        good.write_bytes(b'PGDMP')
+        self.assertEqual(r.check_db_backup(str(good)), good)
 
     def test_default_deploy_is_preflight_only(self):
         args = type('Args', (), {'bundle': str(self.root / 'bundle.tar.gz'), 'apply': False})()
