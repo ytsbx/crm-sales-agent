@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.core import database, scheduler
 from app.core.audit import AuditLog, write_audit
-from app.modules.contract import customer_flow, service as contracts
+from app.modules.contract import support, service as contracts
 from app.modules.notification import service as notifications
 from app.modules.notification.model import Notification
 from app.modules.payment import service as payments
@@ -86,7 +86,7 @@ async def test_daily_tasks_rollback_failed_step_and_commit_later_reminders(monke
     monkeypatch.setattr(scheduler, "SessionLocal", SessionScope)
     monkeypatch.setattr(payments, "refresh_overdue_plans", AsyncMock(return_value=0))
     monkeypatch.setattr(settings, "run_auto_tasks", AsyncMock(return_value={}))
-    monkeypatch.setattr(customer_flow, "remind_countersigns", AsyncMock(return_value=0))
+    monkeypatch.setattr(support, "remind_countersigns", AsyncMock(return_value=0))
     monkeypatch.setattr(contracts, "notify_expiring_monthly", failing_reminder)
     monkeypatch.setattr(quotes, "notify_expired_quotes", quote_reminder)
     monkeypatch.setattr(settings, "notify_due_followups", followups)

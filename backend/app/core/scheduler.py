@@ -55,7 +55,7 @@ async def run_public_pool_recycle_job() -> None:
 async def run_auto_tasks_job() -> None:
     """每日扫描分步提交，单项失败时继续处理其他提醒。"""
     from app.modules.contract import service as contract_service
-    from app.modules.contract.customer_flow import remind_countersigns
+    from app.modules.contract.support import remind_countersigns
     from app.modules.notification import service as notification_service
     from app.modules.payment import service as payment_service
     from app.modules.quote import service as quote_service

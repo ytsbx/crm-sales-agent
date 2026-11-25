@@ -7,69 +7,13 @@ import hashlib
 import pytest
 
 from app.core.errors import AppError
-from app.modules.contract import customer_flow as flow
+from app.modules.contract import support as flow
 from app.modules.contract.schema import DocumentCreate
-
-
-def instance(**changes):
-    data = {"processCode": flow.CONTRACT_PROCESS, "originatorUserId": "ding-actor", "status": "RUNNING",
-            "formComponentValues": [
-                {"name": "合同编号", "value": "CT-001"}, {"name": "合同名称", "value": "采购合同"},
-                {"name": "合同正文", "value": '[{"fileId":"file-a"}]'},
-            ]}
-    return {**data, **changes}
-
-
-def check(data):
-    flow.verify_instance(data, cfg={"process_code": flow.CONTRACT_PROCESS}, doc=Obj(doc_no="CT-001", title="采购合同"), user_id="ding-actor")
 
 
 def test_uploaded_contract_does_not_require_a_template():
     p = DocumentCreate(customer_id=1, source_type="customer_drafted", original_file_id=3)
     assert p.template_id is None and p.original_file_id == 3
-
-
-def test_association_verifies_contract_number_name_actor_and_file():
-    check(instance())
-    with pytest.raises(AppError):
-        check(instance(processCode="PROC-OTHER"))
-    with pytest.raises(AppError):
-        check(instance(originatorUserId="another-person"))
-    for index in range(3):
-        data = instance()
-        data["formComponentValues"][index]["value"] = ""
-        with pytest.raises(AppError):
-            check(data)
-
-
-def test_real_instance_aliases_are_supported():
-    data = instance()
-    data["originatorUserid"] = data.pop("originatorUserId")
-    data["formValueVOS"] = data.pop("formComponentValues")
-    check(data)
-
-
-@pytest.mark.parametrize('data,status', [
-    ({"status":"COMPLETED","processInstanceResult":"refuse"}, "rejected"),
-    ({"status":"COMPLETED","result":"agree"}, "approved"),
-    ({"status":"COMPLETED"}, "needs_review"),
-    ({"status":"TERMINATED"}, "withdrawn"),
-    ({"status":"RUNNING"}, "pending"),
-    ({"status":"SOMETHING_UNKNOWN"}, "needs_review"),
-])
-def test_unknown_completed_result_is_not_approval(data,status):
-    assert flow.status_of(data) == status
-
-
-@pytest.mark.anyio
-async def test_suite_never_reaches_generic_create():
-    client = Obj(get_process_schema=AsyncMock(return_value={"schemaContent": '{"items":[{"componentName":"DDBizSuite"}]}'}))
-    with pytest.raises(AppError):
-        await flow.reject_suite_submission(client, flow.CONTRACT_PROCESS)
-    client.get_process_schema.assert_not_called()
-    with pytest.raises(AppError):
-        await flow.reject_suite_submission(client, "OTHER-SUITE")
-    await flow.reject_suite_submission(Obj(get_process_schema=AsyncMock(return_value={"items": [{"componentName": "DDAttachment"}]})), "ORDINARY")
 
 
 def test_original_bytes_must_exist_and_match_registry(monkeypatch,tmp_path):
@@ -84,59 +28,47 @@ def test_original_bytes_must_exist_and_match_registry(monkeypatch,tmp_path):
     with pytest.raises(AppError): flow.verified_content(row)
 
 
-def setup_withdraw(monkeypatch, *, read_states=None, status='pending'):
-    row=Obj(id=1,status=status,instance_id='INST-1',originator_user_id='ding-actor',result={})
+def setup_withdraw(monkeypatch, *, created_by=1, status='pending', provider='self_oa'):
+    row=Obj(id=1,status=status,instance_id='INST-1',provider=provider,created_by=created_by,result={})
     monkeypatch.setattr(flow.oa,'get_by_business_key',AsyncMock(return_value=row))
     monkeypatch.setattr(flow.oa,'lock_oa_business_then_instance',AsyncMock(return_value=row))
-    monkeypatch.setattr(flow.settings,'dingtalk_push_off',False)
-    client=Obj(get_process_instance=AsyncMock(side_effect=read_states or [instance(), {'status':'TERMINATED'}]), terminate_process_instance=AsyncMock())
-    monkeypatch.setattr(flow,'get_client',lambda:client)
-    monkeypatch.setattr(flow,'store_snapshot',AsyncMock())
     monkeypatch.setattr(flow,'visible_doc',AsyncMock())
-    session=Obj(get=AsyncMock(return_value=Obj(dingtalk_userid='ding-actor')),commit=AsyncMock())
-    return row,client,session
+    withdraw=AsyncMock()
+    monkeypatch.setattr('app.modules.oa.service.withdraw_contract_row',withdraw)
+    session=Obj(get=AsyncMock(return_value=Obj(id=1)),commit=AsyncMock())
+    return row,withdraw,session
 
 
 @pytest.mark.anyio
-async def test_void_waits_for_confirmed_external_withdrawal(monkeypatch):
-    row, client, session=setup_withdraw(monkeypatch)
+async def test_void_withdraws_self_oa_before_local_void(monkeypatch):
+    row,withdraw,session=setup_withdraw(monkeypatch)
     await flow.withdraw_before_void(session,Obj(id=1),Obj(id=2))
-    client.terminate_process_instance.assert_awaited_once()
-    assert client.get_process_instance.await_count==2
-    flow.store_snapshot.assert_awaited_once()
+    withdraw.assert_awaited_once()
 
 
 @pytest.mark.anyio
-async def test_unknown_or_failed_withdrawal_never_marks_local_void(monkeypatch):
-    row,client,session=setup_withdraw(monkeypatch,read_states=[instance(),instance()])
-    with pytest.raises(AppError): await flow.withdraw_before_void(session,Obj(id=1),Obj(id=2))
-    flow.store_snapshot.assert_not_awaited()
-    row,client,session=setup_withdraw(monkeypatch,status='needs_review')
-    with pytest.raises(AppError): await flow.withdraw_before_void(session,Obj(id=1),Obj(id=2))
-    client.terminate_process_instance.assert_not_awaited()
+async def test_unknown_withdrawal_never_marks_local_void(monkeypatch):
+    from app.core.errors import ErrorCode
+    row,withdraw,session=setup_withdraw(monkeypatch)
+    withdraw.side_effect=AppError(ErrorCode.EXTERNAL_ERROR,'OA 未确认',502)
+    with pytest.raises(AppError,match='本次未作废合同'):
+        await flow.withdraw_before_void(session,Obj(id=1),Obj(id=2))
 
 
 @pytest.mark.anyio
 async def test_cannot_withdraw_other_persons_approval(monkeypatch):
-    row,client,session=setup_withdraw(monkeypatch)
-    row.originator_user_id='another-person'
-    with pytest.raises(AppError): await flow.withdraw_before_void(session,Obj(id=1),Obj(id=2))
-    client.terminate_process_instance.assert_not_awaited()
+    row,withdraw,session=setup_withdraw(monkeypatch,created_by=2)
+    with pytest.raises(AppError,match='发起人'):
+        await flow.withdraw_before_void(session,Obj(id=1),Obj(id=2))
+    withdraw.assert_not_awaited()
 
 
 @pytest.mark.anyio
-async def test_approval_refresh_notifies_only_once_per_round(monkeypatch):
-    monkeypatch.setattr(flow.oa,'_notify_contract_review_outcome',AsyncMock())
-    doc=Obj(filled_data={})
-    row=Obj(id=10,instance_id='INST-A')
-    data={'status':'COMPLETED','result':'agree','tasks':[{'status':'COMPLETED'}]}
-    await flow.store_snapshot(None,doc,row,data)
-    await flow.store_snapshot(None,doc,row,data)
-    flow.oa._notify_contract_review_outcome.assert_awaited_once()
-    assert doc.filled_data['_dingtalk_oa']['result']['payload']['tasks']
-    row.id=11
-    await flow.store_snapshot(None,doc,row,data)
-    assert flow.oa._notify_contract_review_outcome.await_count==2
+async def test_historical_dingtalk_approval_is_not_touched(monkeypatch):
+    row,withdraw,session=setup_withdraw(monkeypatch,provider='dingtalk')
+    with pytest.raises(AppError,match='历史钉钉审批'):
+        await flow.withdraw_before_void(session,Obj(id=1),Obj(id=2))
+    withdraw.assert_not_awaited()
 
 
 @pytest.fixture
@@ -277,12 +209,6 @@ async def test_approved_contract_archive_completes_real_return_task(sql_session,
     assert [row["file_id"] for row in await service.list_signed_files(sql_session, doc.id)] == [99]
 
 
-@pytest.mark.parametrize('value',[None,'',[],"[]",'not-an-attachment','[{}]'])
-def test_association_rejects_empty_or_malformed_attachments(value):
-    data=instance()
-    data['formComponentValues'][2]['value']=value
-    with pytest.raises(AppError):check(data)
-
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("separate_upload", [False, True])
@@ -319,20 +245,6 @@ async def test_reusing_a_signed_contract_file_requires_a_reason(sql_session, mon
     assert second.filled_data["_signed_file_reuse_reason"] == "两份合同合扫在一份 PDF"
 
 
-def test_pasted_approval_link_is_parsed_without_executing_it():
-    assert flow.LinkInput(instance_id='https://applink.dingtalk.com/approval?procInstId=instance-123').instance_id=='instance-123'
-    with pytest.raises(ValueError):flow.LinkInput(instance_id='https://example.com/unknown')
-
-
-@pytest.mark.anyio
-async def test_withdraw_timeout_explains_uncertainty_and_does_not_close_contract(monkeypatch):
-    from app.modules.dingtalk.client import DingTalkUnknownOutcome
-    row,client,session=setup_withdraw(monkeypatch)
-    client.terminate_process_instance.side_effect=DingTalkUnknownOutcome('timeout')
-    with pytest.raises(AppError,match='本次未作废合同'):
-        await flow.withdraw_before_void(session,Obj(id=1),Obj(id=2))
-    flow.store_snapshot.assert_not_awaited()
-
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('payload',[
@@ -346,9 +258,22 @@ async def test_contract_entry_accepts_uploads_only(payload):
         await router.generate_document(payload,Obj(),Obj(),Obj())
 
 
-def test_template_creation_is_no_longer_a_public_action():
+def test_template_entry_only_accepts_an_uploaded_file():
+    """2026-11-25：文档管理加了「合同模板」存档入口。
+
+    但系统模板生成**保持停用**：入口只收"类型/名称/已上传文件"，
+    没有正文、没有启用开关，生成合同仍只能上传原文件。
+    """
     from app.modules.contract.router import router
-    assert not any(getattr(route,'path','')=='/contract-templates' and 'POST' in getattr(route,'methods',set()) for route in router.routes)
+    from app.modules.contract.schema import TemplateFileCreate
+
+    posts = [
+        route for route in router.routes
+        if getattr(route, 'path', '') == '/contract-templates'
+        and 'POST' in getattr(route, 'methods', set())
+    ]
+    assert posts, "合同模板存档入口应当存在"
+    assert set(TemplateFileCreate.model_fields) == {'doc_type', 'name', 'file_id'}
 
 
 @pytest.mark.anyio

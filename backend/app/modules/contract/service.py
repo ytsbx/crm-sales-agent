@@ -1281,7 +1281,7 @@ async def sign_document(
     if record is None:
         raise AppError(ErrorCode.NOT_FOUND, "文件不存在，请先通过 /files/upload 上传", 404)
     if original_id:
-        from app.modules.contract.customer_flow import verified_content
+        from app.modules.contract.support import verified_content
         verified_content(record)
     # 不能把系统自己出的生成稿登记成"客户签回来的那一份"：那会让台账上
     # "下载到的到底是生成稿还是签署件"彻底分不清，而且生成稿会因此被列入

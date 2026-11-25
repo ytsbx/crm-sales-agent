@@ -5655,3 +5655,12 @@
 - 证据：`backend/app/modules/bizdoc/tokens.py:33` 原 `"level": "客户等级"`；库中仅 3 条"默认模板（待替换为正式模板）"V1，正文 0 处 `customer.level`；全仓库无模板引用；项目未上线。
 - 改动：白名单删除 `level` 并留注释；新增回归 `test_customer_level_not_printable_on_external_docs`（断言 `{{customer.level}}` 保存/预览即报"不受支持"、可用变量清单不再推荐）。
 - 验证：bizdoc 三文件 36 项通过；后端隔离全量 **2313 绿**。
+
+## 2026-11-25 删除旧钉钉审批路径（主人拍板"旧钉钉的删了"）
+
+- 删除 `backend/app/modules/contract/customer_flow.py`：旧钉钉合同审批的关联/自动认领/同步/状态解析/套装拦截全部移除；保留能力迁到新 `contract/support.py`（附件校验、作废前撤回自研 OA、回签提醒、审批显示名、补业务依据）。
+- 删除 `contract/router.py` 中无装饰器、不可达的 `start_dingtalk_contract_approval` 与两个结果翻译函数。
+- 删除询价发起接口里的钉钉兜底分支（`dingtalk/router.py`）：未配置同序 OA 询价模板时直接提示"可先保存草稿"，不再走 `create_inquiry_instance`。
+- 保留下单：钉钉登录/通讯录、自研 OA 共用的 `OaInstance` 台账与状态同步/撤回/核定接口（合同、打样、询价的自研 OA 分支仍在使用，`oa/sample.py`、`oa/inquiry.py`、`oa/service.py`）。
+- 测试适配：旧钉钉合同状态机与询价提交字段用例随功能删除；作废撤回用例改为自研 OA 口径（撤回成功、撤回失败不本地作废、非发起人拒绝、历史钉钉记录不再调外部）。
+- 验证：后端隔离全量 **2275 绿**。
