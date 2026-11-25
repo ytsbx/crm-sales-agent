@@ -593,6 +593,7 @@ async def finalize(
     preview_token: str | None = None,
     business_type: str | None = None,
     extra: dict | None = None,
+    audit_extra: dict | None = None,
 ) -> dict:
     """收尾：预览就整体回滚，正式执行则写审计并提交。
 
@@ -696,6 +697,8 @@ async def finalize(
             "skipped": report.skipped_count,
             "failed": report.failed_count,
             "failed_rows": sorted(report.failure_rows()),
+            # B03-20：价格/成本导入把逐行明细交给审计（调用方按需传入并截断）
+            **(audit_extra or {}),
         },
         ip=ip,
     )

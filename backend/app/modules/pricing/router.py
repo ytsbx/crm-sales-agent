@@ -109,6 +109,26 @@ async def create_cost(
     sku, product = locked_sku
     if sku.deleted_at is not None or product.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在或已删除", 404)
+    # B03-04：同一天只允许一条成本版本。核价遇到同日多条会直接 409，
+    # 写入口先拦住并指出已有记录，避免把歧义留到核价那一刻。
+    existing_same_day = (
+        await session.execute(
+            select(ProductCost.id)
+            .where(
+                ProductCost.sku_id == sku_id,
+                ProductCost.effective_from == payload.effective_from,
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if existing_same_day is not None:
+        raise AppError(
+            ErrorCode.DUPLICATE,
+            f"该 SKU 在 {payload.effective_from.isoformat()} 已有一条成本记录"
+            f"（编号 {existing_same_day}），同一天只能有一条成本版本："
+            "请修改原记录，或先把原记录的生效截止日设到这一天之前再新增",
+            409,
+        )
     # 与导入同一套校验（第七批 7.2/7.4：导入、预览、页面维护不能各校验一套，
     # 否则"页面拦得住、导入绕得过"永远修不干净）
     values = payload.model_dump()
@@ -386,9 +406,14 @@ async def create_price_rule(
         effective_from=payload.effective_from,
         effective_to=payload.effective_to,
     )
-    sku = await session.get(Sku, payload.sku_id)
-    if sku is None:
+    # B03-07：与成本/导入同一判据——已删除的 SKU 或产品不能建价格规则
+    # （页面原来只查存在，规则建完即隐身）。
+    locked = await product_svc.lock_sku_with_product(session, payload.sku_id)
+    if locked is None:
         raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
+    sku, product = locked
+    if sku.deleted_at is not None or product.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在或已删除", 404)
     # **先拿这个 SKU 的写锁，再读冲突**（审查 R05）：顺序反过来的话，两个并发
     # 请求都已经读完"没有冲突"了，再串行也改不了各自已经做出的判断 ——
     # 实测那样会两条都落库、区间重叠。

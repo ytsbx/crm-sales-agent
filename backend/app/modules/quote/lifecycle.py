@@ -148,7 +148,9 @@ async def accept_version(
     version.accepted_at = datetime.now(UTC)
     quote.status = "accepted"
     await _record(session, quote, version, operator_id, action="accept", label="客户已接受报价",
-                  content=f"{quote.quote_no} V{version.version_no} 客户已接受", ip=ip, after={})
+                  content=f"{quote.quote_no} V{version.version_no} 客户已接受", ip=ip,
+                  # B02-15：接受时的总金额一起留痕，事后能复算"接受的是多少钱那一版"
+                  after={"total_amount": version.total_amount})
     return True
 
 
@@ -163,5 +165,5 @@ async def decline_version(
     quote.status = "declined"
     await _record(session, quote, version, operator_id, action="decline", label="客户已拒绝报价",
                   content=f"{quote.quote_no} V{version.version_no} 客户已拒绝；原因：{reason or '未填写'}",
-                  ip=ip, after={"reason": reason})
+                  ip=ip, after={"reason": reason, "total_amount": version.total_amount})
     return True

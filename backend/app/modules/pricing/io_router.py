@@ -39,6 +39,28 @@ from app.modules.pricing.model import CustomerPriceRule, PriceRule, ProductCost
 from app.modules.pricing.schema import CostCreate
 from app.modules.product.model import Sku
 
+#: 导入审计里逐行明细的上限：超出只记数量并标记，避免一次大导入把审计撑爆。
+_AUDIT_ROWS_LIMIT = 200
+
+
+def _audit_rows(report) -> dict:
+    """B03-20：审计要能回答"哪一行、旧值→新值"，而不是只有总数。"""
+    def trim(items):
+        return items[:_AUDIT_ROWS_LIMIT]
+
+    return {
+        "rows": {
+            "created": trim(report.created),
+            "updated": trim(report.updated),
+            "skipped": trim(report.skipped),
+            "truncated": any(
+                len(items) > _AUDIT_ROWS_LIMIT
+                for items in (report.created, report.updated, report.skipped)
+            ),
+        }
+    }
+
+
 router = APIRouter(tags=["Pricing"])
 
 LEVELS = {"A", "B", "C", "D"}
@@ -292,6 +314,7 @@ async def import_price_rules(
         preview=preview,
         preview_token=preview_token,
         business_type="price_rule",
+        audit_extra=_audit_rows(report),
     )
 
 
@@ -505,6 +528,7 @@ async def import_customer_prices(
         preview=preview,
         preview_token=preview_token,
         business_type="customer_price_rule",
+        audit_extra=_audit_rows(report),
     )
 
 
@@ -691,10 +715,13 @@ async def import_costs(
                     )
                     # 同日起导 = 更新那一版（幂等，不产生重复成本版本）；空白保留旧值
                     changed = False
+                    field_changes: dict[str, dict] = {}
                     for key, value in provided.items():
                         if value is None:
                             continue
-                        if getattr(existing, key) != value:
+                        before_value = getattr(existing, key)
+                        if before_value != value:
+                            field_changes[key] = {"before": before_value, "after": value}
                             setattr(existing, key, value)
                             changed = True
                     if effective_to is not None and existing.effective_to != effective_to:
@@ -709,6 +736,8 @@ async def import_costs(
                             index, code, id=existing.id, changed=True,
                             reason=f"已更新同日成本版本编号 {existing.id}",
                             baseline=baseline,
+                            # B03-20：旧值→新值留在导入审计里，可复算
+                            changes=field_changes,
                         )
                     else:
                         report.skipped_row(
@@ -740,7 +769,10 @@ async def import_costs(
                 session.add(cost)
                 await session.flush()
                 cost_id = cost.id
-            report.created_row(index, code, id=cost_id, sku_code=code, filled=list(filled))
+            report.created_row(
+                index, code, id=cost_id, sku_code=code, filled=list(filled),
+                values={key: value for key, value in provided.items() if value is not None},
+            )
         except RowRejected as rejected:
             report.failed_row(index, code, str(rejected))
         except Exception as exc:
@@ -757,4 +789,5 @@ async def import_costs(
         preview=preview,
         preview_token=preview_token,
         business_type="product_cost",
+        audit_extra=_audit_rows(report),
     )

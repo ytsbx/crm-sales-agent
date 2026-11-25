@@ -401,6 +401,10 @@ async def update_order(
             raise AppError(
                 ErrorCode.PARAM_ERROR, f"负责人「{owner.name}」已停用，不能接收订单", 422
             )
+        # B04-04：目标必须落在操作者的数据范围内（与创建订单、打样转交同一判据）。
+        # 原来的"存在 + 在职"只挡住了不存在的 id，主管可以把单子转到外部门，
+        # 转完连自己都按范围看不到了。
+        await ensure_in_scope(session, user, owner_id=data["owner_id"], label="负责人")
 
     for field, value in data.items():
         setattr(order, field, value)
@@ -968,6 +972,13 @@ async def cancel_order(
         )
     ).scalars().all()
     plan_ids = [plan.id for plan in plans]
+    # B04-19：审计要能复算"取消时这单的应收与待确认回款分别是什么"，
+    # 必须在下面改状态**之前**留快照。
+    plan_snapshot = [
+        {"id": plan.id, "amount": plan.amount, "status": plan.status,
+         "due_date": plan.due_date.isoformat() if plan.due_date else None}
+        for plan in plans
+    ]
 
     # 以订单 id 为准统计回款。`receivable_plan_id` 是可空的：历史上存在未挂
     # 应收节点的回款，而确认入口也仍允许这类记录完成确认。只按 plan_ids
@@ -1032,6 +1043,11 @@ async def cancel_order(
             )
         )
     ).scalars().all()
+    pending_payment_snapshot = [
+        {"id": payment.id, "amount": payment.received_amount,
+         "receivable_plan_id": payment.receivable_plan_id}
+        for payment in pending_payments
+    ]
     if pending_payments:
         for payment in pending_payments:
             payment.status = "rejected"
@@ -1097,8 +1113,11 @@ async def cancel_order(
         after={
             "status": "cancelled",
             "reason": payload.reason.strip() if payload and payload.reason else None,
+            "order_total_amount": order.total_amount,
             "rejected_pending_payments": len(pending_payments),
+            "rejected_pending_payment_rows": pending_payment_snapshot,
             "cancelled_receivable_plans": sum(1 for p in plans if p.status == "cancelled"),
+            "receivable_plans": plan_snapshot,
             "opportunity_id": order.opportunity_id,
             "note": "商机成交状态未自动回退，如需撤销请人工评估",
         },

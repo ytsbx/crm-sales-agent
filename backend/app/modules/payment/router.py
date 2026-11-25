@@ -527,7 +527,11 @@ async def delete_receivable(
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已取消的应收计划须保留历史，不能删除", 422)
     paid = (
         await session.execute(
-            select(PaymentRecord.id).where(PaymentRecord.receivable_plan_id == plan_id)
+            select(PaymentRecord.id).where(
+                PaymentRecord.receivable_plan_id == plan_id,
+                # B05-09：驳回/作废的回款不再占用这一期；待确认与已确认仍然挡住删除
+                PaymentRecord.status.in_(("pending", "confirmed")),
+            )
         )
     ).first()
     allocated = (await session.execute(select(PaymentAllocation.id).where(
@@ -1205,13 +1209,28 @@ async def confirm_payment(
             business_type="order",
             business_id=order.id,
         )
+    allocations = [
+        {"plan_id": row.plan_id, "amount": row.amount}
+        for row in (
+            await session.execute(
+                select(PaymentAllocation).where(PaymentAllocation.payment_id == record.id)
+            )
+        ).scalars().all()
+    ]
     await write_audit(
         session,
         operator_id=user.id,
         action="confirm",
         business_type="payment",
         business_id=record.id,
-        after={"comment": payload.comment},
+        after={
+            "comment": payload.comment,
+            # B05-19：金额、订单、期次与本次分配，审计可独立复算
+            "amount": record.received_amount,
+            "order_id": record.order_id,
+            "receivable_plan_id": record.receivable_plan_id,
+            "allocations": allocations,
+        },
         ip=client_ip(request),
     )
     # 先序列化取值，再 commit：commit 之后会话里的 ORM 对象会过期，
@@ -1246,7 +1265,13 @@ async def reject_payment(
         business_type="payment",
         business_id=record.id,
         before={"status": "pending"},
-        after={"status": "rejected", "comment": payload.comment},
+        after={
+            "status": "rejected",
+            "comment": payload.comment,
+            "amount": record.received_amount,
+            "order_id": record.order_id,
+            "receivable_plan_id": record.receivable_plan_id,
+        },
         ip=client_ip(request),
     )
     await session.commit()
@@ -1383,13 +1408,17 @@ async def plan_payments(
     user: CurrentUser = Depends(require_permission("payment:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    await svc.get_visible_plan(session, user, plan_id)
+    plan = await svc.get_visible_plan(session, user, plan_id)
     effective = svc.effective_allocations()
     rows = (
         await session.execute(
             select(PaymentRecord)
-            .where(or_(PaymentRecord.receivable_plan_id == plan_id,
-                       PaymentRecord.id.in_(select(effective.c.payment_id).where(effective.c.plan_id == plan_id))))
+            .where(
+                # B05-10：只列本订单的回款；脏数据里跨订单的 plan 引用不再串进来
+                PaymentRecord.order_id == plan.order_id,
+                or_(PaymentRecord.receivable_plan_id == plan_id,
+                    PaymentRecord.id.in_(select(effective.c.payment_id).where(effective.c.plan_id == plan_id))),
+            )
             .order_by(PaymentRecord.received_date.asc())
         )
     ).scalars().all()
