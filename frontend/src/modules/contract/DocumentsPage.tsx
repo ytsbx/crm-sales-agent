@@ -150,6 +150,8 @@ export default function DocumentsPage() {
   // 业务员从这里下载、按客户填写后，再走「上传合同」进审批。
   const [templatesVisible, setTemplatesVisible] = useState(false)
   const [templateName, setTemplateName] = useState('')
+  // 名称被人工改过就不再被文件名覆盖；没改过时选文件自动带出文件名（去扩展名）
+  const [templateNameTouched, setTemplateNameTouched] = useState(false)
   const [templateType, setTemplateType] = useState<'contract' | 'monthly'>('monthly')
   const [templateFile, setTemplateFile] = useState<File | null>(null)
   const [templateFileId, setTemplateFileId] = useState<number | null>(null)
@@ -179,6 +181,7 @@ export default function DocumentsPage() {
     onSuccess: (row) => {
       Toast.success(`资料「${row.name}」已存入资料库（v${row.version}）`)
       setTemplateName('')
+      setTemplateNameTouched(false)
       setTemplateFile(null)
       setTemplateFileId(null)
       if (templateFileInput.current) templateFileInput.current.value = ''
@@ -1206,7 +1209,7 @@ export default function DocumentsPage() {
             <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 132px minmax(0, 1fr) auto', gap: 8, alignItems: 'center' }}>
               <Input
                 value={templateName}
-                onChange={setTemplateName}
+                onChange={(v) => { setTemplateName(v); setTemplateNameTouched(true) }}
                 maxLength={128}
                 placeholder="资料名称，例如：货款月结协议（一件代发专用）"
               />
@@ -1243,6 +1246,10 @@ export default function DocumentsPage() {
                     const file = e.target.files?.[0] || null
                     setTemplateFile(file)
                     setTemplateFileId(null)
+                    // 选文件自动带出名称：名称没被人改过时才覆盖，改过就尊重人的输入
+                    if (file && !templateNameTouched) {
+                      setTemplateName(file.name.replace(/\.[^.]+$/, ''))
+                    }
                   }}
                 />
               </div>
