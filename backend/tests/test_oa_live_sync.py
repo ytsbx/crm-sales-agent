@@ -65,7 +65,7 @@ async def test_stream_stop_cancels_without_reconnect():
 async def test_manual_sync_scoped_to_current_record_and_throttled(monkeypatch):
     monkeypatch.setattr(settings,'dingtalk_push_off',False)
     row=Obj(id=7,instance_id='ding-7',synced_at=datetime.now(UTC)-timedelta(minutes=1),error=None)
-    session=Obj(get=AsyncMock(return_value=row),commit=AsyncMock())
+    session=Obj(get=AsyncMock(return_value=row),commit=AsyncMock(),add=Mock())
     monkeypatch.setattr(router,'ensure_oa_type_scope',AsyncMock())
     monkeypatch.setattr(service,'lock_oa_business_then_instance',AsyncMock(return_value=row))
     sync=AsyncMock(return_value={'checked':1,'changed':0})
@@ -90,7 +90,7 @@ async def test_manual_sync_requires_permission_before_network(monkeypatch):
 @pytest.mark.anyio
 async def test_manual_sync_returns_conflict_when_business_lock_is_busy(monkeypatch):
     row = Obj(id=7, provider='self_oa')
-    session = Obj(get=AsyncMock(return_value=row), commit=AsyncMock())
+    session = Obj(get=AsyncMock(return_value=row), commit=AsyncMock(), add=Mock())
     monkeypatch.setattr(router, 'ensure_oa_type_scope', AsyncMock())
     monkeypatch.setattr(service, 'lock_oa_business_then_instance', AsyncMock(return_value=None))
     from app.modules.oa import service as own
@@ -106,7 +106,7 @@ async def test_manual_sync_returns_conflict_when_business_lock_is_busy(monkeypat
 @pytest.mark.anyio
 async def test_delayed_query_cannot_overwrite_withdrawal_completed_while_waiting(monkeypatch):
     row = Obj(id=7, instance_id="remote-7", status="pending", updated_at=datetime.now(UTC))
-    session = Obj(commit=AsyncMock())
+    session = Obj(commit=AsyncMock(), add=Mock())
     lock = AsyncMock(return_value=row)
     monkeypatch.setattr(service, "lock_oa_business_then_instance", lock)
 
@@ -212,7 +212,7 @@ async def test_display_template_cached_but_submission_schema_not_cached(monkeypa
 async def test_self_oa_manual_sync_always_queries(monkeypatch, age, error):
     from app.modules.oa import service as own
     row = Obj(id=7, provider='self_oa', synced_at=None if age is None else datetime.now(UTC)-timedelta(seconds=age), error=error)
-    session = Obj(get=AsyncMock(return_value=row), commit=AsyncMock())
+    session = Obj(get=AsyncMock(return_value=row), commit=AsyncMock(), add=Mock())
     scope = AsyncMock()
     monkeypatch.setattr(router, 'ensure_oa_type_scope', scope)
     lock = AsyncMock(return_value=row)
@@ -263,7 +263,7 @@ async def test_self_oa_query_failure_returns_safe_business_error_without_committ
         'configuration': own_client.OaNotConfigured('private configuration'),
     }
     row = Obj(id=7, provider='self_oa', synced_at=None, error=None, status='pending')
-    session = Obj(get=AsyncMock(return_value=row), commit=AsyncMock())
+    session = Obj(get=AsyncMock(return_value=row), commit=AsyncMock(), add=Mock())
     monkeypatch.setattr(router, 'ensure_oa_type_scope', AsyncMock())
     monkeypatch.setattr(service, 'lock_oa_business_then_instance', AsyncMock(return_value=row))
     monkeypatch.setattr(own, 'sync_self_oa_row', AsyncMock(side_effect=exceptions[failure]))
@@ -296,7 +296,7 @@ async def test_retired_approval_remains_read_only(monkeypatch):
     monkeypatch.setattr(settings, 'dingtalk_push_off', True)
     row = OaInstance(id=7, oa_type='inquiry', provider='dingtalk',
                      status='pending', instance_id='historical-instance')
-    session = Obj(get=AsyncMock(return_value=row), commit=AsyncMock())
+    session = Obj(get=AsyncMock(return_value=row), commit=AsyncMock(), add=Mock())
     monkeypatch.setattr(router, 'ensure_oa_type_scope', AsyncMock())
     monkeypatch.setattr(service, 'lock_oa_business_then_instance', AsyncMock(return_value=row))
     sync = AsyncMock()

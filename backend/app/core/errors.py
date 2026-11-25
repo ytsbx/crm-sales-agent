@@ -160,6 +160,24 @@ def _humanize(error: dict) -> str | None:
     return f"「{label}」{reason}" if label else reason
 
 
+#: 参数校验明细里**不回显原值**的字段名片段。Pydantic v2 的 `input` 会把用户
+#: 刚提交的原值带回来；密码/密钥被原样塞进 400 响应，会进前端提示、浏览器控制台、
+#: 截图和日志。B12-02：登录密码超长时曾把明文密码回显在错误明细里。
+_SENSITIVE_INPUT_FIELDS = (
+    "password", "passwd", "secret", "token", "api_key", "apikey", "private_key",
+)
+
+
+def _validation_detail_input(error: dict) -> str | None:
+    """校验失败的原始输入：普通字段照旧回显（方便定位），敏感字段返回 None。"""
+    location = error.get("loc") or ()
+    field = str(location[-1]).lower() if location else ""
+    if any(name in field for name in _SENSITIVE_INPUT_FIELDS):
+        return None
+    value = error.get("input")
+    return None if value is None else str(value)
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def _app_error(_: Request, exc: AppError) -> JSONResponse:
@@ -194,9 +212,7 @@ def register_exception_handlers(app: FastAPI) -> None:
                 "loc": [str(part) for part in error.get("loc", ())],
                 "msg": error.get("msg"),
                 "hint": _humanize(error),
-                "input": (
-                    None if error.get("input") is None else str(error.get("input"))
-                ),
+                "input": _validation_detail_input(error),
             }
             for error in exc.errors()
         ]

@@ -401,6 +401,9 @@ async def list_tasks(
     # 关联单据的编号，批量取一次（别在序列化里逐条查）。
     # 第十一批 11.6 复审：原先只处理"自动待办 → 合同"这一种，报价、订单两类
     # 在任务页上拿不到单号 —— 于是只能退化成"客户 #3"，看不出业务来源是哪一份。
+    # B22-05：补编号也必须守数据范围——任务本身在范围内，不代表它引用的
+    # 报价/订单/合同也在；按 id 直接回编号等于开了一条越权读单号的缝。
+    scope_ids = await scoped_owner_ids(session, user)
     doc_nos: dict[int, str] = {}
     contract_ids = {
         row.source_business_id
@@ -409,43 +412,39 @@ async def list_tasks(
     }
     if contract_ids:
         from app.modules.contract.model import ContractDocument
+        from app.modules.contract.visibility import contract_in_scope
 
-        doc_nos = dict(
-            (
-                await session.execute(
-                    select(ContractDocument.id, ContractDocument.doc_no).where(
-                        ContractDocument.id.in_(contract_ids)
-                    )
-                )
-            ).all()
-        )
+        # 合同可见性有客户/订单/创建人三段判据，只有 `contract_in_scope` 是唯一出口；
+        # 本页最多 page_size 条，逐条判（不在序列化里逐条查库）。
+        contract_rows = (
+            await session.execute(
+                select(ContractDocument).where(ContractDocument.id.in_(contract_ids))
+            )
+        ).scalars().all()
+        for contract in contract_rows:
+            if await contract_in_scope(session, user, contract):
+                doc_nos[contract.id] = contract.doc_no
     # 报价 / 订单在任务表上有自己的列，单独查编号
     quote_ids = {row.quote_id for row in rows if row.quote_id}
     quote_nos: dict[int, str] = {}
     if quote_ids:
         from app.modules.quote.model import Quote
 
-        quote_nos = dict(
-            (
-                await session.execute(
-                    select(Quote.id, Quote.quote_no).where(Quote.id.in_(quote_ids))
-                )
-            ).all()
-        )
+        quote_stmt = select(Quote.id, Quote.quote_no).where(Quote.id.in_(quote_ids))
+        if scope_ids is not None:
+            quote_stmt = quote_stmt.where(Quote.owner_id.in_(scope_ids))
+        quote_nos = dict((await session.execute(quote_stmt)).all())
     order_ids = {row.order_id for row in rows if row.order_id}
     order_nos: dict[int, str] = {}
     if order_ids:
         from app.modules.order.model import SalesOrder
 
-        order_nos = dict(
-            (
-                await session.execute(
-                    select(SalesOrder.id, SalesOrder.order_no).where(
-                        SalesOrder.id.in_(order_ids)
-                    )
-                )
-            ).all()
+        order_stmt = select(SalesOrder.id, SalesOrder.order_no).where(
+            SalesOrder.id.in_(order_ids)
         )
+        if scope_ids is not None:
+            order_stmt = order_stmt.where(SalesOrder.owner_id.in_(scope_ids))
+        order_nos = dict((await session.execute(order_stmt)).all())
     items = [
         serialize(
             row,

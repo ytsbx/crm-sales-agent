@@ -178,5 +178,6 @@
   "withdraw": "撤回",
   "withdraw_approval": "撤回审批",
   "withdraw_contract_oa": "撤回合同审批",
-  "withdraw_oa_instance": "撤回钉钉审批"
+  "withdraw_oa_instance": "撤回钉钉审批",
+  "sync_oa": "手工同步审批"
 }

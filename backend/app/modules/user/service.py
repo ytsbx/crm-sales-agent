@@ -10,6 +10,7 @@
 from datetime import UTC, datetime
 
 from sqlalchemy import Integer, Select, delete, func, literal, or_, select, union_all
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
@@ -594,6 +595,10 @@ async def create_department(session: AsyncSession, data: dict) -> Department:
     parent_id = data.get("parent_id")
     if parent_id is not None:
         await get_department_or_404(session, parent_id)
+    # B11-06：同级重名检查与插入之间必须串行。部门表没有 (parent_id, name)
+    # 唯一约束（加约束属于结构变更），两个管理员同时建同名部门会双双通过检查。
+    # 复用部门树的 advisory 锁：建部门是低频动作，串行代价可忽略。
+    await _lock_department_tree(session)
     await _assert_sibling_name_free(session, name, parent_id)
 
     dept = Department(
@@ -789,8 +794,14 @@ async def create_role(session: AsyncSession, data: dict) -> Role:
         data_scope=data.get("data_scope") or "self",
         status=data.get("status", "active"),
     )
-    session.add(role)
-    await session.flush()
+    # B11-06：先查后插之间没有锁，两个管理员同时建同一编码会双双通过检查，
+    # 后到的那个撞唯一约束直接 500。保存点里插入，撞了就翻译成人话 409。
+    try:
+        async with session.begin_nested():
+            session.add(role)
+            await session.flush()
+    except IntegrityError as exc:
+        raise AppError(ErrorCode.DUPLICATE, f"角色编码「{code}」已存在", 409) from exc
     await set_role_permissions(session, role, data.get("permission_codes") or [])
     return role
 

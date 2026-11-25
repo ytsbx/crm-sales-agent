@@ -247,6 +247,29 @@ def test_submission_and_reviewed_resend_keep_originator_department(db, monkeypat
 # --------------------------------------------------------------------------
 
 
+def test_resend_rechecks_status_before_external_call(db, fake):
+    """B11-07：路由判过之后状态被同步成 approved，重发必须在调外部前 409。
+
+    路由那次判断与真正调外部之间隔着请求排队/并发；另一个进程（轮询、手动
+    同步、回调）完全可能已把这条记录同步成终态。不复判就会在外部**已经结束**
+    的单上再建一张，本地只认先到的那张。
+    """
+    oa_id = make_row(db)
+    make_inquiry(db)
+    session = open_session(db)
+    row = session._session.get(OaInstance, oa_id)
+    row.status = "approved"
+    session._session.commit()
+
+    with pytest.raises(AppError) as caught:
+        asyncio.run(svc.resend_instance(session, row))
+    assert caught.value.http_status == 409
+    assert "状态已变化" in caught.value.message
+    assert fake.calls == 0
+    assert reload_row(db, oa_id).status == "approved"
+    session._session.close()
+
+
 def test_action_matrix_separates_retry_from_unknown():
     """口径本身：只有"明确结束"的轮次才允许重提；结果未知只能人工核定。"""
     assert allowed_actions("pending") == ["sync"]

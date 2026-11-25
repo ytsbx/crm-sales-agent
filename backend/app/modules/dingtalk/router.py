@@ -176,7 +176,7 @@ RESOLVE_ACTION = "oa:resolve"
 #: 允许人工核定的状态：结果未知、明确失败、确定没发出。
 #: 共同点是"外部**没有**一张正在正常走的单"，所以人都可以介入；
 #: pending / approved 不在其中——那两种状态下钉钉有一张活单，人工只该去查询。
-RESOLVABLE_STATUSES = ("needs_review", "failed", "not_sent")
+RESOLVABLE_STATUSES = svc.RESOLVABLE_STATUSES
 
 
 async def _drop_stale_reservation(
@@ -453,6 +453,22 @@ async def sync_oa_instance(
             raise AppError(ErrorCode.VERSION_CONFLICT, "审批状态已更新，请刷新后再同步", 409)
         row = current
         await ensure_oa_type_scope(session, user, row)
+        # B07-10：手工同步是**人主动去外部系统取结果**的动作，必须留痕——
+        # 否则"谁在什么时候把状态从待审批同步成了已通过"在台账里查不到。
+        await write_audit(
+            session,
+            operator_id=getattr(user, "id", None),
+            action="sync_oa",
+            business_type="oa_instance",
+            business_id=row.id,
+            after={
+                "provider": "self_oa",
+                "status": getattr(row, "status", None),
+                "instance_id": getattr(row, "instance_id", None),
+                "synced_at": row.synced_at.isoformat() if getattr(row, "synced_at", None) else None,
+            },
+            ip=None,
+        )
         await session.commit()
         return ok(oa_service.serialize(row), '已查询 OA 最新记录')
     if app_settings.dingtalk_push_off:
@@ -468,6 +484,20 @@ async def sync_oa_instance(
         if not result["checked"]:
             raise AppError(ErrorCode.VERSION_CONFLICT, "审批状态已更新，请刷新后再同步", 409)
         await ensure_oa_type_scope(session, user, row)
+        await write_audit(
+            session,
+            operator_id=getattr(user, "id", None),
+            action="sync_oa",
+            business_type="oa_instance",
+            business_id=row.id,
+            after={
+                "provider": "dingtalk",
+                "status": getattr(row, "status", None),
+                "instance_id": getattr(row, "instance_id", None),
+                "synced_at": row.synced_at.isoformat() if getattr(row, "synced_at", None) else None,
+            },
+            ip=None,
+        )
         await session.commit()
     if row.error:
         raise AppError(ErrorCode.EXTERNAL_ERROR, '未能取得钉钉最新记录，请稍后重试', 502)

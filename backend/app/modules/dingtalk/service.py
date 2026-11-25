@@ -86,6 +86,10 @@ logger = logging.getLogger(__name__)
 #: 不决定安全性**——接管僵死占用之后也不会盲目再建，见 was_stale 的处理。
 SUBMITTING_STUCK_AFTER = timedelta(minutes=10)
 
+#: 「结果不明/未发出」的轮次允许人工重发或认领的状态。路由与服务共用这一份，
+#: 服务在调外部前会用它在**行锁内**复判（B11-07）。
+RESOLVABLE_STATUSES = ("needs_review", "failed", "not_sent")
+
 #: 核定占用的僵死阈值。与发起同为 10 分钟：两者都是"占住 → 调一次外部"，
 #: 正常耗时一个量级；分开命名是为了将来单独调其中一个时不动另一个的语义。
 RESOLVE_CLAIM_STUCK_AFTER = SUBMITTING_STUCK_AFTER
@@ -865,6 +869,26 @@ async def resend_instance(
     if app_settings.dingtalk_push_off:
         raise AppError(
             ErrorCode.FORBIDDEN, f"{DINGTALK_DISABLED_MESSAGE}；不能重发审批", 403
+        )
+    # B11-07：路由判过状态之后、真正调外部之前，另一个进程可能已把这条同步成
+    # approved/rejected（轮询、手动同步、回调）。这里在**行锁内重新读**并复判，
+    # 不满足可重发状态就放掉占用、报冲突——绝不能在外部已结束的单上再建一张。
+    locked = (
+        await session.execute(
+            select(OaInstance)
+            .where(OaInstance.id == row.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalars().first()
+    if locked is None:
+        raise AppError(ErrorCode.NOT_FOUND, "审批记录不存在", 404)
+    row = locked
+    if row.status not in RESOLVABLE_STATUSES:
+        _release_processing(row, keep_key=False)
+        await session.commit()
+        raise AppError(
+            ErrorCode.VERSION_CONFLICT, "审批状态已变化，请刷新后再操作", 409
         )
     component_values = (row.form_snapshot or {}).get("formComponentValues") or []
     row.status = "submitting"

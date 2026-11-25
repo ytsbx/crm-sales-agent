@@ -159,6 +159,7 @@ export const SHARED_ACTION_LABELS: Record<string, string> = {
   'supersede_approval': '审批被替代',
   'sync_contract_oa': '同步合同审批',
   'sync_erp': '同步 ERP/MES',
+  'sync_oa': '手工同步审批',
   'tag': '打标签',
   'toggle': '切换开关',
   'transfer': '转移负责人',
