@@ -636,6 +636,62 @@ def test_inquiry_oa_payload_keeps_quote_fields_for_handler(monkeypatch, tmp_path
         assert (inquiry.extra or {})["oa_approval"]["status"] == "approved"
 
 
+def test_saved_quote_owner_outside_scope_is_rejected(monkeypatch, tmp_path):
+    """B10-03 按 A 口径：不传报价员时沿用的旧值，也必须过当前模板的报价员范围。"""
+    from app.core.errors import AppError
+
+    scope_quoter = str(uuid.uuid4())
+    stale = str(uuid.uuid4())
+    identity = {"id": str(uuid.uuid4()), "department_id": str(uuid.uuid4())}
+    engine = _engine()
+
+    async def fake_templates(_user):
+        return [{"code": oa_inquiry.NATIVE_INQUIRY_CODE, "version": 1,
+                 "fields": [{"id": "quoter", "user_scope": [scope_quoter]}],
+                 "people": [{"id": scope_quoter}], "applicant": identity}]
+
+    monkeypatch.setattr(oa_client, "list_templates", fake_templates)
+    monkeypatch.setattr(settings, "oa_inquiry_template_id", "")
+    monkeypatch.setattr(settings, "oa_inquiry_template_code", oa_inquiry.NATIVE_INQUIRY_CODE)
+    monkeypatch.setattr(settings, "file_root", str(tmp_path))
+    (tmp_path / "product.png").write_bytes(b"test-image")
+    monkeypatch.setattr(oa_client, "configured", lambda: True)
+    create = AsyncMock()
+    monkeypatch.setattr(oa_client, "create_approval", create)
+
+    with Session(engine) as raw:
+        user = User(id=1, name="业务员", username="sales", password_hash="x",
+                    dingtalk_userid="ding-user", status="active", department_id=1,
+                    created_at=datetime.now(UTC), updated_at=datetime.now(UTC))
+        customer = Customer(id=1, name="客户A", status="active", pool_status="private")
+        inquiry = CustomInquiry(
+            id=1, title="定制产品", inquiry_no="XQ-1", description="需求", quantity=100,
+            customer_id=1, version=1, status="open",
+            extra={"oa_draft": {"quote_owner_user_id": stale}},
+        )
+        raw.add_all([
+            Department(id=1, name="销售部"), user, customer, inquiry,
+            FileRecord(id=1, object_key="product.png", file_name="product.png",
+                       mime_type="image/png", size=10),
+            BusinessFile(business_type="inquiry", business_id=1, file_id=1),
+        ])
+        raw.commit()
+        payload = SimpleNamespace(
+            extra_fields={"product_reference": "M-1", "quote_scope": "全系列",
+                          "reply_date": "2026-12-15", "provide_sample": "是",
+                          "customer_contact": "客户A / 张三", "product_model": "M-1"},
+            quote_owner_user_id=None, attachment_file_ids=[],
+        )
+        with pytest.raises(AppError) as caught:
+            asyncio.run(oa_inquiry.start_inquiry_approval(
+                SyncSessionAsAsync(raw), _actor(user), inquiry, payload,
+            ))
+        assert caught.value.http_status == 422
+        assert "对接报价员" in caught.value.message
+    create.assert_not_awaited()
+    engine.dispose()
+
+
 @pytest.mark.parametrize("business_id,category,mime", [
     (2, None, "image/png"), (1, "oa_attachment", "image/png"),
     (1, None, "image/webp"), (1, None, "application/pdf"),
