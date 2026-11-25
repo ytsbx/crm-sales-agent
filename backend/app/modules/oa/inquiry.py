@@ -215,8 +215,14 @@ async def submission_prefill(session: AsyncSession, inquiry) -> dict[str, str]:
 async def _attachments(session: AsyncSession, user, inquiry: CustomInquiry, file_ids: list[int], *, images: bool = False, max_count: int = 30, uploads=None) -> list[dict]:
     if not file_ids and not images:
         return []
+    # B10-02：附件挂载类型与钉钉侧共用同一份配置（`inquiry_file_business_type`），
+    # 配置改了这里还写死 "inquiry" 就会看不到附件/图片。
+    from app.modules.settings.service import get_setting
+
+    cfg = await get_setting(session, "dingtalk_oa") or {}
+    file_business_type = cfg.get("inquiry_file_business_type") or "inquiry"
     stmt = select(FileRecord).join(BusinessFile, BusinessFile.file_id == FileRecord.id).where(
-        BusinessFile.business_type == "inquiry", BusinessFile.business_id == inquiry.id)
+        BusinessFile.business_type == file_business_type, BusinessFile.business_id == inquiry.id)
     if images:
         from sqlalchemy import or_
         stmt = stmt.where(or_(BusinessFile.category.is_(None), BusinessFile.category != "oa_attachment"),

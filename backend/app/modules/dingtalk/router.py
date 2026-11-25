@@ -645,6 +645,7 @@ async def sync_dingtalk_users(
             "total": result["total"],
             "bound": result["bound"],
             "already_bound": result["already_bound"],
+            "bound_users": result.get("bound_users", []),
             "unmatched": len(result["unmatched"]),
         },
         ip=client_ip(request),

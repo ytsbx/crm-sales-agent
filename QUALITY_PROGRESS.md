@@ -5759,3 +5759,13 @@
 - B22-07 打样修订唯一：修订入口在父单行锁内先查已有子版本（409 明确提示）；模型与迁移 `c4f8a1d6e2b9` 增加 `(parent_id, version)` 唯一约束；提交撞约束回滚并 409。生产库修订版行数为 0，迁移无存量冲突。
 - 验证：新增用例覆盖导入重复 409/不同文件放行、顺序二次修订被拒、唯一约束拦重复行；隔离库 `crm_iso_mig_20261125` 升级到 `c4f8a1d6e2b9` 且约束存在；全量 pytest 通过；静态检查三项 OK。未部署。
 - 其余 6 条（B13-10/B19-09/B20-09/B21-06/B21-07 及合同请求键）按主人意见暂缓：重复一次只多一条记录，风险低。
+
+
+## 2026-11-25 P2 下一批：OA 附件配置、同步审计、案例审计（未部署）
+
+- 复核为已修：B20-06（`product/master.py` 文本字段已按列宽 422）、B11-08（`dingtalk/service.py:1195-1207` 审批结果通知单行 savepoint，失败下轮重试）。
+- B10-02：`oa/inquiry.py` `_attachments` 改为读 `dingtalk_oa.inquiry_file_business_type`，与钉钉侧同源；新增用例验证配置为 `inquiry_file` 时仍能取到附件。
+- B11-05（审计部分）：`sync_users` 返回并审计逐人绑定明细 `bound_users`（crm_user_id + dingtalk_userid），不再只有总数；"绑定纠错接口"仍未提供，属功能需求，待定。
+- B18-08：案例创建审计补 `customer_id/customer_label/problem_tags/status/evidence_count`。
+- 验证：全量后端 pytest 通过；静态检查 pyflakes/模型列/权限码 OK。未部署。
+- 下一批候选：B10-04（钉钉读接口裸 `resp.json()`）、B22-09/B22-10（任务/打样审计补齐）、B19-10/B20-12（P3）。

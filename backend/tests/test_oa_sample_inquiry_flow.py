@@ -37,6 +37,7 @@ from app.modules.sample import dingtalk as sample_approval
 from app.modules.sample import router as sample_router
 from app.modules.sample.model import SampleItem, SampleRequest, SampleShipment
 from app.modules.sample.schema import SampleCreate, SampleTransfer, SampleUpdate
+from app.modules.settings.model import SystemSetting
 from app.modules.user.model import Department, Permission, Role, User, role_permissions, user_roles
 from tests.conftest import SyncSessionAsAsync, _register_sqlite_bigint_as_integer, make_user
 
@@ -48,6 +49,7 @@ def _engine():
         User.__table__, Department.__table__, Customer.__table__, Contact.__table__,
         SampleRequest.__table__, FileRecord.__table__, BusinessFile.__table__,
         CustomInquiry.__table__, OaInstance.__table__, Opportunity.__table__,
+        SystemSetting.__table__,
     ])
     return engine
 
@@ -654,6 +656,35 @@ def test_product_images_require_own_inquiry_and_supported_image(monkeypatch, bus
             asyncio.run(oa_inquiry._attachments(SyncSessionAsAsync(raw), SimpleNamespace(dingtalk_userid="test"),
                                                SimpleNamespace(id=1), [], images=True))
     assert uploaded == []
+
+
+def test_oa_inquiry_attachments_follow_configured_business_type(monkeypatch, tmp_path):
+    """B10-02：附件挂载类型读同一份 inquiry_file_business_type 配置。"""
+    from app.modules.settings.model import SystemSetting
+
+    engine = _engine()
+    path = tmp_path / "a.pdf"
+    path.write_bytes(b"%PDF-1")
+    monkeypatch.setattr(oa_inquiry, "absolute_path", lambda _key: path)
+    called = []
+
+    async def upload(*args):
+        called.append(args)
+        return {"id": "U1"}
+
+    monkeypatch.setattr(oa_client, "upload_file", upload)
+    with Session(engine) as raw:
+        raw.add(SystemSetting(key="dingtalk_oa", value={"inquiry_file_business_type": "inquiry_file"}))
+        raw.add(FileRecord(id=1, object_key="unused", file_name="a.pdf",
+                           mime_type="application/pdf", size=path.stat().st_size))
+        raw.add(BusinessFile(business_type="inquiry_file", business_id=1, file_id=1))
+        raw.commit()
+        rows = asyncio.run(oa_inquiry._attachments(
+            SyncSessionAsAsync(raw), SimpleNamespace(dingtalk_userid="t"),
+            SimpleNamespace(id=1), [1],
+        ))
+    assert rows == [{"id": "U1"}] and len(called) == 1
+    engine.dispose()
 
 
 @pytest.mark.parametrize('business_status', ['archived', 'converted'])

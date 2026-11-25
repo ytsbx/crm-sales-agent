@@ -129,7 +129,14 @@ async def create_case(
         action="create",
         business_type="case",
         business_id=case.id,
-        after={"title": case.title},
+        after={
+            "title": case.title,
+            "customer_id": case.customer_id,
+            "customer_label": case.customer_label,
+            "problem_tags": case.problem_tags,
+            "status": case.status,
+            "evidence_count": len(evidence_items or []),
+        },
         ip=client_ip(request),
     )
     await session.commit()

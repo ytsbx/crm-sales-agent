@@ -1640,10 +1640,13 @@ async def sync_users(session: AsyncSession) -> dict:
     newly_bound = 0
     already_bound = 0
     unmatched: list[dict[str, Any]] = []
+    bound_users: list[dict[str, Any]] = []
 
     def _bind(target: User, dingtalk_userid: str) -> None:
         nonlocal newly_bound
         target.dingtalk_userid = dingtalk_userid
+        # B11-05：审计要能回答"这次到底绑了谁"，只记总数追不到具体人
+        bound_users.append({"crm_user_id": target.id, "dingtalk_userid": dingtalk_userid})
         bound[dingtalk_userid] = target
         # 立刻从"待匹配"里摘掉：同一次同步内，一个人只能被绑一次，
         # 否则后面同一个姓名的成员会把它当成候选再次命中。
@@ -1729,6 +1732,7 @@ async def sync_users(session: AsyncSession) -> dict:
         "total": len(members),
         "bound": newly_bound,
         "already_bound": already_bound,
+        "bound_users": bound_users,
         "unmatched": unmatched,
         "unbound_crm": unbound_crm,
     }
