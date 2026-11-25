@@ -2188,7 +2188,7 @@ export default function OrderDetailPage() {
                     ? [
                         {
                           title: '操作',
-                          width: 210,
+                          width: 260,
                           render: (_: unknown, record: ShipmentBatchRow) =>
                             record.status === 'planned' ? (
                               <span style={{ display: 'inline-flex', gap: 12 }}>
