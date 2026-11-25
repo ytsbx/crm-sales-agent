@@ -73,6 +73,7 @@ export const AUDIT_TYPE_LABEL: Record<string, string> = {
   notification: '站内通知',
   numbering_rule: '编号规则',
   oa_instance: '同序 OA 审批',
+  oa_template: 'OA 模板',
   opportunity: '商机',
   opportunity_stage: '商机阶段',
   order: '订单',
