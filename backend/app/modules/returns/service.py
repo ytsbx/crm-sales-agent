@@ -435,7 +435,9 @@ async def settle_return(
             ErrorCode.STATUS_NOT_ALLOWED, "本项目只支持人民币退货", 422
         )
     order = await get_order_or_404(session, row.order_id)
-    total = _money(row.goods_amount + _money(freight_refund_amount))
+    goods_total = _money(row.goods_amount)
+    freight_total = _money(freight_refund_amount)
+    total = _money(goods_total + freight_total)
     plans = (
         await session.execute(
             select(ReceivablePlan)
@@ -482,13 +484,15 @@ async def settle_return(
     )
 
     if order.status == "cancelled":
-        # 订单已经取消：退款只可能来自确实收到的钱，没有应收可冲。
+        # 订单已经取消：货款退款只可能来自确实收到的钱，没有应收可冲。
+        # 运费是额外的公司成本，不占用“已收货款”的退款额度。
         offset = ZERO
-        refund = min(total, max(received - previous_refund, ZERO))
-        if total > offset + refund:
+        goods_refund = min(goods_total, max(received - previous_refund, ZERO))
+        refund = _money(goods_refund + freight_total)
+        if goods_refund < goods_total:
             settlement_note = (
                 (settlement_note + "；") if settlement_note else ""
-            ) + "订单已取消，无应收可冲，差额仅登记不退款"
+            ) + "订单已取消，货款差额仅登记不退款"
         plans = []
     else:
         if not plans:
@@ -510,15 +514,17 @@ async def settle_return(
         available = _money(
             sum((max(Decimal(plan.amount or 0) - paid.get(plan.id, ZERO), ZERO) for plan in plans), ZERO)
         )
-        offset = min(total, available)
-        refund = _money(total - offset)
-        if refund > max(received - previous_refund, ZERO) + CENT:
+        # 运费不参与冲应收：应收是货款，退运费是额外的公司成本。
+        offset = min(goods_total, available)
+        goods_refund = _money(goods_total - offset)
+        if goods_refund > max(received - previous_refund, ZERO) + CENT:
             raise AppError(
                 ErrorCode.STATUS_NOT_ALLOWED,
-                f"应退 {refund} 超过实际已收可退金额 "
+                f"应退货款 {goods_refund} 超过实际已收可退金额 "
                 f"{(received - previous_refund):.2f}，请先核对回款",
                 422,
             )
+        refund = _money(goods_refund + freight_total)
 
     # 先冲减未收应收：从到期日最晚的一期往前冲，尽量保留近期该收的钱。
     adjustments: list[SalesReturnPlanAdjustment] = []
@@ -696,16 +702,54 @@ async def void_return(
         ).scalar_one_or_none()
         if plan is None:
             raise AppError(ErrorCode.NOT_FOUND, "退货关联的应收期已不存在，不能作废", 409)
-        if _money(plan.amount or 0) != _money(adjustment.amount_after):
+        # 这一期可能被多张退货单先后冲过：不能只拿本单的 amount_after 对比，
+        # 否则“后一张退货”会被误判成“手工改过”，前面的退货永远作废不了。
+        # 用这一期的原始金额 - 所有仍生效退货的冲减额，得到“现在应该是多少”。
+        plan_adjustments = (
+            await session.execute(
+                select(SalesReturnPlanAdjustment)
+                .where(SalesReturnPlanAdjustment.plan_id == adjustment.plan_id)
+                .order_by(SalesReturnPlanAdjustment.id.asc())
+                .with_for_update()
+            )
+        ).scalars().all()
+        if not plan_adjustments:
+            raise AppError(ErrorCode.NOT_FOUND, "退货关联的应收调整不存在，不能作废", 409)
+        original_amount = _money(plan_adjustments[0].amount_before)
+        active_applied = _money(
+            (
+                await session.execute(
+                    select(
+                        func.coalesce(
+                            func.sum(SalesReturnPlanAdjustment.applied_amount), 0
+                        )
+                    )
+                    .join(
+                        SalesReturn,
+                        SalesReturn.id == SalesReturnPlanAdjustment.return_id,
+                    )
+                    .where(
+                        SalesReturnPlanAdjustment.plan_id == adjustment.plan_id,
+                        SalesReturn.status.in_(SETTLED_RETURN_STATUSES),
+                    )
+                )
+            ).scalar_one()
+        )
+        expected_amount = _money(original_amount - active_applied)
+        if _money(plan.amount or 0) != expected_amount:
             raise AppError(
                 ErrorCode.STATUS_NOT_ALLOWED,
-                f"第 {adjustment.plan_id} 期应收在退货处理后被手工改过"
-                f"（现在 {plan.amount}，当时 {adjustment.amount_after}），"
-                "不能直接作废；请先核对应收，再走线下冲回",
+                f"第 {adjustment.plan_id} 期应收和退货冲减台账对不上"
+                f"（现在 {plan.amount}，按台账应为 {expected_amount}），"
+                "可能被手工改过或还有别的退货未处理；请先核对，再走线下冲回",
                 409,
             )
-        plan.amount = _money(adjustment.amount_before)
+        # 把本单的冲减加回去；如果后面还有别的退货，它们冲减的部分保留。
+        restored_amount = _money((plan.amount or ZERO) + adjustment.applied_amount)
+        plan.amount = restored_amount
         plan.status = adjustment.status_before
+        if plan.status == "cancelled" and restored_amount > 0:
+            plan.status = "pending"
         if plan.status != "cancelled":
             await payment_svc.recalc_plan(session, plan)
     row.status = "voided"

@@ -1119,7 +1119,8 @@ async def order_finance_summary(session: AsyncSession, order_id: int) -> dict:
             )
         )
     ).scalars().all()
-    returned_amount = sum((row.total_amount or ZERO) for row in return_rows)
+    returned_amount = sum((row.goods_amount or ZERO) for row in return_rows)
+    return_freight = sum((row.freight_refund_amount or ZERO) for row in return_rows)
     return_offset = sum((row.offset_amount or ZERO) for row in return_rows)
     return_refund = sum((row.refund_amount or ZERO) for row in return_rows)
     return_refunded = sum(
@@ -1134,6 +1135,7 @@ async def order_finance_summary(session: AsyncSession, order_id: int) -> dict:
         "order_amount": total,
         "net_order_amount": net_order,
         "returned_amount": returned_amount,
+        "return_freight_refund_amount": return_freight,
         "return_offset_amount": return_offset,
         "return_refund_amount": return_refund,
         "return_refunded_amount": return_refunded,

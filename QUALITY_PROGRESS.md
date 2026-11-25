@@ -5842,18 +5842,6 @@
   - B05-08 已取消应收允许改哪些字段（当前名称/日期/金额都能改，金额还会触发重平衡）。
 - 本轮只读复核，未改业务代码；等待主人对三组处理顺序拍板。
 
-## 2026-11-25 K2 销售退货登记（A 方案，已跑通，未部署）
-
-- 主人拍板 A：轻量退货登记，生成退款/应收调整待办，原发货事实保留、不碰库存。四个细化口径未回复，按推荐默认落地：业务员/主管登记、财务直接处理（无主管复核）；先冲未收应收、剩余转退款；财务处理未退款可作废，已实际退款禁止作废；只退货款，运费默认 0、财务可加。
-- 后端：新增 `app/modules/returns`（model/schema/service/router），三张表 `sales_returns` / `sales_return_items` / `sales_return_plan_adjustments`；状态 `pending/completed/refunded/cancelled/voided`；8 个接口；权限：登记/取消 `order:manage`，处理/退款/作废 `payment:manage`。
-- 财务口径：处理时按到期日从晚到早冲未收应收，逐期留 `amount_before/applied/amount_after/status_before`；作废时核对 plan 未被手工改过再精确恢复；已退款禁止作废。订单财务汇总新增退货/净额/待退款字段，`unreceived = total - return_offset - received`（保留负值语义，不夹 0）。
-- 迁移：`backend/alembic/versions/20261125_sales_return.py`（revision `d1a7c3e5b9f2`，down `c4f8a1d6e2b9`），已应用到隔离库 `crm_iso_flow_20261125`。
-- 前端：`shared/api/returns.ts` + 订单详情「退货记录」页签、登记/财务处理/登记退款/取消/作废 5 个弹窗；财务概览增加「已退货冲减」KPI；`tsc -b` 与 oxlint 通过。
-- 验证：`tests/test_sales_return.py` 5 条全绿；财务回归 5 个文件 52 条全绿。隔离库真实接口 E2E：3 件部分退（冲 300）→ 作废恢复 → 10 件全退（冲 600、待退 400）→ 登记退款 → 退款后禁止作废；订单 1 超退 1001 被拦、登记 10 件后取消成功。E2E 中发现并修复 `ensure_in_scope` 调用缺参导致的 500。
-- 文档：`docs/全流程走查与撤回点-20261125.md` 已把 K2 改为已完成，剩 K3/K4/K5；`/guide` 已把「暂时不能的四处」改为三处，并补退货入口与撤回说明。
-- 残余风险：并发登记依赖订单行锁；若同订单两笔退货同时处理，财务串行依赖订单锁，已覆盖。待主人确认四个细化口径；K2 未部署。
-
-
 ## 2026-11-25 B02–B05 第一组修复（9 条，未部署）
 
 - B02-15：接受/拒绝报价审计补该版本总金额（不加币种，项目只有人民币）。
@@ -5875,7 +5863,8 @@
 - 后端：新增 `app/modules/returns`（model/schema/service/router），三张表 `sales_returns` / `sales_return_items` / `sales_return_plan_adjustments`；状态 `pending/completed/refunded/cancelled/voided`；8 个接口；权限：登记/取消 `order:manage`，处理/退款/作废 `payment:manage`。
 - 财务口径：处理时按到期日从晚到早冲未收应收，逐期留 `amount_before/applied/amount_after/status_before`；作废时核对 plan 未被手工改过再精确恢复；已退款禁止作废。订单财务汇总新增退货/净额/待退款字段，`unreceived = total - return_offset - received`（保留负值语义，不夹 0）。
 - 迁移：`backend/alembic/versions/20261125_sales_return.py`（revision `d1a7c3e5b9f2`，down `c4f8a1d6e2b9`），已应用到隔离库 `crm_iso_flow_20261125`。
-- 前端：`shared/api/returns.ts` + 订单详情「退货记录」页签、登记/财务处理/登记退款/取消/作废 5 个弹窗；财务概览增加「已退货冲减」KPI；`tsc -b` 与 oxlint 通过。
-- 验证：`tests/test_sales_return.py` 5 条全绿；财务回归 5 个文件 52 条全绿；全量 pytest 通过（并修正两处 mock 因新增退货汇总查询产生的副作用）。隔离库真实接口 E2E：3 件部分退（冲 300）→ 作废恢复 → 10 件全退（冲 600、待退 400）→ 登记退款 → 退款后禁止作废；订单 1 超退 1001 被拦、登记 10 件后取消成功。E2E 中发现并修复 `ensure_in_scope` 调用缺参导致的 500。
+- 前端：`shared/api/returns.ts` + 订单详情「退货记录」页签、登记/财务处理/登记退款/取消/作废 5 个弹窗；财务概览增加「已退货货款」KPI；`tsc -b` 与 oxlint 通过。
+- 验证：`tests/test_sales_return.py` 6 条全绿；财务回归 5 个文件 52 条全绿；全量 pytest 通过（并修正两处 mock 因新增退货汇总查询产生的副作用）。隔离库真实接口 E2E：3 件部分退（冲 300）→ 作废恢复 → 10 件全退（冲 600、待退 400）→ 登记退款 → 退款后禁止作废；订单 1 超退 1001 被拦、登记 10 件后取消成功。E2E 中发现并修复 `ensure_in_scope` 调用缺参导致的 500。
 - 文档：`docs/全流程走查与撤回点-20261125.md` 已把 K2 改为已完成，剩 K3/K4/K5；`/guide` 已把「暂时不能的四处」改为三处，并补退货入口与撤回说明。
+- 复核补充（2026-11-25）：退运费不再冲应收，只单独计入应退；同一期被多张退货先后冲减时，作废前一张会保留后一张的冲减（按台账核对，不误判手工改动）；回款作废增加退货闸门，已处理/已退款退货时禁止作废回款，防止“没收到钱却已退款”。
 - 残余风险：并发登记依赖订单行锁；若同订单两笔退货同时处理，财务串行依赖订单锁，已覆盖。待主人确认四个细化口径；K2 未部署。

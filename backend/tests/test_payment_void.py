@@ -26,6 +26,7 @@ from app.modules.payment.model import PaymentAllocation, PaymentRecord, Receivab
 from app.modules.payment import router
 from app.modules.payment.schema import PaymentVoidRequest
 from app.modules.payment import service as svc
+from app.modules.returns.model import SalesReturn
 
 NOW = datetime.now(UTC)
 REQ = Request({"type": "http", "headers": [], "client": ("127.0.0.1", 1)})
@@ -226,3 +227,33 @@ async def test_void_legacy_confirmed_payment_on_cancelled_order(case):
     assert raw.get(PaymentRecord, 1).status == "voided"
     # 已取消的应收计划保持取消，不被重算复活
     assert raw.get(ReceivablePlan, 1).status == "cancelled"
+
+
+@pytest.mark.anyio
+async def test_void_payment_blocked_when_settled_return_exists(case):
+    """订单已有处理过的退货时，先作废回款会把退款依据打掉，必须拦住。"""
+    raw, session, payment = case
+    raw.add(
+        SalesReturn(
+            id=1,
+            return_no="RT-VOID-1",
+            order_id=1,
+            status="completed",
+            reason_code="customer_rejected",
+            reason="客户拒收",
+            return_date=today_business(),
+            currency="CNY",
+            goods_amount=D("10.00"),
+            freight_refund_amount=D("0"),
+            total_amount=D("10.00"),
+            offset_amount=D("10.00"),
+            refund_amount=D("0"),
+            created_by=1,
+        )
+    )
+    raw.commit()
+    with pytest.raises(AppError, match="退货单"):
+        await router.void_payment(
+            payment.id, PaymentVoidRequest(reason="客户退单，财务核实"), REQ, USER, session
+        )
+    assert raw.get(PaymentRecord, 1).status == "confirmed"

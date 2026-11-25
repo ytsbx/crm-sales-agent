@@ -168,6 +168,8 @@ export interface FinanceSummary {
   net_order_amount_exact?: string | null
   returned_amount?: number
   returned_amount_exact?: string | null
+  return_freight_refund_amount?: number
+  return_freight_refund_amount_exact?: string | null
   return_offset_amount?: number
   return_offset_amount_exact?: string | null
   return_refund_amount?: number

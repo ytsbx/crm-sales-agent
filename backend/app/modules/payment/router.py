@@ -1320,6 +1320,30 @@ async def void_payment(
     before = await svc.serialize_payment(session, record)
     order = await session.get(SalesOrder, record.order_id)
 
+    # K2（2026-11-25）：订单上的退货已经处理/退款后，不能再把这笔回款判没了。
+    # 退货的“能退多少”是按当时已确认回款算的；回款一作废，退货的退款额度
+    # 就失去依据，甚至会出现“没收到钱却已退款”。未退款的退货可以先作废，
+    # 已实际退款的只能线下冲回，不能在这里硬改历史。
+    from app.modules.returns.model import SalesReturn
+
+    return_rows = (
+        await session.execute(
+            select(SalesReturn.return_no, SalesReturn.status).where(
+                SalesReturn.order_id == record.order_id,
+                SalesReturn.status.in_(("completed", "refunded")),
+            )
+        )
+    ).all()
+    if return_rows:
+        refs = "、".join(str(row[0]) for row in return_rows[:5])
+        more = " 等" if len(return_rows) > 5 else ""
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"订单已有退货单 {refs}{more} 处理过货款/退款，作废回款会破坏退款依据。"
+            "请先作废未实际退款的退货单；已实际退款的退货只能线下冲回。",
+            409,
+        )
+
     # 先锁该订单的全部应收期（按 id 升序，与统一锁序一致）。作废会同时影响
     # 多期：一笔回款可能被自动/手工分到几期，不能只重算登记时选的那一期。
     plans = (

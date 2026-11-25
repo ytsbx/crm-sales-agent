@@ -1296,8 +1296,8 @@ export default function OrderDetailPage() {
     ...((summary?.returned_amount ?? 0) > 0
       ? [
           {
-            label: '已退货冲减',
-            help: '已冲账退货的总额；其中先冲未收应收，剩余为应退/已退。明细见「退货记录」。',
+            label: '已退货货款',
+            help: '已冲账的退货货款（不含运费）；先冲未收应收，剩余为应退/已退。明细见「退货记录」。',
             value: formatMoney(
               toTwoDecimals(summary?.returned_amount_exact ?? summary?.returned_amount ?? 0),
               order.currency,

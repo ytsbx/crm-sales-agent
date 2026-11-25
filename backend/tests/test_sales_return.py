@@ -23,6 +23,7 @@ from app.modules.order.model import (
     SalesOrder,
     SalesOrderItem,
 )
+from app.modules.payment import service as payment_svc
 from app.modules.payment.model import (
     PaymentAllocation,
     PaymentRecord,
@@ -272,5 +273,29 @@ def test_freight_refund_is_separate_and_counts_toward_refund(db):
     assert result.goods_amount == D("20.00")
     assert result.freight_refund_amount == D("10.00")
     assert result.total_amount == D("30.00")
-    assert result.offset_amount == D("30.00")
-    assert result.refund_amount == D("0.00")
+    # 运费不冲应收：货款 20 全冲应收，运费 10 单独进退款。
+    assert result.offset_amount == D("20.00")
+    assert result.refund_amount == D("10.00")
+    summary = run(payment_svc.order_finance_summary(s, 1))
+    assert summary["returned_amount_exact"] == "20.00"
+
+
+def test_void_older_return_keeps_later_return(db):
+    """两张退货先后冲同一期：作废前一张，后一张的冲减必须保留。"""
+    s, order, item, batch_item, plans = db
+    first = run(svc.create_return(s, USER, order, _payload("2")))  # 20
+    run(svc.settle_return(s, USER, first, freight_refund_amount=D("0"), settlement_note=None))
+    second = run(svc.create_return(s, USER, order, _payload("3")))  # 30
+    run(svc.settle_return(s, USER, second, freight_refund_amount=D("0"), settlement_note=None))
+    p2 = s._session.get(ReceivablePlan, 2)
+    assert p2.amount == D("20.00")  # 70 - 20 - 30
+
+    # 先作废第一张：只剩第二张的 30，应收回到 40（不是 50）。
+    run(svc.void_return(s, USER, first, "第一张退错了"))
+    assert s._session.get(ReceivablePlan, 2).amount == D("40.00")
+    assert first.status == "voided"
+
+    # 再作废第二张：全部恢复 70。
+    run(svc.void_return(s, USER, second, "第二张也退错了"))
+    assert s._session.get(ReceivablePlan, 2).amount == D("70.00")
+    assert second.status == "voided"

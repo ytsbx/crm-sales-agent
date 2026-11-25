@@ -128,9 +128,10 @@ class SalesReturnItem(Base, IdMixin):
 class SalesReturnPlanAdjustment(Base, IdMixin):
     """退货冲减应收的逐期快照。
 
-    `amount_before/after` 是**处理那一刻**的值；作废时先核对 plan 是否还是
-    `amount_after`，确认没人改过，再原样还原。否则直接加回去会把财务后来
-    手工调整的金额覆盖掉。
+    `amount_before/after` 是**处理那一刻**的值；作废时用这一期的原始金额
+    减去所有仍生效退货的冲减额，核对 plan 是否仍是这个值，确认没人手工改过，
+    再把本单的 `applied_amount` 加回去。这样同一期被多张退货先后冲减时，
+    作废前一张也不会把后一张的冲减抹掉。
     """
 
     __tablename__ = "sales_return_plan_adjustments"
