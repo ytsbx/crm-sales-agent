@@ -7,15 +7,6 @@ from pydantic import BaseModel, Field, field_validator
 from app.core.patch_schema import CreateModel
 
 
-class TemplateCreate(CreateModel):
-    """新增模板=新增版本：同名同类型自动 version+1，旧版本保留。"""
-
-    doc_type: str = "contract"  # contract / monthly
-    name: str = Field(min_length=1, max_length=128)
-    body: str = Field(min_length=1)
-    enabled: bool = True
-
-
 class TemplateFileCreate(CreateModel):
     """合同模板库：保存一版标准合同/月结协议原文件。
 

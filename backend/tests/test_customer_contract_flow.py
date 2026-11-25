@@ -105,6 +105,38 @@ async def test_original_contract_has_no_generated_template_or_content(sql_sessio
 
 
 @pytest.mark.anyio
+async def test_upload_creates_original_link_task_and_audit(sql_session,monkeypatch):
+    """删掉模板生成后，上传原文件这条主路径仍要完整：合同 + 原件关联 + 回签待办 + 审计。"""
+    from app.modules.contract import router as contract_router
+    from app.modules.customer.model import Customer
+    from app.modules.file.model import BusinessFile
+    from app.modules.settings import numbering
+    from app.modules.task.model import Task
+    from types import SimpleNamespace as Obj
+    from unittest.mock import AsyncMock
+
+    sql_session.add(Customer(id=9,name='客户甲',owner_id=1))
+    await sql_session.flush()
+    monkeypatch.setattr(numbering,'generate_for',AsyncMock(return_value='CT-UPLOAD'))
+    customer=Obj(id=9,name='客户甲',owner_id=1)
+    monkeypatch.setattr(contract_router,'ensure_in_scope',AsyncMock())
+    monkeypatch.setattr(contract_router,'write_audit',AsyncMock())
+    import app.modules.contract.support as contract_support
+    monkeypatch.setattr(contract_support,'verify_original',AsyncMock())
+    monkeypatch.setattr('app.modules.customer.service.get_visible_customer',AsyncMock(return_value=customer))
+    p=DocumentCreate(customer_id=9,source_type='customer_drafted',original_file_id=88,
+                     contract_origin='company',title='上传合同')
+    request=Obj(headers={},client=Obj(host='127.0.0.1'))
+    doc=await contract_router.create_document_record(p,request,Obj(id=1),sql_session)
+    # 返回的是 FastAPI 的 ok(...) 响应；业务行已落库，直接查库断言
+    files=(await sql_session.execute(__import__('sqlalchemy').select(BusinessFile))).scalars().all()
+    tasks=(await sql_session.execute(__import__('sqlalchemy').select(Task))).scalars().all()
+    assert len(files)==1 and files[0].category=='contract_original' and files[0].file_id==88
+    assert len(tasks)==1 and tasks[0].task_type=='contract_signed_upload'
+    assert doc['data']['id'] and doc['data']['original_file_id']==88
+
+
+@pytest.mark.anyio
 async def test_customer_source_without_original_is_rejected(sql_session):
     from app.modules.contract import service
     with pytest.raises(AppError):

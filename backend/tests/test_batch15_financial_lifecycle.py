@@ -75,19 +75,6 @@ def sign(db,doc):
     run(contract.sign_document(s,doc,file_id=f.id,note='实测签回'))
 
 
-def test_generation_only_records_intent_does_not_cancel_parent(db,monkeypatch):
-    s,user,c,t=db;parent=document(db);task=reminder(db,parent)
-    async def number(*a,**kw):return 'CT-'+uuid4().hex[:8]
-    from app.modules.settings import numbering
-    monkeypatch.setattr(numbering,'generate_for',number)
-    doc,_=run(contract.generate_document(s,user_id=user.id,payload=DocumentCreate(
-        customer_id=c.id,template_id=t.id,parent_id=parent.id,supersede_parent=True,
-        effective_date=today_business(),expiry_date=today_business()+timedelta(days=365))))
-    assert doc.status=='draft' and doc.filled_data['_supersedes']['id']==parent.id
-    assert task.status=='pending' and not contract.is_superseded(parent)
-    sign(db,doc)
-    assert task.status=='cancelled' and contract.is_superseded(parent)
-
 
 def test_signed_future_replacement_waits_until_effective_day(db):
     s,*_=db;parent=document(db);task=reminder(db,parent)
@@ -163,17 +150,6 @@ def test_void_new_agreement_does_not_reopen_expired_old_reminder(db):
     run(contract.void_document(s,child,reason='新协议撤销'))
     assert task.status=='cancelled'
 
-
-@pytest.mark.parametrize('kind',['missing_parent','wrong_template'])
-def test_invalid_replacement_selection_is_rejected_before_generation(db,kind):
-    s,user,c,t=db;parent=document(db)
-    if kind=='wrong_template':t.doc_type='contract';run(s.flush())
-    with pytest.raises(AppError,match='月结协议'):
-        run(contract.generate_document(s,user_id=user.id,payload=DocumentCreate(
-            template_id=t.id,customer_id=c.id,supersede_parent=True,
-            parent_id=None if kind=='missing_parent' else parent.id,
-            effective_date=today_business(),expiry_date=today_business()+timedelta(days=365))))
-    assert len(run(s.execute(select(ContractDocument))).scalars().all())==1
 
 
 def order(db,status='pending'):

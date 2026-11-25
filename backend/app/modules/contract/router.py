@@ -259,94 +259,41 @@ async def create_document_record(payload: DocumentCreate, request: Request, user
             svc.serialize_document(doc, customer_name=customer.name),
             "这份合同刚才已经生成过了，返回的是同一份",
         )
-    if payload.source_type == "customer_drafted":
-        # 唯一键保证重试不会重复创建“上传客户回签文件”待办。
-        from app.modules.task.model import Task
-        owner_id = customer.owner_id or user.id
-        exists = await session.execute(
-            select(Task.id).where(Task.source_key == f"contract:signed-upload:{doc.id}").limit(1)
-        )
-        if exists.scalar_one_or_none() is None:
-            session.add(Task(
-                title=f"上传客户回签合同：{doc.doc_no}",
-                task_type="contract_signed_upload",
-                customer_id=doc.customer_id,
-                owner_id=owner_id,
-                priority="high",
-                status="pending",
-                source="system",
-                source_business_type="contract",
-                source_business_id=doc.id,
-                source_key=f"contract:signed-upload:{doc.id}",
-            ))
-    # ⚠️ **从"PDF 落盘"到"提交成功"整段都要能清理**（第四批复审 P1，2026-10-12）。
-    #
-    # 我上一版只把 `session.commit()` 那一步放进了 try，于是**写审计失败**这条路
-    # 漏了：PDF 已落盘、数据库回滚、孤儿 PDF 留着（故障注入实测：合同 0 条、
-    # 文件记录 0 条、PDF 仍在、删除调用 0 次）。
-    #
-    # 所以 try 从**落盘之前**就开始，覆盖中间的每一次 await。
-    # 清理一律走 `svc.cleanup_pending_objects()` —— 它**先核查数据库再删**，
-    # 因为"commit 抛异常"不等于"没提交"（见那个函数的说明）。
-    try:
-        # 生成即把 PDF 渲染一次落盘（带 sha256）。之后无论客户改几次名，
-        # 下载拿到的都是这一份——同一编号两次下载内容不同是对外文件的硬伤。
-        if payload.original_file_id:
-            from app.modules.file.model import BusinessFile
-            session.add(BusinessFile(business_type="contract", business_id=doc.id,
-                                     file_id=payload.original_file_id, category="contract_original"))
-        else:
-            await svc.attach_generated_pdf(session, doc, user_id=user.id)
-        # 补充协议 / 续签是**一次真实的业务动作**，要进客户时间线；
-        # 普通草稿生成不记——草稿不代表签约（审查第 9 条明确要求）。
-        if doc.parent_id:
-            parent_doc = await svc.get_doc_or_404(session, doc.parent_id)
-            supersedes = (doc.filled_data or {}).get("_supersedes") or {}
-            label = "月结协议续签" if doc.doc_type == "monthly" else "新增补充协议"
-            extra = ""
-            if supersedes:
-                extra = f"；已替代原协议 {supersedes.get('doc_no')}"
-                if supersedes.get("cancelled_tasks"):
-                    extra += f"，同时结束了 {supersedes['cancelled_tasks']} 条在办提醒"
-            await _record_contract_event(
-                session,
-                doc,
-                user=user,
-                action="amend",
-                title=label,
-                content=f"{label} {doc.doc_no}，基于 {parent_doc.doc_no}{extra}",
-            )
-        await write_audit(
-            session,
-            operator_id=user.id,
-            action="generate",
-            business_type="contract",
-            business_id=doc.id,
-            after={"doc_no": doc.doc_no, "template_id": doc.template_id,
-                   "customer_id": doc.customer_id, "order_id": doc.order_id,
-                   "quote_id": doc.quote_id, "quote_version_id": doc.quote_version_id,
-                   "generated_file_id": doc.generated_file_id, "contract_origin": payload.contract_origin},
-            ip=client_ip(request),
-        )
-        await session.commit()
-    except BaseException:  # noqa: BLE001
-        # ⚠️ 捕 **`BaseException`**，不是 `Exception`（第四批复审 P2，2026-10-12）。
-        #
-        # `asyncio.CancelledError` 继承 `BaseException` —— 写 `except Exception`
-        # **捕不到取消**：客户端断开、请求超时、服务优雅停机都会取消这个协程，
-        # 于是清理被跳过。复审实测（PDF 落盘后、写审计处注入取消）：
-        # 合同 0 条、文件记录 0 条，**存储仍有 1 份 PDF、待清理登记仍有 1 条**。
-        #
-        # 清理走 `_cancel_safe`：用 `asyncio.shield` 让这段**扛住取消跑完**，
-        # 然后再把取消原样抛出去 —— 取消语义不变，只是"先收拾干净再走"。
-        # 核查仍然照旧：查得到就保留（已提交的原件不许删），查不到才删。
-        await svc._cancel_safe(
-            svc.cleanup_pending_objects(session), label="合同 PDF 清理"
-        )
-        raise
-    # 成功路径：**注销登记**。不清的话，本请求会话上会一直挂着"待删"的键 ——
-    # 会话被复用（同一个请求里后面还有别的逻辑）时，那些键可能被当成待清理对象。
-    svc.take_pending_objects(session)
+    # 唯一键保证重试不会重复创建“上传客户回签文件”待办。
+    from app.modules.task.model import Task
+    owner_id = customer.owner_id or user.id
+    exists = await session.execute(
+        select(Task.id).where(Task.source_key == f"contract:signed-upload:{doc.id}").limit(1)
+    )
+    if exists.scalar_one_or_none() is None:
+        session.add(Task(
+            title=f"上传客户回签合同：{doc.doc_no}",
+            task_type="contract_signed_upload",
+            customer_id=doc.customer_id,
+            owner_id=owner_id,
+            priority="high",
+            status="pending",
+            source="system",
+            source_business_type="contract",
+            source_business_id=doc.id,
+            source_key=f"contract:signed-upload:{doc.id}",
+        ))
+    from app.modules.file.model import BusinessFile
+    session.add(BusinessFile(business_type="contract", business_id=doc.id,
+                             file_id=payload.original_file_id, category="contract_original"))
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="generate",
+        business_type="contract",
+        business_id=doc.id,
+        after={"doc_no": doc.doc_no, "template_id": doc.template_id,
+               "customer_id": doc.customer_id, "order_id": doc.order_id,
+               "quote_id": doc.quote_id, "quote_version_id": doc.quote_version_id,
+               "generated_file_id": doc.generated_file_id, "contract_origin": payload.contract_origin},
+        ip=client_ip(request),
+    )
+    await session.commit()
 
     result = svc.serialize_document(doc, customer_name=customer.name)
     missing = result.get("missing_fields") or {}
@@ -393,6 +340,7 @@ async def get_document(
     user: CurrentUser = Depends(require_permission("order:view")),
     session: AsyncSession = Depends(get_db),
 ):
+    from app.modules.contract.pdf import render_contract_pdf
     doc = await svc.get_doc_or_404(session, doc_id)
     await _ensure_doc_in_scope(session, user, doc)
     from app.modules.customer.model import Customer
@@ -492,21 +440,18 @@ async def download_document(
     user: CurrentUser = Depends(require_permission("order:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    """下载**生成稿**（§3.6）。
+    """下载合同原件（2026-11-25：生成功能已删，只返回上传的原文件）。
 
-    生成的时候就把 PDF 渲染一次落盘了，这里返回当时那一份——客户后来改名、
-    公司换抬头、报价出了 V2，都不会让已经发出去的那份合同跟着变。
-    只有本批之前生成的老数据（没有 `generated_file_id`）才回落到实时渲染。
+    上传客户原稿时存的是原件；历史模板稿如果有 `generated_file_id`，返回当时
+    落盘的那一份。两者都不存在的旧模板稿不再现场渲染，直接报 410。
 
-    这是**生成稿**，不是签署原件：签回来的扫描件在详情接口的 `signed_files` 里，
-    下载不等于已签，签了才算签。
+    这是**合同原文件**，不是签署件：签回来的扫描件在详情接口的 `signed_files` 里。
     """
     import asyncio
     import hashlib
 
     from fastapi import Response
 
-    from app.modules.contract.pdf import render_contract_pdf
     from app.modules.file import storage
     from app.modules.file.model import FileRecord
 
@@ -579,12 +524,10 @@ async def download_document(
                 410,
             )
     else:
-        # 本批之前生成的旧记录**本来就没有存档**（当时还没落盘这一步）。
-        # 这类仍按历史数据渲染一份，但必须在文件名与响应头里标明它是**副本**，
-        # 不能让它看起来像原存档（11.3 第 4 条）。
+        # 历史模板稿没有落盘 PDF（本批之前的老数据）：保留原来的只读渲染兜底，
+        # 文件名明确标“副本”。新入口已不再生成模板稿，这条只服务历史数据。
         source = "legacy_rendered"
         data = await svc.build_pdf_data(session, doc)
-        # reportlab 渲染是同步 CPU 密集操作，丢线程池避免卡住事件循环（与报价 PDF 同）
         content = await asyncio.to_thread(render_contract_pdf, data)
 
     # 下载留痕：合同是含价格与条款的对客文件，谁在什么时候取了哪一份要能查

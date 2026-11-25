@@ -5675,3 +5675,11 @@
 - 接入：`contract/service.py` 生成时冻结；`oa/service.py` 的 `_contract_amount` 改为委托 `contract_amount`；`contract/router.py` 签署审计金额同样走 `contract_amount`。
 - 口径：同一份合同内部纸面/OA/审计三处必须一致；V1、V2、续签、替代、补充协议各自生成时各冻各的，不继承父合同金额、也不追着最新报价跑。改金额就重新生成合同。
 - 验证：新增 `test_contract_amount_snapshot.py` 8 条（V2 优先、订单兜底、无金额显式冻结、冻结值不查库、老合同回退报价优先、OA 委托）；原稿合同补断言 `_amount=None`。相关 48 项通过；后端隔离全量 **2267 绿**。
+
+## 2026-11-25 删除系统模板生成合同（主人拍板"删掉不用的生成合同这一块"）
+
+- 范围确认：HTTP 入口 `POST /contract-documents` 早已只收上传原文件；本次删的是后端仍留着的模板生成尸体，不动上传、模板资料库、OA 审批、签署/作废、下载原件。
+- 服务层：`generate_document` 改为上传专用，只接受 `source_type=customer_drafted + original_file_id`；拒绝 `template_id` / `parent_id` / `supersede_parent`。删除 `render_template`、`_QuoteSource`、文本模板 `create_template` / `TemplateCreate`，以及模板生成后落盘 PDF 的 `attach_generated_pdf` 与待清理对象机制。
+- 路由层：创建接口去掉模板分支、`attach_generated_pdf` 分支和 parent/续签分支；上传仍写 `BusinessFile(contract_original)`、回签待办、审计并提交。
+- 保留：合同模板资料库（`/contract-templates` 存 PDF/Word 原文件、`enabled=False`、无正文）、上传原稿、OA 表单/审批/撤回、签署、作废、台账、到期提醒、替代关系状态机；历史模板稿若有 `generated_file_id` 仍可下载，没有存档的旧稿继续按历史数据渲染副本（只读兜底，不产生新合同）。
+- 测试：删除只测试已删功能的 8 条（3 条模板/续签生成、5 条 PDF 待清理对象）；新增 1 条上传主路径集成回归（合同+原件关联+回签待办+审计）。后端隔离全量 **2260 绿**。
