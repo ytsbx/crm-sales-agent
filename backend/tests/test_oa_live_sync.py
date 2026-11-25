@@ -208,8 +208,8 @@ async def test_display_template_cached_but_submission_schema_not_cached(monkeypa
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize('age,error,calls', [(None,None,1),(1,None,0),(4,None,1),(1,'temporary',1)])
-async def test_self_oa_polling_coalesces_recent_queries_after_permission_check(monkeypatch, age, error, calls):
+@pytest.mark.parametrize('age,error', [(None,None),(1,None),(4,None),(1,'temporary')])
+async def test_self_oa_manual_sync_always_queries(monkeypatch, age, error):
     from app.modules.oa import service as own
     row = Obj(id=7, provider='self_oa', synced_at=None if age is None else datetime.now(UTC)-timedelta(seconds=age), error=error)
     session = Obj(get=AsyncMock(return_value=row), commit=AsyncMock())
@@ -221,8 +221,8 @@ async def test_self_oa_polling_coalesces_recent_queries_after_permission_check(m
     monkeypatch.setattr(own, 'sync_self_oa_row', sync)
     monkeypatch.setattr(own, 'serialize', lambda row: {'id':row.id})
     await router.sync_oa_instance(7,Obj(),session)
-    assert sync.await_count == calls
-    assert scope.await_count == 2 + calls
+    assert sync.await_count == 1
+    assert scope.await_count == 3
     lock.assert_awaited_once_with(session,row)
     session.get.assert_awaited_once_with(OaInstance,7)
 

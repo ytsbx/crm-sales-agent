@@ -674,22 +674,20 @@ async def sync_oa_instance(
     await ensure_oa_type_scope(session, user, row)
     if getattr(row, 'provider', 'dingtalk') == 'self_oa':
         from app.modules.oa import service as oa_service
-        synced = row.synced_at
-        if synced is not None and synced.tzinfo is None:
-            synced = synced.replace(tzinfo=UTC)
-        if row.error or synced is None or (datetime.now(UTC) - synced).total_seconds() >= 3:
-            try:
-                current = await oa_service.sync_self_oa_row(session, row)
-            except oa_client.OaError as exc:
-                raise AppError(
-                    ErrorCode.EXTERNAL_ERROR,
-                    '暂时无法确认最新审批结果，请稍后重试；审批尚未确认前，暂不能执行需要审批通过的操作',
-                    502,
-                ) from exc
-            if current is None:
-                raise AppError(ErrorCode.VERSION_CONFLICT, "审批状态已更新，请刷新后再同步", 409)
-            row = current
-            await ensure_oa_type_scope(session, user, row)
+        # 手动同步必须真查：原来 3 秒内复用快照，用户刚在 OA 批完就点同步，
+        # 会拿到旧的 pending，提示却仍是"已查询最新"。并发点击由行锁串行化。
+        try:
+            current = await oa_service.sync_self_oa_row(session, row)
+        except oa_client.OaError as exc:
+            raise AppError(
+                ErrorCode.EXTERNAL_ERROR,
+                '暂时无法确认最新审批结果，请稍后重试；审批尚未确认前，暂不能执行需要审批通过的操作',
+                502,
+            ) from exc
+        if current is None:
+            raise AppError(ErrorCode.VERSION_CONFLICT, "审批状态已更新，请刷新后再同步", 409)
+        row = current
+        await ensure_oa_type_scope(session, user, row)
         await session.commit()
         return ok(oa_service.serialize(row), '已查询 OA 最新记录')
     if app_settings.dingtalk_push_off:
