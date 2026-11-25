@@ -91,14 +91,17 @@ def native_quoters(template):
     return [person for person in template.get("people", []) if person["id"] in scope]
 
 
+NATIVE_ENTRY_FIELD_IDS = {
+    "quote_scope": "quote_scope", "reply_date": "reply_date", "provide_sample": "provide_sample",
+    "customer": "customer_contact", "product_reference": "product_reference", "specification": "product_model",
+    "delivery_time": "delivery_date", "notes": "special_note", "attachments": "attachments",
+}
+
+
 def native_entry_fields(template):
     """Expose OA's editable sales fields through the existing CRM form controls."""
     types = {"text": "TextField", "choice": "DDSelectField", "date": "DDDateField", "attachment": "DDAttachment"}
-    field_ids = {
-        "quote_scope": "quote_scope", "reply_date": "reply_date", "provide_sample": "provide_sample",
-        "customer": "customer_contact", "product_reference": "product_reference", "specification": "product_model",
-        "delivery_time": "delivery_date", "notes": "special_note", "attachments": "attachments",
-    }
+    field_ids = NATIVE_ENTRY_FIELD_IDS
     return [{**field, "id": field_ids[field["id"]], "type": types[field["type"]],
              "options": field.get("options", [])}
             for field in template["fields"] if field["id"] in field_ids and field["type"] in types]
