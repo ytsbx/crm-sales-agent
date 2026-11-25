@@ -272,6 +272,11 @@ export function cancelOrder(orderId: number, reason?: string) {
   return api.post<Order>(`/orders/${orderId}/cancel`, reason ? { reason } : undefined)
 }
 
+/** 恢复已取消的订单：保留编号与明细；原应收与批次仍为已取消，需重新生成/重排。 */
+export function restoreOrder(orderId: number) {
+  return api.post<Order>(`/orders/${orderId}/restore`)
+}
+
 export function getErpReadiness() {
   return api.get<{ configured: boolean }>('/integrations/erp/readiness')
 }

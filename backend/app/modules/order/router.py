@@ -881,6 +881,93 @@ async def status_history(
     )
 
 
+@router.post("/orders/{order_id}/restore")
+async def restore_order(
+    order_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("order:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """恢复已取消的订单（不重建、保留原编号与关联）。
+
+    只恢复订单本身的状态；取消时连带处理的待确认回款、应收计划与未发货批次
+    保持已取消，按需重新登记/生成——系统不替人"复活"财务与履约单据。
+    已发生发货或已有已确认回款的取消单不能恢复（那些是既成事实）。
+    """
+    order = await svc.get_visible_order(session, user, order_id, for_update=True)
+    if order.status != "cancelled":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "只有已取消的订单可以恢复", 422)
+    shipped = (
+        await session.execute(
+            select(func.count())
+            .select_from(OrderShipmentBatch)
+            .where(
+                OrderShipmentBatch.order_id == order.id,
+                OrderShipmentBatch.status == "shipped",
+            )
+        )
+    ).scalar_one()
+    if shipped:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "该订单已有发货记录，不能恢复；请重新建单",
+            422,
+        )
+    confirmed = (
+        await session.execute(
+            select(func.count())
+            .select_from(PaymentRecord)
+            .where(
+                PaymentRecord.order_id == order.id,
+                PaymentRecord.status == "confirmed",
+            )
+        )
+    ).scalar_one()
+    if confirmed:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "该订单已有已确认回款，不能恢复；请先由财务处理回款",
+            422,
+        )
+    previous = (
+        await session.execute(
+            select(OrderStatusHistory.old_status)
+            .where(
+                OrderStatusHistory.order_id == order.id,
+                OrderStatusHistory.new_status == "cancelled",
+            )
+            .order_by(OrderStatusHistory.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    restore_to = previous if previous in ("pending", "in_production") else "pending"
+    before = svc.serialize_order(order)
+    await svc.change_status(
+        session,
+        order,
+        new_status=restore_to,
+        operator_id=user.id,
+        remark="恢复已取消订单",
+        allow_restore=True,
+    )
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="restore",
+        business_type="order",
+        business_id=order.id,
+        before=before,
+        after=svc.serialize_order(order),
+        ip=client_ip(request),
+    )
+    await session.commit()
+    label = ORDER_STATUS_LABEL.get(restore_to, restore_to)
+    return ok(
+        svc.serialize_order(order),
+        f"订单已恢复为「{label}」；原应收计划与发货批次仍为已取消，请按需重新生成或重排",
+    )
+
+
 @router.post("/orders/{order_id}/status")
 async def change_status(
     order_id: int,

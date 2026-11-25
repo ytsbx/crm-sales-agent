@@ -19,6 +19,7 @@ import type { TagTone } from '../../shared/types'
 
 import {
   cancelOrder,
+  restoreOrder,
   cancelOrderShipment,
   changeOrderStatus,
   confirmPayment,
@@ -515,6 +516,20 @@ export default function OrderDetailPage() {
     onError: () => {
       void queryClient.invalidateQueries({ queryKey: ['order-payments', orderId] })
     },
+  })
+
+  // 恢复已取消订单：不重建、保留原编号与明细；应收与批次需重新生成/重排
+  const restoreMutation = useMutation({
+    mutationFn: () => restoreOrder(orderId),
+    onSuccess: (result) => {
+      Toast.success(`${result.order_no} 已恢复`)
+      refresh()
+      shipmentsRefresh()
+      void queryClient.invalidateQueries({ queryKey: ['order-payments', orderId] })
+      void queryClient.invalidateQueries({ queryKey: ['order-schedule-changes', orderId] })
+      void queryClient.invalidateQueries({ queryKey: ['quote-version'] })
+    },
+    onError: (error: Error) => Toast.error(error.message),
   })
 
   // ---- 销售退货：登记 → 财务处理 → 退款登记 / 作废 ----
@@ -1477,6 +1492,21 @@ export default function OrderDetailPage() {
                         onConfirm={() => repurchaseMutation.mutate()}
                       >
                         <Button loading={repurchaseMutation.isPending}>复购开新商机</Button>
+                      </Popconfirm>
+                    ),
+                  })
+                }
+                if (stage === 'cancelled' && canManage) {
+                  more.push({
+                    key: 'restore',
+                    label: '恢复订单',
+                    node: (
+                      <Popconfirm
+                        title="恢复这张已取消的订单？"
+                        content="恢复后订单编号与明细保留；原应收计划与发货批次仍为已取消，需要重新生成或重排。已发生发货或已有已确认回款的订单不能恢复。"
+                        onConfirm={() => restoreMutation.mutate()}
+                      >
+                        <Button loading={restoreMutation.isPending}>恢复订单</Button>
                       </Popconfirm>
                     ),
                   })

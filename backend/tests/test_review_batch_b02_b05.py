@@ -191,3 +191,59 @@ async def test_cancelled_receivable_only_allows_remark(monkeypatch):
         )
     assert caught.value.http_status == 422
     assert "只能修改备注" in caught.value.message
+
+
+@pytest.mark.anyio
+async def test_cancelled_order_can_be_restored():
+    """恢复已取消订单：保留编号与明细，状态回到取消前。"""
+    from app.modules.order.model import OrderShipmentBatch, OrderStatusHistory
+    from app.modules.payment.model import PaymentRecord
+
+    engine = _engine([User, Customer, SalesOrder, OrderStatusHistory,
+                      OrderShipmentBatch, PaymentRecord, AuditLog])
+    try:
+        with Session(engine, expire_on_commit=False) as raw:
+            raw.add_all([
+                Customer(id=1, name="客户", owner_id=1),
+                SalesOrder(id=1, order_no="SO-1", customer_id=1, owner_id=1, status="cancelled"),
+                OrderStatusHistory(order_id=1, old_status="pending", new_status="cancelled",
+                                   operator_id=1, created_at=datetime.now(UTC)),
+            ])
+            raw.commit()
+            actor = make_user(1, permissions=("order:manage",), data_scope="all")
+            result = await order_router.restore_order(1, _request(), actor, SyncSessionAsAsync(raw))
+            assert result["data"]["status"] == "pending"
+            assert raw.get(SalesOrder, 1).status == "pending"
+            audit = raw.query(AuditLog).filter_by(action="restore", business_id=1).one()
+            assert audit.before_data["status"] == "cancelled"
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_shipped_order_cannot_be_restored():
+    """已发生发货的取消单不能恢复（履约事实不复活）。"""
+    from app.modules.order.model import OrderShipmentBatch, OrderStatusHistory
+    from app.modules.payment.model import PaymentRecord
+
+    engine = _engine([User, Customer, SalesOrder, OrderStatusHistory,
+                      OrderShipmentBatch, PaymentRecord, AuditLog])
+    try:
+        with Session(engine, expire_on_commit=False) as raw:
+            raw.add_all([
+                Customer(id=1, name="客户", owner_id=1),
+                SalesOrder(id=1, order_no="SO-1", customer_id=1, owner_id=1, status="cancelled"),
+                OrderStatusHistory(order_id=1, old_status="pending", new_status="cancelled",
+                                   operator_id=1, created_at=datetime.now(UTC)),
+                OrderShipmentBatch(order_id=1, batch_no=1, status="shipped",
+                                   created_at=datetime.now(UTC)),
+            ])
+            raw.commit()
+            actor = make_user(1, permissions=("order:manage",), data_scope="all")
+            with pytest.raises(AppError) as caught:
+                await order_router.restore_order(1, _request(), actor, SyncSessionAsAsync(raw))
+            assert caught.value.http_status == 422
+            assert "发货" in caught.value.message
+            assert raw.get(SalesOrder, 1).status == "cancelled"
+    finally:
+        engine.dispose()

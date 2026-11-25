@@ -621,6 +621,7 @@ async def change_status(
     source: str = "WEB",
     remark: str | None = None,
     allow_cancel: bool = False,
+    allow_restore: bool = False,
 ) -> None:
     if new_status not in ORDER_STATUS_LABEL:
         raise AppError(ErrorCode.PARAM_ERROR, f"未知的订单状态：{new_status}")
@@ -635,7 +636,9 @@ async def change_status(
         )
     if order.status == new_status:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "订单已经是该状态")
-    if order.status == "cancelled":
+    if order.status == "cancelled" and not allow_restore:
+        # allow_restore 只给「恢复已取消订单」专用入口：恢复同样要处理
+        # 回款/批次的前置条件，不能借普通状态接口绕过。
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已取消的订单不能再变更状态")
     if new_status == "completed":
         # 「已完成」必须有**履约依据**：实发数量要盖住订单数量（issue #10）。
