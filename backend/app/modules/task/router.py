@@ -753,7 +753,11 @@ async def cancel_task(
         action="cancel",
         business_type="task",
         business_id=task.id,
-        before={"status": before_status},
+        before={
+            "status": before_status,
+            "title": task.title,
+            "due_at": task.due_at.isoformat() if task.due_at else None,
+        },
         after={"status": "cancelled"},
         ip=client_ip(request),
     )
@@ -956,9 +960,24 @@ async def batch_complete_tasks(
             if expected is None or task.updated_at is None or _as_utc(expected) != _as_utc(task.updated_at):
                 skipped.append({"task_id": task_id, "reason": "任务已变动，请刷新后重新选择"})
                 continue
+        # B22-09：批量完成也要逐条留痕（原状态/原截止日）；聚合审计另有一条
+        old_status, old_due_at = task.status, task.due_at
         task.status = "done"
         task.completed_at = now
         task.completion_note = payload.completion_note
+        await write_audit(
+            session,
+            operator_id=user.id,
+            action="complete",
+            business_type="task",
+            business_id=task.id,
+            before={
+                "status": old_status,
+                "due_at": old_due_at.isoformat() if old_due_at else None,
+            },
+            after={"status": "done", "completion_note": payload.completion_note, "batch": True},
+            ip=client_ip(request),
+        )
         completed.append(task_id)
         if task.task_type == "followup" and task.customer_id:
             touched_customers.add(task.customer_id)

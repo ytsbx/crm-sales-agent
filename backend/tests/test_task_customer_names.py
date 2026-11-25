@@ -70,3 +70,32 @@ async def test_list_task_customer_name_scope(permissions, scope, owner, deleted,
             assert item['customer_id'] == 2
     finally:
         engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_cancel_task_audit_keeps_due_date():
+    """B22-09：取消待办的审计要能回答"原本该哪天做"。"""
+    from starlette.requests import Request
+
+    from app.core.audit import AuditLog
+    from app.modules.task import router as task_router
+
+    engine = make_engine()
+    Task.__table__.create(engine)
+    AuditLog.__table__.create(engine)
+    try:
+        with Session(engine) as raw:
+            raw.add(Task(id=1, title='跟进客户', owner_id=1,
+                         due_at=datetime(2026, 12, 1, tzinfo=UTC)))
+            raw.commit()
+            await task_router.cancel_task(
+                1, Request({'type': 'http', 'headers': []}),
+                user=make_user(1, permissions=('task:manage',), data_scope='all'),
+                session=SyncSessionAsAsync(raw),
+            )
+            audit = raw.query(AuditLog).filter_by(action='cancel', business_id=1).one()
+            assert audit.before_data['status'] == 'pending'
+            assert audit.before_data['due_at'].startswith('2026-12-01')
+            assert audit.before_data['title'] == '跟进客户'
+    finally:
+        engine.dispose()

@@ -1030,7 +1030,7 @@ async def feedback_sample(
         action="feedback",
         business_type="sample",
         business_id=sample.id,
-        before={"feedback": before_feedback},
+        before={"feedback": before_feedback, "status": sample.status},
         after=after,
         ip=client_ip(request),
     )
@@ -1189,7 +1189,18 @@ async def register_sample_made(
         business_type="sample",
         business_id=sample.id,
         before={"made_at": before_made_at.isoformat() if before_made_at else None},
-        after={"made_at": sample.made_at.isoformat()},
+        after={
+            "made_at": sample.made_at.isoformat(),
+            "note": note or None,
+            "sample_version": sample.version or 1,
+            # B22-10：金额与工时是这一次制作的依据，事后要能回答"当时按多少钱做的"
+            "sample_fee": format(sample.sample_fee, "f") if sample.sample_fee is not None else None,
+            "estimated_hours": format(sample.estimated_hours, "f") if sample.estimated_hours is not None else None,
+            "basis_files": [
+                {"file_id": item.get("file_id"), "checksum": item.get("checksum")}
+                for item in (sample.basis_files or [])
+            ],
+        },
         ip=client_ip(request),
     )
     await followup_service.record_and_notify(

@@ -49,7 +49,7 @@ def _engine():
         User.__table__, Department.__table__, Customer.__table__, Contact.__table__,
         SampleRequest.__table__, FileRecord.__table__, BusinessFile.__table__,
         CustomInquiry.__table__, OaInstance.__table__, Opportunity.__table__,
-        SystemSetting.__table__,
+        SystemSetting.__table__, AuditLog.__table__,
     ])
     return engine
 
@@ -743,6 +743,10 @@ def test_sync_sample_without_stage_summary_follows_overall_approved():
         asyncio.run(oa_sample._apply_sample_summary(SyncSessionAsAsync(raw), row, {'status': 'approved'}))
         assert row.status == 'approved'
         assert sample.status == 'approved'
+        audit = raw.query(AuditLog).filter_by(action='sample_oa_status', business_id=92).one()
+        assert audit.before_data == {'status': 'pending'}
+        assert audit.after_data['status'] == 'approved'
+        assert audit.after_data['oa_instance_id'] == row.id
 
 
 def test_sample_detail_upload_requires_files_from_the_same_sample():

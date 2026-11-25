@@ -179,5 +179,6 @@
   "withdraw_approval": "撤回审批",
   "withdraw_contract_oa": "撤回合同审批",
   "withdraw_oa_instance": "撤回钉钉审批",
-  "sync_oa": "手工同步审批"
+  "sync_oa": "手工同步审批",
+  "sample_oa_status": "打样审批状态同步"
 }

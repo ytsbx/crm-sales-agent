@@ -343,6 +343,7 @@ async def _apply_sample_summary(session, row, summary):
             # 有摘要却缺打样段：异常回包，保持 pending 等同步（防呆）。
             released = new_status in {"pending", "approved"} and isinstance(milestone, dict) and milestone.get("status") == "approved"
         sample_status = "approved" if released else new_status if new_status in {"rejected", "withdrawn"} else "pending"
+        before_status = sample.status
         if sample.status == "pending" and sample_status in {"approved", "rejected", "withdrawn"}:
             sample.status = "rejected" if sample_status == "withdrawn" else sample_status
             sample.approved_at = datetime.now(UTC)
@@ -358,6 +359,25 @@ async def _apply_sample_summary(session, row, summary):
                             "provider": PROVIDER, "oa_instance_id": row.id,
                             "instance_id": row.instance_id, "status": row.status},
         }
+        # B22-10：审批结论由 OA 同步回来，也要留一条审计（系统操作，无操作人）
+        if sample.status != before_status:
+            from app.core.audit import write_audit
+
+            await write_audit(
+                session,
+                operator_id=None,
+                source="SYSTEM",
+                action="sample_oa_status",
+                business_type="sample",
+                business_id=sample.id,
+                before={"status": before_status},
+                after={
+                    "status": sample.status,
+                    "provider": PROVIDER,
+                    "oa_instance_id": row.id,
+                    "instance_id": row.instance_id,
+                },
+            )
     await session.flush()
     return row
 

@@ -133,6 +133,7 @@ export const SHARED_ACTION_LABELS: Record<string, string> = {
   'run_notification_digest': '跑通知摘要',
   'sample_confirm': '确认打样',
   'sample_made': '完成打样',
+  'sample_oa_status': '打样审批状态同步',
   'scan_public_pool_recycle': '扫描公海回收',
   'send': '发送',
   'send_email': '发邮件',
