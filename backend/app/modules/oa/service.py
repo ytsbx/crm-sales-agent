@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -24,6 +24,37 @@ from app.modules.oa import client
 
 PROVIDER = "self_oa"
 OA_TYPE = "contract"
+
+#: OA 回包里的 submitted_at 比 CRM 行创建时间早这么多，就按"单号被历史审批占用"处理。
+#: 正常新单两边只差几秒；恢复/复制库导致业务 id 回退时，OA 会返回几天前的旧单。
+_REUSED_REF_TOLERANCE = timedelta(hours=6)
+_REUSED_REF_MESSAGE = (
+    "OA 已存在同单号的历史审批（早于本次提交），可能是数据恢复后业务 id 复用；"
+    "请到 OA 核对原审批，确认后再处理"
+)
+
+
+def _parse_summary_time(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _looks_like_reused_ref(summary: dict, row: OaInstance) -> bool:
+    """OA 返回的审批单是否明显早于本次 CRM 提交（历史单号被复用）。"""
+    submitted_at = _parse_summary_time(summary.get("submitted_at"))
+    created_at = row.created_at
+    if submitted_at is None or created_at is None:
+        return False
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=UTC)
+    return submitted_at < created_at.astimezone(UTC) - _REUSED_REF_TOLERANCE
 
 
 class ApprovalUploads:
@@ -93,6 +124,11 @@ async def send_prepared_approval(session, business, row, payload, uploads: Appro
             raise client.OaUnknownOutcome("OA 返回的审批单与本轮编号不匹配")
     except client.OaError as exc:
         _, current = await lock_receipt()
+        if exc.code == "external_ref_conflict":
+            current.status = "needs_review"
+            current.error = _REUSED_REF_MESSAGE
+            await session.commit()
+            raise AppError(ErrorCode.STATUS_NOT_ALLOWED, _REUSED_REF_MESSAGE, 409) from exc
         unknown = sending and isinstance(exc, client.OaUnknownOutcome)
         current.status = "needs_review" if unknown else "not_sent" if isinstance(exc, client.OaNotConfigured) else "failed"
         current.error = exc.message
@@ -103,6 +139,11 @@ async def send_prepared_approval(session, business, row, payload, uploads: Appro
             raise AppError(ErrorCode.PARAM_ERROR, exc.message, 422) from exc
         raise AppError(ErrorCode.EXTERNAL_ERROR, f"OA 发起失败：{exc.message}", 502) from exc
     fresh_business, current = await lock_receipt()
+    if _looks_like_reused_ref(summary, current):
+        current.status = "needs_review"
+        current.error = f"{_REUSED_REF_MESSAGE}（OA 单号 {summary.get('id')}）"
+        await session.commit()
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, current.error, 409)
     return fresh_business, current, summary
 
 
