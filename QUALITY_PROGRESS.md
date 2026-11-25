@@ -5801,3 +5801,10 @@
 - 复核：当前 `backend/app` 中已无 `https://crm.mandla.cn/api/v1/public/inquiry-images/...` 的生成代码；该段位于旧钉钉询价路径，已在 `165fc06a` 删除。自研 OA 走 `client.upload_file` 直接上传图片，不再需要公网签名 URL。
 - 保留项：`GET /public/inquiry-images/{file_id}` 路由仍在（历史签名 URL 的读取入口），当前无代码生成新链接；签名有过期时间，实际已无可用外链。
 - 结论：B10-05 不再成立；是否顺手删除这个已无调用方的公开读取路由，属清理项，待主人决定。
+
+
+## 2026-11-25 B10-05 清理：删除无调用方的公开图片入口与死函数（未部署）
+
+- 删除 `GET /public/inquiry-images/{file_id}`：唯一生成方已随旧钉钉通道删除，历史签名链接均有有效期，实际已无可用外链。
+- 同步删除无调用方的 `dingtalk/service.first_image_attachment`、测试文件 `tests/test_inquiry_public_images.py`、签名测试中的公开图片用例，以及 API 文档对应条目。
+- 验证：全量 pytest、静态检查三项通过。未部署。

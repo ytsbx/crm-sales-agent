@@ -1,21 +1,11 @@
 """错误签名中的非 ASCII 字符应按校验失败处理，不能抛 TypeError。"""
-import time
-import hashlib
-import hmac
-
-import httpx
 import pytest
-from fastapi import FastAPI
-
-from app.core.jsonio import DecimalJSONResponse
 from starlette.requests import Request
 
 from app.core.config import settings
-from app.core.database import get_db
-from app.core.errors import AppError, register_exception_handlers
+from app.core.errors import AppError
 from app.core.importing import make_preview_token, read_preview_token
 from app.modules.erp.router import _verify_webhook_secret
-from app.modules.file.router import public_inquiry_image, router
 from app.modules.wecom.callback import WeComCallbackError, compute_signature, verify_signature
 
 
@@ -24,33 +14,6 @@ def isolated_keys(monkeypatch):
     monkeypatch.setattr(settings, 'jwt_secret', 'isolated-signature-test-key')
     monkeypatch.setattr(settings, 'erp_webhook_secret', 'isolated-erp-key')
     monkeypatch.setattr(settings, 'wecom_callback_token', 'isolated-wecom-token')
-
-
-class NoDatabase:
-    async def get(self, *args):
-        raise AssertionError('校验失败之前不应读取数据库')
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize('signature', ['invalid', '签名', 'é', '😀'])
-async def test_public_image_bad_signature_rejected_before_database(signature):
-    with pytest.raises(AppError) as error:
-        await public_inquiry_image(1, int(time.time()) + 60, signature, NoDatabase())
-    assert error.value.http_status == 403
-
-
-@pytest.mark.anyio
-async def test_public_image_http_rejects_unicode_signature_instead_of_500():
-    app = FastAPI(default_response_class=DecimalJSONResponse)
-    app.include_router(router)
-    register_exception_handlers(app)
-    async def no_database():
-        yield NoDatabase()
-    app.dependency_overrides[get_db] = no_database
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, raise_app_exceptions=False), base_url='http://isolated') as client:
-        response = await client.get('/public/inquiry-images/1', params={'expires': int(time.time()) + 60, 'sig': '签名'})
-    assert response.status_code == 403
-    assert response.json()['code'] == 40301
 
 
 @pytest.mark.parametrize('signature', ['invalid', '签名', 'é', '😀'])
@@ -80,12 +43,3 @@ def test_erp_bad_header_uses_existing_forbidden_error(raw_secret):
         _verify_webhook_secret(request(raw_secret))
     assert error.value.http_status == 403
     assert _verify_webhook_secret(request(b'isolated-erp-key')) is None
-
-
-@pytest.mark.anyio
-async def test_expired_public_image_is_rejected_even_with_correct_signature():
-    expires = int(time.time()) - 60
-    signature = hmac.new(settings.jwt_secret.encode(), f'1:{expires}'.encode(), hashlib.sha256).hexdigest()
-    with pytest.raises(AppError) as error:
-        await public_inquiry_image(1, expires, signature, NoDatabase())
-    assert error.value.http_status == 403

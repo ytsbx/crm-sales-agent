@@ -1270,42 +1270,6 @@ async def _notify_contract_review_outcome(
     )
 
 
-async def first_image_attachment(
-    session: AsyncSession, *, business_type: str, business_id: int
-) -> tuple[int, str, bytes] | None:
-    """取某个业务对象挂的第一张图片附件，返回 (文件名, 内容)。
-
-    钉钉模板里「产品参考图片」是**必填的图片控件**，所以发起前必须有一张图。
-    图不能直接塞进审批单，得先上传给钉钉换 media_id——**这一步也是对外的**，
-    所以调用方必须在推送总闸打开时才真正传（关着的时候只记录"会用哪张图"）。
-    """
-    from app.modules.file.model import BusinessFile, FileRecord
-    from app.modules.file.storage import absolute_path
-    from app.modules.file.router import preview_media_type
-
-    rows = (
-        await session.execute(
-            select(FileRecord)
-            .join(BusinessFile, BusinessFile.file_id == FileRecord.id)
-            .where(
-                BusinessFile.business_type == business_type,
-                BusinessFile.business_id == business_id,
-                or_(BusinessFile.category.is_(None), BusinessFile.category != "oa_attachment"),
-            )
-            .order_by(BusinessFile.id.asc())
-        )
-    ).scalars().all()
-    for row in rows:
-        # 与公开图片出口使用同一判据，避免选中 SVG 等文件后生成不安全或不可读链接。
-        mime = preview_media_type(row)
-        if mime is None or not mime.startswith("image/"):
-            continue
-        path = absolute_path(row.object_key)
-        if path.exists():
-            return row.id, row.file_name, path.read_bytes()
-    return None
-
-
 def serialize(row: OaInstance) -> dict:
     provider = getattr(row, "provider", "dingtalk")
     legacy_contract = row.oa_type == "contract" and provider != "self_oa"

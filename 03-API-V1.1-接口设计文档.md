@@ -1621,7 +1621,6 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 - `POST /auth/dingtalk/exchange`：用钉钉临时票据换取 CRM 登录令牌。
 - `POST /dingtalk/sync-users`：同步钉钉组织成员及账号绑定状态。
 - `GET /business/{business_id}/files/batch`：批量读取业务对象关联文件。
-- `GET /public/inquiry-images/{file_id}`：带短期签名的询价图片只读地址，供钉钉审批引用。
 
 ### 客户、商机、工作台与等级
 

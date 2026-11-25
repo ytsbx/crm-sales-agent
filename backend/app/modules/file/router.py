@@ -1,9 +1,6 @@
 """文件中心接口（对齐 03-API §31）。"""
 
 import asyncio
-import hashlib
-import hmac
-import time
 import logging
 from pathlib import Path
 from urllib.parse import quote
@@ -42,33 +39,6 @@ def _attachment_category(business_type: str | None, category: str | None) -> str
     if business_type == "contract" and category == "signed":
         return CONTRACT_PENDING_SIGNATURE
     return category
-
-@router.get("/public/inquiry-images/{file_id}")
-async def public_inquiry_image(file_id: int, expires: int, sig: str, session: AsyncSession = Depends(get_db)):
-    """钉钉审批图片控件使用的短期只读图片地址。"""
-    # 按字节比较：非 ASCII 的错误签名也应正常拒绝，不能触发 compare_digest 的 TypeError。
-    if expires < int(time.time()) or not hmac.compare_digest(
-        hmac.new(settings.jwt_secret.encode(), f"{file_id}:{expires}".encode(), hashlib.sha256).hexdigest().encode("ascii"),
-        sig.encode("utf-8"),
-    ):
-        raise AppError(ErrorCode.FORBIDDEN, "图片链接已失效", 403)
-    record = await session.get(FileRecord, file_id)
-    safe_type = preview_media_type(record) if record is not None else None
-    if safe_type is None or not safe_type.startswith("image/"):
-        raise AppError(ErrorCode.NOT_FOUND, "图片不存在", 404)
-    linked = (await session.execute(select(BusinessFile).where(
-        BusinessFile.file_id == file_id, BusinessFile.business_type == "inquiry"
-    ))).scalars().first()
-    path = storage.absolute_path(record.object_key)
-    # B12-05：询价已软删后图片链接同步失效，不能拿着旧签名继续读已删单据的附件
-    from app.modules.inquiry.model import CustomInquiry
-
-    inquiry = await session.get(CustomInquiry, linked.business_id) if linked is not None else None
-    if linked is None or inquiry is None or inquiry.deleted_at is not None or not path.is_file():
-        raise AppError(ErrorCode.NOT_FOUND, "图片不存在", 404)
-    return FileResponse(path, media_type=safe_type, headers={
-        "Content-Disposition": "inline", "X-Content-Type-Options": "nosniff",
-    })
 
 # 原件保护判据（哪些类别不可破坏、对应什么人话）**集中在 access.PROTECTED_CATEGORIES**，
 # 不在这里再维护一份：删除、解绑、以后任何会动到原件的入口都调
