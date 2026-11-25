@@ -23,6 +23,7 @@ from app.modules.file.model import BusinessFile, FileRecord
 from app.modules.notification.model import Notification
 from app.modules.order import schedule, router as orders
 from app.modules.order.model import SalesOrder, OrderScheduleChange, OrderShipmentBatch, OrderStatusHistory
+from app.modules.order.schema import OrderCancel
 from app.modules.payment.model import PaymentRecord
 from app.modules.settings.model import SystemSetting
 from app.modules.task.model import Task
@@ -188,3 +189,21 @@ def test_order_cancel_keeps_voucher_and_closes_pending_change(db):
         run(schedule.confirm_change(s,o,change,user=u,remark='不应放行'))
     audits=run(s.execute(select(AuditLog).where(AuditLog.business_type=='payment',AuditLog.business_id==p.id))).scalars().all()
     assert audits and audits[0].after_data['comment']=='订单取消，随单驳回'
+
+
+def test_completed_order_cancel_requires_reason_and_accepts_it(db):
+    """已完成订单回退为已取消：没理由必须拦，带理由要能走通并留痕。
+
+    这条曾经是死路：取消接口没有 body，`change_status` 又要求理由，
+    于是「已完成」订单永远取消不了。现在补了可选 reason，两个方向都要守住。
+    """
+    s,u,*_=db;o=order(db,'completed')
+    req=Request({'type':'http','method':'POST','path':'/','headers':[],
+        'client':('127.0.0.1',1)})
+    with pytest.raises(AppError,match='必须填写理由'):
+        run(orders.cancel_order(o.id,req,u,s))
+    run(orders.cancel_order(o.id,req,u,s,payload=OrderCancel(reason='客户退单，财务已核实')))
+    assert o.status=='cancelled'
+    history=run(s.execute(select(OrderStatusHistory).where(
+        OrderStatusHistory.order_id==o.id).order_by(OrderStatusHistory.id.desc()))).scalars().first()
+    assert history and history.remark=='客户退单，财务已核实'

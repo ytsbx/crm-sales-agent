@@ -37,6 +37,7 @@ from app.modules.order.model import (
 )
 from app.modules.order.schema import (
     MilestoneUpdate,
+    OrderCancel,
     OrderCreate,
     OrderFromQuote,
     OrderStatusChange,
@@ -943,6 +944,7 @@ async def cancel_order(
     request: Request,
     user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
+    payload: OrderCancel | None = None,
 ):
     """取消订单（方案 §5：取消规则显式化，默认口径如下——要改先改这里）。
 
@@ -984,7 +986,7 @@ async def cancel_order(
     if confirmed:
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
-            f"该订单有 {confirmed} 笔已确认回款，不能直接取消；请先人工处理回款",
+            f"该订单有 {confirmed} 笔已确认回款，不能直接取消；请财务先在「回款记录」作废已确认回款，再取消订单",
             422,
         )
 
@@ -1048,7 +1050,12 @@ async def cancel_order(
                 plan.status = "cancelled"
 
     await svc.change_status(
-        session, order, new_status="cancelled", operator_id=user.id, allow_cancel=True
+        session,
+        order,
+        new_status="cancelled",
+        operator_id=user.id,
+        allow_cancel=True,
+        remark=(payload.reason.strip() if payload and payload.reason else None),
     )
     # 未发货的批次随单取消；已发货批次是既成事实，保留原状
     planned_batches = (
@@ -1089,6 +1096,7 @@ async def cancel_order(
         before={"status": before_status},
         after={
             "status": "cancelled",
+            "reason": payload.reason.strip() if payload and payload.reason else None,
             "rejected_pending_payments": len(pending_payments),
             "cancelled_receivable_plans": sum(1 for p in plans if p.status == "cancelled"),
             "opportunity_id": order.opportunity_id,

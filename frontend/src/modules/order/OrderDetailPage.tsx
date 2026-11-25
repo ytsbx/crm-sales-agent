@@ -9,7 +9,7 @@ import {
   confirmMessageOf,
 } from '../../shared/components/ConfirmRequiredModal'
 import type { ReactNode } from 'react'
-import { Banner, Button, DatePicker, Dropdown, Input, InputNumber, Modal, Popconfirm, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
+import { Banner, Button, DatePicker, Dropdown, Input, InputNumber, Modal, Popconfirm, Select, Table, Tabs, Tag, TextArea, Toast } from '@douyinfe/semi-ui'
 import AllocationAdjustModal from './AllocationAdjustModal'
 import FormLabel from '../../shared/components/FormLabel'
 import { emptyText } from '../../shared/hooks/emptyText'
@@ -53,6 +53,7 @@ import {
   type Receivable,
   type ShipmentBatchRow,
   type ShipmentOverview,
+  voidPayment,
 } from '../../shared/api/order'
 import UserSearchSelect from '../../shared/components/UserSearchSelect'
 import { usePermissions } from '../../shared/hooks/permissions'
@@ -221,11 +222,16 @@ export default function OrderDetailPage() {
   //: 取消订单是**不可逆的终态动作**，单独一个确认弹窗把影响讲清楚
   //: （见下面「取消订单」那个 Modal）。
   const [cancelVisible, setCancelVisible] = useState(false)
+  //: 「已完成」订单取消属于纠错，后端要求写理由；普通订单选填。
+  const [cancelReason, setCancelReason] = useState('')
   const [generateVisible, setGenerateVisible] = useState(false)
   const [generateRows, setGenerateRows] = useState(defaultPlanRows)
   const [dueEdit, setDueEdit] = useState<{ plan: Receivable; date: Date | null } | null>(null)
   const newDueDay = calendarDay(dueEdit?.date)
   const [paymentTarget, setPaymentTarget] = useState<Receivable | null>(null)
+  //: 已确认回款作废（2026-11-25）：普通 Modal，原因必填。
+  const [voidTarget, setVoidTarget] = useState<Payment | null>(null)
+  const [voidReason, setVoidReason] = useState('')
   //: 「调整回款分配」弹窗要调的那笔回款（第十批）。null = 关着。
   const [allocationPayment, setAllocationPayment] = useState<Payment | null>(null)
   const [paymentForm, setPaymentForm] = useState({ amount: '', date: new Date(), method: '银行转账' })
@@ -442,10 +448,11 @@ export default function OrderDetailPage() {
    * 上面这些**一件都不会发生**，会留下"订单已取消但催收照发"的脏账。
    */
   const cancelMutation = useMutation({
-    mutationFn: () => cancelOrder(orderId),
+    mutationFn: (reason: string) => cancelOrder(orderId, reason || undefined),
     onSuccess: (result) => {
       Toast.success(`${result.order_no} 已取消`)
       setCancelVisible(false)
+      setCancelReason('')
       refresh()
       shipmentsRefresh()
       void queryClient.invalidateQueries({ queryKey: ['quote-version'] })
@@ -534,6 +541,21 @@ export default function OrderDetailPage() {
     mutationFn: (id: number) => confirmPayment(id, '财务核对通过'),
     onSuccess: () => {
       Toast.success('回款已确认，已收金额和各期分配已更新。')
+      refresh()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  // 作废已确认回款（2026-11-25 主人拍板 A 方案）：钱确实到过账，记录/分配/凭证
+  // 全留；只是不再计入已收。作废后订单若已无已确认回款，就可以走取消。
+  const voidMutation = useMutation({
+    mutationFn: ({ id, reason }: { id: number; reason: string }) => voidPayment(id, reason),
+    onSuccess: (payment) => {
+      Toast.success(
+        `${formatMoney(payment.received_amount_exact ?? payment.received_amount, payment.currency ?? 'CNY')} 的回款已作废，已收金额与应收期状态已回退。`,
+      )
+      setVoidTarget(null)
+      setVoidReason('')
       refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -770,8 +792,11 @@ export default function OrderDetailPage() {
   const pendingPayments = payments?.filter((payment) => payment.status === 'pending').length ?? 0
   const confirmedPayments = payments?.filter((payment) => payment.status === 'confirmed').length ?? 0
   const cancellationBlocked = confirmedPayments > 0
-    ? `有 ${confirmedPayments} 笔已确认回款。请先联系财务处理回款。`
+    ? `有 ${confirmedPayments} 笔已确认回款。请财务先在「回款记录」作废，再回来取消订单。`
     : ''
+  //: 已完成订单回退为已取消，后端要求必须留理由（进状态变更留痕）。
+  const cancelReasonRequired = order.status === 'completed'
+  const cancelReasonMissing = cancelReasonRequired && cancelReason.trim().length < 2
   const cancelPlanCount = receivables?.filter((plan) => !['paid', 'cancelled'].includes(plan.status)).length
   const orderCancelled = order.status === 'cancelled'
   const unreceivedAmount = order.unreceived_amount_exact ?? order.unreceived_amount
@@ -1192,6 +1217,7 @@ export default function OrderDetailPage() {
                       <Button type="danger" onClick={() => {
                         setOrderMoreVisible(false)
                         cancelMutation.reset()
+                        setCancelReason('')
                         setCancelVisible(true)
                       }}>
                         取消订单
@@ -1454,9 +1480,19 @@ export default function OrderDetailPage() {
                 {
                   title: '状态',
                   dataIndex: 'status_label',
-                  width: narrowScreen ? 110 : 120,
-                  render: (value: string) => (
-                    <Tag color={value === '已确认' ? 'green' : value === '已驳回' ? 'red' : 'orange'}>{value}</Tag>
+                  width: narrowScreen ? 110 : 130,
+                  render: (value: string, record: Payment) => (
+                    <div>
+                      <Tag color={value === '已确认' ? 'green' : value === '已驳回' ? 'red' : value === '已作废' ? 'grey' : 'orange'}>{value}</Tag>
+                      {record.status === 'voided' && (
+                        <div
+                          title={record.void_reason ?? ''}
+                          style={{ fontSize: 11, color: 'var(--crm-text-3)', marginTop: 4, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                        >
+                          {record.void_reason ?? '未填写原因'}
+                        </div>
+                      )}
+                    </div>
                   ),
                 },
                 /* 全部回款都没有确认人时这一列整列挂「-」，白占 90 宽 ——
@@ -1475,9 +1511,9 @@ export default function OrderDetailPage() {
                   : []),
                 {
                   title: '操作',
-                  width: 80,
+                  width: narrowScreen ? 120 : 150,
                   render: (_: unknown, record: Payment) => (
-                    <div style={{ display: 'flex', gap: 10 }}>
+                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                       {record.status === 'pending' && canPayment && !orderCancelled && (
                         <Popconfirm
                           title="确认收到这笔回款？"
@@ -1488,15 +1524,27 @@ export default function OrderDetailPage() {
                         </Popconfirm>
                       )}
                       {record.status === 'confirmed' && canPayment && (
-                        // 只有已确认的回款才谈得上"这笔钱分到哪几期"。
-                        // 列表上把**实际分配**也带出来（超收时与登记的期不同），
-                        // 所以入口旁边直接写出"分了 N 期"，不用点开才知道。
-                        <button type="button" className="crm-text-action" onClick={() => setAllocationPayment(record)}>
-                          调整分配
-                          {(record.allocations?.length ?? 0) > 1
-                            ? `（${record.allocations!.length} 期）`
-                            : ''}
-                        </button>
+                        <>
+                          {/* 只有已确认的回款才谈得上"这笔钱分到哪几期"。
+                              列表上把**实际分配**也带出来（超收时与登记的期不同），
+                              所以入口旁边直接写出"分了 N 期"，不用点开才知道。 */}
+                          <button type="button" className="crm-text-action" onClick={() => setAllocationPayment(record)}>
+                            调整分配
+                            {(record.allocations?.length ?? 0) > 1
+                              ? `（${record.allocations!.length} 期）`
+                              : ''}
+                          </button>
+                          {/* 钱已入账后客户退单/我方放弃：作废是唯一"能把已收金额退回去"的入口。
+                              不删记录、不删凭证，原因必填。 */}
+                          <button
+                            type="button"
+                            className="crm-text-action"
+                            style={{ color: 'var(--crm-danger, #c0392b)' }}
+                            onClick={() => { setVoidReason(''); setVoidTarget(record) }}
+                          >
+                            作废回款
+                          </button>
+                        </>
                       )}
                       {record.status !== 'pending' && record.status !== 'confirmed' && '-'}
                     </div>
@@ -2338,11 +2386,17 @@ export default function OrderDetailPage() {
               type="danger"
               theme="outline"
               action="取消订单"
-              disabled={Boolean(cancellationBlocked)}
-              blockedReasons={cancellationBlocked ? [cancellationBlocked] : []}
+              disabled={Boolean(cancellationBlocked) || cancelReasonMissing}
+              blockedReasons={
+                cancellationBlocked
+                  ? [cancellationBlocked]
+                  : cancelReasonMissing
+                    ? ['请填写取消理由（至少 2 个字）：已完成订单回退属于纠错动作']
+                    : []
+              }
               loading={cancelMutation.isPending}
               hintBelow
-              onClick={() => cancelMutation.mutate()}
+              onClick={() => cancelMutation.mutate(cancelReason.trim())}
             >
               确认取消订单
             </GuardedButton>
@@ -2357,6 +2411,9 @@ export default function OrderDetailPage() {
           </p>
           {cancellationBlocked ? (
             <Banner type="warning" fullMode={false} closeIcon={null} title="已有确认回款">
+              <p className="workflow-guide" style={{ marginBottom: 8 }}>
+                钱已经入账，不能随订单静默作废。请财务打开「回款记录」，对这笔回款点「作废回款」并填原因；作废后这里会自动放行。
+              </p>
               <Button size="small" theme="borderless" onClick={() => {
                 setCancelVisible(false)
                 setActiveKey('payments')
@@ -2383,12 +2440,87 @@ export default function OrderDetailPage() {
               </dl>
               <p className="workflow-guide">已签合同和已确认回款须先处理。未生效的交期变更会随订单作废。</p>
               {order.opportunity_id && <p className="workflow-guide">如需撤销商机成交，请另到商机核对并处理。</p>}
+              <div className="order-cancel-reason">
+                <p className="workflow-guide" style={{ marginBottom: 6 }}>
+                  取消原因{cancelReasonRequired ? '（已完成订单必填，会记入状态变更留痕）' : '（选填）'}
+                </p>
+                <TextArea
+                  rows={3}
+                  maxLength={255}
+                  placeholder={cancelReasonRequired ? '例如：客户退单，财务已核实并作废回款' : '写清原因，方便后续查账'}
+                  value={cancelReason}
+                  onChange={(value) => setCancelReason(value)}
+                />
+              </div>
             </>
           )}
           {cancelMutation.error && !cancellationBlocked && (
             <Banner type="danger" fullMode={false} closeIcon={null} title="取消未完成" description={cancelMutation.error.message} />
           )}
         </div>
+      </Modal>
+
+      {/* 作废已确认回款：钱已经到账，不能"删掉当没发生"；只把它从已收里剔除。 */}
+      <Modal
+        width={520}
+        title="作废这笔回款"
+        visible={Boolean(voidTarget)}
+        onCancel={() => { if (!voidMutation.isPending) { setVoidTarget(null); setVoidReason('') } }}
+        footer={
+          <div className="workflow-modal-actions">
+            <Button disabled={voidMutation.isPending} onClick={() => { setVoidTarget(null); setVoidReason('') }}>先不作废</Button>
+            <GuardedButton
+              type="danger"
+              theme="outline"
+              action="作废回款"
+              disabled={voidReason.trim().length < 2}
+              blockedReasons={voidReason.trim().length < 2 ? ['请填写作废原因（至少 2 个字）'] : []}
+              loading={voidMutation.isPending}
+              hintBelow
+              onClick={() => {
+                if (voidTarget) voidMutation.mutate({ id: voidTarget.id, reason: voidReason.trim() })
+              }}
+            >
+              确认作废
+            </GuardedButton>
+          </div>
+        }
+      >
+        {voidTarget && (
+          <div className="order-cancel-details">
+            <p className="workflow-guide">
+              <strong>{formatMoney(voidTarget.received_amount_exact ?? voidTarget.received_amount, voidTarget.currency ?? order.currency)}</strong>
+              {' · '}{voidTarget.received_date}
+              {voidTarget.plan_name ? ` · ${voidTarget.plan_name}` : ''}
+            </p>
+            <p className="workflow-guide">
+              作废后这笔钱不再计入「已收」，对应应收期会退回未收/部分回款；
+              <strong>原记录、分配和凭证都会保留</strong>，审计能查到谁在什么时候、为什么作废。
+            </p>
+            {voidTarget.allocations && voidTarget.allocations.length > 0 && (
+              <p className="workflow-guide">
+                这笔钱原本分到 {voidTarget.allocations.length} 期：
+                {voidTarget.allocations
+                  .map((a) => `${a.plan_name} ${formatMoney(a.amount_exact ?? a.amount, voidTarget.currency ?? order.currency)}`)
+                  .join('；')}
+                。作废会把这些分配一起冲回。
+              </p>
+            )}
+            <p className="workflow-guide">
+              订单取消还要看已签合同和已发货批次，作废回款只解开"钱"这一道。
+            </p>
+            <TextArea
+              rows={3}
+              value={voidReason}
+              placeholder="例：客户退单 / 金额录错，财务核实后作废"
+              maxLength={200}
+              onChange={setVoidReason}
+            />
+            {voidMutation.error && (
+              <Banner type="danger" fullMode={false} closeIcon={null} title="作废未完成" description={voidMutation.error.message} />
+            )}
+          </div>
+        )}
       </Modal>
 
       <Modal

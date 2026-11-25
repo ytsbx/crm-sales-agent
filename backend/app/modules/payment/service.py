@@ -176,6 +176,40 @@ async def serialize_allocations(session: AsyncSession, payment_id: int) -> list[
              "amount": _f(amount), "amount_exact": str(amount), "source": source or "legacy"} for pid, name, due, amount, source in rows]
 
 
+async def serialize_voided_allocations(session: AsyncSession, payment_id: int) -> list[dict]:
+    """已作废回款的**原始分配**（撤销了什么）。
+
+    作废后 `effective_allocations()` 会把这笔钱剔除，`serialize_allocations`
+    返回空数组 —— 页面就只剩"已作废"三个字，说不清原来冲了哪几期、各多少。
+    这里直接读分配行（钱曾经分到哪，是历史事实，不随状态消失）。
+    """
+    rows = (
+        await session.execute(
+            select(
+                PaymentAllocation.plan_id,
+                ReceivablePlan.plan_name,
+                ReceivablePlan.due_date,
+                PaymentAllocation.amount,
+                PaymentAllocation.source,
+            )
+            .join(ReceivablePlan, ReceivablePlan.id == PaymentAllocation.plan_id)
+            .where(PaymentAllocation.payment_id == payment_id)
+            .order_by(ReceivablePlan.due_date, ReceivablePlan.id)
+        )
+    ).all()
+    return [
+        {
+            "plan_id": pid,
+            "plan_name": name,
+            "due_date": due.isoformat() if due else None,
+            "amount": _f(amount),
+            "amount_exact": str(amount),
+            "source": source or "auto",
+        }
+        for pid, name, due, amount, source in rows
+    ]
+
+
 async def _plan_allocated(session: AsyncSession, plan_id: int) -> Decimal:
     """某一期已被分配掉的**全部**确认金额（含自动与人工）。"""
     return await confirmed_amount(session, plan_id)
@@ -573,10 +607,18 @@ async def serialize_payment(session: AsyncSession, record: PaymentRecord) -> dic
         await session.get(FileRecord, record.voucher_file_id) if record.voucher_file_id else None
     )
     confirmer = await session.get(User, record.confirmed_by) if record.confirmed_by else None
-    allocations = await serialize_allocations(session, record.id) if record.status == "confirmed" else []
+    voider = await session.get(User, record.voided_by) if record.voided_by else None
+    if record.status == "confirmed":
+        allocations = await serialize_allocations(session, record.id)
+    elif record.status == "voided":
+        # 作废后仍要看得见"原来冲了哪几期"：钱曾经到过账、分过账，是历史事实。
+        allocations = await serialize_voided_allocations(session, record.id)
+    else:
+        allocations = []
     effective = effective_allocations()
     allocated = Decimal((await session.execute(select(func.coalesce(func.sum(effective.c.amount), 0))
         .where(effective.c.payment_id == record.id))).scalar_one())
+    counted = record.status == "confirmed"
     return {
         "id": record.id,
         "order_id": record.order_id,
@@ -587,9 +629,9 @@ async def serialize_payment(session: AsyncSession, record: PaymentRecord) -> dic
         "received_amount": _f(record.received_amount),
         "received_amount_exact": str(record.received_amount),
         "allocated_amount_exact": str(allocated),
-        "unallocated_amount_exact": str(max((record.received_amount or ZERO) - allocated, ZERO)) if record.status == "confirmed" else "0.00",
+        "unallocated_amount_exact": str(max((record.received_amount or ZERO) - allocated, ZERO)) if counted else "0.00",
         "allocated_amount": _f(allocated),
-        "unallocated_amount": _f(max((record.received_amount or ZERO) - allocated, ZERO)) if record.status == "confirmed" else ZERO,
+        "unallocated_amount": _f(max((record.received_amount or ZERO) - allocated, ZERO)) if counted else ZERO,
         "allocation_mode": record.allocation_mode,
         "currency": record.currency,
         "payment_method": record.payment_method,
@@ -601,6 +643,10 @@ async def serialize_payment(session: AsyncSession, record: PaymentRecord) -> dic
         "confirmed_by": record.confirmed_by,
         "confirmed_by_name": confirmer.name if confirmer else None,
         "confirmed_at": record.confirmed_at,
+        "voided_by": record.voided_by,
+        "voided_by_name": voider.name if voider else None,
+        "voided_at": record.voided_at,
+        "void_reason": record.void_reason,
         "created_at": record.created_at,
         #: 这笔钱**实际分到哪几期、各多少**（第十批）；未确认时为空。
         #: 带上它，前端"调整分配"弹窗就不用再发一次请求，而且列表上能一眼看出

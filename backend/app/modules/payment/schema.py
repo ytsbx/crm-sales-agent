@@ -186,3 +186,21 @@ class PaymentUpdate(PatchModel):
 
 class PaymentAction(BaseModel):
     comment: str | None = None
+
+
+class PaymentVoidRequest(BaseModel):
+    """财务作废已确认回款。
+
+    与「驳回」不同：驳回只发生在待确认；作废发生在钱已经确认入账之后，
+    是纠错动作，必须留下原因。原因会写进审计并显示在订单的回款记录上。
+    """
+
+    reason: str = Field(min_length=2, max_length=200)
+
+    @field_validator("reason")
+    @classmethod
+    def _trim_reason(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) < 2:
+            raise ValueError("请填写作废原因（至少 2 个字）")
+        return value

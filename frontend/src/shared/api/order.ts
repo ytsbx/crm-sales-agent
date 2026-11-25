@@ -128,6 +128,11 @@ export interface Payment {
   status_label: string
   confirmed_by_name?: string | null
   confirmed_at?: string | null
+  /** 已确认回款被财务作废时的人、时间与原因（2026-11-25）。 */
+  voided_by?: number | null
+  voided_by_name?: string | null
+  voided_at?: string | null
+  void_reason?: string | null
   created_at: string
   /** 币种（第九批 §9.9）：回款跟着订单币种，不能写死人民币 */
   currency?: string | null
@@ -247,8 +252,8 @@ export function changeOrderStatus(orderId: number, status: string, remark?: stri
   return api.post<Order>(`/orders/${orderId}/status`, { status, remark })
 }
 
-export function cancelOrder(orderId: number) {
-  return api.post<Order>(`/orders/${orderId}/cancel`)
+export function cancelOrder(orderId: number, reason?: string) {
+  return api.post<Order>(`/orders/${orderId}/cancel`, reason ? { reason } : undefined)
 }
 
 export function getErpReadiness() {
@@ -407,6 +412,16 @@ export function confirmPayment(id: number, comment?: string) {
 
 export function rejectPayment(id: number, comment?: string) {
   return api.post<Payment>(`/payments/${id}/reject`, { comment })
+}
+
+/**
+ * 财务作废**已确认**回款（2026-11-25 主人拍板 A 方案）。
+ *
+ * 与 reject 的区别：驳回只发生在待确认；作废发生在钱已经入账之后。
+ * 作废后记录、分配、凭证都保留，只是不再计入已收金额，应收期状态随之回退。
+ */
+export function voidPayment(id: number, reason: string) {
+  return api.post<Payment>(`/payments/${id}/void`, { reason })
 }
 
 // ---------------------------------------------------------------- 跟单里程碑（模块⑤）

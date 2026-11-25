@@ -24,6 +24,9 @@ PAYMENT_STATUS_LABEL = {
     "pending": "待财务确认",
     "confirmed": "已确认",
     "rejected": "已驳回",
+    #: 已确认后被财务作废：记录、分配、凭证全部保留，只是不再计入已收。
+    #: 与"删除"不同 —— 钱曾经到过账这件事必须留痕。
+    "voided": "已作废",
 }
 
 
@@ -122,6 +125,11 @@ class PaymentRecord(Base, IdMixin):
     voucher_note: Mapped[str | None] = mapped_column(String(255), nullable=True)
     confirmed_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: 已确认回款被作废时的操作人、时间、原因。
+    #: 三列都只在 `status=voided` 时非空，原确认人与确认时间不覆盖。
+    voided_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    voided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    void_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="pending")
     created_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

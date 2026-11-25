@@ -521,14 +521,16 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       width: compact ? 96 : 110,
       render: (value: string, record: Payment) => {
         const dot = (
-          <StatusDot label={value} tone={value === '已确认' ? 'green' : value === '已驳回' ? 'red' : 'orange'} />
+          <StatusDot label={value} tone={value === '已确认' ? 'green' : value === '已驳回' ? 'red' : value === '已作废' ? 'grey' : 'orange'} />
         )
         if (!compact) return dot
         return (
           <div style={{ display: 'grid', gap: 2, justifyItems: 'end' }}>
             {dot}
             <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-              确认人 {record.confirmed_by_name ?? '-'}
+              {record.status === 'voided'
+                ? `作废人 ${record.voided_by_name ?? '-'}`
+                : `确认人 ${record.confirmed_by_name ?? '-'}`}
             </span>
           </div>
         )

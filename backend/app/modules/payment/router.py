@@ -25,6 +25,7 @@ from app.modules.notification import service as notification_service
 from app.modules.order.service import get_order_or_404
 from app.modules.payment import service as svc
 from app.modules.payment.model import (
+    PAYMENT_STATUS_LABEL,
     PaymentAllocation,
     PaymentRecord,
     ReceivablePlan,
@@ -34,6 +35,7 @@ from app.modules.payment.schema import (
     PaymentAllocationUpdate,
     PaymentCreate,
     PaymentUpdate,
+    PaymentVoidRequest,
     ReceivableCreate,
     ReceivableGenerate,
     ReceivableUpdate,
@@ -740,7 +742,7 @@ async def delete_payment_voucher(
     """
     record = await svc.get_visible_payment(session, user, payment_id, for_update=True)
     if record.status != "pending":
-        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "回款确认或驳回后不能删除凭证")
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "回款确认、驳回或作废后不能删除凭证")
     if not record.voucher_file_id:
         raise AppError(ErrorCode.NOT_FOUND, "该回款还没有凭证", 404)
 
@@ -953,9 +955,10 @@ async def update_payment(
     """
     record = await svc.get_visible_payment(session, user, payment_id, for_update=True)
     if record.status != "pending":
+        label = PAYMENT_STATUS_LABEL.get(record.status, record.status)
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
-            f"回款已{'确认' if record.status == 'confirmed' else '驳回'}，不能再修改",
+            f"回款已{label}，不能再修改",
         )
     # 节点行此时已在前面按统一锁序锁住；这里再取一次是同一事务内的同一把锁，
     # 不额外阻塞，但能让"重算必须在锁内"在调用点一眼可见。
@@ -1248,6 +1251,130 @@ async def reject_payment(
     )
     await session.commit()
     return ok(await svc.serialize_payment(session, record), "已驳回该回款")
+
+
+@router.post("/payments/{payment_id}/void")
+async def void_payment(
+    payment_id: int,
+    payload: PaymentVoidRequest,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("payment:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """财务作废**已确认**回款（2026-11-25 主人拍板 A 方案）。
+
+    为什么要有：已确认回款会挡住订单取消（`order/router.py` 的取消闸门，
+    防止"订单已取消、钱还确认着"）。原先只提示"先人工处理回款"，
+    但回款侧没有作废入口，客户退单/我方放弃时整单永久卡住。
+
+    口径：
+    - 只允许 `confirmed` → `voided`；待确认走驳回、已驳回/已作废直接返回，
+      重复点击不会二次扣账；
+    - **不删记录、不删分配、不删凭证**：钱确实到过账，历史必须留着；
+      作废只是让它不再计入"已收"（`effective_allocations` 只认 confirmed）；
+    - 作废后重算该订单全部未取消应收期，已收金额回落、状态如实退回
+      （paid → partial/pending/overdue），并同步「付定金/收款」跟单节点；
+    - 原因写进审计与页面，能回答"谁在什么时候、为什么把这笔钱判没了"。
+
+    锁序与确认一致：订单 → 应收节点 → 回款记录。订单锁在
+    `get_visible_payment` 里已经拿到，后面按 id 补锁其余节点，不会与并发确认成环。
+    """
+    record = await svc.get_visible_payment(
+        session, user, payment_id, for_update=True, protect_transfer=True
+    )
+    if record.status == "voided":
+        # 幂等：财务连点两次/弱网重试，第二次只回读，不再重算一次账。
+        return ok(await svc.serialize_payment(session, record), "这笔回款已经作废，无需重复操作")
+    if record.status != "confirmed":
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"只有已确认的回款可以作废（当前：{PAYMENT_STATUS_LABEL.get(record.status, record.status)}）",
+            422,
+        )
+
+    before = await svc.serialize_payment(session, record)
+    order = await session.get(SalesOrder, record.order_id)
+
+    # 先锁该订单的全部应收期（按 id 升序，与统一锁序一致）。作废会同时影响
+    # 多期：一笔回款可能被自动/手工分到几期，不能只重算登记时选的那一期。
+    plans = (
+        await session.execute(
+            select(ReceivablePlan)
+            .where(ReceivablePlan.order_id == record.order_id)
+            .order_by(ReceivablePlan.id.asc())
+        )
+    ).scalars().all()
+    for plan in plans:
+        if plan.status != "cancelled":
+            await svc.lock_plan(session, plan.id)
+
+    record.status = "voided"
+    record.voided_by = user.id
+    record.voided_at = datetime.now(UTC)
+    record.void_reason = payload.reason
+    await session.flush()
+
+    # 状态改了再重算：重算读的是 effective allocations（只认 confirmed），
+    # 顺序反了会读到"这笔还算已收"的旧数，应收期就退不回去。
+    for plan in plans:
+        if plan.status == "cancelled":
+            continue
+        await svc.recalc_plan(session, plan)
+
+    if order is not None and order.status != "cancelled":
+        from app.modules.order import milestones as milestones_svc
+
+        await milestones_svc.sync_payment_milestones(session, order.id, operator_id=user.id)
+        from app.modules.followup.service import record_and_notify
+
+        await record_and_notify(
+            session,
+            customer_id=order.customer_id,
+            operator_id=user.id,
+            owner_id=order.owner_id,
+            title="回款已作废",
+            content=(
+                f"订单 {order.order_no} 的回款编号 {record.id} 已作废，"
+                f"金额 ¥{record.received_amount:,.2f}，原因：{record.void_reason}"
+            ),
+            business_type="payment",
+            business_id=record.id,
+            order_id=order.id,
+            event_key=f"payment:void:{record.id}",
+        )
+        if order.owner_id:
+            await notification_service.notify(
+                session,
+                user_id=order.owner_id,
+                type_="payment",
+                title="回款已作废",
+                content=(
+                    f"订单 {order.order_no} 的 ¥{record.received_amount:,.2f} 回款已作废："
+                    f"{record.void_reason}"
+                ),
+                business_type="order",
+                business_id=order.id,
+            )
+
+    after = await svc.serialize_payment(session, record)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="void",
+        business_type="payment",
+        business_id=record.id,
+        before=before,
+        after={
+            "status": "voided",
+            "void_reason": record.void_reason,
+            # 原分配一并留档：作废撤销了哪几期、各多少，事后能对得上。
+            "reversed_allocations": after.get("allocations") or [],
+        },
+        ip=client_ip(request),
+    )
+    await session.commit()
+    await notification_service.dispatch_after_commit(session)
+    return ok(after, "回款已作废，已从已收金额中剔除")
 
 
 @router.get("/receivables/{plan_id}/payments")

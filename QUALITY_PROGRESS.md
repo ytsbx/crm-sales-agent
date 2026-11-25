@@ -5708,3 +5708,38 @@
 - 未改业务代码：以上均涉及业务口径，已提交 4 组选项等待主人拍板。
 - 新增不涉及业务取舍的「流程指引」页（`frontend/src/modules/guide/GuidePage.tsx`，菜单 `/guide`）：主线 8 步、支线、卡点表、现有撤回动作、按角色上手；`pnpm build` 通过，`oxlint` 0 error。
 - 下一步：按拍板结果补 K1–K5，并同步更新指引页的"暂时不能"清单。
+
+
+## 2026-11-25 P1/P2 存量复核与一批修复（未部署）
+
+- 复核方法：按台账仍成立条目逐条对**现行代码**取证；只有代码证据仍成立才继续按原状态处理。
+- 复核为**已修/证伪**（旧状态作废）：
+  - B05-01：`payment/service.py:385-414` 重排已按回款逐笔写 before/after（plan_id + 金额）。
+  - B07-15：`contract/router.py:411-423` 签署审计已带 amount、quote_version_id、oa_instance_id。
+  - B13-08：`customer/router.py:415-430` 转移审计带 moved / moved_total / skipped_total。
+  - B12-05：`file/router.py:63-68` 询价软删后图片签名 URL 失效。
+  - B11-04：`user/service.py:327` 归档吊销全部会话；停用仍由 `core/deps.py` 校验 active 拦在门外。
+  - B16-05：`agent/router.py:209` 删除会话同步删除 AgentExecution。
+  - B08-01 已由 `91fcab60` 对客单据变量白名单摘除客户等级。
+- 本轮修复（修法唯一、无业务取舍）：
+  - B12-02 参数校验明细不再回显密码/密钥原值：`core/errors.py` 新增 `_validation_detail_input`；`tests/test_validation_error_redaction.py`。
+  - B11-07 重发在行锁内复判业务状态，状态变化释放占用并 409：`dingtalk/service.py`；用例并入 `tests/test_dingtalk_oa_state_machine.py`。
+  - B11-06 建部门先取部门树锁再查重；建角色撞唯一约束翻译 409：`user/service.py`；`tests/test_admin_create_concurrency.py`。
+  - B22-05 任务列表补报价/订单/合同编号按数据范围过滤：`task/router.py`；`tests/test_task_customer_names.py` 扩展。
+  - B07-10 手工同步 OA 写审计 `sync_oa`：`dingtalk/router.py`；新增动作标签并重生成前端标签。
+- 验证：全量后端 pytest 通过；静态检查 pyflakes / 模型列 / 权限码三项 OK；前端 `tsc -b` 通过。未部署。
+- B07-02 现值：自研 OA 认领按 `external_ref`（轮次幂等键）绑定（`oa/service.py:159-172`），B07-03 金额冻结后结构上只能认回本单那张；仍有**历史钉钉合同行**的认领只验模板/发起人/来源 id，不验金额/主体。处理方式涉及历史数据与"旧钉钉只读"口径，待主人决定，未改。
+- 待决策（未动）：B11-10 重发能否修改字段后重试；B11-11 Host 白名单落点；幂等类 B07-04/B13-06/B13-10/B19-09/B20-09/B21-06/B21-07/B22-07 是否要求请求键必填或补唯一约束（涉及前端与库结构）。
+- ERP（B06/B07 reconcile）与外币（B17-04/B18-01）按主人口径挂起。
+
+
+## 2026-11-25 K1 已确认回款作废（A 方案）落地与回归
+
+- 拍板：主人选择“给财务加「作废回款」”；权限按最小口径仅 `payment:manage`（财务），未加主管复核。
+- 迁移：`backend/alembic/versions/20261125_payment_void_fields.py`（revision `b7d3f9a2c4e1`）新增 `payment_records.voided_by / voided_at / void_reason`。
+- 后端：`POST /api/v1/payments/{payment_id}/void`；只允许 `confirmed → voided`、重复作废幂等、原因必填；多期分配全部冲回；应收期按剩余已收金额回退（`paid → pending/overdue`）；原确认人/时间保留；写审计、通知跟单人；已收归零时撤销「付定金/收款」跟单节点；订单财务汇总/回款率排除 `voided`。
+- 前端：订单详情「回款记录」新增「作废回款」+原因弹窗；作废后置灰并显示作废人/原因；取消订单弹窗改为“请财务先作废”。
+- 顺带修 K1b：`POST /orders/{id}/cancel` 原来没有请求体，“已完成”订单回退永远卡在“必须填写理由”；现支持可选 `{reason}`，前端已完成订单取消必填理由，理由写入 `order_status_history.remark` 与审计。
+- 验证：`tests/test_payment_void.py` 5 条、`tests/test_batch15_financial_lifecycle.py` 11 条（含新增 `test_completed_order_cancel_requires_reason_and_accepts_it`）全绿；隔离库 `crm_iso_flow_20261125` 真实接口回归：财务作废 8910 → 已收 0/未收 29700、两期应收回 `pending`、业务员 403、重复作废幂等、已完成订单带理由取消成功；前端 `pnpm build` 通过。
+- 未做：K2 退货、K3 打样终止、K4 草稿作废、K5 报价关闭仍待主人逐项拍板；报告与 `/guide` 已同步为“K1 已修复、剩四处”。
+

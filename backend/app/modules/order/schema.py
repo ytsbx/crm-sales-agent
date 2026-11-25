@@ -156,6 +156,17 @@ class OrderStatusChange(BaseModel):
     remark: str | None = None
 
 
+class OrderCancel(BaseModel):
+    """取消订单的可选说明。
+
+    普通订单可以不填；**已完成**订单回退为"已取消"属于纠错动作，
+    `change_status` 要求必须写理由。取消接口原来没有 body，导致这条规则
+    永远过不去 —— 补一个可选字段，把已有规则接通，不改变"必须留理由"的口径。
+    """
+
+    reason: str | None = Field(default=None, max_length=255)
+
+
 # ---- 发货批次（文档 §3.5 / 场景13：分批发货，首批不结束整单）----
 
 class ShipmentBatchItemInput(BaseModel):
