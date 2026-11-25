@@ -16,26 +16,37 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "departments",
-        sa.Column("dingtalk_department_id", sa.String(length=64), nullable=True),
-    )
-    op.create_index(
-        "uq_departments_dingtalk_department_id",
-        "departments",
-        ["dingtalk_department_id"],
-        unique=True,
-    )
-    op.add_column(
-        "departments",
-        sa.Column("oa_department_id", sa.String(length=64), nullable=True),
-    )
-    op.create_index(
-        "uq_departments_oa_department_id",
-        "departments",
-        ["oa_department_id"],
-        unique=True,
-    )
+    # 2026-11-25：生产库存在"有列无版本"的历史漂移——`dingtalk_department_id`
+    # 与唯一索引已由早期手工脚本建好，alembic_version 却仍停在 c92，直接
+    # add_column 会因"列已存在"整条迁移失败。按当前 schema 逐项判断：
+    # 已有的跳过、缺的补上——干净库上的最终结果与原来完全一致。
+    inspector = sa.inspect(op.get_bind())
+    columns = {column["name"] for column in inspector.get_columns("departments")}
+    indexes = {index["name"] for index in inspector.get_indexes("departments")}
+    if "dingtalk_department_id" not in columns:
+        op.add_column(
+            "departments",
+            sa.Column("dingtalk_department_id", sa.String(length=64), nullable=True),
+        )
+    if "uq_departments_dingtalk_department_id" not in indexes:
+        op.create_index(
+            "uq_departments_dingtalk_department_id",
+            "departments",
+            ["dingtalk_department_id"],
+            unique=True,
+        )
+    if "oa_department_id" not in columns:
+        op.add_column(
+            "departments",
+            sa.Column("oa_department_id", sa.String(length=64), nullable=True),
+        )
+    if "uq_departments_oa_department_id" not in indexes:
+        op.create_index(
+            "uq_departments_oa_department_id",
+            "departments",
+            ["oa_department_id"],
+            unique=True,
+        )
 
 
 def downgrade() -> None:
