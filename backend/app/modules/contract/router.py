@@ -1,8 +1,6 @@
 """合同/月结协议接口：模板维护（管理）、生成/签署/作废与台账（销售/主管）。"""
 
 import logging
-import json
-import httpx
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -25,7 +23,7 @@ from app.modules.contract.schema import (
     TemplateFileCreate,
 )
 from app.modules.dingtalk import service as dingtalk_service
-from app.modules.dingtalk.model import OaInstance, allowed_actions
+from app.modules.dingtalk.model import OaInstance
 
 router = APIRouter(tags=["Contract"])
 
