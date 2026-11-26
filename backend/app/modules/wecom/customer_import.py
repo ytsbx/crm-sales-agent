@@ -123,6 +123,7 @@ def _plan(snapshot, policy):
     }
     digest = hashlib.sha256(json.dumps(signature, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
     reasons = Counter(reason for _, reason in held)
+    held_map = dict(held)
     summary = {
         'digest': digest, 'pending_contacts': len(rows),
         'import_contacts': sum(len(g['rows']) for g in ready),
@@ -132,12 +133,17 @@ def _plan(snapshot, policy):
         'new_unassigned_customers': sum(g['target'] is None and g['owner_id'] is None for g in ready),
         'held_contacts': len(held), 'held_reasons': dict(reasons),
     }
-    return summary, ready
+    return summary, ready, held_map
 
 
 async def preview_import(session: AsyncSession, *, policy='hold'):
-    summary, _ = _plan(await _snapshot(session), policy)
+    summary, _, _ = _plan(await _snapshot(session), policy)
     return summary
+
+
+async def import_hold_reasons(session: AsyncSession) -> dict[int, str]:
+    """待确认列表用：与「预览导入」同一套判定，逐条给出不能自动导入的原因。"""
+    return _plan(await _snapshot(session), 'hold')[2]
 
 
 async def execute_import(session: AsyncSession, *, digest: str, policy='hold', operator_id=None, source='WEB'):
@@ -148,7 +154,7 @@ async def execute_import(session: AsyncSession, *, digest: str, policy='hold', o
         dialect = 'sqlite'
     if dialect == 'postgresql':
         await session.execute(text("SELECT pg_advisory_xact_lock(hashtext('crm:wecom-customer-import'))"))
-    summary, groups = _plan(await _snapshot(session, lock=True), policy)
+    summary, groups, _ = _plan(await _snapshot(session, lock=True), policy)
     if summary['digest'] != digest:
         raise AppError(ErrorCode.VERSION_CONFLICT, '客户或负责人数据已变化，请重新预览后导入', 409)
     job = await start_job(session, job_type='customer_import', operator_id=operator_id)

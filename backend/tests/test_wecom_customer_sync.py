@@ -259,6 +259,8 @@ async def test_follower_names_resolve_without_creating_or_binding_accounts():
     from app.modules.wecom.model import WeComUser
     from app.modules.user.model import User
     engine=make_engine()
+    # 待确认列表会顺带算出「能否自动导入」；customers/contacts/users 已由
+    # make_engine 建好，这里只补企微镜像相关的表。
     for model in (WeComExternalContact,WeComFollowRelationship,WeComUser):
         model.__table__.create(engine)
     with Session(engine) as raw:
@@ -271,8 +273,32 @@ async def test_follower_names_resolve_without_creating_or_binding_accounts():
         raw.flush()
         rows,total=await service.unbound_contacts(SyncSessionAsAsync(raw),keyword=None,page=1,page_size=20)
         assert total==1
-        followers={item['wecom_userid']:item['name'] for item in rows[0]['followers']}
-        assert followers=={'unbound':'李浩轩','bound':'企微原姓名','unknown':None}
+        followers={item['wecom_userid']:item for item in rows[0]['followers']}
+        assert {uid:item['name'] for uid,item in followers.items()}=={'unbound':'李浩轩','bound':'企微原姓名','unknown':None}
+        # 谁没有 CRM 账号，名单上要能直接看出来
+        assert followers['bound']['crm_user_id']==1 and followers['bound']['crm_user_name']=='CRM姓名'
+        assert followers['unbound']['crm_user_id'] is None
+        # 有跟进员工没对应 CRM 账号 → 负责人不唯一，导入预览会扣住
+        assert rows[0]['import_hold_reason']=='负责人未唯一匹配，需绑定或分配'
         assert raw.query(User).count()==1
         assert raw.query(WeComUser).filter_by(wecom_userid='unbound').one().user_id is None
+    engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_unbound_list_leaves_importable_contacts_without_hold_reason():
+    from app.modules.wecom.model import WeComUser
+    from app.modules.user.model import User
+    engine=make_engine()
+    for model in (WeComExternalContact,WeComFollowRelationship,WeComUser):
+        model.__table__.create(engine)
+    with Session(engine) as raw:
+        raw.add(WeComExternalContact(id=1,external_userid='ext-ok',name='张三',normalize_status='pending'))
+        raw.add(User(id=1,name='王松',username='wangsong',password_hash='!',wecom_userid='WangSong',status='active'))
+        raw.add(WeComFollowRelationship(external_contact_id=1,wecom_userid='WangSong',status='active'))
+        raw.flush()
+        rows,total=await service.unbound_contacts(SyncSessionAsAsync(raw),keyword=None,page=1,page_size=20)
+        assert total==1
+        assert rows[0]['import_hold_reason'] is None
+        assert rows[0]['followers'][0]['crm_user_id']==1
     engine.dispose()

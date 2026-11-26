@@ -26,6 +26,9 @@ export interface WeComReadiness {
 export interface WeComFollower {
   wecom_userid: string
   name?: string | null
+  /** 对应上的 CRM 账号；未开通 CRM 的员工为空，导入时无法作为负责人 */
+  crm_user_id?: number | null
+  crm_user_name?: string | null
   add_time?: string | null
   add_way?: string | null
   remark?: string | null
@@ -43,6 +46,8 @@ export interface WeComUnboundContact {
   normalize_status_label: string
   last_sync_at?: string | null
   followers: WeComFollower[]
+  /** 与「预览导入」同一判定：非空表示这条不能自动导入，值为原因 */
+  import_hold_reason?: string | null
 }
 
 export interface WeComCandidate {

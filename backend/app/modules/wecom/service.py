@@ -526,27 +526,38 @@ async def unbound_contacts(
     # 展示姓名与账号绑定分开：尚未开通CRM的员工也能显示企微通讯录姓名。
     follower_ids = {item.wecom_userid for item in follows}
     names = {}
+    crm_accounts: dict[str, tuple[int, str | None]] = {}
     if follower_ids:
-        crm_names = (await session.execute(
-            select(User.wecom_userid, User.name).where(User.wecom_userid.in_(follower_ids))
+        crm_rows = (await session.execute(
+            select(User.wecom_userid, User.id, User.name).where(User.wecom_userid.in_(follower_ids))
         )).all()
-        names.update({uid: name.strip() for uid, name in crm_names if name and name.strip()})
+        crm_accounts.update({uid: (user_id, name) for uid, user_id, name in crm_rows})
+        names.update({uid: name.strip() for uid, _user_id, name in crm_rows if name and name.strip()})
         directory_names = (await session.execute(
             select(WeComUser.wecom_userid, WeComUser.name).where(WeComUser.wecom_userid.in_(follower_ids))
         )).all()
         names.update({uid: name.strip() for uid, name in directory_names if name and name.strip()})
     follow_index: dict[int, list[dict]] = {}
     for item in follows:
+        account = crm_accounts.get(item.wecom_userid)
         follow_index.setdefault(item.external_contact_id, []).append(
             {
                 "wecom_userid": item.wecom_userid,
                 "name": names.get(item.wecom_userid),
+                "crm_user_id": account[0] if account else None,
+                "crm_user_name": account[1] if account else None,
                 "add_time": item.add_time,
                 "add_way": item.add_way,
                 "remark": item.remark,
                 "status": item.status,
             }
         )
+
+    # 与「预览导入」同一套判定：每条为什么不能自动导入，直接标在名单上。
+    # 局部导入：customer_import 反向依赖本模块的任务工具，模块级导入会成环。
+    from app.modules.wecom.customer_import import import_hold_reasons
+
+    hold_reasons = await import_hold_reasons(session)
 
     return [
         {
@@ -560,6 +571,7 @@ async def unbound_contacts(
             "normalize_status_label": NORMALIZE_LABEL.get(row.normalize_status, row.normalize_status),
             "last_sync_at": row.last_sync_at,
             "followers": follow_index.get(row.id, []),
+            "import_hold_reason": hold_reasons.get(row.id),
         }
         for row in rows
     ], int(total)

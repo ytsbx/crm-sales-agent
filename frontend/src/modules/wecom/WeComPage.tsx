@@ -106,7 +106,7 @@ function isWeComIpDenied(message?: string | null) {
 }
 
 const IMPORT_REVIEW_GUIDANCE: Record<string, string> = {
-  '负责人未唯一匹配，需绑定或分配': '先同步企微跟进关系，再核对跟进员工和 CRM 账号是否对应。多人跟进时，逐条确认负责人。',
+  '负责人未唯一匹配，需绑定或分配': '跟进员工里有人没开通 CRM 账号，或对应了多个不同账号，系统无法决定客户归谁。请用「关联已有客户」沿用原负责人，或用「创建新客户」逐条确认（新建客户归当前操作人）。',
   '只有公司简称，需确认公司全称': '在待确认联系人里按简称查找，核实全称后再关联已有客户或新建档案。',
   '联系人姓名为空或超长': '核对联系人姓名，修正企微资料后重新同步。',
   '客户名称超长': '核对企微公司全称，修正资料后重新同步。',
@@ -613,6 +613,11 @@ export default function WeComPage() {
             待确认联系人
             <HelpTip forLabel="待确认联系人" text="这些是已同步的企微联系人。确认后可以关联到已有客户，也可以新建客户档案。" />
           </div>
+          {rows.some((row) => row.import_hold_reason) && (
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 10 }}>
+              标出原因的不会随「预览导入」批量进入客户中心，点开可看原因和处理办法。
+            </div>
+          )}
           <Input
             placeholder="搜索昵称或企业名"
             value={keywordInput}
@@ -654,6 +659,20 @@ export default function WeComPage() {
                   >
                     {row.corp_name ?? '个人微信'}
                   </div>
+                  {row.import_hold_reason && (
+                    <div
+                      title={row.import_hold_reason}
+                      style={{
+                        fontSize: 11.5,
+                        color: 'var(--crm-warning)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {row.import_hold_reason}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -739,6 +758,22 @@ export default function WeComPage() {
               </div>
 
               <div style={{ marginTop: 'auto', paddingTop: 14 }}>
+                {active.import_hold_reason && (
+                  <div style={{
+                    marginBottom: 12,
+                    padding: '8px 10px',
+                    borderRadius: 'var(--crm-radius-sm)',
+                    background: 'var(--crm-warning-bg)',
+                    border: '1px solid var(--crm-warning-border)',
+                    color: 'var(--crm-warning)',
+                    fontSize: 12.5,
+                  }}>
+                    <div style={{ fontWeight: 600 }}>这条不会随「批量导入」进入客户中心</div>
+                    <div style={{ marginTop: 2 }}>
+                      {active.import_hold_reason}。{IMPORT_REVIEW_GUIDANCE[active.import_hold_reason] ?? '请核对后在右侧逐条确认。'}
+                    </div>
+                  </div>
+                )}
                 <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>跟进员工</div>
                 {active.followers.length === 0 ? (
                   <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>
@@ -755,6 +790,9 @@ export default function WeComPage() {
                           {follower.status === 'active' ? '跟进中' : follower.status}
                         </Tag>
                         <span>{follower.name || '姓名待同步'}</span>
+                        <span style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
+                          {follower.crm_user_id ? `CRM：${follower.crm_user_name ?? '已绑定'}` : '未开通 CRM'}
+                        </span>
                         <span style={{ color: 'var(--crm-text-3)', marginLeft: 'auto' }}>
                           {follower.add_time
                             ? formatBeijingDate(follower.add_time)
