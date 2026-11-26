@@ -631,7 +631,7 @@ export default function WeComPage() {
       )}
       <div className="split-multi wecom-split" style={{ gap: 16 }}>
         {/* 左：待处理外部联系人 */}
-        <SectionCard id="wecom-contact-review">
+        <SectionCard id="wecom-contact-review" style={{ display: 'flex', flexDirection: 'column' }}>
           <div className="crm-help-label" style={{ fontWeight: 600, marginBottom: 10 }}>
             待确认联系人
             <HelpTip forLabel="待确认联系人" text="这些是已同步的企微联系人。确认后可以关联到已有客户，也可以新建客户档案。" />
@@ -657,7 +657,7 @@ export default function WeComPage() {
           ) : (
             // 列表自己滚，不把整页往下拉：这一栏原来有多少人就有多长，
             // 一页 20 条会把三栏卡片撑到视口外面，中右两栏跟着变成一整块空白。
-            <div style={{ display: 'grid', gap: 6, maxHeight: 'min(40vh, 392px)', overflowY: 'auto', paddingRight: 2 }}>
+            <div style={{ display: 'grid', gap: 6, flex: '1 1 auto', minHeight: 200, maxHeight: 'min(60vh, 720px)', overflowY: 'auto', paddingRight: 2 }}>
               {rows.map((row) => (
                 <div
                   key={row.id}
@@ -792,7 +792,7 @@ export default function WeComPage() {
                 </div>
               </div>
 
-              <div style={{ marginTop: 'auto', paddingTop: 14 }}>
+              <div style={{ paddingTop: 14 }}>
                 {active.import_hold_reason && (
                   <div style={{
                     marginBottom: 12,
@@ -895,7 +895,7 @@ export default function WeComPage() {
               )}
               {canManage && active && (
                 // 针对当前联系人的出口：放在联系人卡片里，和「谁加的、为什么扣住」挨着
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, paddingTop: 12, marginTop: 'auto' }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, paddingTop: 12 }}>
                   {canSearchCustomers && (
                     <Button theme="outline" onClick={() => {
                       bindMutation.reset()
