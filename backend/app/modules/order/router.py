@@ -1008,9 +1008,30 @@ async def change_status(
                 422,
             )
     before_status = order.status
+    finance_after: dict | None = None
+    if payload.status == "completed":
+        from app.modules.payment import service as payment_service
+
+        finance_after = await payment_service.order_finance_summary(session, order.id)
+        unreceived = Decimal(finance_after.get("unreceived_amount_exact") or "0")
+        if unreceived > 0 and not (payload.remark or "").strip():
+            # 完成是交付事实，不等于钱已收齐（月结客户很常见）。有未收款时必须
+            # 写清为什么可以先完成，避免事后只看到"已交付未收款"却不知道原因。
+            raise AppError(
+                ErrorCode.STATUS_NOT_ALLOWED,
+                f"这张订单还有未收款 {unreceived} 元；确认完成交付必须填写原因"
+                "（例如：月结客户，按合同账期收款）",
+                422,
+            )
     await svc.change_status(
         session, order, new_status=payload.status, operator_id=user.id, remark=payload.remark
     )
+    audit_after = {"status": payload.status}
+    if finance_after is not None:
+        audit_after.update({
+            "remark": (payload.remark or "").strip() or None,
+            "unreceived_amount": finance_after.get("unreceived_amount_exact"),
+        })
     await write_audit(
         session,
         operator_id=user.id,
@@ -1018,7 +1039,7 @@ async def change_status(
         business_type="order",
         business_id=order.id,
         before={"status": before_status},
-        after={"status": payload.status},
+        after=audit_after,
         ip=client_ip(request),
     )
     await session.commit()
