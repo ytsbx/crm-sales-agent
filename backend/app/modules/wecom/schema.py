@@ -20,6 +20,8 @@ class CreateCustomerRequest(CreateModel):
     level: str | None = None
     source: str | None = None
     remark: str | None = None
+    #: 指定负责人属于分配动作：不传/为空 = 归创建人自己（与客户中心同一口径）。
+    owner_id: int | None = None
 
 
 class IgnoreContactRequest(BaseModel):

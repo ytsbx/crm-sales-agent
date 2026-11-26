@@ -148,7 +148,7 @@ export function bindUnboundContact(
 
 export function createCustomerFromContact(
   contactId: number,
-  payload: { name: string; region?: string | null; level?: string | null; remark?: string | null },
+  payload: { name: string; region?: string | null; level?: string | null; remark?: string | null; owner_id?: number | null },
 ) {
   return api.post<{ customer_id: number; customer_name: string; contact_id: number }>(
     `/integrations/wecom/unbound-contacts/${contactId}/create-customer`,

@@ -374,6 +374,9 @@ async def create_customer(
     ensure_permission(user, "customer:create")
     if not payload.name.strip():
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "客户名称必填", 422)
+    # 指定别人当负责人是分配动作，和客户中心的创建接口同一道口子。
+    if payload.owner_id is not None:
+        ensure_permission(user, "customer:assign")
     result = await svc.create_customer_from_contact(
         session, user=user, contact_id=contact_id, payload=payload.model_dump()
     )

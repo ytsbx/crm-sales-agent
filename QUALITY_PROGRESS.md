@@ -6437,3 +6437,11 @@
 - 现象：企业微信待确认里点「创建新客户」，客户等级下拉只有 A/B/C/D，没有「未分级」；客户中心早就支持不分级客户，这里看起来像强制分级。
 - 修复：下拉首项加「未分级」并默认选中，提交时按 `customerLevelPayload` 转成 `level=null`；与客户中心共用同一套 `UNRATED_OPTION` 口径。
 - 验证：本地截图确认弹窗默认「未分级」；前端构建通过。未部署。
+
+## 2026-11-26 企微「创建新客户」支持指定负责人（未部署）
+
+- 现象：待确认里点「创建新客户」只能按操作人归属，没有负责人入口；管理员替业务员建客户后还得再去客户中心转交。
+- 口径沿用客户中心，不新增业务规则：不选负责人 = 归创建人自己；指定别人属于分配动作，必须有 `customer:assign`，否则 403。
+- 后端：`CreateCustomerRequest` 增加 `owner_id`；`POST /integrations/wecom/unbound-contacts/{id}/create-customer` 在指定负责人时校验 `customer:assign`。
+- 前端：创建弹窗增加「负责人」搜索选择（`UserSearchSelect`），无分配权限时禁用并提示「新客户归你自己」。
+- 验证：`test_wecom_operation_permissions` 增加无权限 403、有权限指派成功且 owner 正确；WeCom 相关测试通过；前端构建与截图通过。未部署。

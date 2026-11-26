@@ -42,6 +42,7 @@ import GuardedButton from '../../shared/components/GuardedButton'
 import type { Customer, TagTone } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
+import UserSearchSelect from '../../shared/components/UserSearchSelect'
 import HelpTip from '../../shared/components/HelpTip'
 import { optionMatcher } from '../../shared/components/optionMatch'
 import { UNRATED_OPTION, customerLevelPayload, customerLevelValue } from '../../shared/customer-level'
@@ -171,7 +172,7 @@ export default function WeComPage() {
 
   const [createContact, setCreateContact] = useState<WeComUnboundContact | null>(null)
   const [createdCustomer, setCreatedCustomer] = useState<{ customer_id: number; customer_name: string } | null>(null)
-  const [createForm, setCreateForm] = useState({ name: '', region: '', level: '' })
+  const [createForm, setCreateForm] = useState({ name: '', region: '', level: '', owner_id: null as number | null })
   const [transferVisible, setTransferVisible] = useState(Boolean(transferToResume))
   const [transferResultPage, setTransferResultPage] = useState(1)
   const [transferResultFilter, setTransferResultFilter] = useState<'all' | 'pending' | 'frozen'>('all')
@@ -354,12 +355,13 @@ export default function WeComPage() {
         name: createForm.name.trim(),
         region: createForm.region || null,
         level: customerLevelPayload(createForm.level),
+        owner_id: createForm.owner_id,
       }),
     onSuccess: (result) => {
       Toast.success(`已创建客户「${result.customer_name}」`)
       setCreateContact(null)
       setCreatedCustomer(result)
-      setCreateForm({ name: '', region: '', level: '' })
+      setCreateForm({ name: '', region: '', level: '', owner_id: null })
       refresh()
     },
   })
@@ -926,6 +928,7 @@ export default function WeComPage() {
                         name: active.corp_name || active.name || '',
                         region: '',
                         level: '',
+                        owner_id: null,
                       })
                       setCreateContact(active)
                     }}
@@ -1067,6 +1070,18 @@ export default function WeComPage() {
                 UNRATED_OPTION,
                 ...(customerLevelsQuery.data ?? []).map((item) => ({ value: item.code, label: item.label })),
               ]}
+              style={{ width: '100%' }}
+            />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>负责人</div>
+            <UserSearchSelect
+              queryScope="wecom-customer-create"
+              enabled={Boolean(createContact) && can('customer:assign')}
+              disabled={createMutation.isPending || !can('customer:assign')}
+              placeholder={can('customer:assign') ? '不选就归你自己，可搜索同事' : '没有分配权限，新客户归你自己'}
+              value={createForm.owner_id ?? undefined}
+              onChange={(value) => setCreateForm({ ...createForm, owner_id: value ?? null })}
               style={{ width: '100%' }}
             />
           </div>

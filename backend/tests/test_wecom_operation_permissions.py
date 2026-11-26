@@ -15,6 +15,7 @@ from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.core.errors import register_exception_handlers
 from app.modules.customer.model import Customer
+from app.modules.user.model import User
 from app.modules.wecom import router as routes
 from app.modules.wecom.model import WeComExternalContact
 from conftest import SyncSessionAsAsync, make_user
@@ -27,8 +28,10 @@ async def test_wecom_customer_actions_follow_crm_permissions_and_scope(db_sessio
     db_session.add_all([
         Customer(id=11, name="本人的客户", owner_id=101),
         Customer(id=12, name="同事的客户", owner_id=102),
+        User(id=102, name="被指派的同事", username="assignee", password_hash="!", status="active"),
         WeComExternalContact(id=21, external_userid="bind-contact", name="要关联的联系人"),
         WeComExternalContact(id=22, external_userid="create-contact", name="待新建的联系人"),
+        WeComExternalContact(id=23, external_userid="assign-contact", name="要指定负责人的联系人"),
     ])
     db_session.commit()
     actor = make_user(101, permissions=("wecom:view", "wecom:manage"))
@@ -50,9 +53,17 @@ async def test_wecom_customer_actions_follow_crm_permissions_and_scope(db_sessio
         assert bound.status_code == 200
         assert bound.json()["data"]["customer_id"] == 11
         actor.permissions.add("customer:create")
+        # 指定别人当负责人属于分配动作：没有 customer:assign 时拒绝
+        assert (await client.post(f"{base}/23/create-customer",
+                                  json={"name": "指派客户", "owner_id": 102})).status_code == 403
         created = await client.post(f"{base}/22/create-customer", json={"name": "新客户"})
         assert created.status_code == 200
         assert db_session.get(Customer, created.json()["data"]["customer_id"]).owner_id == actor.id
+        actor.permissions.add("customer:assign")
+        assigned = await client.post(f"{base}/23/create-customer",
+                                     json={"name": "指派客户", "owner_id": 102})
+        assert assigned.status_code == 200
+        assert db_session.get(Customer, assigned.json()["data"]["customer_id"]).owner_id == 102
 
 
 @pytest.mark.anyio
