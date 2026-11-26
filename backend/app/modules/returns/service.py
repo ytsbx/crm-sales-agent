@@ -2,7 +2,7 @@
 
 把“登记”和“核销”分开：
 1. 业务员/主管登记：只锁数量、算货款，不动钱；
-2. 业务员/主管填最终退款总额：先冲抵客户未付款，剩余退还客户；运费按谈好的总数一并填入，不单独建模；
+2. 业务员/主管填最终退款总额：先抵扣客户未付款，剩余退还客户；运费按谈好的总数一并填入，不单独建模；
 3. 财务登记实际退款：钱真的付出去后才登记；
 4. 登记可取消，确认退款总额后可作废并冲回；已退款不能作废。
 
@@ -646,7 +646,7 @@ async def settle_return(
         content=(
             f"订单 {order.order_no} 退货 {row.return_no} 已确认退款总额 "
             f"{format(row.settled_goods_amount, '.2f')} 元："
-            f"冲抵客户未付款 {format(row.offset_amount, '.2f')} 元，"
+            f"抵扣客户未付款 {format(row.offset_amount, '.2f')} 元，"
             + (
                 f"退还客户 {format(row.refund_amount, '.2f')} 元，请财务实际退款后登记流水。"
                 if row.refund_amount > 0
@@ -829,7 +829,7 @@ async def void_return(
         title="销售退货已作废",
         content=(
             f"订单 {order.order_no} 退货 {row.return_no} 已作废，"
-            f"原因：{row.void_reason}；原冲抵的客户未付款已恢复。"
+            f"原因：{row.void_reason}；原抵扣的客户未付款已恢复。"
         ),
         business_type="sales_return",
         business_id=row.id,
