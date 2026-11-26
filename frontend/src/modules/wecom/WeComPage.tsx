@@ -631,7 +631,7 @@ export default function WeComPage() {
       )}
       <div className="split-multi wecom-split" style={{ gap: 16 }}>
         {/* 左：待处理外部联系人 */}
-        <SectionCard id="wecom-contact-review" style={{ display: 'flex', flexDirection: 'column' }}>
+        <SectionCard id="wecom-contact-review" className="wecom-pane wecom-pane-left" style={{ display: 'flex', flexDirection: 'column' }}>
           <div className="crm-help-label" style={{ fontWeight: 600, marginBottom: 10 }}>
             待确认联系人
             <HelpTip forLabel="待确认联系人" text="这些是已同步的企微联系人。确认后可以关联到已有客户，也可以新建客户档案。" />
@@ -662,7 +662,7 @@ export default function WeComPage() {
           ) : (
             // 列表自己滚，不把整页往下拉：这一栏原来有多少人就有多长，
             // 一页 20 条会把三栏卡片撑到视口外面，中右两栏跟着变成一整块空白。
-            <div style={{ display: 'grid', gap: 6, flex: '1 1 auto', minHeight: 200, maxHeight: 'min(52vh, 520px)', overflowY: 'auto', paddingRight: 2 }}>
+            <div style={{ display: 'grid', gap: 6, flex: '1 1 auto', minHeight: 0, overflowY: 'auto', paddingRight: 2 }}>
               {rows.map((row) => (
                 <div
                   key={row.id}
@@ -740,7 +740,7 @@ export default function WeComPage() {
         <div className="wecom-side">
         {/* 中：企业微信详情。纵向弹性 + 底下那块 margin-top auto：
             卡片被拉到与左栏等高后，内容不会全挤在上半截、下半截空一大片。 */}
-        <SectionCard style={{ display: 'flex', flexDirection: 'column' }}>
+        <SectionCard className="wecom-pane wecom-pane-right" style={{ display: 'flex', flexDirection: 'column' }}>
           {!active ? (
             <Empty description="请先在待确认列表选择联系人" />
           ) : (
@@ -891,7 +891,7 @@ export default function WeComPage() {
               )}
               {canManage && active && (
                 // 针对当前联系人的出口：放在联系人卡片里，和「谁加的、为什么扣住」挨着
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, paddingTop: 12, marginTop: 12, borderTop: '1px solid var(--crm-border)', justifyContent: 'flex-end' }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, paddingTop: 12, marginTop: 'auto', borderTop: '1px solid var(--crm-border)', justifyContent: 'flex-end' }}>
                   {canSearchCustomers && (
                     <Button theme="outline" onClick={() => {
                       bindMutation.reset()
