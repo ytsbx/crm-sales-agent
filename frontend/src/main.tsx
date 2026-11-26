@@ -35,7 +35,7 @@ async function consumeOaTicket() {
   window.history.replaceState(
     {},
     '',
-    `${window.location.pathname}${query ? `?${query}` : ''}${hash ? `#${hash}` : ''}`,
+    `${window.location.pathname}${query ? `?${query}` : ''}${hash ? '#' + hash : ''}`,
   )
   try {
     const result = await oaExchange(ticket)
