@@ -6195,3 +6195,14 @@
   - **历史无 SKU 样品重判风险**：`sample_is_custom` 改为“无 SKU 即新品”，历史上曾按现有产品走过寄样审批的名称型样品会被重新判为定制；若有这类在办单，可能错误显示「去登记制作」。上线前需要扫一遍 `sku_id is null and inquiry_id is null` 的历史样品，确认是否已走寄样审批。
 - **历史 P1-1 卡单不会自动恢复**：这次回写挂在 `apply_inquiry_summary`/源单同步上；修之前已经卡住的 `mode=inquiry` 样品，如果原询价 OA 早已通过但之后没有同步，会继续停在 pending。上线前要扫 `mode=inquiry + status=pending` 的单，触发一次源单同步或做一次性修数据。
 - 下一步：P2-1 幂等键按主人决定**不做**；继续处理 P2-4（驳回记录只读可查）和历史数据兼容扫描。
+
+## 2026-11-26 当前配置生产库只读扫描
+
+- 扫描目标：`backend/.env` 指向的 `crm_sales_agent`（本机 127.0.0.1:5432），只读事务，未写入。
+- 打样相关：`sample_requests=0`、`sample_items=0`、`approval_instances=0`。
+- 两个上线前扫描均为 0：
+  - `mode=inquiry + status=pending` 且关联原询价 OA 已通过：0。
+  - 明细无 SKU/无询价、但有已通过寄样审批：0。
+- 其他业务表并非全空：`users=11`、`customers=3`、`opportunities=1`；`custom_inquiries=0`、`quotes=0`、`quote_versions=0`、`sales_orders=0`。
+- `sales_returns` 表不存在，生产 `alembic_version=e6b4d2f8a1c9`，退货迁移确实未执行。
+- 范围限制：只查了当前 `.env` 指向的本机生产库；若是另一台远程服务器，需要另行提供地址/权限才能确认。
