@@ -3,7 +3,7 @@ import { api } from './client'
 export type SalesReturnStatus =
   | 'reviewing'
   | 'pending'
-  | 'warehouse_pending'
+  | 'receiving_pending'
   | 'completed'
   | 'refunded'
   | 'settled'
@@ -34,7 +34,6 @@ export interface SalesReturn {
   order_no: string
   customer_id: number
   customer_name?: string | null
-  distributor_name?: string | null
   applicant_name?: string | null
   application_date: string
   status: SalesReturnStatus
@@ -62,7 +61,7 @@ export interface SalesReturn {
   total_amount_exact: string
   payment_method: string
   receiving_account?: string | null
-  /** 申请时上传的《分销商退款登记表》。 */
+  /** 申请时上传的退款登记表。 */
   application_attachment_file_id?: number | null
   application_attachment_file_name?: string | null
   application_attachment_file_size?: number | null
@@ -90,9 +89,9 @@ export interface SalesReturn {
   review_note?: string | null
   /** 审核人就是申请人本人：界面标「本人审核」，审计里也留痕。 */
   self_reviewed?: boolean
-  warehouse_confirmed_by_name?: string | null
-  warehouse_confirmed_at?: string | null
-  warehouse_note?: string | null
+  received_by_name?: string | null
+  received_at?: string | null
+  receiving_note?: string | null
   settled_by_name?: string | null
   settled_at?: string | null
   refunded_by_name?: string | null
@@ -140,7 +139,7 @@ export interface ReturnCreatePayload {
   adjustment_note?: string
   payment_method: string
   receiving_account: string
-  /** 先走 `/files/upload` 上传《分销商退款登记表》，再带 file_id 提交。 */
+  /** 先走 `/files/upload` 上传退款登记表，再带 file_id 提交。 */
   application_attachment_file_id: number
   return_tracking_no?: string
   return_date?: string
@@ -206,14 +205,14 @@ export function settleReturn(returnId: number, payload: ReturnSettlePayload) {
   return api.post<SalesReturn>(`/returns/${returnId}/settle`, payload)
 }
 
-export interface ReturnWarehousePayload {
+export interface ReturnReceivePayload {
   note?: string
   tracking_no?: string
 }
 
-/** 仓库/主管确认收到退货；确认后才允许财务退款。 */
-export function confirmReturnWarehouse(returnId: number, payload: ReturnWarehousePayload) {
-  return api.post<SalesReturn>(`/returns/${returnId}/warehouse-confirm`, payload)
+/** 业务员或主管确认收到退货；确认后才允许财务退款。 */
+export function confirmReturnReceived(returnId: number, payload: ReturnReceivePayload) {
+  return api.post<SalesReturn>(`/returns/${returnId}/receive-confirm`, payload)
 }
 
 /** 历史抵扣单登记现金退款；新退货请优先使用 `settleReturn`。 */

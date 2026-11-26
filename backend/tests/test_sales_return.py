@@ -1,9 +1,9 @@
-"""销售售后：申请金额构成、主管审核、仓库确认、财务自动先冲欠款、退款与作废。
+"""销售售后：申请金额构成、主管审核、业务员/主管确认收货、财务自动先冲欠款、退款与作废。
 
-2026-11-26 按分销商售后 OA 表单重新拍板：
+2026-11-26 按用户提供的售后 OA 表单重新拍板：
 - 售后申请必须挂订单，业务员填货款/运费/改价调整和退款登记表附件；
-- 主管审核通过后先等仓库确认收货；
-- 仓库确认后财务才退款，系统自动先冲客户未付款、剩余才现金退；
+- 主管审核通过后先等业务员或主管确认收到退货；
+- 确认收货后财务才退款，系统自动先冲客户未付款、剩余才现金退；
 - 财务不改金额、不手填抵扣；
 - 历史抵扣单仍保留作废还原逻辑，但不能再直接改金额。
 
@@ -117,7 +117,7 @@ def db(monkeypatch):
             id=1,
             storage_provider="local",
             object_key="2026/11/return-application.xlsx",
-            file_name="分销商退款登记表.xlsx",
+            file_name="退款登记表.xlsx",
             mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             size=1024,
             checksum="return-app",
@@ -127,7 +127,7 @@ def db(monkeypatch):
             id=2,
             storage_provider="local",
             object_key="2026/11/return-application-reviewer.xlsx",
-            file_name="分销商退款登记表-主管.xlsx",
+            file_name="退款登记表-主管.xlsx",
             mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             size=1024,
             checksum="return-app-reviewer",
@@ -201,10 +201,10 @@ def _approve(session, row):
     )
 
 
-def _warehouse(session, row):
+def _receive(session, row, user=USER):
     return run(
-        svc.confirm_warehouse(
-            session, REVIEWER, row, note="仓库已点收，数量一致"
+        svc.confirm_received(
+            session, user, row, note="已点收，数量一致"
         )
     )
 
@@ -325,48 +325,61 @@ def test_same_product_across_batches_does_not_double_count_reference(db):
     assert "batches" not in overview
 
 
-def test_review_approve_goes_to_warehouse_pending_and_keeps_amount(db):
+def test_review_approve_goes_to_receiving_pending_and_keeps_amount(db):
     s, order, item, batch_item, plans = db
     row = run(svc.create_return(s, USER, order, _payload("10", "100")))
     approved = _approve(s, row)
 
-    assert approved.status == "warehouse_pending"
+    assert approved.status == "receiving_pending"
     assert approved.settled_goods_amount == D("100.00")
     assert approved.offset_amount == D("0.00")
     assert approved.refund_amount == D("100.00")
-    assert approved.warehouse_confirmed_by is None
+    assert approved.received_by is None
     # 审核本身不冲应收，原计划金额保持不变。
     assert s._session.get(ReceivablePlan, 1).amount == D("30.00")
     assert s._session.get(ReceivablePlan, 2).amount == D("70.00")
 
 
-def test_warehouse_confirmation_moves_to_finance_refund_pending(db):
+def test_receive_confirmation_moves_to_finance_refund_pending(db):
     s, order, item, batch_item, plans = db
     row = run(svc.create_return(s, USER, order, _payload("10", "100")))
     _approve(s, row)
 
-    # 仓库没确认之前，财务不能直接退款。
-    with pytest.raises(AppError, match="待仓库确认收货"):
+    # 确认收货之前，财务不能直接退款。
+    with pytest.raises(AppError, match="待确认收到退货"):
         run(svc.settle_return(s, FINANCE, row, refund_reference="银行流水 X"))
 
-    confirmed = _warehouse(s, row)
+    # 财务没有收货岗位，不能替业务员/主管确认。
+    with pytest.raises(AppError, match="只有业务员或主管"):
+        run(svc.confirm_received(s, FINANCE, row, note="财务代确认"))
+
+    confirmed = _receive(s, row)
     assert confirmed.status == "completed"
-    assert confirmed.warehouse_confirmed_by == REVIEWER.id
+    assert confirmed.received_by == USER.id
     # 旧 refund_return 接口不能绕过自动抵扣直接全现金退。
     with pytest.raises(AppError, match="财务确认退款"):
         run(svc.refund_return(s, FINANCE, row, "银行流水 绕过测试"))
-    assert confirmed.warehouse_note == "仓库已点收，数量一致"
+    assert confirmed.receiving_note == "已点收，数量一致"
     assert confirmed.total_amount == D("100.00")
 
     audit = s._session.execute(
         select(AuditLog).where(
             AuditLog.business_type == "sales_return",
             AuditLog.business_id == row.id,
-            AuditLog.action == "confirm_return_warehouse",
+            AuditLog.action == "confirm_return_received",
         )
     ).scalars().one()
     assert audit.after_data["status"] == "completed"
-    assert audit.after_data["warehouse_note"] == "仓库已点收，数量一致"
+    assert audit.after_data["receiving_note"] == "已点收，数量一致"
+
+
+def test_supervisor_can_also_confirm_received(db):
+    s, order, item, batch_item, plans = db
+    row = run(svc.create_return(s, USER, order, _payload("3", "30")))
+    _approve(s, row)
+    confirmed = _receive(s, row, REVIEWER)
+    assert confirmed.status == "completed"
+    assert confirmed.received_by == REVIEWER.id
 
 
 def test_finance_cannot_change_new_return_amount(db):
@@ -376,7 +389,7 @@ def test_finance_cannot_change_new_return_amount(db):
         run(svc.update_return_amount(s, FINANCE, row, refund_amount=D("60.00")))
 
     _approve(s, row)
-    _warehouse(s, row)
+    _receive(s, row)
     with pytest.raises(AppError, match="不能改金额"):
         run(svc.update_return_amount(s, FINANCE, row, refund_amount=D("60.00")))
 
@@ -385,7 +398,7 @@ def test_salesperson_without_payment_manage_cannot_change_amount(db):
     s, order, item, batch_item, plans = db
     row = run(svc.create_return(s, USER, order, _payload("3", "30")))
     _approve(s, row)
-    _warehouse(s, row)
+    _receive(s, row)
     with pytest.raises(AppError, match="只有财务"):
         run(svc.update_return_amount(
             s, SALESPERSON_WITHOUT_PAYMENT, row, refund_amount=D("20.00")
@@ -417,7 +430,7 @@ def test_refund_must_be_registered_then_cannot_void_or_change_amount(db):
     s._session.flush()
     row = run(svc.create_return(s, USER, order, _payload("2", "20")))
     _approve(s, row)
-    _warehouse(s, row)
+    _receive(s, row)
     run(svc.settle_return(s, FINANCE, row, refund_reference="银行流水 20261125001"))
     assert row.status == "refunded"
     assert row.offset_amount == D("0.00")
@@ -434,7 +447,7 @@ def test_void_new_return_keeps_plans_unchanged(db):
     s, order, item, batch_item, plans = db
     row = run(svc.create_return(s, USER, order, _payload("4", "40")))
     _approve(s, row)
-    assert row.status == "warehouse_pending"
+    assert row.status == "receiving_pending"
     assert s._session.get(ReceivablePlan, 2).amount == D("70.00")
 
     run(svc.void_return(s, FINANCE, row, "退错了"))
@@ -530,7 +543,7 @@ def test_supervisor_self_review_allowed_but_salesperson_blocked(db):
             s, REVIEWER, row, decision="approve", note="本人审核：已核对退货照片"
         )
     )
-    assert approved.status == "warehouse_pending"
+    assert approved.status == "receiving_pending"
     assert approved.reviewed_by == REVIEWER.id
     assert approved.created_by == REVIEWER.id
 
@@ -568,7 +581,7 @@ def test_finance_cannot_change_amount_even_if_less_or_full(db):
     # 退款金额由业务员登记、主管审核；财务不能改成另一笔账。
     row = run(svc.create_return(s, USER, order, _payload("5", "50")))
     _approve(s, row)
-    _warehouse(s, row)
+    _receive(s, row)
     with pytest.raises(AppError, match="不能改金额"):
         run(svc.update_return_amount(
             s, FINANCE, row, refund_amount=D("30.00"),
@@ -586,7 +599,7 @@ def test_refund_attachment_metadata_serialized(db):
     s, order, item, batch_item, plans = db
     row = run(svc.create_return(s, USER, order, _payload("3", "30")))
     _approve(s, row)
-    _warehouse(s, row)
+    _receive(s, row)
     assert row.status == "completed"
     assert row.offset_amount == D("0.00")
     assert row.refund_amount == D("30.00")
@@ -647,7 +660,7 @@ def test_settle_full_offset_clears_unreceived_without_cash(db):
     s, order, item, batch_item, plans = db
     row = run(svc.create_return(s, USER, order, _payload("10", "100")))
     _approve(s, row)
-    _warehouse(s, row)
+    _receive(s, row)
     settled = run(
         svc.settle_return(
             s,
@@ -715,7 +728,7 @@ def test_settle_auto_offset_then_cash_requires_reference(db):
     _add_payment(s, "80.00", [(1, "30.00"), (2, "50.00")])
     row = run(svc.create_return(s, USER, order, _payload("3", "30")))
     _approve(s, row)
-    _warehouse(s, row)
+    _receive(s, row)
 
     with pytest.raises(AppError, match="必须填写退款流水"):
         run(svc.settle_return(s, FINANCE, row))
@@ -754,7 +767,7 @@ def test_settle_auto_offset_caps_at_customer_unpaid(db):
     _add_payment(s, "90.00", [(1, "30.00"), (2, "60.00")])
     row = run(svc.create_return(s, USER, order, _payload("3", "30")))
     _approve(s, row)
-    _warehouse(s, row)
+    _receive(s, row)
 
     settled = run(
         svc.settle_return(

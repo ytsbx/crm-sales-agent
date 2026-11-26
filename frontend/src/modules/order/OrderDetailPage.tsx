@@ -59,7 +59,7 @@ import {
 } from '../../shared/api/order'
 import {
   cancelReturn,
-  confirmReturnWarehouse,
+  confirmReturnReceived,
   createReturn,
   deleteReturnRefundAttachment,
   downloadReturnRefundAttachment,
@@ -221,7 +221,7 @@ const PLAN_TONE: Record<string, TagTone> = {
 const RETURN_TONE: Record<string, TagTone> = {
   reviewing: 'orange',
   pending: 'orange',
-  warehouse_pending: 'cyan',
+  receiving_pending: 'cyan',
   completed: 'blue',
   refunded: 'green',
   settled: 'green',
@@ -248,6 +248,8 @@ export default function OrderDetailPage() {
   const canPayment = can('payment:manage')
   const canViewPayment = can('payment:view')
   const canReviewReturn = can('order:assign')
+  // 收货确认：业务员或主管；财务也有 order:manage，不能只看 canManage。
+  const canConfirmReceipt = canReviewReturn || Boolean(currentUser?.roles?.includes('salesperson'))
 
   const [activeKey, setActiveKey] = useState('items')
   const orderTabsRef = useRef<HTMLDivElement>(null)
@@ -279,7 +281,7 @@ export default function OrderDetailPage() {
   //: 已确认回款作废（2026-11-25）：普通 Modal，原因必填。
   const [voidTarget, setVoidTarget] = useState<Payment | null>(null)
   const [voidReason, setVoidReason] = useState('')
-  //: 分销商售后（2026-11-26）。申请 / 主管审核 / 仓库确认 / 财务退款 / 作废各有独立弹窗，
+  //: 销售售后（2026-11-26）。申请 / 主管审核 / 确认收到退货 / 财务退款 / 作废各有独立弹窗，
   //: 状态机不允许一步跳过去，弹窗也只做当前一步。
   const [returnVisible, setReturnVisible] = useState(false)
   const [returnReasonCode, setReturnReasonCode] = useState<'customer_rejected' | 'quality_issue' | 'wrong_item' | 'other'>('customer_rejected')
@@ -305,9 +307,9 @@ export default function OrderDetailPage() {
   const [refundTarget, setRefundTarget] = useState<SalesReturn | null>(null)
   const [refundReference, setRefundReference] = useState('')
   const [settleNote, setSettleNote] = useState('')
-  const [warehouseTarget, setWarehouseTarget] = useState<SalesReturn | null>(null)
-  const [warehouseNote, setWarehouseNote] = useState('')
-  const [warehouseTrackingNo, setWarehouseTrackingNo] = useState('')
+  const [receiveTarget, setReceiveTarget] = useState<SalesReturn | null>(null)
+  const [receiveNote, setReceiveNote] = useState('')
+  const [receiveTrackingNo, setReceiveTrackingNo] = useState('')
   const refundAttachmentInputRef = useRef<HTMLInputElement>(null)
   const [cancelReturnTarget, setCancelReturnTarget] = useState<SalesReturn | null>(null)
   const [cancelReturnReason, setCancelReturnReason] = useState('')
@@ -579,7 +581,7 @@ export default function OrderDetailPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
-  // ---- 分销商售后：申请（金额构成） → 主管审核 → 仓库确认收货 → 财务自动抵扣/退现 ----
+  // ---- 销售售后：申请（金额构成） → 主管审核 → 业务员/主管确认收货 → 财务自动抵扣/退现 ----
   const createReturnMutation = useMutation({
     mutationFn: (payload: ReturnCreatePayload) => createReturn(orderId, payload),
     onSuccess: (row) => {
@@ -622,8 +624,8 @@ export default function OrderDetailPage() {
       reviewReturn(payload.id, payload.decision, payload.note),
     onSuccess: (row) => {
       Toast.success(
-        row.status === 'warehouse_pending'
-          ? `售后单 ${row.return_no} 已通过审核，待仓库确认收货`
+        row.status === 'receiving_pending'
+          ? `售后单 ${row.return_no} 已通过审核，待确认收到退货`
           : row.status === 'pending'
             ? `售后单 ${row.return_no} 已通过审核，等填退货总额`
             : `售后单 ${row.return_no} 已驳回，可退数量已释放`,
@@ -633,17 +635,17 @@ export default function OrderDetailPage() {
       refresh()
     },
   })
-  const confirmWarehouseMutation = useMutation({
+  const confirmReceiveMutation = useMutation({
     mutationFn: (payload: { id: number; note?: string; trackingNo?: string }) =>
-      confirmReturnWarehouse(payload.id, {
+      confirmReturnReceived(payload.id, {
         note: payload.note,
         tracking_no: payload.trackingNo,
       }),
     onSuccess: (row) => {
-      Toast.success(`售后单 ${row.return_no} 仓库已确认收货，待财务退款`)
-      setWarehouseTarget(null)
-      setWarehouseNote('')
-      setWarehouseTrackingNo('')
+      Toast.success(`售后单 ${row.return_no} 已确认收到退货，待财务退款`)
+      setReceiveTarget(null)
+      setReceiveNote('')
+      setReceiveTrackingNo('')
       refresh()
     },
   })
@@ -1109,7 +1111,7 @@ export default function OrderDetailPage() {
   const returnableRows: ReturnableItem[] = returnable?.items ?? []
   const returnReviewingCount = returns.filter((row) => row.status === 'reviewing').length
   const returnPendingCount = returns.filter((row) => row.status === 'pending').length
-  const returnWarehousePendingCount = returns.filter((row) => row.status === 'warehouse_pending').length
+  const returnReceivingPendingCount = returns.filter((row) => row.status === 'receiving_pending').length
   const returnRefundPendingCount = returns.filter((row) => row.status === 'completed').length
   const returnRequestedItems = returnableRows.flatMap((row) => {
     const qty = Number(returnQty[row.order_item_id] || 0)
@@ -1144,7 +1146,7 @@ export default function OrderDetailPage() {
         : returnReceivingAccount.trim().length < 2
           ? '请填写收款账户（客户收款用的账号）'
           : !returnApplicationFile
-            ? '请上传《分销商退款登记表》'
+            ? '请上传退款登记表'
             : overReturnRow
               ? `${overReturnRow.sku || '该明细'} 本次最多还能退 ${overReturnRow.remaining_quantity_exact}`
               : returnRequestedItems.length === 0
@@ -1456,8 +1458,8 @@ export default function OrderDetailPage() {
           main = offset > 0
             ? `已抵扣 ${formatMoney(row.offset_amount_exact, row.currency)} · 待登记现金退款 ${formatMoney(row.refund_amount_exact, row.currency)}`
             : `待财务确认：先抵 ${formatMoney(plannedOffset, row.currency)}，现金退 ${formatMoney(plannedCash, row.currency)}`
-        } else if (row.status === 'warehouse_pending') {
-          main = '待仓库确认收货'
+        } else if (row.status === 'receiving_pending') {
+          main = '待确认收到退货'
         } else if (row.status === 'reviewing') {
           main = '待主管审核'
         }
@@ -1505,7 +1507,7 @@ export default function OrderDetailPage() {
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
           <Tag color={RETURN_TONE[row.status] ?? 'grey'}>{value}</Tag>
           {row.self_reviewed && <Tag color="orange">本人审核</Tag>}
-          {row.warehouse_confirmed_at && <Tag color="cyan">仓库已收货</Tag>}
+          {row.received_at && <Tag color="cyan">已确认收货</Tag>}
         </div>
       ),
     },
@@ -1579,20 +1581,20 @@ export default function OrderDetailPage() {
             }}>补退款总额</Button>,
           )
         }
-        if (row.status === 'warehouse_pending' && mayReviewThis) {
+        if (row.status === 'receiving_pending' && canConfirmReceipt) {
           actions.push(
-            <Button key="warehouse" size="small" onClick={() => {
-              confirmWarehouseMutation.reset()
-              setWarehouseNote('')
-              setWarehouseTrackingNo(row.return_tracking_no ?? '')
-              setWarehouseTarget(row)
-            }}>确认仓库收货</Button>,
+            <Button key="receive" size="small" onClick={() => {
+              confirmReceiveMutation.reset()
+              setReceiveNote('')
+              setReceiveTrackingNo(row.return_tracking_no ?? '')
+              setReceiveTarget(row)
+            }}>确认收到退货</Button>,
           )
         }
-        if (row.status === 'warehouse_pending' && !mayReviewThis) {
+        if (row.status === 'receiving_pending' && !canConfirmReceipt) {
           actions.push(
-            <span key="warehouse-wait" style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-              等仓库确认收货
+            <span key="receive-wait" style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+              等业务员/主管确认收到退货
             </span>,
           )
         }
@@ -2568,9 +2570,9 @@ export default function OrderDetailPage() {
               <div className="toolbar">
                 <p className="workflow-guide">
                   售后必须挂订单：业务员填退款金额构成（货款、运费、改价/其他调整）、打款方式、收款账户和退款登记表，
-                  主管审核 → 仓库确认收到货 → 财务按审核后的总额退款。财务不改金额，系统自动先冲客户未付款，剩余才现金退。
+                  主管审核 → 业务员或主管确认收到货 → 财务按审核后的总额退款。财务不改金额，系统自动先冲客户未付款，剩余才现金退。
                   {returnReviewingCount > 0 ? ` 当前有 ${returnReviewingCount} 张待主管审核。` : ''}
-                  {returnWarehousePendingCount > 0 ? ` 当前有 ${returnWarehousePendingCount} 张待仓库确认收货。` : ''}
+                  {returnReceivingPendingCount > 0 ? ` 当前有 ${returnReceivingPendingCount} 张待确认收到退货。` : ''}
                   {returnPendingCount > 0 ? ` 当前有 ${returnPendingCount} 张历史单待补退款总额。` : ''}
                   {returnRefundPendingCount > 0 ? ` 当前有 ${returnRefundPendingCount} 张待财务确认退款。` : ''}
                 </p>
@@ -2616,7 +2618,7 @@ export default function OrderDetailPage() {
                 rowKey="id"
                 pagination={false}
                 empty={emptyText(returnsQuery, '还没有退货登记',
-                  canManage && returnableRows.length ? '客户拒收/退错货时，点「发起售后」走申请、审核、仓库确认、财务退款。' : undefined)}
+                  canManage && returnableRows.length ? '客户拒收/退错货时，点「发起售后」走申请、审核、确认收货、财务退款。' : undefined)}
               />
             </>
           )}
@@ -3499,11 +3501,11 @@ export default function OrderDetailPage() {
         </div>
       </Modal>
 
-      {/* 分销商售后申请：业务员填金额构成、打款信息、退款登记表和退货数量。 */}
+      {/* 销售售后申请：业务员填金额构成、打款信息、退款登记表和退货数量。 */}
       <Modal
         width={860}
         style={{ maxWidth: 'calc(100vw - 32px)' }}
-        title="发起分销商售后"
+        title="发起售后"
         visible={returnVisible}
         onCancel={() => { if (!createReturnMutation.isPending) setReturnVisible(false) }}
         footer={
@@ -3544,7 +3546,7 @@ export default function OrderDetailPage() {
           )}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))', gap: 12 }}>
             <div>
-              <FormLabel>分销商名称</FormLabel>
+              <FormLabel>客户名称</FormLabel>
               <Input value={order.customer_name ?? '—'} disabled />
             </div>
             <div>
@@ -3673,7 +3675,7 @@ export default function OrderDetailPage() {
               </Button>
             )}
             <p className="workflow-guide" style={{ marginTop: 6 }}>
-              按分销商售后 OA 表单要求必填；支持图片、PDF、Word、Excel，单个文件不超过 20 MB。
+              按售后申请要求必填；支持图片、PDF、Word、Excel，单个文件不超过 20 MB。
             </p>
           </div>
 
@@ -3695,7 +3697,7 @@ export default function OrderDetailPage() {
             <FormLabel required>本次退货数量</FormLabel>
             <p className="workflow-guide" style={{ marginBottom: 6 }}>
               填退哪个产品、几件；金额在上方按构成填。系统按订单明细汇总已发/已退数量，不拆发货批次。
-              提交后先交主管审核，通过后等仓库确认收货，最后财务按总额退款。
+              提交后先交主管审核，通过后等业务员/主管确认收到退货，最后财务按总额退款。
             </p>
             <Table<ReturnableItem>
               size="small"
@@ -3740,7 +3742,7 @@ export default function OrderDetailPage() {
         </div>
       </Modal>
 
-      {/* 主管审核售后：通过后转仓库确认收货；驳回释放可退数量，申请人可改后重提。 */}
+      {/* 主管审核售后：通过后转确认收到退货；驳回释放可退数量，申请人可改后重提。 */}
       <Modal
         width={580}
         style={{ maxWidth: 'calc(100vw - 32px)' }}
@@ -3799,7 +3801,7 @@ export default function OrderDetailPage() {
                 value={reviewDecision}
                 onChange={(value) => setReviewDecision(value as 'approve' | 'reject')}
                 optionList={[
-                  { label: '通过，转仓库确认收货', value: 'approve' },
+                  { label: '通过，转确认收到退货', value: 'approve' },
                   { label: '驳回，退给申请人修改', value: 'reject' },
                 ]}
               />
@@ -3810,36 +3812,36 @@ export default function OrderDetailPage() {
                 placeholder={reviewDecision === 'reject' ? '驳回必须写原因，例如：货还没收到' : '选填，例如：已核对退货照片和金额构成'} />
             </div>
             <p className="workflow-guide">
-              通过后进入“待仓库确认收货”，仓库点收后才轮到财务退款。财务不改金额，系统按审核后的总额自动先冲客户未付款，剩余才现金退。
+              通过后进入“待确认收到退货”，业务员或主管点收后才轮到财务退款。财务不改金额，系统按审核后的总额自动先冲客户未付款，剩余才现金退。
               驳回后这张单结束，但占用的可退数量会释放，可以重新申请。
             </p>
           </div>
         )}
       </Modal>
 
-      {/* 仓库确认收货：确认货真的回来了，才允许财务退款。 */}
+      {/* 确认收到退货：业务员或主管点收后才允许财务退款。 */}
       <Modal
         width={520}
         style={{ maxWidth: 'calc(100vw - 32px)' }}
-        title={`确认仓库收货：${warehouseTarget?.return_no ?? ''}`}
-        visible={Boolean(warehouseTarget)}
-        onCancel={() => { if (!confirmWarehouseMutation.isPending) setWarehouseTarget(null) }}
+        title={`确认收到退货：${receiveTarget?.return_no ?? ''}`}
+        visible={Boolean(receiveTarget)}
+        onCancel={() => { if (!confirmReceiveMutation.isPending) setReceiveTarget(null) }}
         footer={
           <div className="workflow-modal-actions">
-            <Button disabled={confirmWarehouseMutation.isPending} onClick={() => setWarehouseTarget(null)}>先不确认</Button>
+            <Button disabled={confirmReceiveMutation.isPending} onClick={() => setReceiveTarget(null)}>先不确认</Button>
             <GuardedButton
               type="primary"
-              action="确认仓库收货"
+              action="确认收到退货"
               disabled={false}
               blockedReasons={[]}
-              loading={confirmWarehouseMutation.isPending}
+              loading={confirmReceiveMutation.isPending}
               hintBelow
               onClick={() => {
-                if (!warehouseTarget) return
-                confirmWarehouseMutation.mutate({
-                  id: warehouseTarget.id,
-                  note: warehouseNote.trim() || undefined,
-                  trackingNo: warehouseTrackingNo.trim() || undefined,
+                if (!receiveTarget) return
+                confirmReceiveMutation.mutate({
+                  id: receiveTarget.id,
+                  note: receiveNote.trim() || undefined,
+                  trackingNo: receiveTrackingNo.trim() || undefined,
                 })
               }}
             >
@@ -3848,23 +3850,23 @@ export default function OrderDetailPage() {
           </div>
         }
       >
-        {warehouseTarget && (
+        {receiveTarget && (
           <div style={{ display: 'grid', gap: 12 }}>
-            {confirmWarehouseMutation.error && (
-              <Banner type="danger" fullMode={false} closeIcon={null} title="仓库确认失败" description={confirmWarehouseMutation.error.message} />
+            {confirmReceiveMutation.error && (
+              <Banner type="danger" fullMode={false} closeIcon={null} title="确认收货失败" description={confirmReceiveMutation.error.message} />
             )}
             <div className="workflow-guide">
-              售后单 {warehouseTarget.return_no}，共 {warehouseTarget.items.length} 项，退款总额
-              <strong>{formatMoney(warehouseTarget.total_amount_exact, warehouseTarget.currency)}</strong>。
+              售后单 {receiveTarget.return_no}，共 {receiveTarget.items.length} 项，退款总额
+              <strong>{formatMoney(receiveTarget.total_amount_exact, receiveTarget.currency)}</strong>。
               确认前请点清实际收到的数量；确认后财务才能退款，系统会自动先冲客户未付款。
             </div>
             <div>
               <FormLabel>退回物流单号</FormLabel>
-              <Input value={warehouseTrackingNo} onChange={setWarehouseTrackingNo} placeholder="客户寄回货物的快递单号" />
+              <Input value={receiveTrackingNo} onChange={setReceiveTrackingNo} placeholder="客户寄回货物的快递单号" />
             </div>
             <div>
-              <FormLabel>仓库收货备注（选填）</FormLabel>
-              <TextArea rows={2} maxLength={255} value={warehouseNote} onChange={setWarehouseNote}
+              <FormLabel>收货备注（选填）</FormLabel>
+              <TextArea rows={2} maxLength={255} value={receiveNote} onChange={setReceiveNote}
                 placeholder="例如：实收 3 件，外箱破损，已拍照留档" />
             </div>
           </div>

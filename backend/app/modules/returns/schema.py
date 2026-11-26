@@ -43,9 +43,9 @@ class ReturnCreate(BaseModel):
     payment_method: str = Field(default="线下转账", min_length=2, max_length=32)
     #: 收款账户：户名/开户行/账号，财务按它打款。
     receiving_account: str = Field(min_length=2, max_length=128)
-    #: 申请单必须附《分销商退款登记表》，文件先走 /files/upload 拿 file_id。
+    #: 申请单必须附退款登记表，文件先走 /files/upload 拿 file_id。
     application_attachment_file_id: int = Field(gt=0)
-    #: 客户退回货物的物流单号，仓库核对用，选填。
+    #: 客户退回货物的物流单号，确认收货时核对用，选填。
     return_tracking_no: str | None = Field(default=None, max_length=64)
     return_date: date | None = None
     remark: str | None = Field(default=None, max_length=255)
@@ -105,8 +105,8 @@ class ReturnSettle(BaseModel):
     note: str | None = Field(default=None, max_length=255)
 
 
-class ReturnWarehouseConfirm(BaseModel):
-    """仓库确认收到退货。"""
+class ReturnReceiveConfirm(BaseModel):
+    """业务员或主管确认收到退货。"""
 
     model_config = ConfigDict(str_strip_whitespace=True)
 

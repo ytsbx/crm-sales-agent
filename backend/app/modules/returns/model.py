@@ -1,10 +1,10 @@
-"""销售退货：发货之后的退货登记、主管审核、仓库确认与财务退款。
+"""销售退货：发货之后的退货登记、主管审核、确认收货与财务退款。
 
-业务口径（2026-11-26 主人按分销商售后 OA 表单重新拍板）：
+业务口径（2026-11-26 主人按用户提供的售后 OA 表单重新拍板）：
 - 售后申请必须挂订单，业务员登记时填退款金额构成（货款 / 运费 / 改价或其他调整），
   系统只负责合计，不再让业务员只填一个说不清来源的总数；
-- 申请单必须附「分销商退款登记表」，主管审核通过后先进入待仓库确认收货；
-- 仓库确认货已退回后，财务才处理退款；
+- 申请单必须附退款登记表，主管审核通过后进入待确认收到退货；
+- 业务员或主管确认货已退回后，财务才处理退款；
 - 财务不手填抵扣、不改金额：系统按订单当前客户未付款自动先冲，剩余才现金退；
 - 审核前不冲欠款，只有财务确认退款时才写应收冲减快照。
 
@@ -35,7 +35,7 @@ RETURN_STATUS_LABEL = {
     "reviewing": "待主管审核",
     #: 兼容历史旧单：金额还没填。新售后在登记时已填金额，不会落到这个状态。
     "pending": "待填退款总额（历史单）",
-    "warehouse_pending": "待仓库确认收货",
+    "receiving_pending": "待确认收到退货",
     "completed": "待财务退款",
     "refunded": "已退款",
     "settled": "已抵扣结清",
@@ -61,11 +61,11 @@ class SalesReturn(Base, IdMixin, TimestampMixin):
 
     return_no: Mapped[str] = mapped_column(String(32), unique=True)
     order_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("sales_orders.id"))
-    #: 售后状态：reviewing / pending（仅历史旧单）/ warehouse_pending / completed /
+    #: 售后状态：reviewing / pending（仅历史旧单）/ receiving_pending / completed /
     #: refunded / settled / cancelled / voided。
     #: reviewing = 已提交申请，等主管审核；
-    #: warehouse_pending = 主管已通过，等仓库确认收到退货；
-    #: completed = 仓库已收货，等财务退款；
+    #: receiving_pending = 主管已通过，等业务员或主管确认收到退货；
+    #: completed = 已确认收到退货，等财务退款；
     #: refunded = 已退款（可能含自动抵扣 + 现金退还）；
     #: settled = 退款金额全部自动抵扣客户未付款，没有现金退给客户。
     status: Mapped[str] = mapped_column(String(32), default="reviewing")
@@ -96,11 +96,11 @@ class SalesReturn(Base, IdMixin, TimestampMixin):
     payment_method: Mapped[str] = mapped_column(String(32), default="线下转账")
     #: 收款账户，业务员填户名/开户行/账号；财务按它打款。
     receiving_account: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    #: 申请时上传的《分销商退款登记表》附件，文件中心 file_id。
+    #: 申请时上传的退款登记表附件，文件中心 file_id。
     application_attachment_file_id: Mapped[int | None] = mapped_column(
         BigInteger, nullable=True
     )
-    #: 客户退回货物的物流单号，便于仓库核对。
+    #: 客户退回货物的物流单号，业务员/主管确认收货时核对。
     return_tracking_no: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     #: 财务确认退款时，系统自动抵扣客户未付款的金额；不是人工填的。
@@ -118,12 +118,12 @@ class SalesReturn(Base, IdMixin, TimestampMixin):
     reviewed_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     review_note: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    #: 仓库确认收到退货：谁确认、什么时候、备注。主管/管理员可代仓库确认。
-    warehouse_confirmed_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    warehouse_confirmed_at: Mapped[datetime | None] = mapped_column(
+    #: 确认收到退货：业务员或主管谁点确认、什么时候、备注。
+    received_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    received_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    warehouse_note: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    receiving_note: Mapped[str | None] = mapped_column(String(255), nullable=True)
     settled_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     refunded_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

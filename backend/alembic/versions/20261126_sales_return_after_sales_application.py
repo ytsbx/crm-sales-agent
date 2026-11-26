@@ -4,7 +4,7 @@ Revision ID: b7e2c9d4a1f6
 Revises: a1c4e8f2b6d9
 Create Date: 2026-11-26
 
-按分销商售后 OA 表单补齐申请字段；不改变历史退货单已有金额字段。
+按用户提供的售后 OA 表单补齐申请字段；不改变历史退货单已有金额字段。
 """
 
 from collections.abc import Sequence

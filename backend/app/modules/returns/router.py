@@ -1,4 +1,4 @@
-"""销售售后接口：申请（含金额构成/附件）、取消、主管审核、仓库确认、财务退款、作废。"""
+"""销售售后接口：申请（含金额构成/附件）、取消、主管审核、确认收货、财务退款、作废。"""
 
 import asyncio
 import logging
@@ -28,7 +28,7 @@ from app.modules.returns.schema import (
     ReturnReview,
     ReturnSettle,
     ReturnVoid,
-    ReturnWarehouseConfirm,
+    ReturnReceiveConfirm,
 )
 
 router = APIRouter(tags=["销售退货"])
@@ -129,8 +129,8 @@ async def review_return(
     data = await svc.serialize_return(session, row)
     await session.commit()
     message = (
-        f"售后申请 {row.return_no} 已通过主管审核，待仓库确认收货"
-        if row.status == "warehouse_pending"
+        f"售后申请 {row.return_no} 已通过主管审核，待确认收到退货"
+        if row.status == "receiving_pending"
         else (
             f"售后申请 {row.return_no} 已通过审核，待填退款总额"
             if row.status == "pending"
@@ -140,17 +140,17 @@ async def review_return(
     return ok(data, message)
 
 
-@router.post("/returns/{return_id}/warehouse-confirm")
-async def confirm_warehouse(
+@router.post("/returns/{return_id}/receive-confirm")
+async def confirm_received(
     return_id: int,
-    payload: ReturnWarehouseConfirm,
+    payload: ReturnReceiveConfirm,
     request: Request,
-    user: CurrentUser = Depends(require_permission("order:assign")),
+    user: CurrentUser = Depends(require_permission("order:manage", "order:assign")),
     session: AsyncSession = Depends(get_db),
 ):
-    """仓库确认收到退货：主管/管理员代确认，确认后才允许财务退款。"""
+    """业务员或主管确认收到退货；确认后才允许财务退款。"""
     row = await _lock_return_with_order(session, user, return_id)
-    await svc.confirm_warehouse(
+    await svc.confirm_received(
         session,
         user,
         row,
@@ -160,7 +160,7 @@ async def confirm_warehouse(
     )
     data = await svc.serialize_return(session, row)
     await session.commit()
-    return ok(data, f"售后申请 {row.return_no} 已确认收货，待财务退款")
+    return ok(data, f"售后申请 {row.return_no} 已确认收到退货，待财务退款")
 
 
 @router.post("/returns/{return_id}/cancel")
