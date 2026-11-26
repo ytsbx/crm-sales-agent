@@ -504,7 +504,7 @@ def main():
     check('全发完未发量 0', res['data']['summary']['remaining'], 0.0)
     check('all_shipped=True', res['data']['summary']['all_shipped'], True)
     status, res = call('POST', f'/orders/{b_order_id}/status', token=admin,
-                       body={'status': 'completed'})
+                       body={'status': 'completed', 'remark': '套件：月结客户，按合同账期收款'})
     check('发完后整单可完成', res.get('code'), 0)
 
     print()

@@ -116,7 +116,8 @@ def main() -> int:
           (float(summary.get("ordered") or 0), float(summary.get("shipped") or 0),
            summary.get("batch_count")),
           (1.0, 0.0, 0))
-    _, res = call("POST", f"/orders/{oid}/status", admin, {"status": "completed"})
+    _, res = call("POST", f"/orders/{oid}/status", admin,
+                  {"status": "completed", "remark": "套件：先说明未收款原因，验证发货闸门"})
     check("库内状态没变成 completed",
           db(f"select status from sales_orders where id={oid}"), "pending")
     check_true("被拒", res.get("code") != 0, f"code={res.get('code')}")
@@ -128,7 +129,8 @@ def main() -> int:
     call("POST", f"/orders/{oid}/shipments", admin,
          {"items": [{"order_item_id": oit, "planned_qty": 1}]})
     batch = int(db(f"select id from order_shipment_batches where order_id={oid} order by id desc limit 1"))
-    _, res = call("POST", f"/orders/{oid}/status", admin, {"status": "completed"})
+    _, res = call("POST", f"/orders/{oid}/status", admin,
+                  {"status": "completed", "remark": "套件：先说明未收款原因，验证发货闸门"})
     check("库内状态仍是 pending",
           db(f"select status from sales_orders where id={oid}"), "pending")
     check_true("  文案说清还差多少", "还差" in str(res.get("message")),
@@ -140,7 +142,8 @@ def main() -> int:
     summary = (call("GET", f"/orders/{oid}/shipments", admin)[1].get("data") or {}).get("summary") or {}
     check("发货概览：shipped=ordered、all_shipped",
           (summary.get("shipped"), summary.get("all_shipped")), (1.0, True))
-    _, res = call("POST", f"/orders/{oid}/status", admin, {"status": "completed"})
+    _, res = call("POST", f"/orders/{oid}/status", admin,
+                  {"status": "completed", "remark": "套件：月结客户，按合同账期收款"})
     check("发够了可以完成", db(f"select status from sales_orders where id={oid}"), "completed")
 
     print("\n=== ④ 已完成回退必须写理由（纠错留痕）===")

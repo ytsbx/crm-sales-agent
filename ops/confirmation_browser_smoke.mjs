@@ -66,6 +66,9 @@ const sampleStatuses={61:'pending',62:'pending',63:'rejected',64:'approved',65:'
 // source_context.dingtalk_oa.submitted 决定详情页「下一步」按钮文案（sampleNextStep）：
 // 61 未送审→「填写或提交 OA 申请」，62 已送审→「查看 OA 进度」；63/67 被拒走「查看 OA 审批意见」（不读这字段）。
 const sampleFixture=id=>({id,status:sampleStatuses[id]??'pending',status_label:'隔离样品状态',customer_name:'隔离样品客户',items:[],shipments:[],confirm_status:'pending',made_at:[64,65,66].includes(id)?'2026-11-18T08:00:00+08:00':null,
+  // 2026-11-26 起所有样品寄样前都要主管批准；64 要验证「登记寄样」确认弹窗，
+  // 夹具必须带上已批准的寄样审批，否则详情页只显示「提交寄样申请」。
+  ship_approval:id===64?{status:'approved',status_label:'已批准',recipient:'隔离收件人 13800000000',payer:'company',payer_label:'公司承担',carrier:'隔离物流',shipping_fee:0,shipping_fee_exact:'0'}:null,
   source_context:[61,62].includes(id)?{dingtalk_oa:{submitted:id===62}}:null})
 // GET /samples/{id}/dingtalk 夹具，形状照 SampleDingTalkModal 的 Options 接口（字段空表=免必填校验，
 // detail_files 与 draft.sample_detail_file_ids 对上=附件校验能过，提交按钮才点得动）。
