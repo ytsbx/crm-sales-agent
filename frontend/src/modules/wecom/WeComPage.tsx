@@ -855,7 +855,42 @@ export default function WeComPage() {
                           ? (canSearchCustomers
                             ? '没有找到可能匹配的已有客户；可按名称搜索，或直接创建新客户。'
                             : '没有找到可能匹配的已有客户，请到客户中心核对已有档案。')
-                          : `找到 ${candidatesQuery.data!.candidates.length} 个可能匹配的已有客户，见下方卡片，核对后点「关联已有客户」。`}
+                          : `找到 ${candidatesQuery.data!.candidates.length} 个可能匹配的已有客户，见下方列表，核对后点「关联已有客户」。`}
+                </div>
+              )}
+              {active && canViewCustomers && (candidatesQuery.data?.candidates.length ?? 0) > 0 && (
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>可能匹配的 CRM 客户</div>
+                  <div style={{ display: 'grid', gap: 8 }}>
+                    {(candidatesQuery.data?.candidates ?? []).map((candidate, index) => (
+                      <div
+                        key={candidate.id}
+                        style={{
+                          padding: 10,
+                          borderRadius: 'var(--crm-radius-sm)',
+                          border: '1px solid var(--crm-surface-high)',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                            {index + 1}
+                          </span>
+                          <span style={{ fontWeight: 600, fontSize: 13 }}>{candidate.name}</span>
+                          <Tag size="small" color={candidate.score >= 80 ? 'green' : 'orange'}>
+                            {candidate.score}%
+                          </Tag>
+                        </div>
+                        <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 4 }}>
+                          {candidate.reasons.slice(0, 3).join('；')}
+                        </div>
+                        {canBindCustomers && (
+                          <Popconfirm title={`确认关联客户「${candidate.name}」？`} content="请核对匹配信息，确认是同一位客户。" disabled={bindMutation.isPending} onConfirm={() => bindMutation.mutate({ contactId: active.id, customerId: candidate.id })}>
+                            <Button size="small" theme="outline" type="primary" style={{ marginTop: 8 }} loading={bindMutation.isPending}>关联已有客户</Button>
+                          </Popconfirm>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
               {canManage && active && (
@@ -896,43 +931,6 @@ export default function WeComPage() {
           )}
         </SectionCard>
 
-        {/* 右：系统候选客户。只有真的匹配到才显示卡片；
-            空结果直接在联系人卡片里一行说明，不再占一整张空卡。 */}
-        {active && canViewCustomers && (candidatesQuery.data?.candidates.length ?? 0) > 0 && (
-        <SectionCard style={{ display: 'flex', flexDirection: 'column' }}>
-          <div style={{ fontWeight: 600, marginBottom: 10 }}>可能匹配的 CRM 客户</div>
-          <div style={{ display: 'grid', gap: 8 }}>
-            {(candidatesQuery.data?.candidates ?? []).map((candidate, index) => (
-                  <div
-                    key={candidate.id}
-                    style={{
-                      padding: 10,
-                      borderRadius: 'var(--crm-radius-sm)',
-                      border: '1px solid var(--crm-surface-high)',
-                    }}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                        {index + 1}
-                      </span>
-                      <span style={{ fontWeight: 600, fontSize: 13 }}>{candidate.name}</span>
-                      <Tag size="small" color={candidate.score >= 80 ? 'green' : 'orange'}>
-                        {candidate.score}%
-                      </Tag>
-                    </div>
-                    <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 4 }}>
-                      {candidate.reasons.slice(0, 3).join('；')}
-                    </div>
-                    {canBindCustomers && (
-                      <Popconfirm title={`确认关联客户「${candidate.name}」？`} content="请核对匹配信息，确认是同一位客户。" disabled={bindMutation.isPending} onConfirm={() => bindMutation.mutate({ contactId: active.id, customerId: candidate.id })}>
-                        <Button size="small" theme="outline" type="primary" style={{ marginTop: 8 }} loading={bindMutation.isPending}>关联已有客户</Button>
-                      </Popconfirm>
-                    )}
-                  </div>
-                ))}
-          </div>
-        </SectionCard>
-        )}
         </div>
       </div>
 
