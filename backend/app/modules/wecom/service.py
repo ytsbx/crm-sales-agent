@@ -498,9 +498,9 @@ async def unbound_contacts(
     """
     # 与「预览导入」同一套判定：每条为什么不能自动导入，直接标在名单上。
     # 局部导入：customer_import 反向依赖本模块的任务工具，模块级导入会成环。
-    from app.modules.wecom.customer_import import HOLD_MULTI_OWNER, import_hold_reasons
+    from app.modules.wecom.customer_import import HOLD_MULTI_OWNER, import_hold_details
 
-    hold_reasons = await import_hold_reasons(session)
+    hold_reasons, hold_peers = await import_hold_details(session)
 
     stmt = select(WeComExternalContact.id).where(
         WeComExternalContact.normalize_status == "pending"
@@ -578,6 +578,7 @@ async def unbound_contacts(
             "last_sync_at": row.last_sync_at,
             "followers": follow_index.get(row.id, []),
             "import_hold_reason": hold_reasons.get(row.id),
+            "import_hold_peers": hold_peers.get(row.id, []),
         }
         for row in rows
     ], int(total)

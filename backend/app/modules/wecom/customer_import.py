@@ -69,6 +69,9 @@ def _plan(snapshot, policy):
     linked = {c.external_userid for c in contacts}  # 包括已删除联系人，不能悄悄重建关联。
     groups = {}
     held = []
+    # 同公司多联系人一起判定归属；名单上要能告诉用户「这条自己是单人跟进，
+    # 是同公司的其它联系人由别人跟进」，否则共用一个原因会看起来自相矛盾。
+    peer_map: dict[int, list[str]] = {}
     for r in rows:
         raw = r.raw_data if isinstance(r.raw_data, dict) else {}
         full = _name(raw.get('corp_full_name'))
@@ -126,6 +129,10 @@ def _plan(snapshot, policy):
                 reason = HOLD_NO_FOLLOWER
             else:
                 reason = HOLD_OWNER_UNRESOLVED
+            peers = [(_name(rr.name) or '未命名') for rr, _ in group['rows']]
+            if len(group['rows']) > 1:
+                for row_index, (rr, _) in enumerate(group['rows']):
+                    peer_map[rr.id] = [name for index, name in enumerate(peers) if index != row_index]
             held.extend((r.id, reason) for r, _ in group['rows'])
         elif group['target'] is not None and group['target'].owner_id != owner:
             held.extend((r.id, '已有客户负责人不同，需人工确认') for r, _ in group['rows'])
@@ -152,16 +159,23 @@ def _plan(snapshot, policy):
         'new_unassigned_customers': sum(g['target'] is None and g['owner_id'] is None for g in ready),
         'held_contacts': len(held), 'held_reasons': dict(reasons),
     }
-    return summary, ready, held_map
+    return summary, ready, held_map, peer_map
 
 
 async def preview_import(session: AsyncSession, *, policy='hold'):
-    summary, _, _ = _plan(await _snapshot(session), policy)
+    summary, _, _, _ = _plan(await _snapshot(session), policy)
     return summary
 
 
+async def import_hold_details(session: AsyncSession) -> tuple[dict[int, str], dict[int, list[str]]]:
+    """待确认列表用：与「预览导入」同一套判定，给出每条不能自动导入的原因，
+    以及同公司其它联系人的名字（个人客户没有同组）。"""
+    summary = _plan(await _snapshot(session), 'hold')
+    return summary[2], summary[3]
+
+
 async def import_hold_reasons(session: AsyncSession) -> dict[int, str]:
-    """待确认列表用：与「预览导入」同一套判定，逐条给出不能自动导入的原因。"""
+    """只取扣住原因（预览/测试用）。"""
     return _plan(await _snapshot(session), 'hold')[2]
 
 
@@ -173,7 +187,7 @@ async def execute_import(session: AsyncSession, *, digest: str, policy='hold', o
         dialect = 'sqlite'
     if dialect == 'postgresql':
         await session.execute(text("SELECT pg_advisory_xact_lock(hashtext('crm:wecom-customer-import'))"))
-    summary, groups, _ = _plan(await _snapshot(session, lock=True), policy)
+    summary, groups, _, _ = _plan(await _snapshot(session, lock=True), policy)
     if summary['digest'] != digest:
         raise AppError(ErrorCode.VERSION_CONFLICT, '客户或负责人数据已变化，请重新预览后导入', 409)
     job = await start_job(session, job_type='customer_import', operator_id=operator_id)

@@ -51,7 +51,7 @@ def snapshot(rows, users=None, customers=None, contacts=None, followers=None):
 
 def test_explicit_company_groups_contacts_but_personal_names_are_not_identity():
     rows=[row(1,full='甲有限公司'),row(2,full='甲有限公司'),row(3,name='张三'),row(4,name='张三')]
-    summary, groups, _held = _plan(snapshot(rows),'hold')
+    summary, groups, _held, _peers = _plan(snapshot(rows),'hold')
     assert summary['new_company_customers']==1
     assert summary['new_personal_customers']==2
     assert summary['import_contacts']==4
@@ -60,7 +60,7 @@ def test_explicit_company_groups_contacts_but_personal_names_are_not_identity():
 
 @pytest.mark.parametrize('kwargs', [{'short':'甲公司'}, {'name':''}, {'name':'字'*65}, {'full':'字'*201}])
 def test_uncertain_names_stay_pending(kwargs):
-    result,_,_=_plan(snapshot([row(**kwargs)]),'hold')
+    result,_,_,_=_plan(snapshot([row(**kwargs)]),'hold')
     assert result['held_contacts']==1 and result['import_contacts']==0
 
 
@@ -72,7 +72,7 @@ def test_uncertain_names_stay_pending(kwargs):
     ([user(),user(2,'staff-2')],[relation(),relation(2,1,'staff-2')], '多名跟进员工对应不同负责人'),
 ])
 def test_unbound_disabled_ambiguous_and_multiple_owners_never_enter_pool(users,followers,reason):
-    result,_,held=_plan(snapshot([row()],users=users,followers=followers),'hold')
+    result,_,held,_=_plan(snapshot([row()],users=users,followers=followers),'hold')
     assert result['held_contacts']==1
     assert result['new_unassigned_customers']==0
     assert result['import_contacts']==0
@@ -81,9 +81,13 @@ def test_unbound_disabled_ambiguous_and_multiple_owners_never_enter_pool(users,f
 
 
 def test_company_with_different_owners_needs_confirmation():
-    result,_,_=_plan(snapshot([row(1,full='甲有限公司'),row(2,full='甲有限公司')],
+    result,_,held,peers=_plan(snapshot(
+        [row(1,full='甲有限公司'),row(2,name='客户乙',full='甲有限公司')],
         users=[user(),user(2,'staff-2')], followers=[relation(),relation(2,2,'staff-2')]),'hold')
     assert result['held_contacts']==2
+    # 同公司一条客户，两个跟进人对应两个账号 → 都扣住，并互相成为「同公司联系人」
+    assert held=={1:'多名跟进员工对应不同负责人',2:'多名跟进员工对应不同负责人'}
+    assert peers=={1:['客户乙'],2:['客户甲']}
 
 
 @pytest.mark.parametrize('customers', [
@@ -91,14 +95,14 @@ def test_company_with_different_owners_needs_confirmation():
     [company(kind='个人')], [company(owner=2)],
 ])
 def test_existing_customer_conflicts_are_not_merged(customers):
-    result,_,_=_plan(snapshot([row(full='甲有限公司')],customers=customers),'hold')
+    result,_,_,_=_plan(snapshot([row(full='甲有限公司')],customers=customers),'hold')
     assert result['import_contacts']==0 and result['held_contacts']==1
 
 
 def test_existing_personal_name_and_source_link_need_review():
-    result,_,_=_plan(snapshot([row(name='张三')],customers=[company(name='张三',kind='个人')]),'hold')
+    result,_,_,_=_plan(snapshot([row(name='张三')],customers=[company(name='张三',kind='个人')]),'hold')
     assert result['held_contacts']==1
-    result,_,held=_plan(snapshot([row()],contacts=[Obj(id=1,external_userid='ext-1',customer_id=9,deleted_at=None)]),'hold')
+    result,_,held,_=_plan(snapshot([row()],contacts=[Obj(id=1,external_userid='ext-1',customer_id=9,deleted_at=None)]),'hold')
     assert held=={1:'已有同来源联系人，请核对关联'}
     assert result['held_contacts']==1
 

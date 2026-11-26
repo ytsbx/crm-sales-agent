@@ -48,6 +48,8 @@ export interface WeComUnboundContact {
   followers: WeComFollower[]
   /** 与「预览导入」同一判定：非空表示这条不能自动导入，值为原因 */
   import_hold_reason?: string | null
+  /** 同公司其它待确认联系人的名字（按公司分组判定归属时用） */
+  import_hold_peers?: string[]
 }
 
 export interface WeComCandidate {

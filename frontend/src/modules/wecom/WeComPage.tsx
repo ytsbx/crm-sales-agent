@@ -107,7 +107,7 @@ function isWeComIpDenied(message?: string | null) {
 }
 
 const IMPORT_REVIEW_GUIDANCE: Record<string, string> = {
-  '多名跟进员工对应不同负责人': '这条客户被多位企微员工添加，且分别对应不同的 CRM 账号，系统不能替你选。请和同事确认归谁后，用「关联已有客户」沿用原负责人，或用「创建新客户」确认（新建客户归当前操作人）。',
+  '多名跟进员工对应不同负责人': '这条客户所在的公司在企微里被多位员工添加，且分别对应不同 CRM 账号；同公司的联系人必须一起归一个负责人，所以单看这一条可能只有一个跟进人。请和同事确认归谁后，用「关联已有客户」沿用原负责人，或用「创建新客户」确认（新建客户归当前操作人）。',
   '有跟进员工没有对应的 CRM 账号': '加这位客户的企微员工还没开通 CRM 账号（详情里显示「未开通 CRM」）。给 TA 开账号并绑定后可以批量导入；或由主管用「创建新客户」逐条确认归属。',
   '没有跟进员工，无法确定负责人': 'CRM 里没同步到这条客户的跟进员工，可能是跟进关系还没同步。先在「更新企微数据」里同步跟进关系；仍然没有的话，用「创建新客户」手工建档。',
   '负责人未唯一匹配，需绑定或分配': '企微里没有跟进员工，或跟进员工没开通 CRM 账号、对应了多个不同账号，系统无法决定客户归谁。请用「关联已有客户」沿用原负责人，或用「创建新客户」逐条确认（新建客户归当前操作人）。',
@@ -126,6 +126,13 @@ function followerSummary(followers: WeComFollower[]) {
   return active
     .map((follower) => `${follower.name || follower.wecom_userid}${follower.crm_user_id ? '' : '（未开通 CRM）'}`)
     .join('、')
+}
+
+/** 同公司还有别的待确认联系人时补一句，避免「我自己只有一个跟进人」的误解。 */
+function holdReasonLabel(row: WeComUnboundContact) {
+  const reason = row.import_hold_reason ?? ''
+  const peers = row.import_hold_peers ?? []
+  return peers.length ? `${reason}（同公司：${peers.join('、')}）` : reason
 }
 
 export default function WeComPage() {
@@ -686,7 +693,7 @@ export default function WeComPage() {
                   </div>
                   {row.import_hold_reason && (
                     <div
-                      title={row.import_hold_reason}
+                      title={holdReasonLabel(row)}
                       style={{
                         fontSize: 11.5,
                         color: 'var(--crm-warning)',
@@ -695,7 +702,7 @@ export default function WeComPage() {
                         whiteSpace: 'nowrap',
                       }}
                     >
-                      {row.import_hold_reason}
+                      {holdReasonLabel(row)}
                     </div>
                   )}
                 </div>
@@ -797,6 +804,11 @@ export default function WeComPage() {
                     <div style={{ marginTop: 2 }}>
                       {active.import_hold_reason}。{IMPORT_REVIEW_GUIDANCE[active.import_hold_reason] ?? '请核对后在右侧逐条确认。'}
                     </div>
+                    {active.import_hold_peers && active.import_hold_peers.length > 0 && (
+                      <div style={{ marginTop: 2 }}>
+                        同公司的其他待确认联系人：{active.import_hold_peers.join('、')}。同公司必须一起归一个负责人，搜索公司全称可以看到这几条。
+                      </div>
+                    )}
                   </div>
                 )}
                 <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>跟进员工</div>
