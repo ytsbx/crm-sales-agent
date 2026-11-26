@@ -218,14 +218,40 @@ async def detail(sample_id:int,user:CurrentUser=Depends(require_permission('samp
         if (draft_fields.get('maker_unit') == '外协厂' and not meta.get('submitted')
                 and '外协厂打样' in ((_maker or {}).get('options') or [])):
             draft_fields['maker_unit'] = '外协厂打样'
-    if options.get('provider') == 'self_oa' and not options.get('native_form'):
+    if options.get('provider') == 'self_oa':
         from app.modules.user.model import User
         from app.modules.oa.inquiry import _department_name
+
+        # 申请人/部门是**同序系统字段**：提交时不随表单发送，由同序按登录人带出。
+        # 页面上不能空着让人以为漏填：已提交的单从发起快照里读实际值，
+        # 未提交的按 CRM 账号/部门兜底；同序返回的预填优先。
         account = await session.get(User, user.id)
-        options['prefill'] = {
+        applicant = {
             'applicant_name': getattr(account, 'name', '') or '',
             'department': await _department_name(session, account) if getattr(account, 'department_id', None) else '',
         }
+        meta = metadata(sample)
+        snapshot_row = None
+        if meta.get('mode') == 'inquiry' and meta.get('source_oa_id'):
+            # 沿用原询价：申请人/部门在**原询价审批**上，读那张单的快照
+            snapshot_row = await session.get(OaInstance, meta['source_oa_id'])
+        elif meta.get('submitted'):
+            snapshot_row = (await session.execute(
+                select(OaInstance).where(
+                    OaInstance.inquiry_id == sample.id,
+                    OaInstance.inquiry_version == int(sample.version or 1),
+                    OaInstance.oa_type == 'sample',
+                ).order_by(OaInstance.id.desc()).limit(1)
+            )).scalars().first()
+        if snapshot_row is not None:
+            snapshot = snapshot_row.form_snapshot
+        else:
+            snapshot = None
+            if isinstance(snapshot, dict):
+                applicant['applicant_name'] = snapshot.get('applicant_name') or applicant['applicant_name']
+                applicant['department'] = snapshot.get('department') or applicant['department']
+        current_prefill = options.get('prefill') or {}
+        options['prefill'] = {**applicant, **{k: v for k, v in current_prefill.items() if v}}
     candidates=[] if self_oa_only else await inquiry_candidates(session,user,sample)
     from app.modules.file.model import BusinessFile, FileRecord
     detail_files = (await session.execute(

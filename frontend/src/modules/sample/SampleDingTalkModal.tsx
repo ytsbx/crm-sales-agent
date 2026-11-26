@@ -233,7 +233,7 @@ export default function SampleDingTalkModal({sampleId,customerName,onClose}:{
             看起来像一团。现在两组各有标题、各说清去哪。 */}
         <div style={{fontWeight:600}}>同序 OA 审批表单</div>
         <div style={{fontSize:12,color:'var(--crm-text-3)',lineHeight:1.7}}>
-          申请人员、归属部门、申请编号由同序按登录人自动带出，不需要在 CRM 填写；这里显示为空不影响提交。
+          申请人员、归属部门、申请编号由同序按登录人自动带出，不需要在 CRM 填写；已提交的单会显示当时发起的值。
         </div>
         {/* ⚠️ 「本次打样积分」**不在这里单独给输入框**（2026-10-16）：
             它与「预计工时 × 10」是**同一个数**。给两个输入框，
