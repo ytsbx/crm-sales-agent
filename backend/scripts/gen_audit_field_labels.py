@@ -51,6 +51,7 @@ MODEL_OF_TYPE: dict[str, tuple[str, str]] = {
     'task': ('app.modules.task.model', 'Task'),
     'payment': ('app.modules.payment.model', 'PaymentRecord'),
     'receivable_plan': ('app.modules.payment.model', 'ReceivablePlan'),
+    'sales_return': ('app.modules.returns.model', 'SalesReturn'),
     'case': ('app.modules.cases.model', 'SalesCase'),
     'product': ('app.modules.product.model', 'Product'),
     'sku': ('app.modules.product.model', 'Sku'),

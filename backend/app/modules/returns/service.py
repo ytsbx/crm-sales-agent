@@ -1,12 +1,13 @@
 """销售退货的业务实现。
 
 把“登记”和“核销”分开：
-1. 业务员/主管登记：只锁数量、算货款，不动钱；
-2. 业务员/主管填最终退款总额：先抵扣客户未付款，剩余退还客户；运费按谈好的总数一并填入，不单独建模；
-3. 财务登记实际退款：钱真的付出去后才登记；
-4. 登记可取消，确认退款总额后可作废并冲回；已退款不能作废。
+1. 业务员登记：填退款金额、锁数量、算参考货款；金额是本次最终退款金额（含货款和运费）；
+2. 主管复核：只审数量、原因和金额；通过后直接进入“待登记退款”，不再另设填金额步骤；
+3. 财务核对/修改金额：可以改，但每次改动写审计；然后登记实际退款；
+4. 登记可取消；主管通过后可作废；已退款不能作废/改金额。
 
-所有写入口都先锁订单行，再锁退货单/应收期，避免并发下超退或重复冲账。
+2026-11-26 主人明确：系统不再自动抵扣客户未付款，新退货不冲应收计划。
+历史抵扣单仍保留原 `sales_return_plan_adjustments`，作废时按原快照恢复。
 """
 
 from datetime import UTC, datetime
@@ -309,10 +310,15 @@ async def create_return(
         return_date=payload.return_date or today_business(),
         currency="CNY",
         goods_amount=_money(goods_amount),
+        # 登记时就填本次退款金额；主管通过后不用再填第二次。
+        settled_goods_amount=_money(payload.refund_amount),
         freight_refund_amount=ZERO,
-        total_amount=_money(goods_amount),
+        total_amount=_money(payload.refund_amount),
+        # 新退货不自动抵扣客户未付款，退款金额单独记录。
         offset_amount=ZERO,
-        refund_amount=ZERO,
+        refund_amount=_money(payload.refund_amount),
+        settled_by=user.id,
+        settled_at=datetime.now(UTC),
         created_by=user.id,
         remark=(payload.remark or "").strip() or None,
     )
@@ -333,6 +339,9 @@ async def create_return(
             "return_no": return_row.return_no,
             "order_no": order.order_no,
             "goods_amount": format(return_row.goods_amount, ".2f"),
+            # 初始登记的金额也要留痕，后面财务改了才查得到“原来是多少”。
+            "refund_amount": format(return_row.settled_goods_amount or ZERO, ".2f"),
+            "settled_goods_amount": format(return_row.settled_goods_amount or ZERO, ".2f"),
             "items": [
                 {
                     "order_item_id": item.order_item_id,
@@ -352,8 +361,8 @@ async def create_return(
         title="登记销售退货",
         content=(
             f"订单 {order.order_no} 登记退货 {return_row.return_no}，"
-            f"货款 {format(return_row.goods_amount, '.2f')} 元，原因：{payload.reason.strip()}；"
-            "待主管复核。"
+            f"退款金额 {format(return_row.settled_goods_amount or ZERO, '.2f')} 元，"
+            f"原因：{payload.reason.strip()}；待主管复核。"
         ),
         business_type="sales_return",
         business_id=return_row.id,
@@ -373,7 +382,10 @@ async def review_return(
     note: str | None,
     ip: str | None = None,
 ) -> SalesReturn:
-    """主管复核：通过才进入“待填退款金额”，驳回则释放占用的可退数量。
+    """主管复核：通过后进入“待登记退款”，驳回则释放占用的可退数量。
+
+    2026-11-26 主人拍板：退款金额在登记时已填，主管通过后不再另设“填金额”步骤。
+    历史旧单没有金额的，仍落到 `pending`，由财务/业务员补填后再处理。
 
     权限在路由层用 `order:assign`（主管级）控制，服务层再校验一次：
     只有主管/管理员能复核；业务员、财务没有该权限，不能复核。
@@ -397,10 +409,16 @@ async def review_return(
     row.reviewed_at = datetime.now(UTC)
     row.review_note = (note or "").strip() or None
     if decision == "approve":
-        row.status = "pending"
+        # 登记时已填金额的新单直接进入待财务登记退款；兼容没有金额的历史旧单。
+        row.status = "completed" if row.settled_goods_amount is not None else "pending"
         title = "销售退货已通过主管复核"
         content = (
-            f"订单退货 {row.return_no} 已通过主管复核，待填退款金额。"
+            f"订单退货 {row.return_no} 已通过主管复核，"
+            + (
+                f"退款金额 {format(row.settled_goods_amount or ZERO, '.2f')} 元，待财务登记退款。"
+                if row.status == "completed"
+                else "待填退款金额。"
+            )
         )
     else:
         row.status = "rejected"
@@ -420,6 +438,7 @@ async def review_return(
             "status": row.status,
             "decision": decision,
             "note": row.review_note,
+            "refund_amount": format(row.settled_goods_amount or ZERO, ".2f"),
             "self_reviewed": row.created_by == user.id,
         },
         ip=ip,
@@ -475,197 +494,109 @@ async def cancel_return(
     return row
 
 
-async def settle_return(
+async def update_return_amount(
     session: AsyncSession,
     user,
     row: SalesReturn,
     *,
-    settled_goods_amount: Decimal,
-    freight_refund_amount: Decimal,
-    settlement_note: str | None,
+    refund_amount: Decimal,
+    note: str | None = None,
     ip: str | None = None,
 ) -> SalesReturn:
-    # 2026-11-26 主人拍板：退多少钱由业务员/主管和客户谈，财务只核对和登记实际退款。
-    # 财务有 payment:manage，不能靠权限码区分，这里按角色拦住财务直接改金额。
-    roles = set(user.roles or ())
-    if "admin" not in roles and "salesperson" not in roles and not user.has("order:assign"):
+    """财务核对/修改退款金额：只改金额，不再自动抵扣客户未付款。
+
+    2026-11-26 主人拍板：
+    - 登记时由业务员先填退款金额；
+    - 财务可以改，但每次都要写审计，保留改前/改后的金额和操作人；
+    - 新退货不再冲应收计划；历史抵扣单不允许直接改金额，必须先作废重登，
+      否则应收计划已经被冲过，改金额会把历史账弄乱。
+    """
+    if not user.has("payment:manage"):
         raise AppError(
             ErrorCode.FORBIDDEN,
-            "退款金额只能由业务员或主管填写；财务只负责核对和登记实际退款",
+            "只有财务可以修改退款金额（需要 payment:manage 权限）",
             403,
         )
-    if row.status != "pending":
+    if row.status == "refunded":
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
-            f"「{RETURN_STATUS_LABEL.get(row.status, row.status)}」的退货单不能重复处理",
+            "这笔退货已经实际退款，不能再改退款金额",
+            422,
+        )
+    if row.status in ("voided", "rejected", "cancelled"):
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"「{RETURN_STATUS_LABEL.get(row.status, row.status)}」的退货单不能修改退款金额",
+            422,
+        )
+    if row.status not in ("reviewing", "pending", "completed"):
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"「{RETURN_STATUS_LABEL.get(row.status, row.status)}」的退货单不能修改退款金额",
             422,
         )
     if row.currency != "CNY":
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED, "本项目只支持人民币退货", 422
         )
-    order = await get_order_or_404(session, row.order_id)
-    # 2026-11-26 主人拍板：只填一个“最终退款金额”，由业务员/主管按和客户谈好的总数人工填写；系统不按单价折算，也不再单列运费。
-    goods_total = _money(settled_goods_amount)
-    freight_total = _money(freight_refund_amount)
-    total = _money(goods_total + freight_total)
-    plans = (
+
+    # 历史抵扣单的应收计划已经被冲减过；它的金额和 plan 快照绑定，
+    # 不能像新单一样只改一个数字。要改只能先作废、恢复应收，再重新登记。
+    adjustment_count = (
         await session.execute(
-            select(ReceivablePlan)
-            .where(
-                ReceivablePlan.order_id == order.id,
-                ReceivablePlan.status != "cancelled",
-            )
-            .order_by(ReceivablePlan.due_date.desc(), ReceivablePlan.id.desc())
-            .with_for_update()
-            .execution_options(populate_existing=True)
+            select(func.count())
+            .select_from(SalesReturnPlanAdjustment)
+            .where(SalesReturnPlanAdjustment.return_id == row.id)
         )
-    ).scalars().all()
-    previous_offset = _money(
-        (
-            await session.execute(
-                select(func.coalesce(func.sum(SalesReturn.offset_amount), 0)).where(
-                    SalesReturn.order_id == order.id,
-                    SalesReturn.id != row.id,
-                    SalesReturn.status.in_(SETTLED_RETURN_STATUSES),
-                )
-            )
-        ).scalar_one()
-    )
-
-    if order.status == "cancelled":
-        # 订单已经取消：没有应收可冲，人工确认的货款全部进入退款。
-        # 运费是额外的公司成本，单独加。
-        offset = ZERO
-        goods_refund = goods_total
-        refund = _money(goods_refund + freight_total)
-        plans = []
-    else:
-        if not plans:
-            raise AppError(
-                ErrorCode.STATUS_NOT_ALLOWED,
-                "该订单还没有应收计划，请财务先生成应收计划，再处理退货",
-                422,
-            )
-        plan_sum = _money(sum((plan.amount or ZERO) for plan in plans))
-        expected = _money((order.total_amount or ZERO) - previous_offset)
-        if abs(plan_sum - expected) > CENT:
-            raise AppError(
-                ErrorCode.STATUS_NOT_ALLOWED,
-                f"应收计划合计 {plan_sum} 与订单净额 {expected} 不一致，"
-                "请先在「应收计划」核对/修正，再处理退货",
-                422,
-            )
-        paid = await payment_svc.confirmed_amounts(session, [plan.id for plan in plans])
-        available = _money(
-            sum((max(Decimal(plan.amount or 0) - paid.get(plan.id, ZERO), ZERO) for plan in plans), ZERO)
+    ).scalar_one()
+    if _money(row.offset_amount) > 0 or adjustment_count:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "这是历史“抵扣客户未付款”的退货单，不能直接改金额；请先作废并重新登记",
+            409,
         )
-        # 新流程只有一个“最终退款金额”，运费已并进去，随总额一起先抵欠款；
-        # 历史单独的 `freight_refund_amount` 仍只加进退款、不参与抵欠款。
-        offset = min(goods_total, available)
-        goods_refund = _money(goods_total - offset)
-        refund = _money(goods_refund + freight_total)
 
-    # 先冲减未收应收：从到期日最晚的一期往前冲，尽量保留近期该收的钱。
-    adjustments: list[SalesReturnPlanAdjustment] = []
-    remaining_offset = offset
-    if remaining_offset > 0:
-        paid = await payment_svc.confirmed_amounts(session, [plan.id for plan in plans])
-        for plan in plans:
-            if remaining_offset <= 0:
-                break
-            reducible = max(_money(plan.amount or 0) - paid.get(plan.id, ZERO), ZERO)
-            take = min(remaining_offset, reducible)
-            if take <= 0:
-                continue
-            before_amount = _money(plan.amount or 0)
-            before_status = plan.status
-            after_amount = _money(before_amount - take)
-            plan.amount = after_amount
-            if after_amount == 0 and paid.get(plan.id, ZERO) == 0:
-                plan.status = "cancelled"
-            else:
-                await payment_svc.recalc_plan(session, plan)
-            adjustments.append(
-                SalesReturnPlanAdjustment(
-                    return_id=row.id,
-                    plan_id=plan.id,
-                    amount_before=before_amount,
-                    applied_amount=take,
-                    amount_after=after_amount,
-                    status_before=before_status,
-                )
-            )
-            remaining_offset = _money(remaining_offset - take)
-        if remaining_offset > 0:
-            raise AppError(
-                ErrorCode.STATUS_NOT_ALLOWED,
-                "应收计划可冲金额不足，请先核对计划金额与已确认回款",
-                422,
-            )
-
-    row.settled_goods_amount = goods_total
-    row.freight_refund_amount = _money(freight_refund_amount)
-    row.total_amount = total
-    row.offset_amount = _money(offset)
-    row.refund_amount = _money(refund)
-    row.status = "completed"
+    amount = _money(refund_amount)
+    if amount <= 0:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED, "退款金额必须大于 0", 422
+        )
+    before = {
+        "status": row.status,
+        "settled_goods_amount": format(row.settled_goods_amount or ZERO, ".2f"),
+        "refund_amount": format(row.refund_amount or ZERO, ".2f"),
+        "total_amount": format(row.total_amount or ZERO, ".2f"),
+    }
+    row.settled_goods_amount = amount
+    row.total_amount = amount
+    # 新流程没有自动抵扣：退款金额就是应退给客户的钱。
+    row.offset_amount = ZERO
+    row.refund_amount = amount
+    row.freight_refund_amount = ZERO
     row.settled_by = user.id
     row.settled_at = datetime.now(UTC)
-    row.settlement_note = (settlement_note or "").strip() or None
-    for adjustment in adjustments:
-        session.add(adjustment)
-    await session.flush()
+    if note is not None:
+        row.settlement_note = note.strip() or None
+    # 历史 pending 单补金额后进入待登记退款；新单 reviewing 仍等主管复核。
+    if row.status == "pending":
+        row.status = "completed"
 
-    from app.modules.order import milestones as milestones_svc
-
-    await milestones_svc.sync_payment_milestones(session, order.id, operator_id=user.id)
     await write_audit(
         session,
         operator_id=user.id,
-        action="settle_return",
+        action="update_return_amount",
         business_type="sales_return",
         business_id=row.id,
-        before={"status": "pending"},
+        before=before,
         after={
             "status": row.status,
-            "total_amount": format(row.total_amount, ".2f"),
-            "offset_amount": format(row.offset_amount, ".2f"),
+            "settled_goods_amount": format(row.settled_goods_amount, ".2f"),
             "refund_amount": format(row.refund_amount, ".2f"),
-            "freight_refund_amount": format(row.freight_refund_amount, ".2f"),
-            "adjustments": [
-                {
-                    "plan_id": adjustment.plan_id,
-                    "amount_before": format(adjustment.amount_before, ".2f"),
-                    "applied_amount": format(adjustment.applied_amount, ".2f"),
-                    "amount_after": format(adjustment.amount_after, ".2f"),
-                }
-                for adjustment in adjustments
-            ],
+            "total_amount": format(row.total_amount, ".2f"),
+            "offset_amount": "0.00",
             "note": row.settlement_note,
         },
         ip=ip,
-    )
-    await record_and_notify(
-        session,
-        customer_id=order.customer_id,
-        owner_id=order.owner_id,
-        operator_id=user.id,
-        title="销售退货已确认退款总额",
-        content=(
-            f"订单 {order.order_no} 退货 {row.return_no} 已确认退款总额 "
-            f"{format(row.settled_goods_amount, '.2f')} 元："
-            f"抵扣客户未付款 {format(row.offset_amount, '.2f')} 元，"
-            + (
-                f"退还客户 {format(row.refund_amount, '.2f')} 元，请财务实际退款后登记流水。"
-                if row.refund_amount > 0
-                else "无需向客户退款。"
-            )
-        ),
-        business_type="sales_return",
-        business_id=row.id,
-        order_id=order.id,
-        event_key=f"order:return:settle:{row.id}",
     )
     await session.flush()
     return row
@@ -815,7 +746,11 @@ async def void_return(
         action="void_return",
         business_type="sales_return",
         business_id=row.id,
-        before={"status": "completed", "offset_amount": format(row.offset_amount, ".2f")},
+        before={
+            "status": "completed",
+            "refund_amount": format(row.refund_amount or ZERO, ".2f"),
+            "offset_amount": format(row.offset_amount or ZERO, ".2f"),
+        },
         after={
             "status": row.status,
             "reason": row.void_reason,
@@ -838,7 +773,12 @@ async def void_return(
         title="销售退货已作废",
         content=(
             f"订单 {order.order_no} 退货 {row.return_no} 已作废，"
-            f"原因：{row.void_reason}；原抵扣的客户未付款已恢复。"
+            f"原因：{row.void_reason}；"
+            + (
+                "原抵扣的客户未付款已恢复。"
+                if _money(row.offset_amount) > 0
+                else "退款金额不再生效，可退数量已释放。"
+            )
         ),
         business_type="sales_return",
         business_id=row.id,

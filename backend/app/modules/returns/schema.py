@@ -23,6 +23,8 @@ class ReturnCreate(BaseModel):
     reason_code: RETURN_REASON_CODES = "other"
     #: 至少 2 个字：退货是要进客户时间线和审计的动作，不能只写一个“退”。
     reason: str = Field(min_length=2, max_length=255)
+    #: 2026-11-26 主人拍板：登记时就填退款金额（含货款和运费），不再等主管通过后另填。
+    refund_amount: Decimal = Field(gt=0, max_digits=16, decimal_places=2)
     return_date: date | None = None
     remark: str | None = Field(default=None, max_length=255)
     items: list[ReturnItemInput] = Field(min_length=1)
@@ -35,14 +37,15 @@ class ReturnCreate(BaseModel):
         return self
 
 
-class ReturnSettle(BaseModel):
-    #: 人工填写的最终退款总额（可含货款和运费）；系统不按单价折算。字段名沿用历史。
-    settled_goods_amount: Decimal = Field(gt=0, max_digits=16, decimal_places=2)
-    #: 历史兼容字段；新界面固定传 0，运费并入 `settled_goods_amount`，不再单列。
-    freight_refund_amount: Decimal = Field(
-        default=Decimal("0"), ge=0, max_digits=16, decimal_places=2
-    )
-    settlement_note: str | None = Field(default=None, max_length=255)
+class ReturnAmountUpdate(BaseModel):
+    """财务核对/修改退款金额。
+
+    2026-11-26 主人拍板：退款金额在登记时由业务员填写，财务后续可以改；
+    每次修改都必须写审计，保留修改前后金额、操作人和说明。
+    """
+
+    refund_amount: Decimal = Field(gt=0, max_digits=16, decimal_places=2)
+    note: str | None = Field(default=None, max_length=255)
 
 
 class ReturnReview(BaseModel):

@@ -189,6 +189,13 @@ export const AUDIT_FIELD_LABEL_BY_TYPE: Record<string, Record<string, string>> =
   user: { name: '姓名', status: '账号状态' },
   payment: { status: '回款状态' },
   receivable_plan: { status: '应收状态' },
+  sales_return: {
+    status: '退货状态',
+    total_amount: '退款总额',
+    settled_goods_amount: '退款金额',
+    refund_amount: '应退客户金额',
+    offset_amount: '抵扣金额（历史）',
+  },
   contract_template: { name: '资料名称' },
   biz_doc_template: { name: '模板名称', status: '模板状态' },
   dictionary: { name: '字典项名称', status: '状态' },

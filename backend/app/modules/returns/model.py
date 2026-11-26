@@ -1,17 +1,18 @@
 """销售退货：发货之后的退货登记与财务核销。
 
-业务口径（2026-11-25 主人拍板 A 方案）：
+业务口径（2026-11-25 主人拍板 A 方案，2026-11-26 两次调整）：
 - 只针对**已实发**的订单明细登记，发货批次仅用于汇总已发数量，原发货事实不动，不碰库存；
-- 登记时只记数量与原因，不直接改应收/回款；
-- 业务员/主管确认本次退货退款总额后，先抵扣客户未付款，剩余部分转为应退还客户；
-- 财务确认后可作废并冲回，但退款已实际支付的不能作废（钱已经出去了，
+- 登记时必须填本次退款金额（含货款和运费）；主管复核后直接进入待财务登记退款；
+- 财务可以核对/修改退款金额，但每次改动都要写审计；
+- 系统**不再自动抵扣客户未付款**：退款金额单独记录，应收计划不因新退货被冲减；
+- 财务确认后未退款可作废；退款已实际支付的不能作废（钱已经出去了，
   系统不能假装没发生）。
 
 三张表：
 - `sales_returns`：退货单头，状态与金额；
 - `sales_return_items`：按订单明细（产品/规格）记录退多少；新单批次字段为空，历史单保留原值；
-- `sales_return_plan_adjustments`：确认退款总额时每一期应收被冲减了多少，
-  用于作废时**精确还原**，不靠“再算一遍”猜。
+- `sales_return_plan_adjustments`：**仅历史抵扣单使用**，记录当时每一期应收被冲减多少，
+  用于作废时**精确还原**。2026-11-26 起新退货不再生成抵扣，也不再写这张表。
 """
 
 from datetime import date, datetime
@@ -33,8 +34,9 @@ from app.core.base import Base, IdMixin, TimestampMixin
 
 RETURN_STATUS_LABEL = {
     "reviewing": "待主管复核",
-    "pending": "待填退款金额",
-    "completed": "已处理",
+    #: 兼容历史旧单：金额还没填。新退货在登记时已填金额，不会落到这个状态。
+    "pending": "待填退款金额（历史单）",
+    "completed": "待登记退款",
     "refunded": "已退款",
     "rejected": "主管驳回",
     "cancelled": "已取消",
@@ -58,10 +60,11 @@ class SalesReturn(Base, IdMixin, TimestampMixin):
 
     return_no: Mapped[str] = mapped_column(String(32), unique=True)
     order_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("sales_orders.id"))
-    #: 退货单状态：pending / completed / refunded / cancelled / voided。
-    #: completed = 财务已冲账，若 refund_amount > 0 还等着实际退款；
+    #: 退货单状态：reviewing / pending（仅历史旧单）/ completed / refunded / cancelled / voided。
+    #: reviewing = 已登记退款金额，等主管复核；
+    #: completed = 主管已通过，等财务登记实际退款；财务可在这时核对/修改金额。
     #: refunded = 退款已支付（refund_amount=0 时不会走到这里）。
-    status: Mapped[str] = mapped_column(String(16), default="pending")
+    status: Mapped[str] = mapped_column(String(16), default="reviewing")
     reason_code: Mapped[str] = mapped_column(String(32), default="other")
     reason: Mapped[str] = mapped_column(String(255))
     return_date: Mapped[date] = mapped_column(Date)
@@ -69,18 +72,19 @@ class SalesReturn(Base, IdMixin, TimestampMixin):
 
     #: 登记时的参考货款（按订单明细单价折算），仅供主管/财务参考，不是最终账。
     goods_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
-    #: 人工填写的最终退款总额（可含货款和运费）；空 = 还没确认。
+    #: 本次退款金额（含货款和运费）。登记时必填；财务有权修改，改动写审计。
     settled_goods_amount: Mapped[Decimal | None] = mapped_column(
         Numeric(16, 2), nullable=True
     )
-    #: 历史兼容字段：新流程由前端传 0，运费并入 `settled_goods_amount`，不再单列。
+    #: 历史兼容字段：新流程固定 0，退款金额不再拆运费。
     freight_refund_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
     #: 本单应退总额 = settled_goods_amount + freight_refund_amount（后者新流程为 0）。
     total_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
 
-    #: 确认退款总额时实际冲减的未收应收。冲减后各期 plan.amount 会同步变小。
+    #: 历史抵扣字段：2026-11-26 起新退货固定 0，不再自动冲减客户未付款。
+    #: 历史单保留原值，作废时按 `sales_return_plan_adjustments` 精确还原。
     offset_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
-    #: 应退给客户的现金 = total_amount - offset_amount。
+    #: 应退给客户的金额：新流程 = total_amount；历史抵扣单 = total_amount - offset_amount。
     refund_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
     #: 退款实际支付后的银行流水/备注，财务填。
     refund_reference: Mapped[str | None] = mapped_column(String(128), nullable=True)

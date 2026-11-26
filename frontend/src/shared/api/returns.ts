@@ -41,16 +41,18 @@ export interface SalesReturn {
   currency: string
   goods_amount: number
   goods_amount_exact: string
-  /** 人工确认的最终退款总额（可含货款和运费）；未确认为 null。 */
+  /** 本次退款金额（含货款和运费）；登记时必填，财务可修改。 */
   settled_goods_amount?: number | null
   settled_goods_amount_exact?: string | null
-  /** 历史兼容字段；新流程固定 0，运费已并入 settled_goods_amount。 */
+  /** 历史兼容字段；新流程固定 0，退款金额已并入 settled_goods_amount。 */
   freight_refund_amount: number
   freight_refund_amount_exact: string
   total_amount: number
   total_amount_exact: string
+  /** 历史抵扣字段；新流程固定 0。 */
   offset_amount: number
   offset_amount_exact: string
+  /** 应退给客户的金额；新流程等于 total_amount。 */
   refund_amount: number
   refund_amount_exact: string
   refund_reference?: string | null
@@ -109,6 +111,8 @@ export interface ReturnableOverview {
 export interface ReturnCreatePayload {
   reason_code: 'customer_rejected' | 'quality_issue' | 'wrong_item' | 'other'
   reason: string
+  /** 登记时就填：本次退款金额（含货款和运费）。 */
+  refund_amount: number
   return_date?: string
   remark?: string
   items: Array<{ order_item_id: number; quantity: number }>
@@ -141,14 +145,20 @@ export function reviewReturn(
   })
 }
 
-export function settleReturn(
+/**
+ * 财务核对/修改退款金额。
+ *
+ * 2026-11-26 主人拍板：登记时业务员先填，财务可以改；后端每次改动都写审计。
+ * 已实际退款的退货单不能再改。
+ */
+export function updateReturnAmount(
   returnId: number,
-  settledGoodsAmount: number,
-  settlementNote?: string,
+  refundAmount: number,
+  note?: string,
 ) {
-  return api.post<SalesReturn>(`/returns/${returnId}/settle`, {
-    settled_goods_amount: settledGoodsAmount,
-    settlement_note: settlementNote || undefined,
+  return api.post<SalesReturn>(`/returns/${returnId}/amount`, {
+    refund_amount: refundAmount,
+    note: note || undefined,
   })
 }
 

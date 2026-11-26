@@ -185,6 +185,7 @@ export const SHARED_ACTION_LABELS: Record<string, string> = {
   'update_item': '修改明细',
   'update_notification_levels': '改通知级别',
   'update_notification_settings': '改通知设置',
+  'update_return_amount': '修改退款金额',
   'update_version': '改版本信息',
   'upload': '上传',
   'void': '作废',

@@ -141,6 +141,7 @@
   "set_role_permissions": "改角色权限",
   "set_roles": "改用户角色",
   "settle_return": "确认退款总额",
+  "update_return_amount": "修改退款金额",
   "ship": "发货",
   "ship_batch": "批次发货",
   "sign": "登记签署",

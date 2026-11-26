@@ -1,4 +1,4 @@
-"销售退货接口：登记、取消、填退款金额、退款登记、退款附件、作废。"
+"销售退货接口：登记（含退款金额）、取消、复核、财务改金额、退款登记、退款附件、作废。"
 
 import asyncio
 import logging
@@ -21,11 +21,11 @@ from app.modules.file.model import FileRecord
 from app.modules.order.service import get_visible_order
 from app.modules.returns import service as svc
 from app.modules.returns.schema import (
+    ReturnAmountUpdate,
     ReturnCancel,
     ReturnCreate,
     ReturnRefund,
     ReturnReview,
-    ReturnSettle,
     ReturnVoid,
 )
 
@@ -80,7 +80,10 @@ async def create_return(
     )
     data = await svc.serialize_return(session, row)
     await session.commit()
-    return ok(data, f"退货单 {row.return_no} 已登记，等待主管复核")
+    return ok(
+        data,
+        f"退货单 {row.return_no} 已登记，退款金额 {row.refund_amount:.2f} 元，等待主管复核",
+    )
 
 
 @router.get("/returns")
@@ -124,9 +127,13 @@ async def review_return(
     data = await svc.serialize_return(session, row)
     await session.commit()
     message = (
-        f"退货单 {row.return_no} 已通过复核，等待填退款金额"
-        if row.status == "pending"
-        else f"退货单 {row.return_no} 已驳回，可退数量已释放"
+        f"退货单 {row.return_no} 已通过复核，待财务登记退款"
+        if row.status == "completed"
+        else (
+            f"退货单 {row.return_no} 已通过复核，待填退款金额"
+            if row.status == "pending"
+            else f"退货单 {row.return_no} 已驳回，可退数量已释放"
+        )
     )
     return ok(data, message)
 
@@ -148,32 +155,27 @@ async def cancel_return(
     return ok(data, f"退货单 {row.return_no} 已取消")
 
 
-@router.post("/returns/{return_id}/settle")
-async def settle_return(
+@router.post("/returns/{return_id}/amount")
+async def update_return_amount(
     return_id: int,
-    payload: ReturnSettle,
+    payload: ReturnAmountUpdate,
     request: Request,
-    user: CurrentUser = Depends(require_permission("order:manage", "payment:manage")),
+    user: CurrentUser = Depends(require_permission("payment:manage")),
     session: AsyncSession = Depends(get_db),
 ):
+    """财务核对/修改退款金额；每次改动写审计。"""
     row = await _lock_return_with_order(session, user, return_id)
-    await svc.settle_return(
+    await svc.update_return_amount(
         session,
         user,
         row,
-        settled_goods_amount=payload.settled_goods_amount,
-        freight_refund_amount=payload.freight_refund_amount,
-        settlement_note=payload.settlement_note,
+        refund_amount=payload.refund_amount,
+        note=payload.note,
         ip=client_ip(request),
     )
     data = await svc.serialize_return(session, row)
     await session.commit()
-    message = (
-        f"退货单 {row.return_no} 已确认退款总额 {row.settled_goods_amount:.2f} 元，"
-        f"抵扣客户未付款 {row.offset_amount:.2f} 元"
-        + (f"，退还客户 {row.refund_amount:.2f} 元" if row.refund_amount > 0 else "，无需向客户退款")
-    )
-    return ok(data, message)
+    return ok(data, f"退货单 {row.return_no} 退款金额已更新为 {row.refund_amount:.2f} 元")
 
 
 @router.post("/returns/{return_id}/refund")

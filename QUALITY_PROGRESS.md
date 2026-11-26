@@ -6231,3 +6231,29 @@
 - 发布前数据库备份 `/opt/crm-sales-agent/backup/db-3302a209.dump`；发布工具自动备份旧后端/前端 `/opt/crm-sales-agent/backup/unified-3302a209e4fa-icboiome`。
 - 部署后：服务 active、`/health` 数据库 ok、公网 200，前后端版本记录均为 3302a209；`AUTH_CALLBACK_HOSTS` 配置保留。
 - 内容：所有样品寄样前都要 CRM 主管审批（定制/新品先过 OA），及此前未上线的寄样文案/审批可见性等修复。
+
+## 2026-11-26 销售退货金额口径调整（主人拍板，未部署）
+
+- 主人拍板：退款金额**登记时就填**；财务**可以改金额**，但每次都要留痕；**不再自动“抵扣客户未付款、剩余才退还客户”**。
+- 后端：
+  - `ReturnCreate` 新增必填 `refund_amount`（含货款和运费），`create_return` 直接写 `settled_goods_amount/total_amount/refund_amount`，`offset_amount=0`，状态 `reviewing`。
+  - 主管复核通过后直接 `completed`（待财务登记退款）；`pending` 只保留给历史无金额旧单。
+  - 新增 `POST /returns/{id}/amount`（`payment:manage`）：财务可在 `reviewing/pending/completed` 改金额，`pending` 改后进入 `completed`；已退款、已作废、已驳回、已取消不能改；历史 `offset_amount>0` 或有 plan adjustment 的旧单拒绝改金额，提示先作废重登。
+  - 财务改金额写 `update_return_amount` 审计，记录改前/改后金额、状态、操作人、说明；创建审计也写入初始 `refund_amount`。
+  - 新退货不再生成 `sales_return_plan_adjustments`，不冲应收计划；`order_finance_summary` 的 `return_offset_amount` 对新单为 0，`unreceived_amount` 不再因退货减少。
+  - 历史抵扣单作废仍按原 adjustment 快照恢复；新单作废只释放可退数量。
+- 前端：
+  - 登记弹窗新增“本次退款金额（含货款和运费）”，实时显示按数量折算的参考金额；不再把金额留到复核后。
+  - 移除“抵扣客户未付款 / 退还客户”分账预览；列表改为“退款金额 / 退款登记”。
+  - 主管复核弹窗显示登记金额；通过后提示“待财务登记退款”。
+  - 财务新增“修改退款金额”弹窗；已退款后按钮消失；退款登记提示“不能改金额、不能作废”。
+  - GuidePage、全流程走查文档同步新口径。
+- 验证：
+  - `backend/tests/test_sales_return.py` 16 条通过；全量 `pytest` 通过（仅既有 SQLAlchemy RuntimeWarning）。
+  - 前端 `npx tsc -b`、`npx vite build` 通过；`oxlint` 0 warnings / 0 errors（3 个改动文件）。
+  - `python3 ops/check_audit_labels.py` 通过：对象 70、动作 188、字段中文名 344，生成物最新。
+- 风险 / 下一步：
+  - **未部署**：生产当前仍是 `3302a209`；本次无新迁移，但生产已有退货表（迁移到 `a1c4e8f2b6d9`）。上线前需扫一遍生产 `sales_returns`：`status='pending'` 和历史 `offset_amount>0` 的单，确认旧单处理口径。
+  - 历史抵扣单不能直接改金额，只能作废重登；这是为了避免 plan 已被冲减后改数字导致账实不符，需业务知悉。
+  - 新流程“未收金额”不会因退货自动减少；财务需按“退款单独记录、应收另行收款/核销”的口径操作。
+  - 旧截图（`docs/screenshots/01-登记退货...` 等）仍是旧“冲应收/待退”文案，未按新口径重截；本次未改图。

@@ -232,7 +232,14 @@ FIELD_LABELS: dict[str, str] = {
     # ==================================================================
     # 订单
     "order_no": "订单号",
+    "return_no": "退货单号",
     "goods_amount": "货款金额",
+    "refund_amount": "退款金额",
+    "settled_goods_amount": "退款金额",
+    "offset_amount": "抵扣金额（历史）",
+    "freight_refund_amount": "运费退款",
+    "refund_reference": "退款流水",
+    "settlement_note": "退款说明",
     "logistics_amount": "运费金额",
     "other_charge_amount": "其他费用",
     "discount_amount": "折扣金额",
