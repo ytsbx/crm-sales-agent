@@ -6280,3 +6280,21 @@
 - 新建版本已有强制确认弹窗列出后果；真建错可再建一版覆盖或作废整张报价。
 - 不实现撤销，避免恢复已撤回的旧审批、制造不可信审批历史。
 - `docs/全流程走查与撤回点-20261125.md` 的 K6 段与修复顺序已同步。
+
+## 2026-11-26 销售退货金额链路隔离验收 + 作废文案修复（未部署）
+
+- 隔离环境：`crm_iso_flow_20261125`（rev `a1c4e8f2b6d9`），后端 `127.0.0.1:8012` 使用当前分支代码，前端 `127.0.0.1:5276`。
+- 实跑数据：新订单 `SO202611260001`（id 6），1 行 10 件 × ¥100 = ¥1,000；应收 20% / 80%；财务确认回款 ¥200，未收 ¥800；发货 10 件。
+- 主链路结果：
+  - 张三登记 3 件、登记退款金额 ¥330 → `reviewing`；创建审计 `create_return` 记录初始 `refund_amount=330.00`；订单汇总不变，可退数量 10 → 7。
+  - 王五在 `reviewing` 改金额 ¥330 → ¥300（备注“运费 30 不退了”）；审计 `update_return_amount` 记录前/后金额；仍为 `reviewing`。
+  - 李四复核通过 → `completed`；`settled_goods_amount/total_amount/refund_amount=300.00`、`offset_amount=0.00`；订单汇总 `returned_amount=300.00`、`net_order_amount=700.00`、`unreceived_amount=800.00`；应收计划仍为 200/800，未冲减。
+  - 王五在 `completed` 继续改金额 ¥300 → ¥320 → ¥200；每次均写审计；最终 `returned_amount=200.00`、`net_order_amount=800.00`、`refund_pending_amount=200.00`、`unreceived_amount=800.00`。
+  - 王五登记退款（流水 `银行流水 E2E-20261126-001`）→ `refunded`；`return_refunded_amount=200.00`、`refund_pending_amount=0.00`、`net_received_amount=0.00`、`unreceived_amount=800.00`。
+  - 退款后再改金额/作废均被拒：改金额提示“已经实际退款，不能再改退款金额”；作废提示“已经实际退款，不能直接作废”。
+  - 第二张退货 2 件复核通过后再作废：可退数量 7 → 5 → 7；`returned_amount` 仍只统计已退款的首张 ¥200，作废单未计入。
+  - 历史抵扣单 `RT202611260003` 作废：按 adjustment 快照把计划金额 400 → 700，提示“原抵扣的客户未付款已恢复”。
+- 发现并修复：`POST /returns/{id}/void` 的接口成功文案此前无条件写“原抵扣的客户未付款已恢复”，新退货作废时也这么提示，和前端/通知文案不一致。现按 `offset_amount>0` 分支：历史抵扣单提示恢复未付款，新单提示“退款金额不再生效，可退数量已释放”。
+- 验证：`backend/tests/test_sales_return.py` 16 条通过；全量 `pytest` 通过（仅既有 SQLAlchemy RuntimeWarning）；隔离环境接口实跑覆盖 `reviewing → completed → refunded`、改金额审计、未付款不自动抵扣、退款后锁定、作废释放数量、历史抵扣单恢复。
+- 环境备注：隔离库是手工灌数，`sales_orders/receivable_plans` 等序列曾落后于现有 id，已在**仅隔离库**内按各表最大 id 重设序列；生产不走该库，不受影响。
+- 未部署：生产仍是 `3302a209`。

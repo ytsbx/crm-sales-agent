@@ -370,4 +370,8 @@ async def void_return(
     )
     data = await svc.serialize_return(session, row)
     await session.commit()
-    return ok(data, f"退货单 {row.return_no} 已作废，原抵扣的客户未付款已恢复")
+    if (row.offset_amount or 0) > 0:
+        message = f"退货单 {row.return_no} 已作废，原抵扣的客户未付款已恢复"
+    else:
+        message = f"退货单 {row.return_no} 已作废，退款金额不再生效，可退数量已释放"
+    return ok(data, message)
