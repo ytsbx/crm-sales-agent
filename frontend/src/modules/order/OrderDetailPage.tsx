@@ -69,7 +69,7 @@ import {
   settleReturn,
   uploadReturnRefundAttachment,
   voidReturn,
-  type ReturnableBatch,
+  type ReturnableItem,
   type ReturnCreatePayload,
   type SalesReturn,
 } from '../../shared/api/returns'
@@ -214,30 +214,6 @@ const PLAN_TONE: Record<string, TagTone> = {
   paid: 'green',
   overdue: 'red',
 }
-
-type ReturnableRow = {
-  shipment_batch_item_id: number
-  order_item_id: number
-  sku?: string | null
-  specification?: string | null
-  shipped_quantity_exact: string
-  returned_quantity_exact: string
-  remaining_quantity_exact: string
-  batch_no: number
-}
-
-type ReturnableGroup = {
-  order_item_id: number
-  sku?: string | null
-  specification?: string | null
-  shipped_quantity_exact: string
-  returned_quantity_exact: string
-  remaining_quantity_exact: string
-  batch_items: ReturnableRow[]
-}
-
-const sumQuantity3 = (values: string[]) =>
-  values.reduce((sum, value) => sum + Number(value || 0), 0).toFixed(3)
 
 const RETURN_TONE: Record<string, TagTone> = {
   reviewing: 'orange',
@@ -1049,65 +1025,20 @@ export default function OrderDetailPage() {
   const shipment = shipmentsQuery.data
   const returns = returnsQuery.data ?? []
   const returnable = returnableQuery.data
-  const returnableFlatRows: ReturnableRow[] = (returnable?.batches ?? [])
-    .flatMap((batch: ReturnableBatch) =>
-      batch.items.map((item) => ({ ...item, batch_no: batch.batch_no })),
-    )
-  // 业务员不认批次：按订单明细（产品/规格）合并。批次只在后台用来扣“已发/已退”，
-  // 填一个总数后，系统按批次号从小到大自己分摊，避免同一产品分批发货时让人拆行。
-  const returnableGroups = returnableFlatRows.reduce<Record<number, ReturnableGroup>>((groups, row) => {
-    const group = groups[row.order_item_id] ?? {
-      order_item_id: row.order_item_id,
-      sku: row.sku,
-      specification: row.specification,
-      shipped_quantity_exact: '0.000',
-      returned_quantity_exact: '0.000',
-      remaining_quantity_exact: '0.000',
-      batch_items: [],
-    }
-    group.batch_items.push(row)
-    group.shipped_quantity_exact = sumQuantity3([
-      group.shipped_quantity_exact,
-      row.shipped_quantity_exact,
-    ])
-    group.returned_quantity_exact = sumQuantity3([
-      group.returned_quantity_exact,
-      row.returned_quantity_exact,
-    ])
-    group.remaining_quantity_exact = sumQuantity3([
-      group.remaining_quantity_exact,
-      row.remaining_quantity_exact,
-    ])
-    groups[row.order_item_id] = group
-    return groups
-  }, {})
-  const returnableRows = Object.values(returnableGroups)
-    // 已全部退完的产品不再出现：否则「登记退货」按钮仍可点，弹窗里全是 0。
-    .filter((group) => Number(group.remaining_quantity_exact) > 0)
-    .map((group) => ({
-      ...group,
-      batch_items: [...group.batch_items].sort((a, b) => a.batch_no - b.batch_no),
-    }))
+  // 退货只按订单明细（产品/规格）汇总，前端不再拆发货批次，也不让业务员看批次。
+  const returnableRows: ReturnableItem[] = returnable?.items ?? []
   const returnReviewingCount = returns.filter((row) => row.status === 'reviewing').length
   const returnPendingCount = returns.filter((row) => row.status === 'pending').length
   const returnRefundPendingCount = returns.filter(
     (row) => row.status === 'completed' && Number(row.refund_amount_exact) > 0,
   ).length
-  const returnRequestedItems = returnableRows.flatMap((group) => {
-    let need = Number(returnQty[group.order_item_id] || 0)
-    if (!Number.isFinite(need) || need <= 0) return []
-    return group.batch_items.flatMap((batchItem) => {
-      if (need <= 0) return []
-      const available = Number(batchItem.remaining_quantity_exact)
-      const take = Math.min(need, available)
-      need = Number((need - take).toFixed(3))
-      return take > 0
-        ? [{ shipment_batch_item_id: batchItem.shipment_batch_item_id, quantity: Number(take.toFixed(3)) }]
-        : []
-    })
+  const returnRequestedItems = returnableRows.flatMap((row) => {
+    const qty = Number(returnQty[row.order_item_id] || 0)
+    if (!Number.isFinite(qty) || qty <= 0) return []
+    return [{ order_item_id: row.order_item_id, quantity: Number(qty.toFixed(3)) }]
   })
   const overReturnRow = returnableRows.find(
-    (group) => Number(returnQty[group.order_item_id] || 0) > Number(group.remaining_quantity_exact),
+    (row) => Number(returnQty[row.order_item_id] || 0) > Number(row.remaining_quantity_exact),
   )
   const returnSubmitBlocked = returnReason.trim().length < 2
     ? '请填写退货原因（至少 2 个字）'
@@ -2444,7 +2375,7 @@ export default function OrderDetailPage() {
             <>
               <div className="toolbar">
                 <p className="workflow-guide">
-                  只退已经发出去的产品，不用选批次，系统自己按发货记录扣减。登记后先由主管复核，
+                  只退已经发出去的产品，按产品汇总数量，不再选发货批次。登记后先由主管复核，
                   通过后由业务员/主管按与客户确认的退款总额填写：先抵扣客户未付款，剩余退还客户。
                   {returnReviewingCount > 0 ? ` 当前有 ${returnReviewingCount} 张待主管复核。` : ''}
                   {returnPendingCount > 0 ? ` 当前有 ${returnPendingCount} 张待填退款金额。` : ''}
@@ -2472,7 +2403,7 @@ export default function OrderDetailPage() {
               </div>
               {canManage && returnableQuery.isSuccess && returnableRows.length === 0 && (
                 <p className="workflow-guide">
-                  {returnable?.batches.length
+                  {returnableRows.length
                     ? '这张订单的已实发数量已经全部退完，暂无可退数量。'
                     : '这张订单还没有已发出去的产品，暂时不能登记退货。'}
                 </p>
@@ -3434,10 +3365,10 @@ export default function OrderDetailPage() {
           <div>
             <FormLabel required>本次退货数量</FormLabel>
             <p className="workflow-guide" style={{ marginBottom: 6 }}>
-              这里只填退哪个产品、几件，不填金额；系统自己按发货记录扣减，不用你管批次。
+              这里只填退哪个产品、几件，不填金额；系统按订单明细汇总已发/已退数量，不再拆发货批次。
               登记后先交主管复核，最终退多少钱由业务员/主管按和客户谈定的结果人工填写。
             </p>
-            <Table<ReturnableGroup>
+            <Table<ReturnableItem>
               size="small"
               pagination={false}
               rowKey="order_item_id"
@@ -3446,20 +3377,20 @@ export default function OrderDetailPage() {
               columns={[
                 {
                   title: '产品 / 规格',
-                  render: (_: unknown, row: ReturnableGroup) => (
+                  render: (_: unknown, row: ReturnableItem) => (
                     <div>
                       {row.sku || '定制件'}
                       <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{row.specification || '-'}</div>
                     </div>
                   ),
                 },
-                { title: '已发', width: 78, render: (_: unknown, row: ReturnableGroup) => row.shipped_quantity_exact },
-                { title: '已退', width: 78, render: (_: unknown, row: ReturnableGroup) => row.returned_quantity_exact },
-                { title: '可退', width: 78, render: (_: unknown, row: ReturnableGroup) => row.remaining_quantity_exact },
+                { title: '已发', width: 78, render: (_: unknown, row: ReturnableItem) => row.shipped_quantity_exact },
+                { title: '已退', width: 78, render: (_: unknown, row: ReturnableItem) => row.returned_quantity_exact },
+                { title: '可退', width: 78, render: (_: unknown, row: ReturnableItem) => row.remaining_quantity_exact },
                 {
                   title: '本次数量',
                   width: 130,
-                  render: (_: unknown, row: ReturnableGroup) => (
+                  render: (_: unknown, row: ReturnableItem) => (
                     <InputNumber
                       min={0}
                       max={Number(row.remaining_quantity_exact)}

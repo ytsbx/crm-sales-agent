@@ -1,4 +1,4 @@
-"""销售退货：数量闸门、冲应收/退款、作废还原、状态流转。
+"""销售退货：数量闸门、抵扣/退款、作废还原、状态流转。
 
 用隔离 SQLite + 真实 service；通知与里程碑在本用例里不是断言对象，monkeypatch 掉。
 """
@@ -165,11 +165,11 @@ def _approve(session, row):
     )
 
 
-def _payload(qty: str = "3", batch_item_id: int = 1):
+def _payload(qty: str = "3", order_item_id: int = 1):
     return ReturnCreate(
         reason_code="customer_rejected",
         reason="客户拒收",
-        items=[ReturnItemInput(shipment_batch_item_id=batch_item_id, quantity=D(qty))],
+        items=[ReturnItemInput(order_item_id=order_item_id, quantity=D(qty))],
     )
 
 
@@ -217,13 +217,23 @@ def test_same_product_across_batches_does_not_double_count_reference(db):
         ReturnCreate(
             reason_code="customer_rejected",
             reason="客户整单退回",
-            items=[
-                ReturnItemInput(shipment_batch_item_id=1, quantity=D("5")),
-                ReturnItemInput(shipment_batch_item_id=2, quantity=D("5")),
-            ],
+            items=[ReturnItemInput(order_item_id=1, quantity=D("10"))],
         ),
     ))
     assert row.goods_amount == D("100.00")
+    # 新退货明细只挂订单明细，不再写批次字段；历史批次记录仍保留在原表里。
+    item_row = s._session.execute(
+        select(SalesReturnItem).where(SalesReturnItem.return_id == row.id)
+    ).scalars().one()
+    assert item_row.order_item_id == 1
+    assert item_row.shipment_batch_item_id is None
+    assert item_row.batch_id is None
+    # 可退概览按订单明细汇总两批 5+5，不再返回 batches。
+    overview = run(svc.returnable_overview(s, order.id))
+    assert len(overview["items"]) == 1
+    assert overview["items"][0]["shipped_quantity_exact"] == "10.000"
+    assert overview["items"][0]["remaining_quantity_exact"] == "0.000"
+    assert "batches" not in overview
 
 
 def test_settle_offsets_unpaid_then_refunds_paid_part(db):

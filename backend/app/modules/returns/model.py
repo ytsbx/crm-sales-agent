@@ -1,7 +1,7 @@
 """销售退货：发货之后的退货登记与财务核销。
 
 业务口径（2026-11-25 主人拍板 A 方案）：
-- 只针对**已实发**的批次明细登记，原发货事实不动，不碰库存；
+- 只针对**已实发**的订单明细登记，发货批次仅用于汇总已发数量，原发货事实不动，不碰库存；
 - 登记时只记数量与原因，不直接改应收/回款；
 - 业务员/主管确认本次退货退款总额后，先抵扣客户未付款，剩余部分转为应退还客户；
 - 财务确认后可作废并冲回，但退款已实际支付的不能作废（钱已经出去了，
@@ -9,7 +9,7 @@
 
 三张表：
 - `sales_returns`：退货单头，状态与金额；
-- `sales_return_items`：按发货批次明细记录退多少；
+- `sales_return_items`：按订单明细（产品/规格）记录退多少；新单批次字段为空，历史单保留原值；
 - `sales_return_plan_adjustments`：确认退款总额时每一期应收被冲减了多少，
   用于作废时**精确还原**，不靠“再算一遍”猜。
 """
@@ -121,13 +121,14 @@ class SalesReturnItem(Base, IdMixin):
     order_item_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("sales_order_items.id")
     )
-    #: 退的是哪一条实发明细。同一订单明细分批发货时，必须精确到批次，
-    #: 否则“已发 1000、退 3”会被算成整单退 3，批次台账对不上。
-    shipment_batch_item_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("order_shipment_batch_items.id")
+    #: 历史字段：旧版按发货批次登记退货时，记录具体批次明细。
+    #: 2026-11-26 起退货只按订单明细（产品/规格）汇总，不再关联批次；
+    #: 新退货单这两个字段为 NULL，历史单保留原值供追溯。
+    shipment_batch_item_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("order_shipment_batch_items.id"), nullable=True
     )
-    batch_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("order_shipment_batches.id")
+    batch_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("order_shipment_batches.id"), nullable=True
     )
     sku_snapshot: Mapped[str | None] = mapped_column(String(200), nullable=True)
     specification_snapshot: Mapped[str | None] = mapped_column(String(200), nullable=True)

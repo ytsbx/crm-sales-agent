@@ -11,9 +11,10 @@ export type SalesReturnStatus =
 
 export interface SalesReturnItem {
   id: number
-  shipment_batch_item_id: number
+  /** 历史字段：旧退货单可能保留批次；2026-11-26 起新退货单为 null。 */
+  shipment_batch_item_id?: number | null
   order_item_id: number
-  batch_id: number
+  batch_id?: number | null
   sku?: string | null
   specification?: string | null
   quantity: number
@@ -78,7 +79,6 @@ export interface SalesReturn {
 }
 
 export interface ReturnableItem {
-  shipment_batch_item_id: number
   order_item_id: number
   sku?: string | null
   specification?: string | null
@@ -92,16 +92,10 @@ export interface ReturnableItem {
   unit_price_exact: string
 }
 
-export interface ReturnableBatch {
-  batch_id: number
-  batch_no: number
-  actual_ship_date?: string | null
-  items: ReturnableItem[]
-}
-
 export interface ReturnableOverview {
   order_id: number
-  batches: ReturnableBatch[]
+  /** 按订单明细（产品/规格）汇总，不再返回发货批次。 */
+  items: ReturnableItem[]
   summary: {
     shipped_quantity: number
     shipped_quantity_exact: string
@@ -117,7 +111,7 @@ export interface ReturnCreatePayload {
   reason: string
   return_date?: string
   remark?: string
-  items: Array<{ shipment_batch_item_id: number; quantity: number }>
+  items: Array<{ order_item_id: number; quantity: number }>
 }
 
 export function getOrderReturns(orderId: number) {

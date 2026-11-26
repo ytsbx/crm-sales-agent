@@ -79,40 +79,43 @@ async def get_visible_return(
     return row
 
 
-async def _active_quantities(
-    session: AsyncSession, batch_item_ids: list[int]
+async def _active_quantities_by_order_item(
+    session: AsyncSession, order_item_ids: list[int]
 ) -> dict[int, Decimal]:
-    if not batch_item_ids:
+    """已登记（未取消/未作废）的退货数量，按订单明细汇总。
+
+    2026-11-26 起退货不再挂发货批次；历史批次行也按 `order_item_id` 归并，
+    这样同一产品分批发货时，旧单和新单占用的可退数量一起计算，不会漏。
+    """
+    if not order_item_ids:
         return {}
     rows = (
         await session.execute(
             select(
-                SalesReturnItem.shipment_batch_item_id,
+                SalesReturnItem.order_item_id,
                 func.coalesce(func.sum(SalesReturnItem.quantity), 0),
             )
             .join(SalesReturn, SalesReturn.id == SalesReturnItem.return_id)
             .where(
-                SalesReturnItem.shipment_batch_item_id.in_(batch_item_ids),
+                SalesReturnItem.order_item_id.in_(order_item_ids),
                 SalesReturn.status.in_(ACTIVE_RETURN_STATUSES),
             )
-            .group_by(SalesReturnItem.shipment_batch_item_id)
+            .group_by(SalesReturnItem.order_item_id)
         )
     ).all()
-    return {int(bid): _quantity(qty) for bid, qty in rows}
+    return {int(order_item_id): _quantity(qty) for order_item_id, qty in rows}
 
 
 async def returnable_overview(session: AsyncSession, order_id: int) -> dict:
-    """订单还能退什么：只列已实发批次，数量扣掉已登记（未取消/未作废）的退货。"""
+    """订单还能退什么：按订单明细（产品/规格）汇总，不再拆发货批次。
+
+    已发数量取所有已实发批次的合计；已退数量取所有仍然生效的退货单合计。
+    """
     rows = (
         await session.execute(
             select(
-                OrderShipmentBatch.id,
-                OrderShipmentBatch.batch_no,
-                OrderShipmentBatch.actual_ship_date,
-                OrderShipmentBatch.status,
-                OrderShipmentBatchItem.id,
                 OrderShipmentBatchItem.order_item_id,
-                OrderShipmentBatchItem.sku_snapshot,
+                SalesOrderItem.sku_snapshot,
                 OrderShipmentBatchItem.shipped_qty,
                 SalesOrderItem.specification,
                 SalesOrderItem.quantity,
@@ -120,8 +123,8 @@ async def returnable_overview(session: AsyncSession, order_id: int) -> dict:
                 SalesOrderItem.unit_price,
             )
             .join(
-                OrderShipmentBatchItem,
-                OrderShipmentBatchItem.batch_id == OrderShipmentBatch.id,
+                OrderShipmentBatch,
+                OrderShipmentBatch.id == OrderShipmentBatchItem.batch_id,
             )
             .join(
                 SalesOrderItem,
@@ -131,50 +134,53 @@ async def returnable_overview(session: AsyncSession, order_id: int) -> dict:
                 OrderShipmentBatch.order_id == order_id,
                 OrderShipmentBatch.status == "shipped",
             )
-            .order_by(OrderShipmentBatch.batch_no.asc(), OrderShipmentBatchItem.id.asc())
+            .order_by(OrderShipmentBatchItem.order_item_id.asc())
         )
     ).all()
-    active_qty = await _active_quantities(session, [int(row[4]) for row in rows])
-    batches: dict[int, dict] = {}
-    total_shipped = total_returned = ZERO
-    for row in rows:
-        (
-            batch_id,
-            batch_no,
-            actual_date,
-            _batch_status,
-            batch_item_id,
-            order_item_id,
-            sku,
-            shipped_qty,
-            specification,
-            order_qty,
-            order_amount,
-            order_unit_price,
-        ) = row
-        shipped = _quantity(shipped_qty)
-        returned = active_qty.get(int(batch_item_id), ZERO)
-        remaining = max(shipped - returned, ZERO)
-        unit_price = (
-            _money(order_amount) / _quantity(order_qty)
-            if _quantity(order_qty) > 0
-            else Decimal(order_unit_price or 0)
-        )
-        batch = batches.setdefault(
-            int(batch_id),
+
+    items: dict[int, dict] = {}
+    for (
+        order_item_id,
+        sku,
+        shipped_qty,
+        specification,
+        order_qty,
+        order_amount,
+        order_unit_price,
+    ) in rows:
+        entry = items.setdefault(
+            int(order_item_id),
             {
-                "batch_id": int(batch_id),
-                "batch_no": int(batch_no),
-                "actual_ship_date": actual_date.isoformat() if actual_date else None,
-                "items": [],
-            },
-        )
-        batch["items"].append(
-            {
-                "shipment_batch_item_id": int(batch_item_id),
                 "order_item_id": int(order_item_id),
                 "sku": sku,
                 "specification": specification,
+                "shipped": ZERO,
+                "order_qty": _quantity(order_qty),
+                "order_amount": _money(order_amount),
+                "order_unit_price": Decimal(order_unit_price or 0),
+            },
+        )
+        entry["shipped"] += _quantity(shipped_qty)
+
+    active_qty = await _active_quantities_by_order_item(
+        session, list(items.keys())
+    )
+    total_shipped = total_returned = ZERO
+    result_items = []
+    for order_item_id, entry in items.items():
+        shipped = entry["shipped"]
+        returned = active_qty.get(order_item_id, ZERO)
+        remaining = max(shipped - returned, ZERO)
+        unit_price = (
+            entry["order_amount"] / entry["order_qty"]
+            if entry["order_qty"] > 0
+            else entry["order_unit_price"]
+        )
+        result_items.append(
+            {
+                "order_item_id": order_item_id,
+                "sku": entry["sku"],
+                "specification": entry["specification"],
                 "shipped_quantity": float(shipped),
                 "shipped_quantity_exact": format(shipped, "f"),
                 "returned_quantity": float(returned),
@@ -189,7 +195,7 @@ async def returnable_overview(session: AsyncSession, order_id: int) -> dict:
         total_returned += returned
     return {
         "order_id": order_id,
-        "batches": list(batches.values()),
+        "items": result_items,
         "summary": {
             "shipped_quantity": float(total_shipped),
             "shipped_quantity_exact": format(total_shipped, "f"),
@@ -215,62 +221,64 @@ async def create_return(
             "本项目只支持人民币订单，外币订单不能登记退货",
             422,
         )
-    ids = [item.shipment_batch_item_id for item in payload.items]
-    rows = (
+    ids = [item.order_item_id for item in payload.items]
+    order_items = (
+        await session.execute(
+            select(SalesOrderItem).where(
+                SalesOrderItem.id.in_(ids),
+                SalesOrderItem.order_id == order.id,
+            )
+        )
+    ).scalars().all()
+    found = {int(order_item.id): order_item for order_item in order_items}
+    missing = [oid for oid in ids if oid not in found]
+    if missing:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"有 {len(missing)} 条订单明细不可退：只能退这张订单里的已发产品",
+            422,
+        )
+
+    shipped_rows = (
         await session.execute(
             select(
-                OrderShipmentBatchItem,
-                OrderShipmentBatch,
-                SalesOrderItem,
+                OrderShipmentBatchItem.order_item_id,
+                func.coalesce(func.sum(OrderShipmentBatchItem.shipped_qty), 0),
             )
             .join(
                 OrderShipmentBatch,
                 OrderShipmentBatch.id == OrderShipmentBatchItem.batch_id,
             )
-            .join(
-                SalesOrderItem,
-                SalesOrderItem.id == OrderShipmentBatchItem.order_item_id,
-            )
             .where(
-                OrderShipmentBatchItem.id.in_(ids),
                 OrderShipmentBatch.order_id == order.id,
                 OrderShipmentBatch.status == "shipped",
-                SalesOrderItem.order_id == order.id,
+                OrderShipmentBatchItem.order_item_id.in_(ids),
             )
+            .group_by(OrderShipmentBatchItem.order_item_id)
         )
     ).all()
-    found = {int(batch_item.id): (batch_item, batch, order_item) for batch_item, batch, order_item in rows}
-    missing = [bid for bid in ids if bid not in found]
-    if missing:
-        raise AppError(
-            ErrorCode.STATUS_NOT_ALLOWED,
-            f"有 {len(missing)} 条发货明细不可退：只能退已实发的批次，"
-            "未发货/已取消批次不能登记退货",
-            422,
-        )
+    shipped_qty = {int(oid): _quantity(qty) for oid, qty in shipped_rows}
+    active_qty = await _active_quantities_by_order_item(session, ids)
 
-    active_qty = await _active_quantities(session, ids)
     result_items: list[SalesReturnItem] = []
     goods_amount = ZERO
     for request_item in payload.items:
-        batch_item, batch, order_item = found[request_item.shipment_batch_item_id]
-        shipped = _quantity(batch_item.shipped_qty)
-        already_qty = active_qty.get(int(batch_item.id), ZERO)
+        order_item = found[request_item.order_item_id]
+        shipped = shipped_qty.get(int(order_item.id), ZERO)
+        already_qty = active_qty.get(int(order_item.id), ZERO)
         remaining = max(shipped - already_qty, ZERO)
         qty = _quantity(request_item.quantity)
         if qty > remaining + UNIT:
             raise AppError(
                 ErrorCode.STATUS_NOT_ALLOWED,
-                f"{batch_item.sku_snapshot or batch_item.order_item_id} 第 {batch.batch_no} 批"
-                f"已发 {shipped}、已退 {already_qty}，最多还能退 {remaining}，本次填了 {qty}",
+                f"{order_item.sku_snapshot or order_item.id} 已发 {shipped}、"
+                f"已退 {already_qty}，最多还能退 {remaining}，本次填了 {qty}",
                 422,
             )
         order_qty = _quantity(order_item.quantity)
         if order_qty <= 0:
             raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "订单明细数量为 0，无法计算退货金额", 422)
-        # 参考金额一律按“订单明细单价 × 本次数量”算。
-        # 同一产品分批发货、界面又只让填一个总数时，payload 会被拆成多条批次明细；
-        # 不能再对“最后一条”倒算整单剩余金额，否则同一产品会被重复算钱。
+        # 参考金额一律按“订单明细单价 × 本次数量”算，不再按批次倒算。
         unit_price = (Decimal(order_item.amount or 0) / order_qty).quantize(
             UNIT, rounding=ROUND_HALF_UP
         )
@@ -280,9 +288,10 @@ async def create_return(
         result_items.append(
             SalesReturnItem(
                 order_item_id=int(order_item.id),
-                shipment_batch_item_id=int(batch_item.id),
-                batch_id=int(batch.id),
-                sku_snapshot=batch_item.sku_snapshot,
+                # 新退货不再挂发货批次；历史字段保留为空。
+                shipment_batch_item_id=None,
+                batch_id=None,
+                sku_snapshot=order_item.sku_snapshot,
                 specification_snapshot=order_item.specification,
                 quantity=qty,
                 unit_price=(amount / qty).quantize(UNIT, rounding=ROUND_HALF_UP),
@@ -326,7 +335,7 @@ async def create_return(
             "goods_amount": format(return_row.goods_amount, ".2f"),
             "items": [
                 {
-                    "shipment_batch_item_id": item.shipment_batch_item_id,
+                    "order_item_id": item.order_item_id,
                     "quantity": format(item.quantity, "f"),
                     "amount": format(item.amount, ".2f"),
                 }

@@ -6064,3 +6064,12 @@
 - 说明 800/600 不是固定值：同一张订单 1000、已付 200、未付款 800，填 1000 时抵扣 800、退 200；填 600 时只抵扣 600、不退款、客户仍欠 200；填 1010 时抵扣 800、退 210。三行是三种不同填法，不是同一笔业务同时出现。
 - 验证：`tests/test_sales_return.py` 13 条通过；前端 `tsc`、lint 0 errors。
 - 提交：`docs(return): 用“抵扣”解释退款与未付款`，未部署。
+
+## 2026-11-26 · 退货不再追发货批次，只按订单明细
+
+- 业务确认：退货不需要知道客户实际退回的是哪一次发货批次。因此取消“按批次号从小到大自动拆”的规则；退货从批次级改为订单明细（产品/规格）级。
+- 后端：`ReturnItemInput` 改为 `order_item_id + quantity`；`returnable_overview` 返回 `items`（按订单明细汇总），不再返回 `batches`；`create_return` 按订单明细汇总所有已实发批次数量，扣减所有活跃退货数量，参考金额仍按订单明细单价 × 本次数量；新退货明细的 `shipment_batch_item_id/batch_id` 写 NULL，历史单保留原值供追溯。
+- 前端：退货登记不再合并/拆分批次，直接把订单明细数量提交；业务员看到的产品行就是可退行，不显示批次。
+- 迁移：`a1c4e8f2b6d9`（`sales_return_items.shipment_batch_item_id/batch_id` 改为 nullable）；隔离库 `crm_iso_flow_20261125` 已升级，生产未跑。
+- 验证：`tests/test_sales_return.py` 13 条通过；全量 pytest 通过；前端 `tsc`、lint 0 errors。隔离后端 8012 真实接口：作废旧退货释放数量后，创建 `RT202611260003`（order_item_id=5、quantity=3），返回 `shipment_batch_item_id/batch_id = null`，参考金额 300；主管复核、张三确认退款总额 300、抵扣 300、无需退款，状态 completed；`/returnable` 返回按订单明细的 `items`，不是 `batches`。前端完整 build 被并行会话 `SampleListPage.tsx` 的类型错误挡住，与退货无关。
+- 提交：`refactor(return): 退货不再追发货批次`，未部署。

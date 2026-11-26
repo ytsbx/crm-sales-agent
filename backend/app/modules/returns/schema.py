@@ -12,7 +12,8 @@ RETURN_REASON_CODES = Literal[
 
 
 class ReturnItemInput(BaseModel):
-    shipment_batch_item_id: int
+    #: 退货按订单明细（产品/规格）登记，不再要求选发货批次。
+    order_item_id: int
     quantity: Decimal = Field(gt=0, max_digits=16, decimal_places=3)
 
 
@@ -27,10 +28,10 @@ class ReturnCreate(BaseModel):
     items: list[ReturnItemInput] = Field(min_length=1)
 
     @model_validator(mode="after")
-    def _no_duplicate_batch_item(self):
-        ids = [item.shipment_batch_item_id for item in self.items]
+    def _no_duplicate_order_item(self):
+        ids = [item.order_item_id for item in self.items]
         if len(ids) != len(set(ids)):
-            raise ValueError("同一发货明细只能填一行，请合并数量")
+            raise ValueError("同一订单明细只能填一行，请合并数量")
         return self
 
 
