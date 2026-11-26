@@ -50,6 +50,7 @@ import {
   reviseSample,
   shipSample,
   signSample,
+  terminateSample,
   transferSample,
   type BasisFile,
   type SampleItem,
@@ -78,6 +79,7 @@ const STATUS_COLOR: Record<string, TagTone> = {
   rejected: 'red',
   shipped: 'cyan',
   signed: 'green',
+  terminated: 'grey',
 }
 
 /**
@@ -95,6 +97,7 @@ const STATUS_OPTIONS = [
   { value: 'rejected', label: '已拒绝' },
   { value: 'shipped', label: '已寄样' },
   { value: 'signed', label: '已签收' },
+  { value: 'terminated', label: '已终止' },
   { value: DELETED_STATUS_OPTION, label: '已删除' },
 ]
 
@@ -356,6 +359,9 @@ export default function SampleListPage() {
   const [transferOwner, setTransferOwner] = useState<{ id: number; name: string } | null>(null)
   const [shipForm, setShipForm] = useState({ carrier: '', tracking_no: '', shipping_fee: '' })
   const [feedback, setFeedback] = useState('')
+  // 终止打样（K3）：二次确认弹窗 + 必填原因
+  const [terminateVisible, setTerminateVisible] = useState(false)
+  const [terminateReason, setTerminateReason] = useState('')
   const [newItem, setNewItem] = useState<ItemDraft>({ quantity: '1' })
   // 生产打样资料（文档 §3.5）：跟单在这一栏把车间要的东西补全，
   // 打样需求单出图时逐项带给车间。
@@ -552,6 +558,21 @@ export default function SampleListPage() {
     onError,
   })
 
+  const terminateMutation = useMutation({
+    mutationFn: () => {
+      const reason = terminateReason.trim()
+      if (!reason) throw new Error('请填写终止原因')
+      return terminateSample(detailId!, reason)
+    },
+    onSuccess: () => {
+      Toast.success('打样已终止，制作与寄送记录保留')
+      setTerminateVisible(false)
+      setTerminateReason('')
+      void refresh()
+    },
+    onError,
+  })
+
   // 生产打样资料（文档 §3.5）：跟单在这一栏把车间要的东西补全，
   // 打样需求单出图时逐项带给车间
   const saveProdMutation = useMutation({
@@ -726,7 +747,7 @@ export default function SampleListPage() {
       title: (
         <span className="crm-help-label">
           状态
-          <HelpTip forLabel="打样状态" text="已寄样 = 样品寄出、等客户签收；已签收 = 客户收到但还没表态；客户接受或未通过，在「客户确认」单独登记。" />
+          <HelpTip forLabel="打样状态" text="已寄样 = 样品寄出、等客户签收；已签收 = 客户收到但还没表态；客户接受或未通过，在「客户确认」单独登记；已终止 = 客户不要了/项目取消，流程结束，制作与寄送记录保留。" />
         </span>
       ),
       dataIndex: 'status_label',
@@ -1036,6 +1057,40 @@ export default function SampleListPage() {
         />
       </SectionCard>
 
+      {/* 终止打样（K3）：二次确认 + 原因；只改状态，制作/寄送事实保留 */}
+      <Modal
+        title="终止打样"
+        visible={terminateVisible}
+        onCancel={() => {
+          if (!terminateMutation.isPending) setTerminateVisible(false)
+        }}
+        onOk={() => terminateMutation.mutate()}
+        confirmLoading={terminateMutation.isPending}
+        okText="确认终止"
+        cancelText="取消"
+        okButtonProps={{ disabled: !terminateReason.trim(), type: 'danger' }}
+        width={480}
+      >
+        <div style={{ display: 'grid', gap: 10 }}>
+          <div style={{ fontSize: 12, color: 'var(--crm-text-3)', lineHeight: 1.7 }}>
+            客户不要了或项目取消时用。终止后这条单不能再往下办理；
+            <strong>已经发生的制作、寄送、签收记录都会保留</strong>，
+            不会删除，也不会生成费用记录。终止后不能改回，请确认。
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>终止原因（必填）</div>
+            <TextArea
+              aria-label="终止原因"
+              rows={3}
+              placeholder="例如：客户项目取消 / 客户改用其他产品"
+              value={terminateReason}
+              onChange={setTerminateReason}
+              disabled={terminateMutation.isPending}
+            />
+          </div>
+        </div>
+      </Modal>
+
       {/* 新建申请 */}
       <Modal
         title="新建样品申请"
@@ -1245,6 +1300,12 @@ export default function SampleListPage() {
               {detail.approved_at && <div>审批时间：{fmt(detail.approved_at)}</div>}
               {detail.shipped_at && <div>寄样时间：{fmt(detail.shipped_at)}</div>}
               {detail.signed_at && <div>签收时间：{fmt(detail.signed_at)}</div>}
+              {detail.terminated_at && (
+                <div style={{ color: 'var(--crm-error)' }}>
+                  终止时间：{fmt(detail.terminated_at)}
+                  {detail.terminate_reason ? `；原因：${detail.terminate_reason}` : ''}
+                </div>
+              )}
               {detail.reject_reason && (
                 <div style={{ color: 'var(--crm-error)' }}>
                   {detail.status === 'rejected' ? '拒绝原因' : '上次驳回原因'}：
@@ -1492,6 +1553,25 @@ export default function SampleListPage() {
                       </div>
                     )}
                   </>
+                )}
+
+                {canUpdateSample && detail.can_terminate && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                    <Button
+                      theme="borderless"
+                      type="danger"
+                      style={{ alignSelf: 'flex-start' }}
+                      onClick={() => {
+                        setTerminateReason('')
+                        setTerminateVisible(true)
+                      }}
+                    >
+                      终止打样
+                    </Button>
+                    <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                      客户不要了/项目取消时用；制作与寄送记录会保留。
+                    </span>
+                  </div>
                 )}
 
                 {detail.feedback && (

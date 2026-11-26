@@ -147,6 +147,11 @@ export interface SampleRequestRow {
    * （与 `attachment_locked` 是同一个道理）。
    */
   can_delete?: boolean
+  /** 这张单现在能不能终止（K3）：判据在后端，只有已批准/已寄样/已签收可以。 */
+  can_terminate?: boolean
+  /** 终止时间与原因（终止后保留，供详情展示；没终止时为 null）。 */
+  terminated_at?: string | null
+  terminate_reason?: string | null
   items: SampleItem[]
   shipments: SampleShipment[]
 }
@@ -230,6 +235,11 @@ export function signSample(id: number, signedAt?: string) {
 
 export function feedbackSample(id: number, feedback: string) {
   return api.post<SampleRequestRow>(`/samples/${id}/feedback`, { feedback })
+}
+
+/** 终止打样（K3）：必须填原因；只改状态与原因，制作/寄送事实保留。 */
+export function terminateSample(id: number, reason: string) {
+  return api.post<SampleRequestRow>(`/samples/${id}/terminate`, { reason })
 }
 
 /**

@@ -34,6 +34,9 @@ SAMPLE_STATUS_LABEL: dict[str, str] = {
     "rejected": "已拒绝",
     "shipped": "已寄样",
     "signed": "已签收",
+    # 终止（K3，2026-11-25 主人拍板）：客户不要了/项目取消，流程到此结束。
+    # 与"删除"不同：制作、寄送、签收发生过的事实全部保留，只把状态钉在终止。
+    "terminated": "已终止",
 }
 
 # 允许的状态流转。写死成一张表，避免各处 if 判断漂移。
@@ -45,11 +48,28 @@ SAMPLE_STATUS_LABEL: dict[str, str] = {
 #   → approved：**主管改判**。上次驳错了直接批回来，不必让跟单先改点什么再绕一圈。
 SAMPLE_TRANSITIONS: dict[str, set[str]] = {
     "pending": {"approved", "rejected"},
-    "approved": {"shipped"},
+    # 已批准后客户突然不要了：允许直接终止（K3）。在此之前没有出口，
+    # 单子只能一路挂到"已签收"或永远挂着，看不出"这件事已经不做了"。
+    "approved": {"shipped", "terminated"},
     "rejected": {"pending", "approved"},
-    "shipped": {"signed"},
-    "signed": set(),
+    # 已寄样/已签收也允许终止，但**不删除寄送与签收记录**：
+    # "寄过、客户收到过"是已经发生的事实，终止只表示流程不再往下走。
+    "shipped": {"signed", "terminated"},
+    "signed": {"terminated"},
+    "terminated": set(),
 }
+
+#: 允许终止的状态（K3）：已经批下来、进了制作或寄送环节的打样。
+#:
+#: `pending` / `rejected` 不在内：还没批的单子走"删除/驳回后作罢"即可，
+#: 给它们再开一个终止口子只会多一种表达同一件事的方式。
+#: `terminated` 自身也不在：终止是终态，不能重复终止。
+SAMPLE_TERMINABLE_STATUSES: tuple[str, ...] = ("approved", "shipped", "signed")
+
+
+def can_terminate_sample(sample) -> bool:
+    """这张打样单现在能不能终止。判据只写在这里，路由与前端下发共用。"""
+    return sample.deleted_at is None and sample.status in SAMPLE_TERMINABLE_STATUSES
 
 #: **还没结束**的打样状态：既构成履约保护（客户还在等结果，不能当冷落客户回收），
 #: 也是离职交接必须迁移责任的"未完成打样"。

@@ -5976,3 +5976,13 @@
 - 金额：`settled_goods_amount` 现在作为最终退款总额使用；系统先拿总额抵客户未收欠款，剩余转待退款。运费并入总额后随总额一起抵欠款；后端保留历史 `freight_refund_amount` 字段，新界面固定传 0。
 - 验证：`tests/test_sales_return.py` 10 条通过、全量 pytest 通过；`npx tsc -b` 通过；lint 0 errors（40 条既有 warning）；`ops/check_action_labels.py` 通过。隔离库 8012 真实接口：业务员张三登录把 `RT202611260001` 按 1000 元填完，抵 800、待退 200，状态「已处理」，`settled_by_name=张三`；随后张三调退款接口返回 403「需要 payment:manage」。
 - 提交：`61b67327 refactor(return): 退款金额改为一个总数，业务员主管财务都能填`，已推 GitHub `feat/k2-sales-return-20261125`；未部署。
+
+## 2026-11-26 K3 打样终止（主人拍板，未部署）
+
+- 口径（主人）：业务员（sample:manage）即可终止，前端二次确认；只改状态 + 原因 + 审计，不生成费用/损失记录；已寄样/已签收也允许终止，但保留寄送事实。
+- 后端：新增 `terminated` 状态（终态），允许 approved / shipped / signed → terminated；新增 `POST /samples/{id}/terminate`，原因必填；终止信息存 `source_context.termination`（原因/时间/操作人/原状态），不新增数据库列；制作完成时间、寄样记录、签收时间原样保留，在办审批不自动撤回。
+- 终止后：单头/明细不能再编辑、不能开修订版（统一 `_reject_terminated`）；附件写入锁定（`file/access`）；反馈与客户确认仍可登记既有事实，但流程不再往下推进。
+- 前端：详情操作区新增「终止打样」+ 二次确认弹窗（原因必填）；列表筛选与状态色增加「已终止」；详情显示终止时间与原因；帮助说明补充。
+- 审计标签新增 `terminate`（终止打样），生成物已更新并通过核对。
+- 验证：新增 7 条用例；打样相关 6 个测试文件 144 项、全量 pytest、pyflakes、审计标签核对、前端 tsc 与 vite build 全部通过。
+- 备注：寄样登记本来就有"承运商 / 快递单号 / 运费（默认 0，两位小数）/ 寄出日期"，终止不改这些记录。

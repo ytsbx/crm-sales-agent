@@ -306,6 +306,17 @@ class SampleSign(BaseModel):
     signed_at: date | None = None
 
 
+class SampleTerminate(BaseModel):
+    """终止打样（K3）：必须说明原因。
+
+    终止只结束流程，不删除任何事实：制作完成时间、寄样记录、签收时间都保留。
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    reason: str = Field(min_length=1, max_length=255)
+
+
 class SampleFeedback(BaseModel):
     model_config = ConfigDict(extra="ignore")
 

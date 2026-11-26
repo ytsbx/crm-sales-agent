@@ -57,6 +57,7 @@ from app.modules.product.model import Sku
 from app.modules.sample import service as svc
 from app.modules.sample.model import (
     can_delete_sample,
+    can_terminate_sample,
     SAMPLE_STATUS_LABEL,
     SampleItem,
     SampleRequest,
@@ -72,6 +73,7 @@ from app.modules.sample.schema import (
     SampleRevise,
     SampleShip,
     SampleSign,
+    SampleTerminate,
     SampleTransfer,
     SampleUpdate,
     SampleFromSource,
@@ -90,6 +92,20 @@ PART_LOCK_LABEL = "材质、工艺、图纸版本、目标完成日、验收标�
 REVIEW_LOCK_FIELDS: tuple[str, ...] = ("sample_fee", "estimated_hours", "production_owner_id")
 
 
+def _reject_terminated(sample: SampleRequest) -> None:
+    """终止后的打样单不再接受任何修改（K3）。
+
+    终止是流程终点，不是"暂停"：再改资料、加明细或开修订版，都会让
+    "已经结束的单子"重新活过来。客户又要打样时重新建单，历史留在这张终止单上。
+    """
+    if sample.status == "terminated":
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "打样单已终止，不能再修改；如客户又要打样，请重新建单",
+            422,
+        )
+
+
 def _gate_part_lock(sample: SampleRequest) -> bool:
     """改「车间依据」时统一走这里：判断这单还能不能改、要不要退回重审批。
 
@@ -105,7 +121,7 @@ def _gate_part_lock(sample: SampleRequest) -> bool:
 
     只有"锁"没有"退路"会让单据卡死，所以已批准 / 已驳回这两档必须配 _reopen。
     """
-    if sample.made_at is not None or sample.status in ("shipped", "signed"):
+    if sample.made_at is not None or sample.status in ("shipped", "signed", "terminated"):
         # 已制作 / 已寄出：车间依据**不能再原地改**（§3.3 口径 A）。
         # 旧写法只挡了 shipped/signed，于是"已制作"的单子改完只是回到待审批——
         # 同一行上留着旧的制作时间却写着新资料，和已经做出来的实物对不上，
@@ -517,6 +533,7 @@ async def update_sample(
     sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
     from app.modules.sample.dingtalk import ensure_editable
     ensure_editable(sample)
+    _reject_terminated(sample)
     before = await svc.detail(session, sample, user)
     data = payload.model_dump(exclude_unset=True)
     # ---- 落库前校验关联完整性（审查 C3-02）----
@@ -757,6 +774,7 @@ async def revise_sample(
     parent = await svc.get_visible_or_404(
         session, user, sample_id, for_update=True, allow_external_flow=True
     )
+    _reject_terminated(parent)
     # B22-07：已经开出过修订版就拒绝（行锁已保证串行，这里给明确提示；
     # 并发下另由 (parent_id, version) 唯一约束兜底）。
     existing_child = (
@@ -999,6 +1017,63 @@ async def sign_sample(
     await session.commit()
     await notification_service.dispatch_after_commit(session)
     return ok(after, "已登记签收")
+
+
+@router.post("/samples/{sample_id}/terminate")
+async def terminate_sample(
+    sample_id: int,
+    payload: SampleTerminate,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("sample:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """终止打样（K3）：客户不要了 / 项目取消，记录原因并结束流程。
+
+    只改状态、原因与审计；制作完成时间、寄样记录、签收时间**一律不动** ——
+    已经发生的事实不能因为"这件事不做了"被抹掉，这也正是"允许终止但保留寄送事实"。
+    按主人口径不生成费用/损失记录（项目不核算样品成本），也不发通知。
+    """
+    sample = await svc.get_visible_or_404(
+        session, user, sample_id, for_update=True, allow_external_flow=True
+    )
+    reason = payload.reason.strip()
+    if not reason:
+        raise AppError(ErrorCode.PARAM_ERROR, "请填写终止原因", 422)
+    if not can_terminate_sample(sample):
+        current = SAMPLE_STATUS_LABEL.get(sample.status, sample.status)
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"样品当前状态是「{current}」，不能终止；"
+            "只有已批准、已寄样或已签收的打样可以终止",
+            422,
+        )
+    before_status = sample.status
+    sample.status = "terminated"
+    sample.source_context = {
+        **(sample.source_context or {}),
+        "termination": {
+            "reason": reason,
+            "at": datetime.now(UTC).isoformat(),
+            "by": user.id,
+            "from_status": before_status,
+        },
+    }
+    await svc.record_opportunity_touch(session, sample, "已终止")
+    await session.flush()
+
+    after = await svc.detail(session, sample, user)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="terminate",
+        business_type="sample",
+        business_id=sample.id,
+        before={"status": before_status},
+        after=after,
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(after, "打样已终止")
 
 
 @router.post("/samples/{sample_id}/feedback")
@@ -1350,6 +1425,7 @@ async def add_sample_item(
     session: AsyncSession = Depends(get_db),
 ):
     sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
+    _reject_terminated(sample)
     # 加明细和改明细走同一道闸门：新明细带进来的材质 / 工艺 / 图纸版本**也是车间依据**，
     # 往已批准的单子里塞新明细，等于让车间按没批过的资料干活 —— 这里原来只挡了
     # 已寄样 / 已签收，已批准的单子能随便加，是个漏口。
@@ -1664,6 +1740,7 @@ async def update_sample_item(
     sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
     from app.modules.sample.dingtalk import ensure_editable
     ensure_editable(sample)
+    _reject_terminated(sample)
     item = await _get_item_or_404(session, sample_id, item_id)
 
     before = svc.serialize_item(item)

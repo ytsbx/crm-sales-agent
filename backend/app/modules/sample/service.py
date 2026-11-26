@@ -18,6 +18,7 @@ from app.modules.product.model import Sku
 from app.modules.sample.model import (
     CONFIRM_STATUS_LABEL,
     can_delete_sample,
+    can_terminate_sample,
     SAMPLE_STATUS_LABEL,
     SAMPLE_TRANSITIONS,
     SampleItem,
@@ -144,6 +145,11 @@ def serialize_request(
         "approved_at": request.approved_at.isoformat() if request.approved_at else None,
         "shipped_at": request.shipped_at.isoformat() if request.shipped_at else None,
         "signed_at": request.signed_at.isoformat() if request.signed_at else None,
+        # 终止（K3）：只存"什么时候、为什么、谁"，制作/寄送/签收的事实原样保留。
+        # 存在 source_context.termination 里而不是新增列：终止原因是一条备忘，
+        # 不参与查询与统计，没必要为它改表结构。
+        "terminated_at": ((request.source_context or {}).get("termination") or {}).get("at"),
+        "terminate_reason": ((request.source_context or {}).get("termination") or {}).get("reason"),
         "feedback": request.feedback,
         # ---- 生产打样资料（文档 §3.5）----
         # 材质 / 工艺 / 图纸版本不在这里：它们逐行不同，挂在明细上（见 items）。
@@ -532,6 +538,9 @@ async def list_payload(
         # （`model.SAMPLE_DELETABLE_STATUSES`），这里下发一个布尔，前端据此决定
         # 显示「删除」还是「恢复」—— 前端不要自己复刻一份状态清单。
         data["can_delete"] = row.id not in locked_ids and can_delete_sample(row)
+        # 能不能终止也由后端下发（判据在 model.SAMPLE_TERMINABLE_STATUSES），
+        # 前端不要自己再拼一份"哪些状态能终止"。
+        data["can_terminate"] = row.id not in locked_ids and can_terminate_sample(row)
         payload.append(data)
     return payload
 

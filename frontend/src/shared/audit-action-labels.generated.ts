@@ -168,6 +168,7 @@ export const SHARED_ACTION_LABELS: Record<string, string> = {
   'sync_erp': '同步 ERP/MES',
   'sync_oa': '手工同步审批',
   'tag': '打标签',
+  'terminate': '终止打样',
   'toggle': '切换开关',
   'transfer': '转移负责人',
   'transfer_documents': '随客户转交单据',
