@@ -809,6 +809,19 @@ export default function SettingsPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  const taskRuleStatusMutation = useMutation({
+    mutationFn: ({ id, active }: { id: number; active: boolean }) =>
+      updateTaskRule(id, { status: active ? 'active' : 'inactive' }),
+    onSuccess: (data) => {
+      queryClient.setQueryData<TaskRuleRow[]>(['task-rules'], (rows) =>
+        rows?.map((row) => row.id === data.id ? data : row),
+      )
+      Toast.success(data.status === 'active' ? '规则已启用' : '规则已停用')
+      refreshRules()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
   const settingMutation = useMutation({
     mutationFn: ({ key, value }: { key: string; value: Record<string, unknown>; silent?: boolean }) =>
       saveSetting(key, value),
@@ -2208,10 +2221,11 @@ export default function SettingsPage() {
                   rules={(taskRulesQuery.data ?? []).filter((row) => row.code !== 'customer_unrated_silent')}
                   pending={taskRulesQuery.isLoading}
                   failed={taskRulesQuery.isError}
-                  saving={taskRuleMutation.isPending}
+                  saving={taskRuleMutation.isPending || taskRuleStatusMutation.isPending}
                   scanning={autoTaskMutation.isPending}
                   onReload={() => void taskRulesQuery.refetch()}
                   onSave={(id, days) => taskRuleMutation.mutateAsync({ id, days })}
+                  onToggle={(id, active) => taskRuleStatusMutation.mutateAsync({ id, active })}
                   onScan={() => autoTaskMutation.mutate()}
                 />
               )}

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { IconCalendarClock, IconComment, IconUser } from '@douyinfe/semi-icons'
-import { Button, Input, Popconfirm } from '@douyinfe/semi-ui'
+import { Button, Input, Popconfirm, Switch } from '@douyinfe/semi-ui'
 import { Link } from 'react-router-dom'
 
 import type { TaskRuleRow } from '../../shared/api/settings'
@@ -24,10 +24,11 @@ const ruleCopy = {
   },
 } as const
 
-function TaskRuleItem({ rule, saving, onSave }: {
+function TaskRuleItem({ rule, saving, onSave, onToggle }: {
   rule: TaskRuleRow
   saving: boolean
   onSave: (id: number, days: number) => Promise<unknown>
+  onToggle: (id: number, active: boolean) => Promise<unknown>
 }) {
   const saved = String(rule.trigger_config?.days ?? 3)
   const [draft, setDraft] = useState<string | null>(null)
@@ -59,6 +60,13 @@ function TaskRuleItem({ rule, saving, onSave }: {
           <span className={`auto-task-rule-status${active ? ' is-active' : ''}`}>
             {active ? '已启用' : '已停用'}
           </span>
+          <Switch
+            size="small"
+            checked={active}
+            disabled={saving}
+            aria-label={active ? `停用规则：${rule.name}` : `启用规则：${rule.name}`}
+            onChange={(checked) => void onToggle(rule.id, checked)}
+          />
         </div>
         {copy && <p>{copy.detail}</p>}
       </div>
@@ -77,7 +85,7 @@ function TaskRuleItem({ rule, saving, onSave }: {
   )
 }
 
-export default function AutoTaskRulesPanel({ rules, pending, failed, saving, scanning, onReload, onSave, onScan }: {
+export default function AutoTaskRulesPanel({ rules, pending, failed, saving, scanning, onReload, onSave, onToggle, onScan }: {
   rules: TaskRuleRow[]
   pending: boolean
   failed: boolean
@@ -85,6 +93,7 @@ export default function AutoTaskRulesPanel({ rules, pending, failed, saving, sca
   scanning: boolean
   onReload: () => void
   onSave: (id: number, days: number) => Promise<unknown>
+  onToggle: (id: number, active: boolean) => Promise<unknown>
   onScan: () => void
 }) {
   return (
@@ -97,7 +106,7 @@ export default function AutoTaskRulesPanel({ rules, pending, failed, saving, sca
         <div className="auto-task-empty">无法读取自动任务规则。 <Button onClick={onReload}>重新读取</Button></div>
       ) : rules.length ? (
         <ul className="auto-task-rule-list">
-          {rules.map((rule) => <TaskRuleItem key={rule.id} rule={rule} saving={saving} onSave={onSave} />)}
+          {rules.map((rule) => <TaskRuleItem key={rule.id} rule={rule} saving={saving} onSave={onSave} onToggle={onToggle} />)}
         </ul>
       ) : <p className="auto-task-empty">暂无自动任务规则。</p>}
       <footer className="auto-task-footer">
