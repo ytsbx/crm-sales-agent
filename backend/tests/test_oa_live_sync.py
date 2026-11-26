@@ -127,14 +127,22 @@ async def test_stuck_self_oa_submission_is_never_resent_and_only_matching_receip
     from sqlalchemy.orm import Session
     from starlette.requests import Request
 
+    import app.modules.customer.model  # noqa: F401
+    import app.modules.opportunity.model  # noqa: F401
+    import app.modules.product.model  # noqa: F401
+    import app.modules.user.model  # noqa: F401
+    from app.core.audit import AuditLog
     from app.modules.inquiry.model import CustomInquiry
     from app.modules.oa import client as own_client
+    from app.modules.sample.model import SampleRequest
     from tests.conftest import SyncSessionAsAsync, _register_sqlite_bigint_as_integer
 
     _register_sqlite_bigint_as_integer()
     engine = create_engine("sqlite://")
     OaInstance.__table__.create(engine)
     CustomInquiry.__table__.create(engine)
+    SampleRequest.__table__.create(engine)
+    AuditLog.__table__.create(engine)
     monkeypatch.setattr(own_client, "configured", lambda: True)
     monkeypatch.setattr(router, "ensure_oa_type_scope", AsyncMock())
     monkeypatch.setattr(router, "write_audit", AsyncMock())

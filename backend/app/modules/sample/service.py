@@ -108,25 +108,33 @@ def serialize_shipment(shipment: SampleShipment) -> dict:
     }
 
 
-async def sample_is_custom(session: AsyncSession, sample: SampleRequest) -> bool:
-    """这张打样单是不是定制件（有定制需求/询价来源）。
+def item_is_custom(item: SampleItem) -> bool:
+    """一条明细是不是新品/定制件。
 
-    定制件的寄样前提是**原询价审批**；现有产品没有定制审批，走 CRM 内部寄样审批
-    （2026-11-26 主人口径）。判据看两处：来源上下文是询价，或任一明细挂在定制需求上。
+    **没有 SKU 就是新品**（2026-11-26 主人指出）：业务员在产品库搜不到时
+    只填一个产品名称，这条明细没有 SKU、也没有 inquiry_id；若按"有询价来源才算定制"
+    判断，它会被当成现有产品，绕过同序 OA 打样审批直接走寄样。新品必须先建档或走定制审批。
+    """
+    return item.inquiry_id is not None or item.sku_id is None
+
+
+async def sample_is_custom(session: AsyncSession, sample: SampleRequest) -> bool:
+    """这张打样单是不是定制件/新品（寄样凭原询价或打样审批，不走内部寄样审批）。
+
+    判据三处：来源上下文是询价；任一明细挂在定制需求上；或任一明细**没有 SKU**
+    （产品库里还没有的新品，只填了名称）。最后一条是 2026-11-26 补的口子：
+    只填产品名称的新品原先被当成现有产品，绕过了 OA。
     """
     if (sample.source_context or {}).get("type") == "inquiry":
         return True
-    row = (
+    rows = (
         await session.execute(
-            select(SampleItem.id)
-            .where(
-                SampleItem.sample_request_id == sample.id,
-                SampleItem.inquiry_id.is_not(None),
+            select(SampleItem.inquiry_id, SampleItem.sku_id).where(
+                SampleItem.sample_request_id == sample.id
             )
-            .limit(1)
         )
-    ).first()
-    return row is not None
+    ).all()
+    return any(inquiry_id is not None or sku_id is None for inquiry_id, sku_id in rows)
 
 
 def serialize_request(
@@ -568,7 +576,7 @@ async def list_payload(
     for row in rows:
         row_items = items_by_request.get(row.id, [])
         is_custom = (row.source_context or {}).get("type") == "inquiry" or any(
-            item.inquiry_id for item in row_items
+            item_is_custom(item) for item in row_items
         )
         data = serialize_request(
             row,

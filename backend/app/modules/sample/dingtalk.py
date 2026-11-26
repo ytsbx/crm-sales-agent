@@ -97,7 +97,8 @@ async def inquiry_candidates(session,user,sample):
                  OaInstance.inquiry_version==inquiry.version,OaInstance.oa_type=='inquiry',
                  OaInstance.instance_id.is_not(None),
                  OaInstance.provider == 'self_oa' if settings.dingtalk_push_off else True,
-                 OaInstance.status.in_(['pending','approved','rejected','cancelled'])).order_by(OaInstance.id.desc()))).all()
+                 # 只列在审/已通过的：关联已驳回或已撤回的审批会让样品单再次卡死
+                 OaInstance.status.in_(['pending','approved'])).order_by(OaInstance.id.desc()))).all()
         for row in rows:result.append({'id':row.id,'label':f'{inquiry.title} · 第{row.submit_round}轮 · {oa.serialize(row)["status_label"]}'})
     return result
 
@@ -422,9 +423,31 @@ async def submit(sample_id:int,payload:Draft,request:Request,user:CurrentUser=De
     if not retry:await save(session,user,sample,payload,options)
     if payload.mode=='inquiry':
         if not payload.source_oa_id:raise AppError(ErrorCode.REQUIRED_FIELD_MISSING,'请选择原询价审批单',422)
+        linked = await session.get(OaInstance, payload.source_oa_id)
+        if linked is None or linked.oa_type != 'inquiry':
+            raise AppError(ErrorCode.PARAM_ERROR, '原询价审批不存在，请重新选择', 422)
+        if linked.status in ('rejected', 'withdrawn', 'cancelled'):
+            # 关联一张没通过的审批，样品单会被永远挡在寄样/制作前，等于死单
+            raise AppError(ErrorCode.STATUS_NOT_ALLOWED,
+                           '选中的原询价审批未通过，请选择已通过或在审的审批单', 422)
+        before_status = sample.status
         sample.source_context={**sample.source_context,META_KEY:{**metadata(sample),'submitted':True}}
+        if linked.status == 'approved':
+            # 原询价已经通过：样品单应立即批准，否则它会一直卡在「待审批」，
+            # 既不能登记制作也不能删除（2026-11-26 主会话 P1 修复）
+            if sample.status in ('pending', 'rejected'):
+                sample.status = 'approved'
+                sample.approved_at = sample.approved_at or service.now()
+                sample.reject_reason = None
+        elif sample.status == 'rejected':
+            # 驳回过、现在关联的是在审的原询价：重新进入待审批
+            sample.status = 'pending'
+            sample.reject_reason = None
+        await service.record_opportunity_touch(session, sample, '已关联原询价审批')
         await write_audit(session,operator_id=user.id,action='update',business_type='sample',business_id=sample.id,
-                         after={'linked_inquiry_oa':payload.source_oa_id},ip=client_ip(request))
+                         before={'status': before_status},
+                         after={'linked_inquiry_oa':payload.source_oa_id,'status':sample.status},
+                         ip=client_ip(request))
         await session.commit()
         return ok(None,'已关联原询价审批；打样步骤请在原同序 OA 单继续处理，本次没有新发审批')
     if self_oa_enabled:

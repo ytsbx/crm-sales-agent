@@ -6155,3 +6155,13 @@
 - 主人看到「申请人员 / 归属部门」为空却有已提交记录：这两项与「打样申请编号」同属**同序系统字段**，CRM 提交时明确跳过（`collect_template_values` 跳过 `field.system`），由同序按登录人身份自动带出；服务端在发起前仍会校验申请人与部门非空（`oa/sample.start_sample_approval`），为空直接 422。
 - 前端在「同序 OA 审批表单」标题下补一句说明，两个只读框加占位「由同序按申请人自动带出」，避免看起来像漏填。
 - 验证：前端 tsc、vite build 通过。
+
+## 2026-11-26 P1 修复：原询价关联回写状态 + 无 SKU 新品按定制（未部署）
+
+- P1-1「沿用原询价流程」死单：此前只记关联、不回写样品状态，原询价通过后样品仍是 pending（不能制作、不能编辑、不能删除）。
+  - 关联时校验审批状态：只能选在审/已通过；选已驳回/已撤回直接 422；候选列表也只列在审/已通过。
+  - 关联已通过的原询价 → 样品单立即置为 approved；关联在审的 → 保持 pending，等同步。
+  - 询价审批同步（`apply_inquiry_summary`）新增回写：approved → 关联样品 pending/rejected 变 approved；rejected/withdrawn → 变 rejected、清掉 submitted，允许修改或重新关联；已制作/已寄出的样品不被迟到的回写改写。
+  - 状态回写写审计 `sample_oa_status`。
+- P1-2 无 SKU 新品绕过审批：`sample_is_custom` 现按「来源是询价 / 明细有 inquiry_id / **明细没有 SKU**」判断；只填产品名称的新品不再当成现有产品走内部寄样审批，必须走同序 OA；列表/详情的「定制」标识同步。
+- 验证：新增 `tests/test_sample_inquiry_writeback.py` 5 条（通过/驳回回写、关联已通过即批准、拒绝关联已驳回审批、无 SKU 判定）；同步相关既有用例补建样品/审计表；全量 pytest 通过。

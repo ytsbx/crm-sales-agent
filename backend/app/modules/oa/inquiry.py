@@ -394,6 +394,68 @@ async def sync_inquiry_row(session: AsyncSession, row: OaInstance) -> OaInstance
     return await sync_self_oa_row(session, row)
 
 
+async def _sync_linked_samples(session: AsyncSession, row: OaInstance) -> None:
+    """原询价审批结果回写到关联的样品单。
+
+    「沿用原询价流程」原先只在样品单上记一句「已关联」，审批通过后样品单仍是
+    `pending`：不能登记制作、不能编辑、不能删除，等于死单（2026-11-26 P1）。
+    这里在询价审批同步时把结果回写：
+      - approved → 样品单 pending/rejected 变 approved；
+      - rejected/withdrawn → 变 rejected、清掉 submitted，允许修改或重新关联。
+    已制作/已寄出的样品不因迟到的审批回写改写履约事实。
+    """
+    from app.core.audit import write_audit
+    from app.modules.sample.model import SampleRequest
+
+    samples = (
+        await session.execute(
+            select(SampleRequest)
+            .where(
+                SampleRequest.deleted_at.is_(None),
+                SampleRequest.status.in_(("pending", "rejected", "approved")),
+                SampleRequest.source_context["dingtalk_oa"]["source_oa_id"].as_integer() == row.id,
+            )
+            .with_for_update()
+        )
+    ).scalars().all()
+    now = datetime.now(UTC)
+    for sample in samples:
+        meta = (sample.source_context or {}).get("dingtalk_oa") or {}
+        if meta.get("mode") != "inquiry":
+            continue
+        before = sample.status
+        if row.status == "approved" and sample.status in ("pending", "rejected"):
+            sample.status = "approved"
+            sample.approved_at = sample.approved_at or now
+            sample.reject_reason = None
+        elif row.status in ("rejected", "withdrawn"):
+            if sample.status in ("pending", "rejected") or (
+                sample.status == "approved" and sample.made_at is None and sample.shipped_at is None
+            ):
+                sample.status = "rejected"
+                sample.reject_reason = (
+                    "原询价审批已撤回，可重新提交"
+                    if row.status == "withdrawn"
+                    else "原询价审批已拒绝，处理意见见 OA 审批记录"
+                )
+                # 清掉 submitted：否则 ensure_editable 会挡住修改、也无法重新关联
+                sample.source_context = {
+                    **(sample.source_context or {}),
+                    "dingtalk_oa": {**meta, "submitted": False},
+                }
+        if sample.status != before:
+            await write_audit(
+                session,
+                operator_id=None,
+                source="SYSTEM",
+                action="sample_oa_status",
+                business_type="sample",
+                business_id=sample.id,
+                before={"status": before},
+                after={"status": sample.status, "linked_inquiry_oa": row.id},
+            )
+
+
 async def apply_inquiry_summary(session: AsyncSession, row: OaInstance, summary: dict) -> OaInstance:
     row.status = _map_status(summary.get("status"))
     row.result = summary
@@ -406,6 +468,7 @@ async def apply_inquiry_summary(session: AsyncSession, row: OaInstance, summary:
             "provider": PROVIDER, "oa_instance_id": row.id, "instance_id": row.instance_id,
             "status": row.status, "synced_at": row.synced_at.isoformat(),
         }}
+    await _sync_linked_samples(session, row)
     await session.flush()
     return row
 
