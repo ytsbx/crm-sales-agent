@@ -10,7 +10,7 @@ from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
 from app.modules.order import drafts
 from app.modules.order.model import OrderDraft
-from app.modules.order.schema import OrderDraftCreate, OrderDraftUpdate, OrderDraftConfirm
+from app.modules.order.schema import OrderDraftCancel, OrderDraftCreate, OrderDraftUpdate, OrderDraftConfirm
 from app.modules.sample.schema import SampleSource
 from app.modules.notification import service as notifications
 
@@ -35,6 +35,7 @@ async def source(quote_version_id: int | None = None, inquiry_id: int | None = N
 
 @router.get('/order-drafts')
 async def listing(opportunity_id: int | None = None, customer_id: int | None = None,
+                  status: str | None = None,
                   page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
                   user: CurrentUser = Depends(require_permission('order:view')), session: AsyncSession = Depends(get_db)):
     stmt = select(OrderDraft)
@@ -44,6 +45,8 @@ async def listing(opportunity_id: int | None = None, customer_id: int | None = N
         stmt = stmt.where(OrderDraft.opportunity_id == opportunity_id)
     if customer_id is not None:
         stmt = stmt.where(OrderDraft.customer_id == customer_id)
+    if status:
+        stmt = stmt.where(OrderDraft.status == status)
     rows, count = await paginate(session, stmt.order_by(OrderDraft.id.desc()), page, page_size)
     return ok(page_data([await drafts.detail(session, row) for row in rows], count, page, page_size))
 
@@ -66,6 +69,15 @@ async def update(draft_id: int, payload: OrderDraftUpdate, user: CurrentUser = D
     row = await drafts.update(session, user, draft_id, payload)
     await session.commit()
     return ok(await drafts.detail(session, row))
+
+
+@router.post('/order-drafts/{draft_id}/cancel')
+async def cancel(draft_id: int, payload: OrderDraftCancel,
+                 user: CurrentUser = Depends(require_permission('order:manage')), session: AsyncSession = Depends(get_db)):
+    """作废草稿：软作废，保留明细、审计与已生成文件。"""
+    row = await drafts.cancel(session, user, draft_id, payload.reason)
+    await session.commit()
+    return ok(await drafts.detail(session, row), '草稿已作废')
 
 
 @router.post('/order-drafts/{draft_id}/confirm')

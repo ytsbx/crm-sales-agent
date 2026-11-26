@@ -698,12 +698,19 @@ export interface OrderDraft {
   source_context: { type: string; id: number; no: string; version: number; quote_id?: number }
   currency: string; delivery_date?: string | null; payment_terms?: string | null; remark?: string | null
   order_id?: number | null; items: OrderDraftLine[]
+  /** 作废信息（原因/操作人/时间）；未作废时为 null */
+  cancel?: { reason: string; by: number; at: string } | null
 }
-export function listOrderDrafts(query: { opportunity_id?: number; page?: number; page_size?: number } = {}) { return api.get<PageResult<OrderDraft>>('/order-drafts', query) }
+export function listOrderDrafts(query: { opportunity_id?: number; status?: string; page?: number; page_size?: number } = {}) { return api.get<PageResult<OrderDraft>>('/order-drafts', query) }
 export function getOrderDraft(id: number) { return api.get<OrderDraft>(`/order-drafts/${id}`) }
 export function getOrderDraftSource(source: { quote_version_id?: number; inquiry_id?: number }) { return api.get<import('./sample').SampleSourcePreview>('/order-drafts/source', source) }
 export function createOrderDraft(payload: Record<string, unknown>) { return api.post<OrderDraft>('/order-drafts', payload) }
 export function updateOrderDraft(id: number, payload: Record<string, unknown>) { return api.patch<OrderDraft>(`/order-drafts/${id}`, payload) }
+/** 作废草稿：软作废，明细/审计/已生成文件都保留。 */
+export function cancelOrderDraft(id: number, reason: string) {
+  return api.post<OrderDraft>(`/order-drafts/${id}/cancel`, { reason })
+}
+
 export function confirmOrderDraft(id: number, revision: number, versionId: number) { return api.post<{ order_id: number; order_no: string }>(`/order-drafts/${id}/confirm`, { revision, quote_version_id: versionId }) }
 /**
  * 订单草稿出一份下单文件。

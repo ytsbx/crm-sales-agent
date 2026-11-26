@@ -2,7 +2,7 @@ import { showDownloadResult } from '../../shared/download-feedback'
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Banner, Button, DatePicker, Input, Popconfirm, Select, Table, Tag, TextArea, Toast } from '@douyinfe/semi-ui'
+import { Banner, Button, DatePicker, Input, Modal, Popconfirm, Select, Table, Tabs, Tag, TextArea, Toast } from '@douyinfe/semi-ui'
 import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
 import BlockedHint from '../../shared/components/BlockedHint'
@@ -11,7 +11,7 @@ import FormLabel from '../../shared/components/FormLabel'
 import { formatMoney } from '../../shared/components/money'
 import { usePermissions } from '../../shared/hooks/permissions'
 import { useTabLabel } from '../../shared/hooks/useTabLabel'
-import { confirmOrderDraft, generateOrderDraftDocument, getOrderDraft, listOrderDrafts, updateOrderDraft, type OrderDraft, type OrderDraftLine } from '../../shared/api/order'
+import { cancelOrderDraft, confirmOrderDraft, generateOrderDraftDocument, getOrderDraft, listOrderDrafts, updateOrderDraft, type OrderDraft, type OrderDraftLine } from '../../shared/api/order'
 import { listQuotes } from '../../shared/api/quote'
 import { getCustomer } from '../../shared/api/customer'
 import { downloadBizDoc, listBizDocs } from '../../shared/api/bizdoc'
@@ -38,7 +38,9 @@ export default function OrderDraftsPage() {
   useTabLabel(id && query.data ? `草稿编号 ${draftId}` : null)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
-  const list = useQuery({ queryKey: ['order-drafts', page, pageSize], queryFn: () => listOrderDrafts({ page, page_size: pageSize }), enabled: !id })
+  // 默认只看还在准备中的草稿；已转订单/已作废各自一个页签，不再混在一个列表里
+  const [statusFilter, setStatusFilter] = useState('draft')
+  const list = useQuery({ queryKey: ['order-drafts', statusFilter, page, pageSize], queryFn: () => listOrderDrafts({ status: statusFilter, page, page_size: pageSize }), enabled: !id })
   const [rows, setRows] = useState<OrderDraftLine[]>([])
   const [form, setForm] = useState({ currency: 'CNY', delivery_date: '', payment_terms: '', remark: '' })
   const [quoteSelection, setQuoteSelection] = useState<{ draftId: number; versionId: number }>()
@@ -112,6 +114,23 @@ export default function OrderDraftsPage() {
       Toast.success(`正式订单 ${data.order_no} 已建立`)
     },
   })
+  const [cancelVisible, setCancelVisible] = useState(false)
+  const [cancelReason, setCancelReason] = useState('')
+  const cancel = useMutation({
+    mutationFn: () => {
+      const reason = cancelReason.trim()
+      if (!reason) throw new Error('请填写作废原因')
+      return cancelOrderDraft(draftId, reason)
+    },
+    onSuccess: (data) => {
+      Toast.success('草稿已作废；明细、审计和已生成文件都保留')
+      setCancelVisible(false)
+      setCancelReason('')
+      client.setQueryData(['order-draft', draftId], data)
+      void client.invalidateQueries({ queryKey: ['order-drafts'] })
+    },
+    onError: error,
+  })
   // 幂等键（§8.9）：同一把键在成功之前保持不变，弱网重试才不会多出一份；
   // 成功即清空，下一次点击必然是**新键**（= 明确再出一版，不按内容去重）。
   const docRequestKey = useRef<string | null>(null)
@@ -127,7 +146,18 @@ export default function OrderDraftsPage() {
     {/* auto-height：单卡列表页会被 .page-container 的 flex 规则拉满整屏，
         草稿只有一条时卡片下半截全是白，像没加载完。内容少就按内容高度收住。
         注意注释必须放在花括号里，否则会被当成正文渲染到页面上。 */}
-    <SectionCard className="auto-height"><Table<OrderDraft> dataSource={list.data?.items ?? []} loading={list.isPending} rowKey="id" /* 一页装得下就不画分页条（2026-11-21 巡检）：草稿往往只有一两条，
+    <SectionCard className="auto-height">
+      <Tabs
+        type="line"
+        activeKey={statusFilter}
+        onChange={(key) => { setStatusFilter(key); setPage(1) }}
+        tabList={[
+          { tab: '准备中', itemKey: 'draft' },
+          { tab: '已转正式订单', itemKey: 'converted' },
+          { tab: '已作废', itemKey: 'cancelled' },
+        ]}
+      />
+      <Table<OrderDraft> dataSource={list.data?.items ?? []} loading={list.isPending} rowKey="id" /* 一页装得下就不画分页条（2026-11-21 巡检）：草稿往往只有一两条，
    原来照样挂「显示第 1 条-第 1 条，共 1 条 + 翻页 + 每页条数：20」，
    翻页键和每页条数都是死的，白占一行。数据多过一页时原样出现。 */
           pagination={(list.data?.total ?? 0) <= pageSize ? false : { currentPage: page, pageSize, total: list.data?.total ?? 0, onPageChange: setPage, showSizeChanger: true, pageSizeOpts: [10, 20, 50, 100], onPageSizeChange: (size: number) => { setPageSize(size); setPage(1) } }} columns={[
@@ -149,13 +179,15 @@ export default function OrderDraftsPage() {
         width: 170,
         render: (_: unknown, row: OrderDraft) => row.status === 'converted'
           ? <Tag color="green" size="small">已转正式订单</Tag>
-          : <Tag color="orange" size="small">准备中</Tag>,
+          : row.status === 'cancelled'
+            ? <Tag color="grey" size="small">已作废</Tag>
+            : <Tag color="orange" size="small">准备中</Tag>,
       },
       { title: '明细数', width: 130, render: (_: unknown, row: OrderDraft) => `${row.items.length} 项` },
       {
         title: '操作',
         render: (_: unknown, row: OrderDraft) => (
-          <Link to={`/order-drafts/${row.id}`}>{row.status === 'converted' ? '查看' : '继续填写'}</Link>
+          <Link to={`/order-drafts/${row.id}`}>{row.status === 'draft' ? '继续填写' : '查看'}</Link>
         ),
       },
     ]} />
@@ -225,7 +257,10 @@ export default function OrderDraftsPage() {
           提示为什么点不了」）。这里只有一个判据 `editable`，三种原因分开写。 */}
       <BlockedHint blocked={[
         { ok: !busy, reason: '上一次操作还在进行中，稍等一下再改。' },
-        { ok: draft.status === 'draft', reason: '这份草稿已经转成正式订单，草稿内容不能再改。' },
+        { ok: draft.status === 'draft',
+          reason: draft.status === 'cancelled'
+            ? '这份草稿已作废，内容不能再改。'
+            : '这份草稿已经转成正式订单，草稿内容不能再改。' },
         { ok: can('order:manage'), reason: '你的账号没有「订单管理」权限，只能查看；需要修改请让有权限的同事来改，或请管理员开通。' },
       ]} action="修改草稿和保存" />
       {draft.status === 'draft' && can('order:manage') && <GuardedButton
@@ -238,9 +273,30 @@ export default function OrderDraftsPage() {
         >
           保存草稿
         </GuardedButton>}
+      {draft.status === 'draft' && can('order:manage') && (
+        <Button
+          type="danger"
+          theme="borderless"
+          style={{ marginTop: 12, marginLeft: 12 }}
+          onClick={() => { setCancelReason(''); setCancelVisible(true) }}
+        >
+          作废草稿
+        </Button>
+      )}
+      {draft.status === 'cancelled' && (
+        <Banner
+          type="warning"
+          fullMode={false}
+          closeIcon={null}
+          title="草稿已作废"
+          description={`${draft.cancel?.reason ?? ''}（作废后不能修改或转正式订单；明细、审计和已生成文件保留）`}
+        />
+      )}
     </SectionCard>
     <SectionCard title="确认正式下单" className="order-draft-confirm" accent="var(--crm-primary)">
-      {draft.order_id ? (
+      {draft.status === 'cancelled' ? (
+        <p className="workflow-guide">这张草稿已作废，不能转正式订单。需要下单请重新打开表单新建一张草稿。</p>
+      ) : draft.order_id ? (
         <Link to={`/orders/${draft.order_id}`}>查看正式订单</Link>
       ) : (
         <div className="order-draft-confirm-body">
@@ -322,7 +378,7 @@ export default function OrderDraftsPage() {
       )}
     </SectionCard>
     <SectionCard title="草稿需求单" style={{ marginTop: 16 }}><p>生成文件会保存当时的草稿和差异；以后修改不会覆盖旧文件。</p>
-      {can('order:manage') && <GuardedButton
+      {can('order:manage') && draft.status === 'draft' && <GuardedButton
           disabled={busy || dirty}
           blockedReasons={dirty ? ['草稿有新改动：请先点上面那张卡里的「保存草稿」，再生成需求单。'] : []}
           action="生成草稿需求单"
@@ -333,5 +389,34 @@ export default function OrderDraftsPage() {
         </GuardedButton>}
       {(docs.data ?? []).map(doc => <p key={doc.id}>{doc.doc_no} V{doc.version} · <button type="button" className="crm-text-action" onClick={() => void showDownloadResult(downloadBizDoc(doc))}>下载 PDF</button></p>)}
     </SectionCard>
+
+    <Modal
+      title="作废这张草稿？"
+      visible={cancelVisible}
+      onCancel={() => { if (!cancel.isPending) setCancelVisible(false) }}
+      onOk={() => cancel.mutate()}
+      confirmLoading={cancel.isPending}
+      okText="确认作废"
+      cancelText="取消"
+      okButtonProps={{ disabled: !cancelReason.trim(), type: 'danger' }}
+      width={460}
+    >
+      <div style={{ display: 'grid', gap: 10 }}>
+        <div style={{ fontSize: 12, color: 'var(--crm-text-3)', lineHeight: 1.7 }}>
+          作废后不能修改、不能转正式订单；草稿明细、审计记录和已生成的需求单都会保留。
+        </div>
+        <div>
+          <div style={{ marginBottom: 4 }}>作废原因（必填）</div>
+          <TextArea
+            aria-label="作废原因"
+            rows={3}
+            placeholder="例如：客户取消 / 建错了 / 已重新建草稿"
+            value={cancelReason}
+            onChange={setCancelReason}
+            disabled={cancel.isPending}
+          />
+        </div>
+      </div>
+    </Modal>
   </div>
 }

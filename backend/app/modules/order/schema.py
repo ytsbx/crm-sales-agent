@@ -276,3 +276,9 @@ class OrderDraftUpdate(PatchModel):
 class OrderDraftConfirm(BaseModel):
     revision: int = Field(gt=0)
     quote_version_id: int = Field(gt=0)
+
+
+class OrderDraftCancel(BaseModel):
+    """作废草稿：必须说明原因；只改状态，保留明细、审计与已出的文件。"""
+
+    reason: str = Field(min_length=1, max_length=255)

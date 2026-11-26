@@ -1,5 +1,6 @@
 """订单准备资料。只有客户确认且与草稿逐项一致的报价才能转正式订单。"""
 from collections import Counter
+from datetime import UTC, datetime
 from decimal import Decimal
 import hashlib
 import json
@@ -55,6 +56,7 @@ async def detail(session, draft):
         'source_context': draft.source_context, 'status': draft.status, 'order_id': draft.order_id,
         'currency': draft.currency, 'delivery_date': draft.delivery_date, 'payment_terms': draft.payment_terms,
         'remark': draft.remark, 'revision': draft.revision, 'created_at': draft.created_at,
+        'cancel': (draft.source_context or {}).get('_cancel'),
         'items': [{'id': i.id, 'source_item_id': i.source_snapshot['source_item_id'], 'name': i.name,
             'source_snapshot': i.source_snapshot, 'quantity': i.quantity,
             'quantity_exact': format(i.quantity, 'f'),
@@ -88,6 +90,13 @@ async def create(session, user, payload):
             raise AppError(ErrorCode.FORBIDDEN, '该请求编号不可使用', 403)
         if existing.request_hash != digest:
             raise AppError(ErrorCode.PARAM_ERROR, '该请求编号已用于不同草稿内容', 409)
+        if existing.status == 'cancelled':
+            # 旧键不能悄悄返回一张作废草稿：让前端重新打开表单换新键
+            raise AppError(
+                ErrorCode.VERSION_CONFLICT,
+                '这张草稿已作废，请重新打开表单后再提交',
+                409,
+            )
         return existing
     data = await preview(session, user, quote_version_id=payload.quote_version_id, inquiry_id=payload.inquiry_id)
     available = {i['source_item_id']: i for i in data['items']}
@@ -140,6 +149,35 @@ async def update(session, user, draft_id, payload):
     await session.flush()
     await write_audit(session, operator_id=user.id, action='update', business_type='order_draft', business_id=draft.id,
                       before=before, after=await detail(session, draft))
+    return draft
+
+
+async def cancel(session, user, draft_id, reason):
+    """作废草稿：软作废，不删明细/审计/已生成的单据文件。"""
+    reason = (reason or '').strip()
+    if not reason:
+        raise AppError(ErrorCode.PARAM_ERROR, '请填写作废原因', 422)
+    draft = await get_visible(session, user, draft_id, lock=True)
+    if draft.status == 'converted':
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, '已转正式订单的草稿不能作废', 422)
+    if draft.status == 'cancelled':
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, '这张草稿已经作废', 422)
+    before = {'status': draft.status}
+    draft.status = 'cancelled'
+    draft.source_context = {
+        **(draft.source_context or {}),
+        '_cancel': {
+            'reason': reason,
+            'by': user.id,
+            'at': datetime.now(UTC).isoformat(),
+        },
+    }
+    await session.flush()
+    await write_audit(
+        session, operator_id=user.id, action='cancel', business_type='order_draft',
+        business_id=draft.id, before=before,
+        after={'status': draft.status, 'reason': reason},
+    )
     return draft
 
 
