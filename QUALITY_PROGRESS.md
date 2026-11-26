@@ -6103,3 +6103,43 @@
 - 附件表在样品详情里启用紧凑模式：去掉「存储」列、收窄各列、文件名换行，抽屉内所有列直接看全；其他页面维持原样。
 - 去掉添加明细按钮下方与空态重复的那句提示。
 - 验证：前端 tsc、vite build 通过；用长产品名/长规格明细截图走查。
+
+## 2026-11-26 打样入口审查（只审未改）
+
+- 范围：`样品管理 → 新建样品申请 → 同序 OA 打样流程`，含商机/报价/定制需求快捷入口。
+- 验证基线：`test_sample_oa_draft.py`、`test_oa_sample_inquiry_flow.py`、`test_sample_create_idempotency.py`、`test_sample_ship_approval.py` 共 68 项通过；以下问题均不在现有用例覆盖内。
+
+### P1-1 「沿用原询价流程」会卡死，样品永远停在待审批
+
+- 触发：打样有原询价来源，在 `同序 OA 打样流程` 选择「沿用原询价流程（不另发审批）」并提交；原询价 OA 之后通过（或此前已通过）。
+- 证据：`backend/app/modules/sample/dingtalk.py:424-427` 只把 `dingtalk_oa.submitted` 写成 true，并提交关联，不写样品主状态；`backend/app/modules/dingtalk/service.py:1096-1099` 的通用 OA 同步只把 `oa_type='sample'` 的行关联到样品，`oa_type='inquiry'` 的原始询价行不会回写样品；`backend/app/modules/sample/router.py:1237-1240` 登记制作时仍按 `sample.status` 判断，pending 一律 422；`backend/app/modules/sample/model.py:100-105` 已提交的 pending 单又不能删除。
+- 复现：构造 `source_context.dingtalk_oa={mode:'inquiry',submitted:true,source_oa_id:9}` 的 pending 样品，原询价 OaInstance 为 approved；`require_sample_approved` 返回 approved，但 `sample.status` 仍为 pending、`can_delete_sample` 为 false，形成“不能编辑、不能删除、不能登记制作/寄样”的死结。
+- 影响：业务员按界面提示选择“沿用原询价”，单据无法走完；转交后接手人也无法处理。
+- 下一步（待业务拍板）：A. 原询价 OA 状态回写到关联样品（需要可靠关联指针/同步）；B. 在关联时若原询价已通过就同步置为 approved，并补后续同步；C. 暂时撤掉该选项。建议 A/B，保留“不另发审批”的业务口径。
+
+### P1-2 只填产品名称的新品绕过同序审批
+
+- 触发：新建样品时产品库搜不到、只在“产品名称”框输入一个新品名，不选 SKU、不关联定制需求；之后在详情走“现有产品寄样审批”。
+- 证据：`backend/app/modules/sample/service.py:111-131` 的 `sample_is_custom` 只看来源是否为 inquiry、明细是否有 `inquiry_id`；只填 `item_name` 的明细被判为 `is_custom=false`。`frontend/src/modules/sample/SampleListPage.tsx:317-325` 对该类单显示“提交寄样申请”，`backend/app/modules/sample/router.py:952-960` 只拦 `sample_is_custom=true`，因此允许提交 CRM 内部寄样审批，不触发同序 OA 打样审批。
+- 复现：SQLite 构造 `SampleItem(item_name='全新产品', sku_id=None, inquiry_id=None)`，`sample_is_custom` 返回 `False`。
+- 影响：新品可能未走同序打样审批就被安排寄样，违反“打样新建统一从同序审批草稿开始”。
+- 下一步（待业务确认）：把“无 SKU 且无询价来源、仅有产品名称”的明细判为定制/新品，强制同序 OA；或显式增加“新品”标识，不能靠产品名称字符串判断。
+
+### P2-1 手动新建样品没有带幂等键
+
+- 触发：弱网下 `POST /samples` 被客户端重试，或按钮被重复触发；`frontend/src/modules/sample/SampleListPage.tsx:578-589` 未生成 `request_key`，而 `backend/app/modules/sample/router.py:327` 已支持同键幂等。
+- 影响：可能建出两张相同的打样申请；当前 `confirmLoading` 只挡双击，不挡网络重试。
+- 下一步：打开新建弹窗时生成 request_key，失败重试复用，成功后再换新键；补前端/接口用例。
+
+### P2-2 新单未送审也显示“待审批”
+
+- 触发：新建完成后 `status='pending'`，但 `dingtalk_oa.submitted` 还是 false；列表状态标签直接显示「待审批」（`backend/app/modules/sample/model.py:31-39`），详情下一步却说“草稿还未送审”。
+- 影响：业务员以为已经进了同序审批，实际还要点“提交打样到同序 OA”。
+- 下一步：列表/详情增加派生的“待提交审批 / 待 OA 审批”文案，依据 `submitted` 区分；不改数据库状态。
+
+### P2-3 转交后的关联询价 OA 记录可见性（待调查）
+
+- `backend/app/modules/sample/dingtalk.py:84-102` 的 `inquiry_candidates` 要求 `quote:view`；`detail` 只有 `source_oa_id` 在候选里才返回记录。转交接手人按固定口径只需 `sample:view/manage`，可能看不到原询价审批记录，界面会显示“尚未提交或关联”。
+- 下一步：确认是否允许只读返回原审批状态；如允许，需做最小字段脱敏，不暴露询价明细。
+
+- 本轮未改代码；下一步先请业务确认 P1-1/P1-2 口径，再补回归测试。
