@@ -98,6 +98,7 @@ export const AUDIT_TYPE_LABEL: Record<string, string> = {
   sales_return: '销售退货',
   sales_target: '销售目标',
   sample: '打样单',
+  sample_shipment: '寄样审批',
   sample_item: '打样明细',
   setting: '系统配置',
   settings: '系统配置',

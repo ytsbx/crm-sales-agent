@@ -59,10 +59,6 @@ from app.modules.sample import service as svc
 from app.modules.sample.model import (
     can_delete_sample,
     can_terminate_sample,
-    SHIP_APPROVAL_APPROVED,
-    SHIP_APPROVAL_PENDING,
-    SHIP_APPROVAL_REJECTED,
-    SHIP_APPROVER_ROLES,
     SAMPLE_STATUS_LABEL,
     SampleItem,
     SampleRequest,
@@ -78,7 +74,6 @@ from app.modules.sample.schema import (
     SampleRevise,
     SampleShip,
     SampleShipApprovalApply,
-    SampleShipApprovalDecision,
     SampleSign,
     SampleTerminate,
     SampleTransfer,
@@ -915,30 +910,27 @@ async def revise_sample(
     return ok(after, f"已开第 {child.version} 版（原版冻结保留，等审批）")
 
 
-def _is_ship_approver(user) -> bool:
-    """谁能批寄样：主管 / 管理员（与合同作废等管理动作同一口径）。"""
-    return any(role in SHIP_APPROVER_ROLES for role in user.roles) or user.has("settings:manage")
-
-
 async def _require_ship_approved(session, sample):
     """寄样放行条件。
 
     - 定制件：沿用原询价审批（`require_sample_approved`），不另批寄样；
-    - 现有产品：看 CRM 内的寄样审批（主管批准后才有资格登记寄样）。
+    - 现有产品：看审批中心里的寄样审批（主管批准后才有资格登记寄样）。
     """
     if await svc.sample_is_custom(session, sample):
         from app.modules.oa.business_gates import require_sample_approved
 
         await require_sample_approved(session, sample)
         return None
-    approval = svc.ship_approval(sample)
-    if approval.get("status") != SHIP_APPROVAL_APPROVED:
+    from app.modules.approval import sample_ship as ship_approval_service
+
+    instance = await ship_approval_service.latest(session, sample.id)
+    if instance is None or instance.status != "approved":
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
             "现有产品寄样需要主管审批：请先在样品详情提交寄样申请，批准后才能登记寄样",
             422,
         )
-    return approval
+    return ship_approval_service.serialize(instance)
 
 
 @router.post("/samples/{sample_id}/ship-approval")
@@ -949,11 +941,13 @@ async def apply_ship_approval(
     user: CurrentUser = Depends(require_permission("sample:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """提交现有产品寄样申请（承运商、运费、说明），等主管批准。
+    """提交现有产品寄样申请（承运商、运费、说明），进入审批中心等主管批准。
 
     定制样品的寄样凭原询价审批，不走这里 —— 两边分开，避免同一次寄样被批两遍。
     驳回过可以改内容重新提交；审批中不能改，防止"批的和寄的不是同一份"。
     """
+    from app.modules.approval import sample_ship as ship_approval_service
+
     sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
     if await svc.sample_is_custom(session, sample):
         raise AppError(
@@ -968,131 +962,29 @@ async def apply_ship_approval(
             f"样品当前状态是「{current}」，不能再申请寄样",
             422,
         )
-    current = svc.ship_approval(sample)
-    if current.get("status") == SHIP_APPROVAL_APPROVED:
-        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "寄样已批准，直接登记寄样即可", 409)
-    if current.get("status") == SHIP_APPROVAL_PENDING:
-        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "寄样申请正在审批中，请等待结果", 409)
-
-    approval = {
-        "status": SHIP_APPROVAL_PENDING,
-        "applicant_id": user.id,
-        "applied_at": datetime.now(UTC).isoformat(),
-        "carrier": payload.carrier,
-        "shipping_fee": str(payload.shipping_fee),
-        "note": payload.note,
-        "approver_id": None,
-        "decided_at": None,
-        "comment": None,
-    }
-    sample.source_context = {**(sample.source_context or {}), "ship_approval": approval}
-    await session.flush()
-    after = await svc.detail(session, sample, user)
+    instance = await ship_approval_service.apply(
+        session, sample, user,
+        carrier=payload.carrier,
+        shipping_fee=payload.shipping_fee,
+        note=payload.note,
+    )
     await write_audit(
         session,
         operator_id=user.id,
         action="sample_ship_apply",
         business_type="sample",
         business_id=sample.id,
-        before={"ship_approval": current or None},
-        after=after,
+        after={
+            "approval_id": instance.id,
+            "carrier": payload.carrier,
+            "shipping_fee": str(payload.shipping_fee),
+            "note": payload.note,
+        },
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(after, "寄样申请已提交，等待主管审批")
-
-
-@router.post("/samples/{sample_id}/ship-approval/approve")
-async def approve_ship_approval(
-    sample_id: int,
-    payload: SampleShipApprovalDecision,
-    request: Request,
-    user: CurrentUser = Depends(require_permission("sample:view")),
-    session: AsyncSession = Depends(get_db),
-):
-    """主管批准寄样：同时把「待审批」的现货样品单批成「已批准」。"""
-    sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
-    if not _is_ship_approver(user):
-        raise AppError(ErrorCode.FORBIDDEN, "只有主管或管理员可以审批寄样", 403)
-    approval = svc.ship_approval(sample)
-    if approval.get("status") != SHIP_APPROVAL_PENDING:
-        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "没有待审批的寄样申请", 422)
-    if approval.get("applicant_id") == user.id and "admin" not in user.roles:
-        raise AppError(ErrorCode.FORBIDDEN, "不能审批自己提交的寄样申请，请找其他主管", 403)
-
-    now = datetime.now(UTC)
-    updated = {
-        **approval,
-        "status": SHIP_APPROVAL_APPROVED,
-        "approver_id": user.id,
-        "decided_at": now.isoformat(),
-        "comment": payload.comment,
-    }
-    sample.source_context = {**(sample.source_context or {}), "ship_approval": updated}
-    if sample.status == "pending":
-        # 现货样品没有制作环节：批准寄样就是批准这张单
-        sample.status = "approved"
-        sample.approved_at = now
-        await svc.record_opportunity_touch(session, sample, "寄样已批准")
-    await session.flush()
     after = await svc.detail(session, sample, user)
-    await write_audit(
-        session,
-        operator_id=user.id,
-        action="sample_ship_approve",
-        business_type="sample",
-        business_id=sample.id,
-        before={"status": "pending", "ship_approval": approval},
-        after=after,
-        ip=client_ip(request),
-    )
-    await session.commit()
-    return ok(after, "寄样已批准，可登记寄样")
-
-
-@router.post("/samples/{sample_id}/ship-approval/reject")
-async def reject_ship_approval(
-    sample_id: int,
-    payload: SampleShipApprovalDecision,
-    request: Request,
-    user: CurrentUser = Depends(require_permission("sample:view")),
-    session: AsyncSession = Depends(get_db),
-):
-    """主管驳回寄样申请：原因必填，样品保持待审批，可改内容重新申请。"""
-    sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
-    if not _is_ship_approver(user):
-        raise AppError(ErrorCode.FORBIDDEN, "只有主管或管理员可以审批寄样", 403)
-    reason = (payload.comment or "").strip()
-    if not reason:
-        raise AppError(ErrorCode.PARAM_ERROR, "请填写驳回原因", 422)
-    approval = svc.ship_approval(sample)
-    if approval.get("status") != SHIP_APPROVAL_PENDING:
-        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "没有待审批的寄样申请", 422)
-    if approval.get("applicant_id") == user.id and "admin" not in user.roles:
-        raise AppError(ErrorCode.FORBIDDEN, "不能审批自己提交的寄样申请，请找其他主管", 403)
-
-    updated = {
-        **approval,
-        "status": SHIP_APPROVAL_REJECTED,
-        "approver_id": user.id,
-        "decided_at": datetime.now(UTC).isoformat(),
-        "comment": reason,
-    }
-    sample.source_context = {**(sample.source_context or {}), "ship_approval": updated}
-    await session.flush()
-    after = await svc.detail(session, sample, user)
-    await write_audit(
-        session,
-        operator_id=user.id,
-        action="sample_ship_reject",
-        business_type="sample",
-        business_id=sample.id,
-        before={"status": sample.status, "ship_approval": approval},
-        after=after,
-        ip=client_ip(request),
-    )
-    await session.commit()
-    return ok(after, "寄样申请已驳回，可修改后重新提交")
+    return ok(after, "寄样申请已提交，请在审批中心等待主管审批")
 
 
 @router.post("/samples/{sample_id}/ship")

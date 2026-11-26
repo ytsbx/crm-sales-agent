@@ -108,11 +108,6 @@ def serialize_shipment(shipment: SampleShipment) -> dict:
     }
 
 
-def ship_approval(sample: SampleRequest) -> dict:
-    """现有产品寄样审批快照（没有申请过时返回空 dict）。"""
-    return (sample.source_context or {}).get("ship_approval") or {}
-
-
 async def sample_is_custom(session: AsyncSession, sample: SampleRequest) -> bool:
     """这张打样单是不是定制件（有定制需求/询价来源）。
 
@@ -145,9 +140,20 @@ def serialize_request(
     superseded_by: int | None = None,
     revision_locked: bool = False,
     is_custom: bool = False,
+    ship_approval: dict | None = None,
 ) -> dict:
     basis = basis_state(request)
-    approval = (request.source_context or {}).get("ship_approval") or {}
+    approval = ship_approval or {}
+    # 现有产品没有"打样草稿"这一说：它们还没走寄样审批时，状态就叫「待寄样审批」，
+    # 免得业务员以为要先去填同序 OA 打样资料。
+    status_label = (
+        "打样草稿"
+        if (request.source_context or {}).get("dingtalk_oa")
+        and not (request.source_context or {})["dingtalk_oa"].get("submitted")
+        else SAMPLE_STATUS_LABEL.get(request.status, request.status)
+    )
+    if not is_custom and request.status == "pending":
+        status_label = "待寄样审批"
     return {
         "id": request.id,
         # 原版锁定与可打开的修订版分别判断。
@@ -167,7 +173,7 @@ def serialize_request(
         # 审批轮次（§3.2）：驳回后重提 / 已批准后改车间依据会自增。
         # 界面据此显示"第 N 轮"，也让"被驳回过几次"数得出来。
         "review_round": request.review_round or 1,
-        "status_label": ("打样草稿" if (request.source_context or {}).get("dingtalk_oa") and not (request.source_context or {})["dingtalk_oa"].get("submitted") else SAMPLE_STATUS_LABEL.get(request.status, request.status)),
+        "status_label": status_label,
         "remark": request.remark,
         "reject_reason": request.reject_reason,
         "requested_at": request.requested_at.isoformat() if request.requested_at else None,
@@ -302,10 +308,16 @@ def build_list_stmt(
     if owner_id:
         stmt = stmt.where(SampleRequest.owner_id == owner_id)
     if ship_approval_status:
-        # 主管找"待我批"的寄样申请：只按 JSON 里的状态筛（PostgreSQL / SQLite 都支持）
+        # 主管找"待我批"的寄样申请：按审批中心的实例状态筛
+        from app.modules.approval.model import ApprovalInstance
+
         stmt = stmt.where(
-            SampleRequest.source_context["ship_approval"]["status"].as_string()
-            == ship_approval_status
+            SampleRequest.id.in_(
+                select(ApprovalInstance.business_id).where(
+                    ApprovalInstance.business_type == "sample_shipment",
+                    ApprovalInstance.status == ship_approval_status,
+                )
+            )
         )
     if keyword:
         # 样品单没有单号字段（ER §13 未定义），所以关键词只搜客户名与商机标题
@@ -549,6 +561,9 @@ async def list_payload(
             if child_id is not None:
                 child_of.setdefault(parent_id, child_id)
 
+    from app.modules.approval import sample_ship as ship_approval_service
+
+    approvals = await ship_approval_service.latest_map(session, ids)
     payload = []
     for row in rows:
         row_items = items_by_request.get(row.id, [])
@@ -573,6 +588,7 @@ async def list_payload(
             superseded_by=child_of.get(row.id),
             revision_locked=row.id in locked_ids,
             is_custom=is_custom,
+            ship_approval=ship_approval_service.serialize(approvals.get(row.id)),
         )
         # 「这张单子的附件还能不能上传」（2026-10-08）：
         # 制作/寄出之后新附件只能标「后续补充资料」，界面据此决定上传时带什么类别。

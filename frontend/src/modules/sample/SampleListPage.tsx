@@ -6,7 +6,7 @@ import SampleDingTalkModal from './SampleDingTalkModal'
 import FormLabel from '../../shared/components/FormLabel'
 import { useEffect, useRef, useState } from 'react'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
 import {
   ConfirmRequiredModal,
@@ -39,7 +39,6 @@ import { listSkusForPricing } from '../../shared/api/pricing'
 import {
   addSampleItem,
   applySampleShipApproval,
-  approveSampleShipApproval,
   confirmSample,
   createSample,
   deleteSample,
@@ -48,7 +47,6 @@ import {
   listSamples,
   listSampleTransferOptions,
   madeSample,
-  rejectSampleShipApproval,
   restoreSample,
   reviseSample,
   shipSample,
@@ -389,8 +387,7 @@ export default function SampleListPage() {
     shipping_fee: '',
     note: '',
   })
-  const [shipRejectVisible, setShipRejectVisible] = useState(false)
-  const [shipRejectReason, setShipRejectReason] = useState('')
+
   const [newItem, setNewItem] = useState<ItemDraft>({ quantity: '1' })
   // 生产打样资料（文档 §3.5）：跟单在这一栏把车间要的东西补全，
   // 打样需求单出图时逐项带给车间。
@@ -623,30 +620,6 @@ export default function SampleListPage() {
     onSuccess: () => {
       Toast.success('寄样申请已提交，等待主管审批')
       setShipApprovalForm({ carrier: '', shipping_fee: '', note: '' })
-      void refresh()
-    },
-    onError,
-  })
-
-  const approveShipApprovalMutation = useMutation({
-    mutationFn: () => approveSampleShipApproval(detailId!),
-    onSuccess: () => {
-      Toast.success('寄样已批准，可登记寄样')
-      void refresh()
-    },
-    onError,
-  })
-
-  const rejectShipApprovalMutation = useMutation({
-    mutationFn: () => {
-      const reason = shipRejectReason.trim()
-      if (!reason) throw new Error('请填写驳回原因')
-      return rejectSampleShipApproval(detailId!, reason)
-    },
-    onSuccess: () => {
-      Toast.success('寄样申请已驳回，业务员可修改后重新提交')
-      setShipRejectVisible(false)
-      setShipRejectReason('')
       void refresh()
     },
     onError,
@@ -1147,37 +1120,6 @@ export default function SampleListPage() {
         />
       </SectionCard>
 
-      <Modal
-        title="驳回寄样申请"
-        visible={shipRejectVisible}
-        onCancel={() => {
-          if (!rejectShipApprovalMutation.isPending) setShipRejectVisible(false)
-        }}
-        onOk={() => rejectShipApprovalMutation.mutate()}
-        confirmLoading={rejectShipApprovalMutation.isPending}
-        okText="确认驳回"
-        cancelText="取消"
-        okButtonProps={{ disabled: !shipRejectReason.trim(), type: 'danger' }}
-        width={460}
-      >
-        <div style={{ display: 'grid', gap: 10 }}>
-          <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-            驳回后业务员可以修改承运商/运费重新提交，样品单保持原状态。
-          </div>
-          <div>
-            <div style={{ marginBottom: 4 }}>驳回原因（必填）</div>
-            <TextArea
-              aria-label="驳回原因"
-              rows={3}
-              placeholder="例如：运费偏高，请改用经济快递"
-              value={shipRejectReason}
-              onChange={setShipRejectReason}
-              disabled={rejectShipApprovalMutation.isPending}
-            />
-          </div>
-        </div>
-      </Modal>
-
       {/* 终止打样（K3）：二次确认 + 原因；只改状态，制作/寄送事实保留 */}
       <Modal
         title="终止打样"
@@ -1657,12 +1599,12 @@ export default function SampleListPage() {
                           运费 {formatMoney(toTwoDecimals(String(detail.ship_approval.shipping_fee ?? '0')), 'CNY')}
                           {detail.ship_approval.note ? `；说明：${detail.ship_approval.note}` : ''}
                         </div>
-                        {isReviewer && (
-                          <div style={{ display: 'flex', gap: 8 }}>
-                            <Button size="small" type="primary" theme="solid" loading={approveShipApprovalMutation.isPending} onClick={() => approveShipApprovalMutation.mutate()}>批准寄样</Button>
-                            <Button size="small" type="danger" theme="outline" onClick={() => { setShipRejectReason(''); setShipRejectVisible(true) }}>驳回</Button>
-                          </div>
-                        )}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                            主管在「审批中心」处理；批准后这里会显示可登记寄样。
+                          </span>
+                          <Link to="/approvals"><Button size="small" theme="outline">去审批中心</Button></Link>
+                        </div>
                       </div>
                     )}
                     {detail.ship_approval?.status === 'rejected' && (

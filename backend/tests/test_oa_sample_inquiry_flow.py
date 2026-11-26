@@ -34,6 +34,7 @@ from app.modules.oa import inquiry as oa_inquiry
 from app.modules.oa import sample as oa_sample
 from app.modules.oa.business_gates import require_sample_approved
 from app.modules.sample import dingtalk as sample_approval
+from app.modules.approval.model import ApprovalInstance
 from app.modules.sample import router as sample_router
 from app.modules.sample.model import SampleItem, SampleRequest, SampleShipment
 from app.modules.sample.schema import SampleCreate, SampleTransfer, SampleUpdate
@@ -47,7 +48,7 @@ def _engine():
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine, tables=[
         User.__table__, Department.__table__, Customer.__table__, Contact.__table__,
-        SampleRequest.__table__, FileRecord.__table__, BusinessFile.__table__,
+        SampleRequest.__table__, ApprovalInstance.__table__, FileRecord.__table__, BusinessFile.__table__,
         CustomInquiry.__table__, OaInstance.__table__, Opportunity.__table__,
         SystemSetting.__table__, AuditLog.__table__,
     ])
@@ -91,6 +92,7 @@ async def test_revision_without_approval_source_starts_a_tongxu_draft(monkeypatc
     engine = _engine()
     Base.metadata.create_all(engine, tables=[
         AuditLog.__table__, SampleItem.__table__, SampleShipment.__table__,
+        ApprovalInstance.__table__,
     ])
     actor = make_user(1, permissions=("sample:manage",))
     request = Request({"type": "http", "headers": []})
@@ -121,6 +123,7 @@ async def test_second_revision_is_rejected(monkeypatch):
     engine = _engine()
     Base.metadata.create_all(engine, tables=[
         AuditLog.__table__, SampleItem.__table__, SampleShipment.__table__,
+        ApprovalInstance.__table__,
     ])
     actor = make_user(1, permissions=("sample:manage",))
     request = Request({"type": "http", "headers": []})
@@ -242,6 +245,7 @@ async def test_shipped_oa_sample_revision_requires_its_own_approval(monkeypatch)
     engine = _engine()
     Base.metadata.create_all(engine, tables=[
         AuditLog.__table__, SampleItem.__table__, SampleShipment.__table__,
+        ApprovalInstance.__table__,
     ])
     actor = make_user(1, permissions=("sample:manage",))
     request = Request({"type": "http", "headers": []})

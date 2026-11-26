@@ -30,16 +30,18 @@ const TABS = [
 ]
 
 const APPROVAL_GUIDE: Record<string, { empty: string; next: string }> = {
-  pending: { empty: '暂无待你处理的审批', next: '先点「看报价」核对当前版本，再决定通过、拒绝或转交。' },
-  mine: { empty: '还没有你提交的报价审批', next: '在报价详情提交审批后，回这里看进度。' },
-  approved: { empty: '暂无已通过的审批', next: '全部审批通过后，经办人可回报价详情发送给客户。' },
-  rejected: { empty: '暂无已拒绝的审批', next: '点「看报价」查看对应版本和审批意见，按意见调整后再提交。' },
+  pending: { empty: '暂无待你处理的审批', next: '先核对单据内容，再决定通过或拒绝；报价审批还可以转交其他主管处理。' },
+  mine: { empty: '还没有你提交的审批', next: '在报价或样品详情提交审批后，回这里看进度。' },
+  approved: { empty: '暂无已通过的审批', next: '通过后，经办人可回原单据继续办理（报价发送 / 登记寄样）。' },
+  rejected: { empty: '暂无已拒绝的审批', next: '打开原单据查看审批意见，按意见调整后再提交。' },
 }
 
 export default function ApprovalPage() {
   const queryClient = useQueryClient()
   const { can } = usePermissions()
   const [activeKey, setActiveKey] = useState('pending')
+  // 分类：全部 / 报价审批 / 寄样审批（按权限显示可选项）
+  const [businessType, setBusinessType] = useState<string | undefined>()
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
   const [rejectTarget, setRejectTarget] = useState<ApprovalRow | null>(null)
@@ -69,11 +71,11 @@ export default function ApprovalPage() {
   ]
 
   const query = useQuery({
-    queryKey: ['approvals', activeKey, page, pageSize],
+    queryKey: ['approvals', activeKey, businessType, page, pageSize],
     queryFn: () =>
       activeKey === 'mine'
-        ? listApprovals({ mine: true, status: '', page, page_size: pageSize })
-        : listApprovals({ status: activeKey, pending_for_me: activeKey === 'pending', page, page_size: pageSize }),
+        ? listApprovals({ mine: true, status: '', business_type: businessType, page, page_size: pageSize })
+        : listApprovals({ status: activeKey, pending_for_me: activeKey === 'pending', business_type: businessType, page, page_size: pageSize }),
     enabled: activeKey !== 'rules',
   })
 
@@ -98,7 +100,7 @@ export default function ApprovalPage() {
     onSuccess: (data) => {
       Toast.success(data?.current_node === 'co_sign'
         ? '本级已通过，接下来等待会签。'
-        : '审批已通过，经办人可回报价详情发送。')
+        : '审批已通过，经办人可回原单据继续办理。')
       refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -157,33 +159,26 @@ export default function ApprovalPage() {
     /* 「版本」原来单独一列只放一个「V1」。并进单号下面一行小字，
        九列变八列，表格才收得进内容区。 */
     {
-      title: '报价单号',
+      title: '单号 / 类型',
       dataIndex: 'quote_no',
-      /* 175 放不下「箭头 + 单号 + 版本」一整行，版本被挤成「第 …」；190 刚好 */
-      width: compact ? 160 : 195,
-      /* 原来单号与「第 N 版」是上下两行的块级 div —— 左边那个展开箭头是 inline 的，
-         块级内容一定另起一行，于是箭头独占一行、单号再一行、版本第三行。
-         改成同一行的两个 inline 片段：箭头 + 单号 + 小字版本，整行只占一行高。 */
-      render: (v: string | null, record: ApprovalRow) =>
-        compact ? (
-          /* 紧凑档把版本号掉到第二行：单号 17 位字符 + 「V1」并排要塞进 156px，
-             单号会被截成省略号。拆两行后单号完整可读，行高由客户列的第二行兜住。 */
+      width: compact ? 175 : 220,
+      render: (v: string | null, record: ApprovalRow) => {
+        const isSample = record.business_type === 'sample_shipment'
+        const no = isSample ? (record.sample_no ?? `打样 #${record.business_id}`) : v
+        return (
           <div style={{ display: 'grid', gap: 2, justifyItems: 'center' }}>
-            <span>{v ?? '-'}</span>
-            {record.version_no ? (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              {no ?? '-'}
+              <Tag size="small" color={isSample ? 'cyan' : 'blue'}>
+                {record.business_type_label ?? (isSample ? '寄样审批' : '报价审批')}
+              </Tag>
+            </span>
+            {!isSample && record.version_no ? (
               <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>V{record.version_no}</span>
             ) : null}
           </div>
-        ) : (
-          <span>
-            {v ?? '-'}
-            {record.version_no ? (
-              <span style={{ fontSize: 12, color: 'var(--crm-text-3)', marginLeft: 6 }}>
-                V{record.version_no}
-              </span>
-            ) : null}
-          </span>
-        ),
+        )
+      },
     },
     {
       title: '客户',
@@ -210,7 +205,7 @@ export default function ApprovalPage() {
       ? []
       : [{ title: '申请人', dataIndex: 'applicant_name', width: 100, render: (v: string | null) => v ?? '-' }]),
     {
-      title: '报价总额',
+      title: '金额 / 运费',
       dataIndex: 'total_amount',
       width: compact ? 112 : 130,
       // 金额走全站口径右对齐（.cell-right）：全站表格默认居中，
@@ -218,7 +213,14 @@ export default function ApprovalPage() {
       className: 'cell-right',
       // 报价总额是业务单据上的钱，按全站口径必须两位小数（¥84,030.00），
       // 不能像统计卡那样取整。
-      render: (v: number | null) => (v === null || v === undefined ? '-' : formatMoney(toTwoDecimals(v), 'CNY')),
+      render: (v: number | null, record: ApprovalRow) => {
+        if (record.business_type === 'sample_shipment') {
+          return record.shipping_fee
+            ? formatMoney(toTwoDecimals(record.shipping_fee), 'CNY')
+            : '-'
+        }
+        return v === null || v === undefined ? '-' : formatMoney(toTwoDecimals(v), 'CNY')
+      },
     },
     {
       title: (
@@ -261,57 +263,64 @@ export default function ApprovalPage() {
          看报价和转交只是配角。
          改成按钮层级：通过 = 主按钮（白底主色描边，见全局规则），拒绝 = 红色文字按钮，
          看报价 / 转交 = 普通文字按钮。同一屏里一眼看出"该点哪个"。 */
-      render: (_: unknown, record: ApprovalRow) => (
-        <div
-          style={{
-            display: 'flex',
-            gap: 4,
-            flexWrap: 'wrap',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
-          {record.version_id && (
-            <Link to={`/quotes/${record.quote_id}?version=${record.version_id}`}>
-              <Button theme="borderless" size="small">看报价</Button>
-            </Link>
-          )}
-          {record.can_approve && (
-            <>
-              {/* 审批通过是不可逆的状态推进（报价随即可以对客发送），点一下生效太轻，
-                  必须二次确认。「拒绝」本来就走原因弹窗，那条不用加。 */}
-              <Popconfirm
-                title="通过这份报价的审批？"
-                content="确认已核对金额和优惠。需要会签的报价会先交给会签人，全部审批通过后才能发送。"
-                onConfirm={() => approveMutation.mutate(record.id)}
-              >
-                {/* 2026-11-20：行内「通过」原来是白底描边，和同排的 看报价/拒绝/转交
-                    三个蓝字不是一套；列表行内的动作一律文字按钮。 */}
-                <Button type="tertiary" theme="borderless" size="small">通过</Button>
-              </Popconfirm>
-              <Button type="danger" theme="borderless" size="small" onClick={() => {
-                setRejectComment('')
-                setRejectTarget(record)
-              }}>
-                拒绝
-              </Button>
-              {(can('quote:approve') || can('quote:finance_approve')) && (
-                <Button
-                  theme="borderless"
-                  size="small"
-                  onClick={() => {
-                    setTransferTarget(record)
-                    setTransferUserId(null)
-                    setTransferComment('')
-                  }}
+      render: (_: unknown, record: ApprovalRow) => {
+        const isSample = record.business_type === 'sample_shipment'
+        return (
+          <div
+            style={{
+              display: 'flex',
+              gap: 4,
+              flexWrap: 'wrap',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            {isSample ? (
+              <Link to={`/samples/${record.sample_id ?? record.business_id}`}>
+                <Button theme="borderless" size="small">看样品</Button>
+              </Link>
+            ) : record.version_id ? (
+              <Link to={`/quotes/${record.quote_id}?version=${record.version_id}`}>
+                <Button theme="borderless" size="small">看报价</Button>
+              </Link>
+            ) : null}
+            {record.can_approve && (
+              <>
+                {/* 通过是不可逆的状态推进：报价通过后可以对客发送，寄样通过后可以寄出。
+                    点一下生效太轻，必须二次确认；拒绝本来就走原因弹窗。 */}
+                <Popconfirm
+                  title={isSample ? '通过这笔寄样申请？' : '通过这份报价的审批？'}
+                  content={isSample
+                    ? '通过后业务员即可登记寄样，运费按申请金额记录。'
+                    : '确认已核对金额和优惠。需要会签的报价会先交给会签人，全部审批通过后才能发送。'}
+                  onConfirm={() => approveMutation.mutate(record.id)}
                 >
-                  转交
+                  <Button type="tertiary" theme="borderless" size="small">通过</Button>
+                </Popconfirm>
+                <Button type="danger" theme="borderless" size="small" onClick={() => {
+                  setRejectComment('')
+                  setRejectTarget(record)
+                }}>
+                  拒绝
                 </Button>
-              )}
-            </>
-          )}
-        </div>
-      ),
+                {!isSample && (can('quote:approve') || can('quote:finance_approve')) && (
+                  <Button
+                    theme="borderless"
+                    size="small"
+                    onClick={() => {
+                      setTransferTarget(record)
+                      setTransferUserId(null)
+                      setTransferComment('')
+                    }}
+                  >
+                    转交
+                  </Button>
+                )}
+              </>
+            )}
+          </div>
+        )
+      },
     },
   ]
 
@@ -319,7 +328,7 @@ export default function ApprovalPage() {
     <div className="page-container">
       <PageHeader
         title="审批中心"
-        subtitle="业务员报价低于自己的价格权限时，必须经审批才能对外发送；审批只看超出权限的部分"
+        subtitle="报价、寄样等需要审批的单据都在这里统一处理；按类型分类，先核对单据再决定通过或拒绝"
       />
 
       {/* 待审批常常只有一两条：卡按内容收住，不拉满整屏 */}
@@ -328,10 +337,38 @@ export default function ApprovalPage() {
           activeKey !== 'rules' && (query.data?.items?.length ?? 0) <= 8 ? 'auto-height' : undefined
         }
       >
-        <Tabs type="line" activeKey={activeKey} onChange={(key) => {
-          setActiveKey(key)
-          setPage(1)
-        }} tabList={TABS_WITH_RULES} />
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'flex-end',
+            justifyContent: 'space-between',
+            gap: 12,
+            flexWrap: 'wrap',
+          }}
+        >
+          <Tabs type="line" activeKey={activeKey} onChange={(key) => {
+            setActiveKey(key)
+            setPage(1)
+          }} tabList={TABS_WITH_RULES} />
+          <div style={{ paddingBottom: 10 }}>
+            <Select
+              size="small"
+              style={{ width: 150 }}
+              value={businessType ?? ''}
+              onChange={(value) => {
+                setBusinessType((value as string) || undefined)
+                setPage(1)
+              }}
+              optionList={[
+                { value: '', label: '全部类型' },
+                ...(can('quote:view') ? [{ value: 'quote_version', label: '报价审批' }] : []),
+                ...(can('sample:view') || can('sample:manage')
+                  ? [{ value: 'sample_shipment', label: '寄样审批' }]
+                  : []),
+              ]}
+            />
+          </div>
+        </div>
         {activeKey === 'rules' ? (
           <div style={{ marginTop: 16 }}>
             <RulesPanel />
@@ -355,6 +392,31 @@ export default function ApprovalPage() {
               expandedRowKeys={expandedKeys}
               expandedRowRender={(record?: ApprovalRow) => {
                 if (!record) return null
+                if (record.business_type === 'sample_shipment') {
+                  return (
+                    <div style={{ display: 'grid', gap: 6, padding: '4px 10px', textAlign: 'left' }}>
+                      <div style={{ fontSize: 13, lineHeight: 1.7 }}>
+                        <span style={{ color: 'var(--crm-text-3)' }}>寄样信息：</span>
+                        承运商 {record.carrier || '待定'}；运费{' '}
+                        {record.shipping_fee
+                          ? formatMoney(toTwoDecimals(record.shipping_fee), 'CNY')
+                          : '-'}
+                      </div>
+                      {record.note && (
+                        <div style={{ fontSize: 13, lineHeight: 1.7 }}>
+                          <span style={{ color: 'var(--crm-text-3)' }}>申请说明：</span>
+                          {record.note}
+                        </div>
+                      )}
+                      {record.comment && (
+                        <div style={{ fontSize: 13, lineHeight: 1.7 }}>
+                          <span style={{ color: 'var(--crm-text-3)' }}>处理意见：</span>
+                          {record.comment}
+                        </div>
+                      )}
+                    </div>
+                  )
+                }
                 const reason = record.summary?.reason
                 /* 「整单（优惠后）」那条的说明跟申请说明是同一句话（同一个 reason 字段
                    被复写了一份），展开后就是「申请说明：…-257.14%」下面再原样重复一遍，
@@ -385,7 +447,9 @@ export default function ApprovalPage() {
                 )
               }}
               rowExpandable={(record?: ApprovalRow) =>
-                Boolean(record?.summary?.reason) || (record?.summary?.offending ?? []).length > 0
+                record?.business_type === 'sample_shipment'
+                  ? Boolean(record.note || record.comment)
+                  : Boolean(record?.summary?.reason) || (record?.summary?.offending ?? []).length > 0
               }
               dataSource={query.data?.items ?? []}
               loading={query.isLoading}
@@ -458,18 +522,29 @@ export default function ApprovalPage() {
       <Modal
         width={520}
         style={{ maxWidth: 'calc(100vw - 32px)' }}
-        title={`拒绝报价审批${rejectTarget?.quote_no ? ` · ${rejectTarget.quote_no}` : ''}`}
+        title={rejectTarget?.business_type === 'sample_shipment'
+          ? `拒绝寄样申请${rejectTarget?.sample_no ? ` · ${rejectTarget.sample_no}` : ''}`
+          : `拒绝报价审批${rejectTarget?.quote_no ? ` · ${rejectTarget.quote_no}` : ''}`}
         visible={Boolean(rejectTarget)}
         onCancel={() => setRejectTarget(null)}
         onOk={() => rejectMutation.mutate()}
         confirmLoading={rejectMutation.isPending}
         okText="确认拒绝"
+        okButtonProps={{
+          disabled: rejectTarget?.business_type === 'sample_shipment' && !rejectComment.trim(),
+        }}
       >
-        <p className="workflow-guide">拒绝后，这个版本无法正式发送。写清需调整的地方，申请人会收到审批意见。</p>
+        <p className="workflow-guide">
+          {rejectTarget?.business_type === 'sample_shipment'
+            ? '拒绝后业务员可以修改承运商/运费重新提交，样品单保持原状态。请写清需要调整的地方。'
+            : '拒绝后，这个版本无法正式发送。写清需调整的地方，申请人会收到审批意见。'}
+        </p>
         <Input
           value={rejectComment}
           onChange={setRejectComment}
-          placeholder="拒绝原因，例如：低于成本，不可让价"
+          placeholder={rejectTarget?.business_type === 'sample_shipment'
+            ? '驳回原因（必填），例如：运费偏高，请改用经济快递'
+            : '拒绝原因，例如：低于成本，不可让价'}
         />
       </Modal>
     </div>

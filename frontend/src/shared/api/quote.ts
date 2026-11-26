@@ -249,6 +249,8 @@ export interface ApprovalRow {
   can_approve: boolean
   id: number
   business_type: string
+  /** 分类名：报价审批 / 寄样审批 */
+  business_type_label?: string
   business_id: number
   status: string
   status_label: string
@@ -273,6 +275,15 @@ export interface ApprovalRow {
   version_no?: number | null
   total_amount?: number | null
   customer_name?: string | null
+  // ---- 寄样审批（business_type='sample_shipment'）----
+  sample_id?: number | null
+  sample_no?: string | null
+  owner_name?: string | null
+  carrier?: string | null
+  shipping_fee?: string | null
+  note?: string | null
+  decided_at?: string | null
+  comment?: string | null
 }
 
 export function listQuotes(query: {
@@ -511,7 +522,7 @@ export function transferApproval(id: number, to_user_id: number, comment?: strin
   return api.post<ApprovalRow>(`/approvals/${id}/transfer`, { to_user_id, comment })
 }
 
-export function listApprovals(query: { status?: string; mine?: boolean; pending_for_me?: boolean; page?: number; page_size?: number }) {
+export function listApprovals(query: { status?: string; mine?: boolean; pending_for_me?: boolean; business_type?: string; page?: number; page_size?: number }) {
   return api.get<PageResult<ApprovalRow>>('/approvals', query)
 }
 

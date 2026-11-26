@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import or_, select, func
+from sqlalchemy import and_, or_, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -16,6 +16,7 @@ from app.core.response import ok, page_data, paginate
 from app.modules.approval.model import ApprovalDefinition, ApprovalInstance, ApprovalRecord
 from app.modules.approval.access import approval_denial, FINANCE_APPROVE_PERMISSION
 from app.modules.approval.rules_engine import strip_approval_summary
+from app.modules.approval import sample_ship as sample_ship_service
 from app.modules.approval.schema import (
     ApprovalDefinitionCreate,
     ApprovalDefinitionUpdate,
@@ -26,6 +27,8 @@ from app.modules.customer.model import Customer
 from app.modules.pricing import service as pricing_service
 from app.modules.quote.model import Quote, QuoteVersion
 from app.modules.quote import service as quote_service
+from app.modules.sample.model import SampleRequest
+from app.modules.sample import service as sample_service
 from app.modules.notification import service as notification_service
 from app.modules.user.model import User
 from app.modules.user import service as user_service
@@ -62,22 +65,77 @@ async def _context(session: AsyncSession, instances: list[ApprovalInstance]) -> 
             await session.execute(select(Customer.id, Customer.name).where(Customer.id.in_(customer_ids)))
         ).all()
     } if customer_ids else {}
-    user_ids = {i.applicant_id for i in instances if i.applicant_id}
+    sample_ids = [
+        i.business_id for i in instances if i.business_type == sample_ship_service.BUSINESS_TYPE
+    ]
+    samples = {
+        s.id: s
+        for s in (
+            await session.execute(select(SampleRequest).where(SampleRequest.id.in_(sample_ids)))
+        ).scalars().all()
+    } if sample_ids else {}
+    customer_ids |= {s.customer_id for s in samples.values() if s.customer_id}
+    if customer_ids - set(customers):
+        customers = {
+            int(cid): name
+            for cid, name in (
+                await session.execute(select(Customer.id, Customer.name).where(Customer.id.in_(customer_ids)))
+            ).all()
+        }
+    user_ids = {i.applicant_id for i in instances if i.applicant_id} | {
+        s.owner_id for s in samples.values() if s.owner_id
+    }
     users = {
         int(uid): name
         for uid, name in (
             await session.execute(select(User.id, User.name).where(User.id.in_(user_ids)))
         ).all()
     } if user_ids else {}
-    return {"versions": versions, "quotes": quotes, "customers": customers, "users": users}
+    return {
+        "versions": versions,
+        "quotes": quotes,
+        "customers": customers,
+        "users": users,
+        "samples": samples,
+    }
 
 
 def _serialize(instance: ApprovalInstance, ctx: dict, *, can_approve: bool = False, can_see_cost: bool = False) -> dict:
+    if instance.business_type == sample_ship_service.BUSINESS_TYPE:
+        sample = ctx["samples"].get(instance.business_id)
+        summary = instance.summary or {}
+        return {
+            "id": instance.id,
+            "business_type": instance.business_type,
+            "business_type_label": sample_ship_service.BUSINESS_TYPE_LABEL[instance.business_type],
+            "business_id": instance.business_id,
+            "status": instance.status,
+            "status_label": STATUS_LABEL.get(instance.status, instance.status),
+            "can_approve": bool(can_approve and instance.status == "pending" and sample is not None),
+            "current_node": instance.current_node,
+            "applicant_id": instance.applicant_id,
+            "applicant_name": ctx["users"].get(instance.applicant_id) if instance.applicant_id else None,
+            "summary": summary,
+            "created_at": instance.created_at,
+            "finished_at": instance.finished_at,
+            "sample_id": instance.business_id,
+            "sample_no": f"打样 #{instance.business_id}",
+            "customer_name": ctx["customers"].get(sample.customer_id) if sample else None,
+            "owner_name": ctx["users"].get(sample.owner_id) if sample else None,
+            "carrier": summary.get("carrier"),
+            "shipping_fee": summary.get("shipping_fee"),
+            "note": summary.get("note"),
+            "decided_at": summary.get("decided_at"),
+            "comment": summary.get("comment"),
+        }
     version = ctx["versions"].get(instance.business_id)
     quote = ctx["quotes"].get(version.quote_id) if version else None
     return {
         "id": instance.id,
         "business_type": instance.business_type,
+        "business_type_label": sample_ship_service.BUSINESS_TYPE_LABEL.get(
+            instance.business_type, instance.business_type
+        ),
         "business_id": instance.business_id,
         "status": instance.status,
         "status_label": ("已被新版取代" if (instance.summary or {}).get("closed_reason") == "superseded"
@@ -101,8 +159,18 @@ def _serialize(instance: ApprovalInstance, ctx: dict, *, can_approve: bool = Fal
 async def _ensure_approval_visible(
     session: AsyncSession, user: CurrentUser, instance: ApprovalInstance
 ) -> None:
+    if instance.business_type == sample_ship_service.BUSINESS_TYPE:
+        if not (
+            "admin" in user.roles
+            or any(role in sample_ship_service.SHIP_APPROVER_ROLES for role in user.roles)
+            or user.has("sample:view")
+            or user.has("sample:manage")
+        ):
+            raise AppError(ErrorCode.FORBIDDEN, "没有查看样品审批的权限", 403)
+        await sample_service.get_visible_or_404(session, user, instance.business_id)
+        return
     if instance.business_type != "quote_version":
-        raise AppError(ErrorCode.NOT_FOUND, "审批关联的报价不存在", 404)
+        raise AppError(ErrorCode.NOT_FOUND, "审批关联的单据不存在", 404)
     await quote_service.get_visible_version(session, user, instance.business_id)
 
 
@@ -113,66 +181,115 @@ async def list_approvals(
     pending_for_me: bool = False,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
-    user: CurrentUser = Depends(require_permission("quote:view")),
+    user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
+    business_type: str | None = None,
 ):
-    stmt = select(ApprovalInstance)
-    visible_versions = select(QuoteVersion.id).join(Quote, Quote.id == QuoteVersion.quote_id).where(
-        Quote.deleted_at.is_(None)
-    )
-    owner_ids = await scoped_owner_ids(session, user)
-    visible_versions = visible_versions.where(
-        draft_scope(Quote, user.id, Quote.owner_id.in_(owner_ids) if owner_ids is not None else None),
-        or_(~private_draft(QuoteVersion), func.coalesce(
-            QuoteVersion.created_by, Quote.created_by, Quote.owner_id,
-        ) == user.id),
-    )
-    stmt = stmt.where(
-        ApprovalInstance.business_type == "quote_version",
-        ApprovalInstance.business_id.in_(visible_versions),
-    )
+    """审批中心列表（多类型）：报价审批 + 寄样审批。
+
+    类型之间各自校验可见性：报价看报价数据范围，寄样看样品数据范围；
+    没有其中一类权限的用户，只在列表里看到自己有权限的那类。
+    """
+    is_admin = "admin" in user.roles
+    can_quote = is_admin or user.has("quote:view")
+    can_sample = is_admin or user.has("sample:view") or user.has("sample:manage")
+    if not (can_quote or can_sample):
+        raise AppError(ErrorCode.FORBIDDEN, "没有查看审批的权限", 403)
+
+    conditions = []
+    price_can_approve = False
+    if can_quote:
+        visible_versions = select(QuoteVersion.id).join(Quote, Quote.id == QuoteVersion.quote_id).where(
+            Quote.deleted_at.is_(None)
+        )
+        owner_ids = await scoped_owner_ids(session, user)
+        visible_versions = visible_versions.where(
+            draft_scope(Quote, user.id, Quote.owner_id.in_(owner_ids) if owner_ids is not None else None),
+            or_(~private_draft(QuoteVersion), func.coalesce(
+                QuoteVersion.created_by, Quote.created_by, Quote.owner_id,
+            ) == user.id),
+        )
+        if pending_for_me:
+            # 待我审批只列当前版本：旧版本已作废，批了也没有意义
+            visible_versions = visible_versions.where(Quote.current_version_id == QuoteVersion.id)
+        conditions.append(and_(
+            ApprovalInstance.business_type == "quote_version",
+            ApprovalInstance.business_id.in_(visible_versions),
+        ))
+        _, price_can_approve = await pricing_service.resolve_min_margin(session, user.roles)
+    if can_sample:
+        visible_samples = select(SampleRequest.id).where(SampleRequest.deleted_at.is_(None))
+        visible_samples = await sample_service.apply_data_scope(visible_samples, user, session)
+        conditions.append(and_(
+            ApprovalInstance.business_type == sample_ship_service.BUSINESS_TYPE,
+            ApprovalInstance.business_id.in_(visible_samples),
+        ))
+
+    stmt = select(ApprovalInstance).where(or_(*conditions))
+    if business_type:
+        if business_type not in ("quote_version", sample_ship_service.BUSINESS_TYPE):
+            raise AppError(ErrorCode.PARAM_ERROR, "未知的审批类型", 422)
+        stmt = stmt.where(ApprovalInstance.business_type == business_type)
     if status:
         stmt = stmt.where(ApprovalInstance.status == status)
     if mine:
         stmt = stmt.where(ApprovalInstance.applicant_id == user.id)
-    _, price_can_approve = await pricing_service.resolve_min_margin(session, user.roles)
     stmt = stmt.order_by(ApprovalInstance.id.desc())
+
     if pending_for_me:
-        stmt = stmt.where(ApprovalInstance.status == "pending", ApprovalInstance.business_id.in_(
-            visible_versions.where(Quote.current_version_id == QuoteVersion.id)))
-        # 先按共用资格规则筛选，再计算总数及取页。分批读取避免把全部待审单
-        # 留在内存里，价格权限只解析一次，逐单判断不再查询数据库。
+        stmt = stmt.where(ApprovalInstance.status == "pending")
         rows, total = [], 0
         offset = (page - 1) * page_size
         candidates = await session.stream_scalars(stmt.execution_options(yield_per=200))
         async for instance in candidates:
-            if approval_denial(user, instance, price_can_approve=price_can_approve) is not None:
+            if instance.business_type == sample_ship_service.BUSINESS_TYPE:
+                allowed = sample_ship_service.can_approve(user, instance)
+            else:
+                allowed = approval_denial(
+                    user, instance, price_can_approve=price_can_approve
+                ) is None
+            if not allowed:
                 continue
             if offset <= total < offset + page_size:
                 rows.append(instance)
             total += 1
     else:
         rows, total = await paginate(session, stmt, page, page_size)
+
     ctx = await _context(session, rows)
-    return ok(page_data([
-        _serialize(row, ctx, can_see_cost=user.has("price:manage"), can_approve=row.status == "pending" and approval_denial(
-            user, row, price_can_approve=price_can_approve
-        ) is None)
-        for row in rows
-    ], total, page, page_size))
+    items = []
+    for row in rows:
+        if row.business_type == sample_ship_service.BUSINESS_TYPE:
+            can_approve = sample_ship_service.can_approve(user, row)
+        else:
+            can_approve = row.status == "pending" and approval_denial(
+                user, row, price_can_approve=price_can_approve
+            ) is None
+        items.append(_serialize(
+            row, ctx,
+            can_see_cost=user.has("price:manage"),
+            can_approve=can_approve,
+        ))
+    return ok(page_data(items, total, page, page_size))
 
 
 @router.get("/approvals/{approval_id}")
 async def get_approval(
     approval_id: int,
-    user: CurrentUser = Depends(require_permission("quote:view")),
+    user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
     instance = await session.get(ApprovalInstance, approval_id)
     if instance is None:
         raise AppError(ErrorCode.NOT_FOUND, "审批单不存在", 404)
     await _ensure_approval_visible(session, user, instance)
-    _, price_can_approve = await pricing_service.resolve_min_margin(session, user.roles)
+    if instance.business_type == sample_ship_service.BUSINESS_TYPE:
+        can_approve = sample_ship_service.can_approve(user, instance)
+    else:
+        _, price_can_approve = await pricing_service.resolve_min_margin(session, user.roles)
+        can_approve = instance.status == "pending" and approval_denial(
+            user, instance, price_can_approve=price_can_approve
+        ) is None
     ctx = await _context(session, [instance])
     records = (
         await session.execute(
@@ -184,9 +301,8 @@ async def get_approval(
     ).all()
     return ok(
         {
-            **_serialize(instance, ctx, can_see_cost=user.has("price:manage"), can_approve=instance.status == "pending" and approval_denial(
-                user, instance, price_can_approve=price_can_approve
-            ) is None),
+            **_serialize(instance, ctx, can_see_cost=user.has("price:manage"),
+                         can_approve=can_approve),
             "records": [
                 {
                     "id": record.id,
@@ -206,8 +322,26 @@ async def _load_pending(session: AsyncSession, approval_id: int, user: CurrentUs
     instance = await session.get(ApprovalInstance, approval_id)
     if instance is None:
         raise AppError(ErrorCode.NOT_FOUND, "审批单不存在", 404)
+    if instance.business_type == sample_ship_service.BUSINESS_TYPE:
+        if not (
+            "admin" in user.roles
+            or any(role in sample_ship_service.SHIP_APPROVER_ROLES for role in user.roles)
+            or user.has("sample:view")
+            or user.has("sample:manage")
+        ):
+            raise AppError(ErrorCode.FORBIDDEN, "没有处理样品审批的权限", 403)
+        await sample_service.get_visible_or_404(
+            session, user, instance.business_id, for_update=True
+        )
+        instance = (await session.execute(
+            select(ApprovalInstance).where(ApprovalInstance.id == approval_id)
+            .with_for_update().execution_options(populate_existing=True)
+        )).scalar_one()
+        if instance.status != "pending":
+            raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该审批单已处理")
+        return instance
     if instance.business_type != "quote_version":
-        raise AppError(ErrorCode.NOT_FOUND, "审批关联的报价不存在", 404)
+        raise AppError(ErrorCode.NOT_FOUND, "审批关联的单据不存在", 404)
     version = await quote_service.get_visible_version(session, user, instance.business_id, for_update=True)
     instance = (await session.execute(select(ApprovalInstance).where(ApprovalInstance.id == approval_id)
                 .with_for_update().execution_options(populate_existing=True))).scalar_one()
@@ -221,6 +355,14 @@ async def _load_pending(session: AsyncSession, approval_id: int, user: CurrentUs
 
 async def _assert_can_approve(session: AsyncSession, user: CurrentUser, instance: ApprovalInstance) -> None:
     await _ensure_approval_visible(session, user, instance)
+    if instance.business_type == sample_ship_service.BUSINESS_TYPE:
+        if not sample_ship_service.can_approve(user, instance):
+            raise AppError(
+                ErrorCode.FORBIDDEN,
+                "只有主管或管理员可以审批寄样，且不能审批自己提交的申请",
+                403,
+            )
+        return
     _, can_approve = await pricing_service.resolve_min_margin(session, user.roles)
     denial = approval_denial(user, instance, price_can_approve=can_approve)
     if denial is not None:
@@ -319,6 +461,61 @@ async def transfer_candidates(
     return ok(result)
 
 
+async def _decide_sample_shipment(
+    session: AsyncSession,
+    instance: ApprovalInstance,
+    user: CurrentUser,
+    request: Request,
+    *,
+    approved: bool,
+    comment: str | None,
+):
+    """寄样审批的通过/驳回：更新审批实例、样品状态并留审计。"""
+    comment = (comment or "").strip() or None
+    if not approved and comment is None:
+        raise AppError(ErrorCode.PARAM_ERROR, "请填写驳回原因", 422)
+    sample = await sample_service.get_visible_or_404(
+        session, user, instance.business_id, for_update=True
+    )
+    before_status = sample.status
+    sample_ship_service.decide(instance, user, approved=approved, comment=comment)
+    session.add(
+        ApprovalRecord(
+            approval_instance_id=instance.id,
+            node_code="manager",
+            approver_id=user.id,
+            action="approve" if approved else "reject",
+            comment=comment,
+        )
+    )
+    if approved and sample.status == "pending":
+        # 现货样品没有制作环节：批准寄样就是批准这张单
+        sample.status = "approved"
+        sample.approved_at = datetime.now(UTC)
+        await sample_service.record_opportunity_touch(session, sample, "寄样已批准")
+    summary = instance.summary or {}
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="sample_ship_approve" if approved else "sample_ship_reject",
+        business_type="sample",
+        business_id=sample.id,
+        before={"status": before_status},
+        after={
+            "status": sample.status,
+            "approval_id": instance.id,
+            "carrier": summary.get("carrier"),
+            "shipping_fee": summary.get("shipping_fee"),
+            "comment": comment,
+        },
+        ip=client_ip(request),
+    )
+    await session.commit()
+    ctx = await _context(session, [instance])
+    message = "寄样已批准，业务员可登记寄样" if approved else "寄样申请已驳回，业务员可修改后重新提交"
+    return ok(_serialize(instance, ctx, can_approve=False), message)
+
+
 @router.post("/approvals/{approval_id}/approve")
 async def approve(
     approval_id: int,
@@ -328,6 +525,10 @@ async def approve(
 ):
     instance = await _load_pending(session, approval_id, user)
     await _assert_can_approve(session, user, instance)
+    if instance.business_type == sample_ship_service.BUSINESS_TYPE:
+        return await _decide_sample_shipment(
+            session, instance, user, request, approved=True, comment=None
+        )
 
     version = await session.get(QuoteVersion, instance.business_id)
     quote = await session.get(Quote, version.quote_id) if version else None
@@ -443,6 +644,10 @@ async def reject(
 ):
     instance = await _load_pending(session, approval_id, user)
     await _assert_can_approve(session, user, instance)
+    if instance.business_type == sample_ship_service.BUSINESS_TYPE:
+        return await _decide_sample_shipment(
+            session, instance, user, request, approved=False, comment=comment
+        )
 
     version = await session.get(QuoteVersion, instance.business_id)
     quote = await session.get(Quote, version.quote_id) if version else None
@@ -494,7 +699,7 @@ async def reject(
 @router.get("/approvals/{approval_id}/records")
 async def records(
     approval_id: int,
-    user: CurrentUser = Depends(require_permission("quote:view")),
+    user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
     instance = await session.get(ApprovalInstance, approval_id)
@@ -543,6 +748,12 @@ async def transfer(
     """
     instance = await _load_pending(session, approval_id, user)
     await _assert_can_approve(session, user, instance)
+    if instance.business_type == sample_ship_service.BUSINESS_TYPE:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "寄样审批不支持转交，请由主管直接批准或驳回",
+            422,
+        )
 
     target = await session.get(User, payload.to_user_id)
     if target is None:
@@ -626,6 +837,33 @@ async def withdraw(
     await _ensure_approval_visible(session, user, instance)
     if instance.applicant_id != user.id and "admin" not in user.roles:
         raise AppError(ErrorCode.FORBIDDEN, "只能撤回自己提交的审批", 403)
+
+    if instance.business_type == sample_ship_service.BUSINESS_TYPE:
+        withdrawn_from_node = instance.current_node
+        instance.status = "withdrawn"
+        instance.finished_at = datetime.now(UTC)
+        instance.current_node = None
+        session.add(
+            ApprovalRecord(
+                approval_instance_id=instance.id,
+                node_code=withdrawn_from_node,
+                approver_id=user.id,
+                action="withdraw",
+                comment=payload.comment or "申请人撤回",
+            )
+        )
+        await write_audit(
+            session,
+            operator_id=user.id,
+            action="withdraw",
+            business_type="sample",
+            business_id=instance.business_id,
+            after={"approval_id": instance.id, "comment": payload.comment},
+            ip=client_ip(request),
+        )
+        await session.commit()
+        ctx = await _context(session, [instance])
+        return ok(_serialize(instance, ctx), "已撤回寄样申请，可修改后重新提交")
 
     withdrawn_from_node = instance.current_node
     instance.status = "withdrawn"

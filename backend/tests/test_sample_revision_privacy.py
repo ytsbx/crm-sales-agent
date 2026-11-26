@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 import pytest
 
 from app.core.errors import AppError
+from app.modules.approval.model import ApprovalInstance
 from app.modules.sample import router, service
 from app.modules.sample.model import SampleItem, SampleRequest, SampleShipment
 from conftest import SyncSessionAsAsync, make_user
@@ -10,7 +11,7 @@ from conftest import SyncSessionAsAsync, make_user
 
 @pytest.mark.anyio
 async def test_private_revision_does_not_expose_link_on_parent_read_or_write(db_session):
-    for model in (SampleRequest, SampleItem, SampleShipment):
+    for model in (SampleRequest, SampleItem, SampleShipment, ApprovalInstance):
         model.__table__.create(db_session.get_bind())
     author = make_user(101, permissions=("sample:view", "sample:manage"), data_scope="all")
     coworker = make_user(102, permissions=("sample:view", "sample:manage"))

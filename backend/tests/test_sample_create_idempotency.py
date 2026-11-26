@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from app.core.audit import AuditLog
+from app.modules.approval.model import ApprovalInstance
 from app.modules.customer.model import Customer
 from app.modules.sample import router as sample_router
 from app.modules.sample.model import SampleItem, SampleRequest, SampleShipment
@@ -34,7 +35,8 @@ def test_manual_sample_create_same_request_key_is_idempotent():
 
     for table in (
         User.__table__, Customer.__table__, SampleRequest.__table__, SampleItem.__table__,
-        SampleShipment.__table__, AuditLog.__table__, Role.__table__, Permission.__table__,
+        SampleShipment.__table__, ApprovalInstance.__table__, AuditLog.__table__,
+        Role.__table__, Permission.__table__,
         user_roles, role_permissions,
     ):
         table.create(engine, checkfirst=True)
