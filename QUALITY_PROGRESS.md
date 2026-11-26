@@ -6191,7 +6191,7 @@
 - 复核验证：全量 `pytest` 通过；`npx tsc -b`、`npx vite build` 通过；lint 0 errors（40 条既有 warning）。
 - 仍有残留（本轮未改）：
   - **P2-4 原询价驳回后审批记录消失**：`_sync_linked_samples` 清 `submitted=False`，而 `SampleDingTalkModal.detail` 只在 `submitted=True` 时返回 `source_oa_id` 记录；同时 `inquiry_candidates` 已排除 rejected/withdrawn。结果状态为 rejected 的样品详情仍显示「查看 OA 审批意见」，点开却无记录。建议把“可查看的历史审批记录”和“是否允许编辑”拆开。
-  - **P2-1 手动新建仍无幂等键**：`SampleListPage.tsx` 的 `createSample` 仍未带 `request_key`；后端已支持。弱网重试仍可能建两张。
+  - **P2-1 手动新建仍无幂等键**：`SampleListPage.tsx` 的 `createSample` 仍未带 `request_key`；后端已支持。**2026-11-26 主人明确决定不补**，接受弱网重试可能建两张的风险；后续不要再把它列为待修项。
   - **历史无 SKU 样品重判风险**：`sample_is_custom` 改为“无 SKU 即新品”，历史上曾按现有产品走过寄样审批的名称型样品会被重新判为定制；若有这类在办单，可能错误显示「去登记制作」。上线前需要扫一遍 `sku_id is null and inquiry_id is null` 的历史样品，确认是否已走寄样审批。
 - **历史 P1-1 卡单不会自动恢复**：这次回写挂在 `apply_inquiry_summary`/源单同步上；修之前已经卡住的 `mode=inquiry` 样品，如果原询价 OA 早已通过但之后没有同步，会继续停在 pending。上线前要扫 `mode=inquiry + status=pending` 的单，触发一次源单同步或做一次性修数据。
-- 下一步：先确认 P2-4/历史单是否需要数据兼容，再补 P2-1 幂等键。
+- 下一步：P2-1 幂等键按主人决定**不做**；继续处理 P2-4（驳回记录只读可查）和历史数据兼容扫描。
