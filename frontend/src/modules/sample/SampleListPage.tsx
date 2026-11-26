@@ -23,7 +23,6 @@ import {
   Modal,
   Popconfirm,
   Select,
-  SideSheet,
   Table,
   Tag,
   TextArea,
@@ -1380,11 +1379,14 @@ export default function SampleListPage() {
         {transferMutation.isError && <p role="alert">{transferMutation.error.message}</p>}
       </Modal>
 
-      <SideSheet
+      <Modal
         title={detail ? `样品申请编号 ${detail.id}` : '样品申请'}
         visible={detailId !== null}
         onCancel={closeDetail}
-        width="min(760px, calc(100vw - 24px))"
+        footer={null}
+        width={1040}
+        style={{ maxWidth: 'calc(100vw - 32px)', top: 24 }}
+        bodyStyle={{ maxHeight: 'calc(100vh - 140px)', overflowY: 'auto' }}
       >
         {/* 读不到详情时这里原来只有一个浅蓝药丸按钮挂在左上角，下面整片白 ——
             看不出是"加载完了没数据"还是"接口挂了"（2026-11-20）。
@@ -2226,7 +2228,7 @@ export default function SampleListPage() {
             )}
           </div>
         )}
-      </SideSheet>
+      </Modal>
 
       {/* 改一条明细的车间依据。单独开弹窗而不是行内编辑：这三个字段是「审批批的
           那一版资料」，改它们会触发退回重审，值得一次明确的确认动作 */}
