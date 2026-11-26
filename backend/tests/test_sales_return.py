@@ -1,10 +1,10 @@
-"""销售退货：登记金额、主管复核、财务改金额留痕、无自动抵扣、退款与作废。
+"""销售售后：申请金额构成、主管审核、仓库确认、财务自动先冲欠款、退款与作废。
 
-2026-11-26 主人拍板后的口径：
-- 登记时就填退款金额（含货款和运费），不再等主管通过后另填；
-- 主管通过后直接进入待财务结算；
-- 财务可以修改退款金额，但每次改动都要写审计；
-- 新退货不再自动抵扣客户未付款，应收计划保持原样；
+2026-11-26 按分销商售后 OA 表单重新拍板：
+- 售后申请必须挂订单，业务员填货款/运费/改价调整和退款登记表附件；
+- 主管审核通过后先等仓库确认收货；
+- 仓库确认后财务才退款，系统自动先冲客户未付款、剩余才现金退；
+- 财务不改金额、不手填抵扣；
 - 历史抵扣单仍保留作废还原逻辑，但不能再直接改金额。
 
 用隔离 SQLite + 真实 service；通知与里程碑在本用例里不是断言对象，monkeypatch 掉。
@@ -113,7 +113,27 @@ def db(monkeypatch):
             updated_at=NOW,
         )
         customer = Customer(id=1, name="退货客户", owner_id=1)
-        raw.add_all([user, customer])
+        application_file = FileRecord(
+            id=1,
+            storage_provider="local",
+            object_key="2026/11/return-application.xlsx",
+            file_name="分销商退款登记表.xlsx",
+            mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            size=1024,
+            checksum="return-app",
+            uploaded_by=1,
+        )
+        reviewer_file = FileRecord(
+            id=2,
+            storage_provider="local",
+            object_key="2026/11/return-application-reviewer.xlsx",
+            file_name="分销商退款登记表-主管.xlsx",
+            mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            size=1024,
+            checksum="return-app-reviewer",
+            uploaded_by=2,
+        )
+        raw.add_all([user, customer, application_file, reviewer_file])
         order = SalesOrder(
             id=1,
             order_no="SO-RET-1",
@@ -181,11 +201,29 @@ def _approve(session, row):
     )
 
 
-def _payload(qty: str = "3", refund: str = "30", order_item_id: int = 1):
+def _warehouse(session, row):
+    return run(
+        svc.confirm_warehouse(
+            session, REVIEWER, row, note="仓库已点收，数量一致"
+        )
+    )
+
+
+def _payload(
+    qty: str = "3",
+    refund: str = "30",
+    order_item_id: int = 1,
+    attachment_id: int = 1,
+):
     return ReturnCreate(
         reason_code="customer_rejected",
         reason="客户拒收",
-        refund_amount=D(refund),
+        goods_refund_amount=D(refund),
+        freight_refund_amount=D("0"),
+        adjustment_amount=D("0"),
+        payment_method="线下转账",
+        receiving_account="测试账户 6222 0000 0000 0000",
+        application_attachment_file_id=attachment_id,
         items=[ReturnItemInput(order_item_id=order_item_id, quantity=D(qty))],
     )
 
@@ -196,13 +234,19 @@ def test_create_records_refund_amount_and_no_offset(db):
 
     assert row.status == "reviewing"
     assert row.goods_amount == D("30.00")
-    # 登记时填的退款金额直接落库；主管通过后不用再填一次。
+    # 业务员填的是构成，服务端合计总额；主管只审核，不再改金额。
+    assert row.goods_refund_amount == D("30.00")
+    assert row.freight_refund_amount == D("0.00")
+    assert row.adjustment_amount == D("0.00")
     assert row.settled_goods_amount == D("30.00")
     assert row.total_amount == D("30.00")
     assert row.refund_amount == D("30.00")
-    # 新流程没有自动抵扣，也没有生成应收调整。
+    assert row.payment_method == "线下转账"
+    assert row.receiving_account == "测试账户 6222 0000 0000 0000"
+    assert row.application_attachment_file_id == 1
+    # 审核前不自动抵扣，也没有生成应收调整。
     assert row.offset_amount == D("0.00")
-    assert row.settled_by == USER.id
+    assert row.settled_by is None
 
     audit = s._session.execute(
         select(AuditLog).where(
@@ -258,7 +302,10 @@ def test_same_product_across_batches_does_not_double_count_reference(db):
         ReturnCreate(
             reason_code="customer_rejected",
             reason="客户整单退回",
-            refund_amount=D("100.00"),
+            goods_refund_amount=D("100.00"),
+            payment_method="线下转账",
+            receiving_account="测试账户 6222 0000 0000 0000",
+            application_attachment_file_id=1,
             items=[ReturnItemInput(order_item_id=1, quantity=D("10"))],
         ),
     ))
@@ -278,79 +325,67 @@ def test_same_product_across_batches_does_not_double_count_reference(db):
     assert "batches" not in overview
 
 
-def test_review_approve_goes_directly_to_completed_and_keeps_amount(db):
+def test_review_approve_goes_to_warehouse_pending_and_keeps_amount(db):
     s, order, item, batch_item, plans = db
     row = run(svc.create_return(s, USER, order, _payload("10", "100")))
     approved = _approve(s, row)
 
-    assert approved.status == "completed"
+    assert approved.status == "warehouse_pending"
     assert approved.settled_goods_amount == D("100.00")
     assert approved.offset_amount == D("0.00")
     assert approved.refund_amount == D("100.00")
-    # 不再自动冲应收，原计划金额保持不变。
+    assert approved.warehouse_confirmed_by is None
+    # 审核本身不冲应收，原计划金额保持不变。
     assert s._session.get(ReceivablePlan, 1).amount == D("30.00")
     assert s._session.get(ReceivablePlan, 2).amount == D("70.00")
 
 
-def test_finance_can_update_amount_after_review_and_writes_audit(db):
+def test_warehouse_confirmation_moves_to_finance_refund_pending(db):
     s, order, item, batch_item, plans = db
-    row = run(svc.create_return(s, USER, order, _payload("5", "50")))
+    row = run(svc.create_return(s, USER, order, _payload("10", "100")))
     _approve(s, row)
-    assert row.status == "completed"
 
-    updated = run(svc.update_return_amount(
-        s, FINANCE, row,
-        refund_amount=D("60.00"),
-        note="财务核对后按客户确认金额调整",
-    ))
-    assert updated.status == "completed"
-    assert updated.settled_goods_amount == D("60.00")
-    assert updated.total_amount == D("60.00")
-    assert updated.refund_amount == D("60.00")
-    assert updated.offset_amount == D("0.00")
-    # 财务改金额同样不碰应收计划。
-    assert s._session.get(ReceivablePlan, 1).amount == D("30.00")
-    assert s._session.get(ReceivablePlan, 2).amount == D("70.00")
+    # 仓库没确认之前，财务不能直接退款。
+    with pytest.raises(AppError, match="待仓库确认收货"):
+        run(svc.settle_return(s, FINANCE, row, refund_reference="银行流水 X"))
+
+    confirmed = _warehouse(s, row)
+    assert confirmed.status == "completed"
+    assert confirmed.warehouse_confirmed_by == REVIEWER.id
+    # 旧 refund_return 接口不能绕过自动抵扣直接全现金退。
+    with pytest.raises(AppError, match="财务确认退款"):
+        run(svc.refund_return(s, FINANCE, row, "银行流水 绕过测试"))
+    assert confirmed.warehouse_note == "仓库已点收，数量一致"
+    assert confirmed.total_amount == D("100.00")
 
     audit = s._session.execute(
         select(AuditLog).where(
             AuditLog.business_type == "sales_return",
             AuditLog.business_id == row.id,
-            AuditLog.action == "update_return_amount",
+            AuditLog.action == "confirm_return_warehouse",
         )
     ).scalars().one()
-    assert audit.before_data["settled_goods_amount"] == "50.00"
-    assert audit.after_data["settled_goods_amount"] == "60.00"
-    assert audit.after_data["note"] == "财务核对后按客户确认金额调整"
-
-    summary = run(payment_svc.order_finance_summary(s, order.id))
-    assert summary["returned_amount_exact"] == "60.00"
-    assert summary["return_offset_amount_exact"] == "0.00"
-    assert summary["refund_pending_amount_exact"] == "60.00"
-    # 没有自动抵扣，客户未付款仍是原订单额减去已确认回款（本用例没有回款）。
-    assert summary["unreceived_amount_exact"] == "100.00"
+    assert audit.after_data["status"] == "completed"
+    assert audit.after_data["warehouse_note"] == "仓库已点收，数量一致"
 
 
-def test_finance_can_update_amount_while_reviewing_then_supervisor_approves(db):
+def test_finance_cannot_change_new_return_amount(db):
     s, order, item, batch_item, plans = db
-    row = run(svc.create_return(s, USER, order, _payload("3", "30")))
-    assert row.status == "reviewing"
+    row = run(svc.create_return(s, USER, order, _payload("5", "50")))
+    with pytest.raises(AppError, match="不能改金额"):
+        run(svc.update_return_amount(s, FINANCE, row, refund_amount=D("60.00")))
 
-    updated = run(svc.update_return_amount(
-        s, FINANCE, row, refund_amount=D("25.00"), note="财务先核对金额"
-    ))
-    assert updated.status == "reviewing"
-    assert updated.settled_goods_amount == D("25.00")
-
-    approved = _approve(s, row)
-    assert approved.status == "completed"
-    assert approved.settled_goods_amount == D("25.00")
+    _approve(s, row)
+    _warehouse(s, row)
+    with pytest.raises(AppError, match="不能改金额"):
+        run(svc.update_return_amount(s, FINANCE, row, refund_amount=D("60.00")))
 
 
 def test_salesperson_without_payment_manage_cannot_change_amount(db):
     s, order, item, batch_item, plans = db
     row = run(svc.create_return(s, USER, order, _payload("3", "30")))
     _approve(s, row)
+    _warehouse(s, row)
     with pytest.raises(AppError, match="只有财务"):
         run(svc.update_return_amount(
             s, SALESPERSON_WITHOUT_PAYMENT, row, refund_amount=D("20.00")
@@ -382,11 +417,14 @@ def test_refund_must_be_registered_then_cannot_void_or_change_amount(db):
     s._session.flush()
     row = run(svc.create_return(s, USER, order, _payload("2", "20")))
     _approve(s, row)
-    run(svc.refund_return(s, FINANCE, row, "银行流水 20261125001"))
+    _warehouse(s, row)
+    run(svc.settle_return(s, FINANCE, row, refund_reference="银行流水 20261125001"))
     assert row.status == "refunded"
+    assert row.offset_amount == D("0.00")
+    assert row.refund_amount == D("20.00")
     with pytest.raises(AppError, match="已经实际退款"):
         run(svc.void_return(s, FINANCE, row, "想撤销"))
-    with pytest.raises(AppError, match="已经实际退款"):
+    with pytest.raises(AppError, match="不能改金额"):
         run(svc.update_return_amount(
             s, FINANCE, row, refund_amount=D("10.00")
         ))
@@ -396,12 +434,12 @@ def test_void_new_return_keeps_plans_unchanged(db):
     s, order, item, batch_item, plans = db
     row = run(svc.create_return(s, USER, order, _payload("4", "40")))
     _approve(s, row)
-    assert row.status == "completed"
+    assert row.status == "warehouse_pending"
     assert s._session.get(ReceivablePlan, 2).amount == D("70.00")
 
     run(svc.void_return(s, FINANCE, row, "退错了"))
     assert row.status == "voided"
-    # 新退货本来就没冲应收，作废后计划还是 30/70。
+    # 新售后本来就没冲应收，作废后计划还是 30/70。
     assert s._session.get(ReceivablePlan, 1).amount == D("30.00")
     assert s._session.get(ReceivablePlan, 2).amount == D("70.00")
     # 作废后释放可退数量，能重新登记。
@@ -410,7 +448,7 @@ def test_void_new_return_keeps_plans_unchanged(db):
 
 
 def test_legacy_pending_return_can_fill_amount_and_goes_completed(db):
-    """兼容历史旧单：没有金额的 pending 单，财务补填后进入待财务结算。"""
+    """兼容历史旧单：没有金额的 pending 单，财务补填后进入待财务退款。"""
     s, order, item, batch_item, plans = db
     row = run(svc.create_return(s, USER, order, _payload("3", "30")))
     row.status = "pending"
@@ -423,6 +461,7 @@ def test_legacy_pending_return_can_fill_amount_and_goes_completed(db):
         s, FINANCE, row, refund_amount=D("25.00"), note="历史单补金额"
     ))
     assert updated.status == "completed"
+    assert updated.goods_refund_amount == D("25.00")
     assert updated.settled_goods_amount == D("25.00")
     assert updated.refund_amount == D("25.00")
 
@@ -432,10 +471,11 @@ def test_historical_offset_return_cannot_change_amount(db):
     row = run(svc.create_return(s, USER, order, _payload("3", "30")))
     _approve(s, row)
     # 模拟历史抵扣单：当时冲过客户未付款。
+    row.status = "completed"
     row.offset_amount = D("20.00")
     row.refund_amount = D("10.00")
     s._session.flush()
-    with pytest.raises(AppError, match="历史.*抵扣"):
+    with pytest.raises(AppError, match="不能改金额"):
         run(svc.update_return_amount(
             s, FINANCE, row, refund_amount=D("30.00")
         ))
@@ -446,6 +486,7 @@ def test_historical_offset_void_restores_plan_exactly_and_blocks_manual_edit(db)
     s, order, item, batch_item, plans = db
     row = run(svc.create_return(s, USER, order, _payload("4", "40")))
     _approve(s, row)
+    row.status = "completed"
     row.offset_amount = D("40.00")
     row.refund_amount = D("0.00")
     row.total_amount = D("40.00")
@@ -475,21 +516,21 @@ def test_historical_offset_void_restores_plan_exactly_and_blocks_manual_edit(db)
 
 def test_supervisor_self_review_allowed_but_salesperson_blocked(db):
     s, order, item, batch_item, plans = db
-    # 主管自己登记的退货，主管自己复核：允许，但审计要标 self_reviewed。
-    row = run(svc.create_return(s, REVIEWER, order, _payload("3", "30")))
+    # 主管自己登记的售后，主管自己审核：允许，但审计要标 self_reviewed。
+    row = run(svc.create_return(s, REVIEWER, order, _payload("3", "30", attachment_id=2)))
     assert row.status == "reviewing"
     assert row.created_by == REVIEWER.id
 
-    # 业务员没有 order:assign，不能复核（即使这张不是他登记的）。
+    # 业务员没有 order:assign，不能审核（即使这张不是他登记的）。
     with pytest.raises(AppError, match="只有主管"):
         run(svc.review_return(s, USER, row, decision="approve", note=None))
 
     approved = run(
         svc.review_return(
-            s, REVIEWER, row, decision="approve", note="本人复核：已核对退货照片"
+            s, REVIEWER, row, decision="approve", note="本人审核：已核对退货照片"
         )
     )
-    assert approved.status == "completed"
+    assert approved.status == "warehouse_pending"
     assert approved.reviewed_by == REVIEWER.id
     assert approved.created_by == REVIEWER.id
 
@@ -506,7 +547,7 @@ def test_supervisor_self_review_allowed_but_salesperson_blocked(db):
 
 def test_review_reject_releases_quantity(db):
     s, order, item, batch_item, plans = db
-    row = run(svc.create_return(s, REVIEWER, order, _payload("3", "30")))
+    row = run(svc.create_return(s, REVIEWER, order, _payload("3", "30", attachment_id=2)))
     assert row.status == "reviewing"
     rejected = run(
         svc.review_return(
@@ -522,28 +563,22 @@ def test_review_reject_releases_quantity(db):
     assert again.goods_amount == D("100.00")
 
 
-def test_finance_manual_amount_can_be_less_or_full(db):
+def test_finance_cannot_change_amount_even_if_less_or_full(db):
     s, order, item, batch_item, plans = db
-    # 退 5 件，登记参考 50；财务按协商改成 30，再改成整单 100。
+    # 退款金额由业务员登记、主管审核；财务不能改成另一笔账。
     row = run(svc.create_return(s, USER, order, _payload("5", "50")))
     _approve(s, row)
-    less = run(svc.update_return_amount(
-        s, FINANCE, row, refund_amount=D("30.00"),
-        note="客户承担 20 元折损",
-    ))
-    assert less.goods_amount == D("50.00")  # 登记参考价保留
-    assert less.settled_goods_amount == D("30.00")
-    assert less.refund_amount == D("30.00")
-    assert less.offset_amount == D("0.00")
-
-    full = run(svc.update_return_amount(
-        s, FINANCE, row, refund_amount=D("100.00"),
-        note="客户投诉，整单全退",
-    ))
-    assert full.goods_amount == D("50.00")
-    assert full.settled_goods_amount == D("100.00")
-    assert full.refund_amount == D("100.00")
-    assert full.total_amount == D("100.00")
+    _warehouse(s, row)
+    with pytest.raises(AppError, match="不能改金额"):
+        run(svc.update_return_amount(
+            s, FINANCE, row, refund_amount=D("30.00"),
+            note="客户承担 20 元折损",
+        ))
+    with pytest.raises(AppError, match="不能改金额"):
+        run(svc.update_return_amount(
+            s, FINANCE, row, refund_amount=D("100.00"),
+            note="客户投诉，整单全退",
+        ))
 
 
 def test_refund_attachment_metadata_serialized(db):
@@ -551,6 +586,7 @@ def test_refund_attachment_metadata_serialized(db):
     s, order, item, batch_item, plans = db
     row = run(svc.create_return(s, USER, order, _payload("3", "30")))
     _approve(s, row)
+    _warehouse(s, row)
     assert row.status == "completed"
     assert row.offset_amount == D("0.00")
     assert row.refund_amount == D("30.00")
@@ -607,18 +643,17 @@ def _add_payment(s, amount: str, allocations: list[tuple[int, str]]):
 
 
 def test_settle_full_offset_clears_unreceived_without_cash(db):
-    """整单退货全部抵扣：未付款归 0，状态已结算，不再一直悬浮。"""
+    """整单售后全部自动抵扣：未付款归 0，状态已抵扣结清。"""
     s, order, item, batch_item, plans = db
     row = run(svc.create_return(s, USER, order, _payload("10", "100")))
     _approve(s, row)
+    _warehouse(s, row)
     settled = run(
         svc.settle_return(
             s,
             FINANCE,
             row,
-            total_amount=D("100.00"),
-            offset_amount=D("100.00"),
-            note="客户还没付款，整单退货直接抵未付款",
+            note="客户还没付款，整单退款直接抵未付款",
         )
     )
     assert settled.status == "settled"
@@ -636,7 +671,7 @@ def test_settle_full_offset_clears_unreceived_without_cash(db):
     assert summary["unreceived_amount_exact"] == "0.00"
     assert summary["net_order_amount_exact"] == "0.00"
 
-    # 订单详情/列表也必须减掉退货抵扣；只改汇总接口会出现“汇总 0、详情还挂 800”。
+    # 订单详情/列表也必须减掉售后抵扣；只改汇总接口会出现“汇总 0、详情还挂旧数”。
     from app.modules.order import service as order_svc
 
     ctx = run(order_svc.order_context(s, [order]))
@@ -667,79 +702,110 @@ def test_settle_full_offset_clears_unreceived_without_cash(db):
     assert sum((item.applied_amount for item in adjustments), D("0.00")) == D("100.00")
     assert all(item.amount_after == D("0.00") for item in adjustments)
 
-    # 已用抵扣结清，不能再改金额、不能再作废。
-    with pytest.raises(AppError, match="已经实际退款或结算"):
+    # 已抵扣结清，不能再改金额、不能再作废。
+    with pytest.raises(AppError, match="不能改金额"):
         run(svc.update_return_amount(s, FINANCE, row, refund_amount=D("90.00")))
     with pytest.raises(AppError, match="已经用抵扣"):
         run(svc.void_return(s, FINANCE, row, "想撤销"))
 
 
-def test_settle_partial_offset_and_cash_refund_requires_reference(db):
+def test_settle_auto_offset_then_cash_requires_reference(db):
+    """客户已付 80、欠 20，退 30：系统先抵 20，再现金退 10。"""
     s, order, item, batch_item, plans = db
-    _add_payment(s, "20.00", [(1, "20.00")])
+    _add_payment(s, "80.00", [(1, "30.00"), (2, "50.00")])
     row = run(svc.create_return(s, USER, order, _payload("3", "30")))
     _approve(s, row)
+    _warehouse(s, row)
 
     with pytest.raises(AppError, match="必须填写退款流水"):
-        run(
-            svc.settle_return(
-                s,
-                FINANCE,
-                row,
-                total_amount=D("30.00"),
-                offset_amount=D("10.00"),
-            )
-        )
+        run(svc.settle_return(s, FINANCE, row))
 
     settled = run(
         svc.settle_return(
             s,
             FINANCE,
             row,
-            total_amount=D("30.00"),
-            offset_amount=D("10.00"),
             refund_reference="银行流水 20261126001",
-            note="先抵 10，再退 20",
+            note="系统先抵欠款，再退剩余现金",
         )
     )
     assert settled.status == "refunded"
     assert settled.total_amount == D("30.00")
-    assert settled.offset_amount == D("10.00")
-    assert settled.refund_amount == D("20.00")
+    assert settled.offset_amount == D("20.00")
+    assert settled.refund_amount == D("10.00")
     assert settled.refund_reference == "银行流水 20261126001"
 
-    # 先到期的定金余额 10 被抵完，计划金额从 30 降到 20；尾款不动。
-    assert plans[0].amount == D("20.00")
-    assert plans[1].amount == D("70.00")
+    # 定金已收满，尾款 70 里自动抵 20，剩 50。
+    assert plans[0].amount == D("30.00")
+    assert plans[1].amount == D("50.00")
 
     summary = run(payment_svc.order_finance_summary(s, 1))
     assert summary["returned_amount_exact"] == "30.00"
-    assert summary["return_offset_amount_exact"] == "10.00"
-    assert summary["return_refunded_amount_exact"] == "20.00"
+    assert summary["return_offset_amount_exact"] == "20.00"
+    assert summary["return_refunded_amount_exact"] == "10.00"
     assert summary["refund_pending_amount_exact"] == "0.00"
-    assert summary["unreceived_amount_exact"] == "70.00"
-    assert summary["net_received_amount_exact"] == "0.00"
+    assert summary["unreceived_amount_exact"] == "0.00"
+    assert summary["net_received_amount_exact"] == "70.00"
 
 
-def test_settle_offset_cannot_exceed_unreceived(db):
+def test_settle_auto_offset_caps_at_customer_unpaid(db):
+    """客户只欠 10，退 30：只能抵 10，剩余 20 必须现金退。"""
     s, order, item, batch_item, plans = db
     _add_payment(s, "90.00", [(1, "30.00"), (2, "60.00")])
     row = run(svc.create_return(s, USER, order, _payload("3", "30")))
     _approve(s, row)
+    _warehouse(s, row)
 
-    with pytest.raises(AppError, match="可抵扣上限 10.00"):
-        run(
-            svc.settle_return(
-                s,
-                FINANCE,
-                row,
-                total_amount=D("30.00"),
-                offset_amount=D("20.00"),
-                refund_reference="银行流水 20261126002",
-            )
+    settled = run(
+        svc.settle_return(
+            s,
+            FINANCE,
+            row,
+            refund_reference="银行流水 20261126002",
         )
-    # 失败不落库、不改计划、不改状态。
-    assert row.status == "completed"
-    assert row.offset_amount == D("0.00")
+    )
+    assert settled.status == "refunded"
+    assert settled.offset_amount == D("10.00")
+    assert settled.refund_amount == D("20.00")
     assert plans[0].amount == D("30.00")
-    assert plans[1].amount == D("70.00")
+    assert plans[1].amount == D("60.00")
+    assert run(payment_svc.order_finance_summary(s, 1))["unreceived_amount_exact"] == "0.00"
+
+
+def test_create_amount_breakdown_and_requires_application_attachment(db):
+    s, order, item, batch_item, plans = db
+    row = run(svc.create_return(
+        s, USER, order,
+        ReturnCreate(
+            reason_code="quality_issue",
+            reason="外箱破损，客户要求退货款并补运费",
+            goods_refund_amount=D("30.00"),
+            freight_refund_amount=D("8.00"),
+            adjustment_amount=D("-3.00"),
+            adjustment_note="改价：售价减包装费",
+            payment_method="银行转账",
+            receiving_account="测试账户 6222 0000 0000 0000",
+            application_attachment_file_id=1,
+            items=[ReturnItemInput(order_item_id=1, quantity=D("3"))],
+        ),
+    ))
+    assert row.goods_refund_amount == D("30.00")
+    assert row.freight_refund_amount == D("8.00")
+    assert row.adjustment_amount == D("-3.00")
+    assert row.adjustment_note == "改价：售价减包装费"
+    assert row.total_amount == D("35.00")
+    assert row.refund_amount == D("35.00")
+
+    with pytest.raises(AppError, match="附件不存在"):
+        run(svc.create_return(
+            s, USER, order,
+            ReturnCreate(
+                reason_code="other",
+                reason="附件不存在测试",
+                goods_refund_amount=D("30.00"),
+                payment_method="线下转账",
+                receiving_account="测试账户 6222 0000 0000 0000",
+                application_attachment_file_id=999,
+                items=[ReturnItemInput(order_item_id=1, quantity=D("3"))],
+            ),
+        ))

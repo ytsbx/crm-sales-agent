@@ -1,4 +1,4 @@
-"销售退货接口：登记（含退款金额）、取消、复核、财务改金额、退款登记、退款附件、作废。"
+"""销售售后接口：申请（含金额构成/附件）、取消、主管审核、仓库确认、财务退款、作废。"""
 
 import asyncio
 import logging
@@ -28,6 +28,7 @@ from app.modules.returns.schema import (
     ReturnReview,
     ReturnSettle,
     ReturnVoid,
+    ReturnWarehouseConfirm,
 )
 
 router = APIRouter(tags=["销售退货"])
@@ -83,7 +84,7 @@ async def create_return(
     await session.commit()
     return ok(
         data,
-        f"退货单 {row.return_no} 已登记，退款金额 {row.refund_amount:.2f} 元，等待主管复核",
+        f"售后申请 {row.return_no} 已提交，退款总额 {row.total_amount:.2f} 元，等待主管审核",
     )
 
 
@@ -115,7 +116,7 @@ async def review_return(
     user: CurrentUser = Depends(require_permission("order:assign")),
     session: AsyncSession = Depends(get_db),
 ):
-    """主管复核退货：`order:assign` 是主管级权限，财务/业务员没有。"""
+    """主管审核售后申请：`order:assign` 是主管级权限，财务/业务员没有。"""
     row = await _lock_return_with_order(session, user, return_id)
     await svc.review_return(
         session,
@@ -128,15 +129,38 @@ async def review_return(
     data = await svc.serialize_return(session, row)
     await session.commit()
     message = (
-        f"退货单 {row.return_no} 已通过复核，待财务结算"
-        if row.status == "completed"
+        f"售后申请 {row.return_no} 已通过主管审核，待仓库确认收货"
+        if row.status == "warehouse_pending"
         else (
-            f"退货单 {row.return_no} 已通过复核，待填退货总额"
+            f"售后申请 {row.return_no} 已通过审核，待填退款总额"
             if row.status == "pending"
-            else f"退货单 {row.return_no} 已驳回，可退数量已释放"
+            else f"售后申请 {row.return_no} 已驳回，可退数量已释放"
         )
     )
     return ok(data, message)
+
+
+@router.post("/returns/{return_id}/warehouse-confirm")
+async def confirm_warehouse(
+    return_id: int,
+    payload: ReturnWarehouseConfirm,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("order:assign")),
+    session: AsyncSession = Depends(get_db),
+):
+    """仓库确认收到退货：主管/管理员代确认，确认后才允许财务退款。"""
+    row = await _lock_return_with_order(session, user, return_id)
+    await svc.confirm_warehouse(
+        session,
+        user,
+        row,
+        note=payload.note,
+        tracking_no=payload.tracking_no,
+        ip=client_ip(request),
+    )
+    data = await svc.serialize_return(session, row)
+    await session.commit()
+    return ok(data, f"售后申请 {row.return_no} 已确认收货，待财务退款")
 
 
 @router.post("/returns/{return_id}/cancel")
@@ -153,7 +177,7 @@ async def cancel_return(
     )
     data = await svc.serialize_return(session, row)
     await session.commit()
-    return ok(data, f"退货单 {row.return_no} 已取消")
+    return ok(data, f"售后申请 {row.return_no} 已取消")
 
 
 @router.post("/returns/{return_id}/amount")
@@ -164,7 +188,7 @@ async def update_return_amount(
     user: CurrentUser = Depends(require_permission("payment:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """财务核对/修改退款金额；每次改动写审计。"""
+    """只给历史旧单补退款金额；新流程财务不改金额。"""
     row = await _lock_return_with_order(session, user, return_id)
     await svc.update_return_amount(
         session,
@@ -176,7 +200,7 @@ async def update_return_amount(
     )
     data = await svc.serialize_return(session, row)
     await session.commit()
-    return ok(data, f"退货单 {row.return_no} 退款金额已更新为 {row.refund_amount:.2f} 元")
+    return ok(data, f"历史售后单 {row.return_no} 退款金额已更新为 {row.refund_amount:.2f} 元")
 
 
 @router.post("/returns/{return_id}/refund")
@@ -193,7 +217,7 @@ async def refund_return(
     )
     data = await svc.serialize_return(session, row)
     await session.commit()
-    return ok(data, f"退货单 {row.return_no} 已登记退款")
+    return ok(data, f"售后申请 {row.return_no} 已登记退款")
 
 
 @router.post("/returns/{return_id}/settle")
@@ -204,14 +228,12 @@ async def settle_return(
     user: CurrentUser = Depends(require_permission("payment:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """财务结算：手动决定抵扣未付款 / 现金退还，抵扣才冲应收计划。"""
+    """财务确认退款：系统自动先冲欠款，剩余现金退；财务不手填抵扣。"""
     row = await _lock_return_with_order(session, user, return_id)
     await svc.settle_return(
         session,
         user,
         row,
-        total_amount=payload.total_amount,
-        offset_amount=payload.offset_amount,
         refund_reference=payload.refund_reference,
         note=payload.note,
         ip=client_ip(request),
@@ -220,12 +242,12 @@ async def settle_return(
     await session.commit()
     if row.status == "settled":
         message = (
-            f"退货单 {row.return_no} 已结算：抵扣客户未付款 "
+            f"售后申请 {row.return_no} 已处理：自动抵扣客户未付款 "
             f"{row.offset_amount:.2f} 元，无现金退款"
         )
     else:
         message = (
-            f"退货单 {row.return_no} 已结算：抵扣 {row.offset_amount:.2f} 元，"
+            f"售后申请 {row.return_no} 已处理：自动抵扣 {row.offset_amount:.2f} 元，"
             f"现金退还 {row.refund_amount:.2f} 元"
         )
     return ok(data, message)

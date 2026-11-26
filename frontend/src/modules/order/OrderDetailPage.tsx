@@ -59,6 +59,7 @@ import {
 } from '../../shared/api/order'
 import {
   cancelReturn,
+  confirmReturnWarehouse,
   createReturn,
   deleteReturnRefundAttachment,
   downloadReturnRefundAttachment,
@@ -74,6 +75,7 @@ import {
   type ReturnCreatePayload,
   type SalesReturn,
 } from '../../shared/api/returns'
+import { downloadFile, uploadFile, type FileRow } from '../../shared/api/file'
 import UserSearchSelect from '../../shared/components/UserSearchSelect'
 import { usePermissions } from '../../shared/hooks/permissions'
 import { useAuthStore } from '../../shared/store/auth'
@@ -219,6 +221,7 @@ const PLAN_TONE: Record<string, TagTone> = {
 const RETURN_TONE: Record<string, TagTone> = {
   reviewing: 'orange',
   pending: 'orange',
+  warehouse_pending: 'cyan',
   completed: 'blue',
   refunded: 'green',
   settled: 'green',
@@ -276,7 +279,7 @@ export default function OrderDetailPage() {
   //: 已确认回款作废（2026-11-25）：普通 Modal，原因必填。
   const [voidTarget, setVoidTarget] = useState<Payment | null>(null)
   const [voidReason, setVoidReason] = useState('')
-  //: 销售退货（2026-11-26）。登记 / 主管复核 / 财务改金额 / 退款登记 / 作废各有独立弹窗，
+  //: 分销商售后（2026-11-26）。申请 / 主管审核 / 仓库确认 / 财务退款 / 作废各有独立弹窗，
   //: 状态机不允许一步跳过去，弹窗也只做当前一步。
   const [returnVisible, setReturnVisible] = useState(false)
   const [returnReasonCode, setReturnReasonCode] = useState<'customer_rejected' | 'quality_issue' | 'wrong_item' | 'other'>('customer_rejected')
@@ -284,7 +287,15 @@ export default function OrderDetailPage() {
   const [returnRemark, setReturnRemark] = useState('')
   const [returnDate, setReturnDate] = useState<Date | null>(new Date())
   const [returnQty, setReturnQty] = useState<Record<number, string>>({})
-  const [returnRefundAmount, setReturnRefundAmount] = useState('')
+  const [returnGoodsAmount, setReturnGoodsAmount] = useState('')
+  const [returnFreightAmount, setReturnFreightAmount] = useState('0')
+  const [returnAdjustmentAmount, setReturnAdjustmentAmount] = useState('0')
+  const [returnAdjustmentNote, setReturnAdjustmentNote] = useState('')
+  const [returnPaymentMethod, setReturnPaymentMethod] = useState('线下转账')
+  const [returnReceivingAccount, setReturnReceivingAccount] = useState('')
+  const [returnTrackingNo, setReturnTrackingNo] = useState('')
+  const [returnApplicationFile, setReturnApplicationFile] = useState<FileRow | null>(null)
+  const returnApplicationInputRef = useRef<HTMLInputElement>(null)
   const [reviewTarget, setReviewTarget] = useState<SalesReturn | null>(null)
   const [reviewDecision, setReviewDecision] = useState<'approve' | 'reject'>('approve')
   const [reviewNote, setReviewNote] = useState('')
@@ -293,9 +304,10 @@ export default function OrderDetailPage() {
   const [amountNote, setAmountNote] = useState('')
   const [refundTarget, setRefundTarget] = useState<SalesReturn | null>(null)
   const [refundReference, setRefundReference] = useState('')
-  const [settleTotalDraft, setSettleTotalDraft] = useState('')
-  const [settleOffsetDraft, setSettleOffsetDraft] = useState('0')
   const [settleNote, setSettleNote] = useState('')
+  const [warehouseTarget, setWarehouseTarget] = useState<SalesReturn | null>(null)
+  const [warehouseNote, setWarehouseNote] = useState('')
+  const [warehouseTrackingNo, setWarehouseTrackingNo] = useState('')
   const refundAttachmentInputRef = useRef<HTMLInputElement>(null)
   const [cancelReturnTarget, setCancelReturnTarget] = useState<SalesReturn | null>(null)
   const [cancelReturnReason, setCancelReturnReason] = useState('')
@@ -567,18 +579,34 @@ export default function OrderDetailPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
-  // ---- 销售退货：登记（含退货总额） → 主管复核 → 财务结算（抵扣/退现）/ 作废 ----
+  // ---- 分销商售后：申请（金额构成） → 主管审核 → 仓库确认收货 → 财务自动抵扣/退现 ----
   const createReturnMutation = useMutation({
     mutationFn: (payload: ReturnCreatePayload) => createReturn(orderId, payload),
     onSuccess: (row) => {
-      Toast.success(`退货单 ${row.return_no} 已登记，退货总额 ${formatMoney(row.total_amount_exact, row.currency)}，等主管复核`)
+      Toast.success(`售后单 ${row.return_no} 已提交，退款总额 ${formatMoney(row.total_amount_exact, row.currency)}，等主管审核`)
       setReturnVisible(false)
       setReturnQty({})
-      setReturnRefundAmount('')
+      setReturnGoodsAmount('')
+      setReturnFreightAmount('0')
+      setReturnAdjustmentAmount('0')
+      setReturnAdjustmentNote('')
+      setReturnReceivingAccount('')
+      setReturnTrackingNo('')
+      setReturnApplicationFile(null)
       setReturnReason('')
       setReturnRemark('')
       refresh()
     },
+  })
+  const uploadReturnApplicationMutation = useMutation({
+    mutationFn: (file: File) =>
+      uploadFile(file, {
+        businessType: 'order',
+        businessId: orderId,
+        category: 'return_application',
+      }),
+    onSuccess: (file) => setReturnApplicationFile(file),
+    onError: (error: Error) => Toast.error(error.message || '退款登记表上传失败'),
   })
   const cancelReturnMutation = useMutation({
     mutationFn: (payload: { id: number; reason: string }) => cancelReturn(payload.id, payload.reason),
@@ -594,14 +622,28 @@ export default function OrderDetailPage() {
       reviewReturn(payload.id, payload.decision, payload.note),
     onSuccess: (row) => {
       Toast.success(
-        row.status === 'completed'
-          ? `退货单 ${row.return_no} 已通过复核，待财务结算`
+        row.status === 'warehouse_pending'
+          ? `售后单 ${row.return_no} 已通过审核，待仓库确认收货`
           : row.status === 'pending'
-            ? `退货单 ${row.return_no} 已通过复核，等填退货总额`
-            : `退货单 ${row.return_no} 已驳回，可退数量已释放`,
+            ? `售后单 ${row.return_no} 已通过审核，等填退货总额`
+            : `售后单 ${row.return_no} 已驳回，可退数量已释放`,
       )
       setReviewTarget(null)
       setReviewNote('')
+      refresh()
+    },
+  })
+  const confirmWarehouseMutation = useMutation({
+    mutationFn: (payload: { id: number; note?: string; trackingNo?: string }) =>
+      confirmReturnWarehouse(payload.id, {
+        note: payload.note,
+        tracking_no: payload.trackingNo,
+      }),
+    onSuccess: (row) => {
+      Toast.success(`售后单 ${row.return_no} 仓库已确认收货，待财务退款`)
+      setWarehouseTarget(null)
+      setWarehouseNote('')
+      setWarehouseTrackingNo('')
       refresh()
     },
   })
@@ -628,32 +670,23 @@ export default function OrderDetailPage() {
     },
   })
   const settleReturnMutation = useMutation({
-    mutationFn: (payload: {
-      id: number
-      total: number
-      offset: number
-      reference?: string
-      note?: string
-    }) => settleReturn(payload.id, {
-      total_amount: payload.total,
-      offset_amount: payload.offset,
-      refund_reference: payload.reference,
-      note: payload.note,
-    }),
+    mutationFn: (payload: { id: number; reference?: string; note?: string }) =>
+      settleReturn(payload.id, {
+        refund_reference: payload.reference,
+        note: payload.note,
+      }),
     onSuccess: (row) => {
       const offset = Number(row.offset_amount_exact)
       const cash = Number(row.refund_amount_exact)
       const extra = offset > 0
-        ? `，抵扣客户未付款 ${formatMoney(offset, row.currency)}`
+        ? `，自动抵扣客户未付款 ${formatMoney(offset, row.currency)}`
         : ''
       const tail = cash > 0
         ? `，现金退还 ${formatMoney(cash, row.currency)}`
         : '，无现金退还'
-      Toast.success(`退货单 ${row.return_no} 已结算${extra}${tail}`)
+      Toast.success(`售后单 ${row.return_no} 已确认退款${extra}${tail}`)
       setRefundTarget(null)
       setRefundReference('')
-      setSettleTotalDraft('')
-      setSettleOffsetDraft('0')
       setSettleNote('')
       refresh()
     },
@@ -1076,9 +1109,8 @@ export default function OrderDetailPage() {
   const returnableRows: ReturnableItem[] = returnable?.items ?? []
   const returnReviewingCount = returns.filter((row) => row.status === 'reviewing').length
   const returnPendingCount = returns.filter((row) => row.status === 'pending').length
-  const returnRefundPendingCount = returns.filter(
-    (row) => row.status === 'completed' && Number(row.refund_amount_exact) > 0,
-  ).length
+  const returnWarehousePendingCount = returns.filter((row) => row.status === 'warehouse_pending').length
+  const returnRefundPendingCount = returns.filter((row) => row.status === 'completed').length
   const returnRequestedItems = returnableRows.flatMap((row) => {
     const qty = Number(returnQty[row.order_item_id] || 0)
     if (!Number.isFinite(qty) || qty <= 0) return []
@@ -1094,53 +1126,49 @@ export default function OrderDetailPage() {
   const overReturnRow = returnableRows.find(
     (row) => Number(returnQty[row.order_item_id] || 0) > Number(row.remaining_quantity_exact),
   )
-  const returnRefundValid = /^\d+(?:\.\d{1,2})?$/.test(returnRefundAmount.trim())
-    && Number(returnRefundAmount) > 0
+  const returnGoodsValid = /^\d+(?:\.\d{1,2})?$/.test(returnGoodsAmount.trim())
+    && Number(returnGoodsAmount) >= 0
+  const returnFreightValid = /^\d+(?:\.\d{1,2})?$/.test(returnFreightAmount.trim())
+    && Number(returnFreightAmount) >= 0
+  const returnAdjustmentValid = /^-?\d+(?:\.\d{1,2})?$/.test(returnAdjustmentAmount.trim())
+  const returnTotal = (Number(returnGoodsAmount || 0) || 0)
+    + (Number(returnFreightAmount || 0) || 0)
+    + (Number(returnAdjustmentAmount || 0) || 0)
+  const returnTotalValid = Number.isFinite(returnTotal) && returnTotal > 0
   const returnSubmitBlocked = returnReason.trim().length < 2
-    ? '请填写退货原因（至少 2 个字）'
-    : !returnRefundValid
-      ? '请填写退货总额（大于 0，最多两位小数；含货款和运费）'
-      : overReturnRow
-        ? `${overReturnRow.sku || '该明细'} 本次最多还能退 ${overReturnRow.remaining_quantity_exact}`
-        : returnRequestedItems.length === 0
-          ? '请至少填一项本次退货数量'
-          : ''
+    ? '请填写售后原因（至少 2 个字）'
+    : !returnGoodsValid || !returnFreightValid || !returnAdjustmentValid
+      ? '退款金额只能填数字，货款/运费不能为负，调整可正可负，最多两位小数'
+      : !returnTotalValid
+        ? '退款总额必须大于 0（货款 + 运费 + 调整）'
+        : returnReceivingAccount.trim().length < 2
+          ? '请填写收款账户（客户收款用的账号）'
+          : !returnApplicationFile
+            ? '请上传《分销商退款登记表》'
+            : overReturnRow
+              ? `${overReturnRow.sku || '该明细'} 本次最多还能退 ${overReturnRow.remaining_quantity_exact}`
+              : returnRequestedItems.length === 0
+                ? '请至少填一项本次退货数量'
+                : ''
   const amountDraftValid = /^\d+(?:\.\d{1,2})?$/.test(amountDraft.trim())
     && Number(amountDraft) > 0
   const reviewNoteValid = reviewDecision === 'approve' || reviewNote.trim().length >= 2
   const refundReferenceValid = refundReference.trim().length >= 2
     && refundReference.trim().length <= 128
-  // 财务结算：新退货可以改总额、手动填抵扣；历史抵扣单只补登记现金退款。
+  // 财务确认：金额、抵扣都由系统按审核后的售后单和订单欠款自动算，财务只核对流水。
   const refundIsLegacyOffset = Boolean(refundTarget && Number(refundTarget.offset_amount_exact) > 0)
-  const refundEditsSettlement = Boolean(refundTarget && !refundIsLegacyOffset)
-  const settleTotalValid = /^\d+(?:\.\d{1,2})?$/.test(settleTotalDraft.trim())
-    && Number(settleTotalDraft) > 0
-  const settleOffsetNumber = Number(settleOffsetDraft || 0)
-  const settleOffsetShapeValid = /^\d+(?:\.\d{1,2})?$/.test(settleOffsetDraft.trim())
-    && Number.isFinite(settleOffsetNumber)
-    && settleOffsetNumber >= 0
-  const settleMaxOffset = Math.max(
-    0,
-    Math.min(Number(settleTotalDraft || 0), Number(unreceivedAmount || 0)),
-  )
-  const settleCashAmount = refundEditsSettlement
-    ? Math.max(0, Number(settleTotalDraft || 0) - settleOffsetNumber)
-    : Number(refundTarget?.refund_amount_exact ?? 0)
+  const settleTotal = Number(refundTarget?.total_amount_exact ?? 0)
+  const settleExpectedOffset = Math.max(0, Math.min(settleTotal, Number(unreceivedAmount || 0)))
+  const settleExpectedCash = Math.max(0, settleTotal - settleExpectedOffset)
   const settleBlockedReason = !refundTarget
     ? ''
     : refundIsLegacyOffset
       ? (Number(refundTarget.refund_amount_exact) > 0 && !refundReferenceValid
           ? '请填写退款流水/凭证说明（至少 2 个字）'
           : '')
-      : !settleTotalValid
-        ? '请填写退货总额（大于 0，最多两位小数）'
-        : !settleOffsetShapeValid
-          ? '抵扣金额要填 0 或正数，最多两位小数'
-          : settleOffsetNumber > settleMaxOffset
-            ? `最多可抵扣 ${formatMoney(settleMaxOffset, order.currency)}`
-            : settleCashAmount > 0 && !refundReferenceValid
-              ? '有现金退还时，请填写退款流水/凭证说明（至少 2 个字）'
-              : ''
+      : settleExpectedCash > 0 && !refundReferenceValid
+        ? '有现金退还时，请填写退款流水/凭证说明（至少 2 个字）'
+        : ''
   const refundAttachmentBusy = uploadRefundAttachmentMutation.isPending
     || deleteRefundAttachmentMutation.isPending
   const cancelReturnReasonValid = cancelReturnReason.trim().length >= 2
@@ -1353,16 +1381,7 @@ export default function OrderDetailPage() {
     refundReturnMutation.reset()
     setRefundReference('')
     setRefundTarget(row)
-    // 历史抵扣单只补现金退款；新退货进结算弹窗，可改总额和抵扣。
-    if (Number(row.offset_amount_exact) <= 0) {
-      setSettleTotalDraft(row.settled_goods_amount_exact ?? row.goods_amount_exact ?? '')
-      setSettleOffsetDraft('0')
-      setSettleNote(row.settlement_note ?? '')
-    } else {
-      setSettleTotalDraft('')
-      setSettleOffsetDraft('0')
-      setSettleNote('')
-    }
+    setSettleNote(row.settlement_note ?? '')
   }
 
   const returnColumns = [
@@ -1373,8 +1392,23 @@ export default function OrderDetailPage() {
         <div>
           <strong>{row.return_no}</strong>
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-            {row.return_date} · 共 {row.items.length} 项
+            {row.application_date || row.return_date} · {row.applicant_name || '—'} · 共 {row.items.length} 项
           </div>
+          {row.application_attachment_file_id && (
+            <Button
+              theme="borderless"
+              size="small"
+              style={{ padding: 0, height: 'auto', fontSize: 12 }}
+              onClick={() => {
+                void downloadFile(
+                  row.application_attachment_file_id as number,
+                  row.application_attachment_file_name ?? `退款登记表-${row.return_no}`,
+                ).catch((error: Error) => Toast.error(error.message || '退款登记表下载失败'))
+              }}
+            >
+              退款登记表
+            </Button>
+          )}
         </div>
       ),
     },
@@ -1386,14 +1420,18 @@ export default function OrderDetailPage() {
         return (
           <div>
             <div>
-              {row.settled_goods_amount_exact
-                ? formatMoney(row.settled_goods_amount_exact, row.currency)
+              {row.total_amount_exact
+                ? formatMoney(row.total_amount_exact, row.currency)
                 : '待填'}
             </div>
             <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-              登记参考：{formatMoney(row.goods_amount_exact, row.currency)}
-              {row.settled_by_name ? ` · 经办：${row.settled_by_name}` : ''}
+              货款 {formatMoney(row.goods_refund_amount_exact, row.currency)}
+              · 运费 {formatMoney(row.freight_refund_amount_exact, row.currency)}
+              · 调整 {formatMoney(row.adjustment_amount_exact, row.currency)}
             </div>
+            {row.adjustment_note && (
+              <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{row.adjustment_note}</div>
+            )}
           </div>
         )
       },
@@ -1404,6 +1442,9 @@ export default function OrderDetailPage() {
       render: (_: unknown, row: SalesReturn) => {
         const offset = Number(row.offset_amount_exact)
         const cash = Number(row.refund_amount_exact)
+        const total = Number(row.total_amount_exact)
+        const plannedOffset = Math.max(0, Math.min(total, Number(unreceivedAmount || 0)))
+        const plannedCash = Math.max(0, total - plannedOffset)
         let main = '—'
         if (row.status === 'settled') {
           main = `已抵扣未付款 ${formatMoney(row.offset_amount_exact, row.currency)}`
@@ -1414,14 +1455,18 @@ export default function OrderDetailPage() {
         } else if (row.status === 'completed') {
           main = offset > 0
             ? `已抵扣 ${formatMoney(row.offset_amount_exact, row.currency)} · 待登记现金退款 ${formatMoney(row.refund_amount_exact, row.currency)}`
-            : '待财务结算：抵扣或退现'
+            : `待财务确认：先抵 ${formatMoney(plannedOffset, row.currency)}，现金退 ${formatMoney(plannedCash, row.currency)}`
+        } else if (row.status === 'warehouse_pending') {
+          main = '待仓库确认收货'
+        } else if (row.status === 'reviewing') {
+          main = '待主管审核'
         }
         return (
           <div>
             <div>{main}</div>
             {row.status === 'completed' && offset === 0 && (
               <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                可抵扣上限 {formatMoney(Math.max(0, Number(unreceivedAmount)), row.currency)}
+                系统按当前欠款自动抵扣，财务不改金额
               </div>
             )}
             {row.status === 'refunded' && cash > 0 && row.refund_reference && (
@@ -1459,7 +1504,8 @@ export default function OrderDetailPage() {
       render: (value: string, row: SalesReturn) => (
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
           <Tag color={RETURN_TONE[row.status] ?? 'grey'}>{value}</Tag>
-          {row.self_reviewed && <Tag color="orange">本人复核</Tag>}
+          {row.self_reviewed && <Tag color="orange">本人审核</Tag>}
+          {row.warehouse_confirmed_at && <Tag color="cyan">仓库已收货</Tag>}
         </div>
       ),
     },
@@ -1479,8 +1525,8 @@ export default function OrderDetailPage() {
       width: 230,
       render: (_: unknown, row: SalesReturn) => {
         const actions: ReactNode[] = []
-        // 主管/管理员有 order:assign 就能复核；自己登记的也允许，靠「本人复核」留痕。
-        // 业务员没有 order:assign，前端不会出现复核按钮，后端也会再挡一次。
+        // 主管/管理员有 order:assign 就能审核；自己登记的也允许，靠「本人审核」留痕。
+        // 业务员没有 order:assign，前端不会出现审核按钮，后端也会再挡一次。
         const mayReviewThis = canReviewReturn
         if (row.status === 'reviewing' && mayReviewThis) {
           actions.push(
@@ -1489,7 +1535,7 @@ export default function OrderDetailPage() {
               setReviewDecision('approve')
               setReviewNote('')
               setReviewTarget(row)
-            }}>通过复核</Button>,
+            }}>通过审核</Button>,
             <Button key="reject" size="small" theme="borderless" onClick={() => {
               reviewReturnMutation.reset()
               setReviewDecision('reject')
@@ -1498,29 +1544,19 @@ export default function OrderDetailPage() {
             }}>驳回</Button>,
           )
         }
-        if (row.status === 'reviewing' && canPayment) {
-          actions.push(
-            <Button key="amount" size="small" theme="borderless" onClick={() => {
-              updateReturnAmountMutation.reset()
-              setAmountDraft(row.settled_goods_amount_exact ?? row.goods_amount_exact)
-              setAmountNote('')
-              setAmountTarget(row)
-            }}>改金额</Button>,
-          )
-        }
         if (row.status === 'reviewing' && canManage) {
           actions.push(
             <Button key="cancel" size="small" theme="borderless" onClick={() => {
               cancelReturnMutation.reset()
               setCancelReturnReason('')
               setCancelReturnTarget(row)
-            }}>取消登记</Button>,
+            }}>取消申请</Button>,
           )
         }
         if (row.status === 'reviewing' && !mayReviewThis) {
           actions.push(
             <span key="review-wait" style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-              等主管复核
+              等主管审核
             </span>,
           )
         }
@@ -1530,7 +1566,7 @@ export default function OrderDetailPage() {
               cancelReturnMutation.reset()
               setCancelReturnReason('')
               setCancelReturnTarget(row)
-            }}>取消登记</Button>,
+            }}>取消申请</Button>,
           )
         }
         if (row.status === 'pending' && canPayment) {
@@ -1540,18 +1576,27 @@ export default function OrderDetailPage() {
               setAmountDraft(row.settled_goods_amount_exact ?? row.goods_amount_exact)
               setAmountNote('')
               setAmountTarget(row)
-            }}>填退货总额</Button>,
+            }}>补退款总额</Button>,
+          )
+        }
+        if (row.status === 'warehouse_pending' && mayReviewThis) {
+          actions.push(
+            <Button key="warehouse" size="small" onClick={() => {
+              confirmWarehouseMutation.reset()
+              setWarehouseNote('')
+              setWarehouseTrackingNo(row.return_tracking_no ?? '')
+              setWarehouseTarget(row)
+            }}>确认仓库收货</Button>,
+          )
+        }
+        if (row.status === 'warehouse_pending' && !mayReviewThis) {
+          actions.push(
+            <span key="warehouse-wait" style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+              等仓库确认收货
+            </span>,
           )
         }
         if (row.status === 'completed' && canPayment) {
-          actions.push(
-            <Button key="amount" size="small" theme="borderless" onClick={() => {
-              updateReturnAmountMutation.reset()
-              setAmountDraft(row.settled_goods_amount_exact ?? row.goods_amount_exact)
-              setAmountNote(row.settlement_note ?? '')
-              setAmountTarget(row)
-            }}>修改退货金额</Button>,
-          )
           const legacyOffset = Number(row.offset_amount_exact) > 0
           if (legacyOffset && Number(row.refund_amount_exact) > 0) {
             actions.push(
@@ -1559,10 +1604,10 @@ export default function OrderDetailPage() {
                 登记退款
               </Button>,
             )
-          } else if (!legacyOffset) {
+          } else {
             actions.push(
               <Button key="settle" size="small" onClick={() => openSettlementModal(row)}>
-                财务结算
+                确认退款
               </Button>,
             )
           }
@@ -1571,13 +1616,13 @@ export default function OrderDetailPage() {
               voidReturnMutation.reset()
               setVoidReturnReason('')
               setVoidReturnTarget(row)
-            }}>作废退货</Button>,
+            }}>作废</Button>,
           )
         }
         if (row.status === 'completed' && !canPayment) {
           actions.push(
             <span key="refund-wait" style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-              {Number(row.offset_amount_exact) > 0 ? '待财务登记现金退款' : '待财务结算'}
+              {Number(row.offset_amount_exact) > 0 ? '待财务登记现金退款' : '待财务确认退款'}
             </span>,
           )
         }
@@ -1631,7 +1676,7 @@ export default function OrderDetailPage() {
       ? [
           {
             label: '已退货金额',
-            help: '已确认退货总额（含货款和运费，按登记/财务确认后的金额）；系统不自动抵扣，财务结算时手动选择抵扣或退现。明细见「退货记录」。',
+            help: '已审核的退款总额（货款+运费+改价调整）；财务确认时系统自动先冲客户未付款，剩余才现金退。明细见「退货记录」。',
             value: formatMoney(
               toTwoDecimals(summary?.returned_amount_exact ?? summary?.returned_amount ?? 0),
               order.currency,
@@ -2522,11 +2567,12 @@ export default function OrderDetailPage() {
             <>
               <div className="toolbar">
                 <p className="workflow-guide">
-                  只退已经发出去的产品，按产品汇总数量，不再选发货批次。登记后先由主管复核，
-                  登记时填本次退货总额（含货款和运费），主管复核后由财务核对/修改金额，并手动选择抵扣未付款或现金退还；系统不自动抵扣。
-                  {returnReviewingCount > 0 ? ` 当前有 ${returnReviewingCount} 张待主管复核。` : ''}
-                  {returnPendingCount > 0 ? ` 当前有 ${returnPendingCount} 张历史单待补退货总额。` : ''}
-                  {returnRefundPendingCount > 0 ? ` 当前有 ${returnRefundPendingCount} 张待财务结算。` : ''}
+                  售后必须挂订单：业务员填退款金额构成（货款、运费、改价/其他调整）、打款方式、收款账户和退款登记表，
+                  主管审核 → 仓库确认收到货 → 财务按审核后的总额退款。财务不改金额，系统自动先冲客户未付款，剩余才现金退。
+                  {returnReviewingCount > 0 ? ` 当前有 ${returnReviewingCount} 张待主管审核。` : ''}
+                  {returnWarehousePendingCount > 0 ? ` 当前有 ${returnWarehousePendingCount} 张待仓库确认收货。` : ''}
+                  {returnPendingCount > 0 ? ` 当前有 ${returnPendingCount} 张历史单待补退款总额。` : ''}
+                  {returnRefundPendingCount > 0 ? ` 当前有 ${returnRefundPendingCount} 张待财务确认退款。` : ''}
                 </p>
                 <div style={{ flex: 1 }} />
                 {canManage && (
@@ -2539,13 +2585,20 @@ export default function OrderDetailPage() {
                       setReturnReasonCode('customer_rejected')
                       setReturnReason('')
                       setReturnRemark('')
-                      setReturnRefundAmount('')
+                      setReturnGoodsAmount('')
+                      setReturnFreightAmount('0')
+                      setReturnAdjustmentAmount('0')
+                      setReturnAdjustmentNote('')
+                      setReturnPaymentMethod('线下转账')
+                      setReturnReceivingAccount('')
+                      setReturnTrackingNo('')
+                      setReturnApplicationFile(null)
                       setReturnDate(new Date())
                       setReturnQty({})
                       setReturnVisible(true)
                     }}
                   >
-                    登记退货
+                    发起售后
                   </Button>
                 )}
               </div>
@@ -2563,7 +2616,7 @@ export default function OrderDetailPage() {
                 rowKey="id"
                 pagination={false}
                 empty={emptyText(returnsQuery, '还没有退货登记',
-                  canManage && returnableRows.length ? '客户拒收/退错货时，点「登记退货」发起。' : undefined)}
+                  canManage && returnableRows.length ? '客户拒收/退错货时，点「发起售后」走申请、审核、仓库确认、财务退款。' : undefined)}
               />
             </>
           )}
@@ -3446,45 +3499,70 @@ export default function OrderDetailPage() {
         </div>
       </Modal>
 
-      {/* 登记销售退货：填退几件、原因和退货总额；不再等主管通过后另填金额。 */}
+      {/* 分销商售后申请：业务员填金额构成、打款信息、退款登记表和退货数量。 */}
       <Modal
-        width={780}
+        width={860}
         style={{ maxWidth: 'calc(100vw - 32px)' }}
-        title="登记销售退货"
+        title="发起分销商售后"
         visible={returnVisible}
         onCancel={() => { if (!createReturnMutation.isPending) setReturnVisible(false) }}
         footer={
           <div className="workflow-modal-actions">
-            <Button disabled={createReturnMutation.isPending} onClick={() => setReturnVisible(false)}>先不登记</Button>
+            <Button disabled={createReturnMutation.isPending} onClick={() => setReturnVisible(false)}>先不提交</Button>
             <GuardedButton
               type="danger"
               theme="outline"
-              action="登记退货"
-              disabled={Boolean(returnSubmitBlocked)}
+              action="提交售后申请"
+              disabled={Boolean(returnSubmitBlocked) || uploadReturnApplicationMutation.isPending}
               blockedReasons={returnSubmitBlocked ? [returnSubmitBlocked] : []}
               loading={createReturnMutation.isPending}
               hintBelow
               onClick={() => createReturnMutation.mutate({
                 reason_code: returnReasonCode,
                 reason: returnReason.trim(),
-                refund_amount: Number(returnRefundAmount),
+                goods_refund_amount: Number(returnGoodsAmount),
+                freight_refund_amount: Number(returnFreightAmount),
+                adjustment_amount: Number(returnAdjustmentAmount),
+                adjustment_note: returnAdjustmentNote.trim() || undefined,
+                payment_method: returnPaymentMethod,
+                receiving_account: returnReceivingAccount.trim(),
+                application_attachment_file_id: returnApplicationFile?.id as number,
+                return_tracking_no: returnTrackingNo.trim() || undefined,
                 return_date: calendarDay(returnDate) ?? undefined,
                 remark: returnRemark.trim() || undefined,
                 items: returnRequestedItems,
               })}
             >
-              确认登记
+              提交售后申请
             </GuardedButton>
           </div>
         }
       >
-        <div style={{ display: 'grid', gap: 12 }}>
+        <div style={{ display: 'grid', gap: 14 }}>
           {createReturnMutation.error && (
-            <Banner type="danger" fullMode={false} closeIcon={null} title="登记未完成" description={createReturnMutation.error.message} />
+            <Banner type="danger" fullMode={false} closeIcon={null} title="提交未完成" description={createReturnMutation.error.message} />
           )}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))', gap: 12 }}>
             <div>
-              <FormLabel required>退货原因分类</FormLabel>
+              <FormLabel>分销商名称</FormLabel>
+              <Input value={order.customer_name ?? '—'} disabled />
+            </div>
+            <div>
+              <FormLabel>申请人</FormLabel>
+              <Input value={currentUser?.name ?? currentUser?.username ?? '当前登录人'} disabled />
+            </div>
+            <div>
+              <FormLabel>申请日期</FormLabel>
+              <DatePicker
+                type="date"
+                format="yyyy-MM-dd"
+                value={returnDate ?? undefined}
+                onChange={(date) => setReturnDate((date as Date) ?? new Date())}
+                style={{ width: '100%' }}
+              />
+            </div>
+            <div>
+              <FormLabel required>售后类型</FormLabel>
               <Select
                 value={returnReasonCode}
                 onChange={(value) => setReturnReasonCode(value as typeof returnReasonCode)}
@@ -3497,33 +3575,110 @@ export default function OrderDetailPage() {
                 style={{ width: '100%' }}
               />
             </div>
+          </div>
+
+          <div style={{ border: '1px solid var(--crm-border)', borderRadius: 8, padding: 12, display: 'grid', gap: 10 }}>
+            <div style={{ fontWeight: 600 }}>退款金额构成</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 200px), 1fr))', gap: 12 }}>
+              <div>
+                <FormLabel required>货款退款</FormLabel>
+                <Input inputMode="decimal" value={returnGoodsAmount} onChange={setReturnGoodsAmount} suffix="元" placeholder="0.00" />
+              </div>
+              <div>
+                <FormLabel>运费退款</FormLabel>
+                <Input inputMode="decimal" value={returnFreightAmount} onChange={setReturnFreightAmount} suffix="元" placeholder="0.00" />
+              </div>
+              <div>
+                <FormLabel>改价 / 其他调整</FormLabel>
+                <Input inputMode="decimal" value={returnAdjustmentAmount} onChange={setReturnAdjustmentAmount} suffix="元" placeholder="可正可负，例如 -20" />
+              </div>
+            </div>
             <div>
-              <FormLabel>退货日期</FormLabel>
-              <DatePicker
-                type="date"
-                format="yyyy-MM-dd"
-                value={returnDate ?? undefined}
-                onChange={(date) => setReturnDate((date as Date) ?? new Date())}
-                style={{ width: '100%' }}
-              />
+              <FormLabel>调整说明（调整不为 0 时建议填写）</FormLabel>
+              <Input value={returnAdjustmentNote} onChange={setReturnAdjustmentNote} placeholder="例如：按售价减包装费改价 / 补客户运费" />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, flexWrap: 'wrap', paddingTop: 4 }}>
+              <span style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
+                按当前退货数量折算的参考金额：{formatMoney(returnReferenceTotal.toFixed(2), order.currency)}
+              </span>
+              <span>
+                退款总额：<strong style={{ fontSize: 18 }}>{formatMoney(returnTotal.toFixed(2), order.currency)}</strong>
+              </span>
             </div>
           </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))', gap: 12 }}>
+            <div>
+              <FormLabel required>退款打款方式</FormLabel>
+              <Select
+                value={returnPaymentMethod}
+                onChange={(value) => setReturnPaymentMethod(value as string)}
+                optionList={[
+                  { value: '线下转账', label: '线下转账' },
+                  { value: '银行转账', label: '银行转账' },
+                  { value: '支付宝', label: '支付宝' },
+                  { value: '微信', label: '微信' },
+                  { value: '其他', label: '其他' },
+                ]}
+                style={{ width: '100%' }}
+              />
+              <p className="workflow-guide" style={{ margin: '6px 0 0' }}>
+                公司把这笔钱退给客户的方式，默认线下转账；财务按这里登记的方式打款。
+              </p>
+            </div>
+            <div>
+              <FormLabel required>收款账户</FormLabel>
+              <Input value={returnReceivingAccount} onChange={setReturnReceivingAccount} placeholder="客户收款账号 / 开户行 / 支付宝账号" />
+            </div>
+            <div>
+              <FormLabel>退回物流单号（选填）</FormLabel>
+              <Input value={returnTrackingNo} onChange={setReturnTrackingNo} placeholder="客户寄回货物的快递单号" />
+            </div>
+          </div>
+
           <div>
-            <FormLabel required>本次退货总额（含货款和运费）</FormLabel>
-            <Input
-              value={returnRefundAmount}
-              onChange={setReturnRefundAmount}
-              inputMode="decimal"
-              placeholder="例如：1000.00"
-              suffix="元"
+            <FormLabel required>退款登记表附件</FormLabel>
+            <input
+              ref={returnApplicationInputRef}
+              type="file"
+              accept="image/*,.heic,.heif,.pdf,.ofd,.doc,.docx,.xls,.xlsx,.csv"
+              style={{ display: 'none' }}
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                event.target.value = ''
+                if (!file) return
+                if (file.size > 20 * 1024 * 1024) {
+                  Toast.warning('退款登记表不能超过 20 MB')
+                  return
+                }
+                uploadReturnApplicationMutation.mutate(file)
+              }}
             />
-            <p className="workflow-guide" style={{ margin: '6px 0 0' }}>
-              按当前退货数量折算的登记参考金额：<strong>{formatMoney(returnReferenceTotal.toFixed(2), order.currency)}</strong>。
-              这只是提示，最终以你填的金额为准；财务后续可以核对修改，改动会写审计。
+            {returnApplicationFile ? (
+              <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', padding: '8px 10px', border: '1px solid var(--crm-border)', borderRadius: 6, background: 'var(--crm-bg-2)' }}>
+                <div style={{ minWidth: 0, flex: '1 1 220px' }}>
+                  <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{returnApplicationFile.file_name}</div>
+                  <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{formatAttachmentSize(returnApplicationFile.size)}</div>
+                </div>
+                <Button size="small" theme="borderless" onClick={() => returnApplicationInputRef.current?.click()}>重新上传</Button>
+                <Button size="small" theme="borderless" type="danger" onClick={() => setReturnApplicationFile(null)}>移除</Button>
+              </div>
+            ) : (
+              <Button
+                theme="outline"
+                loading={uploadReturnApplicationMutation.isPending}
+                onClick={() => returnApplicationInputRef.current?.click()}
+              >
+                选择并上传退款登记表
+              </Button>
+            )}
+            <p className="workflow-guide" style={{ marginTop: 6 }}>
+              按分销商售后 OA 表单要求必填；支持图片、PDF、Word、Excel，单个文件不超过 20 MB。
             </p>
           </div>
+
           <div>
-            <FormLabel required>退货原因</FormLabel>
+            <FormLabel required>售后原因</FormLabel>
             <TextArea
               rows={2}
               maxLength={255}
@@ -3539,8 +3694,8 @@ export default function OrderDetailPage() {
           <div>
             <FormLabel required>本次退货数量</FormLabel>
             <p className="workflow-guide" style={{ marginBottom: 6 }}>
-              这里只填退哪个产品、几件；退货总额在上方填。系统按订单明细汇总已发/已退数量，不再拆发货批次。
-              登记后先交主管复核，通过后由财务核对/修改金额并登记实际退款。
+              填退哪个产品、几件；金额在上方按构成填。系统按订单明细汇总已发/已退数量，不拆发货批次。
+              提交后先交主管审核，通过后等仓库确认收货，最后财务按总额退款。
             </p>
             <Table<ReturnableItem>
               size="small"
@@ -3585,19 +3740,19 @@ export default function OrderDetailPage() {
         </div>
       </Modal>
 
-      {/* 主管复核退货：通过后进入待财务结算；驳回释放可退数量，登记人可改后重提。 */}
+      {/* 主管审核售后：通过后转仓库确认收货；驳回释放可退数量，申请人可改后重提。 */}
       <Modal
-        width={520}
+        width={580}
         style={{ maxWidth: 'calc(100vw - 32px)' }}
-        title={`主管复核退货：${reviewTarget?.return_no ?? ''}`}
+        title={`主管审核售后：${reviewTarget?.return_no ?? ''}`}
         visible={Boolean(reviewTarget)}
         onCancel={() => { if (!reviewReturnMutation.isPending) setReviewTarget(null) }}
         footer={
           <div className="workflow-modal-actions">
-            <Button disabled={reviewReturnMutation.isPending} onClick={() => setReviewTarget(null)}>先不复核</Button>
+            <Button disabled={reviewReturnMutation.isPending} onClick={() => setReviewTarget(null)}>先不审核</Button>
             <GuardedButton
               type={reviewDecision === 'reject' ? 'danger' : 'primary'}
-              action={reviewDecision === 'reject' ? '驳回退货' : '通过复核'}
+              action={reviewDecision === 'reject' ? '驳回售后' : '通过审核'}
               disabled={!reviewNoteValid}
               blockedReasons={reviewNoteValid ? [] : ['驳回必须写原因（至少 2 个字）']}
               loading={reviewReturnMutation.isPending}
@@ -3619,51 +3774,108 @@ export default function OrderDetailPage() {
         {reviewTarget && (
           <div style={{ display: 'grid', gap: 12 }}>
             {reviewReturnMutation.error && (
-              <Banner type="danger" fullMode={false} closeIcon={null} title="复核未完成" description={reviewReturnMutation.error.message} />
+              <Banner type="danger" fullMode={false} closeIcon={null} title="审核未完成" description={reviewReturnMutation.error.message} />
             )}
             {reviewTarget.created_by != null && reviewTarget.created_by === currentUser?.id && (
               <Banner
                 type="warning"
                 fullMode={false}
                 closeIcon={null}
-                title="这是你自己登记的退货"
-                description="可以自己复核；通过后列表会标「本人复核」，审计里也会记录，方便事后查。"
+                title="这是你自己申请的售后"
+                description="可以自己审核；通过后列表会标「本人审核」，审计里也会记录，方便事后查。"
               />
             )}
             <div className="workflow-guide">
-              这张退货单有 <strong>{reviewTarget.items.length}</strong> 项退货，
-              登记参考 <strong>{formatMoney(reviewTarget.goods_amount_exact, reviewTarget.currency)}</strong>，
-              登记退货总额 <strong>{formatMoney(reviewTarget.settled_goods_amount_exact, reviewTarget.currency)}</strong>。
-              这里确认“退几件、什么原因、登记金额”是否属实；通过后由财务核对金额并登记实际退款。
+              这张售后单有 <strong>{reviewTarget.items.length}</strong> 项退货，
+              退款总额 <strong>{formatMoney(reviewTarget.total_amount_exact, reviewTarget.currency)}</strong>
+              （货款 {formatMoney(reviewTarget.goods_refund_amount_exact, reviewTarget.currency)}
+              · 运费 {formatMoney(reviewTarget.freight_refund_amount_exact, reviewTarget.currency)}
+              · 调整 {formatMoney(reviewTarget.adjustment_amount_exact, reviewTarget.currency)}）。
+              收款账户：{reviewTarget.receiving_account || '—'}；打款方式：{reviewTarget.payment_method || '—'}。
             </div>
             <div>
-              <FormLabel required>复核结果</FormLabel>
+              <FormLabel required>审核结果</FormLabel>
               <Select
                 value={reviewDecision}
                 onChange={(value) => setReviewDecision(value as 'approve' | 'reject')}
                 optionList={[
-                  { label: '通过，待财务结算', value: 'approve' },
-                  { label: '驳回，退给登记人修改', value: 'reject' },
+                  { label: '通过，转仓库确认收货', value: 'approve' },
+                  { label: '驳回，退给申请人修改', value: 'reject' },
                 ]}
               />
             </div>
             <div>
-              <FormLabel required={reviewDecision === 'reject'}>复核意见</FormLabel>
+              <FormLabel required={reviewDecision === 'reject'}>审核意见</FormLabel>
               <TextArea rows={2} maxLength={255} value={reviewNote} onChange={setReviewNote}
-                placeholder={reviewDecision === 'reject' ? '驳回必须写原因，例如：货还没收到' : '选填，例如：已核对退货照片'} />
+                placeholder={reviewDecision === 'reject' ? '驳回必须写原因，例如：货还没收到' : '选填，例如：已核对退货照片和金额构成'} />
             </div>
             <p className="workflow-guide">
-              通过后进入“待财务结算”，财务可以核对/修改退货总额，再手动选择抵扣未付款或现金退还；驳回后这张单结束，但占用的可退数量会释放，可以重新登记。
+              通过后进入“待仓库确认收货”，仓库点收后才轮到财务退款。财务不改金额，系统按审核后的总额自动先冲客户未付款，剩余才现金退。
+              驳回后这张单结束，但占用的可退数量会释放，可以重新申请。
             </p>
           </div>
         )}
       </Modal>
 
-      {/* 财务修改退货总额：登记时业务员先填；财务可核对修改，每次改动写审计；不自动抵扣客户未付款。 */}
+      {/* 仓库确认收货：确认货真的回来了，才允许财务退款。 */}
       <Modal
         width={520}
         style={{ maxWidth: 'calc(100vw - 32px)' }}
-        title={`${amountTarget?.status === 'pending' ? '填写' : '修改'}退货总额：${amountTarget?.return_no ?? ''}`}
+        title={`确认仓库收货：${warehouseTarget?.return_no ?? ''}`}
+        visible={Boolean(warehouseTarget)}
+        onCancel={() => { if (!confirmWarehouseMutation.isPending) setWarehouseTarget(null) }}
+        footer={
+          <div className="workflow-modal-actions">
+            <Button disabled={confirmWarehouseMutation.isPending} onClick={() => setWarehouseTarget(null)}>先不确认</Button>
+            <GuardedButton
+              type="primary"
+              action="确认仓库收货"
+              disabled={false}
+              blockedReasons={[]}
+              loading={confirmWarehouseMutation.isPending}
+              hintBelow
+              onClick={() => {
+                if (!warehouseTarget) return
+                confirmWarehouseMutation.mutate({
+                  id: warehouseTarget.id,
+                  note: warehouseNote.trim() || undefined,
+                  trackingNo: warehouseTrackingNo.trim() || undefined,
+                })
+              }}
+            >
+              确认已收到货
+            </GuardedButton>
+          </div>
+        }
+      >
+        {warehouseTarget && (
+          <div style={{ display: 'grid', gap: 12 }}>
+            {confirmWarehouseMutation.error && (
+              <Banner type="danger" fullMode={false} closeIcon={null} title="仓库确认失败" description={confirmWarehouseMutation.error.message} />
+            )}
+            <div className="workflow-guide">
+              售后单 {warehouseTarget.return_no}，共 {warehouseTarget.items.length} 项，退款总额
+              <strong>{formatMoney(warehouseTarget.total_amount_exact, warehouseTarget.currency)}</strong>。
+              确认前请点清实际收到的数量；确认后财务才能退款，系统会自动先冲客户未付款。
+            </div>
+            <div>
+              <FormLabel>退回物流单号</FormLabel>
+              <Input value={warehouseTrackingNo} onChange={setWarehouseTrackingNo} placeholder="客户寄回货物的快递单号" />
+            </div>
+            <div>
+              <FormLabel>仓库收货备注（选填）</FormLabel>
+              <TextArea rows={2} maxLength={255} value={warehouseNote} onChange={setWarehouseNote}
+                placeholder="例如：实收 3 件，外箱破损，已拍照留档" />
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* 仅历史旧单：没有金额的 pending 单由财务补总额；新售后不允许财务改金额。 */}
+      <Modal
+        width={520}
+        style={{ maxWidth: 'calc(100vw - 32px)' }}
+        title={`补历史退货总额：${amountTarget?.return_no ?? ''}`}
         visible={Boolean(amountTarget)}
         onCancel={() => { if (!updateReturnAmountMutation.isPending) setAmountTarget(null) }}
         footer={
@@ -3671,11 +3883,11 @@ export default function OrderDetailPage() {
             <Button disabled={updateReturnAmountMutation.isPending} onClick={() => setAmountTarget(null)}>暂不处理</Button>
             <GuardedButton
               type="primary"
-              action="保存退货总额"
+              action="保存退款总额"
               disabled={!amountDraftValid}
               blockedReasons={
                 !amountDraftValid
-                  ? ['请填写退货总额（大于 0，最多两位小数；含货款和运费）']
+                  ? ['请填写退款总额（大于 0，最多两位小数；历史单兼容）']
                   : []
               }
               loading={updateReturnAmountMutation.isPending}
@@ -3689,7 +3901,7 @@ export default function OrderDetailPage() {
                 })
               }}
             >
-              保存退货总额
+              保存退款总额
             </GuardedButton>
           </div>
         }
@@ -3700,12 +3912,11 @@ export default function OrderDetailPage() {
               <Banner type="danger" fullMode={false} closeIcon={null} title="金额未保存" description={updateReturnAmountMutation.error.message} />
             )}
             <div className="workflow-guide">
-              当前退货总额：<strong>{formatMoney(amountTarget.settled_goods_amount_exact, amountTarget.currency)}</strong>，
-              登记参考金额：<strong>{formatMoney(amountTarget.goods_amount_exact, amountTarget.currency)}</strong>。
-              修改后会立即写审计，保留改前/改后金额、操作人和说明。
+              当前退款总额：<strong>{formatMoney(amountTarget.settled_goods_amount_exact, amountTarget.currency)}</strong>。
+              这是历史旧单的补金额入口，只适用于还没有金额的“pending”单；新售后金额由申请人填、主管审核，财务不能改。
             </div>
             <div>
-              <FormLabel required>退货总额（含货款和运费）</FormLabel>
+              <FormLabel required>退款总额（历史单兼容）</FormLabel>
               <Input
                 inputMode="decimal"
                 value={amountDraft}
@@ -3720,19 +3931,19 @@ export default function OrderDetailPage() {
                 placeholder="例如：财务核对后按客户确认金额调整" />
             </div>
             <p className="workflow-guide">
-              这里只改退货总额，不自动抵扣；财务结算时再手动选抵扣未付款或现金退还。已退款/已结算后不能再改。
+              保存后会写审计；已退款/已结算后不能再改。新单请驳回让申请人重提，不要在这里改金额。
             </p>
           </div>
         )}
       </Modal>
 
-      {/* 财务结算：新退货手动选抵扣/退现；历史抵扣单只补登记现金退款。 */}
+      {/* 财务确认退款：新单金额已审核，系统自动先冲欠款、剩余现金退；历史抵扣单只补登记现金退款。 */}
       <Modal
-        width={560}
+        width={600}
         style={{ maxWidth: 'calc(100vw - 32px)' }}
         title={refundIsLegacyOffset
           ? `登记现金退款：${refundTarget?.return_no ?? ''}`
-          : `财务结算：${refundTarget?.return_no ?? ''}`}
+          : `财务确认退款：${refundTarget?.return_no ?? ''}`}
         visible={Boolean(refundTarget)}
         onCancel={() => {
           if (!settleReturnMutation.isPending && !refundReturnMutation.isPending) setRefundTarget(null)
@@ -3773,7 +3984,7 @@ export default function OrderDetailPage() {
               </GuardedButton>
             ) : (
               <GuardedButton
-                action="确认退货结算"
+                action="确认退款"
                 disabled={Boolean(settleBlockedReason) || refundAttachmentBusy}
                 blockedReasons={
                   settleBlockedReason
@@ -3788,14 +3999,12 @@ export default function OrderDetailPage() {
                   if (!refundTarget) return
                   settleReturnMutation.mutate({
                     id: refundTarget.id,
-                    total: Number(settleTotalDraft),
-                    offset: settleOffsetNumber,
-                    reference: settleCashAmount > 0 ? refundReference.trim() : undefined,
+                    reference: settleExpectedCash > 0 ? refundReference.trim() : undefined,
                     note: settleNote.trim() || undefined,
                   })
                 }}
               >
-                确认结算
+                确认退款
               </GuardedButton>
             )}
           </div>
@@ -3808,11 +4017,11 @@ export default function OrderDetailPage() {
                   <Banner type="danger" fullMode={false} closeIcon={null} title="登记未完成" description={refundReturnMutation.error.message} />
                 )
               : settleReturnMutation.error && (
-                  <Banner type="danger" fullMode={false} closeIcon={null} title="结算未完成" description={settleReturnMutation.error.message} />
+                  <Banner type="danger" fullMode={false} closeIcon={null} title="退款未完成" description={settleReturnMutation.error.message} />
                 )}
             {refundIsLegacyOffset ? (
               <div className="workflow-guide">
-                这张是历史“已抵扣客户未付款”的退货单：已抵扣
+                这张是历史“已抵扣客户未付款”的售后单：已抵扣
                 <strong>{formatMoney(refundTarget.offset_amount_exact, refundTarget.currency)}</strong>，
                 本次现金退款
                 <strong>{formatMoney(refundTarget.refund_amount_exact, refundTarget.currency)}</strong>。
@@ -3820,55 +4029,50 @@ export default function OrderDetailPage() {
               </div>
             ) : (
               <>
-                <div className="workflow-guide">
-                  客户未付款余额
-                  <strong>{formatMoney(Math.max(0, Number(unreceivedAmount)), refundTarget.currency)}</strong>，
-                  本次最多可抵扣
-                  <strong>{formatMoney(settleMaxOffset, refundTarget.currency)}</strong>。
-                  抵扣多少由财务手动填；不填抵扣就是全部现金退还。只有填了抵扣，才会冲减应收计划并写审计。
-                </div>
-                <div>
-                  <FormLabel required>本次退货总额（含货款和运费）</FormLabel>
-                  <Input
-                    inputMode="decimal"
-                    value={settleTotalDraft}
-                    onChange={setSettleTotalDraft}
-                    placeholder="例如 1000.00"
-                    suffix="元"
-                  />
-                </div>
-                <div>
-                  <FormLabel required>抵扣客户未付款</FormLabel>
-                  <Input
-                    inputMode="decimal"
-                    value={settleOffsetDraft}
-                    onChange={setSettleOffsetDraft}
-                    placeholder="0.00"
-                    suffix="元"
-                  />
-                  <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
-                    <Button size="small" theme="borderless" onClick={() => setSettleOffsetDraft('0')}>
-                      全部退现
-                    </Button>
-                    <Button
-                      size="small"
-                      theme="borderless"
-                      disabled={settleMaxOffset <= 0}
-                      onClick={() => setSettleOffsetDraft(settleMaxOffset.toFixed(2))}
-                    >
-                      优先抵扣未付款
-                    </Button>
+                <div style={{
+                  display: 'grid',
+                  gap: 8,
+                  padding: 12,
+                  border: '1px solid var(--crm-border)',
+                  borderRadius: 8,
+                  background: 'var(--crm-bg-2)',
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+                    <span>退款总额（已审核）</span>
+                    <strong>{formatMoney(settleTotal, refundTarget.currency)}</strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 12, color: 'var(--crm-text-3)' }}>
+                    <span>
+                      货款 {formatMoney(refundTarget.goods_refund_amount_exact, refundTarget.currency)}
+                      · 运费 {formatMoney(refundTarget.freight_refund_amount_exact, refundTarget.currency)}
+                      · 调整 {formatMoney(refundTarget.adjustment_amount_exact, refundTarget.currency)}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+                    <span>客户当前未付款</span>
+                    <span>{formatMoney(Math.max(0, Number(unreceivedAmount)), refundTarget.currency)}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+                    <span>系统自动抵扣未付款</span>
+                    <strong>{formatMoney(settleExpectedOffset, refundTarget.currency)}</strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+                    <span>剩余现金退给客户</span>
+                    <strong style={{ color: settleExpectedCash > 0 ? 'var(--crm-error)' : undefined }}>
+                      {formatMoney(settleExpectedCash, refundTarget.currency)}
+                    </strong>
                   </div>
                 </div>
                 <div className="workflow-guide">
-                  本次现金退还：
-                  <strong>{formatMoney(settleCashAmount, refundTarget.currency)}</strong>
-                  {settleCashAmount > 0 ? '（需要填退款流水/凭证说明）' : '（全额抵扣，无现金退款）'}
+                  系统按订单当前欠款自动先冲未付款，剩余才现金退；财务不改金额、不手选抵扣。
+                  收款账户：{refundTarget.receiving_account || '—'}；打款方式：{refundTarget.payment_method || '—'}。
                 </div>
               </>
             )}
             <div>
-              <FormLabel required={settleCashAmount > 0}>退款流水 / 凭证说明</FormLabel>
+              <FormLabel required={refundIsLegacyOffset ? Number(refundTarget.refund_amount_exact) > 0 : settleExpectedCash > 0}>
+                退款流水 / 凭证说明
+              </FormLabel>
               <Input
                 value={refundReference}
                 onChange={setRefundReference}
@@ -3876,15 +4080,15 @@ export default function OrderDetailPage() {
                 placeholder="例如：银行转账 20261125001"
               />
             </div>
-            {refundEditsSettlement && (
+            {!refundIsLegacyOffset && (
               <div>
-                <FormLabel>结算说明（选填）</FormLabel>
+                <FormLabel>退款备注（选填）</FormLabel>
                 <TextArea
                   rows={2}
                   maxLength={255}
                   value={settleNote}
                   onChange={setSettleNote}
-                  placeholder="例如：客户未付尾款，退货金额直接抵扣"
+                  placeholder="例如：客户未付尾款，退款先抵欠款"
                 />
               </div>
             )}
@@ -3959,7 +4163,7 @@ export default function OrderDetailPage() {
               )}
               <p className="workflow-guide" style={{ marginTop: 6 }}>
                 可上传银行回单、转账截图、客户签收单等；支持图片、PDF、Word、Excel，单个文件不超过 20 MB。
-                附件仅用于核对，不改变结算金额。
+                附件仅用于核对，不改变退款金额。
               </p>
             </div>
           </div>

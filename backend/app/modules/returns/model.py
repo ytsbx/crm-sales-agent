@@ -1,17 +1,17 @@
-"""销售退货：发货之后的退货登记与财务核销。
+"""销售退货：发货之后的退货登记、主管审核、仓库确认与财务退款。
 
-业务口径（2026-11-25 主人拍板 A 方案，2026-11-26 两次调整）：
-- 只针对**已实发**的订单明细登记，发货批次仅用于汇总已发数量，原发货事实不动，不碰库存；
-- 登记时必须填本次退货总额（含货款和运费）；主管复核后直接进入待财务结算；
-- 财务可以核对/修改退款金额，但每次改动都要写审计；
-- 系统**不自动抵扣客户未付款**；财务结算时必须手动选：多少抵扣未付款、多少现金退还；
-- 财务确认后未结算可作废；已经现金退款或已用抵扣结清的不能作废。
+业务口径（2026-11-26 主人按分销商售后 OA 表单重新拍板）：
+- 售后申请必须挂订单，业务员登记时填退款金额构成（货款 / 运费 / 改价或其他调整），
+  系统只负责合计，不再让业务员只填一个说不清来源的总数；
+- 申请单必须附「分销商退款登记表」，主管审核通过后先进入待仓库确认收货；
+- 仓库确认货已退回后，财务才处理退款；
+- 财务不手填抵扣、不改金额：系统按订单当前客户未付款自动先冲，剩余才现金退；
+- 审核前不冲欠款，只有财务确认退款时才写应收冲减快照。
 
 三张表：
-- `sales_returns`：退货单头，状态与金额；
+- `sales_returns`：售后申请单头，状态与金额；
 - `sales_return_items`：按订单明细（产品/规格）记录退多少；新单批次字段为空，历史单保留原值；
-- `sales_return_plan_adjustments`：记录每一期应收被退货抵扣多少。
-  历史自动抵扣单靠它精确还原；2026-11-26 起新单只在财务手动选“抵扣未付款”时写入。
+- `sales_return_plan_adjustments`：记录每一期应收被退货自动抵扣多少，作废时精确还原。
 """
 
 from datetime import date, datetime
@@ -32,12 +32,13 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.base import Base, IdMixin, TimestampMixin
 
 RETURN_STATUS_LABEL = {
-    "reviewing": "待主管复核",
-    #: 兼容历史旧单：金额还没填。新退货在登记时已填金额，不会落到这个状态。
-    "pending": "待填退货总额（历史单）",
-    "completed": "待财务结算",
+    "reviewing": "待主管审核",
+    #: 兼容历史旧单：金额还没填。新售后在登记时已填金额，不会落到这个状态。
+    "pending": "待填退款总额（历史单）",
+    "warehouse_pending": "待仓库确认收货",
+    "completed": "待财务退款",
     "refunded": "已退款",
-    "settled": "已结算",
+    "settled": "已抵扣结清",
     "rejected": "主管驳回",
     "cancelled": "已取消",
     "voided": "已作废",
@@ -60,29 +61,49 @@ class SalesReturn(Base, IdMixin, TimestampMixin):
 
     return_no: Mapped[str] = mapped_column(String(32), unique=True)
     order_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("sales_orders.id"))
-    #: 退货单状态：reviewing / pending（仅历史旧单）/ completed / refunded / settled / cancelled / voided。
-    #: reviewing = 已登记退款金额，等主管复核；
-    #: completed = 主管已通过，等财务结算；财务可在这时核对/修改金额、选择抵扣或退现。
-    #: refunded = 现金退款已支付；
-    #: settled = 退货金额全部抵了客户未付款，没有现金退给客户。
-    status: Mapped[str] = mapped_column(String(16), default="reviewing")
+    #: 售后状态：reviewing / pending（仅历史旧单）/ warehouse_pending / completed /
+    #: refunded / settled / cancelled / voided。
+    #: reviewing = 已提交申请，等主管审核；
+    #: warehouse_pending = 主管已通过，等仓库确认收到退货；
+    #: completed = 仓库已收货，等财务退款；
+    #: refunded = 已退款（可能含自动抵扣 + 现金退还）；
+    #: settled = 退款金额全部自动抵扣客户未付款，没有现金退给客户。
+    status: Mapped[str] = mapped_column(String(32), default="reviewing")
     reason_code: Mapped[str] = mapped_column(String(32), default="other")
     reason: Mapped[str] = mapped_column(String(255))
     return_date: Mapped[date] = mapped_column(Date)
     currency: Mapped[str] = mapped_column(String(8), default="CNY")
 
-    #: 登记时的参考货款（按订单明细单价折算），仅供主管/财务参考，不是最终账。
+    #: 登记时的参考货款（按订单明细单价折算），仅供业务员/主管参考，不是最终账。
     goods_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
-    #: 本次退货总额（含货款和运费）。登记时必填；财务有权修改，改动写审计。
+    #: 货款退款：业务员在申请单里填，默认带出参考货款，可按实际协商金额改。
+    goods_refund_amount: Mapped[Decimal] = mapped_column(
+        Numeric(16, 2), default=0
+    )
+    #: 本次退款总额（兼容历史字段，仍等于 goods_refund + freight_refund + adjustment）。
     settled_goods_amount: Mapped[Decimal | None] = mapped_column(
         Numeric(16, 2), nullable=True
     )
-    #: 历史兼容字段：新流程固定 0，退款金额不再拆运费。
+    #: 运费退款：业务员填，0 表示不退运费。
     freight_refund_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
-    #: 本次退货总额 = settled_goods_amount + freight_refund_amount（后者新流程为 0）。
+    #: 改价/其他调整：可正可负，用来解释“为什么和按单价算出来的不一样”。
+    adjustment_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
+    adjustment_note: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: 本次退款总额 = goods_refund_amount + freight_refund_amount + adjustment_amount。
     total_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
 
-    #: 本次退货中抵扣客户未付款的金额。财务结算时手动填，0 表示全部现金退还。
+    #: 打款方式（线下转账/银行转账等）。财务只按这个渠道退款，不在系统里选抵扣。
+    payment_method: Mapped[str] = mapped_column(String(32), default="线下转账")
+    #: 收款账户，业务员填户名/开户行/账号；财务按它打款。
+    receiving_account: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    #: 申请时上传的《分销商退款登记表》附件，文件中心 file_id。
+    application_attachment_file_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True
+    )
+    #: 客户退回货物的物流单号，便于仓库核对。
+    return_tracking_no: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    #: 财务确认退款时，系统自动抵扣客户未付款的金额；不是人工填的。
     offset_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
     #: 现金退还给客户的金额 = total_amount - offset_amount。
     refund_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
@@ -97,6 +118,12 @@ class SalesReturn(Base, IdMixin, TimestampMixin):
     reviewed_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     review_note: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: 仓库确认收到退货：谁确认、什么时候、备注。主管/管理员可代仓库确认。
+    warehouse_confirmed_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    warehouse_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    warehouse_note: Mapped[str | None] = mapped_column(String(255), nullable=True)
     settled_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     refunded_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

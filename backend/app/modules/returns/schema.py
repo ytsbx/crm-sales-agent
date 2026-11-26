@@ -21,10 +21,32 @@ class ReturnCreate(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     reason_code: RETURN_REASON_CODES = "other"
-    #: 至少 2 个字：退货是要进客户时间线和审计的动作，不能只写一个“退”。
+    #: 至少 2 个字：售后申请要进客户时间线和审计，不能只写一个“退”。
     reason: str = Field(min_length=2, max_length=255)
-    #: 2026-11-26 主人拍板：登记时就填退款金额（含货款和运费），不再等主管通过后另填。
-    refund_amount: Decimal = Field(gt=0, max_digits=16, decimal_places=2)
+    #: 业务员填的退款金额构成。总金额由系统合计，不再只填一个说不清来源的数。
+    goods_refund_amount: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=2
+    )
+    freight_refund_amount: Decimal = Field(
+        default=0, ge=0, max_digits=16, decimal_places=2
+    )
+    #: 改价/其他调整，可正可负；合计后总额必须大于 0。
+    adjustment_amount: Decimal = Field(
+        default=0, max_digits=16, decimal_places=2
+    )
+    adjustment_note: str | None = Field(default=None, max_length=255)
+    #: 兼容旧调用：老接口只传一个 refund_amount 时，把它当作总额。
+    refund_amount: Decimal | None = Field(
+        default=None, gt=0, max_digits=16, decimal_places=2
+    )
+    #: 打款方式；财务按这个渠道退款，不在系统里另选抵扣。
+    payment_method: str = Field(default="线下转账", min_length=2, max_length=32)
+    #: 收款账户：户名/开户行/账号，财务按它打款。
+    receiving_account: str = Field(min_length=2, max_length=128)
+    #: 申请单必须附《分销商退款登记表》，文件先走 /files/upload 拿 file_id。
+    application_attachment_file_id: int = Field(gt=0)
+    #: 客户退回货物的物流单号，仓库核对用，选填。
+    return_tracking_no: str | None = Field(default=None, max_length=64)
     return_date: date | None = None
     remark: str | None = Field(default=None, max_length=255)
     items: list[ReturnItemInput] = Field(min_length=1)
@@ -36,12 +58,33 @@ class ReturnCreate(BaseModel):
             raise ValueError("同一订单明细只能填一行，请合并数量")
         return self
 
+    @model_validator(mode="after")
+    def _amount_breakdown(self):
+        # 老调用只传 refund_amount：把它当总额，货款 = 总额 - 运费 - 调整。
+        if self.goods_refund_amount is None:
+            if self.refund_amount is None:
+                raise ValueError("请填写货款退款金额")
+            goods = self.refund_amount - self.freight_refund_amount - self.adjustment_amount
+            if goods < 0:
+                raise ValueError("货款退款金额不能小于 0，请检查运费/调整金额")
+            self.goods_refund_amount = goods
+        total = (
+            self.goods_refund_amount
+            + self.freight_refund_amount
+            + self.adjustment_amount
+        )
+        if total <= 0:
+            raise ValueError("退款总额必须大于 0")
+        # 兼容字段：统一写成系统合计后的总额，后面 service 只认这个数。
+        self.refund_amount = total
+        return self
+
 
 class ReturnAmountUpdate(BaseModel):
-    """财务核对/修改退款金额。
+    """历史旧单补/改退款金额。
 
-    2026-11-26 主人拍板：退款金额在登记时由业务员填写，财务后续可以改；
-    每次修改都必须写审计，保留修改前后金额、操作人和说明。
+    2026-11-26 新流程：业务员登记时填构成，主管审核；财务不改金额。
+    这个接口只保留给历史 `pending` 旧单补金额，不再给新单使用。
     """
 
     refund_amount: Decimal = Field(gt=0, max_digits=16, decimal_places=2)
@@ -49,20 +92,26 @@ class ReturnAmountUpdate(BaseModel):
 
 
 class ReturnSettle(BaseModel):
-    """财务结算：确定退货总额里多少抵扣未付款，多少现金退还。
+    """财务确认退款：金额由系统按订单欠款自动拆分，财务只登记退款结果。
 
-    2026-11-26 补：系统不自动抵扣，但财务必须能手动选。
-    - `offset_amount` 抵扣客户未付款，0 表示全部现金退还；
-    - `total_amount` 是本次退货总额（含货款和运费），财务可在这里一并核对修改；
-    - 现金退还 = total_amount - offset_amount，现金大于 0 时必须有退款流水/说明。
+    - 系统先冲客户未付款，剩余才现金退；
+    - 财务不填抵扣金额、不改退款总额；
+    - 有现金退还时必须填退款流水/凭证说明。
     """
 
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    total_amount: Decimal = Field(gt=0, max_digits=16, decimal_places=2)
-    offset_amount: Decimal = Field(ge=0, max_digits=16, decimal_places=2)
     refund_reference: str | None = Field(default=None, min_length=2, max_length=128)
     note: str | None = Field(default=None, max_length=255)
+
+
+class ReturnWarehouseConfirm(BaseModel):
+    """仓库确认收到退货。"""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    note: str | None = Field(default=None, max_length=255)
+    tracking_no: str | None = Field(default=None, max_length=64)
 
 
 class ReturnReview(BaseModel):

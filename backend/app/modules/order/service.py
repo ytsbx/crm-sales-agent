@@ -54,7 +54,7 @@ def serialize_order(
 ) -> dict:
     received = received_amount or Decimal(0)
     total = order.total_amount or Decimal(0)
-    # 未收 = 订单总额 - 客户已付 - 退货里财务手动抵扣的未付款。
+    # 未收 = 订单总额 - 客户已付 - 售后财务确认时系统自动抵扣的未付款。
     # 之前只减已付，退货结算把 800 抵掉后订单详情仍显示 800，页面就像“永远悬浮”。
     # 取消是终态：应收计划已随单作废，不再按这个公式算。
     offset = return_offset_amount or Decimal(0)
@@ -1334,7 +1334,7 @@ async def order_context(session: AsyncSession, orders: list[SalesOrder]) -> dict
                 )
             ).all()
         }
-        # 退货结算里财务手动抵扣的未付款：订单详情的“客户未付款余额”必须减掉，
+        # 售后退款里系统自动抵扣的未付款：订单详情的“客户未付款余额”必须减掉，
         # 否则结算后汇总已经 0、详情还挂着旧数，用户会以为没生效。
         from app.modules.returns.model import SalesReturn
         from app.modules.returns.service import SETTLED_RETURN_STATUSES

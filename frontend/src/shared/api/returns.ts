@@ -3,6 +3,7 @@ import { api } from './client'
 export type SalesReturnStatus =
   | 'reviewing'
   | 'pending'
+  | 'warehouse_pending'
   | 'completed'
   | 'refunded'
   | 'settled'
@@ -33,6 +34,9 @@ export interface SalesReturn {
   order_no: string
   customer_id: number
   customer_name?: string | null
+  distributor_name?: string | null
+  applicant_name?: string | null
+  application_date: string
   status: SalesReturnStatus
   status_label: string
   reason_code: string
@@ -42,15 +46,29 @@ export interface SalesReturn {
   currency: string
   goods_amount: number
   goods_amount_exact: string
-  /** 本次退货总额（含货款和运费）；登记时必填，财务可修改。 */
+  /** 业务员填的货款退款。 */
+  goods_refund_amount: number
+  goods_refund_amount_exact: string
+  /** 退款总额（兼容字段）= 货款退款 + 运费退款 + 改价/其他调整。 */
   settled_goods_amount?: number | null
   settled_goods_amount_exact?: string | null
-  /** 历史兼容字段；新流程固定 0，退款金额已并入 settled_goods_amount。 */
   freight_refund_amount: number
   freight_refund_amount_exact: string
+  /** 改价/其他调整，可正可负。 */
+  adjustment_amount: number
+  adjustment_amount_exact: string
+  adjustment_note?: string | null
   total_amount: number
   total_amount_exact: string
-  /** 本次退货中抵扣客户未付款的金额；财务结算时手动填，0 表示全部现金退还。 */
+  payment_method: string
+  receiving_account?: string | null
+  /** 申请时上传的《分销商退款登记表》。 */
+  application_attachment_file_id?: number | null
+  application_attachment_file_name?: string | null
+  application_attachment_file_size?: number | null
+  application_attachment_mime_type?: string | null
+  return_tracking_no?: string | null
+  /** 系统自动抵扣客户未付款的金额；不是财务手填。 */
   offset_amount: number
   offset_amount_exact: string
   /** 现金退还给客户的金额 = total_amount - offset_amount。 */
@@ -70,8 +88,11 @@ export interface SalesReturn {
   reviewed_by_name?: string | null
   reviewed_at?: string | null
   review_note?: string | null
-  /** 复核人就是登记人本人：界面标「本人复核」，审计里也留痕。 */
+  /** 审核人就是申请人本人：界面标「本人审核」，审计里也留痕。 */
   self_reviewed?: boolean
+  warehouse_confirmed_by_name?: string | null
+  warehouse_confirmed_at?: string | null
+  warehouse_note?: string | null
   settled_by_name?: string | null
   settled_at?: string | null
   refunded_by_name?: string | null
@@ -112,8 +133,16 @@ export interface ReturnableOverview {
 export interface ReturnCreatePayload {
   reason_code: 'customer_rejected' | 'quality_issue' | 'wrong_item' | 'other'
   reason: string
-  /** 登记时就填：本次退款金额（含货款和运费）。 */
-  refund_amount: number
+  /** 业务员填的退款金额构成，服务端合计总额。 */
+  goods_refund_amount: number
+  freight_refund_amount: number
+  adjustment_amount: number
+  adjustment_note?: string
+  payment_method: string
+  receiving_account: string
+  /** 先走 `/files/upload` 上传《分销商退款登记表》，再带 file_id 提交。 */
+  application_attachment_file_id: number
+  return_tracking_no?: string
   return_date?: string
   remark?: string
   items: Array<{ order_item_id: number; quantity: number }>
@@ -147,10 +176,10 @@ export function reviewReturn(
 }
 
 /**
- * 财务核对/修改退货总额（不含结算）。
+ * 仅历史旧单：还没有金额的 pending 单由财务补退款总额。
  *
- * 2026-11-26 主人拍板：登记时业务员先填，财务可以改；后端每次改动都写审计。
- * 已退款/已结算的退货单不能再改；新单正式结算走 `settleReturn`。
+ * 2026-11-26 新流程：业务员申请时填金额构成、主管审核；财务不改金额。
+ * 新单金额有误只能驳回重提，正式退款走 `settleReturn`。
  */
 export function updateReturnAmount(
   returnId: number,
@@ -164,23 +193,27 @@ export function updateReturnAmount(
 }
 
 export interface ReturnSettlePayload {
-  /** 本次退货总额（含货款和运费）；财务可在这里一并核对修改。 */
-  total_amount: number
-  /** 抵扣客户未付款的金额；0 表示全部现金退还。 */
-  offset_amount: number
   /** 有现金退还时必填（至少 2 个字）；全额抵扣可不填。 */
   refund_reference?: string
   note?: string
 }
 
 /**
- * 财务结算：手动决定抵扣未付款 / 现金退还。
- *
- * 只有财务选“抵扣”才会冲减应收计划；现金部分大于 0 时登记为已退款，
- * 全部抵扣时状态为“已结算”，不再产生现金退款。
+ * 财务确认退款：系统自动先冲客户未付款，剩余才现金退。
+ * 财务不改金额、不手填抵扣。
  */
 export function settleReturn(returnId: number, payload: ReturnSettlePayload) {
   return api.post<SalesReturn>(`/returns/${returnId}/settle`, payload)
+}
+
+export interface ReturnWarehousePayload {
+  note?: string
+  tracking_no?: string
+}
+
+/** 仓库/主管确认收到退货；确认后才允许财务退款。 */
+export function confirmReturnWarehouse(returnId: number, payload: ReturnWarehousePayload) {
+  return api.post<SalesReturn>(`/returns/${returnId}/warehouse-confirm`, payload)
 }
 
 /** 历史抵扣单登记现金退款；新退货请优先使用 `settleReturn`。 */

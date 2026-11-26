@@ -1,11 +1,11 @@
 """销售退货的业务实现。
 
-把“登记”和“结算”分开：
-1. 业务员登记：填本次退货总额、锁数量、算参考货款；不自动抵扣；
-2. 主管复核：只审数量、原因和金额；通过后进入“待财务结算”；
-3. 财务结算：可核对/修改总额，并手动选“抵扣客户未付款 / 现金退还”；
-   抵扣才冲应收计划并写审计；现金部分登记实际支付；
-4. 登记可取消；主管通过、财务未结算前可作废；已退款/已抵扣结清后不能作废。
+把“申请”和“退款”分开：
+1. 业务员申请：必须挂订单，填货款/运费/改价调整的金额构成、打款方式、收款账户和退款登记表；
+2. 主管审核：只审数量、原因和金额构成，通过后进入“待仓库确认收货”；
+3. 仓库确认：点收退回货物后进入“待财务退款”；
+4. 财务确认退款：不改金额、不手填抵扣；系统按订单当前欠款自动先冲未付款，剩余才现金退；
+5. 申请可取消；仓库确认前/待财务退款时可作废；已退款/已抵扣结清后不能作废。
 
 历史自动抵扣单仍保留原 `sales_return_plan_adjustments`，作废时按原快照恢复。
 """
@@ -47,7 +47,14 @@ ZERO = Decimal("0")
 CENT = Decimal("0.01")
 UNIT = Decimal("0.0001")
 #: 参与“占用量”的退货状态。cancelled/voided 不占，允许重新登记。
-ACTIVE_RETURN_STATUSES = ("reviewing", "pending", "completed", "refunded", "settled")
+ACTIVE_RETURN_STATUSES = (
+    "reviewing",
+    "pending",
+    "warehouse_pending",
+    "completed",
+    "refunded",
+    "settled",
+)
 #: 已对钱做过处理的退货状态。作废时要把这些单的冲减算进“已冲”分母。
 SETTLED_RETURN_STATUSES = ("completed", "refunded", "settled")
 
@@ -219,8 +226,23 @@ async def create_return(
     if (order.currency or "CNY") != "CNY":
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
-            "本项目只支持人民币订单，外币订单不能登记退货",
+            "本项目只支持人民币订单，外币订单不能登记售后",
             422,
+        )
+    application_file = await session.get(
+        FileRecord, payload.application_attachment_file_id
+    )
+    if application_file is None:
+        raise AppError(
+            ErrorCode.NOT_FOUND,
+            "分销商退款登记表附件不存在，请重新上传",
+            404,
+        )
+    if application_file.uploaded_by != user.id:
+        raise AppError(
+            ErrorCode.FORBIDDEN,
+            "分销商退款登记表只能用当前账号刚上传的附件",
+            403,
         )
     ids = [item.order_item_id for item in payload.items]
     order_items = (
@@ -301,6 +323,11 @@ async def create_return(
         )
         goods_amount += amount
 
+    total_refund = _money(payload.refund_amount)
+    goods_refund = _money(payload.goods_refund_amount)
+    freight_refund = _money(payload.freight_refund_amount)
+    adjustment = _money(payload.adjustment_amount)
+
     return_row = SalesReturn(
         return_no=await generate_return_no(session),
         order_id=order.id,
@@ -310,15 +337,20 @@ async def create_return(
         return_date=payload.return_date or today_business(),
         currency="CNY",
         goods_amount=_money(goods_amount),
-        # 登记时就填本次退款金额；主管通过后不用再填第二次。
-        settled_goods_amount=_money(payload.refund_amount),
-        freight_refund_amount=ZERO,
-        total_amount=_money(payload.refund_amount),
-        # 新退货不自动抵扣客户未付款，退款金额单独记录。
+        # 业务员填的金额构成：货款 / 运费 / 改价或其他调整；总额由服务端合计。
+        goods_refund_amount=goods_refund,
+        settled_goods_amount=total_refund,
+        freight_refund_amount=freight_refund,
+        adjustment_amount=adjustment,
+        adjustment_note=(payload.adjustment_note or "").strip() or None,
+        total_amount=total_refund,
+        payment_method=payload.payment_method.strip(),
+        receiving_account=payload.receiving_account.strip(),
+        application_attachment_file_id=payload.application_attachment_file_id,
+        return_tracking_no=(payload.return_tracking_no or "").strip() or None,
+        # 审核前不抵扣；财务确认退款时由系统自动先冲客户未付款。
         offset_amount=ZERO,
-        refund_amount=_money(payload.refund_amount),
-        settled_by=user.id,
-        settled_at=datetime.now(UTC),
+        refund_amount=total_refund,
         created_by=user.id,
         remark=(payload.remark or "").strip() or None,
     )
@@ -339,9 +371,16 @@ async def create_return(
             "return_no": return_row.return_no,
             "order_no": order.order_no,
             "goods_amount": format(return_row.goods_amount, ".2f"),
-            # 初始登记的金额也要留痕，后面财务改了才查得到“原来是多少”。
-            "refund_amount": format(return_row.settled_goods_amount or ZERO, ".2f"),
-            "settled_goods_amount": format(return_row.settled_goods_amount or ZERO, ".2f"),
+            "goods_refund_amount": format(goods_refund, ".2f"),
+            "freight_refund_amount": format(freight_refund, ".2f"),
+            "adjustment_amount": format(adjustment, ".2f"),
+            "adjustment_note": return_row.adjustment_note,
+            "refund_amount": format(total_refund, ".2f"),
+            "settled_goods_amount": format(total_refund, ".2f"),
+            "payment_method": return_row.payment_method,
+            "receiving_account": return_row.receiving_account,
+            "application_attachment_file_id": return_row.application_attachment_file_id,
+            "return_tracking_no": return_row.return_tracking_no,
             "items": [
                 {
                     "order_item_id": item.order_item_id,
@@ -358,11 +397,13 @@ async def create_return(
         customer_id=order.customer_id,
         owner_id=order.owner_id,
         operator_id=user.id,
-        title="登记销售退货",
+        title="提交销售售后申请",
         content=(
-            f"订单 {order.order_no} 登记退货 {return_row.return_no}，"
-            f"退款金额 {format(return_row.settled_goods_amount or ZERO, '.2f')} 元，"
-            f"原因：{payload.reason.strip()}；待主管复核。"
+            f"订单 {order.order_no} 提交售后申请 {return_row.return_no}，"
+            f"退款总额 {format(total_refund, '.2f')} 元"
+            f"（货款 {format(goods_refund, '.2f')}、运费 {format(freight_refund, '.2f')}、"
+            f"改价/其他 {format(adjustment, '.2f')}），"
+            f"原因：{payload.reason.strip()}；待主管审核。"
         ),
         business_type="sales_return",
         business_id=return_row.id,
@@ -382,26 +423,27 @@ async def review_return(
     note: str | None,
     ip: str | None = None,
 ) -> SalesReturn:
-    """主管复核：通过后进入“待财务结算”，驳回则释放占用的可退数量。
+    """主管审核：通过后进入“待仓库确认收货”，驳回则释放占用的可退数量。
 
-    2026-11-26 主人拍板：退款金额在登记时已填，主管通过后不再另设“填金额”步骤。
-    历史旧单没有金额的，仍落到 `pending`，由财务/业务员补填后再处理。
+    2026-11-26 主人按 OA 表单拍板：申请时已填退款金额和登记表附件，
+    主管只审核；审核通过后仓库确认货已退回，再交财务退款。
+    历史旧单没有金额的，仍落到 `pending`，由业务员补填后再处理。
 
     权限在路由层用 `order:assign`（主管级）控制，服务层再校验一次：
-    只有主管/管理员能复核；业务员、财务没有该权限，不能复核。
-    主管可以复核自己登记的单（小团队只有一个主管时不会卡死），
-    但审计会记录 `self_reviewed=True`，界面也会标“本人复核”，留痕可查。
+    只有主管/管理员能审核；业务员、财务没有该权限，不能审核。
+    主管可以审核自己登记的单（小团队只有一个主管时不会卡死），
+    但审计会记录 `self_reviewed=True`，界面也会标“本人审核”，留痕可查。
     """
     if not user.has("order:assign"):
         raise AppError(
             ErrorCode.FORBIDDEN,
-            "只有主管或管理员能复核退货，业务员和财务不能复核",
+            "只有主管或管理员能审核售后申请，业务员和财务不能审核",
             403,
         )
     if row.status != "reviewing":
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
-            f"「{RETURN_STATUS_LABEL.get(row.status, row.status)}」的退货单不在待复核状态",
+            f"「{RETURN_STATUS_LABEL.get(row.status, row.status)}」的售后申请不在待审核状态",
             422,
         )
     before = row.status
@@ -409,22 +451,23 @@ async def review_return(
     row.reviewed_at = datetime.now(UTC)
     row.review_note = (note or "").strip() or None
     if decision == "approve":
-        # 登记时已填金额的新单直接进入待财务结算；兼容没有金额的历史旧单。
-        row.status = "completed" if row.settled_goods_amount is not None else "pending"
-        title = "销售退货已通过主管复核"
+        # 申请时已填金额的新单进入待仓库收货；兼容没有金额的历史旧单。
+        row.status = "warehouse_pending" if row.settled_goods_amount is not None else "pending"
+        title = "销售售后申请已通过主管审核"
         content = (
-            f"订单退货 {row.return_no} 已通过主管复核，"
+            f"订单售后申请 {row.return_no} 已通过主管审核，"
             + (
-                f"退货总额 {format(row.settled_goods_amount or ZERO, '.2f')} 元，待财务结算。"
-                if row.status == "completed"
-                else "待填退货总额。"
+                f"退款总额 {format(row.total_amount or ZERO, '.2f')} 元，待仓库确认收货；"
+                "仓库确认后由财务退款。"
+                if row.status == "warehouse_pending"
+                else "待填退款总额。"
             )
         )
     else:
         row.status = "rejected"
-        title = "销售退货被主管驳回"
+        title = "销售售后申请被主管驳回"
         content = (
-            f"订单退货 {row.return_no} 被主管驳回，原因："
+            f"订单售后申请 {row.return_no} 被主管驳回，原因："
             f"{row.review_note or '未填写'}；可退数量已释放。"
         )
     await write_audit(
@@ -438,7 +481,7 @@ async def review_return(
             "status": row.status,
             "decision": decision,
             "note": row.review_note,
-            "refund_amount": format(row.settled_goods_amount or ZERO, ".2f"),
+            "refund_amount": format(row.total_amount or ZERO, ".2f"),
             "self_reviewed": row.created_by == user.id,
         },
         ip=ip,
@@ -455,6 +498,73 @@ async def review_return(
         business_id=row.id,
         order_id=order.id,
         event_key=f"order:return:review:{row.id}",
+    )
+    await session.flush()
+    return row
+
+
+async def confirm_warehouse(
+    session: AsyncSession,
+    user,
+    row: SalesReturn,
+    *,
+    note: str | None = None,
+    tracking_no: str | None = None,
+    ip: str | None = None,
+) -> SalesReturn:
+    """仓库确认收到退货：之后才允许财务退款。
+
+    当前系统没有独立仓库角色，由主管/管理员（order:assign）代仓库确认；
+    确认记录操作人、时间和备注，审计可查。
+    """
+    if not user.has("order:assign"):
+        raise AppError(
+            ErrorCode.FORBIDDEN,
+            "只有主管或管理员能确认仓库收货",
+            403,
+        )
+    if row.status != "warehouse_pending":
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"「{RETURN_STATUS_LABEL.get(row.status, row.status)}」的售后申请不能确认收货",
+            422,
+        )
+    before = row.status
+    row.warehouse_confirmed_by = user.id
+    row.warehouse_confirmed_at = datetime.now(UTC)
+    row.warehouse_note = (note or "").strip() or None
+    if tracking_no and tracking_no.strip():
+        row.return_tracking_no = tracking_no.strip()
+    row.status = "completed"
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="confirm_return_warehouse",
+        business_type="sales_return",
+        business_id=row.id,
+        before={"status": before},
+        after={
+            "status": row.status,
+            "warehouse_note": row.warehouse_note,
+            "return_tracking_no": row.return_tracking_no,
+        },
+        ip=ip,
+    )
+    order = await get_order_or_404(session, row.order_id)
+    await record_and_notify(
+        session,
+        customer_id=order.customer_id,
+        owner_id=order.owner_id,
+        operator_id=user.id,
+        title="销售售后已确认仓库收货",
+        content=(
+            f"订单售后申请 {row.return_no} 已确认收到退货，"
+            f"退款总额 {format(row.total_amount or ZERO, '.2f')} 元，待财务退款。"
+        ),
+        business_type="sales_return",
+        business_id=row.id,
+        order_id=order.id,
+        event_key=f"order:return:warehouse:{row.id}",
     )
     await session.flush()
     return row
@@ -503,43 +613,26 @@ async def update_return_amount(
     note: str | None = None,
     ip: str | None = None,
 ) -> SalesReturn:
-    """财务核对/修改退货总额：只改金额，不自动抵扣客户未付款。
+    """只给历史 `pending` 旧单补金额；新售后单不允许任何人改金额。
 
-    2026-11-26 主人拍板：
-    - 登记时由业务员先填退货总额；
-    - 财务可以改，但每次都要写审计，保留改前/改后的金额和操作人；
-    - 新退货不再自动冲应收计划；历史抵扣单不允许直接改金额，必须先作废重登，
-      否则应收计划已经被冲过，改金额会把历史账弄乱；
-    - 已现金退款或已用抵扣结清的单，不能再改金额。
+    2026-11-26 新流程：业务员登记时填金额构成，主管审核；财务只按审核后的
+    总额退款，不改金额。金额有误只能驳回重提，避免财务把申请单改成另一笔账。
     """
     if not user.has("payment:manage"):
         raise AppError(
             ErrorCode.FORBIDDEN,
-            "只有财务可以修改退货总额（需要 payment:manage 权限）",
+            "只有财务可以处理历史旧单的退款金额（需要 payment:manage 权限）",
             403,
         )
-    if row.status in ("refunded", "settled"):
+    if row.status != "pending":
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
-            "这笔退货已经实际退款或结算，不能再改退货总额",
-            422,
-        )
-    if row.status in ("voided", "rejected", "cancelled"):
-        raise AppError(
-            ErrorCode.STATUS_NOT_ALLOWED,
-            f"「{RETURN_STATUS_LABEL.get(row.status, row.status)}」的退货单不能修改退货总额",
-            422,
-        )
-    if row.status not in ("reviewing", "pending", "completed"):
-        raise AppError(
-            ErrorCode.STATUS_NOT_ALLOWED,
-            f"「{RETURN_STATUS_LABEL.get(row.status, row.status)}」的退货单不能修改退货总额",
+            f"「{RETURN_STATUS_LABEL.get(row.status, row.status)}」的售后单不能改金额；"
+            "新流程的金额由业务员登记、主管审核，财务不改金额",
             422,
         )
     if row.currency != "CNY":
-        raise AppError(
-            ErrorCode.STATUS_NOT_ALLOWED, "本项目只支持人民币退货", 422
-        )
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "本项目只支持人民币售后", 422)
 
     # 历史抵扣单的应收计划已经被冲减过；它的金额和 plan 快照绑定，
     # 不能像新单一样只改一个数字。要改只能先作废、恢复应收，再重新登记。
@@ -553,34 +646,32 @@ async def update_return_amount(
     if _money(row.offset_amount) > 0 or adjustment_count:
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
-            "这是历史“抵扣客户未付款”的退货单，不能直接改金额；请先作废并重新登记",
+            "这是历史“抵扣客户未付款”的售后单，不能直接改金额；请先作废并重新登记",
             409,
         )
 
     amount = _money(refund_amount)
     if amount <= 0:
-        raise AppError(
-            ErrorCode.STATUS_NOT_ALLOWED, "退货总额必须大于 0", 422
-        )
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "退款总额必须大于 0", 422)
     before = {
         "status": row.status,
         "settled_goods_amount": format(row.settled_goods_amount or ZERO, ".2f"),
         "refund_amount": format(row.refund_amount or ZERO, ".2f"),
         "total_amount": format(row.total_amount or ZERO, ".2f"),
     }
+    row.goods_refund_amount = amount
     row.settled_goods_amount = amount
     row.total_amount = amount
-    # 还没结算，先不抵扣；财务结算时再手动填 offset_amount。
+    row.freight_refund_amount = ZERO
+    row.adjustment_amount = ZERO
     row.offset_amount = ZERO
     row.refund_amount = amount
-    row.freight_refund_amount = ZERO
     row.settled_by = user.id
     row.settled_at = datetime.now(UTC)
     if note is not None:
         row.settlement_note = note.strip() or None
-    # 历史 pending 单补金额后进入待财务结算；新单 reviewing 仍等主管复核。
-    if row.status == "pending":
-        row.status = "completed"
+    # 历史 pending 旧单当年没有仓库确认环节；补金额后直接进入待财务退款。
+    row.status = "completed"
 
     await write_audit(
         session,
@@ -623,6 +714,13 @@ async def refund_return(
             f"「{RETURN_STATUS_LABEL.get(row.status, row.status)}」的退货单不能登记退款",
             422,
         )
+    if _money(row.offset_amount) <= 0:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "新流程的售后退款请走「财务确认退款」，由系统自动先冲客户未付款；"
+            "旧接口只保留给历史已抵扣的售后单补登记现金退款",
+            422,
+        )
     if row.refund_amount <= 0:
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED, "这张退货单没有需要退给客户的钱，不用登记退款", 422
@@ -654,35 +752,33 @@ async def settle_return(
     user,
     row: SalesReturn,
     *,
-    total_amount: Decimal,
-    offset_amount: Decimal,
     refund_reference: str | None = None,
     note: str | None = None,
     ip: str | None = None,
 ) -> SalesReturn:
-    """财务结算：手动决定多少抵扣未付款、多少现金退还。
+    """财务确认退款：系统自动先冲客户未付款，剩余才现金退。
 
-    这是 2026-11-26 “不自动抵扣”之后的补齐：
-    - 系统不会自己冲应收，但财务必须在结算时选；
-    - `offset_amount=0`：全部现金退，客户未付款不变；
-    - `offset_amount=total_amount`：全部抵扣，无现金退，状态 `settled`；
-    - 中间值：部分抵扣、剩余退现，状态 `refunded`。
+    2026-11-26 按 OA 表单拍板：
+    - 财务不改金额，也不手填抵扣；只确认“这笔退款已经按申请金额处理”；
+    - 系统先按订单当前欠款自动抵扣，抵不完的部分才现金退；
+    - 有现金退还时必须填退款流水/凭证说明；
+    - 抵扣逐期写快照，作废时能精确还原。
     """
     if not user.has("payment:manage"):
         raise AppError(
             ErrorCode.FORBIDDEN,
-            "只有财务可以结算退货（需要 payment:manage 权限）",
+            "只有财务可以确认退款（需要 payment:manage 权限）",
             403,
         )
     if row.status != "completed":
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
-            f"「{RETURN_STATUS_LABEL.get(row.status, row.status)}」的退货单不能结算",
+            f"「{RETURN_STATUS_LABEL.get(row.status, row.status)}」的售后单不能退款",
             422,
         )
     if row.currency != "CNY":
         raise AppError(
-            ErrorCode.STATUS_NOT_ALLOWED, "本项目只支持人民币退货", 422
+            ErrorCode.STATUS_NOT_ALLOWED, "本项目只支持人民币售后", 422
         )
 
     adjustment_count = (
@@ -695,35 +791,18 @@ async def settle_return(
     if _money(row.offset_amount) > 0 or adjustment_count:
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
-            "这是历史“抵扣客户未付款”的退货单，不能重新结算；"
+            "这是历史“抵扣客户未付款”的售后单，不能重新退款；"
             "请按原金额登记现金退款，或先作废后重新登记",
             409,
         )
 
-    total = _money(total_amount)
-    offset = _money(offset_amount)
+    # 退款总额只认业务员登记、主管审核后的数；财务不能在这里改。
+    total = _money(row.total_amount)
     if total <= 0:
         raise AppError(
-            ErrorCode.STATUS_NOT_ALLOWED, "退货总额必须大于 0", 422
+            ErrorCode.STATUS_NOT_ALLOWED, "退款总额必须大于 0", 422
         )
-    if offset < 0:
-        raise AppError(
-            ErrorCode.STATUS_NOT_ALLOWED, "抵扣金额不能小于 0", 422
-        )
-    if offset > total:
-        raise AppError(
-            ErrorCode.STATUS_NOT_ALLOWED, "抵扣金额不能大于本次退货总额", 422
-        )
-    cash = _money(total - offset)
     reference = (refund_reference or "").strip() or None
-    if cash > 0 and (not reference or len(reference) < 2):
-        raise AppError(
-            ErrorCode.STATUS_NOT_ALLOWED,
-            "有现金退还时必须填写退款流水/凭证说明（至少 2 个字）",
-            422,
-        )
-    if cash == 0:
-        reference = None
 
     order = await get_order_or_404(session, row.order_id)
     plans = (
@@ -762,12 +841,17 @@ async def settle_return(
         _money(order.total_amount) - _money(prior_offsets) - _money(received_total)
     )
     max_offset = min(max(unreceived, ZERO), max(plan_outstanding, ZERO))
-    if offset > max_offset:
+    # 系统自动先冲客户未付款，最多冲到本次退款总额；剩余才现金退。
+    offset = min(total, max_offset)
+    cash = _money(total - offset)
+    if cash > 0 and (not reference or len(reference) < 2):
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
-            f"抵扣金额不能超过当前可抵扣上限 {format(max_offset, '.2f')} 元",
+            "有现金退还时必须填写退款流水/凭证说明（至少 2 个字）",
             422,
         )
+    if cash == 0:
+        reference = None
 
     adjustments: list[SalesReturnPlanAdjustment] = []
     remaining = offset
@@ -810,7 +894,6 @@ async def settle_return(
     row.total_amount = total
     row.offset_amount = offset
     row.refund_amount = cash
-    row.freight_refund_amount = ZERO
     row.settled_by = user.id
     row.settled_at = datetime.now(UTC)
     if note is not None:
@@ -873,10 +956,10 @@ async def settle_return(
         customer_id=order.customer_id,
         owner_id=order.owner_id,
         operator_id=user.id,
-        title="销售退货已结算",
+        title="销售售后已退款",
         content=(
-            f"订单 {order.order_no} 退货 {row.return_no} 已结算，"
-            f"退货总额 {format(total, '.2f')} 元：{settle_text}"
+            f"订单 {order.order_no} 售后申请 {row.return_no} 已处理，"
+            f"退款总额 {format(total, '.2f')} 元：{settle_text}"
         ),
         business_type="sales_return",
         business_id=row.id,
@@ -895,25 +978,26 @@ async def void_return(
     *,
     ip: str | None = None,
 ) -> SalesReturn:
-    if row.status != "completed":
+    if row.status not in ("warehouse_pending", "completed"):
         if row.status == "refunded":
             raise AppError(
                 ErrorCode.STATUS_NOT_ALLOWED,
-                "这笔退货已经实际退款，不能直接作废；请线下处理并保留退款凭证",
+                "这笔售后已经实际退款，不能直接作废；请线下处理并保留退款凭证",
                 422,
             )
         if row.status == "settled":
             raise AppError(
                 ErrorCode.STATUS_NOT_ALLOWED,
-                "这笔退货已经用抵扣客户未付款结清，不能直接作废",
+                "这笔售后已经用抵扣客户未付款结清，不能直接作废",
                 422,
             )
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
-            f"「{RETURN_STATUS_LABEL.get(row.status, row.status)}」的退货单不能作废",
+            f"「{RETURN_STATUS_LABEL.get(row.status, row.status)}」的售后单不能作废",
             422,
         )
     order = await get_order_or_404(session, row.order_id)
+    before_status = row.status
     adjustments = (
         await session.execute(
             select(SalesReturnPlanAdjustment)
@@ -998,7 +1082,7 @@ async def void_return(
         business_type="sales_return",
         business_id=row.id,
         before={
-            "status": "completed",
+            "status": before_status,
             "refund_amount": format(row.refund_amount or ZERO, ".2f"),
             "offset_amount": format(row.offset_amount or ZERO, ".2f"),
         },
@@ -1021,9 +1105,9 @@ async def void_return(
         customer_id=order.customer_id,
         owner_id=order.owner_id,
         operator_id=user.id,
-        title="销售退货已作废",
+        title="销售售后已作废",
         content=(
-            f"订单 {order.order_no} 退货 {row.return_no} 已作废，"
+            f"订单 {order.order_no} 售后申请 {row.return_no} 已作废，"
             f"原因：{row.void_reason}；"
             + (
                 "原抵扣的客户未付款已恢复。"
@@ -1060,7 +1144,20 @@ async def serialize_return(session: AsyncSession, row: SalesReturn) -> dict:
     ).scalars().all()
     names = await _user_names(
         session,
-        [row.created_by, row.reviewed_by, row.settled_by, row.refunded_by, row.voided_by, row.cancelled_by],
+        [
+            row.created_by,
+            row.reviewed_by,
+            row.warehouse_confirmed_by,
+            row.settled_by,
+            row.refunded_by,
+            row.voided_by,
+            row.cancelled_by,
+        ],
+    )
+    application_attachment = (
+        await session.get(FileRecord, row.application_attachment_file_id)
+        if row.application_attachment_file_id
+        else None
     )
     refund_attachment = (
         await session.get(FileRecord, row.refund_attachment_file_id)
@@ -1074,6 +1171,9 @@ async def serialize_return(session: AsyncSession, row: SalesReturn) -> dict:
         "order_no": order.order_no,
         "customer_id": order.customer_id,
         "customer_name": customer.name if customer else None,
+        "distributor_name": customer.name if customer else None,
+        "applicant_name": names.get(row.created_by or 0),
+        "application_date": row.return_date.isoformat(),
         "status": row.status,
         "status_label": RETURN_STATUS_LABEL.get(row.status, row.status),
         "reason_code": row.reason_code,
@@ -1083,12 +1183,24 @@ async def serialize_return(session: AsyncSession, row: SalesReturn) -> dict:
         "currency": row.currency,
         "goods_amount": float(row.goods_amount or 0),
         "goods_amount_exact": format(row.goods_amount or 0, ".2f"),
+        "goods_refund_amount": float(row.goods_refund_amount or 0),
+        "goods_refund_amount_exact": format(row.goods_refund_amount or 0, ".2f"),
         "settled_goods_amount": float(row.settled_goods_amount or 0) if row.settled_goods_amount is not None else None,
         "settled_goods_amount_exact": format(row.settled_goods_amount, ".2f") if row.settled_goods_amount is not None else None,
         "freight_refund_amount": float(row.freight_refund_amount or 0),
         "freight_refund_amount_exact": format(row.freight_refund_amount or 0, ".2f"),
+        "adjustment_amount": float(row.adjustment_amount or 0),
+        "adjustment_amount_exact": format(row.adjustment_amount or 0, ".2f"),
+        "adjustment_note": row.adjustment_note,
         "total_amount": float(row.total_amount or 0),
         "total_amount_exact": format(row.total_amount or 0, ".2f"),
+        "payment_method": row.payment_method,
+        "receiving_account": row.receiving_account,
+        "application_attachment_file_id": row.application_attachment_file_id,
+        "application_attachment_file_name": application_attachment.file_name if application_attachment else None,
+        "application_attachment_file_size": application_attachment.size if application_attachment else None,
+        "application_attachment_mime_type": application_attachment.mime_type if application_attachment else None,
+        "return_tracking_no": row.return_tracking_no,
         "offset_amount": float(row.offset_amount or 0),
         "offset_amount_exact": format(row.offset_amount or 0, ".2f"),
         "refund_amount": float(row.refund_amount or 0),
@@ -1106,6 +1218,9 @@ async def serialize_return(session: AsyncSession, row: SalesReturn) -> dict:
         "reviewed_at": row.reviewed_at.isoformat() if row.reviewed_at else None,
         "review_note": row.review_note,
         "self_reviewed": bool(row.reviewed_by and row.created_by == row.reviewed_by),
+        "warehouse_confirmed_by_name": names.get(row.warehouse_confirmed_by or 0),
+        "warehouse_confirmed_at": row.warehouse_confirmed_at.isoformat() if row.warehouse_confirmed_at else None,
+        "warehouse_note": row.warehouse_note,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "settled_by_name": names.get(row.settled_by or 0),
         "settled_at": row.settled_at.isoformat() if row.settled_at else None,
