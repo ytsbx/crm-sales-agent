@@ -6553,3 +6553,10 @@
 - 后端：`GET /customers` 增加 `activity=stale` 参数；`build_list_stmt` 用 CASE 计算"最近有效联系/进展"（都没有退回建档时间），筛选早于 `customer_stale_days` 的客户，并按该时间从早到晚排序。
 - 前端：客户列表工具栏增加「联系情况 → 久未联系」筛选；选中时显示口径说明。
 - 验证：新增 `test_customer_list_activity.py`（久未联系排序、包含从未联系、最近联系排除、默认顺序不变）；本地 8009 实测 `activity=stale` 返回 61 条、按建档时间升序；customer 相关测试全部通过。
+
+## 2026-11-26 生产部署十二：0d1cc6bb（久未联系筛选 + 规则停用开关，已完成并核验）
+
+- 合成提交 0d1cc6bb：从生产基线 e367ad1c 摘取 a18a09b6（自动任务规则停用开关）和 92977ac3（客户列表久未联系筛选），未夹带分支上的退货改造/迁移。
+- 发布包 SHA256 `ef942f35…059c`；无迁移、无依赖变更，数据库保持 `a1c4e8f2b6d9`。
+- `status=verified`，备份 `/opt/crm-sales-agent/backup/unified-0d1cc6bbac8d-ov_gtaus`；服务 active、`/health` 数据库 ok、公网 200、两端版本记录均 0d1cc6bb。
+- 生产 `task_rules` 现有：报价后未跟进、应收即将到期；「重点客户久未联系」已被删除（SQL 直删，无审计），以后需要可重建并用新开关控制启停。
