@@ -90,12 +90,15 @@ def _plan(snapshot, policy):
             held.append((r.id, reason))
             continue
         group_key = ('企业', _key(full)) if full else ('个人', r.external_userid)
-        group = groups.setdefault(group_key, {'name': name, 'kind': kind, 'target': target, 'rows': [], 'owners': set(), 'owner_unknown': False})
+        group = groups.setdefault(group_key, {'name': name, 'kind': kind, 'target': target, 'rows': [], 'owners': set(), 'owner_unknown': False, 'no_follower': False, 'unmapped_follower': False})
         owner_ids = set()
         unresolved = not follows[r.id]
+        if unresolved:
+            group['no_follower'] = True
         for uid in follows[r.id]:
             if len(mapped[uid]) != 1:
                 unresolved = True
+                group['unmapped_follower'] = True
             else:
                 owner_ids.update(mapped[uid])
         owner = next(iter(owner_ids)) if not unresolved and len(owner_ids) == 1 else None
@@ -107,7 +110,17 @@ def _plan(snapshot, policy):
         owner = next(iter(group['owners'])) if not group['owner_unknown'] and len(group['owners']) == 1 else None
         group['owner_id'] = owner
         if owner is None:
-            held.extend((r.id, '负责人未唯一匹配，需绑定或分配') for r, _ in group['rows'])
+            # 原因要能对应到具体做法：多人不同账号、跟进人没开账号、压根没同步到跟进人，
+            # 处理方式完全不同，不能都写成「未唯一匹配」。
+            if len(group['owners']) > 1:
+                reason = '多名跟进员工对应不同负责人'
+            elif group['unmapped_follower']:
+                reason = '有跟进员工没有对应的 CRM 账号'
+            elif group['no_follower']:
+                reason = '没有跟进员工，无法确定负责人'
+            else:
+                reason = '负责人未唯一匹配，需绑定或分配'
+            held.extend((r.id, reason) for r, _ in group['rows'])
         elif group['target'] is not None and group['target'].owner_id != owner:
             held.extend((r.id, '已有客户负责人不同，需人工确认') for r, _ in group['rows'])
         else:

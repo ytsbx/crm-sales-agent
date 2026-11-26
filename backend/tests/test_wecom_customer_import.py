@@ -64,18 +64,20 @@ def test_uncertain_names_stay_pending(kwargs):
     assert result['held_contacts']==1 and result['import_contacts']==0
 
 
-@pytest.mark.parametrize('users,followers', [
-    ([],[relation()]),
-    ([user(status='disabled')],[relation()]),
-    ([user(),user(2)],[relation()]),
-    ([user()],[]),
-    ([user(),user(2,'staff-2')],[relation(),relation(2,1,'staff-2')]),
+@pytest.mark.parametrize('users,followers,reason', [
+    ([],[relation()], '有跟进员工没有对应的 CRM 账号'),
+    ([user(status='disabled')],[relation()], '有跟进员工没有对应的 CRM 账号'),
+    ([user(),user(2)],[relation()], '有跟进员工没有对应的 CRM 账号'),
+    ([user()],[], '没有跟进员工，无法确定负责人'),
+    ([user(),user(2,'staff-2')],[relation(),relation(2,1,'staff-2')], '多名跟进员工对应不同负责人'),
 ])
-def test_unbound_disabled_ambiguous_and_multiple_owners_never_enter_pool(users,followers):
-    result,_,_=_plan(snapshot([row()],users=users,followers=followers),'hold')
+def test_unbound_disabled_ambiguous_and_multiple_owners_never_enter_pool(users,followers,reason):
+    result,_,held=_plan(snapshot([row()],users=users,followers=followers),'hold')
     assert result['held_contacts']==1
     assert result['new_unassigned_customers']==0
     assert result['import_contacts']==0
+    # 每条扣住的原因要能指向具体做法，而不是统一的「未唯一匹配」
+    assert held=={1: reason}
 
 
 def test_company_with_different_owners_needs_confirmation():

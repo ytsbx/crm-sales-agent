@@ -279,7 +279,7 @@ async def test_follower_names_resolve_without_creating_or_binding_accounts():
         assert followers['bound']['crm_user_id']==1 and followers['bound']['crm_user_name']=='CRM姓名'
         assert followers['unbound']['crm_user_id'] is None
         # 有跟进员工没对应 CRM 账号 → 负责人不唯一，导入预览会扣住
-        assert rows[0]['import_hold_reason']=='负责人未唯一匹配，需绑定或分配'
+        assert rows[0]['import_hold_reason']=='有跟进员工没有对应的 CRM 账号'
         assert raw.query(User).count()==1
         assert raw.query(WeComUser).filter_by(wecom_userid='unbound').one().user_id is None
     engine.dispose()
