@@ -282,7 +282,7 @@ async def test_approval_center_lists_sample_ship_with_category(approval_db):
     row = result['data']['items'][0]
     assert row['business_type'] == 'sample_shipment'
     assert row['business_type_label'] == '寄样审批'
-    assert row['sample_no'] == '打样 #21'
+    assert row['sample_no'] == '打样单编号 21'
     assert row['carrier'] == '顺丰'
     assert row['shipping_fee'] == '25.50'
     assert row['can_approve'] is True
