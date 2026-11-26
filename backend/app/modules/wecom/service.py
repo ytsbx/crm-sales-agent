@@ -316,9 +316,16 @@ async def sync_external_contacts(session: AsyncSession, *, user: CurrentUser) ->
     return job
 
 
-async def sync_follow_relations(session: AsyncSession, *, user: CurrentUser) -> WeComSyncJob:
-    """同步「谁加了谁」。同一个外部联系人可能有多个跟进成员，逐条 upsert。"""
-    job = await start_job(session, job_type="follow_relation", operator_id=user.id)
+async def sync_follow_relations(
+    session: AsyncSession, *, user: CurrentUser, job: WeComSyncJob | None = None
+) -> WeComSyncJob:
+    """同步「谁加了谁」。同一个外部联系人可能有多个跟进成员，逐条 upsert。
+
+    数据量大时这一轮要逐条调 4,000+ 次企微接口，不能占着网页请求不放：
+    路由会先建好任务行、立即返回，再在后台用独立会话调用这里。
+    `job` 由调用方传入时沿用那一行，避免重复建任务。
+    """
+    job = job or await start_job(session, job_type="follow_relation", operator_id=user.id)
     api = wecom_client.get_client()
     await _lock_contact_sync(session)
 

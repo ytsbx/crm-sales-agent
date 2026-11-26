@@ -1,6 +1,6 @@
 import { formatBeijingTime, formatBeijingDate } from '../../shared/beijing-time'
 import { humanizeBackendText } from '../../shared/humanize-text'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Banner, Button, Dropdown, Empty, Input, Modal, Popconfirm, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
@@ -214,6 +214,9 @@ export default function WeComPage() {
   const followJobQuery = useQuery({
     queryKey: ['wecom-jobs', 'last-follow-sync'],
     queryFn: () => listWeComSyncJobs({ job_type: 'follow_relation', page_size: 1 }),
+    // 跟进关系同步已改为后台任务：进行中每 3 秒刷新一次，完成后停止
+    refetchInterval: (query) => query.state.data?.items?.[0]?.status === 'running' ? 3000 : false,
+    refetchIntervalInBackground: true,
   })
 
   const usersQuery = useQuery({
@@ -259,6 +262,11 @@ export default function WeComPage() {
   const syncMutation = useMutation({
     mutationFn: (run: () => Promise<WeComSyncJob>) => run(),
     onSuccess: (job) => {
+      if (job.status === 'running') {
+        Toast.info('跟进关系同步已开始，联系人较多时需要几分钟，完成后会自动刷新')
+        refresh()
+        return
+      }
       const conflicts = job.detail?.conflicts
       const notReturned = job.detail?.not_returned
       if (job.job_type === 'user' && Array.isArray(conflicts) && conflicts.length) {
@@ -468,7 +476,18 @@ export default function WeComPage() {
   const readiness = readinessQuery.data
   const counts = readiness?.counts
   const lastFollowSync = followJobQuery.data?.items[0]
-  const busy = syncMutation.isPending || importPreviewMutation.isPending || importCustomersMutation.isPending
+  const followRunning = lastFollowSync?.status === 'running'
+  const busy = syncMutation.isPending || importPreviewMutation.isPending
+    || importCustomersMutation.isPending || followRunning
+  // 后台同步从「进行中」变为完成/失败时，刷新页面上的统计与清单
+  const followStatusRef = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    const status = lastFollowSync?.status
+    if (followStatusRef.current === 'running' && status && status !== 'running') refresh()
+    followStatusRef.current = status
+    // refresh 每次渲染都是新函数，放进依赖会重复触发
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastFollowSync?.status])
   const nextSync = counts && readiness && (
     !counts.wecom_users && canSyncDirectory && readiness.can_sync_contact ? SYNC_ACTIONS.users
       : !counts.external_contacts && canSyncContacts && readiness.can_sync_external ? SYNC_ACTIONS.external
@@ -527,7 +546,7 @@ export default function WeComPage() {
               })}
             </Dropdown.Menu>
           }>
-            <Button theme="borderless" loading={syncMutation.isPending}>更新企微数据 ▾</Button>
+            <Button theme="borderless" loading={syncMutation.isPending || followRunning}>更新企微数据 ▾</Button>
           </Dropdown>}
           {canPreviewTransfer && <Button type="tertiary" theme="borderless" onClick={() => setTransferVisible(true)}>离职交接</Button>}
         </>}

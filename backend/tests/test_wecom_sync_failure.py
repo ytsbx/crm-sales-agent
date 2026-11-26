@@ -1,5 +1,7 @@
 """同步整批失败需回滚事实、保留失败任务；仅内存数据库和HTTP故障替身。"""
+import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -19,7 +21,7 @@ from conftest import make_engine, SyncSessionAsAsync
 @pytest.mark.anyio
 @pytest.mark.parametrize('name,kind', [
     ('sync_departments', 'department'), ('sync_users', 'user'),
-    ('sync_external_contacts', 'external_contact'), ('sync_follow_relations', 'follow_relation'),
+    ('sync_external_contacts', 'external_contact'),
 ])
 @pytest.mark.parametrize('failure', ['connect', 'timeout', 'http', 'business', 'configuration', 'response'])
 async def test_sync_failure_rolls_back_facts_and_persists_one_failed_job(monkeypatch, name, kind, failure):
@@ -189,4 +191,64 @@ def test_integration_log_model_creates_partial_unique_index():
             event_key='dup-key', business_type='order',
         ))
         raw.commit()
+    engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_follow_sync_starts_background_job(monkeypatch):
+    """跟进关系同步改为后台任务：接口立即返回 running 任务行，不再占着请求。"""
+    from app.core.audit import AuditLog
+
+    engine = make_engine()
+    for model in (WeComSyncJob, AuditLog):
+        model.__table__.create(engine)
+    request = Request({'type': 'http', 'method': 'POST', 'path': '/', 'headers': [], 'client': ('127.0.0.1', 1)})
+    with Session(engine) as raw:
+        background = AsyncMock()
+        monkeypatch.setattr(router, '_run_follow_relations_background', background)
+        result = await router.sync_follow_relations(
+            request=request, user=SimpleNamespace(id=1), session=SyncSessionAsAsync(raw),
+        )
+        assert result['data']['status'] == 'running'
+        assert '已开始' in result['message']
+        job = raw.scalars(select(WeComSyncJob)).one()
+        assert job.job_type == 'follow_relation' and job.status == 'running'
+        await asyncio.sleep(0)
+        background.assert_awaited_once_with(job.id, 1)
+    engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_follow_background_failure_marks_job_failed(monkeypatch):
+    """后台同步失败要把任务行标成 failed，并写入脱敏后的错误。"""
+    from app.core.audit import AuditLog
+
+    engine = make_engine()
+    for model in (WeComSyncJob, AuditLog):
+        model.__table__.create(engine)
+    with Session(engine) as raw:
+        job = WeComSyncJob(job_type='follow_relation', status='running', operator_id=1)
+        raw.add(job)
+        raw.commit()
+        raw.refresh(job)
+
+        class Ctx:
+            async def __aenter__(self):
+                return SyncSessionAsAsync(raw)
+
+            async def __aexit__(self, *_):
+                return False
+
+        import app.core.database as database
+        monkeypatch.setattr(database, 'SessionLocal', lambda: Ctx())
+        async def failed_sync(session, *, user, job):
+            raise WeComError(60020, 'access_token=SECRET-LEAK', 'externalcontact/get')
+        monkeypatch.setattr(service, 'sync_follow_relations', failed_sync)
+
+        await router._run_follow_relations_background(job.id, 1)
+        raw.expire_all()
+        row = raw.get(WeComSyncJob, job.id)
+        assert row.status == 'failed' and row.fail_count == 1
+        assert 'SECRET-LEAK' not in (row.error_message or '')
+        assert '60020' in (row.error_message or '')
     engine.dispose()

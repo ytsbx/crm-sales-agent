@@ -25,7 +25,9 @@
 "成功 0 条"。静默成功会让运营以为企微里真的没人，这是最坏的失败方式。
 """
 
+import asyncio
 import hashlib
+import logging
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -209,27 +211,99 @@ async def sync_external_contacts(
     return ok(svc.serialize_job(job), message)
 
 
+logger = logging.getLogger(__name__)
+
+#: 本进程正在跑的跟进关系同步任务（单 worker 部署；只用于防重复启动）。
+_follow_sync_task: asyncio.Task | None = None
+
+
+async def _run_follow_relations_background(job_id: int, user_id: int) -> None:
+    """后台跑跟进关系同步：数据量大时一轮要调 4,000+ 次企微接口，
+    不能再占着网页请求（浏览器 30 秒就超时取消）。独立会话、独立事务。"""
+    from types import SimpleNamespace
+
+    from app.core.database import SessionLocal
+
+    async with SessionLocal() as session:
+        job = await session.get(WeComSyncJob, job_id, with_for_update=True)
+        if job is None or job.status != "running":
+            return
+        try:
+            await svc.sync_follow_relations(
+                session, user=SimpleNamespace(id=user_id), job=job
+            )
+            await write_audit(
+                session,
+                operator_id=user_id,
+                source="SYSTEM",
+                action="wecom_sync_follow_relations",
+                business_type="integration",
+                business_id=job.id,
+                after={"success": job.success_count, "fail": job.fail_count},
+            )
+            await session.commit()
+        except Exception as error:  # noqa: BLE001 —— 后台任务必须把失败写回任务行
+            logger.exception("跟进关系同步失败 job_id=%s", job_id)
+            await session.rollback()
+            job = await session.get(WeComSyncJob, job_id, with_for_update=True)
+            if job is None:
+                return
+            message = wecom_client.safe_error_text(error)[:500] or "同步异常，请查看服务器日志"
+            svc.finish_job(job, success=0, fail=1, error=message)
+            await write_audit(
+                session,
+                operator_id=user_id,
+                source="SYSTEM",
+                action="wecom_sync_follow_relations",
+                business_type="integration",
+                business_id=job.id,
+                after={"success": 0, "fail": 1, "error": message},
+            )
+            await session.commit()
+
+
 @router.post("/integrations/wecom/sync-follow-relations")
 async def sync_follow_relations(
     request: Request,
     user: CurrentUser = Depends(require_wecom_action("wecom:sync_contacts")),
     session: AsyncSession = Depends(get_db),
 ):
-    job = await _run_sync(session, user=user, job_type="follow_relation", operation=svc.sync_follow_relations)
+    global _follow_sync_task
+    running = (
+        await session.execute(
+            select(WeComSyncJob)
+            .where(
+                WeComSyncJob.job_type == "follow_relation",
+                WeComSyncJob.status == "running",
+            )
+            .order_by(WeComSyncJob.id.desc())
+            .limit(1)
+        )
+    ).scalars().first()
+    if running is not None:
+        return ok(
+            svc.serialize_job(running),
+            "跟进关系同步正在进行中，完成后会自动刷新，请稍候",
+        )
+    job = await svc.start_job(session, job_type="follow_relation", operator_id=user.id)
+    await session.commit()
     await write_audit(
         session,
         operator_id=user.id,
         action="wecom_sync_follow_relations",
         business_type="integration",
         business_id=job.id,
-        after={"success": job.success_count, "fail": job.fail_count},
+        after={"status": "running"},
         ip=client_ip(request),
     )
     await session.commit()
-    message = f"跟进关系同步完成，成功 {job.success_count} 条"
-    if job.fail_count:
-        message += f"；{job.fail_count} 个客户同步失败，原有跟进关系保留，请重试"
-    return ok(svc.serialize_job(job), message)
+    _follow_sync_task = asyncio.create_task(
+        _run_follow_relations_background(job.id, user.id)
+    )
+    return ok(
+        svc.serialize_job(job),
+        "跟进关系同步已开始；联系人较多时需要几分钟，完成后页面会自动刷新",
+    )
 
 
 @router.get("/integrations/wecom/unbound-contacts")
