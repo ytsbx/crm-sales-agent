@@ -6382,3 +6382,12 @@
 - 截图目录：`docs/screenshots/退货结算-验收-20261126/`（01 登记、02 待复核、03 复核弹窗、04 待结算、05 结算默认、07 优先抵扣、08 部分抵扣+退现、09 结算后行、10 结算后 KPI、12 改金额、13 全部退现）。
 - UI 观察：560px 窄窗口下退货表只显示「原因/操作」，金额/状态列需横向滚动；1247px 桌面宽度也出现横向滚动条。功能可用，但窄屏信息取舍需产品另行确认。
 - 文案修正：复核接口/复核弹窗/通知里的「待财务登记退款」统一为「待财务结算」，历史 pending 单提示「待填退货总额」；提交 `8fce7c99`。
+
+## 2026-11-26 生产部署四：829c60e0（已完成并核验）
+
+- 发布包 `crm-release-829c60e0.tar.gz`，SHA256 `9feb672a…70bf`；基线 35858759；无 alembic 迁移、无依赖变更，数据库保持 `a1c4e8f2b6d9`。
+- 发布前：release 工具单测 3 条通过；包构建成功；上传 `/tmp/crm-release-829c60e0/` 后 `deploy` 预检通过（`preflight_only`）。
+- 首次 `--apply` 被自动模式的生产部署拦截，经主人指示「自己做」后在终端执行；工具返回 `status=verified`，备份 `/opt/crm-sales-agent/backup/unified-829c60e0cc50-t0q9_6uv`。
+- 内容：退货财务手动结算（7c51b7a0）、退货状态文案「待财务结算」（2d73edb9）、企微跟进关系同步改后台任务（91ae70b5）、待确认联系人原因提示（99efe52d/89dab997）、OA 登录 hash 修复（816cd7ed）、完成交付原因与寄样审批测试夹具（5400a063）。
+- 部署后核验：`crm-sales.service` active；`/health` 数据库 ok；公网 `https://crm.mandla.cn/` 200；`DEPLOYED_COMMIT` 与 `WEB_DEPLOYED_COMMIT` 均为 829c60e0cc50167926bb73d767e8933bade3f5b6；`RELEASE.json` status=verified；数据库 `alembic_version` 仍为 a1c4e8f2b6d9。
+- 待办：生产企微跟进关系镜像仍停在 2026-10-15，部署后可在「企业微信 → 更新企微数据」触发一次后台同步（依赖服务器 IP 在企微白名单内），再重新预览导入。
