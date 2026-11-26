@@ -40,9 +40,10 @@ export interface SalesReturn {
   currency: string
   goods_amount: number
   goods_amount_exact: string
-  /** 财务人工确认的最终退货货款；未处理为 null。 */
+  /** 人工确认的最终退款总额（可含货款和运费）；未确认为 null。 */
   settled_goods_amount?: number | null
   settled_goods_amount_exact?: string | null
+  /** 历史兼容字段；新流程固定 0，运费已并入 settled_goods_amount。 */
   freight_refund_amount: number
   freight_refund_amount_exact: string
   total_amount: number
@@ -144,12 +145,10 @@ export function reviewReturn(
 export function settleReturn(
   returnId: number,
   settledGoodsAmount: number,
-  freightRefundAmount: number,
   settlementNote?: string,
 ) {
   return api.post<SalesReturn>(`/returns/${returnId}/settle`, {
     settled_goods_amount: settledGoodsAmount,
-    freight_refund_amount: freightRefundAmount,
     settlement_note: settlementNote || undefined,
   })
 }

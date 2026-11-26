@@ -3,14 +3,14 @@
 业务口径（2026-11-25 主人拍板 A 方案）：
 - 只针对**已实发**的批次明细登记，原发货事实不动，不碰库存；
 - 登记时只记数量与原因，不直接改应收/回款；
-- 财务处理时先冲未收应收，剩余部分转“待退款”；
+- 业务员/主管/财务确认最终退款金额后，先冲未收应收，剩余部分转“待退款”；
 - 财务确认后可作废并冲回，但退款已实际支付的不能作废（钱已经出去了，
   系统不能假装没发生）。
 
 三张表：
 - `sales_returns`：退货单头，状态与金额；
 - `sales_return_items`：按发货批次明细记录退多少；
-- `sales_return_plan_adjustments`：财务处理时每一期应收被冲减了多少，
+- `sales_return_plan_adjustments`：确认退款金额时每一期应收被冲减了多少，
   用于作废时**精确还原**，不靠“再算一遍”猜。
 """
 
@@ -33,7 +33,7 @@ from app.core.base import Base, IdMixin, TimestampMixin
 
 RETURN_STATUS_LABEL = {
     "reviewing": "待主管复核",
-    "pending": "待财务处理",
+    "pending": "待填退款金额",
     "completed": "已处理",
     "refunded": "已退款",
     "rejected": "主管驳回",
@@ -69,16 +69,16 @@ class SalesReturn(Base, IdMixin, TimestampMixin):
 
     #: 登记时的参考货款（按订单明细单价折算），仅供主管/财务参考，不是最终账。
     goods_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
-    #: 财务处理时**人工填写**的最终退货货款；空 = 还没处理。
+    #: 人工填写的最终退款总额（可含货款和运费）；空 = 还没确认。
     settled_goods_amount: Mapped[Decimal | None] = mapped_column(
         Numeric(16, 2), nullable=True
     )
-    #: 财务处理时手工追加的退运费；默认 0（运费不退）。
+    #: 历史兼容字段：新流程由前端传 0，运费并入 `settled_goods_amount`，不再单列。
     freight_refund_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
-    #: 本单应退总额 = goods_amount + freight_refund_amount。
+    #: 本单应退总额 = settled_goods_amount + freight_refund_amount（后者新流程为 0）。
     total_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
 
-    #: 财务处理时实际冲减的未收应收。冲减后各期 plan.amount 会同步变小。
+    #: 确认退款金额时实际冲减的未收应收。冲减后各期 plan.amount 会同步变小。
     offset_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
     #: 应退给客户的现金 = total_amount - offset_amount。
     refund_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)

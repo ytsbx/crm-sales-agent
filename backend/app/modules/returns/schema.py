@@ -35,9 +35,9 @@ class ReturnCreate(BaseModel):
 
 
 class ReturnSettle(BaseModel):
-    #: 财务**人工填写**的最终退货货款；系统不再按单价自动折算。
+    #: 人工填写的最终退款总额（可含货款和运费）；系统不按单价折算。字段名沿用历史。
     settled_goods_amount: Decimal = Field(gt=0, max_digits=16, decimal_places=2)
-    #: 运费默认不退；确需退时财务在这里手工加。
+    #: 历史兼容字段；新界面固定传 0，运费并入 `settled_goods_amount`，不再单列。
     freight_refund_amount: Decimal = Field(
         default=Decimal("0"), ge=0, max_digits=16, decimal_places=2
     )

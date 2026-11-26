@@ -1,4 +1,4 @@
-"销售退货接口：登记、取消、财务处理、退款登记、作废。"
+"销售退货接口：登记、取消、填退款金额、退款登记、作废。"
 
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -105,7 +105,7 @@ async def review_return(
     data = await svc.serialize_return(session, row)
     await session.commit()
     message = (
-        f"退货单 {row.return_no} 已通过复核，转财务处理"
+        f"退货单 {row.return_no} 已通过复核，等待填退款金额"
         if row.status == "pending"
         else f"退货单 {row.return_no} 已驳回，可退数量已释放"
     )
@@ -134,7 +134,7 @@ async def settle_return(
     return_id: int,
     payload: ReturnSettle,
     request: Request,
-    user: CurrentUser = Depends(require_permission("payment:manage")),
+    user: CurrentUser = Depends(require_permission("order:manage", "payment:manage")),
     session: AsyncSession = Depends(get_db),
 ):
     row = await _lock_return_with_order(session, user, return_id)
@@ -150,7 +150,7 @@ async def settle_return(
     data = await svc.serialize_return(session, row)
     await session.commit()
     message = (
-        f"退货单 {row.return_no} 已处理：确认退货货款 {row.settled_goods_amount:.2f} 元，"
+        f"退货单 {row.return_no} 已处理：确认退款金额 {row.settled_goods_amount:.2f} 元，"
         f"抵掉客户欠款 {row.offset_amount:.2f} 元"
         + (f"，待退款 {row.refund_amount:.2f} 元" if row.refund_amount > 0 else "")
     )

@@ -2,9 +2,9 @@
 
 把“登记”和“核销”分开：
 1. 业务员/主管登记：只锁数量、算货款，不动钱；
-2. 财务处理：先冲未收应收，剩余转待退款；
+2. 业务员/主管/财务填最终退款金额：先抵未收应收，剩余转待退款；运费按谈好的总数一并填入，不单独建模；
 3. 财务确认退款：钱真的付出去后才标记；
-4. 登记可取消，财务处理后可作废并冲回；已退款不能作废。
+4. 登记可取消，确认退款金额后可作废并冲回；已退款不能作废。
 
 所有写入口都先锁订单行，再锁退货单/应收期，避免并发下超退或重复冲账。
 """
@@ -390,7 +390,7 @@ async def review_return(
     note: str | None,
     ip: str | None = None,
 ) -> SalesReturn:
-    """主管复核：通过才进入财务处理，驳回则释放占用的可退数量。
+    """主管复核：通过才进入“待填退款金额”，驳回则释放占用的可退数量。
 
     权限在路由层用 `order:assign`（主管级）控制，服务层再校验一次：
     只有主管/管理员能复核；业务员、财务没有该权限，不能复核。
@@ -417,7 +417,7 @@ async def review_return(
         row.status = "pending"
         title = "销售退货已通过主管复核"
         content = (
-            f"订单退货 {row.return_no} 已通过主管复核，待财务处理。"
+            f"订单退货 {row.return_no} 已通过主管复核，待填退款金额。"
         )
     else:
         row.status = "rejected"
@@ -470,7 +470,7 @@ async def cancel_return(
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
             f"「{RETURN_STATUS_LABEL.get(row.status, row.status)}」的退货单不能取消；"
-            "财务已处理的请走「作废退货」",
+            "已确认退款金额的请走「作废退货」",
             422,
         )
     before = row.status
@@ -513,7 +513,7 @@ async def settle_return(
             ErrorCode.STATUS_NOT_ALLOWED, "本项目只支持人民币退货", 422
         )
     order = await get_order_or_404(session, row.order_id)
-    # 2026-11-25 主人拍板：最终退货货款由财务**人工填写**，系统不再按单价折算。
+    # 2026-11-26 主人拍板：只填一个“最终退款金额”，由业务员/主管/财务按和客户谈好的总数人工填写；系统不按单价折算，也不再单列运费。
     goods_total = _money(settled_goods_amount)
     freight_total = _money(freight_refund_amount)
     total = _money(goods_total + freight_total)
@@ -568,7 +568,8 @@ async def settle_return(
         available = _money(
             sum((max(Decimal(plan.amount or 0) - paid.get(plan.id, ZERO), ZERO) for plan in plans), ZERO)
         )
-        # 运费不参与冲应收：应收是货款，退运费是额外的公司成本。
+        # 新流程只有一个“最终退款金额”，运费已并进去，随总额一起先抵欠款；
+        # 历史单独的 `freight_refund_amount` 仍只加进退款、不参与抵欠款。
         offset = min(goods_total, available)
         goods_refund = _money(goods_total - offset)
         refund = _money(goods_refund + freight_total)
@@ -658,9 +659,9 @@ async def settle_return(
         customer_id=order.customer_id,
         owner_id=order.owner_id,
         operator_id=user.id,
-        title="财务已处理销售退货",
+        title="销售退货已确认退款金额",
         content=(
-            f"订单 {order.order_no} 退货 {row.return_no} 已处理："
+            f"订单 {order.order_no} 退货 {row.return_no} 已确认退款金额："
             f"抵掉客户欠款 {format(row.offset_amount, '.2f')} 元，"
             f"需退给客户 {format(row.refund_amount, '.2f')} 元"
             + ("，请财务实际退款后登记流水。" if row.refund_amount > 0 else "。")
