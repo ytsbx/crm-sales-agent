@@ -495,7 +495,7 @@ export default function ApprovalPage() {
         <div style={{ display: 'grid', gap: 12 }}>
           <p className="workflow-guide">转交后，由接收人继续处理当前审批。请从下方选择接收人。</p>
           <Select
-            placeholder="选择有资格处理当前审批的接收人"
+            placeholder="选择有权限处理当前审批的接收人"
             filter={optionMatcher}
             style={{ width: '100%' }}
             value={transferUserId}

@@ -599,7 +599,7 @@ export default function RulesPanel() {
             {editing.kind === 'exception_route' && (
               <div style={{ display: 'flex', gap: 12 }}>
                 <div style={{ flex: 1 }}>
-                  <div style={labelStyle}>会签资格</div>
+                  <div style={labelStyle}>会签权限</div>
                   <div style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>拥有「财务会签」权限即可，不限制角色。授权在「系统设置 → 角色与数据范围」维护。</div>
                 </div>
                 <div style={{ flex: 1 }}>
