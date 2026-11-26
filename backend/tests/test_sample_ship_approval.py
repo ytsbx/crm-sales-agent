@@ -92,10 +92,12 @@ async def test_apply_creates_pending_approval_in_center(approval_db, monkeypatch
 
 
 @pytest.mark.anyio
-async def test_custom_sample_does_not_use_internal_ship_approval(approval_db, monkeypatch):
-    row = sample()
+async def test_custom_sample_needs_oa_then_ship_approval(approval_db, monkeypatch):
+    """定制/新品：OA 审批通过前不能提寄样申请；通过后仍需寄样审批。"""
+    row = sample(status='pending')
     _mock_sample_for(monkeypatch, row)
     monkeypatch.setattr(sample_router.svc, 'sample_is_custom', AsyncMock(return_value=True))
+    monkeypatch.setattr(sample_router, 'write_audit', AsyncMock())
     with pytest.raises(AppError) as caught:
         await sample_router.apply_ship_approval(
             7, SampleShipApprovalApply(recipient='李四 13900000000 东莞市', payer='company',
@@ -103,8 +105,18 @@ async def test_custom_sample_does_not_use_internal_ship_approval(approval_db, mo
             make_user(1, permissions=('sample:manage',), data_scope='all'),
             SyncSessionAsAsync(approval_db),
         )
-    assert '原询价审批' in caught.value.message
+    assert 'OA 审批' in caught.value.message
     assert approval_db.query(ApprovalInstance).count() == 0
+
+    row.status = 'approved'
+    await sample_router.apply_ship_approval(
+        7, SampleShipApprovalApply(recipient='李四 13900000000 东莞市', payer='company',
+                                   shipping_fee=Decimal('10')), request(),
+        make_user(1, permissions=('sample:manage',), data_scope='all'),
+        SyncSessionAsAsync(approval_db),
+    )
+    assert approval_db.query(ApprovalInstance).filter_by(
+        business_type='sample_shipment', business_id=7).one().status == 'pending'
 
 
 def _pending_instance(db, applicant_id=1) -> ApprovalInstance:
@@ -226,15 +238,28 @@ async def test_ship_requires_approved_instance_and_freezes_fee(approval_db, monk
 
 
 @pytest.mark.anyio
-async def test_custom_ship_still_uses_inquiry_approval(monkeypatch):
+async def test_custom_ship_needs_oa_and_ship_approval(approval_db, monkeypatch):
     from app.modules.oa import business_gates
 
     gate = AsyncMock(return_value=SimpleNamespace(status='approved'))
     monkeypatch.setattr(business_gates, 'require_sample_approved', gate)
     monkeypatch.setattr(sample_router.svc, 'sample_is_custom', AsyncMock(return_value=True))
     row = sample(status='approved')
-    assert await sample_router._require_ship_approved(SimpleNamespace(), row) is None
+
+    with pytest.raises(AppError) as caught:
+        await sample_router._require_ship_approved(SyncSessionAsAsync(approval_db), row)
+    assert '主管审批' in caught.value.message
     gate.assert_awaited_once()
+
+    approval_db.add(ApprovalDefinition(
+        id=9, code='sample_shipment', name='寄样审批', business_type='sample_shipment'))
+    approval_db.add(ApprovalInstance(
+        definition_id=9, business_type='sample_shipment', business_id=7,
+        applicant_id=1, status='approved', summary={'shipping_fee': '10'},
+        created_at=datetime.now(UTC)))
+    approval_db.commit()
+    result = await sample_router._require_ship_approved(SyncSessionAsAsync(approval_db), row)
+    assert result['shipping_fee'] == '10'
 
 
 @pytest.mark.anyio

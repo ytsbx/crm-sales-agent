@@ -352,14 +352,20 @@ function sampleNextStep(row: SampleRequestRow) {
     label: '查看 OA 审批意见',
   }
   if (row.status === 'approved') {
-    if (row.is_custom === false) {
-      return row.ship_approval_status === 'approved'
-        ? { hint: '寄样已批准。寄出后登记承运商与快递单号（运费按批准金额记录）。', action: 'work', label: '去登记寄样' }
-        : { hint: '现有产品寄样需要主管批准：先提交寄样申请并等待批准。', action: 'work', label: '提交寄样申请' }
+    const custom = row.is_custom !== false
+    if (custom && !row.made_at) {
+      return { hint: '等车间完成实物制作后，登记制作完成并选取实际使用的图纸或确认件。', action: 'work', label: '去登记制作' }
     }
-    return row.made_at
-      ? { hint: '样品寄出后，填写承运商、快递单号及运费，登记寄样。', action: 'work', label: '去登记寄样' }
-      : { hint: '等车间完成实物制作后，登记制作完成并选取实际使用的图纸或确认件。', action: 'work', label: '去登记制作' }
+    if (row.ship_approval_status === 'approved') {
+      return { hint: '寄样已批准。寄出后登记承运商与快递单号（运费按批准金额记录）。', action: 'work', label: '去登记寄样' }
+    }
+    if (row.ship_approval_status === 'pending') {
+      return { hint: '寄样申请已提交，等主管在审批中心批准后即可登记寄样。', action: 'work', label: '查看寄样审批' }
+    }
+    if (row.ship_approval_status === 'rejected') {
+      return { hint: '寄样申请被驳回，按驳回原因修改后可重新提交。', action: 'work', label: '重新提交寄样申请' }
+    }
+    return { hint: '寄样前需要主管批准：先提交寄样申请（收件人、运费谁承担），批准后登记寄样。', action: 'work', label: '提交寄样申请' }
   }
   if (row.status === 'shipped') return { hint: '客户收到样品后，登记签收。客户对样品的最终决定在「客户确认」另记。', action: 'work', label: '去登记签收' }
   if (row.status === 'signed' && row.confirm_status === 'pending') {
@@ -1659,29 +1665,9 @@ export default function SampleListPage() {
                     原来寄样按钮和制作登记一起出现，可以跳过制作直接寄样，
                     记录里就少了一笔"什么时候做完的"，后续追质量问题没有锚点。 */}
                 {canUpdateSample && detail.is_custom !== false && detail.status === 'approved' && (detail.made_at ? (
-                  <>
-                    <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                      已登记制作完成，下一步登记寄样（承运商 / 单号 / 运费）。
-                    </div>
-                    <div className="sample-shipping-fields">
-                      <label htmlFor="sample-carrier">承运商
-                        <Input id="sample-carrier" placeholder="承运商" value={shipForm.carrier}
-                          onChange={(value) => setShipForm({ ...shipForm, carrier: value })} />
-                      </label>
-                      <label htmlFor="sample-tracking">快递单号
-                        <Input id="sample-tracking" placeholder="快递单号" value={shipForm.tracking_no}
-                          onChange={(value) => setShipForm({ ...shipForm, tracking_no: value })} />
-                      </label>
-                      <label htmlFor="sample-shipping-fee">运费（元）
-                        <Input id="sample-shipping-fee" inputMode="decimal" placeholder="留空按 0 元"
-                          value={shipForm.shipping_fee}
-                          onChange={(value) => setShipForm({ ...shipForm, shipping_fee: value })} />
-                      </label>
-                    </div>
-                    <Popconfirm title="确认登记寄样？" content="请在样品实际寄出后登记。客户收到样品时，再登记签收。" onConfirm={() => shipMutation.mutate()}>
-                      <Button theme="outline" type="primary" loading={shipMutation.isPending}>登记寄样</Button>
-                    </Popconfirm>
-                  </>
+                  <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                    已登记制作完成；寄样需先在下方「寄样审批」提交申请并由主管批准，批准后再登记寄样。
+                  </div>
                 ) : (
                   <>
                     <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
@@ -1702,10 +1688,19 @@ export default function SampleListPage() {
                   </>
                 ))}
 
-                {canUpdateSample && detail.is_custom === false && ['pending', 'approved'].includes(detail.status) && (
-                  <DetailCard title="寄样审批" extra="现有产品">
+                {canUpdateSample && detail.is_custom !== false && detail.status === 'pending' && (
+                  <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                    定制/新品：先在「查看同序 OA 记录」完成审批；通过后在下方提交寄样申请，由主管批准后再寄出。
+                  </div>
+                )}
+
+                {canUpdateSample && (
+                  (detail.is_custom === false && ['pending', 'approved'].includes(detail.status))
+                  || (detail.is_custom !== false && detail.status === 'approved')
+                ) && (
+                  <DetailCard title="寄样审批" extra="寄样前主管批准">
                     <div style={{ fontSize: 12, color: 'var(--crm-text-3)', lineHeight: 1.7 }}>
-                      现有产品从库存寄样，寄出前需主管批准；承运商与运费在审批时确定，登记寄样时按批准金额记录。
+                      所有样品寄出前都需主管批准；承运商与运费在审批时确定，登记寄样时按批准金额记录。
                     </div>
                     {detail.ship_approval?.status === 'pending' && (
                       <div style={{ background: 'var(--crm-warning-bg, #FFF7E6)', border: '1px solid var(--crm-warning-border, #FFE7BA)', borderRadius: 4, padding: 10, fontSize: 13, display: 'grid', gap: 8 }}>
@@ -1730,6 +1725,11 @@ export default function SampleListPage() {
                       </div>
                     )}
                     {detail.ship_approval?.status === 'approved' ? (
+                      detail.is_custom !== false && !detail.made_at ? (
+                        <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                          寄样已批准；请先在详情登记制作完成，之后再回来登记寄样。
+                        </div>
+                      ) : (
                       <>
                         <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
                           已由主管批准，运费 {formatMoney(toTwoDecimals(String(detail.ship_approval.shipping_fee ?? '0')), 'CNY')}
@@ -1752,6 +1752,7 @@ export default function SampleListPage() {
                           <Button theme="outline" type="primary" loading={shipMutation.isPending}>登记寄样</Button>
                         </Popconfirm>
                       </>
+                      )
                     ) : detail.ship_approval?.status !== 'pending' && (
                       <>
                         <div>

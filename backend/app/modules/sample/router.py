@@ -911,23 +911,23 @@ async def revise_sample(
 
 
 async def _require_ship_approved(session, sample):
-    """寄样放行条件。
+    """寄样放行条件（2026-11-26 主人口径：所有寄样都要有一道寄样批准）。
 
-    - 定制件：沿用原询价审批（`require_sample_approved`），不另批寄样；
-    - 现有产品：看审批中心里的寄样审批（主管批准后才有资格登记寄样）。
+    1. 定制/新品：先要原询价/打样 OA 审批通过（管"做不做这个样"）；
+    2. 所有样品：还要 CRM 审批中心里的寄样审批通过（管"寄不寄、谁收、运费谁出"）。
+    OA 审批里没有寄样字段，不能拿它当寄样许可。
     """
     if await svc.sample_is_custom(session, sample):
         from app.modules.oa.business_gates import require_sample_approved
 
         await require_sample_approved(session, sample)
-        return None
     from app.modules.approval import sample_ship as ship_approval_service
 
     instance = await ship_approval_service.latest(session, sample.id)
     if instance is None or instance.status != "approved":
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
-            "现有产品寄样需要主管审批：请先在样品详情提交寄样申请，批准后才能登记寄样",
+            "寄样需要主管审批：请先在样品详情提交寄样申请，批准后才能登记寄样",
             422,
         )
     return ship_approval_service.serialize(instance)
@@ -941,18 +941,19 @@ async def apply_ship_approval(
     user: CurrentUser = Depends(require_permission("sample:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """提交现有产品寄样申请（承运商、运费、说明），进入审批中心等主管批准。
+    """提交寄样申请（收件人、付款方、承运商、运费、说明），进入审批中心等主管批准。
 
-    定制样品的寄样凭原询价审批，不走这里 —— 两边分开，避免同一次寄样被批两遍。
+    定制/新品要先完成同序 OA 审批（样品状态到「已批准」），再提交寄样申请；
+    所有样品都走这一道，OA 审批里没有寄样字段，不能拿它当寄样许可。
     驳回过可以改内容重新提交；审批中不能改，防止"批的和寄的不是同一份"。
     """
     from app.modules.approval import sample_ship as ship_approval_service
 
     sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
-    if await svc.sample_is_custom(session, sample):
+    if await svc.sample_is_custom(session, sample) and sample.status == "pending":
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
-            "定制样品的寄样按原询价审批办理，不需要单独申请寄样",
+            "这张定制样品还没完成同序 OA 审批；通过后再提交寄样申请",
             422,
         )
     if sample.status not in ("pending", "approved"):
