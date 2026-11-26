@@ -270,24 +270,46 @@ function reopenedHint(before: string | undefined, after: string): string | null 
 }
 
 /** 生产资料这类"可有可无"的字段统一显示成 —，而不是一片空白。 */
-function dash(value?: string | null) {
-  return value && value.trim() ? value : '-'
-}
-
-/** 详情里可折叠的次要区块：默认收起，避免一屏堆满长说明和空字段。 */
-function Fold({ title, extra, children }: { title: string; extra?: string; children: ReactNode }) {
+/** 详情里的分区卡片：标题条 + 内容，层次清楚，不折叠。 */
+function DetailCard({
+  title,
+  extra,
+  action,
+  children,
+}: {
+  title: string
+  extra?: string
+  action?: ReactNode
+  children: ReactNode
+}) {
   return (
-    <details style={{ borderTop: '1px solid var(--crm-border)', paddingTop: 10 }}>
-      <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: 14, color: 'var(--crm-text-1)' }}>
-        {title}
+    <section
+      style={{
+        border: '1px solid var(--crm-border)',
+        borderRadius: 10,
+        background: 'var(--crm-surface, #fff)',
+        overflow: 'hidden',
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          padding: '10px 14px',
+          borderBottom: '1px solid var(--crm-border)',
+          background: 'var(--crm-surface-low)',
+        }}
+      >
+        <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--crm-text-1)' }}>{title}</div>
         {extra && (
-          <span style={{ marginLeft: 8, fontWeight: 400, fontSize: 12, color: 'var(--crm-text-3)' }}>
-            {extra}
-          </span>
+          <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{extra}</span>
         )}
-      </summary>
-      <div style={{ marginTop: 10 }}>{children}</div>
-    </details>
+        <div style={{ flex: 1 }} />
+        {action}
+      </div>
+      <div style={{ padding: '12px 14px' }}>{children}</div>
+    </section>
   )
 }
 
@@ -486,6 +508,32 @@ export default function SampleListPage() {
     enabled: detailId !== null && listDetail === undefined && !query.isLoading,
   })
   const detail: SampleRequestRow | undefined = listDetail ?? detailQuery.data
+  // 生产打样资料有没有填过：全空时只显示一句「还没有填写」，不铺一排短横线
+  const hasProdInfo = Boolean(
+    detail && (detail.purpose || detail.target_completion_date || detail.acceptance_criteria
+      || detail.sample_fee != null || detail.sample_type || detail.made_at
+      || (detail.basis_files && detail.basis_files.length)
+      || (detail.made_events && detail.made_events.length)),
+  )
+
+  const startProdEditing = () => {
+    if (!detail) return
+    setProdForm({
+      purpose: detail.purpose ?? '',
+      target_completion_date: detail.target_completion_date ?? '',
+      acceptance_criteria: detail.acceptance_criteria ?? '',
+      sample_fee: String(detail.sample_fee_exact ?? detail.sample_fee ?? ''),
+      sample_type: detail.sample_type ?? '',
+      product_category: detail.product_category ?? '',
+      // 历史钉钉单写的是「外协厂」，同序模板是「外协厂打样」；打开编辑时按同序写法显示。
+      maker_unit: detail.maker_unit === '外协厂' ? '外协厂打样' : detail.maker_unit ?? '',
+      sample_purpose: detail.sample_purpose ?? '',
+      urgency: detail.urgency ?? '',
+      sample_situation: detail.sample_situation ?? '',
+      estimated_hours: detail.estimated_hours != null ? String(detail.estimated_hours) : '',
+    })
+    setProdEditing(true)
+  }
   const nextStep = detail ? sampleNextStep(detail) : null
   const revisionLocked = Boolean(detail?.revision_locked || detail?.superseded_by)
   const canUpdateSample = canManage && !revisionLocked
@@ -1437,8 +1485,7 @@ export default function SampleListPage() {
               <div style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>备注：{detail.remark}</div>
             )}
 
-            <div>
-              <div style={{ fontWeight: 600, marginBottom: 8 }}>样品明细（产品名称 *，打样数量 *）</div>
+            <DetailCard title="样品明细" extra="产品名称 *，打样数量 *">
               {detail.items.length === 0 && (
                 <div style={{ padding: '10px 0', color: 'var(--crm-text-3)', fontSize: 13 }}>
                   还没有样品明细；在下面添加产品名称和打样数量。
@@ -1566,11 +1613,10 @@ export default function SampleListPage() {
                   </GuardedButton>
                 </div>
               )}
-            </div>
+            </DetailCard>
 
             {detail.shipments.length > 0 && (
-              <div>
-                <div style={{ fontWeight: 600, marginBottom: 8 }}>寄样记录</div>
+              <DetailCard title="寄样记录">
                 <Table
                   size="small"
                   rowKey="id"
@@ -1593,7 +1639,7 @@ export default function SampleListPage() {
                     },
                   ]}
                 />
-              </div>
+              </DetailCard>
             )}
 
             {canManage && nextStep?.action !== 'oa' && (
@@ -1653,8 +1699,7 @@ export default function SampleListPage() {
                 ))}
 
                 {canUpdateSample && detail.is_custom === false && ['pending', 'approved'].includes(detail.status) && (
-                  <div style={{ display: 'grid', gap: 10, borderTop: '1px solid var(--crm-border)', paddingTop: 12 }}>
-                    <div style={{ fontWeight: 600 }}>寄样审批（现有产品）</div>
+                  <DetailCard title="寄样审批" extra="现有产品">
                     <div style={{ fontSize: 12, color: 'var(--crm-text-3)', lineHeight: 1.7 }}>
                       现有产品从库存寄样，寄出前需主管批准；承运商与运费在审批时确定，登记寄样时按批准金额记录。
                     </div>
@@ -1752,7 +1797,7 @@ export default function SampleListPage() {
                         <Button theme="outline" type="primary" style={{ alignSelf: 'flex-start', justifySelf: 'start', width: 'auto' }} loading={applyShipApprovalMutation.isPending} onClick={() => applyShipApprovalMutation.mutate()}>提交寄样申请</Button>
                       </>
                     )}
-                  </div>
+                  </DetailCard>
                 )}
 
                 {/* 页顶「下一步」条上的「去登记签收」只是把视线带到这一段，
@@ -1820,44 +1865,15 @@ export default function SampleListPage() {
                 {/* 生产打样资料（文档 §3.5）：车间照着这张单子干活——
                     这里放的是**整单属性**（用途 / 交期 / 验收标准 / 费用）；
                     材质、工艺、图纸版本逐行不同，在上面的明细行里改 */}
-                <Fold
+                <DetailCard
                   title="生产打样资料"
-                  extra={
-                    detail.purpose || detail.target_completion_date || detail.acceptance_criteria
-                    || detail.sample_fee != null || detail.sample_type
-                      ? ''
-                      : '未填写'
-                  }
+                  extra={hasProdInfo ? undefined : '未填写'}
+                  action={canUpdateSample && !prodEditing ? (
+                    <button type="button" className="crm-text-action" onClick={startProdEditing}>
+                      编辑
+                    </button>
+                  ) : null}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
-                    <div style={{ flex: 1 }} />
-                    {canUpdateSample && !prodEditing && (
-                      <button type="button" className="crm-text-action"
-                        onClick={() => {
-                          setProdForm({
-                            purpose: detail.purpose ?? '',
-                            target_completion_date: detail.target_completion_date ?? '',
-                            acceptance_criteria: detail.acceptance_criteria ?? '',
-                            sample_fee:
-                              String(detail.sample_fee_exact ?? detail.sample_fee ?? ''),
-                            sample_type: detail.sample_type ?? '',
-                            product_category: detail.product_category ?? '',
-                            // 历史钉钉单写的是「外协厂」，同序模板是「外协厂打样」；
-                            // 打开编辑时按同序写法显示，保存后库里也换成新值。
-                            maker_unit: detail.maker_unit === '外协厂' ? '外协厂打样' : detail.maker_unit ?? '',
-                            sample_purpose: detail.sample_purpose ?? '',
-                            urgency: detail.urgency ?? '',
-                            sample_situation: detail.sample_situation ?? '',
-                            estimated_hours:
-                              detail.estimated_hours != null ? String(detail.estimated_hours) : '',
-                          })
-                          setProdEditing(true)
-                        }}
-                      >
-                        编辑
-                      </button>
-                    )}
-                  </div>
 
                   {prodEditing ? (
                     <div style={{ display: 'grid', gap: 8 }}>
@@ -2024,46 +2040,65 @@ export default function SampleListPage() {
                         <Button onClick={() => setProdEditing(false)}>取消</Button>
                       </div>
                     </div>
-                  ) : (
-                    <div style={{ fontSize: 13, color: 'var(--crm-text-2)', lineHeight: 1.9 }}>
-                      <div>用途：{dash(detail.purpose)}</div>
-                      <div>目标完成日：{dash(detail.target_completion_date)}</div>
-                      <div>验收标准：{dash(detail.acceptance_criteria)}</div>
-                      <div>
-                        {/* 金额统一两位小数（2026-11-17 视觉审视 V-05）：原来 ¥120 与 ¥120.50 混排 */}
-                        打样费用：{detail.sample_fee != null ? formatMoney(toTwoDecimals(detail.sample_fee_exact ?? detail.sample_fee), 'CNY') : '未填'}
+                  ) : hasProdInfo ? (
+                    <div style={{ display: 'grid', gap: 12 }}>
+                      <div
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+                          gap: 10,
+                        }}
+                      >
+                        {detail.purpose && <MetaItem label="用途">{detail.purpose}</MetaItem>}
+                        {detail.target_completion_date && (
+                          <MetaItem label="目标完成日">{detail.target_completion_date}</MetaItem>
+                        )}
+                        {detail.acceptance_criteria && (
+                          <MetaItem label="验收标准">{detail.acceptance_criteria}</MetaItem>
+                        )}
+                        {detail.sample_fee != null && (
+                          <MetaItem label="打样费用">
+                            {formatMoney(toTwoDecimals(detail.sample_fee_exact ?? detail.sample_fee), 'CNY')}
+                          </MetaItem>
+                        )}
+                        {detail.made_at && (
+                          <MetaItem label="制作完成">{formatBeijingDate(detail.made_at)}</MetaItem>
+                        )}
+                        <MetaItem label="版本">
+                          第 {detail.version ?? 1} 版
+                          {revisionLocked && '（只读）'}
+                        </MetaItem>
                       </div>
-                      <div>制作完成：{dash(detail.made_at ? formatBeijingDate(detail.made_at) : null)}</div>
                       {/* 制作依据（第一批返修 §3.5）：这次照哪几份文件做的。
                           三种情况必须分开说（返工单 P2-7）：
                             · 还没登记制作 → 不适用；
                             · 这条记录早于本功能 → **明确标注"未登记"**，
                               绝不能显示成"已确认没有依据"（那是把"不知道"说成了"没有"）；
                             · 登记过但当时没选 → 如实说"登记时未指定"。 */}
-                      <div>
-                        制作依据：
-                        {!detail.made_at ? (
-                          <span style={{ color: 'var(--crm-text-3)' }}>还没登记制作完成</span>
-                        ) : !detail.basis_files ? (
-                          <span style={{ color: 'var(--crm-warning)' }}>
-                            这条记录早于「制作依据」功能，当时没有登记（不代表没有依据）
-                          </span>
-                        ) : detail.basis_files.length === 0 ? (
-                          <span style={{ color: 'var(--crm-text-3)' }}>登记时未指定</span>
-                        ) : (
-                          detail.basis_files.map((file: BasisFile) => (
-                            <div key={file.file_id} style={{ marginLeft: 8 }}>
-                              · {file.file_name || `文件编号 ${file.file_id}`}
-                              <span style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
-                                （第 {file.sample_version ?? 1} 版依据，校验值{' '}
-                                {file.checksum ? `${file.checksum.slice(0, 12)}…` : '未记录'}）
-                              </span>
-                            </div>
-                          ))
-                        )}
-                      </div>
+                      {detail.made_at && (
+                        <div style={{ fontSize: 13, lineHeight: 1.8 }}>
+                          制作依据：
+                          {!detail.basis_files ? (
+                            <span style={{ color: 'var(--crm-warning)' }}>
+                              这条记录早于「制作依据」功能，当时没有登记（不代表没有依据）
+                            </span>
+                          ) : detail.basis_files.length === 0 ? (
+                            <span style={{ color: 'var(--crm-text-3)' }}>登记时未指定</span>
+                          ) : (
+                            detail.basis_files.map((file: BasisFile) => (
+                              <div key={file.file_id} style={{ marginLeft: 8 }}>
+                                · {file.file_name || `文件编号 ${file.file_id}`}
+                                <span style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
+                                  （第 {file.sample_version ?? 1} 版依据，校验值{' '}
+                                  {file.checksum ? `${file.checksum.slice(0, 12)}…` : '未记录'}）
+                                </span>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      )}
                       {detail.made_events && detail.made_events.length > 0 && (
-                        <div>
+                        <div style={{ fontSize: 13, lineHeight: 1.8 }}>
                           制作记录：
                           {detail.made_events.map((event, index) => (
                             <div key={event.key ?? index} style={{ marginLeft: 8 }}>
@@ -2073,10 +2108,10 @@ export default function SampleListPage() {
                           ))}
                         </div>
                       )}
-                      <div>
-                        版本：第 {detail.version ?? 1} 版
-                        {revisionLocked && '（只读）'}
-                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 13, color: 'var(--crm-text-3)' }}>
+                      还没有填写生产打样资料。
                     </div>
                   )}
 
@@ -2096,22 +2131,19 @@ export default function SampleListPage() {
                       </Button>
                     </Popconfirm>
                   )}
-                </Fold>
+                </DetailCard>
 
                 {/* 客户确认：签收是物流事实、确认是业务事实，两者分开（文档 §3.5） */}
-                <div ref={customerConfirmRef} tabIndex={-1} style={{ borderTop: '1px solid var(--crm-border)', paddingTop: 10 }}>
-                  <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8 }}>
-                    客户确认
-                    <span style={{ marginLeft: 8, fontWeight: 400, fontSize: 12, color: 'var(--crm-text-3)' }}>
-                      {detail.confirm_status_label}
-                      {detail.customer_confirmed_at
-                        ? ` · ${formatBeijingDate(detail.customer_confirmed_at)}`
-                        : ''}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 8 }}>
-                    客户收到样品不等于样品被接受，结果以客户明确表态为准。
-                  </div>
+                <DetailCard
+                  title="客户确认"
+                  extra={`${detail.confirm_status_label}${detail.customer_confirmed_at
+                    ? ` · ${formatBeijingDate(detail.customer_confirmed_at)}`
+                    : ''}`}
+                >
+                  <div ref={customerConfirmRef} tabIndex={-1}>
+                    <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 8 }}>
+                      客户收到样品不等于样品被接受，结果以客户明确表态为准。
+                    </div>
                   {canUpdateSample && detail.status === 'signed' && detail.confirm_status === 'pending' && (
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                       <Input
@@ -2135,7 +2167,8 @@ export default function SampleListPage() {
                       </Button>
                     </div>
                   )}
-                </div>
+                  </div>
+                </DetailCard>
 
                 {/* 附件区（2026-10-08 补）。
                     这里原本**没有上传入口**：而「登记制作完成」那个弹窗写着
@@ -2147,7 +2180,7 @@ export default function SampleListPage() {
                     锁定之后上传的**自动**按「后续补充资料」归类，不用用户选 ——
                     锁定与否由后端下发（`attachment_locked` / `attachment_lock`），
                     前端不自己按 made_at / status 推一遍（推出来的那份迟早和后端分叉）。 */}
-                <Fold title="附件" extra={detail.attachment_locked ? '已锁定' : '可上传'}>
+                <DetailCard title="附件" extra={detail.attachment_locked ? '已锁定' : '可上传'}>
                   {detail.attachment_locked && (
                     <div
                       style={{
@@ -2173,10 +2206,10 @@ export default function SampleListPage() {
                     hint="放样品实物照片、尺寸图、客户确认截图，单个文件不超过 20 MB"
                     category={detail.attachment_locked ? 'supplement' : undefined}
                   />
-                </Fold>
+                </DetailCard>
 
                 {/* 场景12：从这张打样申请出打样需求单，来源询价与本次差异随文件落快照 */}
-                <Fold title="打样需求单">
+                <DetailCard title="打样需求单">
                   <BizDocPanel
                     docType="sample_request"
                     sampleRequestId={detail.id}
@@ -2185,7 +2218,7 @@ export default function SampleListPage() {
                     emptyInline
                     compactEmptyText="还没有生成过打样需求单 —— 点右上「生成一份」，按本次申请内容出一份 PDF。"
                   />
-                </Fold>
+                </DetailCard>
               </div>
             )}
           </div>
