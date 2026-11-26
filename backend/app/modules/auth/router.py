@@ -21,7 +21,7 @@ from app.core.security import (
     decode_access_token_allow_expired,
     verify_password,
 )
-from app.modules.auth.schema import DingTalkExchange, LoginRequest, WeComSsoCallback, PersonalAccountUpdate
+from app.modules.auth.schema import DingTalkExchange, LoginRequest, OaTicketExchange, WeComSsoCallback, PersonalAccountUpdate
 from app.modules.auth.session import (
     REASON_LOGOUT,
     SID_CLAIM,
@@ -141,6 +141,50 @@ async def login(
 
     # 用上面取好的标量，**不再碰 user 对象**：它可能已被回滚整片过期。
     return ok({"access_token": token, "token_type": "Bearer", "user": user_brief})
+
+
+@router.post("/oa/exchange")
+async def oa_exchange(
+    payload: OaTicketExchange,
+    request: Request,
+    session: AsyncSession = Depends(get_db),
+):
+    """OA 软件内嵌 CRM 时，用 OA 签发的一次性票据换取 CRM 登录凭证。"""
+    from app.modules.oa import client as oa_client
+
+    try:
+        identity = await oa_client.exchange_sso_ticket(payload.ticket)
+    except oa_client.OaNotConfigured as exc:
+        raise AppError(ErrorCode.EXTERNAL_ERROR, "同序 OA 对接尚未配置", 503) from exc
+    except oa_client.OaUnknownOutcome as exc:
+        raise AppError(ErrorCode.EXTERNAL_ERROR, "同序 OA 暂未响应，请稍后重试", 502) from exc
+    except oa_client.OaError as exc:
+        raise AppError(ErrorCode.UNAUTHORIZED, "同序登录票据无效或已过期，请重新打开", 401) from exc
+
+    oa_user_id = str(identity.get("oa_user_id") or "")
+    if not oa_user_id:
+        raise AppError(ErrorCode.UNAUTHORIZED, "同序登录票据无效", 401)
+    user = (await session.execute(
+        select(User).where(User.oa_user_id == oa_user_id)
+    )).scalar_one_or_none()
+    if user is None:
+        raise AppError(ErrorCode.FORBIDDEN, "当前同序人员还没有绑定 CRM 账号，请联系管理员绑定", 403)
+    if user.status != "active":
+        raise AppError(ErrorCode.FORBIDDEN, "账号已停用", 403)
+
+    login_session = await open_session(session, user.id)
+    token = issue_session_token(login_session, user.name)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="login",
+        business_type="user",
+        business_id=user.id,
+        after={"via": "oa_sso"},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok({"access_token": token, "token_type": "Bearer", "user": _user_brief(user)})
 
 
 @router.post("/refresh")

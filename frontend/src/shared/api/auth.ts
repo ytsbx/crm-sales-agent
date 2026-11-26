@@ -5,6 +5,11 @@ export function login(username: string, password: string) {
   return api.post<LoginResult>('/auth/login', { username, password })
 }
 
+/** OA 客户端内嵌 CRM 时，用 URL 里的一次性票据换取登录凭证。 */
+export function oaExchange(ticket: string) {
+  return api.post<LoginResult>('/auth/oa/exchange', { ticket })
+}
+
 export function fetchMe() {
   return api.get<CurrentUser>('/auth/me')
 }

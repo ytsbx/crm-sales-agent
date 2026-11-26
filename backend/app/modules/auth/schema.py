@@ -6,6 +6,12 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=128)
 
 
+class OaTicketExchange(BaseModel):
+    """OA 客户端内嵌 CRM 时，用一次性票据换取 CRM 登录凭证。"""
+
+    ticket: str = Field(min_length=1, max_length=256)
+
+
 class WeComSsoCallback(BaseModel):
     """企微网页授权登录回调入参（03-API §2）。
 

@@ -184,6 +184,12 @@ def _multipart(fields: dict[str, str], file_name: str, file_bytes: bytes, mime: 
     return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
 
 
+async def exchange_sso_ticket(ticket: str) -> dict:
+    """用 OA 客户端签发的一次性票据换取 OA 人员身份（服务间签名调用）。"""
+    body = json.dumps({"ticket": ticket}, separators=(",", ":")).encode()
+    return await _request("POST", "/sso/exchange/", body=body, content_type="application/json")
+
+
 async def upload_file(dingtalk_user_id: uuid.UUID | str, file_name: str, file_bytes: bytes, mime: str | None = None) -> dict:
     mime = mime or mimetypes.guess_type(file_name)[0] or "application/octet-stream"
     body, content_type = _multipart(
