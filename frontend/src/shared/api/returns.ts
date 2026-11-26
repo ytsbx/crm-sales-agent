@@ -60,6 +60,8 @@ export interface SalesReturn {
   reviewed_by_name?: string | null
   reviewed_at?: string | null
   review_note?: string | null
+  /** 复核人就是登记人本人：界面标「本人复核」，审计里也留痕。 */
+  self_reviewed?: boolean
   settled_by_name?: string | null
   settled_at?: string | null
   refunded_by_name?: string | null

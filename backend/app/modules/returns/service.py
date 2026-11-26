@@ -392,19 +392,21 @@ async def review_return(
 ) -> SalesReturn:
     """主管复核：通过才进入财务处理，驳回则释放占用的可退数量。
 
-    权限在路由层用 `order:assign`（主管级）控制；这里再挡一次“自己审自己”：
-    除非管理员，登记人不能复核自己的单，否则复核就是自签自批。
+    权限在路由层用 `order:assign`（主管级）控制，服务层再校验一次：
+    只有主管/管理员能复核；业务员、财务没有该权限，不能复核。
+    主管可以复核自己登记的单（小团队只有一个主管时不会卡死），
+    但审计会记录 `self_reviewed=True`，界面也会标“本人复核”，留痕可查。
     """
+    if not user.has("order:assign"):
+        raise AppError(
+            ErrorCode.FORBIDDEN,
+            "只有主管或管理员能复核退货，业务员和财务不能复核",
+            403,
+        )
     if row.status != "reviewing":
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
             f"「{RETURN_STATUS_LABEL.get(row.status, row.status)}」的退货单不在待复核状态",
-            422,
-        )
-    if row.created_by == user.id and "admin" not in user.roles:
-        raise AppError(
-            ErrorCode.STATUS_NOT_ALLOWED,
-            "不能复核自己登记的退货，请让另一名主管或管理员复核",
             422,
         )
     before = row.status
@@ -431,7 +433,12 @@ async def review_return(
         business_type="sales_return",
         business_id=row.id,
         before={"status": before},
-        after={"status": row.status, "decision": decision, "note": row.review_note},
+        after={
+            "status": row.status,
+            "decision": decision,
+            "note": row.review_note,
+            "self_reviewed": row.created_by == user.id,
+        },
         ip=ip,
     )
     order = await get_order_or_404(session, row.order_id)
@@ -897,6 +904,7 @@ async def serialize_return(session: AsyncSession, row: SalesReturn) -> dict:
         "reviewed_by_name": names.get(row.reviewed_by or 0),
         "reviewed_at": row.reviewed_at.isoformat() if row.reviewed_at else None,
         "review_note": row.review_note,
+        "self_reviewed": bool(row.reviewed_by and row.created_by == row.reviewed_by),
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "settled_by_name": names.get(row.settled_by or 0),
         "settled_at": row.settled_at.isoformat() if row.settled_at else None,

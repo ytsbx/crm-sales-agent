@@ -1268,9 +1268,12 @@ export default function OrderDetailPage() {
     {
       title: '状态',
       dataIndex: 'status_label',
-      width: 110,
+      width: 140,
       render: (value: string, row: SalesReturn) => (
-        <Tag color={RETURN_TONE[row.status] ?? 'grey'}>{value}</Tag>
+        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+          <Tag color={RETURN_TONE[row.status] ?? 'grey'}>{value}</Tag>
+          {row.self_reviewed && <Tag color="orange">本人复核</Tag>}
+        </div>
       ),
     },
     {
@@ -1289,8 +1292,9 @@ export default function OrderDetailPage() {
       width: 230,
       render: (_: unknown, row: SalesReturn) => {
         const actions: ReactNode[] = []
-        const isSelfReturn = row.created_by != null && row.created_by === currentUser?.id
-        const mayReviewThis = canReviewReturn && (!isSelfReturn || Boolean(currentUser?.roles.includes('admin')))
+        // 主管/管理员有 order:assign 就能复核；自己登记的也允许，靠「本人复核」留痕。
+        // 业务员没有 order:assign，前端不会出现复核按钮，后端也会再挡一次。
+        const mayReviewThis = canReviewReturn
         if (row.status === 'reviewing' && mayReviewThis) {
           actions.push(
             <Button key="approve" size="small" onClick={() => {
@@ -3389,8 +3393,17 @@ export default function OrderDetailPage() {
             {reviewReturnMutation.error && (
               <Banner type="danger" fullMode={false} closeIcon={null} title="复核未完成" description={reviewReturnMutation.error.message} />
             )}
+            {reviewTarget.created_by != null && reviewTarget.created_by === currentUser?.id && (
+              <Banner
+                type="warning"
+                fullMode={false}
+                closeIcon={null}
+                title="这是你自己登记的退货"
+                description="可以自己复核；通过后列表会标「本人复核」，审计里也会记录，方便事后查。"
+              />
+            )}
             <div className="workflow-guide">
-              业务员登记了 <strong>{reviewTarget.items.length}</strong> 项退货，
+              这张退货单有 <strong>{reviewTarget.items.length}</strong> 项退货，
               登记参考 <strong>{formatMoney(reviewTarget.goods_amount_exact, reviewTarget.currency)}</strong>。
               这里只确认“退几件、什么原因”是否属实；最终退多少钱由财务下一步人工填写。
             </div>

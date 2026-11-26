@@ -330,13 +330,41 @@ def test_void_older_return_keeps_later_return(db):
     assert second.status == "voided"
 
 
-def test_review_required_self_review_blocked_and_reject_releases(db):
+def test_supervisor_self_review_allowed_but_salesperson_blocked(db):
     s, order, item, batch_item, plans = db
-    row = run(svc.create_return(s, USER, order, _payload("3")))
+    # 主管自己登记的退货，主管自己复核：允许，但审计要标 self_reviewed。
+    row = run(svc.create_return(s, REVIEWER, order, _payload("3")))
     assert row.status == "reviewing"
-    # 登记人自己不能审自己（除非 admin）
-    with pytest.raises(AppError, match="自己登记"):
+    assert row.created_by == REVIEWER.id
+
+    # 业务员没有 order:assign，不能复核（即使这张不是他登记的）。
+    with pytest.raises(AppError, match="只有主管"):
         run(svc.review_return(s, USER, row, decision="approve", note=None))
+
+    approved = run(
+        svc.review_return(
+            s, REVIEWER, row, decision="approve", note="本人复核：已核对退货照片"
+        )
+    )
+    assert approved.status == "pending"
+    assert approved.reviewed_by == REVIEWER.id
+    assert approved.created_by == REVIEWER.id
+
+    audit = s._session.execute(
+        select(AuditLog).where(
+            AuditLog.business_type == "sales_return",
+            AuditLog.business_id == row.id,
+            AuditLog.action == "review_return",
+        )
+    ).scalars().first()
+    assert audit is not None
+    assert audit.after_data["self_reviewed"] is True
+
+
+def test_review_reject_releases_quantity(db):
+    s, order, item, batch_item, plans = db
+    row = run(svc.create_return(s, REVIEWER, order, _payload("3")))
+    assert row.status == "reviewing"
     rejected = run(
         svc.review_return(
             s, REVIEWER, row, decision="reject", note="客户没把货寄回，先驳回"
