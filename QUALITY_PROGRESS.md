@@ -6183,3 +6183,14 @@
   - 详情的「草稿还未送审」同步改为「还没提交审批」。
 - 转交后的接手人可能没有 `quote:view`：详情不再误显示"没有记录"，而是返回关联原询价审批的**仅状态**视图（状态、轮次、最近同步时间），不含 `result`（询价明细/金额）、`instance_id`、`allowed_actions`，也不会触发 OA 同步接口；有 `quote:view` 的仍按原完整视图与数据范围。
 - 验证：新增 2 条用例（待审文案、脱敏状态视图）；全量 pytest、前端 tsc 与构建通过。
+
+## 2026-11-26 打样 P1 修复复核（只审未改）
+
+- P1-1 主路径已修：关联已通过的原询价立即批准；在审的等 `apply_inquiry_summary` 回写；驳回/撤回释放 `submitted` 并允许改单。新增 5 条 writeback 用例外，原 68 条打样用例仍通过。
+- P1-2 主路径已修：`sample_is_custom`/`item_is_custom` 把“无 SKU”视为新品/定制，只填名称的新品不再走内部寄样审批。
+- 复核验证：全量 `pytest` 通过；`npx tsc -b`、`npx vite build` 通过；lint 0 errors（40 条既有 warning）。
+- 仍有残留（本轮未改）：
+  - **P2-4 原询价驳回后审批记录消失**：`_sync_linked_samples` 清 `submitted=False`，而 `SampleDingTalkModal.detail` 只在 `submitted=True` 时返回 `source_oa_id` 记录；同时 `inquiry_candidates` 已排除 rejected/withdrawn。结果状态为 rejected 的样品详情仍显示「查看 OA 审批意见」，点开却无记录。建议把“可查看的历史审批记录”和“是否允许编辑”拆开。
+  - **P2-1 手动新建仍无幂等键**：`SampleListPage.tsx` 的 `createSample` 仍未带 `request_key`；后端已支持。弱网重试仍可能建两张。
+  - **历史无 SKU 样品重判风险**：`sample_is_custom` 改为“无 SKU 即新品”，历史上曾按现有产品走过寄样审批的名称型样品会被重新判为定制；若有这类在办单，可能错误显示「去登记制作」。上线前需要扫一遍 `sku_id is null and inquiry_id is null` 的历史样品，确认是否已走寄样审批。
+- 下一步：先确认 P2-4/历史单是否需要数据兼容，再补 P2-1 幂等键。
