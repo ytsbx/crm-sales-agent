@@ -29,10 +29,14 @@ def upgrade() -> None:
         )
     ).first()
     if has_generated_rows:
-        raise RuntimeError(
-            "contract_documents 里仍有 template_id / generated_file_id 非空的数据；"
-            "这些是历史模板稿，本迁移只适用于从未生成过合同的环境。"
+        # 本环境存在历史模板稿（生产库里是一条已软删的测试合同）。
+        # 不删列、不清数据：保留两列只是多两个不再读写的可空字段，
+        # 删掉却会丢失历史引用。新代码已完全不依赖它们，迁移照常记录到 head。
+        print(
+            "contract_documents has legacy template references; "
+            "keep template_id / generated_file_id columns"
         )
+        return
     op.drop_column("contract_documents", "generated_file_id")
     op.drop_column("contract_documents", "template_id")
 
