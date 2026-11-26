@@ -635,6 +635,11 @@ export default function WeComPage() {
           <div className="crm-help-label" style={{ fontWeight: 600, marginBottom: 10 }}>
             待确认联系人
             <HelpTip forLabel="待确认联系人" text="这些是已同步的企微联系人。确认后可以关联到已有客户，也可以新建客户档案。" />
+            {listQuery.data && (
+              <span style={{ marginLeft: 8, fontSize: 12, fontWeight: 400, color: 'var(--crm-text-3)' }}>
+                共 {listQuery.data.total.toLocaleString()} 位
+              </span>
+            )}
           </div>
           {rows.some((row) => row.import_hold_reason) && (
             <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 10 }}>
@@ -657,7 +662,7 @@ export default function WeComPage() {
           ) : (
             // 列表自己滚，不把整页往下拉：这一栏原来有多少人就有多长，
             // 一页 20 条会把三栏卡片撑到视口外面，中右两栏跟着变成一整块空白。
-            <div style={{ display: 'grid', gap: 6, flex: '1 1 auto', minHeight: 200, maxHeight: 'min(60vh, 720px)', overflowY: 'auto', paddingRight: 2 }}>
+            <div style={{ display: 'grid', gap: 6, flex: '1 1 auto', minHeight: 200, maxHeight: 'min(52vh, 520px)', overflowY: 'auto', paddingRight: 2 }}>
               {rows.map((row) => (
                 <div
                   key={row.id}
@@ -670,8 +675,11 @@ export default function WeComPage() {
                     border: `1px solid ${row.id === activeId ? 'var(--crm-primary)' : 'transparent'}`,
                   }}
                 >
-                  <div style={{ fontSize: 13, fontWeight: 600 }}>{row.name ?? '未命名'}</div>
+                  <div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {row.name ?? '未命名'}
+                  </div>
                   <div
+                    title={`${row.corp_name ?? '个人微信'} · 跟进人：${followerSummary(row.followers)}`}
                     style={{
                       fontSize: 12,
                       color: 'var(--crm-text-3)',
@@ -680,19 +688,7 @@ export default function WeComPage() {
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    {row.corp_name ?? '个人微信'}
-                  </div>
-                  <div
-                    title={followerSummary(row.followers)}
-                    style={{
-                      fontSize: 11.5,
-                      color: 'var(--crm-text-3)',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    跟进人：{followerSummary(row.followers)}
+                    {row.corp_name ?? '个人微信'} · 跟进人：{followerSummary(row.followers)}
                   </div>
                   {row.import_hold_reason && (
                     <div
@@ -861,7 +857,7 @@ export default function WeComPage() {
               {active && canViewCustomers && (candidatesQuery.data?.candidates.length ?? 0) > 0 && (
                 <div style={{ marginTop: 12 }}>
                   <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>可能匹配的 CRM 客户</div>
-                  <div style={{ display: 'grid', gap: 8 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 8 }}>
                     {(candidatesQuery.data?.candidates ?? []).map((candidate, index) => (
                       <div
                         key={candidate.id}
@@ -895,7 +891,7 @@ export default function WeComPage() {
               )}
               {canManage && active && (
                 // 针对当前联系人的出口：放在联系人卡片里，和「谁加的、为什么扣住」挨着
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, paddingTop: 12 }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, paddingTop: 12, marginTop: 12, borderTop: '1px solid var(--crm-border)', justifyContent: 'flex-end' }}>
                   {canSearchCustomers && (
                     <Button theme="outline" onClick={() => {
                       bindMutation.reset()
