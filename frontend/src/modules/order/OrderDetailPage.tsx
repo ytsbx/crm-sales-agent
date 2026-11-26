@@ -9,7 +9,7 @@ import {
   confirmMessageOf,
 } from '../../shared/components/ConfirmRequiredModal'
 import type { ReactNode } from 'react'
-import { Banner, Button, DatePicker, Dropdown, Input, InputNumber, Modal, Popconfirm, Select, Table, Tabs, Tag, TextArea, Toast } from '@douyinfe/semi-ui'
+import { Banner, Button, Checkbox, DatePicker, Dropdown, Input, InputNumber, Modal, Popconfirm, Select, Table, Tabs, Tag, TextArea, Toast } from '@douyinfe/semi-ui'
 import AllocationAdjustModal from './AllocationAdjustModal'
 import FormLabel from '../../shared/components/FormLabel'
 import { emptyText } from '../../shared/hooks/emptyText'
@@ -278,6 +278,7 @@ export default function OrderDetailPage() {
   const [settleTarget, setSettleTarget] = useState<SalesReturn | null>(null)
   const [settleGoodsAmount, setSettleGoodsAmount] = useState('')
   const [settleFreight, setSettleFreight] = useState('0')
+  const [settleIncludeFreight, setSettleIncludeFreight] = useState(false)
   const [settleNote, setSettleNote] = useState('')
   const [refundTarget, setRefundTarget] = useState<SalesReturn | null>(null)
   const [refundReference, setRefundReference] = useState('')
@@ -584,14 +585,18 @@ export default function OrderDetailPage() {
     mutationFn: (payload: { id: number; goods: number; freight: number; note?: string }) =>
       settleReturn(payload.id, payload.goods, payload.freight, payload.note),
     onSuccess: (row) => {
+      const freightRefund = Number(row.freight_refund_amount_exact ?? row.freight_refund_amount ?? 0)
       Toast.success(
         `退货单 ${row.return_no} 已按 ${formatMoney(row.settled_goods_amount_exact ?? row.goods_amount_exact, row.currency)} 处理：`
         + `抵客户欠款 ${formatMoney(row.offset_amount_exact, row.currency)}`
-        + (Number(row.refund_amount_exact) > 0 ? `，待退款 ${formatMoney(row.refund_amount_exact, row.currency)}` : ''),
+        + (Number(row.refund_amount_exact) > 0
+          ? `，待退款 ${formatMoney(row.refund_amount_exact, row.currency)}${freightRefund > 0 ? `（含公司承担运费 ${formatMoney(row.freight_refund_amount_exact ?? freightRefund, row.currency)}）` : ''}`
+          : ''),
       )
       setSettleTarget(null)
       setSettleGoodsAmount('')
       setSettleFreight('0')
+      setSettleIncludeFreight(false)
       setSettleNote('')
       refresh()
     },
@@ -1017,10 +1022,12 @@ export default function OrderDetailPage() {
         : ''
   const settleGoodsValid = /^\d+(?:\.\d{1,2})?$/.test(settleGoodsAmount.trim())
     && Number(settleGoodsAmount) > 0
-  const settleFreightValid = settleFreight.trim() !== ''
+  const settleFreightValid = !settleIncludeFreight || (
+    settleFreight.trim() !== ''
     && /^\d+(?:\.\d{1,2})?$/.test(settleFreight.trim())
     && Number.isFinite(Number(settleFreight))
-    && Number(settleFreight) >= 0
+    && Number(settleFreight) > 0
+  )
   const reviewNoteValid = reviewDecision === 'approve' || reviewNote.trim().length >= 2
   const refundReferenceValid = refundReference.trim().length >= 2
     && refundReference.trim().length <= 128
@@ -1260,6 +1267,9 @@ export default function OrderDetailPage() {
           <div>抵 {formatMoney(row.offset_amount_exact, row.currency)}</div>
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
             退 {formatMoney(row.refund_amount_exact, row.currency)}
+            {Number(row.freight_refund_amount_exact) > 0
+              ? `（含公司承担运费 ${formatMoney(row.freight_refund_amount_exact, row.currency)}）`
+              : ''}
             {row.refund_reference ? `（已退：${row.refund_reference}）` : ''}
           </div>
         </div>
@@ -1342,6 +1352,7 @@ export default function OrderDetailPage() {
               settleReturnMutation.reset()
               setSettleGoodsAmount(row.goods_amount_exact)
               setSettleFreight('0')
+              setSettleIncludeFreight(false)
               setSettleNote('')
               setSettleTarget(row)
             }}>财务处理</Button>,
@@ -3449,7 +3460,7 @@ export default function OrderDetailPage() {
                 !settleGoodsValid
                   ? ['请填写最终退货货款（大于 0，最多 2 位小数）']
                   : !settleFreightValid
-                    ? ['退运费必须是不小于 0 的数字']
+                    ? ['勾选“公司承担运费”后，请填大于 0 的退运费金额（最多 2 位小数）']
                     : []
               }
               loading={settleReturnMutation.isPending}
@@ -3459,7 +3470,7 @@ export default function OrderDetailPage() {
                 settleReturnMutation.mutate({
                   id: settleTarget.id,
                   goods: Number(settleGoodsAmount),
-                  freight: Number(settleFreight || 0),
+                  freight: settleIncludeFreight ? Number(settleFreight) : 0,
                   note: settleNote.trim() || undefined,
                 })
               }}
@@ -3493,14 +3504,31 @@ export default function OrderDetailPage() {
                 </div>
               )}
             </div>
-            <div>
-              <FormLabel>退运费（默认 0，确需退再填）</FormLabel>
-              <Input
-                inputMode="decimal"
-                value={settleFreight}
-                onChange={setSettleFreight}
-                placeholder="0.00"
-              />
+            <div style={{ display: 'grid', gap: 8 }}>
+              <Checkbox
+                checked={settleIncludeFreight}
+                onChange={(e) => {
+                  const checked = Boolean(e.target.checked)
+                  setSettleIncludeFreight(checked)
+                  if (!checked) setSettleFreight('0')
+                }}
+              >
+                这次退款加运费（公司承担）
+              </Checkbox>
+              <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                不勾选就是客户自己承担退货运费，系统按 0 算；勾选后这笔钱由公司出，直接加到“待退款”，不抵客户欠款。
+              </div>
+              {settleIncludeFreight && (
+                <div>
+                  <FormLabel required>退运费金额（公司承担）</FormLabel>
+                  <Input
+                    inputMode="decimal"
+                    value={settleFreight}
+                    onChange={setSettleFreight}
+                    placeholder="例如 10.00"
+                  />
+                </div>
+              )}
             </div>
             <div>
               <FormLabel>处理备注（选填）</FormLabel>
@@ -3548,6 +3576,9 @@ export default function OrderDetailPage() {
             )}
             <div className="workflow-guide">
               需退给客户 <strong>{formatMoney(refundTarget.refund_amount_exact, refundTarget.currency)}</strong>。
+              {Number(refundTarget.freight_refund_amount_exact) > 0 && (
+                <> 其中公司承担退货运费 <strong>{formatMoney(refundTarget.freight_refund_amount_exact, refundTarget.currency)}</strong>，</>
+              )}
               只有钱实际付出后才登记；登记后这张退货单不能再作废。
             </div>
             <div>
