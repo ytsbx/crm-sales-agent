@@ -754,7 +754,10 @@ export default function AnalyticsPage() {
               { query: quoteQuery, label: '报价接受率',
                 tone: 'success',
                 value: quote && quote.sent_count !== 0 ? `${(quote.accept_rate * 100).toFixed(0)}%` : '—',
-                hint: quote?.sent_count == null ? undefined : `已接受 ${quote.accepted_count} / 已发出 ${quote.sent_count} 张`,
+                hint: quote?.sent_count == null
+                  ? undefined
+                  : `已接受 ${quote.accepted_count} / 已发出 ${quote.sent_count} 张`
+                    + (quote.voided_count ? `（其中我方作废 ${quote.voided_count} 张）` : ''),
                 help: '客户已接受的报价 ÷ 已发出的报价。已发出包括等待答复、已接受和已拒绝。',
               },
               {

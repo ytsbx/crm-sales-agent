@@ -1032,6 +1032,7 @@ async def quote_stats(session: AsyncSession, user: CurrentUser) -> dict:
             "approval_rate": 0,
             "accepted_count": 0,
             "sent_count": 0,
+            "voided_count": 0,
             "approval_required_count": 0,
         }
 
@@ -1069,7 +1070,13 @@ async def quote_stats(session: AsyncSession, user: CurrentUser) -> dict:
     ).scalar_one()
 
     accepted = len([quote for quote in quotes if quote.status == "accepted"])
-    sent = len([quote for quote in quotes if quote.status in ("sent", "accepted", "declined")])
+    # 已作废也属于"发出去了、我方终止"：算进已发送分母，但不混进客户拒绝；
+    # 单独给 voided_count，看板可以说明"其中我方作废 N 张"。
+    voided = len([quote for quote in quotes if quote.status == "voided"])
+    sent = len([
+        quote for quote in quotes
+        if quote.status in ("sent", "accepted", "declined", "voided")
+    ])
     return {
         "quote_count": len(quotes),
         "average_versions": round(total_versions / len(quotes), 2),
@@ -1078,6 +1085,7 @@ async def quote_stats(session: AsyncSession, user: CurrentUser) -> dict:
         "approval_rate": round(approval_required / total_versions, 4) if total_versions else 0,
         "accepted_count": accepted,
         "sent_count": sent,
+        "voided_count": voided,
         "approval_required_count": approval_required,
     }
 

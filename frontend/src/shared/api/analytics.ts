@@ -96,6 +96,8 @@ export interface QuoteStats {
   approval_rate: number
   accepted_count: number
   sent_count?: number
+  /** 已发送里由我方终止（报价作废）的数量，单独展示、不混进客户拒绝 */
+  voided_count?: number
   approval_required_count: number
 }
 
