@@ -44,11 +44,17 @@ async def list_customers(
     source: str | None = None,
     owner_id: int | None = None,
     pool_status: str | None = None,
+    activity: str | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     user: CurrentUser = Depends(require_permission("customer:view")),
     session: AsyncSession = Depends(get_db),
 ):
+    now = now_business()
+    active_days = int(await settings_service.get_number(session, "customer_active_days", "days", 30))
+    stale_days = int(await settings_service.get_number(session, "customer_stale_days", "days", 30))
+    active_cutoff = now - timedelta(days=active_days)
+    stale_cutoff = now - timedelta(days=stale_days)
     stmt = await svc.apply_data_scope(svc.not_deleted(svc.build_list_stmt(
         keyword=keyword,
         level=level,
@@ -56,6 +62,8 @@ async def list_customers(
         source=source,
         owner_id=owner_id,
         pool_status=pool_status,
+        activity=activity,
+        stale_before=stale_cutoff,
     )), user, session)
     rows, total = await paginate(session, stmt, page, page_size)
 
@@ -66,11 +74,6 @@ async def list_customers(
     stage_map = await stage.stage_counts_map(session, [c.id for c in rows])
     historical_orders = await stage.historical_order_counts_map(session, [c.id for c in rows])
     current_opportunities = await stage.current_opportunity_counts_map(session, [c.id for c in rows])
-    now = now_business()
-    active_days = int(await settings_service.get_number(session, "customer_active_days", "days", 30))
-    stale_days = int(await settings_service.get_number(session, "customer_stale_days", "days", 30))
-    active_cutoff = now - timedelta(days=active_days)
-    stale_cutoff = now - timedelta(days=stale_days)
 
     def activity_status(customer: Customer) -> str:
         facts = [value for value in (customer.last_followup_at, customer.last_progress_at) if value]

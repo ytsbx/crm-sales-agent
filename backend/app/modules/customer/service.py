@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import Select, func, or_, select, update
+from sqlalchemy import Select, and_, case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -120,6 +120,8 @@ def build_list_stmt(
     source: str | None = None,
     owner_id: int | None = None,
     pool_status: str | None = None,
+    activity: str | None = None,
+    stale_before: datetime | None = None,
 ) -> Select:
     stmt = select(Customer)
     if keyword:
@@ -143,6 +145,22 @@ def build_list_stmt(
         stmt = stmt.where(Customer.owner_id == owner_id)
     if pool_status:
         stmt = stmt.where(Customer.pool_status == pool_status)
+    # “最近有效联系/进展”，两者都没有就退回建档时间；与 activity_status 口径一致。
+    last_active = case(
+        (
+            and_(Customer.last_followup_at.is_(None), Customer.last_progress_at.is_(None)),
+            Customer.created_at,
+        ),
+        (Customer.last_followup_at.is_(None), Customer.last_progress_at),
+        (Customer.last_progress_at.is_(None), Customer.last_followup_at),
+        (Customer.last_followup_at >= Customer.last_progress_at, Customer.last_followup_at),
+        else_=Customer.last_progress_at,
+    )
+    if activity == "stale" and stale_before is not None:
+        # 久未联系：按最近联系时间从早到晚，最该补联系的排前面
+        return stmt.where(last_active < stale_before).order_by(
+            last_active.asc(), Customer.id.asc()
+        )
     return stmt.order_by(Customer.id.desc())
 
 

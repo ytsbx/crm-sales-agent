@@ -120,6 +120,7 @@ export default function CustomerListPage() {
   const [keywordInput, setKeywordInput] = useState('')
   const [keyword, setKeyword] = useState('')
   const [level, setLevel] = useState<string | undefined>()
+  const [activity, setActivity] = useState<string | undefined>()
   // 默认范围跟着数据权限走：管理员看全部，业务员看自己的——
   // 否则管理员打开客户中心会是一片空白（他名下本来就没有客户）
   const [scope, setScope] = useState<Scope>(
@@ -365,11 +366,12 @@ export default function CustomerListPage() {
   }
 
   const query = useQuery({
-    queryKey: ['customers', { keyword, level, scope, page, pageSize, userId: currentUser?.id }],
+    queryKey: ['customers', { keyword, level, activity, scope, page, pageSize, userId: currentUser?.id }],
     queryFn: () =>
       listCustomers({
         keyword,
         level,
+        activity,
         page,
         page_size: pageSize,
         owner_id: scope === 'mine' ? currentUser?.id : undefined,
@@ -677,6 +679,17 @@ export default function CustomerListPage() {
             showClear
           />
           <Select
+            placeholder="联系情况"
+            value={activity}
+            onChange={(value) => {
+              setActivity(value as string | undefined)
+              setPage(1)
+            }}
+            optionList={[{ value: 'stale', label: '久未联系' }]}
+            style={{ width: 140 }}
+            showClear
+          />
+          <Select
             value={scope}
             onChange={(value) => {
               setScope(value as Scope)
@@ -735,6 +748,12 @@ export default function CustomerListPage() {
             新建客户
           </Button>
         </div>
+
+        {activity === 'stale' && (
+          <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 10 }}>
+            久未联系：按最近一次跟进/业务进展从早到晚排序，从未联系过的客户按建档时间算。
+          </div>
+        )}
 
         {stageDistQuery.data && (
           <div

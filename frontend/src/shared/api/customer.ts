@@ -8,6 +8,8 @@ export interface CustomerQuery {
   source?: string
   owner_id?: number
   pool_status?: string
+  /** stale = 久未联系（按最近联系/进展从早到晚，含从未联系的客户） */
+  activity?: string
   page?: number
   page_size?: number
 }
