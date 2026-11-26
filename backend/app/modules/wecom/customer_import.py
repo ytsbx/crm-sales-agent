@@ -15,6 +15,12 @@ from app.modules.user.model import User
 from app.modules.wecom.model import WeComExternalContact, WeComFollowRelationship
 from app.modules.wecom.service import finish_job, start_job
 
+#: 导入扣住原因：多人跟进且分别对应不同负责人（待确认列表要优先展示这一类）
+HOLD_MULTI_OWNER = '多名跟进员工对应不同负责人'
+HOLD_UNMAPPED_FOLLOWER = '有跟进员工没有对应的 CRM 账号'
+HOLD_NO_FOLLOWER = '没有跟进员工，无法确定负责人'
+HOLD_OWNER_UNRESOLVED = '负责人未唯一匹配，需绑定或分配'
+
 
 def _name(value) -> str:
     return str(value or '').strip()
@@ -113,13 +119,13 @@ def _plan(snapshot, policy):
             # 原因要能对应到具体做法：多人不同账号、跟进人没开账号、压根没同步到跟进人，
             # 处理方式完全不同，不能都写成「未唯一匹配」。
             if len(group['owners']) > 1:
-                reason = '多名跟进员工对应不同负责人'
+                reason = HOLD_MULTI_OWNER
             elif group['unmapped_follower']:
-                reason = '有跟进员工没有对应的 CRM 账号'
+                reason = HOLD_UNMAPPED_FOLLOWER
             elif group['no_follower']:
-                reason = '没有跟进员工，无法确定负责人'
+                reason = HOLD_NO_FOLLOWER
             else:
-                reason = '负责人未唯一匹配，需绑定或分配'
+                reason = HOLD_OWNER_UNRESOLVED
             held.extend((r.id, reason) for r, _ in group['rows'])
         elif group['target'] is not None and group['target'].owner_id != owner:
             held.extend((r.id, '已有客户负责人不同，需人工确认') for r, _ in group['rows'])

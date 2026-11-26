@@ -618,7 +618,7 @@ export default function WeComPage() {
           </div>
           {rows.some((row) => row.import_hold_reason) && (
             <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 10 }}>
-              标出原因的不会随「预览导入」批量进入客户中心，点开可看原因和处理办法。
+              标出原因的不会随「预览导入」批量进入客户中心；多人跟进导致的排在最前，点开可看原因和处理办法。
             </div>
           )}
           <Input

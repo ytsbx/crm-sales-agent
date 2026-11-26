@@ -491,8 +491,18 @@ async def sync_contact_events(session: AsyncSession) -> None:
 async def unbound_contacts(
     session: AsyncSession, *, keyword: str | None, page: int, page_size: int
 ) -> tuple[list[dict], int]:
-    """待归一列表：归一状态仍为 pending 的外部联系人。"""
-    stmt = select(WeComExternalContact).where(
+    """待归一列表：归一状态仍为 pending 的外部联系人。
+
+    「多名跟进员工对应不同负责人」的排在最前：这类才是真正因为多人添加
+    才卡住的，要先看到；其余保持原来的 id 倒序。
+    """
+    # 与「预览导入」同一套判定：每条为什么不能自动导入，直接标在名单上。
+    # 局部导入：customer_import 反向依赖本模块的任务工具，模块级导入会成环。
+    from app.modules.wecom.customer_import import HOLD_MULTI_OWNER, import_hold_reasons
+
+    hold_reasons = await import_hold_reasons(session)
+
+    stmt = select(WeComExternalContact.id).where(
         WeComExternalContact.normalize_status == "pending"
     )
     if keyword:
@@ -503,16 +513,17 @@ async def unbound_contacts(
                 WeComExternalContact.corp_name.ilike(like),
             )
         )
-    total = (
-        await session.execute(select(func.count()).select_from(stmt.subquery()))
-    ).scalar_one()
+    ids = list((await session.execute(stmt)).scalars().all())
+    total = len(ids)
+    ids.sort(key=lambda cid: (0 if hold_reasons.get(cid) == HOLD_MULTI_OWNER else 1, -cid))
+    page_ids = ids[(page - 1) * page_size : page * page_size]
     rows = (
         await session.execute(
-            stmt.order_by(WeComExternalContact.id.desc())
-            .offset((page - 1) * page_size)
-            .limit(page_size)
+            select(WeComExternalContact).where(WeComExternalContact.id.in_(page_ids))
         )
-    ).scalars().all()
+    ).scalars().all() if page_ids else []
+    order = {cid: index for index, cid in enumerate(page_ids)}
+    rows = sorted(rows, key=lambda row: order[row.id])
 
     # 每条带上跟进员工，界面要显示"谁加的"
     contact_ids = [row.id for row in rows]
@@ -554,11 +565,6 @@ async def unbound_contacts(
         )
 
     # 与「预览导入」同一套判定：每条为什么不能自动导入，直接标在名单上。
-    # 局部导入：customer_import 反向依赖本模块的任务工具，模块级导入会成环。
-    from app.modules.wecom.customer_import import import_hold_reasons
-
-    hold_reasons = await import_hold_reasons(session)
-
     return [
         {
             "id": row.id,

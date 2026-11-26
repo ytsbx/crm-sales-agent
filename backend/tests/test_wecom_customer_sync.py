@@ -302,3 +302,33 @@ async def test_unbound_list_leaves_importable_contacts_without_hold_reason():
         assert rows[0]['import_hold_reason'] is None
         assert rows[0]['followers'][0]['crm_user_id']==1
     engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_unbound_list_shows_multi_owner_contacts_first():
+    from app.modules.wecom.model import WeComUser
+    from app.modules.user.model import User
+    engine=make_engine()
+    for model in (WeComExternalContact,WeComFollowRelationship,WeComUser):
+        model.__table__.create(engine)
+    with Session(engine) as raw:
+        raw.add_all([
+            User(id=1,name='甲',username='u1',password_hash='!',wecom_userid='A',status='active'),
+            User(id=2,name='乙',username='u2',password_hash='!',wecom_userid='B',status='active'),
+            WeComExternalContact(id=1,external_userid='ext-unmapped',name='只有一个没账号的跟进人',normalize_status='pending'),
+            WeComExternalContact(id=2,external_userid='ext-multi',name='多人跟进',normalize_status='pending'),
+            WeComExternalContact(id=3,external_userid='ext-ok',name='可导入',normalize_status='pending'),
+            WeComFollowRelationship(external_contact_id=1,wecom_userid='C',status='active'),
+            WeComFollowRelationship(external_contact_id=2,wecom_userid='A',status='active'),
+            WeComFollowRelationship(external_contact_id=2,wecom_userid='B',status='active'),
+            WeComFollowRelationship(external_contact_id=3,wecom_userid='A',status='active'),
+        ])
+        raw.flush()
+        rows,total=await service.unbound_contacts(SyncSessionAsAsync(raw),keyword=None,page=1,page_size=10)
+        assert total==3
+        # 多人跟进导致的排最前，其余保持 id 倒序
+        assert [row['id'] for row in rows]==[2,3,1]
+        assert rows[0]['import_hold_reason']=='多名跟进员工对应不同负责人'
+        first,_=await service.unbound_contacts(SyncSessionAsAsync(raw),keyword=None,page=1,page_size=1)
+        assert [row['id'] for row in first]==[2]
+    engine.dispose()
