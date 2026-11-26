@@ -2,7 +2,7 @@
 
 把“登记”和“核销”分开：
 1. 业务员/主管登记：只锁数量、算货款，不动钱；
-2. 业务员/主管填最终退款金额：先抵未收应收，剩余转待退款；运费按谈好的总数一并填入，不单独建模；
+2. 业务员/主管填最终退款金额：先从客户欠款里扣，剩余转要退客户的钱；运费按谈好的总数一并填入，不单独建模；
 3. 财务确认退款：钱真的付出去后才标记；
 4. 登记可取消，确认退款金额后可作废并冲回；已退款不能作废。
 
@@ -643,10 +643,13 @@ async def settle_return(
         operator_id=user.id,
         title="销售退货已确认退款金额",
         content=(
-            f"订单 {order.order_no} 退货 {row.return_no} 已确认退款金额："
-            f"抵掉客户欠款 {format(row.offset_amount, '.2f')} 元，"
-            f"需退给客户 {format(row.refund_amount, '.2f')} 元"
-            + ("，请财务实际退款后登记流水。" if row.refund_amount > 0 else "。")
+            f"订单 {order.order_no} 退货 {row.return_no} 已确认："
+            f"客户欠款里扣 {format(row.offset_amount, '.2f')} 元，"
+            + (
+                f"再退给客户 {format(row.refund_amount, '.2f')} 元，请财务实际退款后登记流水。"
+                if row.refund_amount > 0
+                else "不用退现金。"
+            )
         ),
         business_type="sales_return",
         business_id=row.id,
@@ -820,7 +823,7 @@ async def void_return(
         title="销售退货已作废",
         content=(
             f"订单 {order.order_no} 退货 {row.return_no} 已作废，"
-            f"原因：{row.void_reason}；原来抵掉的客户欠款已恢复。"
+            f"原因：{row.void_reason}；原来从客户欠款里扣掉的钱已恢复。"
         ),
         business_type="sales_return",
         business_id=row.id,

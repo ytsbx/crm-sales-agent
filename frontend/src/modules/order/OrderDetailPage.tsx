@@ -609,9 +609,9 @@ export default function OrderDetailPage() {
       settleReturn(payload.id, payload.amount, payload.note),
     onSuccess: (row) => {
       Toast.success(
-        `退货单 ${row.return_no} 已按 ${formatMoney(row.settled_goods_amount_exact ?? row.goods_amount_exact, row.currency)} 确认退款金额：`
-        + `抵客户欠款 ${formatMoney(row.offset_amount_exact, row.currency)}`
-        + (Number(row.refund_amount_exact) > 0 ? `，待退款 ${formatMoney(row.refund_amount_exact, row.currency)}` : ''),
+        `退货单 ${row.return_no} 已按 ${formatMoney(row.settled_goods_amount_exact ?? row.goods_amount_exact, row.currency)} 确认：`
+        + `客户欠款里扣 ${formatMoney(row.offset_amount_exact, row.currency)}`
+        + (Number(row.refund_amount_exact) > 0 ? `，再退给客户 ${formatMoney(row.refund_amount_exact, row.currency)}` : '，不用退现金'),
       )
       setSettleTarget(null)
       setSettleGoodsAmount('')
@@ -631,7 +631,7 @@ export default function OrderDetailPage() {
   const voidReturnMutation = useMutation({
     mutationFn: (payload: { id: number; reason: string }) => voidReturn(payload.id, payload.reason),
     onSuccess: (row) => {
-      Toast.success(`退货单 ${row.return_no} 已作废，原来抵掉的客户欠款已恢复`)
+      Toast.success(`退货单 ${row.return_no} 已作废，原来从客户欠款里扣掉的钱已恢复`)
       setVoidReturnTarget(null)
       setVoidReturnReason('')
       refresh()
@@ -1083,6 +1083,16 @@ export default function OrderDetailPage() {
         : ''
   const settleGoodsValid = /^\d+(?:\.\d{1,2})?$/.test(settleGoodsAmount.trim())
     && Number(settleGoodsAmount) > 0
+  // 填金额时当场算给业务员看：客户还欠多少、从欠款里扣多少、还要退客户多少。
+  // 订单已取消时没有欠款可扣，和 backend 的 offset=0 保持一致。
+  const orderPaidAmount = Math.max(Number(order.received_amount_exact ?? order.received_amount ?? 0), 0)
+  const orderUnpaidAmount = order.status === 'cancelled'
+    ? 0
+    : Math.max(Number(order.unreceived_amount_exact ?? order.unreceived_amount ?? 0), 0)
+  const settleAmountInput = Number(settleGoodsAmount)
+  const settleOffsetPreview = settleGoodsValid ? Math.min(settleAmountInput, orderUnpaidAmount) : 0
+  const settleRefundPreview = settleGoodsValid ? Math.max(settleAmountInput - settleOffsetPreview, 0) : 0
+  const settleDebtAfterPreview = Math.max(orderUnpaidAmount - settleOffsetPreview, 0)
   const reviewNoteValid = reviewDecision === 'approve' || reviewNote.trim().length >= 2
   const refundReferenceValid = refundReference.trim().length >= 2
     && refundReference.trim().length <= 128
@@ -1314,14 +1324,14 @@ export default function OrderDetailPage() {
       ),
     },
     {
-      title: '抵客户欠款 / 退现金',
+      title: '客户欠款里扣 / 退客户现金',
       width: 150,
       className: 'cell-right',
       render: (_: unknown, row: SalesReturn) => (
         <div>
-          <div>抵 {formatMoney(row.offset_amount_exact, row.currency)}</div>
+          <div>欠款里扣 {formatMoney(row.offset_amount_exact, row.currency)}</div>
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-            退 {formatMoney(row.refund_amount_exact, row.currency)}
+            退客户 {formatMoney(row.refund_amount_exact, row.currency)}
             {row.refund_reference ? `（已退：${row.refund_reference}）` : ''}
           </div>
         </div>
@@ -1464,7 +1474,7 @@ export default function OrderDetailPage() {
   const orderKpis: KpiItem[] = [
     { label: '订单金额', value: formatMoney(toTwoDecimals(order.total_amount_exact ?? order.total_amount), order.currency) },
     {
-      label: '实际到账（财务已确认）',
+      label: '客户已付（财务已确认）',
       value: formatMoney(toTwoDecimals(order.received_amount_exact ?? order.received_amount), order.currency),
       /* 2026-11-20：这枚 tone 原来是写死的 success —— 一分钱没收到时
          那张卡也是一个绿色的「¥0.00」，绿色在这里等于说"收到钱了"。
@@ -1472,7 +1482,7 @@ export default function OrderDetailPage() {
       tone: Number(order.received_amount_exact ?? order.received_amount ?? 0) > 0 ? 'success' : 'default',
     },
     {
-      label: '尚未到账',
+      label: '客户还欠我们',
       value: formatMoney(toTwoDecimals(order.unreceived_amount_exact ?? order.unreceived_amount), order.currency),
       /* 2026-11-20：尚未到账不是异常 —— 刚下的单本来就一分钱没收。
          原来只要 >0 就染橙，等于每张新订单都亮一个橙灯，警告用滥了。
@@ -1490,7 +1500,7 @@ export default function OrderDetailPage() {
       ? [
           {
             label: '已退货金额',
-            help: '已处理的退货金额（按和客户谈好的总数，可含运费）；先把客户还没付的钱抵掉，剩余为待退/已退。明细见「退货记录」。',
+            help: '已处理的退货金额（按和客户谈好的总数，可含运费）；先从客户欠款里扣，剩余再退客户。明细见「退货记录」。',
             value: formatMoney(
               toTwoDecimals(summary?.returned_amount_exact ?? summary?.returned_amount ?? 0),
               order.currency,
@@ -2381,8 +2391,8 @@ export default function OrderDetailPage() {
             <>
               <div className="toolbar">
                 <p className="workflow-guide">
-                  只退已经发出去的产品，不用选批次，系统按已发批次自动扣减。登记后先由主管复核，
-                  通过后由业务员/主管按和客户谈好的最终退款总额填金额：先抵客户还没付的钱，剩余转待退款。
+                  只退已经发出去的产品，不用选批次，系统自己按发货记录扣减。登记后先由主管复核，
+                  通过后由业务员/主管按和客户谈好的最终退款总额填金额：先从客户欠款里扣，剩余再退客户。
                   {returnReviewingCount > 0 ? ` 当前有 ${returnReviewingCount} 张待主管复核。` : ''}
                   {returnPendingCount > 0 ? ` 当前有 ${returnPendingCount} 张待填退款金额。` : ''}
                   {returnRefundPendingCount > 0 ? ` 当前有 ${returnRefundPendingCount} 张待登记退款。` : ''}
@@ -3371,7 +3381,7 @@ export default function OrderDetailPage() {
           <div>
             <FormLabel required>本次退货数量</FormLabel>
             <p className="workflow-guide" style={{ marginBottom: 6 }}>
-              这里只填退哪个产品、几件，不填金额，也不用管批次；系统按已发批次自动扣减。
+              这里只填退哪个产品、几件，不填金额；系统自己按发货记录扣减，不用你管批次。
               登记后先交主管复核，最终退多少钱由业务员/主管按和客户谈定的结果人工填写。
             </p>
             <Table<ReturnableGroup>
@@ -3490,7 +3500,7 @@ export default function OrderDetailPage() {
         )}
       </Modal>
 
-      {/* 确认退货退款金额：由业务员/主管按和客户谈好的总数人工填；系统只管抵欠款、拆待退款。 */}
+      {/* 确认退货退款金额：由业务员/主管按和客户谈好的总数人工填；系统负责区分“客户欠款里扣多少、退客户多少”。 */}
       <Modal
         width={560}
         style={{ maxWidth: 'calc(100vw - 32px)' }}
@@ -3503,7 +3513,7 @@ export default function OrderDetailPage() {
             <GuardedButton
               type="danger"
               theme="outline"
-              action="确认退款金额"
+              action="确认这个数"
               disabled={!settleGoodsValid}
               blockedReasons={
                 !settleGoodsValid
@@ -3521,7 +3531,7 @@ export default function OrderDetailPage() {
                 })
               }}
             >
-              确认处理
+              确认这个数
             </GuardedButton>
           </div>
         }
@@ -3533,8 +3543,8 @@ export default function OrderDetailPage() {
             )}
             <div className="workflow-guide">
               登记时按单价折出来的参考是 <strong>{formatMoney(settleTarget.goods_amount_exact, settleTarget.currency)}</strong>，
-              这只是参考。请直接填和客户谈好的<strong>最终退款总额</strong>，货款、运费都算在里面；
-              系统拿这笔钱先抵客户还没付的欠款，剩余部分转成“待退款”。退款实际付出后，再回来登记流水。
+              只是参考，可以改。填和客户谈好的<strong>这次退货总额</strong>，货款、运费都算在里面；
+              系统会自动分清楚：客户欠款里扣多少，还要退给客户多少。
             </div>
             <div>
               <FormLabel required>这次退货总共算多少钱（含货款和运费）</FormLabel>
@@ -3550,13 +3560,47 @@ export default function OrderDetailPage() {
                 </div>
               )}
             </div>
+            <div style={{
+              border: '1px solid var(--crm-border)',
+              borderRadius: 8,
+              padding: '12px 14px',
+              background: 'var(--crm-bg-2)',
+              display: 'grid',
+              gap: 8,
+            }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 24px' }}>
+                <span>客户已经付给我们：<strong>{formatMoney(orderPaidAmount, settleTarget.currency)}</strong></span>
+                <span>客户还欠我们：<strong>{formatMoney(orderUnpaidAmount, settleTarget.currency)}</strong></span>
+              </div>
+              {settleGoodsValid ? (
+                <div style={{ lineHeight: 1.7 }}>
+                  这次退货一共算 <strong>{formatMoney(settleAmountInput, settleTarget.currency)}</strong>。
+                  {orderUnpaidAmount > 0
+                    ? ` 先从客户欠的 ${formatMoney(orderUnpaidAmount, settleTarget.currency)} 里扣 ${formatMoney(settleOffsetPreview, settleTarget.currency)}`
+                    : ' 客户不欠我们钱，不用抵扣'}
+                  {settleRefundPreview > 0
+                    ? `，再退给客户 ${formatMoney(settleRefundPreview, settleTarget.currency)}。`
+                    : '，不用退现金给客户。'}
+                  <div style={{ marginTop: 4 }}>
+                    {settleDebtAfterPreview > 0
+                      ? `扣完后，客户还欠我们 ${formatMoney(settleDebtAfterPreview, settleTarget.currency)}。`
+                      : '扣完后，客户不欠我们了。'}
+                  </div>
+                </div>
+              ) : (
+                <div style={{ color: 'var(--crm-text-3)' }}>
+                  填了这次退货总额后，这里会直接写清楚：客户欠款里扣多少、退客户多少。
+                </div>
+              )}
+            </div>
             <div>
               <FormLabel>补充说明（选填）</FormLabel>
               <TextArea rows={2} maxLength={255} value={settleNote} onChange={setSettleNote}
                 placeholder="例如：客户承担退货运费，货款退 1000；或公司补客户 10 元运费" />
             </div>
             <p className="workflow-guide">
-              确认会同步改「应收计划」金额。若退货后又手工改过应收，作废会被拦住，需先核对。
+              确认后，客户欠款和要退客户的钱会按上面显示的结果更新。
+              若退货后又手工改过欠款，作废会被拦住，需先核对。
             </p>
           </div>
         )}
@@ -3595,8 +3639,8 @@ export default function OrderDetailPage() {
               <Banner type="danger" fullMode={false} closeIcon={null} title="登记未完成" description={refundReturnMutation.error.message} />
             )}
             <div className="workflow-guide">
-              需退给客户 <strong>{formatMoney(refundTarget.refund_amount_exact, refundTarget.currency)}</strong>。
-              只有钱实际付出后才登记；登记后这张退货单不能再作废。
+              我们要退给客户 <strong>{formatMoney(refundTarget.refund_amount_exact, refundTarget.currency)}</strong>。
+              只有钱实际付给客户后才登记；登记后这张退货单不能再作废。
             </div>
             <div>
               <FormLabel required>退款流水 / 凭证说明</FormLabel>
