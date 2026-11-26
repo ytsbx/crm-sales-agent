@@ -6409,3 +6409,11 @@
 - 内容：复核提示文案统一为「待财务结算」（8fce7c99）、导入扣住原因拆分为多人/未开通账号/无跟进员工（9a6c417d）及对应质量记录。
 - 部署前预检通过；执行返回 `status=verified`，备份 `/opt/crm-sales-agent/backup/unified-ea56ee2371ca-m1z_yzga`。
 - 核验：服务 active、`/health` 数据库 ok、公网 200、前后端版本记录均为 ea56ee23、RELEASE.json verified。
+
+## 2026-11-26 生产部署六：f479691e（已完成并核验）
+
+- 内容：待确认列表把「多名跟进员工对应不同负责人」排在最前（f479691e）；其余保持原 id 倒序。
+- 发布包 `crm-release-f479691e.tar.gz`，SHA256 `c677a10d…e623`；基线 ea56ee23；无迁移、无依赖变更。
+- 第一次执行失败：新进程 30 秒内未完成启动（服务启动约 24–54 秒，疑似磁盘/IO 慢），工具判 `Backend health/database check failed` 并自动回滚成功，线上保持 ea56ee23、服务健康；重试后 `status=verified`，备份 `/opt/crm-sales-agent/backup/unified-f479691e1257-ia1a812f`。
+- 核验：服务 active、`/health` 数据库 ok、公网 200、前后端版本记录均为 f479691e、RELEASE.json verified、数据库仍为 a1c4e8f2b6d9；线上代码已含新排序判定。
+- 注意：这台服务器本次发布时应用启动明显变慢（健康等待上限 30 秒），后续发布若再遇到，需先排查服务器负载/磁盘，不要盲目重试。
