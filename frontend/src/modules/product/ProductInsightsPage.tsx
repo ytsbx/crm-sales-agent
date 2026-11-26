@@ -479,6 +479,11 @@ export default function ProductInsightsPage() {
                       第 {record.review_round} 轮
                     </div>
                   )}
+                  {record.reviewer_id != null && record.created_by === record.reviewer_id && record.status !== 'under_review' && (
+                    <div style={{ marginTop: 4 }}>
+                      <Tag color="orange" size="small">本人评审</Tag>
+                    </div>
+                  )}
                 </div>
               ),
             },
@@ -869,6 +874,9 @@ export default function ProductInsightsPage() {
                 {round.reviewed_at && (
                   <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
                     评审：{round.reviewer_name ?? '-'} · {fmtTime(round.reviewed_at)}
+                    {round.self_reviewed && (
+                      <Tag color="orange" size="small" style={{ marginLeft: 6 }}>本人评审</Tag>
+                    )}
                   </div>
                 )}
               </div>

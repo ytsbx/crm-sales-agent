@@ -23,6 +23,8 @@ export interface CaseReviewRound {
   note?: string | null
   reviewer_id?: number | null
   reviewer_name?: string | null
+  /** 审核人就是作者本人（有审核权限时允许自审，界面标「本人审核」）。 */
+  self_reviewed?: boolean
   reviewed_at?: string | null
   version?: number
 }

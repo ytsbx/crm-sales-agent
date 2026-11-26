@@ -375,7 +375,11 @@ async def approve(
                 action="approve",
                 business_type="approval",
                 business_id=instance.id,
-                after={"node": "co_sign", "by": user.id},
+                after={
+                    "node": "co_sign",
+                    "by": user.id,
+                    "self_approved": instance.applicant_id == user.id,
+                },
                 ip=client_ip(request),
             )
             await session.commit()
@@ -418,7 +422,10 @@ async def approve(
         action="approve",
         business_type="quote",
         business_id=quote.id if quote else instance.id,
-        after={"approval_id": instance.id},
+        after={
+            "approval_id": instance.id,
+            "self_approved": instance.applicant_id == user.id,
+        },
         ip=client_ip(request),
     )
     await session.commit()
@@ -473,7 +480,10 @@ async def reject(
         action="reject",
         business_type="quote",
         business_id=quote.id if quote else instance.id,
-        after={"comment": comment},
+        after={
+            "comment": comment,
+            "self_approved": instance.applicant_id == user.id,
+        },
         ip=client_ip(request),
     )
     await session.commit()

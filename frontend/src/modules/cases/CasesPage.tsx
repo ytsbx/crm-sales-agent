@@ -1275,8 +1275,11 @@ export default function CasesPage() {
                           {round.version ? ` · V${round.version}` : ''}
                         </span>
                         <span style={{ flex: 1 }} />
-                        <span style={{ color: 'var(--crm-text-3)' }}>
+                        <span style={{ color: 'var(--crm-text-3)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                           {round.reviewer_name || '-'}
+                          {(round.self_reviewed ?? Boolean(round.reviewer_id && round.reviewer_id === detail.author_id)) && (
+                            <Tag color="orange" size="small">本人审核</Tag>
+                          )}
                         </span>
                         <span style={{ color: 'var(--crm-text-3)' }}>
                           {round.reviewed_at ? formatBeijingTime(round.reviewed_at) : ''}

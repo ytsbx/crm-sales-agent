@@ -56,6 +56,7 @@ import {
   updateQuoteItem,
   updateQuoteVersion,
   withdrawApproval,
+  type ApprovalRecordRow,
   type QuoteChargeRow,
   type QuoteVersion,
   type QuoteItemRow,
@@ -2483,7 +2484,15 @@ export default function QuoteDetailPage() {
               { title: '动作', dataIndex: 'action', width: 120,
                 render: (v: string) =>
                   ({ submit: '提交申请', approve: '同意', reject: '拒绝', withdraw: '撤回', transfer: '转交' })[v] ?? '审批操作' },
-              { title: '处理人', dataIndex: 'approver_name', width: 120, render: (v: string | null) => v ?? '-' },
+              { title: '处理人', dataIndex: 'approver_name', width: 150,
+                render: (v: string | null, row: ApprovalRecordRow) => (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    {v ?? '-'}
+                    {(row.action === 'approve' || row.action === 'reject') && row.approver_id != null && row.approver_id === detail.approval?.applicant_id && (
+                      <Tag color="orange" size="small">本人审批</Tag>
+                    )}
+                  </span>
+                ) },
               { title: '意见', dataIndex: 'comment', render: (v: string | null) => v ?? '-' },
               {
                 title: '审批时间',

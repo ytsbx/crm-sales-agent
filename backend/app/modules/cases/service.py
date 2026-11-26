@@ -937,6 +937,9 @@ async def review_case(session: AsyncSession, *, case: SalesCase, user, approve: 
         # 而修完这一条之前前端的类型里写的就是 `reviewer_name` —— 它一直取不到值
         # （后端从来没给过），于是审核历史那一块渲染出来只有时间没有名字。
         "reviewer_name": getattr(user, "name", None),
+        # 作者本人有审核权限时允许自审（2026-11-26 主人拍板）；
+        # 逐轮记录和审计都留 self_reviewed，事后可查。
+        "self_reviewed": case.author_id == user.id,
         "reviewed_at": case.reviewed_at.isoformat(),
         "version": case.version or 1,
     })

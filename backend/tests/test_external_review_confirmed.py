@@ -119,15 +119,19 @@ async def test_insight_edit_flags_match_existing_public_pool_write_scope(db_sess
         model.__table__.create(db_session.get_bind(), checkfirst=True)
     db_session.add_all([
         ProductInsight(id=1, title="公海洞察", created_by=202),
-        ProductInsight(id=2, title="本人洞察", created_by=101, owner_id=101),
+        ProductInsight(id=2, title="本人洞察", created_by=101, owner_id=101, status="under_review"),
         ProductInsight(id=3, title="别人的洞察", created_by=202, owner_id=202),
     ])
     db_session.flush()
     session = SyncSessionAsAsync(db_session)
     reviewer = make_user(permissions=("product:view", "product:review", "product:manage"))
     rows = await list_insights(page=1, page_size=20, user=reviewer, session=session)
-    assert {item["id"]: item["can_edit"] for item in rows["data"]["items"]} == {1: True, 2: True, 3: False}
+    items = {item["id"]: item for item in rows["data"]["items"]}
+    assert {item_id: item["can_edit"] for item_id, item in items.items()} == {1: True, 2: True, 3: False}
+    # 本人提交的洞察，只要有 product:review 就能自审（2026-11-26 主人拍板）
+    assert items[2]["can_review"] is True
     assert (await get_insight(1, reviewer, session))["data"]["can_edit"] is True
+    assert (await get_insight(2, reviewer, session))["data"]["can_review"] is True
     assert (await get_insight(3, reviewer, session))["data"]["can_edit"] is False
 
 
@@ -349,7 +353,7 @@ async def test_inactive_staff_tasks_wait_for_scoped_batch_handover(db_session, m
 
 
 @pytest.mark.anyio
-async def test_case_author_can_review_and_admin_can_self_review_insight_but_other_reviewer_cannot(db_session):
+async def test_case_author_and_insight_reviewer_can_self_review_with_trace(db_session):
     for model in (SalesCase, ProductInsight, ProductInsightRound, AuditLog):
         model.__table__.create(db_session.get_bind(), checkfirst=True)
     case = SalesCase(id=1, author_id=101, title="待审核案例", status="pending_review",
@@ -362,21 +366,27 @@ async def test_case_author_can_review_and_admin_can_self_review_insight_but_othe
     author = make_user(101, roles=("admin",), permissions={"product:review"})
     manager_author = make_user(103, roles=("sales_manager",), permissions={"product:review"})
     author_without_review = make_user(101, roles=("salesperson",), permissions={"quote:view"})
-    reviewer = make_user(102, roles=("admin",), permissions={"product:review"})
     request = Request({"type": "http", "headers": []})
     with pytest.raises(AppError, match="只有销售主管/管理员能审核案例"):
         await review_case(session, case=case, user=author_without_review, approve=True, note=None)
-    # 非管理员评审人仍然不能自审（管理员自审见下）
-    with pytest.raises(AppError, match="不能审核自己"):
-        await review_insight(2, InsightReview(approve=True), request, manager_author, session)
     assert case.status == "pending_review" and manager_insight.status == "under_review"
     await review_case(session, case=case, user=author, approve=True, note=None)
-    # 管理员可以审核自己提交的新品洞察（2026-11-21 用户确认）
+    # 管理员可以审核自己提交的新品洞察
     await review_insight(1, InsightReview(approve=True), request, author, session)
-    await review_insight(2, InsightReview(approve=True), request, reviewer, session)
+    # 销售主管有 product:review：也可以评审自己提交的洞察（2026-11-26 主人拍板）
+    await review_insight(2, InsightReview(approve=True), request, manager_author, session)
     assert case.status == "published" and case.reviewer_id == 101
+    assert case.review_history and case.review_history[-1]["self_reviewed"] is True
     assert insight.status == "approved" and insight.reviewer_id == 101
-    assert manager_insight.status == "approved" and manager_insight.reviewer_id == 102
+    assert manager_insight.status == "approved" and manager_insight.reviewer_id == 103
+    audit = db_session.execute(
+        select(AuditLog).where(
+            AuditLog.business_type == "product_insight",
+            AuditLog.business_id == 2,
+            AuditLog.action == "review",
+        )
+    ).scalars().first()
+    assert audit is not None and audit.after_data["self_reviewed"] is True
 
 
 @pytest.mark.anyio

@@ -332,7 +332,12 @@ async def review_case(
         business_type="case",
         business_id=case.id,
         before={"status": before_status},
-        after={"approve": payload.approve, "note": payload.note, "status": case.status},
+        after={
+            "approve": payload.approve,
+            "note": payload.note,
+            "status": case.status,
+            "self_reviewed": case.author_id == user.id,
+        },
         ip=client_ip(request),
     )
     await session.commit()

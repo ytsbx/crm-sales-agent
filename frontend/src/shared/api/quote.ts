@@ -138,6 +138,7 @@ export interface ApprovalRecordRow {
   id: number
   action: string
   comment?: string | null
+  approver_id?: number | null
   approver_name?: string | null
   created_at: string
 }

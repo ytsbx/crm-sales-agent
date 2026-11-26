@@ -15,6 +15,7 @@ export interface ProductInsightRow {
   images: string[] | null
   owner_id: number | null
   owner_name: string | null
+  created_by?: number | null
   status: string
   status_label: string
   reviewer_id: number | null
@@ -55,6 +56,8 @@ export interface InsightRound {
   reviewer_name: string | null
   reviewed_at: string | null
   review_note: string | null
+  /** 评审人就是这一轮的提交人：界面标「本人评审」。 */
+  self_reviewed?: boolean
 }
 
 /** 转换结果（第五批 §6.1(3)）：带编号与来源类型，前端能直接给深链和提示。 */

@@ -120,6 +120,7 @@ def _serialize(row: ProductInsight, *, owner_name: str | None = None) -> dict:
         # 审批轮次（§6.1(1)）：第几次提交评审。驳回重提、通过后改内容都会加一。
         "review_round": row.review_round or 1,
         "converted_inquiry_id": row.converted_inquiry_id,
+        "created_by": row.created_by,
         "created_at": row.created_at,
     }
 
@@ -253,6 +254,7 @@ async def _serialize_rounds(session: AsyncSession, insight_id: int) -> list[dict
             "reviewer_name": names.get(entry.reviewer_id) if entry.reviewer_id else None,
             "reviewed_at": entry.reviewed_at,
             "review_note": entry.review_note,
+            "self_reviewed": bool(entry.reviewer_id and entry.submitted_by == entry.reviewer_id),
         }
         for entry in entries
     ]
@@ -402,16 +404,13 @@ async def list_insights(
     # 看着像能点、其实是坏的。这里把判断结果随行下发。
     # 注意：藏按钮**不是**权限，后端每个写入口仍会用 `_get_writable` 再判一次。
     can_review_any = _can_review(user)
-    is_admin = "admin" in user.roles
     items = []
     for r in rows:
         item = _serialize(r, owner_name=names.get(r.owner_id))
         item["can_edit"] = _owner_in_write_scope(r.owner_id, owner_ids)
-        # 管理员可以审自己提交的（2026-11-21 用户确认）；其他人仍只审别人的。
-        item["can_review"] = (
-            can_review_any and (r.created_by != user.id or is_admin)
-            and r.status == "under_review"
-        )
+        # 有 product:review 的评审人可以审自己提交的（2026-11-26 主人拍板），
+        # 通过后列表和逐轮记录会标「本人评审」，审计也留 self_reviewed。
+        item["can_review"] = can_review_any and r.status == "under_review"
         items.append(item)
     return ok(page_data(items, total, page, page_size))
 
@@ -431,11 +430,7 @@ async def get_insight(
     # 藏按钮不是权限（返工单 P1-3 明确说了不能只靠前端）。
     owner_ids = await scoped_owner_ids(session, user)
     payload["can_edit"] = _owner_in_write_scope(row.owner_id, owner_ids)
-    payload["can_review"] = (
-        _can_review(user)
-        and (row.created_by != user.id or "admin" in user.roles)
-        and row.status == "under_review"
-    )
+    payload["can_review"] = _can_review(user) and row.status == "under_review"
     return ok(payload)
 
 
@@ -636,10 +631,8 @@ async def review_insight(
     # 加行锁：两个人同时点「通过/驳回」时，后到的会等前面提交完再读，
     # 读到的是已审状态 → 被下面的状态检查挡下，只有一个能成功。
     row = await _get_visible(session, user, insight_id, for_update=True)
-    # 管理员可以审核自己提交的（2026-11-21 用户确认）；其他评审人仍不能自审，
-    # 避免“自己提的自己批”绕过评审。只放宽 admin，不按权限码放行。
-    if row.created_by == user.id and "admin" not in user.roles:
-        raise AppError(ErrorCode.FORBIDDEN, "不能审核自己提交的新品洞察，请交由其他审核人处理", 403)
+    # 有 product:review 的评审人可以审自己提交的（2026-11-26 主人拍板）；
+    # 业务员没有该权限，仍在上面被挡。自审会在审计标 self_reviewed=True。
     if row.status != "under_review":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该记录不在待评审状态")
 
@@ -666,6 +659,7 @@ async def review_insight(
             "approve": payload.approve,
             "note": payload.note,
             "review_round": row.review_round,
+            "self_reviewed": row.created_by == user.id,
         },
         ip=client_ip(request),
     )
