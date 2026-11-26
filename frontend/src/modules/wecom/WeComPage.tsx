@@ -843,6 +843,21 @@ export default function WeComPage() {
                     ))}
                   </div>
                 )}
+              {active && (
+                <div style={{ fontSize: 12, color: 'var(--crm-text-3)', paddingTop: 8 }}>
+                  {!canViewCustomers
+                    ? '需要客户查看权限才能查看匹配建议。'
+                    : candidatesQuery.isLoading
+                      ? '正在查找可能匹配的已有客户…'
+                      : candidatesQuery.isError
+                        ? <>暂时无法查询已有客户。<Button size="small" theme="borderless" onClick={() => void candidatesQuery.refetch()}>重试</Button></>
+                        : (candidatesQuery.data?.candidates.length ?? 0) === 0
+                          ? (canSearchCustomers
+                            ? '没有找到可能匹配的已有客户；可按名称搜索，或直接创建新客户。'
+                            : '没有找到可能匹配的已有客户，请到客户中心核对已有档案。')
+                          : `找到 ${candidatesQuery.data!.candidates.length} 个可能匹配的已有客户，见下方卡片，核对后点「关联已有客户」。`}
+                </div>
+              )}
               {canManage && active && (
                 // 针对当前联系人的出口：放在联系人卡片里，和「谁加的、为什么扣住」挨着
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, paddingTop: 12, marginTop: 'auto' }}>
@@ -881,37 +896,13 @@ export default function WeComPage() {
           )}
         </SectionCard>
 
-        {/* 右：系统候选客户。这里只放「可能匹配的已有客户」，
-            针对当前联系人的操作按钮已经移到上面的联系人卡片里。 */}
+        {/* 右：系统候选客户。只有真的匹配到才显示卡片；
+            空结果直接在联系人卡片里一行说明，不再占一整张空卡。 */}
+        {active && canViewCustomers && (candidatesQuery.data?.candidates.length ?? 0) > 0 && (
         <SectionCard style={{ display: 'flex', flexDirection: 'column' }}>
           <div style={{ fontWeight: 600, marginBottom: 10 }}>可能匹配的 CRM 客户</div>
-          {!active ? (
-            <Empty description="选中联系人后显示候选" />
-          ) : (
-            <>
-              {!canViewCustomers && <Empty description="需要客户查看权限才能查看匹配建议" />}
-              {canViewCustomers && candidatesQuery.isLoading && (
-                <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>匹配中…</div>
-              )}
-              {canViewCustomers && candidatesQuery.isError && <div style={{ color: 'var(--crm-error)', fontSize: 13, marginBottom: 10 }}>
-                暂时无法查询已有客户。<Button size="small" theme="borderless" onClick={() => void candidatesQuery.refetch()}>重试</Button>
-              </div>}
-              {canViewCustomers && candidatesQuery.isSuccess && candidatesQuery.data.candidates.length === 0 && (
-                // 原来是一句灰字缩在左上角，这张卡又被右半区拉到半屏高，
-                // 中间空出近 200px、按钮孤零零贴在底下（2026-11-21 巡检）。
-                // 改成居中的两行字：用 margin auto 在剩余空间里站中间，不写 flex:1
-                // （写了会把 1fr 的行高顶破，右半区变长、底部按钮掉出屏幕）。
-                <div style={{ margin: 'auto 0', padding: '8px 0', textAlign: 'center' }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--crm-text-2)' }}>
-                    当前查看范围内没有匹配建议
-                  </div>
-                  <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 4 }}>
-                    {canSearchCustomers ? '可按客户名称搜索现有档案，核对后再关联或新建。' : '可先核对客户中心的已有档案。'}
-                  </div>
-                </div>
-              )}
-              <div style={{ display: 'grid', gap: 8 }}>
-                {(canViewCustomers ? candidatesQuery.data?.candidates ?? [] : []).map((candidate, index) => (
+          <div style={{ display: 'grid', gap: 8 }}>
+            {(candidatesQuery.data?.candidates ?? []).map((candidate, index) => (
                   <div
                     key={candidate.id}
                     style={{
@@ -939,10 +930,9 @@ export default function WeComPage() {
                     )}
                   </div>
                 ))}
-              </div>
-            </>
-          )}
+          </div>
         </SectionCard>
+        )}
         </div>
       </div>
 
