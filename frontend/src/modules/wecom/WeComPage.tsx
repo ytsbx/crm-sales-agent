@@ -44,6 +44,7 @@ import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
 import HelpTip from '../../shared/components/HelpTip'
 import { optionMatcher } from '../../shared/components/optionMatch'
+import { UNRATED_OPTION, customerLevelPayload, customerLevelValue } from '../../shared/customer-level'
 
 /**
  * 企业微信待确认客户页面（04-UI §5，布局照设计稿：左待处理 / 中企微详情 / 右候选客户）。
@@ -352,7 +353,7 @@ export default function WeComPage() {
       createCustomerFromContact(contactId, {
         name: createForm.name.trim(),
         region: createForm.region || null,
-        level: createForm.level || null,
+        level: customerLevelPayload(createForm.level),
       }),
     onSuccess: (result) => {
       Toast.success(`已创建客户「${result.customer_name}」`)
@@ -1059,11 +1060,13 @@ export default function WeComPage() {
           <div>
             <div style={{ marginBottom: 4 }}>客户等级</div>
             <Select
-              value={createForm.level || undefined}
+              value={customerLevelValue(createForm.level)}
               disabled={createMutation.isPending}
-              onChange={(value) => setCreateForm({ ...createForm, level: value as string })}
-              optionList={(customerLevelsQuery.data ?? []).map((item) => ({ value: item.code, label: item.label }))}
-              showClear
+              onChange={(value) => setCreateForm({ ...createForm, level: (customerLevelPayload(value) ?? '') })}
+              optionList={[
+                UNRATED_OPTION,
+                ...(customerLevelsQuery.data ?? []).map((item) => ({ value: item.code, label: item.label })),
+              ]}
               style={{ width: '100%' }}
             />
           </div>
