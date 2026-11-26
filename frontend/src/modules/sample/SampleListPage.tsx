@@ -4,7 +4,7 @@ import { humanizeBackendText } from '../../shared/humanize-text'
 import { formatBeijingTime, formatBeijingDate } from '../../shared/beijing-time'
 import SampleDingTalkModal from './SampleDingTalkModal'
 import FormLabel from '../../shared/components/FormLabel'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
@@ -272,6 +272,33 @@ function reopenedHint(before: string | undefined, after: string): string | null 
 /** 生产资料这类"可有可无"的字段统一显示成 —，而不是一片空白。 */
 function dash(value?: string | null) {
   return value && value.trim() ? value : '-'
+}
+
+/** 详情里可折叠的次要区块：默认收起，避免一屏堆满长说明和空字段。 */
+function Fold({ title, extra, children }: { title: string; extra?: string; children: ReactNode }) {
+  return (
+    <details style={{ borderTop: '1px solid var(--crm-border)', paddingTop: 10 }}>
+      <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: 14, color: 'var(--crm-text-1)' }}>
+        {title}
+        {extra && (
+          <span style={{ marginLeft: 8, fontWeight: 400, fontSize: 12, color: 'var(--crm-text-3)' }}>
+            {extra}
+          </span>
+        )}
+      </summary>
+      <div style={{ marginTop: 10 }}>{children}</div>
+    </details>
+  )
+}
+
+/** 详情顶部「关键信息」小格：标签在上、值在下，比一串「负责人：…」更好扫。 */
+function MetaItem({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div style={{ minWidth: 0 }}>
+      <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 2 }}>{label}</div>
+      <div style={{ fontSize: 13, color: 'var(--crm-text-1)' }}>{children}</div>
+    </div>
+  )
 }
 
 function sampleNextStep(row: SampleRequestRow) {
@@ -1356,37 +1383,68 @@ export default function SampleListPage() {
               }}>{nextStep.label}</Button>}
             </div>}
 
-            <div style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span>负责人：{detail.owner_name ?? '-'}</span>
-                {canUpdateSample && <Button size="small" theme="outline" onClick={() => {
-                  setTransferKeyword('')
-                  setTransferOwner(null)
-                  transferMutation.reset()
-                  setTransferVisible(true)
-                }}>转交打样单</Button>}
-              </div>
-              <div>申请时间：{fmt(detail.requested_at)}</div>
-              {detail.approved_at && <div>审批时间：{fmt(detail.approved_at)}</div>}
-              {detail.shipped_at && <div>寄样时间：{fmt(detail.shipped_at)}</div>}
-              {detail.signed_at && <div>签收时间：{fmt(detail.signed_at)}</div>}
-              {detail.terminated_at && (
-                <div style={{ color: 'var(--crm-error)' }}>
-                  终止时间：{fmt(detail.terminated_at)}
-                  {detail.terminate_reason ? `；原因：${detail.terminate_reason}` : ''}
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+                gap: 10,
+                padding: '10px 12px',
+                border: '1px solid var(--crm-border)',
+                borderRadius: 8,
+                background: 'var(--crm-surface-low)',
+              }}
+            >
+              <MetaItem label="负责人">
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  {detail.owner_name ?? '-'}
+                  {canUpdateSample && (
+                    <Button size="small" theme="borderless" onClick={() => {
+                      setTransferKeyword('')
+                      setTransferOwner(null)
+                      transferMutation.reset()
+                      setTransferVisible(true)
+                    }}>转交</Button>
+                  )}
                 </div>
-              )}
-              {detail.reject_reason && (
-                <div style={{ color: 'var(--crm-error)' }}>
-                  {detail.status === 'rejected' ? '拒绝原因' : '上次驳回原因'}：
-                  {detail.reject_reason}
-                </div>
-              )}
-              {detail.remark && <div>备注：{detail.remark}</div>}
+              </MetaItem>
+              <MetaItem label="申请时间">{fmt(detail.requested_at)}</MetaItem>
+              {detail.approved_at && <MetaItem label="审批时间">{fmt(detail.approved_at)}</MetaItem>}
+              {detail.shipped_at && <MetaItem label="寄样时间">{fmt(detail.shipped_at)}</MetaItem>}
+              {detail.signed_at && <MetaItem label="签收时间">{fmt(detail.signed_at)}</MetaItem>}
+              {detail.terminated_at && <MetaItem label="终止时间">{fmt(detail.terminated_at)}</MetaItem>}
             </div>
+
+            {detail.reject_reason && (
+              <div
+                style={{
+                  padding: '8px 10px',
+                  borderRadius: 6,
+                  background: 'var(--crm-error-bg, #FFF1F0)',
+                  color: 'var(--crm-error)',
+                  fontSize: 13,
+                  lineHeight: 1.7,
+                }}
+              >
+                {detail.status === 'rejected' ? '拒绝原因' : '上次驳回原因'}：{detail.reject_reason}
+              </div>
+            )}
+            {detail.terminated_at && detail.terminate_reason && (
+              <div style={{ fontSize: 13, color: 'var(--crm-error)' }}>
+                终止原因：{detail.terminate_reason}
+              </div>
+            )}
+            {detail.remark && (
+              <div style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>备注：{detail.remark}</div>
+            )}
 
             <div>
               <div style={{ fontWeight: 600, marginBottom: 8 }}>样品明细（产品名称 *，打样数量 *）</div>
+              {detail.items.length === 0 && (
+                <div style={{ padding: '10px 0', color: 'var(--crm-text-3)', fontSize: 13 }}>
+                  还没有样品明细；在下面添加产品名称和打样数量。
+                </div>
+              )}
+              {detail.items.length > 0 && (
               <Table
                 size="small"
                 rowKey="id"
@@ -1478,6 +1536,7 @@ export default function SampleListPage() {
                     : []),
                 ]}
               />
+              )}
               {canUpdateSample && !['shipped', 'signed'].includes(detail.status) && (
                 <div className="sample-add-item">
                   {/* 追加明细同样只用**一个框**（与上面新建时一致，
@@ -1761,9 +1820,17 @@ export default function SampleListPage() {
                 {/* 生产打样资料（文档 §3.5）：车间照着这张单子干活——
                     这里放的是**整单属性**（用途 / 交期 / 验收标准 / 费用）；
                     材质、工艺、图纸版本逐行不同，在上面的明细行里改 */}
-                <div>
+                <Fold
+                  title="生产打样资料"
+                  extra={
+                    detail.purpose || detail.target_completion_date || detail.acceptance_criteria
+                    || detail.sample_fee != null || detail.sample_type
+                      ? ''
+                      : '未填写'
+                  }
+                >
                   <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
-                    <div style={{ fontWeight: 600, flex: 1 }}>生产打样资料</div>
+                    <div style={{ flex: 1 }} />
                     {canUpdateSample && !prodEditing && (
                       <button type="button" className="crm-text-action"
                         onClick={() => {
@@ -2029,17 +2096,21 @@ export default function SampleListPage() {
                       </Button>
                     </Popconfirm>
                   )}
-                </div>
+                </Fold>
 
                 {/* 客户确认：签收是物流事实、确认是业务事实，两者分开（文档 §3.5） */}
-                <div ref={customerConfirmRef} tabIndex={-1}>
-                  <div style={{ fontWeight: 600, marginBottom: 8 }}>客户确认</div>
-                  <div style={{ fontSize: 13, color: 'var(--crm-text-2)', marginBottom: 8 }}>
-                    当前：{detail.confirm_status_label}
-                    {detail.customer_confirmed_at
-                      ? `（${formatBeijingDate(detail.customer_confirmed_at)}）`
-                      : ''}
-                    ｜客户收到样品不等于样品被接受
+                <div ref={customerConfirmRef} tabIndex={-1} style={{ borderTop: '1px solid var(--crm-border)', paddingTop: 10 }}>
+                  <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8 }}>
+                    客户确认
+                    <span style={{ marginLeft: 8, fontWeight: 400, fontSize: 12, color: 'var(--crm-text-3)' }}>
+                      {detail.confirm_status_label}
+                      {detail.customer_confirmed_at
+                        ? ` · ${formatBeijingDate(detail.customer_confirmed_at)}`
+                        : ''}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 8 }}>
+                    客户收到样品不等于样品被接受，结果以客户明确表态为准。
                   </div>
                   {canUpdateSample && detail.status === 'signed' && detail.confirm_status === 'pending' && (
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -2076,8 +2147,7 @@ export default function SampleListPage() {
                     锁定之后上传的**自动**按「后续补充资料」归类，不用用户选 ——
                     锁定与否由后端下发（`attachment_locked` / `attachment_lock`），
                     前端不自己按 made_at / status 推一遍（推出来的那份迟早和后端分叉）。 */}
-                <div>
-                  <div style={{ fontWeight: 600, marginBottom: 8 }}>附件</div>
+                <Fold title="附件" extra={detail.attachment_locked ? '已锁定' : '可上传'}>
                   {detail.attachment_locked && (
                     <div
                       style={{
@@ -2090,8 +2160,7 @@ export default function SampleListPage() {
                           （`file/access.py`：「打样申请已提交或关联钉钉，制作资料已经冻结」）。
                           过一层 humanize：平台名按现在实际用的「同序 OA」显示，
                           冒号也换成句号，别让两句话粘成一句。 */}
-                      {humanizeBackendText(detail.attachment_lock)}。现在上传的附件会自动归到「后续补充资料」，
-                      和制作依据分开记 —— 事后补进来的资料不能和「当时照哪份做的」混在一起。
+                      {humanizeBackendText(detail.attachment_lock)}。新上传的附件自动归入「后续补充资料」，与制作依据分开记录。
                     </div>
                   )}
                   {/* 默认说明是「合同、图纸、回款凭证」—— 那是合同页的语境，
@@ -2104,11 +2173,10 @@ export default function SampleListPage() {
                     hint="放样品实物照片、尺寸图、客户确认截图，单个文件不超过 20 MB"
                     category={detail.attachment_locked ? 'supplement' : undefined}
                   />
-                </div>
+                </Fold>
 
                 {/* 场景12：从这张打样申请出打样需求单，来源询价与本次差异随文件落快照 */}
-                <div>
-                  <div style={{ fontWeight: 600, marginBottom: 8 }}>打样需求单</div>
+                <Fold title="打样需求单">
                   <BizDocPanel
                     docType="sample_request"
                     sampleRequestId={detail.id}
@@ -2117,7 +2185,7 @@ export default function SampleListPage() {
                     emptyInline
                     compactEmptyText="还没有生成过打样需求单 —— 点右上「生成一份」，按本次申请内容出一份 PDF。"
                   />
-                </div>
+                </Fold>
               </div>
             )}
           </div>
