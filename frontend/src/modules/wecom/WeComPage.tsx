@@ -35,6 +35,7 @@ import {
   type WeComTransferPeopleSelection,
   type WeComTransferPreview,
   type WeComUnboundContact,
+  type WeComFollower,
 } from '../../shared/api/wecom'
 import { ApiError } from '../../shared/api/client'
 import GuardedButton from '../../shared/components/GuardedButton'
@@ -116,6 +117,15 @@ const IMPORT_REVIEW_GUIDANCE: Record<string, string> = {
   '已有同来源联系人，请核对关联': '到客户中心核对已有联系人和所属客户。',
   '存在同名或不可用客户，需人工确认': '先到客户中心核对同名档案及其状态，再决定关联哪家客户。',
   '已有客户负责人不同，需人工确认': '与原跟进员工和现任负责人核对后，再逐条处理。',
+}
+
+/** 名单上一行放下「谁加了这个客户」：未开通 CRM 的直接标出来，方便判断归谁。 */
+function followerSummary(followers: WeComFollower[]) {
+  const active = followers.filter((follower) => follower.status === 'active')
+  if (!active.length) return '无'
+  return active
+    .map((follower) => `${follower.name || follower.wecom_userid}${follower.crm_user_id ? '' : '（未开通 CRM）'}`)
+    .join('、')
 }
 
 export default function WeComPage() {
@@ -661,6 +671,18 @@ export default function WeComPage() {
                     }}
                   >
                     {row.corp_name ?? '个人微信'}
+                  </div>
+                  <div
+                    title={followerSummary(row.followers)}
+                    style={{
+                      fontSize: 11.5,
+                      color: 'var(--crm-text-3)',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    跟进人：{followerSummary(row.followers)}
                   </div>
                   {row.import_hold_reason && (
                     <div
