@@ -130,6 +130,10 @@ EXCEPTIONS: dict[tuple[str, str], str] = {
     ("app/modules/payment/service.py", "serialize_payment"): (
         "序列化**单条**回款记录；范围在取这条记录时已经判过。"
     ),
+    ("app/modules/returns/service.py", "create_return"): (
+        "只为**单个订单**校验可退数量（按订单明细汇总已发数量），"
+        "`func.sum` 不是统计出口；调用方路由先 `get_visible_order` 判过范围。"
+    ),
     ("app/modules/wecom/service.py", "readiness"): (
         "**管理员诊断**用的健康检查（企微同步就绪度：绑定数、待归一数）——"
         "按定义就是全公司视角，且入口需要管理权限。"
