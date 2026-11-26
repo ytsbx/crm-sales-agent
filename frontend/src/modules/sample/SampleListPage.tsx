@@ -1494,6 +1494,7 @@ export default function SampleListPage() {
               {detail.items.length > 0 && (
               <Table
                 size="small"
+                tableLayout="fixed"
                 rowKey="id"
                 pagination={false}
                 dataSource={detail.items}
@@ -1504,7 +1505,7 @@ export default function SampleListPage() {
                     dataIndex: 'sku_code',
                     // 编码在上、名称在下（同报价明细的口径）
                     render: (v: string | null, row: SampleRequestRow['items'][number]) => (
-                      <div>
+                      <div style={{ whiteSpace: 'normal', wordBreak: 'break-word' }}>
                         <div>
                           {row.sku_name || v || '未命名产品'}
                           {row.is_custom && (
@@ -1521,7 +1522,7 @@ export default function SampleListPage() {
                       </div>
                     ),
                   },
-                  { title: '原数量', dataIndex: 'original_quantity', width: 84, render: (v: number | null) => v == null ? <span style={{ color: 'var(--crm-text-3)' }}>未记录</span> : v.toLocaleString('zh-CN') },
+                  { title: '原数量', dataIndex: 'original_quantity', width: 64, render: (v: number | null) => v == null ? <span style={{ color: 'var(--crm-text-3)' }}>未记录</span> : v.toLocaleString('zh-CN') },
                   {
                     /* 抽屉只有 716 宽。原来「本次数量 / 车间依据 / 本次备注 / 本次规格」四列
                        各占一格，「本次规格」被抽屉右边缘直接切掉（2026-11-20 截图，
@@ -1534,7 +1535,7 @@ export default function SampleListPage() {
                       const specChanged = row.source_snapshot && row.specification !== oldSpec
                       const remarkChanged = row.source_snapshot && (row.remark || '') !== (oldRemark || '')
                       return (
-                        <div>
+                        <div style={{ whiteSpace: 'normal', wordBreak: 'break-word' }}>
                           <div>{row.quantity} 件{row.specification ? ` · ${row.specification}` : ''}</div>
                           {specChanged && <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>原规格：{oldSpec || '未记录'}</div>}
                           {row.remark && <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>备注：{row.remark}</div>}
@@ -1552,10 +1553,13 @@ export default function SampleListPage() {
                         <HelpTip forLabel="车间依据" text="做这件样品时交给车间的依据：材质、工艺和图纸版本。同一单里不同明细可能不一样。" />
                       </span>
                     ),
+                    width: 150,
                     render: (_: unknown, row: SampleItem) => {
                       const spec = [row.material, row.craft].filter(Boolean).join(' / ')
-                      if (!row.drawing_version) return spec || '-'
-                      return spec ? `${spec}（图纸 ${row.drawing_version}）` : `图纸 ${row.drawing_version}`
+                      const text = !row.drawing_version
+                        ? (spec || '-')
+                        : spec ? `${spec}（图纸 ${row.drawing_version}）` : `图纸 ${row.drawing_version}`
+                      return <div style={{ whiteSpace: 'normal', wordBreak: 'break-word' }}>{text}</div>
                     },
                   },
                   // 已寄样/已签收不给改：后端也会拒，这里不显示入口省得点了才报错
@@ -1563,7 +1567,7 @@ export default function SampleListPage() {
                     ? [
                         {
                           title: '操作',
-                          width: 64,
+                          width: 56,
                           render: (_: unknown, row: SampleItem) => (
                             <button type="button" className="crm-text-action"
                               onClick={() =>
@@ -1602,9 +1606,7 @@ export default function SampleListPage() {
                     onChange={(value) => setNewItem({ ...newItem, quantity: value })}
                   />
                   <GuardedButton
-                    hintBelow
                     disabled={!draftReady(newItem)}
-                    blockedReasons={['请先选一个产品，或直接把产品名称打进去。']}
                     action="添加明细"
                     loading={addItemMutation.isPending}
                     onClick={() => addItemMutation.mutate()}
@@ -2203,6 +2205,7 @@ export default function SampleListPage() {
                     businessId={detail.id}
                     writePermission="sample:manage"
                     showCategory
+                    compact
                     hint="放样品实物照片、尺寸图、客户确认截图，单个文件不超过 20 MB"
                     category={detail.attachment_locked ? 'supplement' : undefined}
                   />

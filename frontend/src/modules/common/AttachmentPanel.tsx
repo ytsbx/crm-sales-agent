@@ -307,14 +307,21 @@ export default function AttachmentPanel({
       ) : (
       <Table<FileRow>
         style={{ width: '100%', maxWidth: '100%', minWidth: 0 }}
-        scroll={{ x: 1000 }}
+        /* 紧凑（侧栏/抽屉）不设横向滚动：列宽收窄、文件名换行，全部列直接看全 */
+        tableLayout={compact ? 'fixed' : undefined}
+        scroll={compact ? undefined : { x: 1000 }}
         columns={[
           {
             title: '文件名',
             dataIndex: 'file_name',
             render: (name: string, record: FileRow) => (
               <button type="button" className="crm-text-action"
-                style={{ color: 'var(--crm-primary)' }}
+                style={{
+                  color: 'var(--crm-primary)',
+                  whiteSpace: compact ? 'normal' : undefined,
+                  textAlign: 'left',
+                  wordBreak: 'break-word',
+                }}
                 onClick={() =>
                   record.previewable ? void openPreview(record) : void showDownloadResult(downloadFile(record.id, name))
                 }
@@ -326,7 +333,7 @@ export default function AttachmentPanel({
           {
             title: '大小',
             dataIndex: 'size',
-            width: 110,
+            width: compact ? 64 : 110,
             render: (size: number) => formatSize(size),
           },
           // 「分类」列只在**这个场景真的在用分类**时才出现（`showCategory`）。
@@ -337,29 +344,31 @@ export default function AttachmentPanel({
                 {
                   title: '分类',
                   dataIndex: 'category',
-                  width: 110,
+                  width: compact ? 80 : 110,
                   render: (v: string | null) => v ?? '-',
                 },
               ]
             : []),
-          { title: '上传人', dataIndex: 'uploader_name', width: 110, render: (v: string | null) => v ?? '-' },
+          { title: '上传人', dataIndex: 'uploader_name', width: compact ? 80 : 110, render: (v: string | null) => v ?? '-' },
           {
             title: '上传时间',
             dataIndex: 'created_at',
-            width: 190,
+            width: compact ? 130 : 190,
             render: (v: string) => formatBeijingTime(v),
           },
-          {
-            title: '存储',
-            dataIndex: 'storage_provider',
-            width: 100,
-            render: (v: string) => <Tag>{v === 'local' ? '本地' : v}</Tag>,
-          },
+          ...(compact
+            ? []
+            : [{
+                title: '存储',
+                dataIndex: 'storage_provider',
+                width: 100,
+                render: (v: string) => <Tag>{v === 'local' ? '本地' : v}</Tag>,
+              }]),
           {
             title: '操作',
-            width: 220,
+            width: compact ? 110 : 220,
             render: (_: unknown, record: FileRow) => (
-              <div style={{ display: 'flex', gap: 10 }}>
+              <div style={{ display: 'flex', gap: compact ? 8 : 10, flexWrap: 'wrap' }}>
                 {record.previewable && (
                   <button type="button" className="crm-text-action" style={{ color: 'var(--crm-primary)' }} onClick={() => void openPreview(record)}>
                     预览
