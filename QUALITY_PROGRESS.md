@@ -6206,3 +6206,13 @@
 - 其他业务表并非全空：`users=11`、`customers=3`、`opportunities=1`；`custom_inquiries=0`、`quotes=0`、`quote_versions=0`、`sales_orders=0`。
 - `sales_returns` 表不存在，生产 `alembic_version=e6b4d2f8a1c9`，退货迁移确实未执行。
 - 范围限制：只查了当前 `.env` 指向的本机生产库；若是另一台远程服务器，需要另行提供地址/权限才能确认。
+
+## 2026-11-26 生产部署：a14b86ec（已完成并核验）
+
+- 发布包：`crm-release-a14b86ec.tar.gz`，SHA256 `62ac6715…d8d768`；基线为线上快照提交 `6abecdf8`（ce708a15 + 生产已在运行的 OA 登录三文件），允许迁移变更；数据库备份 `/opt/crm-sales-agent/backup/db-a14b86ec.dump`。
+- 迁移：`f6a281 → e6b4d2f8a1c9 → b7d3f9a2c4e1 → c4f8a1d6e2b9 → d1a7c3e5b9f2 → e5b8c2d7a4f1 → f3c7a9d1b5e8 → a1c4e8f2b6d9` 全部执行成功，数据库到达 head。
+- 发布前发现两件事并处理：
+  1. 线上后端与 ce708a15 不同的三个文件（auth/router.py、auth/schema.py、oa/client.py）是**已在生产运行但未提交**的 OA 票据登录改动；已作为 a14b86ec 纳入版本，避免发布会把它们回退。对应 2 条测试通过。
+  2. `drop_contract_generation_columns` 的数据闸门被一条**已软删的测试合同**（CT202610150001，void/已删）触发；迁移改为“有历史引用就保留 template_id / generated_file_id 两列”，不清生产数据、不阻断发布。生产这两个字段仍在，代码不再读写。
+- 部署后：服务 active、`/health` 数据库 ok、公网首页 200、两端口版本记录一致为 a14b86ec；生产 `.env` 已补 `AUTH_CALLBACK_HOSTS=crm.mandla.cn` 并重启服务。
+- 残余：历史“沿用原询价”卡住的样品单仍需对原询价审批点一次同步才会回写；分支在部署后又多了一个纯文档提交（98ae89e1），与生产功能无关。
