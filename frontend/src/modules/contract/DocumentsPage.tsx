@@ -1280,13 +1280,17 @@ export default function DocumentsPage() {
               {
                 title: '资料名称',
                 dataIndex: 'name',
-                render: (v: string) => <span className="cell-strong" title={v}>{v}</span>,
+                width: '28%',
+                ellipsis: true,
+                render: (v: string) => (
+                  <span className="cell-strong" title={v} style={{ display: 'inline-block', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'bottom' }}>{v}</span>
+                ),
               },
-              { title: '类型', dataIndex: 'doc_type_label', width: 96 },
+              { title: '类型', dataIndex: 'doc_type_label', width: '12%' },
               {
                 title: '版本',
                 dataIndex: 'version',
-                width: 88,
+                width: '10%',
                 render: (v: number, record) => (
                   <span>
                     v{v}
@@ -1297,16 +1301,28 @@ export default function DocumentsPage() {
               {
                 title: '原文件',
                 dataIndex: 'file',
+                width: '34%',
+                ellipsis: true,
                 render: (file: ContractTemplate['file']) => {
                   if (!file) {
                     return <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>—</span>
                   }
-                  if (!can('file:view')) return <span>{file.file_name}</span>
+                  const textStyle = {
+                    display: 'inline-block',
+                    maxWidth: '100%',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                    verticalAlign: 'bottom',
+                    textAlign: 'left',
+                  } as const
+                  if (!can('file:view')) return <span style={textStyle} title={file.file_name}>{file.file_name}</span>
                   return (
                     <button
                       type="button"
                       className="crm-text-action"
                       title={file.file_name}
+                      style={textStyle}
                       onClick={() => void showDownloadResult(downloadFile(file.file_id, file.file_name))}
                     >
                       {file.file_name}
@@ -1317,7 +1333,7 @@ export default function DocumentsPage() {
               {
                 title: '保存时间',
                 dataIndex: 'created_at',
-                width: 120,
+                width: '16%',
                 render: (v: string) => formatBeijingDate(v),
               },
             ]}
