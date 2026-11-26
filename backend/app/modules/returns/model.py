@@ -3,14 +3,14 @@
 业务口径（2026-11-25 主人拍板 A 方案）：
 - 只针对**已实发**的批次明细登记，原发货事实不动，不碰库存；
 - 登记时只记数量与原因，不直接改应收/回款；
-- 业务员/主管确认最终退款金额后，先冲未收应收，剩余部分转“待退款”；
+- 业务员/主管确认本次退货退款总额后，先冲抵客户未付款，剩余部分转为应退还客户；
 - 财务确认后可作废并冲回，但退款已实际支付的不能作废（钱已经出去了，
   系统不能假装没发生）。
 
 三张表：
 - `sales_returns`：退货单头，状态与金额；
 - `sales_return_items`：按发货批次明细记录退多少；
-- `sales_return_plan_adjustments`：确认退款金额时每一期应收被冲减了多少，
+- `sales_return_plan_adjustments`：确认退款总额时每一期应收被冲减了多少，
   用于作废时**精确还原**，不靠“再算一遍”猜。
 """
 
@@ -78,7 +78,7 @@ class SalesReturn(Base, IdMixin, TimestampMixin):
     #: 本单应退总额 = settled_goods_amount + freight_refund_amount（后者新流程为 0）。
     total_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
 
-    #: 确认退款金额时实际冲减的未收应收。冲减后各期 plan.amount 会同步变小。
+    #: 确认退款总额时实际冲减的未收应收。冲减后各期 plan.amount 会同步变小。
     offset_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
     #: 应退给客户的现金 = total_amount - offset_amount。
     refund_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
