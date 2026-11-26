@@ -843,13 +843,46 @@ export default function WeComPage() {
                     ))}
                   </div>
                 )}
+              {canManage && active && (
+                // 针对当前联系人的出口：放在联系人卡片里，和「谁加的、为什么扣住」挨着
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, paddingTop: 12, marginTop: 'auto' }}>
+                  {canSearchCustomers && (
+                    <Button theme="outline" onClick={() => {
+                      bindMutation.reset()
+                      setCustomerSearch('')
+                      setCustomerKeyword('')
+                      setBindTarget(null)
+                      setManualBindContact(active)
+                    }}>搜索已有客户</Button>
+                  )}
+                  {canCreateCustomers && <Button
+                    onClick={() => {
+                      createMutation.reset()
+                      setCreateForm({
+                        name: active.corp_name || active.name || '',
+                        region: '',
+                        level: '',
+                        owner_id: null,
+                      })
+                      setCreateContact(active)
+                    }}
+                  >
+                    创建新客户
+                  </Button>}
+                  <Popconfirm title={`将「${active.name || '未命名联系人'}」移出待确认？`}
+                    content="企微联系人资料会保留，这条记录将从待确认列表移出。"
+                    disabled={ignoreMutation.isPending} onConfirm={() => ignoreMutation.mutate(active)}>
+                    <Button theme="borderless" loading={ignoreMutation.isPending}>移出待确认</Button>
+                  </Popconfirm>
+                </div>
+              )}
               </div>
             </>
           )}
         </SectionCard>
 
-        {/* 右：系统候选客户。候选列表在上、两个操作按钮贴底 ——
-            否则卡片拉高以后，按钮会悬在半空、下面空出一截。 */}
+        {/* 右：系统候选客户。这里只放「可能匹配的已有客户」，
+            针对当前联系人的操作按钮已经移到上面的联系人卡片里。 */}
         <SectionCard style={{ display: 'flex', flexDirection: 'column' }}>
           <div style={{ fontWeight: 600, marginBottom: 10 }}>可能匹配的 CRM 客户</div>
           {!active ? (
@@ -907,41 +940,6 @@ export default function WeComPage() {
                   </div>
                 ))}
               </div>
-
-              {canManage && active && (
-                // 两个出口原来各占一整行、通栏灰块，像张表单；并排放在一行就够了。
-                // marginTop:auto：卡片被拉到半栏高时，按钮贴底，不悬在中间。
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, paddingTop: 12, marginTop: 'auto' }}>
-                  {canSearchCustomers && (
-                    <Button theme="outline" onClick={() => {
-                      bindMutation.reset()
-                      setCustomerSearch('')
-                      setCustomerKeyword('')
-                      setBindTarget(null)
-                      setManualBindContact(active)
-                    }}>搜索已有客户</Button>
-                  )}
-                  {canCreateCustomers && <Button
-                    onClick={() => {
-                      createMutation.reset()
-                      setCreateForm({
-                        name: active.corp_name || active.name || '',
-                        region: '',
-                        level: '',
-                        owner_id: null,
-                      })
-                      setCreateContact(active)
-                    }}
-                  >
-                    创建新客户
-                  </Button>}
-                  <Popconfirm title={`将「${active.name || '未命名联系人'}」移出待确认？`}
-                    content="企微联系人资料会保留，这条记录将从待确认列表移出。"
-                    disabled={ignoreMutation.isPending} onConfirm={() => ignoreMutation.mutate(active)}>
-                    <Button theme="borderless" loading={ignoreMutation.isPending}>移出待确认</Button>
-                  </Popconfirm>
-                </div>
-              )}
             </>
           )}
         </SectionCard>
