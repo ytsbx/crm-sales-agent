@@ -47,6 +47,12 @@ REVIEWER = make_user(
     permissions=("order:assign", "order:view", "payment:view"),
     roles=("sales_manager",),
 )
+FINANCE = make_user(
+    3,
+    data_scope="all",
+    permissions=("order:manage", "payment:manage"),
+    roles=("finance",),
+)
 
 class AsyncSession(SyncSessionAsAsync):
     async def delete(self, obj):
@@ -182,6 +188,42 @@ def test_return_over_quantity_and_cancel_frees_it(db):
     assert again.goods_amount == D("30.00")
 
 
+def test_same_product_across_batches_does_not_double_count_reference(db):
+    """同一产品分两批发 5+5，一次退 10：参考金额应是 100，不是 200。"""
+    s, order, item, batch_item, plans = db
+    batch_item.shipped_qty = D("5")
+    second_batch = OrderShipmentBatch(
+        id=2,
+        order_id=1,
+        batch_no=2,
+        status="shipped",
+        actual_ship_date=date(2026, 11, 22),
+        created_at=NOW,
+    )
+    second_item = OrderShipmentBatchItem(
+        id=2,
+        batch_id=2,
+        order_item_id=1,
+        sku_snapshot="SKU-R1",
+        planned_qty=D("5"),
+        shipped_qty=D("5"),
+    )
+    s._session.add_all([second_batch, second_item])
+    s._session.flush()
+    row = run(svc.create_return(
+        s, USER, order,
+        ReturnCreate(
+            reason_code="customer_rejected",
+            reason="客户整单退回",
+            items=[
+                ReturnItemInput(shipment_batch_item_id=1, quantity=D("5")),
+                ReturnItemInput(shipment_batch_item_id=2, quantity=D("5")),
+            ],
+        ),
+    ))
+    assert row.goods_amount == D("100.00")
+
+
 def test_settle_offsets_unpaid_then_refunds_paid_part(db):
     s, order, item, batch_item, plans = db
     # 收 40 元（分配到第一期 30、第二期 10），退 100：未收 60 先冲，剩下 40 退现。
@@ -224,6 +266,18 @@ def test_settle_offsets_unpaid_then_refunds_paid_part(db):
     ).scalars().all()
     assert len(adjustments) == 1
     assert adjustments[0].plan_id == 2 and adjustments[0].applied_amount == D("60.00")
+
+
+def test_finance_cannot_set_refund_amount(db):
+    """退多少钱必须由业务员/主管谈；财务有 order:manage 也不能借这个口子改金额。"""
+    s, order, item, batch_item, plans = db
+    row = run(svc.create_return(s, USER, order, _payload("3")))
+    _approve(s, row)
+    with pytest.raises(AppError, match="只能由业务员或主管填写"):
+        run(svc.settle_return(
+            s, FINANCE, row, settled_goods_amount=D("30.00"),
+            freight_refund_amount=D("0"), settlement_note="财务想直接填",
+        ))
 
 
 def test_refund_must_be_registered_then_cannot_void(db):

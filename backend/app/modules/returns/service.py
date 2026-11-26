@@ -2,7 +2,7 @@
 
 把“登记”和“核销”分开：
 1. 业务员/主管登记：只锁数量、算货款，不动钱；
-2. 业务员/主管/财务填最终退款金额：先抵未收应收，剩余转待退款；运费按谈好的总数一并填入，不单独建模；
+2. 业务员/主管填最终退款金额：先抵未收应收，剩余转待退款；运费按谈好的总数一并填入，不单独建模；
 3. 财务确认退款：钱真的付出去后才标记；
 4. 登记可取消，确认退款金额后可作废并冲回；已退款不能作废。
 
@@ -98,28 +98,6 @@ async def _active_quantities(
         )
     ).all()
     return {int(bid): _quantity(qty) for bid, qty in rows}
-
-
-async def _active_item_amounts(
-    session: AsyncSession, order_item_ids: list[int]
-) -> dict[int, Decimal]:
-    if not order_item_ids:
-        return {}
-    rows = (
-        await session.execute(
-            select(
-                SalesReturnItem.order_item_id,
-                func.coalesce(func.sum(SalesReturnItem.amount), 0),
-            )
-            .join(SalesReturn, SalesReturn.id == SalesReturnItem.return_id)
-            .where(
-                SalesReturnItem.order_item_id.in_(order_item_ids),
-                SalesReturn.status.in_(ACTIVE_RETURN_STATUSES),
-            )
-            .group_by(SalesReturnItem.order_item_id)
-        )
-    ).all()
-    return {int(oid): _money(amount) for oid, amount in rows}
 
 
 async def returnable_overview(session: AsyncSession, order_id: int) -> dict:
@@ -271,9 +249,6 @@ async def create_return(
         )
 
     active_qty = await _active_quantities(session, ids)
-    active_amount = await _active_item_amounts(
-        session, [int(batch_item.order_item_id) for batch_item, _, _ in rows]
-    )
     result_items: list[SalesReturnItem] = []
     goods_amount = ZERO
     for request_item in payload.items:
@@ -292,15 +267,13 @@ async def create_return(
         order_qty = _quantity(order_item.quantity)
         if order_qty <= 0:
             raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "订单明细数量为 0，无法计算退货金额", 422)
-        already_amount = active_amount.get(int(order_item.id), ZERO)
-        if qty >= remaining - UNIT:
-            # 最后一批按“订单明细剩余金额”倒算，避免多行单价四舍五入后差几分钱。
-            amount = _money((order_item.amount or ZERO) - already_amount)
-        else:
-            unit_price = (Decimal(order_item.amount or 0) / order_qty).quantize(
-                UNIT, rounding=ROUND_HALF_UP
-            )
-            amount = _money(qty * unit_price)
+        # 参考金额一律按“订单明细单价 × 本次数量”算。
+        # 同一产品分批发货、界面又只让填一个总数时，payload 会被拆成多条批次明细；
+        # 不能再对“最后一条”倒算整单剩余金额，否则同一产品会被重复算钱。
+        unit_price = (Decimal(order_item.amount or 0) / order_qty).quantize(
+            UNIT, rounding=ROUND_HALF_UP
+        )
+        amount = _money(qty * unit_price)
         if amount <= 0:
             raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "退货金额必须大于 0", 422)
         result_items.append(
@@ -502,6 +475,15 @@ async def settle_return(
     settlement_note: str | None,
     ip: str | None = None,
 ) -> SalesReturn:
+    # 2026-11-26 主人拍板：退多少钱由业务员/主管和客户谈，财务只核对和登记实际退款。
+    # 财务有 payment:manage，不能靠权限码区分，这里按角色拦住财务直接改金额。
+    roles = set(user.roles or ())
+    if "admin" not in roles and "salesperson" not in roles and not user.has("order:assign"):
+        raise AppError(
+            ErrorCode.FORBIDDEN,
+            "退款金额只能由业务员或主管填写；财务只负责核对和登记实际退款",
+            403,
+        )
     if row.status != "pending":
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
@@ -513,7 +495,7 @@ async def settle_return(
             ErrorCode.STATUS_NOT_ALLOWED, "本项目只支持人民币退货", 422
         )
     order = await get_order_or_404(session, row.order_id)
-    # 2026-11-26 主人拍板：只填一个“最终退款金额”，由业务员/主管/财务按和客户谈好的总数人工填写；系统不按单价折算，也不再单列运费。
+    # 2026-11-26 主人拍板：只填一个“最终退款金额”，由业务员/主管按和客户谈好的总数人工填写；系统不按单价折算，也不再单列运费。
     goods_total = _money(settled_goods_amount)
     freight_total = _money(freight_refund_amount)
     total = _money(goods_total + freight_total)
