@@ -6391,3 +6391,4 @@
 - 内容：退货财务手动结算（7c51b7a0）、退货状态文案「待财务结算」（2d73edb9）、企微跟进关系同步改后台任务（91ae70b5）、待确认联系人原因提示（99efe52d/89dab997）、OA 登录 hash 修复（816cd7ed）、完成交付原因与寄样审批测试夹具（5400a063）。
 - 部署后核验：`crm-sales.service` active；`/health` 数据库 ok；公网 `https://crm.mandla.cn/` 200；`DEPLOYED_COMMIT` 与 `WEB_DEPLOYED_COMMIT` 均为 829c60e0cc50167926bb73d767e8933bade3f5b6；`RELEASE.json` status=verified；数据库 `alembic_version` 仍为 a1c4e8f2b6d9。
 - 待办：生产企微跟进关系镜像仍停在 2026-10-15，部署后可在「企业微信 → 更新企微数据」触发一次后台同步（依赖服务器 IP 在企微白名单内），再重新预览导入。
+- 部署期间分支新增文案修复 `8fce7c99`（复核提示统一为待财务结算）；已另构建 `abc84277` 包（SHA256 `68ef0d8a…1788`）并完成预检（`preflight_only`），正式执行被生产部署拦截，待授权发布。
