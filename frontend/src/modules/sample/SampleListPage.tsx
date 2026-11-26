@@ -343,7 +343,7 @@ function sampleNextStep(row: SampleRequestRow) {
       ? { hint: '打开同序 OA 进度确认当前审批阶段。审批通过后，再登记制作完成。', action: 'oa', label: '查看 OA 进度' }
       : { hint: oa?.requires_self_oa
           ? '这个修订版需要单独审批。补齐本版打样资料后，提交同序 OA。'
-          : '草稿还未送审。补齐资料后，单独发起审批，或选择本单的原询价审批继续办理。',
+          : '还没提交审批。补齐资料后，单独发起审批，或选择本单的原询价审批继续办理。',
         action: 'oa', label: '填写或提交 OA 申请' }
   }
   if (row.status === 'rejected') return {

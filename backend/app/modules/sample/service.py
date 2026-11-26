@@ -154,14 +154,21 @@ def serialize_request(
     approval = ship_approval or {}
     # 现有产品没有"打样草稿"这一说：它们还没走寄样审批时，状态就叫「待寄样审批」，
     # 免得业务员以为要先去填同序 OA 打样资料。
-    status_label = (
-        "打样草稿"
-        if (request.source_context or {}).get("dingtalk_oa")
-        and not (request.source_context or {})["dingtalk_oa"].get("submitted")
-        else SAMPLE_STATUS_LABEL.get(request.status, request.status)
-    )
-    if not is_custom and request.status == "pending":
-        status_label = "待寄样审批"
+    meta = (request.source_context or {}).get("dingtalk_oa") or {}
+    if request.status == "pending":
+        if not is_custom:
+            # 现有产品：交了寄样申请才是「待寄样审批」，没交是「待提交寄样申请」
+            status_label = (
+                "待寄样审批" if approval.get("status") == "pending" else "待提交寄样申请"
+            )
+        elif meta and not meta.get("submitted"):
+            status_label = "待提交审批"
+        elif meta.get("submitted"):
+            status_label = "待 OA 审批"
+        else:
+            status_label = SAMPLE_STATUS_LABEL.get(request.status, request.status)
+    else:
+        status_label = SAMPLE_STATUS_LABEL.get(request.status, request.status)
     return {
         "id": request.id,
         # 原版锁定与可打开的修订版分别判断。

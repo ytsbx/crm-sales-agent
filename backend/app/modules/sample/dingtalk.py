@@ -150,6 +150,30 @@ class Draft(BaseModel):
     resubmit: bool = False
 
 
+def _serialize_linked_inquiry_status(row: OaInstance) -> dict:
+    """无报价权限的接手人：只给原询价审批的**状态**，不暴露询价明细/金额/操作。"""
+    payload = oa.serialize(row)
+    return {
+        "id": row.id,
+        "inquiry_id": row.inquiry_id,
+        "inquiry_version": row.inquiry_version,
+        "oa_type": row.oa_type,
+        "provider": row.provider or "self_oa",
+        # instance_id 置空：前端就不会对这张单触发自动同步/「立即同步」，
+        # 避免用样品权限去调报价审批的同步接口
+        "instance_id": None,
+        "status": row.status,
+        "status_label": payload.get("status_label", row.status),
+        "submit_round": row.submit_round,
+        "attempt_count": 0,
+        "result": None,
+        "error": None,
+        "sync_notice": "当前账号只能查看原询价审批的状态；询价明细请在原询价审批中查看。",
+        "allowed_actions": [],
+        "synced_at": row.synced_at.isoformat() if row.synced_at else None,
+    }
+
+
 @router.get('/samples/{sample_id}/dingtalk')
 async def detail(sample_id:int,user:CurrentUser=Depends(require_permission('sample:manage')),session:AsyncSession=Depends(get_db)):
     sample=await service.get_visible_or_404(session,user,sample_id)
@@ -181,6 +205,15 @@ async def detail(sample_id:int,user:CurrentUser=Depends(require_permission('samp
         if meta['source_oa_id'] in {r['id'] for r in candidates}:
             row=await session.get(OaInstance,meta['source_oa_id'])
             if row:records=[oa.serialize(row)]
+        elif not user.has('quote:view'):
+            # 转交后接手人只有打样权限：允许看原审批**状态**（否则样品卡在哪一步都不知道），
+            # 但只给状态，不给询价明细/金额/操作。
+            row=await session.get(OaInstance,meta['source_oa_id'])
+            if row is not None and row.oa_type=='inquiry':
+                from app.modules.inquiry.model import CustomInquiry
+                inquiry=await session.get(CustomInquiry,row.inquiry_id)
+                if inquiry is None or inquiry.customer_id in (None,sample.customer_id):
+                    records=[_serialize_linked_inquiry_status(row)]
     else:
         records=[oa.serialize(row) for row in (await session.scalars(select(OaInstance).where(
             OaInstance.inquiry_id==sample.id,OaInstance.inquiry_version==int(sample.version or 1),OaInstance.oa_type=='sample').order_by(OaInstance.id.desc()))).all()]

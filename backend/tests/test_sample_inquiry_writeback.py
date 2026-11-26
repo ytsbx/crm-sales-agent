@@ -132,3 +132,37 @@ async def test_item_without_sku_is_treated_as_custom(db_session):
     item.sku_id = 3
     db_session.commit()
     assert await sample_service.sample_is_custom(SyncSessionAsAsync(db_session), sample) is False
+
+
+def test_pending_status_label_distinguishes_not_submitted_and_in_oa():
+    from app.modules.sample.service import serialize_request
+
+    def label(submitted, is_custom=True, ship_approval=None):
+        sample = SampleRequest(
+            id=7, status='pending', owner_id=1, version=1,
+            source_context={'dingtalk_oa': {'mode': 'standalone', 'fields': {},
+                                           'submitted': submitted}},
+        )
+        return serialize_request(sample, is_custom=is_custom, ship_approval=ship_approval)['status_label']
+
+    assert label(False) == '待提交审批'
+    assert label(True) == '待 OA 审批'
+    assert label(False, is_custom=False) == '待提交寄样申请'
+    assert label(False, is_custom=False, ship_approval={'status': 'pending'}) == '待寄样审批'
+
+
+def test_linked_inquiry_status_view_hides_details():
+    from app.modules.dingtalk.model import OaInstance
+
+    row = OaInstance(
+        id=3, inquiry_id=1, inquiry_version=1, oa_type='inquiry', provider='self_oa',
+        instance_id='oa-3', status='approved', submit_round=1, idempotency_key='k',
+        attempt_count=1, result={'secret': '询价明细'}, synced_at=datetime.now(UTC),
+        created_at=datetime.now(UTC),
+    )
+    payload = sample_approval._serialize_linked_inquiry_status(row)
+    assert payload['status'] == 'approved'
+    assert payload['instance_id'] is None
+    assert payload['result'] is None
+    assert payload['allowed_actions'] == []
+    assert '状态' in payload['sync_notice']
