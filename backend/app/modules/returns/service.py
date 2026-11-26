@@ -382,7 +382,7 @@ async def review_return(
     note: str | None,
     ip: str | None = None,
 ) -> SalesReturn:
-    """主管复核：通过后进入“待登记退款”，驳回则释放占用的可退数量。
+    """主管复核：通过后进入“待财务结算”，驳回则释放占用的可退数量。
 
     2026-11-26 主人拍板：退款金额在登记时已填，主管通过后不再另设“填金额”步骤。
     历史旧单没有金额的，仍落到 `pending`，由财务/业务员补填后再处理。
@@ -417,7 +417,7 @@ async def review_return(
             + (
                 f"退款金额 {format(row.settled_goods_amount or ZERO, '.2f')} 元，待财务登记退款。"
                 if row.status == "completed"
-                else "待填退款金额。"
+                else "待填退货总额。"
             )
         )
     else:

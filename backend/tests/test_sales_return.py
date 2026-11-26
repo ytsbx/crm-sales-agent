@@ -410,7 +410,7 @@ def test_void_new_return_keeps_plans_unchanged(db):
 
 
 def test_legacy_pending_return_can_fill_amount_and_goes_completed(db):
-    """兼容历史旧单：没有金额的 pending 单，财务补填后进入待登记退款。"""
+    """兼容历史旧单：没有金额的 pending 单，财务补填后进入待财务结算。"""
     s, order, item, batch_item, plans = db
     row = run(svc.create_return(s, USER, order, _payload("3", "30")))
     row.status = "pending"

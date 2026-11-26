@@ -131,7 +131,7 @@ async def review_return(
         f"退货单 {row.return_no} 已通过复核，待财务登记退款"
         if row.status == "completed"
         else (
-            f"退货单 {row.return_no} 已通过复核，待填退款金额"
+            f"退货单 {row.return_no} 已通过复核，待财务结算"
             if row.status == "pending"
             else f"退货单 {row.return_no} 已驳回，可退数量已释放"
         )

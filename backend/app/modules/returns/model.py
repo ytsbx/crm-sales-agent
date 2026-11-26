@@ -34,8 +34,8 @@ from app.core.base import Base, IdMixin, TimestampMixin
 RETURN_STATUS_LABEL = {
     "reviewing": "待主管复核",
     #: 兼容历史旧单：金额还没填。新退货在登记时已填金额，不会落到这个状态。
-    "pending": "待填退款金额（历史单）",
-    "completed": "待登记退款",
+    "pending": "待填退货总额（历史单）",
+    "completed": "待财务结算",
     "refunded": "已退款",
     "settled": "已结算",
     "rejected": "主管驳回",
