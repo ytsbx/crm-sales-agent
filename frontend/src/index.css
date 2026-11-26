@@ -2901,26 +2901,9 @@ table:not(.semi-table) td {
    三张卡底边也各不相齐（2026-11-18 主人："空的太多了，也没有对齐"）。
    现在右半区两块叠进同一列，名单多长只影响这一列自己的高度，不会再撕出两截。 */
 .wecom-split {
-  /* 两栏各自定高、对齐；高度放在卡片上，放在外层容器上会被内容撑破。 */
-  align-items: stretch;
-}
-.wecom-pane {
-  height: min(60vh, 600px);
-}
-.wecom-pane-left {
-  overflow: hidden;
-}
-.wecom-pane-right {
-  overflow-y: auto;
-}
-@media (max-width: 900px) {
-  .wecom-pane {
-    height: auto;
-  }
-  .wecom-pane-left,
-  .wecom-pane-right {
-    overflow: visible;
-  }
+  /* 右卡按内容高度，左卡由组件把高度同步成同样高；不再给两栏写死高度，
+     右卡里和页面下都不会留出空白。 */
+  align-items: flex-start;
 }
 .wecom-side {
   /* 右半区占两栏宽：详情和疑似客户都宽一点，字段不用再挤在 220px 里 */

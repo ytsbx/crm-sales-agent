@@ -215,6 +215,25 @@ export default function WeComPage() {
     queryFn: () => getUnboundCandidates(activeId!),
     enabled: canViewCustomers && Boolean(activeId),
   })
+  // 右卡不写死高度；量出它的实际高度同步给左卡，两栏底边对齐，
+  // 右卡里和页面下都不会留白。
+  const sideRef = useRef<HTMLDivElement | null>(null)
+  const [leftPaneHeight, setLeftPaneHeight] = useState<number | undefined>(undefined)
+  useEffect(() => {
+    const element = sideRef.current
+    if (!element) return
+    const sync = () => {
+      setLeftPaneHeight(window.innerWidth > 900 ? Math.round(element.getBoundingClientRect().height) : undefined)
+    }
+    sync()
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(sync)
+    observer?.observe(element)
+    window.addEventListener('resize', sync)
+    return () => {
+      observer?.disconnect()
+      window.removeEventListener('resize', sync)
+    }
+  }, [activeId, candidatesQuery.data])
   const matchingCustomersQuery = useQuery({
     queryKey: ['wecom-customer-search', customerKeyword],
     queryFn: () => listCustomers({ keyword: customerKeyword, status: 'active', page: 1, page_size: 20 }),
@@ -631,7 +650,7 @@ export default function WeComPage() {
       )}
       <div className="split-multi wecom-split" style={{ gap: 16 }}>
         {/* 左：待处理外部联系人 */}
-        <SectionCard id="wecom-contact-review" className="wecom-pane wecom-pane-left" style={{ display: 'flex', flexDirection: 'column' }}>
+        <SectionCard id="wecom-contact-review" style={{ display: 'flex', flexDirection: 'column', height: leftPaneHeight, overflow: 'hidden' }}>
           <div className="crm-help-label" style={{ fontWeight: 600, marginBottom: 10 }}>
             待确认联系人
             <HelpTip forLabel="待确认联系人" text="这些是已同步的企微联系人。确认后可以关联到已有客户，也可以新建客户档案。" />
@@ -737,10 +756,10 @@ export default function WeComPage() {
             右边两栏底下拖出一大块灰底空白，三张卡底边也互相对不齐
             （2026-11-18 主人："空的太多了，也没有对齐"）。叠起来以后右半区
             自己成一块，左边名单多长都不会把右边撕成两截。 */}
-        <div className="wecom-side">
+        <div className="wecom-side" ref={sideRef}>
         {/* 中：企业微信详情。纵向弹性 + 底下那块 margin-top auto：
             卡片被拉到与左栏等高后，内容不会全挤在上半截、下半截空一大片。 */}
-        <SectionCard className="wecom-pane wecom-pane-right" style={{ display: 'flex', flexDirection: 'column' }}>
+        <SectionCard style={{ display: 'flex', flexDirection: 'column' }}>
           {!active ? (
             <Empty description="请先在待确认列表选择联系人" />
           ) : (
