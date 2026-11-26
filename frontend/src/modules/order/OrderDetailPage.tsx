@@ -3440,7 +3440,7 @@ export default function OrderDetailPage() {
               disabled={!settleGoodsValid}
               blockedReasons={
                 !settleGoodsValid
-                  ? ['请填写最终退款金额（大于 0，最多 2 位小数）']
+                  ? ['请填写这次退货的总金额（大于 0，最多 2 位小数）']
                   : []
               }
               loading={settleReturnMutation.isPending}
@@ -3470,12 +3470,12 @@ export default function OrderDetailPage() {
               系统拿这笔钱先抵客户还没付的欠款，剩余部分转成“待退款”。退款实际付出后，再回来登记流水。
             </div>
             <div>
-              <FormLabel required>最终退款金额（和客户谈好的总数）</FormLabel>
+              <FormLabel required>这次退货总共算多少钱（含货款和运费）</FormLabel>
               <Input
                 inputMode="decimal"
                 value={settleGoodsAmount}
                 onChange={setSettleGoodsAmount}
-                placeholder="例如 500.00"
+                placeholder="例如 1000.00"
               />
               {settleGoodsValid && Number(settleGoodsAmount) !== Number(settleTarget.goods_amount_exact) && (
                 <div style={{ marginTop: 6, fontSize: 12, color: 'var(--crm-text-3)' }}>
