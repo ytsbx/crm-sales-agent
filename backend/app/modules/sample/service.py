@@ -19,6 +19,7 @@ from app.modules.sample.model import (
     CONFIRM_STATUS_LABEL,
     can_delete_sample,
     can_terminate_sample,
+    SHIP_APPROVAL_LABEL,
     SAMPLE_STATUS_LABEL,
     SAMPLE_TRANSITIONS,
     SampleItem,
@@ -107,6 +108,32 @@ def serialize_shipment(shipment: SampleShipment) -> dict:
     }
 
 
+def ship_approval(sample: SampleRequest) -> dict:
+    """现有产品寄样审批快照（没有申请过时返回空 dict）。"""
+    return (sample.source_context or {}).get("ship_approval") or {}
+
+
+async def sample_is_custom(session: AsyncSession, sample: SampleRequest) -> bool:
+    """这张打样单是不是定制件（有定制需求/询价来源）。
+
+    定制件的寄样前提是**原询价审批**；现有产品没有定制审批，走 CRM 内部寄样审批
+    （2026-11-26 主人口径）。判据看两处：来源上下文是询价，或任一明细挂在定制需求上。
+    """
+    if (sample.source_context or {}).get("type") == "inquiry":
+        return True
+    row = (
+        await session.execute(
+            select(SampleItem.id)
+            .where(
+                SampleItem.sample_request_id == sample.id,
+                SampleItem.inquiry_id.is_not(None),
+            )
+            .limit(1)
+        )
+    ).first()
+    return row is not None
+
+
 def serialize_request(
     request: SampleRequest,
     *,
@@ -117,8 +144,10 @@ def serialize_request(
     shipments: list[dict] | None = None,
     superseded_by: int | None = None,
     revision_locked: bool = False,
+    is_custom: bool = False,
 ) -> dict:
     basis = basis_state(request)
+    approval = (request.source_context or {}).get("ship_approval") or {}
     return {
         "id": request.id,
         # 原版锁定与可打开的修订版分别判断。
@@ -150,6 +179,13 @@ def serialize_request(
         # 不参与查询与统计，没必要为它改表结构。
         "terminated_at": ((request.source_context or {}).get("termination") or {}).get("at"),
         "terminate_reason": ((request.source_context or {}).get("termination") or {}).get("reason"),
+        # 定制件 / 现有产品：前者寄样凭原询价审批，后者凭 CRM 内的寄样审批
+        "is_custom": is_custom,
+        "ship_approval": approval or None,
+        "ship_approval_status": approval.get("status"),
+        "ship_approval_status_label": (
+            SHIP_APPROVAL_LABEL.get(approval.get("status")) if approval else None
+        ),
         "feedback": request.feedback,
         # ---- 生产打样资料（文档 §3.5）----
         # 材质 / 工艺 / 图纸版本不在这里：它们逐行不同，挂在明细上（见 items）。
@@ -246,6 +282,7 @@ def build_list_stmt(
     opportunity_id: int | None = None,
     owner_id: int | None = None,
     include_deleted: bool = False,
+    ship_approval_status: str | None = None,
 ) -> Select:
     stmt = base_query()
     # 软删（2026-10-15）：默认只看**没删的**；`include_deleted=True` 时**只看删了的**。
@@ -264,6 +301,12 @@ def build_list_stmt(
         stmt = stmt.where(SampleRequest.opportunity_id == opportunity_id)
     if owner_id:
         stmt = stmt.where(SampleRequest.owner_id == owner_id)
+    if ship_approval_status:
+        # 主管找"待我批"的寄样申请：只按 JSON 里的状态筛（PostgreSQL / SQLite 都支持）
+        stmt = stmt.where(
+            SampleRequest.source_context["ship_approval"]["status"].as_string()
+            == ship_approval_status
+        )
     if keyword:
         # 样品单没有单号字段（ER §13 未定义），所以关键词只搜客户名与商机标题
         _kw = keyword.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -508,6 +551,10 @@ async def list_payload(
 
     payload = []
     for row in rows:
+        row_items = items_by_request.get(row.id, [])
+        is_custom = (row.source_context or {}).get("type") == "inquiry" or any(
+            item.inquiry_id for item in row_items
+        )
         data = serialize_request(
             row,
                 customer_name=customers.get(row.customer_id) if row.customer_id else None,
@@ -525,6 +572,7 @@ async def list_payload(
             ],
             superseded_by=child_of.get(row.id),
             revision_locked=row.id in locked_ids,
+            is_custom=is_custom,
         )
         # 「这张单子的附件还能不能上传」（2026-10-08）：
         # 制作/寄出之后新附件只能标「后续补充资料」，界面据此决定上传时带什么类别。

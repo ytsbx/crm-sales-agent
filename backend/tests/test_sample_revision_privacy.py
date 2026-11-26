@@ -26,7 +26,8 @@ async def test_private_revision_does_not_expose_link_on_parent_read_or_write(db_
     async def normal_list(user, include_history=False):
         return (await router.list_samples(
             keyword=None, status=None, customer_id=None, opportunity_id=None, owner_id=None,
-            include_history=include_history, include_deleted=False, page=1, page_size=20,
+            include_history=include_history, include_deleted=False,
+            ship_approval_status=None, page=1, page_size=20,
             user=user, session=session,
         ))["data"]["items"]
 

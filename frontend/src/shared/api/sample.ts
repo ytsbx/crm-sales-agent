@@ -152,6 +152,22 @@ export interface SampleRequestRow {
   /** 终止时间与原因（终止后保留，供详情展示；没终止时为 null）。 */
   terminated_at?: string | null
   terminate_reason?: string | null
+  /** 是不是定制件：定制走原询价审批；现有产品走 CRM 内的寄样审批。 */
+  is_custom?: boolean
+  /** 现有产品寄样审批快照（申请/批准/驳回），定制件为 null。 */
+  ship_approval?: {
+    status: 'pending' | 'approved' | 'rejected' | string
+    applicant_id?: number | null
+    applied_at?: string | null
+    carrier?: string | null
+    shipping_fee?: string | null
+    note?: string | null
+    approver_id?: number | null
+    decided_at?: string | null
+    comment?: string | null
+  } | null
+  ship_approval_status?: string | null
+  ship_approval_status_label?: string | null
   items: SampleItem[]
   shipments: SampleShipment[]
 }
@@ -164,6 +180,8 @@ export function listSamples(query: {
   owner_id?: number
   /** 只看已软删的（「已删除」那个筛选项用）；不传 = 只看没删的 */
   include_deleted?: boolean
+  /** 按寄样审批状态筛（主管找"待我批"的用 pending） */
+  ship_approval_status?: string
   page?: number
   page_size?: number
 }) {
@@ -240,6 +258,23 @@ export function feedbackSample(id: number, feedback: string) {
 /** 终止打样（K3）：必须填原因；只改状态与原因，制作/寄送事实保留。 */
 export function terminateSample(id: number, reason: string) {
   return api.post<SampleRequestRow>(`/samples/${id}/terminate`, { reason })
+}
+
+// ---- 现有产品寄样审批（定制件走原询价审批，不用这三个） ----
+
+export function applySampleShipApproval(
+  id: number,
+  payload: { carrier?: string | null; shipping_fee: number | string; note?: string | null },
+) {
+  return api.post<SampleRequestRow>(`/samples/${id}/ship-approval`, payload)
+}
+
+export function approveSampleShipApproval(id: number, comment?: string) {
+  return api.post<SampleRequestRow>(`/samples/${id}/ship-approval/approve`, { comment })
+}
+
+export function rejectSampleShipApproval(id: number, comment: string) {
+  return api.post<SampleRequestRow>(`/samples/${id}/ship-approval/reject`, { comment })
 }
 
 /**

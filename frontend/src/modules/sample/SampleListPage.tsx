@@ -38,6 +38,8 @@ import { getOpportunity, listOpportunities } from '../../shared/api/opportunity'
 import { listSkusForPricing } from '../../shared/api/pricing'
 import {
   addSampleItem,
+  applySampleShipApproval,
+  approveSampleShipApproval,
   confirmSample,
   createSample,
   deleteSample,
@@ -46,6 +48,7 @@ import {
   listSamples,
   listSampleTransferOptions,
   madeSample,
+  rejectSampleShipApproval,
   restoreSample,
   reviseSample,
   shipSample,
@@ -90,6 +93,8 @@ const STATUS_COLOR: Record<string, TagTone> = {
  * 用一个一眼认得出的哨兵值，别拿 `'deleted'` 冒充状态 —— 那会和真状态混起来。
  */
 const DELETED_STATUS_OPTION = '__deleted__'
+/** 「寄样待审批」也不是状态值：选中时按 `ship_approval_status=pending` 筛。 */
+const SHIP_PENDING_STATUS_OPTION = '__ship_pending__'
 
 const STATUS_OPTIONS = [
   { value: 'pending', label: '待审批' },
@@ -279,6 +284,15 @@ function sampleNextStep(row: SampleRequestRow) {
       : '原版记录已锁定，可查看制作与寄送记录。如需继续办理，请联系负责人。' }
   }
   if (row.status === 'pending') {
+    if (row.is_custom === false) {
+      if (row.ship_approval_status === 'pending') {
+        return { hint: '寄样申请已提交，等主管批准后即可登记寄样。', action: 'work', label: '查看寄样审批' }
+      }
+      if (row.ship_approval_status === 'rejected') {
+        return { hint: '寄样申请被驳回，按驳回原因修改后可重新提交。', action: 'work', label: '重新提交寄样申请' }
+      }
+      return { hint: '现有产品寄样需要主管批准：先提交寄样申请（承运商、运费），批准后登记寄样。', action: 'work', label: '提交寄样申请' }
+    }
     return oa?.submitted
       ? { hint: '打开同序 OA 进度确认当前审批阶段。审批通过后，再登记制作完成。', action: 'oa', label: '查看 OA 进度' }
       : { hint: oa?.requires_self_oa
@@ -291,9 +305,16 @@ function sampleNextStep(row: SampleRequestRow) {
     action: 'oa',
     label: '查看 OA 审批意见',
   }
-  if (row.status === 'approved') return row.made_at
-    ? { hint: '样品寄出后，填写承运商、快递单号及运费，登记寄样。', action: 'work', label: '去登记寄样' }
-    : { hint: '等车间完成实物制作后，登记制作完成并选取实际使用的图纸或确认件。', action: 'work', label: '去登记制作' }
+  if (row.status === 'approved') {
+    if (row.is_custom === false) {
+      return row.ship_approval_status === 'approved'
+        ? { hint: '寄样已批准。寄出后登记承运商与快递单号（运费按批准金额记录）。', action: 'work', label: '去登记寄样' }
+        : { hint: '现有产品寄样需要主管批准：先提交寄样申请并等待批准。', action: 'work', label: '提交寄样申请' }
+    }
+    return row.made_at
+      ? { hint: '样品寄出后，填写承运商、快递单号及运费，登记寄样。', action: 'work', label: '去登记寄样' }
+      : { hint: '等车间完成实物制作后，登记制作完成并选取实际使用的图纸或确认件。', action: 'work', label: '去登记制作' }
+  }
   if (row.status === 'shipped') return { hint: '客户收到样品后，登记签收。客户对样品的最终决定在「客户确认」另记。', action: 'work', label: '去登记签收' }
   if (row.status === 'signed' && row.confirm_status === 'pending') {
     return { hint: '样品已经签收。等客户明确接受或未通过，到「客户确认」登记结论。', action: 'confirm', label: '去登记客户确认' }
@@ -305,7 +326,7 @@ function sampleNextStep(row: SampleRequestRow) {
 
 export default function SampleListPage() {
   const queryClient = useQueryClient()
-  const { can } = usePermissions()
+  const { can, isReviewer } = usePermissions()
   const canManage = can('sample:manage')
   const workActionsRef = useRef<HTMLDivElement>(null)
   const customerConfirmRef = useRef<HTMLDivElement>(null)
@@ -362,6 +383,14 @@ export default function SampleListPage() {
   // 终止打样（K3）：二次确认弹窗 + 必填原因
   const [terminateVisible, setTerminateVisible] = useState(false)
   const [terminateReason, setTerminateReason] = useState('')
+  // 现有产品寄样审批：申请表单与驳回原因
+  const [shipApprovalForm, setShipApprovalForm] = useState({
+    carrier: '',
+    shipping_fee: '',
+    note: '',
+  })
+  const [shipRejectVisible, setShipRejectVisible] = useState(false)
+  const [shipRejectReason, setShipRejectReason] = useState('')
   const [newItem, setNewItem] = useState<ItemDraft>({ quantity: '1' })
   // 生产打样资料（文档 §3.5）：跟单在这一栏把车间要的东西补全，
   // 打样需求单出图时逐项带给车间。
@@ -394,12 +423,14 @@ export default function SampleListPage() {
 
   // 选了「已删除」就换一套参数：走 `include_deleted`，而不是拿它当状态传给后端
   const deletedOnly = status === DELETED_STATUS_OPTION
+  const shipPendingOnly = status === SHIP_PENDING_STATUS_OPTION
   const query = useQuery({
     queryKey: ['samples', { status, keyword, page, pageSize }],
     queryFn: () =>
       listSamples({
-        status: deletedOnly ? undefined : status,
+        status: deletedOnly || shipPendingOnly ? undefined : status,
         include_deleted: deletedOnly || undefined,
+        ship_approval_status: shipPendingOnly ? 'pending' : undefined,
         keyword: keyword.trim() || undefined,
         page,
         page_size: pageSize,
@@ -517,7 +548,11 @@ export default function SampleListPage() {
       // 用户只会看到「参数校验失败：shipping_fee」，不知道该怎么改。
       // 与同文件 `saveProdMutation`（打样费用）同一口径，别再写第三个版本。
       shipSample(detailId!, (() => {
-        const raw = shipForm.shipping_fee.trim()
+        // 现有产品寄样：运费以审批确定的金额为准（后端也会校验），这里只读显示
+        const approvedFee = detail?.ship_approval?.status === 'approved'
+          ? String(detail.ship_approval.shipping_fee ?? '0')
+          : null
+        const raw = approvedFee ?? shipForm.shipping_fee.trim()
         const fee = raw === '' ? 0 : Number(raw)
         if (!Number.isFinite(fee) || fee < 0) {
           throw new Error('运费要填一个不小于 0 的数字（留空按 0 算）')
@@ -568,6 +603,50 @@ export default function SampleListPage() {
       Toast.success('打样已终止，制作与寄送记录保留')
       setTerminateVisible(false)
       setTerminateReason('')
+      void refresh()
+    },
+    onError,
+  })
+
+  const applyShipApprovalMutation = useMutation({
+    mutationFn: () => {
+      const raw = shipApprovalForm.shipping_fee.trim()
+      if (raw !== '' && !/^\d+(\.\d{1,2})?$/.test(raw)) {
+        throw new Error('运费最多两位小数')
+      }
+      return applySampleShipApproval(detailId!, {
+        carrier: shipApprovalForm.carrier.trim() || null,
+        shipping_fee: raw || '0',
+        note: shipApprovalForm.note.trim() || null,
+      })
+    },
+    onSuccess: () => {
+      Toast.success('寄样申请已提交，等待主管审批')
+      setShipApprovalForm({ carrier: '', shipping_fee: '', note: '' })
+      void refresh()
+    },
+    onError,
+  })
+
+  const approveShipApprovalMutation = useMutation({
+    mutationFn: () => approveSampleShipApproval(detailId!),
+    onSuccess: () => {
+      Toast.success('寄样已批准，可登记寄样')
+      void refresh()
+    },
+    onError,
+  })
+
+  const rejectShipApprovalMutation = useMutation({
+    mutationFn: () => {
+      const reason = shipRejectReason.trim()
+      if (!reason) throw new Error('请填写驳回原因')
+      return rejectSampleShipApproval(detailId!, reason)
+    },
+    onSuccess: () => {
+      Toast.success('寄样申请已驳回，业务员可修改后重新提交')
+      setShipRejectVisible(false)
+      setShipRejectReason('')
       void refresh()
     },
     onError,
@@ -755,7 +834,12 @@ export default function SampleListPage() {
       render: (value: string, record: SampleRequestRow) => (
         // 十二行彩色 Tag 一屏下来像一面色块墙（打样草稿橙、已寄样青、已签收绿…），
         // 眼睛先被颜色吃掉。改成「圆点 + 状态文字」，与产品中心「● 在售」同一套语言。
-        <StatusDot label={value} tone={STATUS_COLOR[record.status] ?? 'grey'} />
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+          <StatusDot label={value} tone={STATUS_COLOR[record.status] ?? 'grey'} />
+          {record.ship_approval_status === 'pending' && (
+            <Tag size="small" color="orange">寄样待审批</Tag>
+          )}
+        </span>
       ),
     },
     {
@@ -1026,7 +1110,13 @@ export default function SampleListPage() {
             showClear
             value={status}
             onChange={(value) => setStatus(value as string | undefined)}
-            optionList={STATUS_OPTIONS}
+            optionList={isReviewer
+              ? [
+                  ...STATUS_OPTIONS.slice(0, -1),
+                  { value: SHIP_PENDING_STATUS_OPTION, label: '寄样待审批' },
+                  STATUS_OPTIONS[STATUS_OPTIONS.length - 1],
+                ]
+              : STATUS_OPTIONS}
           />
         </div>
 
@@ -1056,6 +1146,37 @@ export default function SampleListPage() {
           }}
         />
       </SectionCard>
+
+      <Modal
+        title="驳回寄样申请"
+        visible={shipRejectVisible}
+        onCancel={() => {
+          if (!rejectShipApprovalMutation.isPending) setShipRejectVisible(false)
+        }}
+        onOk={() => rejectShipApprovalMutation.mutate()}
+        confirmLoading={rejectShipApprovalMutation.isPending}
+        okText="确认驳回"
+        cancelText="取消"
+        okButtonProps={{ disabled: !shipRejectReason.trim(), type: 'danger' }}
+        width={460}
+      >
+        <div style={{ display: 'grid', gap: 10 }}>
+          <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+            驳回后业务员可以修改承运商/运费重新提交，样品单保持原状态。
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>驳回原因（必填）</div>
+            <TextArea
+              aria-label="驳回原因"
+              rows={3}
+              placeholder="例如：运费偏高，请改用经济快递"
+              value={shipRejectReason}
+              onChange={setShipRejectReason}
+              disabled={rejectShipApprovalMutation.isPending}
+            />
+          </div>
+        </div>
+      </Modal>
 
       {/* 终止打样（K3）：二次确认 + 原因；只改状态，制作/寄送事实保留 */}
       <Modal
@@ -1479,7 +1600,7 @@ export default function SampleListPage() {
                     先「登记制作完成」（车间做完这一笔事实），登记过之后才轮到「登记寄样」。
                     原来寄样按钮和制作登记一起出现，可以跳过制作直接寄样，
                     记录里就少了一笔"什么时候做完的"，后续追质量问题没有锚点。 */}
-                {canUpdateSample && detail.status === 'approved' && (detail.made_at ? (
+                {canUpdateSample && detail.is_custom !== false && detail.status === 'approved' && (detail.made_at ? (
                   <>
                     <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
                       已登记制作完成，下一步登记寄样（承运商 / 单号 / 运费）。
@@ -1522,6 +1643,74 @@ export default function SampleListPage() {
                     </div>
                   </>
                 ))}
+
+                {canUpdateSample && detail.is_custom === false && ['pending', 'approved'].includes(detail.status) && (
+                  <div style={{ display: 'grid', gap: 10, borderTop: '1px solid var(--crm-border)', paddingTop: 12 }}>
+                    <div style={{ fontWeight: 600 }}>寄样审批（现有产品）</div>
+                    <div style={{ fontSize: 12, color: 'var(--crm-text-3)', lineHeight: 1.7 }}>
+                      现有产品从库存寄样，寄出前需主管批准；承运商与运费在审批时确定，登记寄样时按批准金额记录。
+                    </div>
+                    {detail.ship_approval?.status === 'pending' && (
+                      <div style={{ background: 'var(--crm-warning-bg, #FFF7E6)', border: '1px solid var(--crm-warning-border, #FFE7BA)', borderRadius: 4, padding: 10, fontSize: 13, display: 'grid', gap: 8 }}>
+                        <div>
+                          寄样申请待主管审批：承运商 {detail.ship_approval.carrier || '待定'}；
+                          运费 {formatMoney(toTwoDecimals(String(detail.ship_approval.shipping_fee ?? '0')), 'CNY')}
+                          {detail.ship_approval.note ? `；说明：${detail.ship_approval.note}` : ''}
+                        </div>
+                        {isReviewer && (
+                          <div style={{ display: 'flex', gap: 8 }}>
+                            <Button size="small" type="primary" theme="solid" loading={approveShipApprovalMutation.isPending} onClick={() => approveShipApprovalMutation.mutate()}>批准寄样</Button>
+                            <Button size="small" type="danger" theme="outline" onClick={() => { setShipRejectReason(''); setShipRejectVisible(true) }}>驳回</Button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {detail.ship_approval?.status === 'rejected' && (
+                      <div style={{ color: 'var(--crm-error)', fontSize: 13 }}>
+                        上次申请被驳回：{detail.ship_approval.comment || '未填原因'}。修改后可重新提交。
+                      </div>
+                    )}
+                    {detail.ship_approval?.status === 'approved' ? (
+                      <>
+                        <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                          已由主管批准，运费 {formatMoney(toTwoDecimals(String(detail.ship_approval.shipping_fee ?? '0')), 'CNY')}；寄出后登记单号即可。
+                        </div>
+                        <div className="sample-shipping-fields">
+                          <label htmlFor="ship-approved-carrier">承运商
+                            <Input id="ship-approved-carrier" placeholder="承运商" value={shipForm.carrier}
+                              onChange={(value) => setShipForm({ ...shipForm, carrier: value })} />
+                          </label>
+                          <label htmlFor="ship-approved-tracking">快递单号
+                            <Input id="ship-approved-tracking" placeholder="快递单号" value={shipForm.tracking_no}
+                              onChange={(value) => setShipForm({ ...shipForm, tracking_no: value })} />
+                          </label>
+                          <label htmlFor="ship-approved-fee">运费（元）
+                            <Input id="ship-approved-fee" value={String(detail.ship_approval.shipping_fee ?? '0')} disabled />
+                          </label>
+                        </div>
+                        <Popconfirm title="确认登记寄样？" content="请在样品实际寄出后登记。客户收到样品时，再登记签收。" onConfirm={() => shipMutation.mutate()}>
+                          <Button theme="outline" type="primary" loading={shipMutation.isPending}>登记寄样</Button>
+                        </Popconfirm>
+                      </>
+                    ) : detail.ship_approval?.status !== 'pending' && (
+                      <>
+                        <div className="sample-shipping-fields">
+                          <label htmlFor="ship-apply-carrier">承运商
+                            <Input id="ship-apply-carrier" placeholder="承运商" value={shipApprovalForm.carrier}
+                              onChange={(value) => setShipApprovalForm({ ...shipApprovalForm, carrier: value })} />
+                          </label>
+                          <label htmlFor="ship-apply-fee">运费（元）
+                            <Input id="ship-apply-fee" inputMode="decimal" placeholder="留空按 0 元" value={shipApprovalForm.shipping_fee}
+                              onChange={(value) => setShipApprovalForm({ ...shipApprovalForm, shipping_fee: value })} />
+                          </label>
+                        </div>
+                        <TextArea rows={2} placeholder="给主管的说明（选填）" value={shipApprovalForm.note}
+                          onChange={(value) => setShipApprovalForm({ ...shipApprovalForm, note: value })} />
+                        <Button theme="outline" type="primary" style={{ alignSelf: 'flex-start' }} loading={applyShipApprovalMutation.isPending} onClick={() => applyShipApprovalMutation.mutate()}>提交寄样申请</Button>
+                      </>
+                    )}
+                  </div>
+                )}
 
                 {/* 页顶「下一步」条上的「去登记签收」只是把视线带到这一段，
                     真正的登记动作在这里执行 —— 所以按钮必须留着。 */}

@@ -300,6 +300,25 @@ class SampleShip(BaseModel):
     shipped_at: date | None = None
 
 
+class SampleShipApprovalApply(BaseModel):
+    """现有产品寄样申请：承运商、运费与说明，提交给主管审批。
+
+    运费在审批时确定；登记寄样时不能改（要改就重新申请），这样批的和寄的是同一个数。
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    carrier: str | None = Field(default=None, max_length=64)
+    shipping_fee: Decimal = Field(default=Decimal(0), ge=0, max_digits=16, decimal_places=2)
+    note: str | None = Field(default=None, max_length=255)
+
+
+class SampleShipApprovalDecision(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    comment: str | None = Field(default=None, max_length=255)
+
+
 class SampleSign(BaseModel):
     model_config = ConfigDict(extra="ignore")
 

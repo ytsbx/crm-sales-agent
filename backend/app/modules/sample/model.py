@@ -118,6 +118,24 @@ CONFIRM_STATUS_LABEL: dict[str, str] = {
     CONFIRM_REJECTED: "客户未通过",
 }
 
+# ---- 现有产品寄样审批（2026-11-26 主人拍板补上）----
+#
+# 定制样品的寄样前提是原询价审批；**现有产品**没有定制审批可依，
+# 所以补一道 CRM 内的寄样审批：业务员提交承运商/运费/说明 → 主管批准 → 才能登记寄样。
+# 审批同时把「待审批」的样品单批成「已批准」（现货样品没有制作环节）。
+SHIP_APPROVAL_PENDING = "pending"
+SHIP_APPROVAL_APPROVED = "approved"
+SHIP_APPROVAL_REJECTED = "rejected"
+
+SHIP_APPROVAL_LABEL: dict[str, str] = {
+    SHIP_APPROVAL_PENDING: "待主管审批",
+    SHIP_APPROVAL_APPROVED: "已批准",
+    SHIP_APPROVAL_REJECTED: "已驳回",
+}
+
+#: 谁能批寄样：与合同作废等管理动作同一口径（主管 / 管理员）。
+SHIP_APPROVER_ROLES: tuple[str, ...] = ("sales_manager", "admin")
+
 
 class SampleRequest(Base, IdMixin):
     __tablename__ = "sample_requests"
