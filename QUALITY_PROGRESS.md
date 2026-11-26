@@ -6046,3 +6046,13 @@
 - 验证：寄样审批 10 条用例（申请、审批中心批准/驳回、越权与自批拒绝、撤回、寄样闸门、列表分类）、报价审批与边界回归、全量 pytest、pyflakes、审计标签核对、前端 tsc 与 vite build 全部通过。
 - 说明：未改表结构（复用 `approval_*` 表）；本地走查截图未入库。
 - 文案：转交接收人提示「有资格」改为「有权限」（主人指出太口语化）；规则配置「会签资格」同步改为「会签权限」。
+
+## 2026-11-26 · 退货登记实际退款支持上传附件
+
+- 财务在“登记退款”弹窗可上传一份退款凭证附件（选填）：银行回单、转账截图、客户签收单等。一个退货单保留一份，换附件先删旧附件；单文件不超过 20 MB；后端后缀白名单为图片、PDF、OFD、Word、Excel、CSV、TXT、ZIP。
+- 上传条件：退货单必须处于 `completed`（已确认退款总额）且 `refund_amount > 0`；`refunded`、`voided`、已取消的退货单不能改附件。上传/删除需要 `payment:manage`，下载需要 `payment:view` 并按订单数据范围校验。
+- 文件原件仍由文件中心 `files` 表管理，`sales_returns` 只新增 `refund_attachment_file_id`；序列化时回查 `file_name / size / mime_type`。删除附件时 `file_service.inspect_file_usage` 增加“另一条退货的退款附件”引用检查：仍有别处引用就只解绑、不删原件。
+- 前端：登记退款弹窗新增“退款附件（选填）”，支持选择并上传、显示文件名和大小、下载、删除；附件上传/删除未完成时“登记实际退款”按钮禁用。退货记录行显示“退款附件”下载入口（需 `payment:view`）。
+- 迁移：`f3c7a9d1b5e8`（`sales_returns.refund_attachment_file_id`）；隔离库 `crm_iso_flow_20261125` 已升级，生产库未跑。
+- 验证：`tests/test_sales_return.py` 13 条通过；全量 pytest 通过；`npx tsc -b`、`npm run build`、lint 0 errors（40 条既有 warning）；审计中文名检查通过。隔离后端 8012 真实接口 E2E：财务上传成功并下载内容一致、重复上传 422、删除 200、删除后下载 404、业务员上传 403、`.exe` 返回 40001。
+- 提交：`feat(return): 退款登记支持上传凭证附件`（本轮），未部署生产。

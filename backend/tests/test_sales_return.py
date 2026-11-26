@@ -16,6 +16,7 @@ from conftest import SyncSessionAsAsync, make_engine, make_user
 from app.core.audit import AuditLog
 from app.core.base import Base
 from app.core.errors import AppError
+from app.modules.file.model import FileRecord
 from app.modules.customer.model import Customer
 from app.modules.order.model import (
     OrderShipmentBatch,
@@ -79,6 +80,7 @@ def db(monkeypatch):
             SalesReturn.__table__,
             SalesReturnItem.__table__,
             SalesReturnPlanAdjustment.__table__,
+            FileRecord.__table__,
             AuditLog.__table__,
             NumberingRule.__table__,
             NumberSequence.__table__,
@@ -463,3 +465,34 @@ def test_finance_manual_full_amount_can_exceed_reference(db):
     assert result.offset_amount == D("100.00")
     assert result.refund_amount == D("0.00")
     assert result.total_amount == D("100.00")
+
+
+def test_refund_attachment_metadata_serialized(db):
+    """退款附件只存 file_id，序列化时回查文件中心的名字、大小和类型。"""
+    s, order, item, batch_item, plans = db
+    row = run(svc.create_return(s, USER, order, _payload("3")))
+    row.status = "completed"
+    row.settled_goods_amount = D("30.00")
+    row.total_amount = D("30.00")
+    row.offset_amount = D("30.00")
+    row.refund_amount = D("0.00")
+
+    attachment = FileRecord(
+        storage_provider="local",
+        object_key="2026/11/refund-proof.pdf",
+        file_name="银行回单.pdf",
+        mime_type="application/pdf",
+        size=1234,
+        checksum="abc",
+        uploaded_by=1,
+    )
+    s.add(attachment)
+    run(s.flush())
+    row.refund_attachment_file_id = attachment.id
+    run(s.flush())
+
+    data = run(svc.serialize_return(s, row))
+    assert data["refund_attachment_file_id"] == attachment.id
+    assert data["refund_attachment_file_name"] == "银行回单.pdf"
+    assert data["refund_attachment_file_size"] == 1234
+    assert data["refund_attachment_mime_type"] == "application/pdf"

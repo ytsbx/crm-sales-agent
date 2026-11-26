@@ -95,7 +95,7 @@ class FileUsage:
     分三档，因为三种档位对应三种处理，混在一起就会做错：
     - `protected`：受"原件不可破坏"保护的引用（已签原件 / 生成稿 / 已锁定打样的
       制作依据）——**不许删文件**；
-    - `other_holders`：别处还在正常引用（另一条回款的凭证、单据生成稿、打样依据…）
+    - `other_holders`：别处还在正常引用（另一条回款的凭证、另一条退货的退款附件、单据生成稿、打样依据…）
       ——**不许删文件**，但解绑当前这一处是允许的；
     - `business_links`：挂在业务对象上的附件条数。它同时意味着"解绑要解几条"。
     """
@@ -115,14 +115,16 @@ async def inspect_file_usage(
     file_id: int,
     *,
     exclude_payment_id: int | None = None,
+    exclude_sales_return_id: int | None = None,
 ) -> FileUsage:
     """这份文件还被谁用着（第十一批 11.2）。
 
-    为什么要单独做一个判据：引用文件的列有**四处**，而且**一处外键都没有** ——
+    为什么要单独做一个判据：引用文件的列有五处，而且一处外键都没有 ——
     数据库不会替我们守住"文件还被引用着"这件事，全靠应用层查。
     - `business_files.file_id`：通用附件挂载（一对多）；
     - `biz_docs.file_id`：单据生成稿；
     - `payment_records.voucher_file_id`：回款凭证；
+    - `sales_returns.refund_attachment_file_id`：销售退货的退款附件；
     - `sample_requests.basis_files`（jsonb 快照）：打样的制作依据。
 
     此前只有**通用删除**入口看了第一处，于是回款凭证那个专用删除入口把一份
@@ -131,6 +133,7 @@ async def inspect_file_usage(
     """
     from app.modules.bizdoc.model import BizDoc
     from app.modules.payment.model import PaymentRecord
+    from app.modules.returns.model import SalesReturn
 
     protected = await file_protection_label(session, file_id)
     if protected is None:
@@ -155,6 +158,14 @@ async def inspect_file_usage(
         payment_stmt = payment_stmt.where(PaymentRecord.id != exclude_payment_id)
     if (await session.execute(payment_stmt)).first():
         others.append("另一条回款的凭证")
+
+    return_stmt = select(SalesReturn.id).where(
+        SalesReturn.refund_attachment_file_id == file_id
+    )
+    if exclude_sales_return_id is not None:
+        return_stmt = return_stmt.where(SalesReturn.id != exclude_sales_return_id)
+    if (await session.execute(return_stmt)).first():
+        others.append("另一条退货的退款附件")
 
     # 打样依据只在 jsonb 快照里（`basis_files`），不在 `business_files` 表上，
     # 所以必须单独查一次 —— 这是最容易漏掉的一处。

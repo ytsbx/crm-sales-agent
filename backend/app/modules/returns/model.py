@@ -84,6 +84,9 @@ class SalesReturn(Base, IdMixin, TimestampMixin):
     refund_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
     #: 退款实际支付后的银行流水/备注，财务填。
     refund_reference: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    #: 财务登记实际退款时上传的凭证附件（银行回单/转账截图/客户签收单等）。
+    #: 只存文件中心的 file_id，文件元信息和磁盘位置由 `files` 表管理。
+    refund_attachment_file_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     settlement_note: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     created_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

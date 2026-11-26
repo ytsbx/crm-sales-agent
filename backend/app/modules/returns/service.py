@@ -20,6 +20,7 @@ from app.core.data_scope import ensure_in_scope, scoped_owner_ids
 from app.core.errors import AppError, ErrorCode
 from app.core.timebase import today_business
 from app.modules.customer.model import Customer
+from app.modules.file.model import FileRecord
 from app.modules.followup.service import record_and_notify
 from app.modules.order.model import (
     OrderShipmentBatch,
@@ -690,7 +691,11 @@ async def refund_return(
         business_type="sales_return",
         business_id=row.id,
         before={"status": "completed", "refund_amount": format(row.refund_amount, ".2f")},
-        after={"status": row.status, "refund_reference": row.refund_reference},
+        after={
+            "status": row.status,
+            "refund_reference": row.refund_reference,
+            "refund_attachment_file_id": row.refund_attachment_file_id,
+        },
         ip=ip,
     )
     await session.flush()
@@ -857,6 +862,11 @@ async def serialize_return(session: AsyncSession, row: SalesReturn) -> dict:
         session,
         [row.created_by, row.reviewed_by, row.settled_by, row.refunded_by, row.voided_by, row.cancelled_by],
     )
+    refund_attachment = (
+        await session.get(FileRecord, row.refund_attachment_file_id)
+        if row.refund_attachment_file_id
+        else None
+    )
     return {
         "id": row.id,
         "return_no": row.return_no,
@@ -884,6 +894,10 @@ async def serialize_return(session: AsyncSession, row: SalesReturn) -> dict:
         "refund_amount": float(row.refund_amount or 0),
         "refund_amount_exact": format(row.refund_amount or 0, ".2f"),
         "refund_reference": row.refund_reference,
+        "refund_attachment_file_id": row.refund_attachment_file_id,
+        "refund_attachment_file_name": refund_attachment.file_name if refund_attachment else None,
+        "refund_attachment_file_size": refund_attachment.size if refund_attachment else None,
+        "refund_attachment_mime_type": refund_attachment.mime_type if refund_attachment else None,
         "settlement_note": row.settlement_note,
         "remark": row.remark,
         "created_by": row.created_by,

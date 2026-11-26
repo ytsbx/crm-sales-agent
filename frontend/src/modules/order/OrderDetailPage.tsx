@@ -60,11 +60,14 @@ import {
 import {
   cancelReturn,
   createReturn,
+  deleteReturnRefundAttachment,
+  downloadReturnRefundAttachment,
   getOrderReturns,
   getReturnable,
   refundReturn,
   reviewReturn,
   settleReturn,
+  uploadReturnRefundAttachment,
   voidReturn,
   type ReturnableBatch,
   type ReturnCreatePayload,
@@ -246,6 +249,13 @@ const RETURN_TONE: Record<string, TagTone> = {
   voided: 'grey',
 }
 
+function formatAttachmentSize(bytes?: number | null) {
+  if (bytes === null || bytes === undefined) return ''
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`
+}
+
 export default function OrderDetailPage() {
   const params = useParams()
   const orderId = Number(params.id)
@@ -255,6 +265,7 @@ export default function OrderDetailPage() {
   const currentUser = useAuthStore((state) => state.user)
   const canManage = can('order:manage')
   const canPayment = can('payment:manage')
+  const canViewPayment = can('payment:view')
   const canReviewReturn = can('order:assign')
   const userRoles = currentUser?.roles ?? []
   // 退多少钱由业务员/主管和客户谈；财务有 order:manage，但不能靠权限码区分，前端按角色隐藏。
@@ -305,6 +316,7 @@ export default function OrderDetailPage() {
   const [settleNote, setSettleNote] = useState('')
   const [refundTarget, setRefundTarget] = useState<SalesReturn | null>(null)
   const [refundReference, setRefundReference] = useState('')
+  const refundAttachmentInputRef = useRef<HTMLInputElement>(null)
   const [cancelReturnTarget, setCancelReturnTarget] = useState<SalesReturn | null>(null)
   const [cancelReturnReason, setCancelReturnReason] = useState('')
   const [voidReturnTarget, setVoidReturnTarget] = useState<SalesReturn | null>(null)
@@ -626,6 +638,29 @@ export default function OrderDetailPage() {
       setRefundTarget(null)
       setRefundReference('')
       refresh()
+    },
+  })
+  const uploadRefundAttachmentMutation = useMutation({
+    mutationFn: (payload: { id: number; file: File }) =>
+      uploadReturnRefundAttachment(payload.id, payload.file),
+    onSuccess: (row) => {
+      Toast.success('退款附件已上传')
+      setRefundTarget(row)
+      refresh()
+    },
+    onError: (error: Error) => {
+      Toast.error(error.message || '退款附件上传失败')
+    },
+  })
+  const deleteRefundAttachmentMutation = useMutation({
+    mutationFn: (id: number) => deleteReturnRefundAttachment(id),
+    onSuccess: (row) => {
+      Toast.success('退款附件已删除')
+      setRefundTarget(row)
+      refresh()
+    },
+    onError: (error: Error) => {
+      Toast.error(error.message || '退款附件删除失败')
     },
   })
   const voidReturnMutation = useMutation({
@@ -1096,6 +1131,8 @@ export default function OrderDetailPage() {
   const reviewNoteValid = reviewDecision === 'approve' || reviewNote.trim().length >= 2
   const refundReferenceValid = refundReference.trim().length >= 2
     && refundReference.trim().length <= 128
+  const refundAttachmentBusy = uploadRefundAttachmentMutation.isPending
+    || deleteRefundAttachmentMutation.isPending
   const cancelReturnReasonValid = cancelReturnReason.trim().length >= 2
   const voidReturnReasonValid = voidReturnReason.trim().length >= 2
   const remainingToShip = shipment?.summary.remaining_exact ?? shipment?.summary.remaining
@@ -1333,6 +1370,22 @@ export default function OrderDetailPage() {
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
             退还 {formatMoney(row.refund_amount_exact, row.currency)}
             {row.refund_reference ? `（已退：${row.refund_reference}）` : ''}
+            {row.refund_attachment_file_id && canViewPayment && (
+              <Button
+                theme="borderless"
+                size="small"
+                style={{ padding: 0, height: 'auto', fontSize: 12, marginLeft: 6 }}
+                title={row.refund_attachment_file_name ?? '退款附件'}
+                onClick={() => {
+                  void downloadReturnRefundAttachment(
+                    row.id,
+                    row.refund_attachment_file_name ?? `退款附件-${row.return_no}`,
+                  ).catch((error: Error) => Toast.error(error.message || '退款附件下载失败'))
+                }}
+              >
+                退款附件
+              </Button>
+            )}
           </div>
         </div>
       ),
@@ -3630,13 +3683,19 @@ export default function OrderDetailPage() {
         onCancel={() => { if (!refundReturnMutation.isPending) setRefundTarget(null) }}
         footer={
           <div className="workflow-modal-actions">
-            <Button disabled={refundReturnMutation.isPending} onClick={() => setRefundTarget(null)}>先不登记</Button>
+            <Button disabled={refundReturnMutation.isPending || refundAttachmentBusy} onClick={() => setRefundTarget(null)}>暂不登记</Button>
             <GuardedButton
               type="danger"
               theme="outline"
               action="登记退款"
-              disabled={!refundReferenceValid}
-              blockedReasons={refundReferenceValid ? [] : ['请填写退款流水/凭证说明（至少 2 个字）']}
+              disabled={!refundReferenceValid || refundAttachmentBusy}
+              blockedReasons={
+                !refundReferenceValid
+                  ? ['请填写退款流水/凭证说明（至少 2 个字）']
+                  : refundAttachmentBusy
+                    ? ['退款附件正在处理，请稍候']
+                    : []
+              }
               loading={refundReturnMutation.isPending}
               hintBelow
               onClick={() => {
@@ -3661,6 +3720,80 @@ export default function OrderDetailPage() {
               <FormLabel required>退款流水 / 凭证说明</FormLabel>
               <Input value={refundReference} onChange={setRefundReference} maxLength={128}
                 placeholder="例如：银行转账 20261125001" />
+            </div>
+            <div>
+              <FormLabel>退款附件（选填）</FormLabel>
+              <input
+                ref={refundAttachmentInputRef}
+                type="file"
+                accept="image/*,.heic,.heif,.pdf,.ofd,.doc,.docx,.xls,.xlsx,.csv,.txt,.zip"
+                style={{ display: 'none' }}
+                onChange={(event) => {
+                  const file = event.target.files?.[0]
+                  // 清空 value：否则连续选同一个文件不会再触发 onChange。
+                  event.target.value = ''
+                  if (!file) return
+                  if (file.size > 20 * 1024 * 1024) {
+                    Toast.warning('退款附件不能超过 20 MB')
+                    return
+                  }
+                  uploadRefundAttachmentMutation.mutate({ id: refundTarget.id, file })
+                }}
+              />
+              {refundTarget.refund_attachment_file_id ? (
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 12,
+                  flexWrap: 'wrap',
+                  padding: '8px 10px',
+                  border: '1px solid var(--crm-border)',
+                  borderRadius: 6,
+                  background: 'var(--crm-bg-2)',
+                }}>
+                  <div style={{ minWidth: 0, flex: '1 1 220px' }}>
+                    <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {refundTarget.refund_attachment_file_name ?? '退款附件'}
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                      {formatAttachmentSize(refundTarget.refund_attachment_file_size)}
+                    </div>
+                  </div>
+                  <Button
+                    size="small"
+                    theme="borderless"
+                    onClick={() => {
+                      void downloadReturnRefundAttachment(
+                        refundTarget.id,
+                        refundTarget.refund_attachment_file_name ?? `退款附件-${refundTarget.return_no}`,
+                      ).catch((error: Error) => Toast.error(error.message || '退款附件下载失败'))
+                    }}
+                  >
+                    下载
+                  </Button>
+                  <Button
+                    size="small"
+                    theme="borderless"
+                    type="danger"
+                    loading={deleteRefundAttachmentMutation.isPending}
+                    onClick={() => deleteRefundAttachmentMutation.mutate(refundTarget.id)}
+                  >
+                    删除
+                  </Button>
+                </div>
+              ) : (
+                <Button
+                  theme="outline"
+                  loading={uploadRefundAttachmentMutation.isPending}
+                  onClick={() => refundAttachmentInputRef.current?.click()}
+                >
+                  选择并上传
+                </Button>
+              )}
+              <p className="workflow-guide" style={{ marginTop: 6 }}>
+                可上传银行回单、转账截图、客户签收单等；支持图片、PDF、Word、Excel，单个文件不超过 20 MB。
+                附件仅用于退款核对，不改变退款金额。
+              </p>
             </div>
           </div>
         )}

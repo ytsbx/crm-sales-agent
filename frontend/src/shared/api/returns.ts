@@ -53,6 +53,11 @@ export interface SalesReturn {
   refund_amount: number
   refund_amount_exact: string
   refund_reference?: string | null
+  /** 财务登记退款时上传的凭证附件；由文件中心存原件，不复制文件元信息。 */
+  refund_attachment_file_id?: number | null
+  refund_attachment_file_name?: string | null
+  refund_attachment_file_size?: number | null
+  refund_attachment_mime_type?: string | null
   settlement_note?: string | null
   remark?: string | null
   created_by?: number | null
@@ -155,6 +160,21 @@ export function settleReturn(
 
 export function refundReturn(returnId: number, refundReference: string) {
   return api.post<SalesReturn>(`/returns/${returnId}/refund`, { refund_reference: refundReference })
+}
+
+/** 财务登记实际退款前上传退款凭证；一个退货单保留一份，换附件先删旧的。 */
+export function uploadReturnRefundAttachment(returnId: number, file: File) {
+  const form = new FormData()
+  form.append('file', file)
+  return api.upload<SalesReturn>(`/returns/${returnId}/refund-attachment`, form)
+}
+
+export function deleteReturnRefundAttachment(returnId: number) {
+  return api.delete<SalesReturn>(`/returns/${returnId}/refund-attachment`)
+}
+
+export function downloadReturnRefundAttachment(returnId: number, filename: string) {
+  return api.download(`/returns/${returnId}/refund-attachment`, filename)
 }
 
 export function voidReturn(returnId: number, reason: string) {

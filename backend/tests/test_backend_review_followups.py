@@ -209,6 +209,7 @@ async def test_file_usage_tolerates_old_sample_json_and_keeps_real_references():
         for ddl in (
             "biz_docs (id int, file_id int)",
             "payment_records (id int, voucher_file_id int)",
+            "sales_returns (id int, refund_attachment_file_id int)",
             "sample_requests (basis_files json)",
         ):
             raw.execute(text(f"create table {ddl}"))
