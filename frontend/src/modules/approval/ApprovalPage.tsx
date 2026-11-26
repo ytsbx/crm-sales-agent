@@ -215,9 +215,14 @@ export default function ApprovalPage() {
       // 不能像统计卡那样取整。
       render: (v: number | null, record: ApprovalRow) => {
         if (record.business_type === 'sample_shipment') {
-          return record.shipping_fee
-            ? formatMoney(toTwoDecimals(record.shipping_fee), 'CNY')
-            : '-'
+          return (
+            <div style={{ display: 'grid', gap: 2, justifyItems: 'center' }}>
+              <span>{record.shipping_fee ? formatMoney(toTwoDecimals(record.shipping_fee), 'CNY') : '-'}</span>
+              {record.payer_label && (
+                <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{record.payer_label}</span>
+              )}
+            </div>
+          )
         }
         return v === null || v === undefined ? '-' : formatMoney(toTwoDecimals(v), 'CNY')
       },
@@ -397,6 +402,7 @@ export default function ApprovalPage() {
                     <div style={{ display: 'grid', gap: 6, padding: '4px 10px', textAlign: 'left' }}>
                       <div style={{ fontSize: 13, lineHeight: 1.7 }}>
                         <span style={{ color: 'var(--crm-text-3)' }}>寄样信息：</span>
+                        收件 {record.recipient || '-'}；付款方 {record.payer_label || '-'}；
                         承运商 {record.carrier || '待定'}；运费{' '}
                         {record.shipping_fee
                           ? formatMoney(toTwoDecimals(record.shipping_fee), 'CNY')
@@ -448,7 +454,7 @@ export default function ApprovalPage() {
               }}
               rowExpandable={(record?: ApprovalRow) =>
                 record?.business_type === 'sample_shipment'
-                  ? Boolean(record.note || record.comment)
+                  ? Boolean(record.note || record.comment || record.recipient)
                   : Boolean(record?.summary?.reason) || (record?.summary?.offending ?? []).length > 0
               }
               dataSource={query.data?.items ?? []}

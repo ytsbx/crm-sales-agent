@@ -70,7 +70,8 @@ async def test_apply_creates_pending_approval_in_center(approval_db, monkeypatch
     monkeypatch.setattr(sample_router, 'write_audit', audit)
 
     await sample_router.apply_ship_approval(
-        7, SampleShipApprovalApply(carrier='顺丰', shipping_fee=Decimal('25.50'), note='客户急要'),
+        7, SampleShipApprovalApply(recipient='张三 13800000000 宁波市江北区', payer='customer',
+                                   carrier='顺丰', shipping_fee=Decimal('25.50'), note='客户急要'),
         request(), make_user(1, permissions=('sample:view', 'sample:manage'), data_scope='all'),
         SyncSessionAsAsync(approval_db),
     )
@@ -84,6 +85,8 @@ async def test_apply_creates_pending_approval_in_center(approval_db, monkeypatch
     assert instance.applicant_id == 1
     assert instance.summary['shipping_fee'] == '25.50'
     assert instance.summary['carrier'] == '顺丰'
+    assert instance.summary['payer'] == 'customer'
+    assert instance.summary['recipient'] == '张三 13800000000 宁波市江北区'
     assert instance.definition_id is not None
     assert audit.call_args.kwargs['action'] == 'sample_ship_apply'
 
@@ -95,7 +98,8 @@ async def test_custom_sample_does_not_use_internal_ship_approval(approval_db, mo
     monkeypatch.setattr(sample_router.svc, 'sample_is_custom', AsyncMock(return_value=True))
     with pytest.raises(AppError) as caught:
         await sample_router.apply_ship_approval(
-            7, SampleShipApprovalApply(shipping_fee=Decimal('10')), request(),
+            7, SampleShipApprovalApply(recipient='李四 13900000000 东莞市', payer='company',
+                                       shipping_fee=Decimal('10')), request(),
             make_user(1, permissions=('sample:manage',), data_scope='all'),
             SyncSessionAsAsync(approval_db),
         )
@@ -270,7 +274,8 @@ async def test_approval_center_lists_sample_ship_with_category(approval_db):
     approval_db.add(ApprovalInstance(
         id=30, definition_id=1, business_type='sample_shipment', business_id=21,
         applicant_id=1, status='pending', current_node='manager',
-        summary={'carrier': '顺丰', 'shipping_fee': '25.50', 'note': '客户急要'},
+        summary={'recipient': '张三 13800000000 宁波市江北区', 'payer': 'customer',
+                 'carrier': '顺丰', 'shipping_fee': '25.50', 'note': '客户急要'},
         created_at=datetime.now(UTC),
     ))
     approval_db.commit()
@@ -285,4 +290,7 @@ async def test_approval_center_lists_sample_ship_with_category(approval_db):
     assert row['sample_no'] == '打样单编号 21'
     assert row['carrier'] == '顺丰'
     assert row['shipping_fee'] == '25.50'
+    assert row['payer'] == 'customer'
+    assert row['payer_label'] == '客户承担'
+    assert row['recipient'] == '张三 13800000000 宁波市江北区'
     assert row['can_approve'] is True

@@ -6073,3 +6073,10 @@
 - 迁移：`a1c4e8f2b6d9`（`sales_return_items.shipment_batch_item_id/batch_id` 改为 nullable）；隔离库 `crm_iso_flow_20261125` 已升级，生产未跑。
 - 验证：`tests/test_sales_return.py` 13 条通过；全量 pytest 通过；前端 `tsc`、lint 0 errors。隔离后端 8012 真实接口：作废旧退货释放数量后，创建 `RT202611260003`（order_item_id=5、quantity=3），返回 `shipment_batch_item_id/batch_id = null`，参考金额 300；主管复核、张三确认退款总额 300、抵扣 300、无需退款，状态 completed；`/returnable` 返回按订单明细的 `items`，不是 `batches`。前端完整 build 被并行会话 `SampleListPage.tsx` 的类型错误挡住，与退货无关。
 - 提交：`refactor(return): 退货不再追发货批次`，未部署。
+
+## 2026-11-26 寄样申请补充：收件信息 + 运费承担方（主人要求，未部署）
+
+- 寄样申请新增两个必填项：收件信息（姓名 / 电话 / 详细地址）与运费承担方（公司承担 / 客户承担）；提交后随审批进入审批中心，审批人在列表金额下方与展开详情里都能看到收件人与付款方。
+- 样品详情：待审批卡片和批准后提示都显示收件信息、付款方、承运商、运费；申请表单新增对应输入。
+- 口径：运费仍是人工填写、按批准金额锁定；系统不自动计算、不生成应收。"客户承担"目前只做记录，表示客户付费寄样（到付或公司代收由线下处理）。
+- 验证：寄样审批 10 条用例更新（含收件人 / 付款方断言）；全量 pytest、pyflakes、前端 tsc 与构建通过。

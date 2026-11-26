@@ -301,13 +301,19 @@ class SampleShip(BaseModel):
 
 
 class SampleShipApprovalApply(BaseModel):
-    """现有产品寄样申请：承运商、运费与说明，提交给主管审批。
+    """现有产品寄样申请：收件信息、付款方、承运商、运费与说明，提交给主管审批。
 
     运费在审批时确定；登记寄样时不能改（要改就重新申请），这样批的和寄的是同一个数。
+    运费谁出由业务员在提交时选（主人 2026-11-26：有的是公司出，有的是客户付费寄样），
+    审批时一起看得到，避免批完才发现钱没人认。
     """
 
     model_config = ConfigDict(extra="ignore")
 
+    #: 收件信息：姓名 / 电话 / 详细地址，一行写清（与外部寄样申请单的「客户地址」对齐）
+    recipient: str = Field(min_length=1, max_length=255)
+    #: 运费承担方：company = 公司承担；customer = 客户承担（客户付费寄样）
+    payer: Literal["company", "customer"]
     carrier: str | None = Field(default=None, max_length=64)
     shipping_fee: Decimal = Field(default=Decimal(0), ge=0, max_digits=16, decimal_places=2)
     note: str | None = Field(default=None, max_length=255)

@@ -159,6 +159,11 @@ export interface SampleRequestRow {
     status: 'pending' | 'approved' | 'rejected' | string
     applicant_id?: number | null
     applied_at?: string | null
+    /** 收件信息：姓名 / 电话 / 详细地址 */
+    recipient?: string | null
+    /** 运费承担方：company 公司承担 / customer 客户承担 */
+    payer?: 'company' | 'customer' | string | null
+    payer_label?: string | null
     carrier?: string | null
     shipping_fee?: string | null
     note?: string | null
@@ -264,7 +269,13 @@ export function terminateSample(id: number, reason: string) {
 
 export function applySampleShipApproval(
   id: number,
-  payload: { carrier?: string | null; shipping_fee: number | string; note?: string | null },
+  payload: {
+    recipient: string
+    payer: 'company' | 'customer'
+    carrier?: string | null
+    shipping_fee: number | string
+    note?: string | null
+  },
 ) {
   return api.post<SampleRequestRow>(`/samples/${id}/ship-approval`, payload)
 }

@@ -383,6 +383,8 @@ export default function SampleListPage() {
   const [terminateReason, setTerminateReason] = useState('')
   // 现有产品寄样审批：申请表单与驳回原因
   const [shipApprovalForm, setShipApprovalForm] = useState({
+    recipient: '',
+    payer: '' as '' | 'company' | 'customer',
     carrier: '',
     shipping_fee: '',
     note: '',
@@ -607,11 +609,16 @@ export default function SampleListPage() {
 
   const applyShipApprovalMutation = useMutation({
     mutationFn: () => {
+      const recipient = shipApprovalForm.recipient.trim()
+      if (!recipient) throw new Error('请填写收件信息（姓名 / 电话 / 详细地址）')
+      if (!shipApprovalForm.payer) throw new Error('请选择运费由谁承担')
       const raw = shipApprovalForm.shipping_fee.trim()
       if (raw !== '' && !/^\d+(\.\d{1,2})?$/.test(raw)) {
         throw new Error('运费最多两位小数')
       }
       return applySampleShipApproval(detailId!, {
+        recipient,
+        payer: shipApprovalForm.payer,
         carrier: shipApprovalForm.carrier.trim() || null,
         shipping_fee: raw || '0',
         note: shipApprovalForm.note.trim() || null,
@@ -619,7 +626,7 @@ export default function SampleListPage() {
     },
     onSuccess: () => {
       Toast.success('寄样申请已提交，等待主管审批')
-      setShipApprovalForm({ carrier: '', shipping_fee: '', note: '' })
+      setShipApprovalForm({ recipient: '', payer: '', carrier: '', shipping_fee: '', note: '' })
       void refresh()
     },
     onError,
@@ -1595,7 +1602,9 @@ export default function SampleListPage() {
                     {detail.ship_approval?.status === 'pending' && (
                       <div style={{ background: 'var(--crm-warning-bg, #FFF7E6)', border: '1px solid var(--crm-warning-border, #FFE7BA)', borderRadius: 4, padding: 10, fontSize: 13, display: 'grid', gap: 8 }}>
                         <div>
-                          寄样申请待主管审批：承运商 {detail.ship_approval.carrier || '待定'}；
+                          寄样申请待主管审批：收件 {detail.ship_approval.recipient || '-'}；
+                          付款方 {detail.ship_approval.payer_label || '-'}；
+                          承运商 {detail.ship_approval.carrier || '待定'}；
                           运费 {formatMoney(toTwoDecimals(String(detail.ship_approval.shipping_fee ?? '0')), 'CNY')}
                           {detail.ship_approval.note ? `；说明：${detail.ship_approval.note}` : ''}
                         </div>
@@ -1615,7 +1624,8 @@ export default function SampleListPage() {
                     {detail.ship_approval?.status === 'approved' ? (
                       <>
                         <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                          已由主管批准，运费 {formatMoney(toTwoDecimals(String(detail.ship_approval.shipping_fee ?? '0')), 'CNY')}；寄出后登记单号即可。
+                          已由主管批准，运费 {formatMoney(toTwoDecimals(String(detail.ship_approval.shipping_fee ?? '0')), 'CNY')}
+                          （{detail.ship_approval.payer_label || '-'}）；收件 {detail.ship_approval.recipient || '-'}；寄出后登记单号即可。
                         </div>
                         <div className="sample-shipping-fields">
                           <label htmlFor="ship-approved-carrier">承运商
@@ -1636,6 +1646,38 @@ export default function SampleListPage() {
                       </>
                     ) : detail.ship_approval?.status !== 'pending' && (
                       <>
+                        <div>
+                          <div style={{ marginBottom: 4 }}>
+                            收件信息（姓名 / 电话 / 详细地址）
+                            <span style={{ color: 'var(--crm-error)' }}> *</span>
+                          </div>
+                          <Input
+                            aria-label="收件信息"
+                            placeholder="例如：张三 13800000000 宁波市江北区XX路88号"
+                            value={shipApprovalForm.recipient}
+                            onChange={(value) => setShipApprovalForm({ ...shipApprovalForm, recipient: value })}
+                          />
+                        </div>
+                        <div>
+                          <div style={{ marginBottom: 4 }}>
+                            运费承担
+                            <span style={{ color: 'var(--crm-error)' }}> *</span>
+                          </div>
+                          <Select
+                            aria-label="运费承担方"
+                            style={{ width: '100%' }}
+                            placeholder="请选择运费由谁承担"
+                            value={shipApprovalForm.payer || undefined}
+                            optionList={[
+                              { value: 'company', label: '公司承担' },
+                              { value: 'customer', label: '客户承担（客户付费寄样）' },
+                            ]}
+                            onChange={(value) => setShipApprovalForm({
+                              ...shipApprovalForm,
+                              payer: value as 'company' | 'customer',
+                            })}
+                          />
+                        </div>
                         <div className="sample-shipping-fields">
                           <label htmlFor="ship-apply-carrier">承运商
                             <Input id="ship-apply-carrier" placeholder="承运商" value={shipApprovalForm.carrier}
@@ -1648,7 +1690,7 @@ export default function SampleListPage() {
                         </div>
                         <TextArea rows={2} placeholder="给主管的说明（选填）" value={shipApprovalForm.note}
                           onChange={(value) => setShipApprovalForm({ ...shipApprovalForm, note: value })} />
-                        <Button theme="outline" type="primary" style={{ alignSelf: 'flex-start' }} loading={applyShipApprovalMutation.isPending} onClick={() => applyShipApprovalMutation.mutate()}>提交寄样申请</Button>
+                        <Button theme="outline" type="primary" style={{ alignSelf: 'flex-start', justifySelf: 'start', width: 'auto' }} loading={applyShipApprovalMutation.isPending} onClick={() => applyShipApprovalMutation.mutate()}>提交寄样申请</Button>
                       </>
                     )}
                   </div>

@@ -279,6 +279,9 @@ export interface ApprovalRow {
   sample_id?: number | null
   sample_no?: string | null
   owner_name?: string | null
+  recipient?: string | null
+  payer?: 'company' | 'customer' | string | null
+  payer_label?: string | null
   carrier?: string | null
   shipping_fee?: string | null
   note?: string | null

@@ -23,6 +23,12 @@ BUSINESS_TYPE = "sample_shipment"
 DEFINITION_CODE = "sample_shipment"
 TYPE_LABEL = "寄样审批"
 
+#: 运费承担方（主人 2026-11-26：业务员在寄样申请时选，审批时一起看）
+PAYER_LABEL = {
+    "company": "公司承担",
+    "customer": "客户承担",
+}
+
 #: 审批中心里这一类的分类名（列表按类型分组/筛选用）。
 BUSINESS_TYPE_LABEL = {
     "quote_version": "报价审批",
@@ -96,6 +102,9 @@ def serialize(instance: ApprovalInstance | None) -> dict | None:
         "status": instance.status,
         "applicant_id": instance.applicant_id,
         "applied_at": instance.created_at.isoformat() if instance.created_at else None,
+        "recipient": summary.get("recipient"),
+        "payer": summary.get("payer"),
+        "payer_label": PAYER_LABEL.get(summary.get("payer")),
         "carrier": summary.get("carrier"),
         "shipping_fee": summary.get("shipping_fee"),
         "note": summary.get("note"),
@@ -121,6 +130,8 @@ async def apply(
     sample: SampleRequest,
     user,
     *,
+    recipient: str,
+    payer: str,
     carrier: str | None,
     shipping_fee: Decimal,
     note: str | None,
@@ -143,6 +154,8 @@ async def apply(
         status="pending",
         current_node="manager",
         summary={
+            "recipient": recipient,
+            "payer": payer,
             "carrier": carrier,
             "shipping_fee": str(shipping_fee),
             "note": note,

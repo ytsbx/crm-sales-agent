@@ -964,6 +964,8 @@ async def apply_ship_approval(
         )
     instance = await ship_approval_service.apply(
         session, sample, user,
+        recipient=payload.recipient.strip(),
+        payer=payload.payer,
         carrier=payload.carrier,
         shipping_fee=payload.shipping_fee,
         note=payload.note,
@@ -976,6 +978,8 @@ async def apply_ship_approval(
         business_id=sample.id,
         after={
             "approval_id": instance.id,
+            "recipient": payload.recipient.strip(),
+            "payer": payload.payer,
             "carrier": payload.carrier,
             "shipping_fee": str(payload.shipping_fee),
             "note": payload.note,
