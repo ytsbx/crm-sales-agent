@@ -232,6 +232,9 @@ export default function SampleDingTalkModal({sampleId,customerName,onClose}:{
             所以这里是两组不同的东西，原来的问题只是"第一组没标题、第二组标题又长又绕"，
             看起来像一团。现在两组各有标题、各说清去哪。 */}
         <div style={{fontWeight:600}}>同序 OA 审批表单</div>
+        <div style={{fontSize:12,color:'var(--crm-text-3)',lineHeight:1.7}}>
+          申请人员、归属部门、申请编号由同序按登录人自动带出，不需要在 CRM 填写；这里显示为空不影响提交。
+        </div>
         {/* ⚠️ 「本次打样积分」**不在这里单独给输入框**（2026-10-16）：
             它与「预计工时 × 10」是**同一个数**。给两个输入框，
             用户填了工时、积分还是旧值 —— 主人原话：「打样积分不还是要填几遍吗」。
@@ -243,7 +246,7 @@ export default function SampleDingTalkModal({sampleId,customerName,onClose}:{
               label={field.label} required={field.required} hint={field.help_text}>
               {field.type==='description' ? <p style={{whiteSpace:'pre-line'}}>{field.hint}</p>
               :field.type==='serial' ? <Input readOnly placeholder={submitted ? "编号可在同序查看" : "由同序自动编号"}/>
-              :field.id==='applicant_name' || field.id==='department' ? <Input readOnly value={query.data?.prefill?.[field.id] ?? ''}/>
+              :field.id==='applicant_name' || field.id==='department' ? <Input readOnly placeholder="由同序按申请人自动带出" value={query.data?.prefill?.[field.id] ?? ''}/>
               :field.id==='sample_items' ? <div style={{display:'grid',gap:8}}>
                 {(query.data?.detail_files?.length ?? 0) > 0 && <Select multiple style={{width:'100%'}}
                   placeholder="选择已上传的样品明细表"
