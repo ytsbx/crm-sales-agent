@@ -128,10 +128,10 @@ async def review_return(
     data = await svc.serialize_return(session, row)
     await session.commit()
     message = (
-        f"退货单 {row.return_no} 已通过复核，待财务登记退款"
+        f"退货单 {row.return_no} 已通过复核，待财务结算"
         if row.status == "completed"
         else (
-            f"退货单 {row.return_no} 已通过复核，待财务结算"
+            f"退货单 {row.return_no} 已通过复核，待填退货总额"
             if row.status == "pending"
             else f"退货单 {row.return_no} 已驳回，可退数量已释放"
         )

@@ -3585,7 +3585,7 @@ export default function OrderDetailPage() {
         </div>
       </Modal>
 
-      {/* 主管复核退货：通过后直接进入待财务登记退款；驳回释放可退数量，登记人可改后重提。 */}
+      {/* 主管复核退货：通过后进入待财务结算；驳回释放可退数量，登记人可改后重提。 */}
       <Modal
         width={520}
         style={{ maxWidth: 'calc(100vw - 32px)' }}
@@ -3642,7 +3642,7 @@ export default function OrderDetailPage() {
                 value={reviewDecision}
                 onChange={(value) => setReviewDecision(value as 'approve' | 'reject')}
                 optionList={[
-                  { label: '通过，待财务登记退款', value: 'approve' },
+                  { label: '通过，待财务结算', value: 'approve' },
                   { label: '驳回，退给登记人修改', value: 'reject' },
                 ]}
               />

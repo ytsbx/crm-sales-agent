@@ -409,13 +409,13 @@ async def review_return(
     row.reviewed_at = datetime.now(UTC)
     row.review_note = (note or "").strip() or None
     if decision == "approve":
-        # 登记时已填金额的新单直接进入待财务登记退款；兼容没有金额的历史旧单。
+        # 登记时已填金额的新单直接进入待财务结算；兼容没有金额的历史旧单。
         row.status = "completed" if row.settled_goods_amount is not None else "pending"
         title = "销售退货已通过主管复核"
         content = (
             f"订单退货 {row.return_no} 已通过主管复核，"
             + (
-                f"退款金额 {format(row.settled_goods_amount or ZERO, '.2f')} 元，待财务登记退款。"
+                f"退货总额 {format(row.settled_goods_amount or ZERO, '.2f')} 元，待财务结算。"
                 if row.status == "completed"
                 else "待填退货总额。"
             )
