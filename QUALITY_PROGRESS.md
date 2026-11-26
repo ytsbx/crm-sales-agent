@@ -6308,3 +6308,13 @@
 - 确认系统未接 MES/ERP，履约状态全部人工维护，不存在回调入口需要单独豁免。
 - 验证：新增 `tests/test_order_completion_reason.py`（无原因 422、有原因通过且审计带金额）；全量 pytest、前端 tsc 与构建通过。
 - 未部署：生产仍 3302a209，与此前 K4/K5/退款金额一起待下次发布。
+
+## 2026-11-26 销售退货上线前生产只读扫描（结果：0 条）
+
+- 通过 SSH 只读查询生产 `crm.mandla.cn`（服务器应用目录 `/opt/crm-sales-agent/app`）：`DEPLOYED_COMMIT=3302a209e4fa2505e93b62f861398c8d336ba4c1`。
+- 生产库 `crm_sales_agent`：`alembic_version=a1c4e8f2b6d9`，`sales_returns` 表存在。
+- 退货数据：总 0 条、`status='pending'` 0 条、`offset_amount>0` 0 条，按状态分组为空。
+  - 连带：`sales_orders=0`、`payment_records=0`；`customers=2554`、`users=16`。
+- 本次仅执行 `SELECT`，未写库、未迁移、未改配置、未重启服务、未部署。
+- 结论：上线前最担心的历史 `pending` / 历史抵扣退货单不存在，满足发布条件。
+- 备注：本机 `backend/.env` 指向的同名 `crm_sales_agent` 与线上不是同一套数据（本机无 `sales_returns` 表），后续生产核对必须以服务器 SSH 查询为准。
