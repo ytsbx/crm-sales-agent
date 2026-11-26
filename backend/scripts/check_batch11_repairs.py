@@ -6,7 +6,7 @@
 """
 import sys
 sys.path[:0] = ['.', 'scripts']
-from _test_support import require_isolated_db, ISOLATED_DB_PREFIXES, ISOLATED_DB_SUFFIXES
+from _test_support import force_sample_ship_approval, require_isolated_db, ISOLATED_DB_PREFIXES, ISOLATED_DB_SUFFIXES
 db_name = require_isolated_db()
 if not (db_name.startswith(ISOLATED_DB_PREFIXES) or db_name.endswith(ISOLATED_DB_SUFFIXES)):
  raise SystemExit('本套件只允许隔离库，不接受业务库逃生开关')
@@ -177,6 +177,9 @@ async def sample_dates(actor):
     print('PASS 制作在寄出后被拒');await s.rollback()
  async with SessionLocal() as s:
   sample=SampleRequest(customer_id=1,owner_id=actor.id,status='approved');s.add(sample);await s.commit();sid=sample.id
+  # 2026-11-26 起现有产品寄样要先有 CRM 内寄样审批；本段只验日期，先补批准事实。
+  await force_sample_ship_approval(s, sid)
+  await s.commit()
   await samples.register_sample_made(sid,SampleMade(made_at=now-timedelta(days=2)),REQ,actor,s)
   try:
    await samples.ship_sample(sid,SampleShip(shipped_at=today_business()-timedelta(days=3)),REQ,actor,s)

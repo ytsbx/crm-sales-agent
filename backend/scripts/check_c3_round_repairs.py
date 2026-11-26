@@ -128,6 +128,22 @@ def mark_approved(sid) -> None:
         "'{\"business_stages\": {\"sample\": {\"status\": \"approved\"}}}'::jsonb, now(), now() "
         f"from sample_requests where id={sid}"
     )
+    # 2026-11-26 起现有产品寄样还有一道 CRM 内寄样审批；这里补批准事实，
+    # 后续运费/日期断言仍然打真实 /ship 接口，不绕过状态机。
+    db(
+        "insert into approval_definitions (code,name,business_type,status,created_at) "
+        "values ('sample_shipment','寄样审批','sample_shipment','active',now()) "
+        "on conflict (code) do nothing"
+    )
+    db(
+        "insert into approval_instances (definition_id,business_type,business_id,applicant_id,"
+        "status,current_node,summary,created_at,finished_at) "
+        "select d.id,'sample_shipment',s.id,s.owner_id,'approved','manager',"
+        "'{\"carrier\":\"测试夹具\",\"shipping_fee\":null}'::jsonb,now(),now() "
+        "from sample_requests s join approval_definitions d on d.code='sample_shipment' "
+        f"where s.id={sid} and not exists (select 1 from approval_instances ai "
+        "where ai.business_type='sample_shipment' and ai.business_id=s.id and ai.status='approved')"
+    )
 
 
 # =====================================================================

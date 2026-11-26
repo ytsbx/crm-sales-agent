@@ -164,7 +164,7 @@ export default function ApprovalPage() {
       width: compact ? 175 : 220,
       render: (v: string | null, record: ApprovalRow) => {
         const isSample = record.business_type === 'sample_shipment'
-        const no = isSample ? (record.sample_no ?? `打样 #${record.business_id}`) : v
+        const no = isSample ? (record.sample_no ?? `打样单编号 ${record.business_id}`) : v
         return (
           <div style={{ display: 'grid', gap: 2, justifyItems: 'center' }}>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>

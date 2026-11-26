@@ -79,6 +79,39 @@ async def main() -> int:
                 "now": now,
             },
         )
+        # 2026-11-26 起现有产品寄样还有一道 CRM 内寄样审批。冒烟/CI 没有审批人，
+        # 这里补一条 approved 实例；定制件有询价来源，不补（仍走原询价 OA）。
+        await s.execute(
+            text(
+                "INSERT INTO approval_definitions (code, name, business_type, status, created_at) "
+                "VALUES ('sample_shipment', '寄样审批', 'sample_shipment', 'active', :now) "
+                "ON CONFLICT (code) DO NOTHING"
+            ),
+            {"now": now},
+        )
+        await s.execute(
+            text(
+                "INSERT INTO approval_instances "
+                "(definition_id, business_type, business_id, applicant_id, status, current_node, "
+                " summary, created_at, finished_at) "
+                "SELECT d.id, 'sample_shipment', sr.id, sr.owner_id, 'approved', 'manager', "
+                "       CAST(:summary AS jsonb), :now, :now "
+                "FROM sample_requests sr "
+                "JOIN approval_definitions d ON d.code='sample_shipment' "
+                "WHERE sr.id=:sid "
+                "  AND NOT EXISTS (SELECT 1 FROM approval_instances ai "
+                "                  WHERE ai.business_type='sample_shipment' "
+                "                    AND ai.business_id=sr.id AND ai.status='approved') "
+                "  AND COALESCE(sr.source_context->>'type','') <> 'inquiry' "
+                "  AND NOT EXISTS (SELECT 1 FROM sample_items si "
+                "                  WHERE si.sample_request_id=sr.id AND si.inquiry_id IS NOT NULL)"
+            ),
+            {
+                "sid": sample_id,
+                "summary": '{"carrier":"测试夹具","shipping_fee":null,"note":"测试夹具"}',
+                "now": now,
+            },
+        )
         await s.commit()
         if result.rowcount != 1:
             print(f"样品 {sample_id} 未置为已批准（状态不是 pending/rejected）")

@@ -119,7 +119,7 @@ def _serialize(instance: ApprovalInstance, ctx: dict, *, can_approve: bool = Fal
             "created_at": instance.created_at,
             "finished_at": instance.finished_at,
             "sample_id": instance.business_id,
-            "sample_no": f"打样 #{instance.business_id}",
+            "sample_no": f"打样单编号 {instance.business_id}",
             "customer_name": ctx["customers"].get(sample.customer_id) if sample else None,
             "owner_name": ctx["users"].get(sample.owner_id) if sample else None,
             "carrier": summary.get("carrier"),

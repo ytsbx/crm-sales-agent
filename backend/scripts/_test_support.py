@@ -283,6 +283,54 @@ async def force_sample_review(session, sample_id: int, status: str, *, reason: s
             "now": now,
         },
     )
-    await session.commit()
     if result.rowcount != 1:
         raise RuntimeError(f"样品 {sample_id} 未能置为 {status}（状态不是 pending/rejected）")
+    if status == "approved":
+        # 2026-11-26 起，现有产品的寄样还有一道 CRM 内「寄样审批」。
+        # 这里只给**非定制件**补一条 approved 审批实例；定制件仍走原询价 OA 闸门。
+        await force_sample_ship_approval(session, sample_id)
+    await session.commit()
+
+
+async def force_sample_ship_approval(session, sample_id: int) -> None:
+    """给现有产品打样单造一条 approved 的寄样审批实例（测试夹具）。
+
+    只补前置审批事实，不绕过后续状态机；定制件（有询价来源/明细挂询价）不补，
+    因为它们的寄样凭原询价审批，补了反而会让审批中心多出一条无关记录。
+    """
+    from datetime import UTC, datetime
+
+    from sqlalchemy import text
+
+    now = datetime.now(UTC)
+    await session.execute(
+        text(
+            "INSERT INTO approval_definitions (code, name, business_type, status, created_at) "
+            "VALUES ('sample_shipment', '寄样审批', 'sample_shipment', 'active', :now) "
+            "ON CONFLICT (code) DO NOTHING"
+        ),
+        {"now": now},
+    )
+    await session.execute(
+        text(
+            "INSERT INTO approval_instances "
+            "(definition_id, business_type, business_id, applicant_id, status, current_node, "
+            " summary, created_at, finished_at) "
+            "SELECT d.id, 'sample_shipment', s.id, s.owner_id, 'approved', 'manager', "
+            "       CAST(:summary AS jsonb), :now, :now "
+            "FROM sample_requests s "
+            "JOIN approval_definitions d ON d.code='sample_shipment' "
+            "WHERE s.id=:sid "
+            "  AND NOT EXISTS (SELECT 1 FROM approval_instances ai "
+            "                  WHERE ai.business_type='sample_shipment' "
+            "                    AND ai.business_id=s.id AND ai.status='approved') "
+            "  AND COALESCE(s.source_context->>'type','') <> 'inquiry' "
+            "  AND NOT EXISTS (SELECT 1 FROM sample_items si "
+            "                  WHERE si.sample_request_id=s.id AND si.inquiry_id IS NOT NULL)"
+        ),
+        {
+            "sid": sample_id,
+            "summary": '{"carrier":"测试夹具","shipping_fee":null,"note":"测试夹具"}',
+            "now": now,
+        },
+    )

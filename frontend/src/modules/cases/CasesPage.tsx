@@ -1242,7 +1242,7 @@ export default function CasesPage() {
                   {detail.quote_id && <Link to={`/quotes/${detail.quote_id}`}>报价单 #{detail.quote_id}</Link>}
                   {detail.order_id && <Link to={`/orders/${detail.order_id}`}>订单 #{detail.order_id}</Link>}
                   {detail.sample_id && (
-                    <Link to={`/samples/${detail.sample_id}`}>打样单 #{detail.sample_id}</Link>
+                    <Link to={`/samples/${detail.sample_id}`}>打样单编号 {detail.sample_id}</Link>
                   )}
                 </div>
               )
