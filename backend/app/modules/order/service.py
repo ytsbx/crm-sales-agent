@@ -50,8 +50,15 @@ def serialize_order(
     sales_owner_name: str | None = None,
     received_amount: Decimal | None = None,
     item_count: int = 0,
+    return_offset_amount: Decimal | None = None,
 ) -> dict:
     received = received_amount or Decimal(0)
+    total = order.total_amount or Decimal(0)
+    # 未收 = 订单总额 - 客户已付 - 退货里财务手动抵扣的未付款。
+    # 之前只减已付，退货结算把 800 抵掉后订单详情仍显示 800，页面就像“永远悬浮”。
+    # 取消是终态：应收计划已随单作废，不再按这个公式算。
+    offset = return_offset_amount or Decimal(0)
+    unreceived = Decimal(0) if order.status == "cancelled" else total - received - offset
     return {
         "id": order.id,
         "order_no": order.order_no,
@@ -86,12 +93,8 @@ def serialize_order(
         "received_amount_exact": str(received),
         # 取消是终态：应收计划已随单作废，订单不再有待收金额。
         # 继续按 `总额 - 已收` 算会让已取消订单在详情/列表里显示"还要收 17 万"。
-        "unreceived_amount_exact": str(
-            Decimal(0) if order.status == "cancelled" else (order.total_amount or Decimal(0)) - received
-        ),
-        "unreceived_amount": _f(
-            Decimal(0) if order.status == "cancelled" else (order.total_amount or Decimal(0)) - received
-        ),
+        "unreceived_amount_exact": str(unreceived),
+        "unreceived_amount": _f(unreceived),
         "currency": order.currency,
         "status": order.status,
         "status_label": ORDER_STATUS_LABEL.get(order.status, order.status),
@@ -1318,6 +1321,7 @@ async def order_context(session: AsyncSession, orders: list[SalesOrder]) -> dict
         ).all()
     } if owner_ids else {}
     received: dict[int, Decimal] = {}
+    return_offsets: dict[int, Decimal] = {}
     counts: dict[int, int] = {}
     if order_ids:
         received = {
@@ -1327,6 +1331,24 @@ async def order_context(session: AsyncSession, orders: list[SalesOrder]) -> dict
                     select(PaymentRecord.order_id, func.coalesce(func.sum(PaymentRecord.received_amount), 0))
                     .where(PaymentRecord.order_id.in_(order_ids), PaymentRecord.status == "confirmed")
                     .group_by(PaymentRecord.order_id)
+                )
+            ).all()
+        }
+        # 退货结算里财务手动抵扣的未付款：订单详情的“客户未付款余额”必须减掉，
+        # 否则结算后汇总已经 0、详情还挂着旧数，用户会以为没生效。
+        from app.modules.returns.model import SalesReturn
+        from app.modules.returns.service import SETTLED_RETURN_STATUSES
+
+        return_offsets = {
+            int(oid): Decimal(total or 0)
+            for oid, total in (
+                await session.execute(
+                    select(SalesReturn.order_id, func.coalesce(func.sum(SalesReturn.offset_amount), 0))
+                    .where(
+                        SalesReturn.order_id.in_(order_ids),
+                        SalesReturn.status.in_(SETTLED_RETURN_STATUSES),
+                    )
+                    .group_by(SalesReturn.order_id)
                 )
             ).all()
         }
@@ -1340,7 +1362,13 @@ async def order_context(session: AsyncSession, orders: list[SalesOrder]) -> dict
                 )
             ).all()
         }
-    return {"customers": customers, "owners": owners, "received": received, "counts": counts}
+    return {
+        "customers": customers,
+        "owners": owners,
+        "received": received,
+        "return_offsets": return_offsets,
+        "counts": counts,
+    }
 
 
 async def plan_summary(session: AsyncSession, plan: ReceivablePlan) -> dict:

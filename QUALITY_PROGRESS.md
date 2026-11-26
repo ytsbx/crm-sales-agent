@@ -6339,3 +6339,21 @@
 - 前端：任务进行中每 3 秒轮询 `sync-jobs`，"更新企微数据"按钮显示加载并禁用；任务从进行中变为完成/失败时自动刷新统计、待确认联系人和客户列表；启动时提示"已开始，完成后自动刷新"。
 - 验证：同步失败参数的既有用例不再包含 follow（改为后台任务），新增"接口只建 running 任务"和"后台失败标记 failed 且脱敏"两条；全量 pytest、前端 tsc 与构建通过。
 - 未部署：生产仍 35858759。
+
+## 2026-11-26 退货财务手动结算（抵扣未付款/现金退还，未部署）
+
+- 背景：主人指出“退货后客户没付款，未付款仍 ¥800 一直悬浮”。原口径只做到“不自动抵扣”，但没有财务手动抵扣入口；订单详情 `serialize_order` 又只减已确认回款、不减退货抵扣，导致即使汇总接口算出 0，详情页仍显示旧数。
+- 后端：
+  - 新增 `POST /returns/{id}/settle`（`payment:manage`）：财务在同一弹窗里最后核对退货总额，并手动填 `offset_amount`（抵扣客户未付款）；`refund_amount = total_amount - offset_amount`。
+  - `offset_amount=0`：全部现金退，状态 `refunded`，必须填退款流水；`refund_amount=0`：全额抵扣，状态新增 `settled`，无现金退款、不要求流水；中间值：部分抵扣+部分退现，状态 `refunded`。
+  - 只有填了抵扣才冲应收计划，按 `due_date` 先后逐期冲减；写 `sales_return_plan_adjustments` 快照和 `settle_return` 审计（改前/改后总额、抵扣、现金、计划明细）。抵扣上限取“订单未付款”与“应收计划未收余额”的较小值，防止冲成负数。
+  - 历史 `offset_amount>0` / 有 adjustment 的旧单不能走新结算，只能按原金额登记现金退款或作废重登。已退款/已结算不能改金额、不能作废；回款作废拦截状态补 `settled`。
+  - `order_finance_summary` 统计 `settled` 的退货总额；订单详情/列表/客户订单列表的 `unreceived_amount` 改为“订单总额 - 已确认回款 - 已结算退货抵扣”，不再只减回款。
+  - 单测新增 3 条：全额抵扣清零未付款、部分抵扣+退现、抵扣超未付上限被拒；`backend/tests/test_sales_return.py` 共 19 条通过，全量 pytest 通过。
+- 隔离环境实测（`crm_iso_flow_20261125`，`127.0.0.1:8012`）：
+  - 订单 `SO202611260003`（id 8）：10 件 × ¥100 = ¥1,000，应收 ¥1,000，已确认回款 ¥200，发货 10；退货 `RT202611260007`（id 16）10 件、总额 ¥1,000，李四复核后王五结算：抵扣 ¥800 + 现金退 ¥200。结果 `status=refunded`、`return_offset_amount=800.00`、`return_refunded_amount=200.00`、`unreceived_amount=0.00`、`net_order_amount=0.00`、`unsettled_plan_amount=0.00`；订单详情未付款也从 ¥800 变为 ¥0.00。
+  - 订单 `SO202611260004`（id 9）：客户一分未付，整单退货 `RT202611260008`（id 17）全额抵扣 ¥1,000，结果 `status=settled`、`refund_amount=0.00`、`unreceived_amount=0.00`，无现金退款流水。
+  - 结算后再结算/作废/改金额均被 422 拦；`settle_return` 审计存在于 `sales_return` 业务审计。
+- 前端：退货列表“退款金额/退款登记”改为“退货金额/结算”；财务结算弹窗支持改总额、填抵扣、快捷“全部退现/优先抵扣未付款”、实时显示可抵扣上限和现金退还金额；纯现金退款必须填流水，全额抵扣可不填；历史抵扣单只显示“登记现金退款”。GuidePage、全流程走查文档同步。
+- 验证：`frontend` `tsc -b`、`vite build` 通过；`oxlint` 0 errors（既有 39 warnings）。
+- 未部署：生产当前 `35858759`，本次 `settle` 改造及订单详情未付款扣减尚未发布。

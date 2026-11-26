@@ -26,6 +26,7 @@ from app.modules.returns.schema import (
     ReturnCreate,
     ReturnRefund,
     ReturnReview,
+    ReturnSettle,
     ReturnVoid,
 )
 
@@ -193,6 +194,41 @@ async def refund_return(
     data = await svc.serialize_return(session, row)
     await session.commit()
     return ok(data, f"退货单 {row.return_no} 已登记退款")
+
+
+@router.post("/returns/{return_id}/settle")
+async def settle_return(
+    return_id: int,
+    payload: ReturnSettle,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("payment:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """财务结算：手动决定抵扣未付款 / 现金退还，抵扣才冲应收计划。"""
+    row = await _lock_return_with_order(session, user, return_id)
+    await svc.settle_return(
+        session,
+        user,
+        row,
+        total_amount=payload.total_amount,
+        offset_amount=payload.offset_amount,
+        refund_reference=payload.refund_reference,
+        note=payload.note,
+        ip=client_ip(request),
+    )
+    data = await svc.serialize_return(session, row)
+    await session.commit()
+    if row.status == "settled":
+        message = (
+            f"退货单 {row.return_no} 已结算：抵扣客户未付款 "
+            f"{row.offset_amount:.2f} 元，无现金退款"
+        )
+    else:
+        message = (
+            f"退货单 {row.return_no} 已结算：抵扣 {row.offset_amount:.2f} 元，"
+            f"现金退还 {row.refund_amount:.2f} 元"
+        )
+    return ok(data, message)
 
 
 @router.post("/returns/{return_id}/refund-attachment")

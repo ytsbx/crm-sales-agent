@@ -1115,7 +1115,7 @@ async def order_finance_summary(session: AsyncSession, order_id: int) -> dict:
         await session.execute(
             select(SalesReturn).where(
                 SalesReturn.order_id == order_id,
-                SalesReturn.status.in_(("completed", "refunded")),
+                SalesReturn.status.in_(("completed", "refunded", "settled")),
             )
         )
     ).scalars().all()

@@ -1343,7 +1343,7 @@ async def void_payment(
         await session.execute(
             select(SalesReturn.return_no, SalesReturn.status).where(
                 SalesReturn.order_id == record.order_id,
-                SalesReturn.status.in_(("completed", "refunded")),
+                SalesReturn.status.in_(("completed", "refunded", "settled")),
             )
         )
     ).all()

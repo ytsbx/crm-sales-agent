@@ -48,6 +48,23 @@ class ReturnAmountUpdate(BaseModel):
     note: str | None = Field(default=None, max_length=255)
 
 
+class ReturnSettle(BaseModel):
+    """财务结算：确定退货总额里多少抵扣未付款，多少现金退还。
+
+    2026-11-26 补：系统不自动抵扣，但财务必须能手动选。
+    - `offset_amount` 抵扣客户未付款，0 表示全部现金退还；
+    - `total_amount` 是本次退货总额（含货款和运费），财务可在这里一并核对修改；
+    - 现金退还 = total_amount - offset_amount，现金大于 0 时必须有退款流水/说明。
+    """
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    total_amount: Decimal = Field(gt=0, max_digits=16, decimal_places=2)
+    offset_amount: Decimal = Field(ge=0, max_digits=16, decimal_places=2)
+    refund_reference: str | None = Field(default=None, min_length=2, max_length=128)
+    note: str | None = Field(default=None, max_length=255)
+
+
 class ReturnReview(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 

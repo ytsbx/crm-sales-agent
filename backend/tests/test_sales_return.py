@@ -574,3 +574,172 @@ def test_refund_attachment_metadata_serialized(db):
     assert data["refund_attachment_file_name"] == "银行回单.pdf"
     assert data["refund_attachment_file_size"] == 1234
     assert data["refund_attachment_mime_type"] == "application/pdf"
+
+
+def _add_payment(s, amount: str, allocations: list[tuple[int, str]]):
+    from app.modules.payment.model import PaymentAllocation, PaymentRecord
+
+    payment = PaymentRecord(
+        id=1,
+        order_id=1,
+        received_date=date(2026, 11, 21),
+        received_amount=D(amount),
+        currency="CNY",
+        status="confirmed",
+        created_at=NOW,
+    )
+    s.add(payment)
+    s._session.flush()
+    s.add_all(
+        [
+            PaymentAllocation(
+                payment_id=1,
+                plan_id=plan_id,
+                amount=D(allocated),
+                created_at=NOW,
+                updated_at=NOW,
+            )
+            for plan_id, allocated in allocations
+        ]
+    )
+    s._session.flush()
+    return payment
+
+
+def test_settle_full_offset_clears_unreceived_without_cash(db):
+    """整单退货全部抵扣：未付款归 0，状态已结算，不再一直悬浮。"""
+    s, order, item, batch_item, plans = db
+    row = run(svc.create_return(s, USER, order, _payload("10", "100")))
+    _approve(s, row)
+    settled = run(
+        svc.settle_return(
+            s,
+            FINANCE,
+            row,
+            total_amount=D("100.00"),
+            offset_amount=D("100.00"),
+            note="客户还没付款，整单退货直接抵未付款",
+        )
+    )
+    assert settled.status == "settled"
+    assert settled.total_amount == D("100.00")
+    assert settled.offset_amount == D("100.00")
+    assert settled.refund_amount == D("0.00")
+    assert settled.refund_reference is None
+    assert settled.settled_by == FINANCE.id
+
+    summary = run(payment_svc.order_finance_summary(s, 1))
+    assert summary["returned_amount_exact"] == "100.00"
+    assert summary["return_offset_amount_exact"] == "100.00"
+    assert summary["return_refund_amount_exact"] == "0.00"
+    assert summary["return_refunded_amount_exact"] == "0.00"
+    assert summary["unreceived_amount_exact"] == "0.00"
+    assert summary["net_order_amount_exact"] == "0.00"
+
+    # 订单详情/列表也必须减掉退货抵扣；只改汇总接口会出现“汇总 0、详情还挂 800”。
+    from app.modules.order import service as order_svc
+
+    ctx = run(order_svc.order_context(s, [order]))
+    serialized = order_svc.serialize_order(
+        order,
+        received_amount=ctx["received"].get(order.id, 0),
+        return_offset_amount=ctx["return_offsets"].get(order.id, 0),
+    )
+    assert serialized["unreceived_amount_exact"] == "0.00"
+
+    audit = s._session.execute(
+        select(AuditLog).where(
+            AuditLog.business_type == "sales_return",
+            AuditLog.business_id == row.id,
+            AuditLog.action == "settle_return",
+        )
+    ).scalars().one()
+    assert audit.after_data["status"] == "settled"
+    assert audit.after_data["offset_amount"] == "100.00"
+    assert audit.after_data["refund_amount"] == "0.00"
+    assert len(audit.after_data["plans"]) == 2
+    adjustments = s._session.execute(
+        select(SalesReturnPlanAdjustment).where(
+            SalesReturnPlanAdjustment.return_id == row.id
+        )
+    ).scalars().all()
+    assert len(adjustments) == 2
+    assert sum((item.applied_amount for item in adjustments), D("0.00")) == D("100.00")
+    assert all(item.amount_after == D("0.00") for item in adjustments)
+
+    # 已用抵扣结清，不能再改金额、不能再作废。
+    with pytest.raises(AppError, match="已经实际退款或结算"):
+        run(svc.update_return_amount(s, FINANCE, row, refund_amount=D("90.00")))
+    with pytest.raises(AppError, match="已经用抵扣"):
+        run(svc.void_return(s, FINANCE, row, "想撤销"))
+
+
+def test_settle_partial_offset_and_cash_refund_requires_reference(db):
+    s, order, item, batch_item, plans = db
+    _add_payment(s, "20.00", [(1, "20.00")])
+    row = run(svc.create_return(s, USER, order, _payload("3", "30")))
+    _approve(s, row)
+
+    with pytest.raises(AppError, match="必须填写退款流水"):
+        run(
+            svc.settle_return(
+                s,
+                FINANCE,
+                row,
+                total_amount=D("30.00"),
+                offset_amount=D("10.00"),
+            )
+        )
+
+    settled = run(
+        svc.settle_return(
+            s,
+            FINANCE,
+            row,
+            total_amount=D("30.00"),
+            offset_amount=D("10.00"),
+            refund_reference="银行流水 20261126001",
+            note="先抵 10，再退 20",
+        )
+    )
+    assert settled.status == "refunded"
+    assert settled.total_amount == D("30.00")
+    assert settled.offset_amount == D("10.00")
+    assert settled.refund_amount == D("20.00")
+    assert settled.refund_reference == "银行流水 20261126001"
+
+    # 先到期的定金余额 10 被抵完，计划金额从 30 降到 20；尾款不动。
+    assert plans[0].amount == D("20.00")
+    assert plans[1].amount == D("70.00")
+
+    summary = run(payment_svc.order_finance_summary(s, 1))
+    assert summary["returned_amount_exact"] == "30.00"
+    assert summary["return_offset_amount_exact"] == "10.00"
+    assert summary["return_refunded_amount_exact"] == "20.00"
+    assert summary["refund_pending_amount_exact"] == "0.00"
+    assert summary["unreceived_amount_exact"] == "70.00"
+    assert summary["net_received_amount_exact"] == "0.00"
+
+
+def test_settle_offset_cannot_exceed_unreceived(db):
+    s, order, item, batch_item, plans = db
+    _add_payment(s, "90.00", [(1, "30.00"), (2, "60.00")])
+    row = run(svc.create_return(s, USER, order, _payload("3", "30")))
+    _approve(s, row)
+
+    with pytest.raises(AppError, match="可抵扣上限 10.00"):
+        run(
+            svc.settle_return(
+                s,
+                FINANCE,
+                row,
+                total_amount=D("30.00"),
+                offset_amount=D("20.00"),
+                refund_reference="银行流水 20261126002",
+            )
+        )
+    # 失败不落库、不改计划、不改状态。
+    assert row.status == "completed"
+    assert row.offset_amount == D("0.00")
+    assert plans[0].amount == D("30.00")
+    assert plans[1].amount == D("70.00")

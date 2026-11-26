@@ -93,6 +93,7 @@ async def list_orders(
             ),
             received_amount=ctx["received"].get(order.id, 0),
             item_count=ctx["counts"].get(order.id, 0),
+            return_offset_amount=ctx["return_offsets"].get(order.id, 0),
         )
         for order in rows
     ]
@@ -343,6 +344,7 @@ async def get_order(
             ),
             received_amount=ctx["received"].get(order.id, 0),
             item_count=ctx["counts"].get(order.id, 0),
+            return_offset_amount=ctx["return_offsets"].get(order.id, 0),
         )
     )
 

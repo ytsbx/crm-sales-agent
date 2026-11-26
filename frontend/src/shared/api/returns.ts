@@ -5,6 +5,7 @@ export type SalesReturnStatus =
   | 'pending'
   | 'completed'
   | 'refunded'
+  | 'settled'
   | 'rejected'
   | 'cancelled'
   | 'voided'
@@ -41,7 +42,7 @@ export interface SalesReturn {
   currency: string
   goods_amount: number
   goods_amount_exact: string
-  /** 本次退款金额（含货款和运费）；登记时必填，财务可修改。 */
+  /** 本次退货总额（含货款和运费）；登记时必填，财务可修改。 */
   settled_goods_amount?: number | null
   settled_goods_amount_exact?: string | null
   /** 历史兼容字段；新流程固定 0，退款金额已并入 settled_goods_amount。 */
@@ -49,10 +50,10 @@ export interface SalesReturn {
   freight_refund_amount_exact: string
   total_amount: number
   total_amount_exact: string
-  /** 历史抵扣字段；新流程固定 0。 */
+  /** 本次退货中抵扣客户未付款的金额；财务结算时手动填，0 表示全部现金退还。 */
   offset_amount: number
   offset_amount_exact: string
-  /** 应退给客户的金额；新流程等于 total_amount。 */
+  /** 现金退还给客户的金额 = total_amount - offset_amount。 */
   refund_amount: number
   refund_amount_exact: string
   refund_reference?: string | null
@@ -146,10 +147,10 @@ export function reviewReturn(
 }
 
 /**
- * 财务核对/修改退款金额。
+ * 财务核对/修改退货总额（不含结算）。
  *
  * 2026-11-26 主人拍板：登记时业务员先填，财务可以改；后端每次改动都写审计。
- * 已实际退款的退货单不能再改。
+ * 已退款/已结算的退货单不能再改；新单正式结算走 `settleReturn`。
  */
 export function updateReturnAmount(
   returnId: number,
@@ -162,6 +163,27 @@ export function updateReturnAmount(
   })
 }
 
+export interface ReturnSettlePayload {
+  /** 本次退货总额（含货款和运费）；财务可在这里一并核对修改。 */
+  total_amount: number
+  /** 抵扣客户未付款的金额；0 表示全部现金退还。 */
+  offset_amount: number
+  /** 有现金退还时必填（至少 2 个字）；全额抵扣可不填。 */
+  refund_reference?: string
+  note?: string
+}
+
+/**
+ * 财务结算：手动决定抵扣未付款 / 现金退还。
+ *
+ * 只有财务选“抵扣”才会冲减应收计划；现金部分大于 0 时登记为已退款，
+ * 全部抵扣时状态为“已结算”，不再产生现金退款。
+ */
+export function settleReturn(returnId: number, payload: ReturnSettlePayload) {
+  return api.post<SalesReturn>(`/returns/${returnId}/settle`, payload)
+}
+
+/** 历史抵扣单登记现金退款；新退货请优先使用 `settleReturn`。 */
 export function refundReturn(returnId: number, refundReference: string) {
   return api.post<SalesReturn>(`/returns/${returnId}/refund`, { refund_reference: refundReference })
 }

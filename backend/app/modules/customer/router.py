@@ -822,6 +822,7 @@ async def customer_orders(
                     owner_name=ctx["owners"].get(row.owner_id) if row.owner_id else None,
                     received_amount=ctx["received"].get(row.id),
                     item_count=ctx["counts"].get(row.id, 0),
+                    return_offset_amount=ctx["return_offsets"].get(row.id, 0),
                 )
                 for row in rows
             ],
