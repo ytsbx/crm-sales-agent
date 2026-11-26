@@ -52,7 +52,7 @@ EXPECTED_ACTIONS = {
     'delete', 'delete_item', 'disable', 'expire', 'mark_sent', 'price_refresh', 'cost_refresh',
     'quote_link_master', 'recalculate', 'refresh_prices', 'send_email',
     'set_items', 'submit_approval', 'supersede_approval', 'update', 'update_charge',
-    'update_item', 'update_version', 'withdraw', 'withdraw_approval',
+    'update_item', 'update_version', 'withdraw', 'withdraw_approval', 'void',
 }
 
 

@@ -205,7 +205,7 @@ async def seed_fixtures() -> dict:
                 ContractDocument(
                     doc_no=f"{PREFIX}C{stamp}", doc_type="contract",
                     title=f"{PREFIX}合同-{stamp}", customer_id=source.id,
-                    template_id=template.id, content_snapshot=contract_body,
+                    content_snapshot=contract_body,
                     created_at=datetime.now(UTC),
                 ),
                 SalesCase(

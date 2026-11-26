@@ -388,11 +388,10 @@ async def probe_contract_visibility(session, owner_id: int, user, other_user, st
 
     customer = await make_customer(session, owner_id=None)
     order = await make_order(session, owner_id=scoped.id, customer=customer)
-    template_id = await _any_template_id(session)
     doc = ContractDocument(
         doc_no=f"{PREFIX}-C-{uuid4().hex[:6]}", doc_type="contract",
         title="公海客户合同", customer_id=customer.id, order_id=order.id,
-        template_id=template_id, content_snapshot="检查用正文",
+        content_snapshot="检查用正文",
         status="signed", created_by=other_user.id, created_at=datetime.now(UTC),
     )
     session.add(doc)
@@ -422,7 +421,7 @@ async def probe_contract_visibility(session, owner_id: int, user, other_user, st
     doc2 = ContractDocument(
         doc_no=f"{PREFIX}-C2-{uuid4().hex[:6]}", doc_type="contract",
         title="无订单负责人合同", customer_id=customer.id, order_id=order2.id,
-        template_id=template_id, content_snapshot="检查用正文",
+        content_snapshot="检查用正文",
         status="signed", created_by=scoped.id, created_at=datetime.now(UTC),
     )
     session.add(doc2)
@@ -516,12 +515,10 @@ async def probe_superseded_reminder(session, owner_id: int, user):
 
     days = int(await settings_service.get_number(session, "contract", "monthly_remind_days", 30))
     customer = await make_customer(session, owner_id=owner_id)
-    template_id = await _any_template_id(session)
-
     # 阶段①：到期日远在窗口之外
     old = ContractDocument(
         doc_no=f"{PREFIX}-M-{uuid4().hex[:6]}", doc_type="monthly",
-        title="月结协议（旧）", customer_id=customer.id, template_id=template_id,
+        title="月结协议（旧）", customer_id=customer.id,
         content_snapshot="检查用正文", status="signed",
         expiry_date=today_business() + timedelta(days=days + 60),
         effective_date=today_business() - timedelta(days=100),
@@ -529,7 +526,7 @@ async def probe_superseded_reminder(session, owner_id: int, user):
     )
     fresh = ContractDocument(
         doc_no=f"{PREFIX}-M2-{uuid4().hex[:6]}", doc_type="monthly",
-        title="月结协议（新）", customer_id=customer.id, template_id=template_id,
+        title="月结协议（新）", customer_id=customer.id,
         content_snapshot="检查用正文", status="signed",
         expiry_date=today_business() + timedelta(days=5),
         effective_date=today_business(),
@@ -575,7 +572,6 @@ async def probe_renewal_effective_date(session, owner_id: int, user, doc_id_hold
     parent = ContractDocument(
         doc_no=f"{PREFIX}-P-{uuid4().hex[:6]}", doc_type="monthly",
         title="待续签月结", customer_id=customer.id,
-        template_id=await _any_template_id(session),
         content_snapshot="检查用正文",
         status="signed",
         expiry_date=today_business() + timedelta(days=10),
@@ -733,7 +729,6 @@ async def main():
         await probe_contract_visibility(session, owner_id, user, other_user, staff_ids)
         await probe_copy_sku_guard(session, owner_id, user)
         await probe_superseded_reminder(session, owner_id, user)
-        await probe_renewal_effective_date(session, owner_id, user, None)
 
     await cleanup()
     print()

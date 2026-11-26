@@ -261,6 +261,7 @@ const ACTION_LABEL: Record<string, string> = {
   disable: '停用',
   enable: '启用',
   withdraw: '撤回',
+  void: '作废',
 }
 
 /** 动作名的中文（认不出就退回原值，至少不空白）。 */
@@ -296,6 +297,7 @@ const VALUE_LABEL: Record<string, string> = {
   accepted: '已接受',
   declined: '客户拒绝',
   converted: '已转客户',
+  voided: '已作废',
   open: '进行中',
   closed: '已关闭',
   active: '启用',

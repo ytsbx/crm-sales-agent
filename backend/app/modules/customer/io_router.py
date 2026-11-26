@@ -45,7 +45,9 @@ async def _reject_reimported_file(session: AsyncSession, file_sha256: str) -> No
         prior = (
             await session.execute(
                 stmt.where(
-                    AuditLog.after_data["file_sha256"].astext == file_sha256
+                    # JSONB 取文本要用 `->>`；`.astext` 是 asyncpg/旧驱动的写法，
+                    # SQLAlchemy 的 JSONB 表达式上没有这个属性，会在真实 PG 上 500。
+                    AuditLog.after_data.op("->>")("file_sha256") == file_sha256
                 ).limit(1)
             )
         ).first()

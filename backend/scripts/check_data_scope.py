@@ -767,7 +767,7 @@ async def main() -> int:
         fixture_tpl_id = tpl.id
         victim_doc = ContractDocument(
             doc_no=f'{PREFIX}DOC{stamp}', title=f'{PREFIX}他人合同', customer_id=cid,
-            template_id=tpl.id, content_snapshot='{"金额":"机密"}', status='draft',
+            content_snapshot='{"金额":"机密"}', status='draft',
             request_key=f'{PREFIX}KEY{stamp}', created_by=owner.id,
             created_at=_dt.now(_UTC),
         )

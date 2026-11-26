@@ -118,7 +118,8 @@ check_opportunity_stage_item_guards
 check_sample_sources
 check_order_drafts
 check_delivery_planning
-check_contract_documents
+# 2026-11-26：系统模板生成合同/生成稿已删除，check_contract_documents、
+# check_contract_archive_and_fx、check_contract_pdf_cleanup 退出接口回归清单（脚本保留备查）。
 check_contract_monthly_reminders
 check_attachment_sample_guards
 # 新品洞察（第五批）：评审冻结、转换、内部开发需求的权限连续性。
@@ -293,16 +294,6 @@ check_tenth_round_scope_assign
 # 自造客户/订单/应收/回款/凭证，自己连磁盘文件一起清干净。
 # ⚠️ 它**必须显式传 API_BASE**：不给就拒跑（会真建订单与凭证夹具）。
 check_payment_and_vouchers
-# 第十一批组二（11.3 合同存档 / 11.4 汇率时效）。
-# ① 合同下载必须读**生成时落盘的存档原件**：记录缺失 / 磁盘文件缺失 / 校验值不符
-#    一律明确 410 且**不返回 PDF**（原实现是"读不到就当场重排一份给你、HTTP 200"）；
-#    历史上本来就没有存档的旧记录仍可下载，但响应头与文件名都要标明它是**副本**；
-# ② 取汇率只选**报价时刻已生效**的记录（原实现只按生效时间倒序取最新，
-#    提前录的 2030 年那条会被今天用上）；只剩未来汇率时明确拒绝报价。
-# ⚠️ 构造"只剩未来汇率"要把该币种**当前已生效的每一条**都推后 —— 库里可能还有
-#    别的套件留下的同币种汇率（本轮实测踩到，漏了它这个场景根本构造不出来）。
-# 自造客户/商机/模板/合同/汇率/报价，自己连磁盘存档一起清干净；**必须显式传 API_BASE**。
-check_contract_archive_and_fx
 # 第十一批组四（11.6 关联继承 / 11.7 负责人校验）：补建后续任务。
 # ① 跟进的报价、订单要继承进新任务；**打样没有对应的列**，改用任务上的
 #    "来源业务对象"承载（任务详情据此跳转）；跨客户的脏关联**不许**带过去，
@@ -424,11 +415,6 @@ check_round4_review_fixes
 # 它证明：两个并发的普通结账只能成功一个，另一个必须报「已经结过账了」。
 # 其余四项的离线回归在 backend/tests/test_round5_review_fixes.py。
 check_actuals_period_lock
-# 2026-10-12 第四批返修（复审独立复验后仍不合格的两项）：
-#   ① 合同 PDF 清理的两条失败路径 —— 写审计失败必须清、**提交回执丢失不许删原件**；
-#   ② 人民币白名单（改 trade_mode 也不放行外币）由 check_trade_mode_gate 覆盖。
-# 真库 + 真存储目录故障注入，所以放真库脚本段。
-check_contract_pdf_cleanup
 # 2026-10-12 第五批返修：任务「客户端版本」校验的精度。
 # 复审实测同一秒内的旧版本能覆盖同事的改动（`replace(microsecond=0)` 惹的祸）。
 # 离线只能断言"源码里没有截断"，"旧版本必须 409、当前版本必须成功"要真接口。

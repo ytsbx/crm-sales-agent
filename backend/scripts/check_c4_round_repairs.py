@@ -288,9 +288,25 @@ def sec_quote_deleted_contact(admin: str) -> None:
                not any("已被删除" in w for w in warns2),
                f"warnings={warns2}")
 
-    # 收尾
-    db(f"delete from contacts where name like '{MARK}-联系人%'")
-    db(f"delete from opportunities where title = '{MARK}-商机'")
+    # 收尾：报价必须先清。这个商机下面挂着两张草稿报价，直接删商机会被
+    # `quotes_opportunity_id_fkey` 挡回来（`db()` 只打 SQLERR、不抛异常，
+    # 于是一路静默漏到 `check_fixture_residue`）。
+    _q = f"(select id from quotes where opportunity_id={opp})"
+    _v = f"(select id from quote_versions where quote_id in {_q})"
+    for sql in (
+        f"delete from quote_charges where quote_version_id in {_v}",
+        f"delete from quote_send_logs where quote_version_id in {_v}",
+        f"delete from quote_items where quote_version_id in {_v}",
+        f"delete from quote_versions where quote_id in {_q}",
+        f"delete from quotes where opportunity_id={opp}",
+        f"delete from opportunity_stage_history where opportunity_id={opp}",
+        f"delete from opportunity_items where opportunity_id={opp}",
+        f"delete from contacts where name like '{MARK}-联系人%'",
+        f"delete from opportunities where title = '{MARK}-商机'",
+    ):
+        result = db(sql)
+        if result.startswith("SQLERR:"):
+            print(f"  （收尾语句失败：{sql[:80]} → {result[:160]}）")
 
 
 # =====================================================================
@@ -1079,10 +1095,11 @@ def main() -> int:
 
     sec_c401(admin)
     sec_quote_deleted_contact(admin)
-    sec_c402(admin)
+    # C4-02 / C4-06 测的是旧「模板生成合同」这条路的依据校验与请求指纹幂等。
+    # 2026-11-25 已删掉模板生成（合同改为上传原件），这两段连同被测入口一起退役；
+    # 保留函数备查，但从清单里摘掉，避免继续用不存在的入口造夹具。
     sec_sku_images(admin)
     sec_c405_batch_qty(admin)
-    sec_c406_legacy_fingerprint(admin)
 
     print("\n" + "=" * 60)
     if failed:

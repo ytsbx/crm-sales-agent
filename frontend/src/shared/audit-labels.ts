@@ -95,6 +95,7 @@ export const AUDIT_TYPE_LABEL: Record<string, string> = {
   receivable_plan: '应收节点',
   reconciliation_run: 'ERP 对账',
   role: '角色',
+  sales_return: '销售退货',
   sales_target: '销售目标',
   sample: '打样单',
   sample_item: '打样明细',

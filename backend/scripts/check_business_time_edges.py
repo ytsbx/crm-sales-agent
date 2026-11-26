@@ -54,7 +54,6 @@ from app.core.errors import AppError
 from app.core.importing import RowErrors
 from app.modules.analytics import targets as targets_service
 from app.modules.bizdoc import tokens as bizdoc_tokens
-from app.modules.contract import service as contract_service
 from app.modules.customer.model import Customer
 from app.modules.opportunity import router as opportunity_router
 from app.modules.opportunity.model import Opportunity, OpportunityStage
@@ -137,15 +136,9 @@ def _fake_request() -> Request:
 
 
 # --------------------------------------------------------------------------
-# ① 两个模板渲染入口的 {{today}}
+# ① 业务文件模板的 {{today}}
+# 系统合同模板渲染已删除，只保留仍在使用的业务文件模板。
 # --------------------------------------------------------------------------
-
-def render_contract_template(body: str) -> str:
-    text, _missing, _extra = contract_service.render_template(
-        body, customer=Customer(name=f"{PREFIX}时间客户")
-    )
-    return text
-
 
 def render_bizdoc_template(body: str) -> str:
     text, _unresolved = bizdoc_tokens.resolve_tokens(body, {})
@@ -163,7 +156,6 @@ def check_template_today() -> None:
     ]
     for label, instant, expected in cases:
         with frozen_business_clock(instant):
-            check(f"合同模板 {{today}}：{label}", render_contract_template("{{today}}"), expected)
             check(
                 f"业务文件模板 {{today}}：{label}",
                 render_bizdoc_template("{{today}}"),
@@ -701,7 +693,7 @@ async def main() -> None:
     print(f"隔离库：{db_name}")
     print(f"业务时区：{timebase.BUSINESS_TZ_NAME}")
 
-    print("\n① 两个模板渲染入口的 {{today}}")
+    print("\n① 业务文件模板的 {{today}}")
     check_template_today()
 
     print("\n② 成本失效入口的截止日期")

@@ -42,13 +42,11 @@ async def fixture(user, tag):
         order = SalesOrder(order_no=tag, customer_id=c.id, owner_id=user.id,
                            total_amount=Decimal(100), currency="CNY", status="pending",
                            created_at=datetime.now(UTC))
-        tpl = ContractTemplate(doc_type="contract", name=tag, body="正文", enabled=True,
-                               created_at=datetime.now(UTC))
         scan = FileRecord(object_key=f"isolated-test/{tag}.pdf", file_name=f"{tag}.pdf",
                           mime_type="application/pdf", size=5, uploaded_by=user.id)
-        s.add_all([order, tpl, scan]); await s.flush()
+        s.add_all([order, scan]); await s.flush()
         doc = ContractDocument(doc_no=tag, doc_type="contract", title=tag, customer_id=c.id,
-                               order_id=order.id, template_id=tpl.id, content_snapshot="正文",
+                               order_id=order.id, content_snapshot="正文",
                                # 私人草稿只看创建人；本套件用当前用户扮演创建/签署人。
                                created_by=user.id,
                                status="draft", created_at=datetime.now(UTC))

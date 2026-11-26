@@ -433,16 +433,11 @@ def main() -> int:  # noqa: C901 —— 十条判据顺序写下来最清楚
         check_true("P1-3 夹具建单（跳过本条）", False, str(res.get("message"))[:60])
     else:
         oid13 = res["data"]["order_id"]
-        # 造一份"已签署"的合同挂到订单上（走库，因为签署还要文件与模板一堆前置）
-        out = db(
-            "insert into contract_templates (doc_type, name, version, body, enabled, created_at) "
-            "values ('sales', 'P13模板', 1, '正文', true, now()) returning id"
-        )
-        tpl_id = str(out).strip()
+        # 造一份"已签署"的合同挂到订单上（走库，因为签署还要文件等前置）
         out = db(
             "insert into contract_documents (doc_no, doc_type, title, customer_id, order_id, "
-            "template_id, content_snapshot, status, signed_at, created_at) values "
-            f"('DOC-P13-{oid13}', 'sales', 'P13合同', {cid13}, {oid13}, {tpl_id}, '正文', "
+            "content_snapshot, status, signed_at, created_at) values "
+            f"('DOC-P13-{oid13}', 'sales', 'P13合同', {cid13}, {oid13}, '正文', "
             "'signed', now(), now()) returning id"
         )
         if str(out).startswith("SQLERR"):

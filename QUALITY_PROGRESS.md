@@ -5948,3 +5948,12 @@
 - 新品洞察：去掉“只有管理员能自审”的限制，所有 `product:review` 评审人都能自审；`can_review` 不再排除本人；序列化下发 `created_by` 与逐轮 `self_reviewed`，列表/历史标「本人评审」。
 - 报价低价审批、财务会签保持独立（申请人不能自审，管理员例外）；报价详情审批记录按 `approver_id == applicant_id` 标「本人审批」（目前只会出现在管理员自审场景）。
 - 验证：`tests/test_external_review_confirmed.py` 覆盖主管自审洞察与案例作者自审并留痕；隔离库真实接口验证赵六（产品评审）自建洞察→提交→自审通过、张三（业务员）评审 403；李四（主管）自建案例→提交→自审发布。前端 tsc、lint 通过，后端全量 pytest 通过。
+
+## 2026-11-26 · 修复 CI：合同模板清理后的夹具与审计动作
+
+- 前端 job：`ops/check_action_labels.py` 补登报价 `void` 动作，`PriceCenterPage` 增加“作废”动作名与 `voided` 状态名；审计动作清单补销售退货七个动作，审计对象补 `sales_return`，生成文件同步。
+- 后端 job 的合同夹具：`_legacy_contract_fixture.py` 改为测试专用历史文本模板/合同夹具，保留权限、数据范围、订单/报价归属校验、同客户请求键幂等与不同客户 409、续签生效日校验和 `_supersedes` 标记；各套件移除已删的 `ContractDocument.template_id` / `generated_file_id` / `render_template` 引用。
+- 发现并修复一个真实生产 bug：客户导入“同一文件重复上传”守卫用了 `AuditLog.after_data["file_sha256"].astext`，SQLAlchemy JSONB 表达式没有该属性，真实 PostgreSQL 上直接 500。改为 `->>` 取文本；`check_import_integrity`、`check_dictionary_enforcement`、`check_round4_review_fixes` 的导入 500 同源，均恢复。
+- 清理夹具补漏：C4 报价挂已删联系人段先删报价链、阶段历史和明细再删商机；报价中心验收在订单链物理清后补删报价链，避免 accepted 报价挡住商机删除而漏进 `check_fixture_residue`。
+- `ops/check_suites.txt` 移除三个随“模板生成合同/历史 PDF”功能删除而退役的套件（`check_contract_documents`、`check_contract_archive_and_fx`、`check_contract_pdf_cleanup`），脚本保留备查；C4-02/C4-06 两段旧模板入口断言同步退役。
+- 验证：以当前 HEAD 建干净 worktree，只叠加本轮改动；新建隔离 PostgreSQL，跑 `alembic upgrade head` + seed 后完整 `ops/run_checks.sh` 全部通过；前端 `pnpm build` 通过；未部署、未改生产库。

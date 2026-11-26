@@ -555,6 +555,30 @@ def main():
                     except Exception as exc:  # noqa: BLE001 —— 漏清必须出声
                         print(f'  （订单链清理语句失败：{str(exc)[:120]}）')
                 # ② 过程记录/通知与夹具规则成本（原有清单）
+                # ③ 报价链：A13 成交后报价是 accepted，接口 DELETE 有“已转订单不能删”
+                # 追溯守卫，订单虽已物理删掉仍会被挡；不物理清掉，商机就删不掉，
+                # 最终漏进 check_fixture_residue（2026-11-26 实测残留
+                # CHKQC*-A05）。按 FK 图谱先叶子后主表。
+                for sql in (
+                    "delete from contract_documents where quote_id in "
+                    "(select id from quotes where opportunity_id = any(:opp_ids))",
+                    "delete from quote_charges where quote_version_id in "
+                    "(select id from quote_versions where quote_id in "
+                    "(select id from quotes where opportunity_id = any(:opp_ids)))",
+                    "delete from quote_send_logs where quote_version_id in "
+                    "(select id from quote_versions where quote_id in "
+                    "(select id from quotes where opportunity_id = any(:opp_ids)))",
+                    "delete from quote_items where quote_version_id in "
+                    "(select id from quote_versions where quote_id in "
+                    "(select id from quotes where opportunity_id = any(:opp_ids)))",
+                    "delete from quote_versions where quote_id in "
+                    "(select id from quotes where opportunity_id = any(:opp_ids))",
+                    "delete from quotes where opportunity_id = any(:opp_ids)",
+                ):
+                    try:
+                        await s.execute(text(sql), {'opp_ids': created_opps})
+                    except Exception as exc:  # noqa: BLE001 —— 漏清必须出声
+                        print(f'  （报价链清理语句失败：{str(exc)[:120]}）')
                 for sql in (
                     "delete from notifications where business_type in ('quote','order','sample') "
                     "and created_at > :ts",

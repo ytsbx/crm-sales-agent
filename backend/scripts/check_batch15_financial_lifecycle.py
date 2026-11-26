@@ -98,16 +98,21 @@ async def main():
             template=ContractTemplate(doc_type='monthly',name=tag,body='{{customer.name}}',version=1,enabled=True,created_by=user.id,created_at=datetime.now(UTC))
             s.add(template);await s.flush()
         parent=ContractDocument(doc_no=tag+'-P',doc_type='monthly',title='旧月结',customer_id=customer.id,
-            template_id=template.id,content_snapshot='原件',status='signed',effective_date=today_business()-timedelta(days=10),
+            content_snapshot='原件',status='signed',effective_date=today_business()-timedelta(days=10),
             expiry_date=today_business()+timedelta(days=5),created_at=datetime.now(UTC),created_by=user.id)
         s.add(parent);await s.flush();FIX["parent_id"]=parent.id
         reminder=Task(title='旧月结续签',status='pending',owner_id=user.id,customer_id=customer.id,source='system',
             source_business_type='contract',source_business_id=parent.id,source_key='contract:monthly:'+str(parent.id)+':'+str(parent.expiry_date))
         s.add(reminder)
-        from app.modules.contract.schema import DocumentCreate
-        child,_=await contracts.generate_document(s,payload=DocumentCreate(template_id=template.id,
-            customer_id=customer.id,parent_id=parent.id,supersede_parent=True,effective_date=today_business()+timedelta(days=1),
-            expiry_date=today_business()+timedelta(days=365)),user_id=user.id)
+        # 续签现在只接受上传原文件；本套件只验月结替代生命周期，直接造一份待签子协议。
+        from app.modules.settings import numbering
+        child=ContractDocument(
+            doc_no=await numbering.generate_for(s,'contract',model=ContractDocument,column=ContractDocument.doc_no),
+            doc_type='monthly',title='新月结',customer_id=customer.id,parent_id=parent.id,
+            content_snapshot='原件',status='draft',effective_date=today_business()+timedelta(days=1),
+            filled_data={'_supersedes': {'id': parent.id}},
+            expiry_date=today_business()+timedelta(days=365),created_at=datetime.now(UTC),created_by=user.id)
+        s.add(child);await s.flush()
         FIX["child_id"]=child.id
         assert reminder.status=='pending' and not contracts.is_superseded(parent)
         f=FileRecord(storage_provider='local',object_key=tag,file_name='signed.pdf',size=1,uploaded_by=user.id)

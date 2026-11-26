@@ -78,18 +78,9 @@ def check(label: str, value, expected) -> None:
 async def make_monthly_doc(session, tag: str, *, days_to_expiry: int = 10) -> tuple[int, int]:
     """造一份"10 天后到期、已签"的月结协议（扫描会把它当候选）。"""
     customer = Customer(name=f"{tag}", owner_id=1, status="active", level="A")
-    # template_id 是**非空**列（实测踩到 NotNullViolationError），先建一份模板
-    template = ContractTemplate(
-        doc_type="monthly",
-        name=f"{tag}-模板",
-        body="正文",
-        enabled=True,
-        created_at=datetime.now(UTC),
-    )
-    session.add_all([customer, template])
+    session.add(customer)
     await session.flush()
     doc = ContractDocument(
-        template_id=template.id,
         content_snapshot="正文",
         doc_no=tag,
         doc_type="monthly",
