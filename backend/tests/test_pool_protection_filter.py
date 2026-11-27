@@ -56,6 +56,35 @@ async def test_targeted_matches_global_for_documents_and_revision_chains(pool_db
 
 
 @pytest.mark.anyio
+async def test_scan_separates_wecom_unfollowed_from_history_unknown(pool_db, monkeypatch):
+    """企业微信导入不是历史档案缺口：单独计数，不混进「待补核」。"""
+    db = pool_db
+    now = datetime.now(UTC)
+    db.add_all([
+        Customer(id=1, name="企微导入客户", owner_id=1, pool_status="private", level="C",
+                 source="企业微信", last_contact_unknown=True,
+                 created_at=now - timedelta(days=100)),
+        Customer(id=2, name="历史导入客户", owner_id=1, pool_status="private", level="C",
+                 source=None, last_contact_unknown=True,
+                 created_at=now - timedelta(days=100)),
+    ])
+    db.add(PublicPoolRule(level="C", days=30, enabled=True))
+    db.flush()
+    from tests.conftest import follow_customer
+
+    follow_customer(db, 1, 1)
+    follow_customer(db, 2, 1)
+    monkeypatch.setattr(service.duplicates, "is_disputed", AsyncMock(return_value=False))
+    monkeypatch.setattr(service, "_notify_recycle_candidate", AsyncMock(return_value=0))
+    result = await service.run_public_pool_recycle(SyncSessionAsAsync(db), 1)
+    assert result["nominated_count"] == 0
+    assert result["unknown_contact_count"] == 1
+    assert result["wecom_unfollowed_count"] == 1
+    assert result["unknown_contact"][0]["customer_id"] == 2
+    assert result["wecom_unfollowed"][0]["customer_id"] == 1
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize('idle_days,max_days,nominated', [(60,90,0),(100,90,1),(100,0,0)])
 async def test_scan_keeps_protection_cap(pool_db, monkeypatch, idle_days, max_days, nominated):
     db = pool_db

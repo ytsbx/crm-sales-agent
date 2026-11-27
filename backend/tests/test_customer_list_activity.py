@@ -72,6 +72,10 @@ def test_unknown_contact_filter_only_returns_history_rows_without_activity():
                      last_progress_at=now - timedelta(days=10)),
             Customer(id=3, name="新客户未跟进", owner_id=1,
                      last_contact_unknown=False),
+            # 企业微信导入只是同步联系人，不是历史档案缺口；即使标记为未知，
+            # 也不应进入「待补核」筛选（保留标记是为了不自动回收）。
+            Customer(id=4, name="企业微信导入未跟进", owner_id=1,
+                     source="企业微信", last_contact_unknown=True),
         ])
         session.commit()
         rows = session.execute(

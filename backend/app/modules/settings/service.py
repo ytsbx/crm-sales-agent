@@ -1023,6 +1023,9 @@ async def run_public_pool_recycle(
     #: 先标记未知，补核后才进自动回收候选。这类客户不参与本轮扫描，
     #: 但要单独列出来 —— 名单上"看不见"才最危险，主管得知道有多少条等着补核。
     unknown_contact_skipped: list[dict] = []
+    #: 企业微信导入的客户不是历史档案，没有“上次联系时间”可补；
+    #: 它们同样靠未知标记保留“不自动回收”保护，但不进入待补核名单。
+    wecom_unfollowed_skipped: list[dict] = []
     already_open: list[int] = []
     cooldown_skipped: set[int] = set()
     #: 本轮实际发出去的预告通知条数（一人一条，原负责人与主管分别算）
@@ -1088,16 +1091,28 @@ async def run_public_pool_recycle(
                 already_open.append(customer.id)
                 continue
             # 联系时间未知 + 没有任何真实业务进展 → 不能按"刚联系过"或"刚建档"算，
-            # 也不能直接回收（我们并不知道他是什么时候联系的）。跳过并列入待补核。
+            # 也不能直接回收（我们并不知道他是什么时候联系的）。
+            # 企业微信导入只是同步联系人，没有历史联系时间可补，不算待补核；
+            # 但仍保留“不自动回收”，避免这批客户一次性进入回收池。
             if customer.last_contact_unknown and customer.last_progress_at is None:
-                unknown_contact_skipped.append(
-                    {
-                        "customer_id": customer.id,
-                        "name": customer.name,
-                        "level": rule.level,
-                        "note": "最近联系时间未知（历史导入未提供），补核后才参与自动回收",
-                    }
-                )
+                if customer.source == "企业微信":
+                    wecom_unfollowed_skipped.append(
+                        {
+                            "customer_id": customer.id,
+                            "name": customer.name,
+                            "level": rule.level,
+                            "note": "企业微信导入，尚未在 CRM 记录跟进；暂不参与自动回收",
+                        }
+                    )
+                else:
+                    unknown_contact_skipped.append(
+                        {
+                            "customer_id": customer.id,
+                            "name": customer.name,
+                            "level": rule.level,
+                            "note": "最近联系时间未知（历史导入未提供），补核后才参与自动回收",
+                        }
+                    )
                 continue
             last = _last_active_at(customer)
             if last is None:
@@ -1231,6 +1246,8 @@ async def run_public_pool_recycle(
             "disputed": disputed_skipped[:100],
             "unknown_contact_count": len(unknown_contact_skipped),
             "unknown_contact": unknown_contact_skipped[:100],
+            "wecom_unfollowed_count": len(wecom_unfollowed_skipped),
+            "wecom_unfollowed": wecom_unfollowed_skipped[:100],
             "already_open_count": len(already_open),
             "cooldown_count": len(cooldown_skipped),
             "enabled_rule_count": len(rules),
@@ -1257,6 +1274,9 @@ async def run_public_pool_recycle(
         #: 联系时间未知、待补核的历史客户：这批不参与自动回收
         "unknown_contact_count": len(unknown_contact_skipped),
         "unknown_contact": unknown_contact_skipped[:100],
+        #: 企业微信导入未跟进：不是待补核，但同样暂不参与自动回收
+        "wecom_unfollowed_count": len(wecom_unfollowed_skipped),
+        "wecom_unfollowed": wecom_unfollowed_skipped[:100],
         "already_open_count": len(already_open),
         "cooldown_count": len(cooldown_skipped),
         "enabled_rule_count": len(rules),
