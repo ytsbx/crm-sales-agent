@@ -6899,3 +6899,6 @@
 - 前端：`CustomerListPage` 的 `activityLabel` 对企业微信来源不再隐藏标签；顶部待补核汇总和「历史导入待补核」筛选只由非企微客户触发，数量为 0 时筛选入口不渲染。
 - 后端：`customer/service.py::build_list_stmt` 的 `activity=unknown_contact` 增加排除 `source=企业微信`；`settings/service.py::run_public_pool_recycle` 把企微导入未跟进单独计入 `wecom_unfollowed_count`，不再混进 `unknown_contact_count`。企微客户仍保留 `last_contact_unknown` 的“不自动回收”保护，避免 10 月导入的 2,550 条一次性进入回收池。
 - 验证：`tests/test_customer_list_activity.py`、`tests/test_pool_protection_filter.py` 共 10 项通过；前端 `npx tsc -b`、`npm run build`、`npm run lint` 通过（lint 0 error / 41 条历史 warning）。
+- 发布：生产候选分支 `release/customer-wecom-20261127`，提交 `d606c66b6d7c628cace12d89198699853d7c9888`，基线 `9e693c5f`；发布包 SHA256 `20f802d056e1cb2046a4c6b2efbd3c39433609663b6bf3123fe5fd5243ccf5a0`，备份 `/opt/crm-sales-agent/backup/unified-d606c66b6d7c-ywvaqel3`。
+- 上线核验：`status=verified`、`verified_at_utc=2026-11-27T10:24:40Z`；两端版本记录均为 `d606c66b`；服务 active、`/health database=ok`、公网首页 200；数据库仍为 `d4f6a8b0c2e1`；生产 `web-dist` 已含「企业微信导入未跟进」和「非企业微信来源」新文案；发布后日志无 error/traceback。
+- 生产接口口径核验：直接调用已部署的 `build_list_stmt(activity="unknown_contact")` 统计，`unknown_contact_total=0`，确认 2,562 条企微客户不再进入待补核筛选。
