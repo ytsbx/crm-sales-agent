@@ -143,9 +143,7 @@ export interface ReturnCreatePayload {
   freight_refund_amount: number
   adjustment_amount: number
   adjustment_note?: string
-  payment_method: string
-  receiving_account: string
-  /** 先走 `/files/upload` 上传退款登记表，再带 file_id 提交。 */
+  /** 先走 `/files/upload` 上传退款登记表，再带 file_id 提交；收款信息由财务确认退款时填写。 */
   application_attachment_file_id: number
   return_tracking_no?: string
   return_date?: string
@@ -202,8 +200,6 @@ export interface ReturnAmountRevisionPayload {
   freight_refund_amount: number
   adjustment_amount: number
   adjustment_note?: string
-  payment_method?: string
-  receiving_account?: string
   note?: string
 }
 
@@ -212,7 +208,7 @@ export function financeReturn(returnId: number, reason: string) {
   return api.post<SalesReturn>(`/returns/${returnId}/finance-return`, { reason })
 }
 
-/** 财务打回后，申请人或主管修改金额/收款信息，重新交主管复审。 */
+/** 财务打回后，申请人或主管只修改金额，重新交主管复审。 */
 export function reviseReturnAmount(returnId: number, payload: ReturnAmountRevisionPayload) {
   return api.post<SalesReturn>(`/returns/${returnId}/revise-amount`, payload)
 }
@@ -220,12 +216,16 @@ export function reviseReturnAmount(returnId: number, payload: ReturnAmountRevisi
 export interface ReturnSettlePayload {
   /** 有现金退还时必填（至少 2 个字）；全额抵扣可不填。 */
   refund_reference?: string
+  /** 财务实际打款方式；有现金退还时必填。 */
+  payment_method?: string
+  /** 财务实际打款的收款账户；有现金退还时必填。 */
+  receiving_account?: string
   note?: string
 }
 
 /**
  * 财务确认退款：系统自动先冲客户未付款，剩余才现金退。
- * 财务不改金额、不手填抵扣。
+ * 财务不改金额、不手填抵扣，收款账户和打款方式由财务填写。
  */
 export function settleReturn(returnId: number, payload: ReturnSettlePayload) {
   return api.post<SalesReturn>(`/returns/${returnId}/settle`, payload)

@@ -68,7 +68,7 @@ class SalesReturn(Base, IdMixin, TimestampMixin):
     #: reviewing = 已提交申请，等主管审核；
     #: receiving_pending = 主管已通过，等业务员或主管确认收到退货；
     #: completed = 已确认收到退货，等财务退款；
-    #: finance_returned = 财务发现金额/收款信息不对，退回业务员修改；
+    #: finance_returned = 财务发现金额不对，退回业务员修改；
     #: refunded = 已退款（可能含自动抵扣 + 现金退还）；
     #: settled = 退款金额全部自动抵扣客户未付款，没有现金退给客户。
     status: Mapped[str] = mapped_column(String(32), default="reviewing")
@@ -95,9 +95,9 @@ class SalesReturn(Base, IdMixin, TimestampMixin):
     #: 本次退款总额 = goods_refund_amount + freight_refund_amount + adjustment_amount。
     total_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
 
-    #: 打款方式（线下转账/银行转账等）。财务只按这个渠道退款，不在系统里选抵扣。
+    #: 打款方式（线下转账/银行转账等）。财务确认退款时填，只按这个渠道退款，不在系统里选抵扣。
     payment_method: Mapped[str] = mapped_column(String(32), default="线下转账")
-    #: 收款账户，业务员填户名/开户行/账号；财务按它打款。
+    #: 收款账户，财务确认退款时填户名/开户行/账号，按它打款。
     receiving_account: Mapped[str | None] = mapped_column(String(128), nullable=True)
     #: 申请时上传的退款登记表附件，文件中心 file_id。
     application_attachment_file_id: Mapped[int | None] = mapped_column(
@@ -121,7 +121,7 @@ class SalesReturn(Base, IdMixin, TimestampMixin):
     reviewed_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     review_note: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    #: 财务退回修改：原因、操作人、时间、累计次数。金额和收款信息由业务员/主管改，
+    #: 财务退回修改：原因、操作人、时间、累计次数。金额由业务员/主管改，
     #: 财务只负责“付款/打回”，不能自己改金额。
     finance_return_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     finance_returned_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

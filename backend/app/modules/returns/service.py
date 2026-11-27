@@ -1,11 +1,12 @@
 """销售退货的业务实现。
 
 把“申请”和“退款”分开：
-1. 业务员申请：必须挂订单，填货款/运费/改价调整的金额构成、打款方式、收款账户和退款登记表；
+1. 业务员申请：必须挂订单，填货款/运费/改价调整的金额构成和退款登记表；
 2. 主管审核：只审数量、原因和金额构成，通过后进入“待确认收到退货”；
 3. 确认收货：业务员或主管点收退回货物后进入“待财务退款”；
 4. 财务确认退款：不改金额、不手填抵扣；系统按订单当前欠款自动先冲未付款，剩余才现金退；
-5. 财务发现金额/收款信息不对可打回；业务员或主管修改后重新交主管复审，
+   收款账户和打款方式由财务在这一步核对并填写；
+5. 财务发现金额不对可打回；业务员或主管修改后重新交主管复审，
    货已收过的复审通过直接回到待财务退款；财务也可以作废终止；
 6. 申请可取消；确认收货前/待财务退款时可作废；已退款/已抵扣结清后不能作废。
 
@@ -367,8 +368,9 @@ async def create_return(
         adjustment_amount=adjustment,
         adjustment_note=(payload.adjustment_note or "").strip() or None,
         total_amount=total_refund,
-        payment_method=payload.payment_method.strip(),
-        receiving_account=payload.receiving_account.strip(),
+        # 收款信息归财务，申请阶段不填；财务确认退款时再写。
+        payment_method="",
+        receiving_account=None,
         application_attachment_file_id=payload.application_attachment_file_id,
         return_tracking_no=(payload.return_tracking_no or "").strip() or None,
         # 审核前不抵扣；财务确认退款时由系统自动先冲客户未付款。
@@ -628,9 +630,9 @@ async def finance_return(
 ) -> SalesReturn:
     """财务打回：只退回修改，不替业务员改金额。
 
-    财务发现金额、收款账户或凭证不对时，写清原因把单退回业务员/主管；
+    财务发现金额不对时，写清原因把单退回业务员/主管；
     原单、收货记录和审计都保留。修改后重新走主管审核，通过后直接回到
-    “待财务退款”，不再重复确认收货。
+    “待财务退款”，不再重复确认收货。收款信息仍由财务在确认退款时填写。
     """
     if not user.has("payment:manage"):
         raise AppError(
@@ -727,15 +729,14 @@ async def revise_return_amount(
     freight_refund_amount: Decimal,
     adjustment_amount: Decimal,
     adjustment_note: str | None = None,
-    payment_method: str | None = None,
-    receiving_account: str | None = None,
     note: str | None = None,
     ip: str | None = None,
 ) -> SalesReturn:
-    """财务打回后，由申请人或主管修改金额和收款信息，再交主管复审。
+    """财务打回后，由申请人或主管只修改退款金额，再交主管复审。
 
     财务没有改金额权限；这里也不允许财务调用。修改后状态回到 `reviewing`，
     货已收过的单据复审通过会直接回到 `completed`，不重复点收。
+    收款账户和打款方式归财务，在最终确认退款时填写，这里不接收也不改动。
     """
     if not (
         row.created_by == user.id
@@ -772,8 +773,6 @@ async def revise_return_amount(
         "freight_refund_amount": format(row.freight_refund_amount or ZERO, ".2f"),
         "adjustment_amount": format(row.adjustment_amount or ZERO, ".2f"),
         "total_amount": format(row.total_amount or ZERO, ".2f"),
-        "payment_method": row.payment_method,
-        "receiving_account": row.receiving_account,
     }
     row.goods_refund_amount = goods
     row.freight_refund_amount = freight
@@ -783,10 +782,7 @@ async def revise_return_amount(
     row.total_amount = total
     row.refund_amount = total
     row.offset_amount = ZERO
-    if payment_method:
-        row.payment_method = payment_method.strip()
-    if receiving_account:
-        row.receiving_account = receiving_account.strip()
+    # 收款账户和打款方式不在这一步改；财务确认退款时自己填。
     # 金额改了，原来的主管审核结论不再有效，必须重新审。
     row.status = "reviewing"
     row.reviewed_by = None
@@ -810,8 +806,6 @@ async def revise_return_amount(
             "adjustment_amount": format(adjustment, ".2f"),
             "adjustment_note": row.adjustment_note,
             "total_amount": format(total, ".2f"),
-            "payment_method": row.payment_method,
-            "receiving_account": row.receiving_account,
             "note": (note or "").strip() or None,
             "finance_return_reason": row.finance_return_reason,
         },
@@ -1028,6 +1022,8 @@ async def settle_return(
     row: SalesReturn,
     *,
     refund_reference: str | None = None,
+    payment_method: str | None = None,
+    receiving_account: str | None = None,
     note: str | None = None,
     ip: str | None = None,
 ) -> SalesReturn:
@@ -1036,7 +1032,7 @@ async def settle_return(
     2026-11-26 按 OA 表单拍板：
     - 财务不改金额，也不手填抵扣；只确认“这笔退款已经按申请金额处理”；
     - 系统先按订单当前欠款自动抵扣，抵不完的部分才现金退；
-    - 有现金退还时必须填退款流水/凭证说明；
+    - 有现金退还时，财务必须填退款流水/凭证说明、打款方式和收款账户；
     - 抵扣逐期写快照，作废时能精确还原。
     """
     if not user.has("payment:manage"):
@@ -1078,6 +1074,9 @@ async def settle_return(
             ErrorCode.STATUS_NOT_ALLOWED, "退款总额必须大于 0", 422
         )
     reference = (refund_reference or "").strip() or None
+    # 收款信息由财务在确认退款时填；申请阶段不再接收业务员填的账号。
+    payment_method_text = (payment_method or "").strip()
+    receiving_account_text = (receiving_account or "").strip()
 
     order = await get_order_or_404(session, row.order_id)
     plans = (
@@ -1123,6 +1122,20 @@ async def settle_return(
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
             "有现金退还时必须填写退款流水/凭证说明（至少 2 个字）",
+            422,
+        )
+    if cash > 0 and (not payment_method_text or len(payment_method_text) < 2):
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "有现金退还时必须填写打款方式（至少 2 个字）",
+            422,
+        )
+    if cash > 0 and (
+        not receiving_account_text or len(receiving_account_text) < 2
+    ):
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "有现金退还时必须填写收款账户（至少 2 个字）",
             422,
         )
     if cash == 0:
@@ -1171,6 +1184,11 @@ async def settle_return(
     row.refund_amount = cash
     row.settled_by = user.id
     row.settled_at = datetime.now(UTC)
+    # 财务确认退款时写入实际打款方式和收款账户；无现金退还时保留原值。
+    if payment_method_text:
+        row.payment_method = payment_method_text
+    if receiving_account_text:
+        row.receiving_account = receiving_account_text
     if note is not None:
         row.settlement_note = note.strip() or None
     if cash > 0:
@@ -1197,6 +1215,8 @@ async def settle_return(
             "total_amount": format(before_total, ".2f"),
             "offset_amount": format(before_offset, ".2f"),
             "refund_amount": format(before_refund, ".2f"),
+            "payment_method": row.payment_method,
+            "receiving_account": row.receiving_account,
         },
         after={
             "status": row.status,
@@ -1204,6 +1224,8 @@ async def settle_return(
             "offset_amount": format(offset, ".2f"),
             "refund_amount": format(cash, ".2f"),
             "refund_reference": row.refund_reference,
+            "payment_method": row.payment_method,
+            "receiving_account": row.receiving_account,
             "note": row.settlement_note,
             "plans": [
                 {

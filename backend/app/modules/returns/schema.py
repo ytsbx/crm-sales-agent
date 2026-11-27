@@ -39,11 +39,8 @@ class ReturnCreate(BaseModel):
     refund_amount: Decimal | None = Field(
         default=None, gt=0, max_digits=16, decimal_places=2
     )
-    #: 打款方式；财务按这个渠道退款，不在系统里另选抵扣。
-    payment_method: str = Field(default="线下转账", min_length=2, max_length=32)
-    #: 收款账户：户名/开户行/账号，财务按它打款。
-    receiving_account: str = Field(min_length=2, max_length=128)
     #: 申请单必须附退款登记表，文件先走 /files/upload 拿 file_id。
+    #: 打款方式和收款账户不在这里填：财务确认退款时自己核对并填写。
     application_attachment_file_id: int = Field(gt=0)
     #: 客户退回货物的物流单号，确认收货时核对用，选填。
     return_tracking_no: str | None = Field(default=None, max_length=64)
@@ -92,9 +89,10 @@ class ReturnAmountUpdate(BaseModel):
 
 
 class ReturnAmountRevision(BaseModel):
-    """财务打回后，业务员/主管修改退款金额和收款信息。
+    """财务打回后，业务员/主管只修改退款金额。
 
     财务不能自己改金额：财务只打回并写原因，业务员/主管改完重新交主管审核。
+    收款账户和打款方式归财务，在确认退款时填写；这里不接收。
     """
 
     model_config = ConfigDict(str_strip_whitespace=True)
@@ -109,8 +107,6 @@ class ReturnAmountRevision(BaseModel):
         default=0, max_digits=16, decimal_places=2
     )
     adjustment_note: str | None = Field(default=None, max_length=255)
-    payment_method: str | None = Field(default=None, min_length=2, max_length=32)
-    receiving_account: str | None = Field(default=None, min_length=2, max_length=128)
     note: str | None = Field(default=None, max_length=255)
 
     @model_validator(mode="after")
@@ -134,16 +130,20 @@ class ReturnFinanceReturn(BaseModel):
 
 
 class ReturnSettle(BaseModel):
-    """财务确认退款：金额由系统按订单欠款自动拆分，财务只登记退款结果。
+    """财务确认退款：金额由系统按订单欠款自动拆分，财务登记收款信息。
 
     - 系统先冲客户未付款，剩余才现金退；
     - 财务不填抵扣金额、不改退款总额；
-    - 有现金退还时必须填退款流水/凭证说明。
+    - 有现金退还时必须填退款流水/凭证说明、打款方式和收款账户。
     """
 
     model_config = ConfigDict(str_strip_whitespace=True)
 
     refund_reference: str | None = Field(default=None, min_length=2, max_length=128)
+    #: 财务实际打款方式（线下转账/银行转账/支付宝/微信等）。
+    payment_method: str | None = Field(default=None, min_length=2, max_length=32)
+    #: 财务实际打款的收款账户：户名/开户行/账号。
+    receiving_account: str | None = Field(default=None, min_length=2, max_length=128)
     note: str | None = Field(default=None, max_length=255)
 
 

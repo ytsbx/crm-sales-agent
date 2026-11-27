@@ -296,8 +296,6 @@ export default function OrderDetailPage() {
   const [returnFreightAmount, setReturnFreightAmount] = useState('0')
   const [returnAdjustmentAmount, setReturnAdjustmentAmount] = useState('0')
   const [returnAdjustmentNote, setReturnAdjustmentNote] = useState('')
-  const [returnPaymentMethod, setReturnPaymentMethod] = useState('线下转账')
-  const [returnReceivingAccount, setReturnReceivingAccount] = useState('')
   const [returnTrackingNo, setReturnTrackingNo] = useState('')
   const [returnApplicationFile, setReturnApplicationFile] = useState<FileRow | null>(null)
   const returnApplicationInputRef = useRef<HTMLInputElement>(null)
@@ -309,6 +307,8 @@ export default function OrderDetailPage() {
   const [amountNote, setAmountNote] = useState('')
   const [refundTarget, setRefundTarget] = useState<SalesReturn | null>(null)
   const [refundReference, setRefundReference] = useState('')
+  const [settlePaymentMethod, setSettlePaymentMethod] = useState('线下转账')
+  const [settleReceivingAccount, setSettleReceivingAccount] = useState('')
   const [settleNote, setSettleNote] = useState('')
   const [receiveTarget, setReceiveTarget] = useState<SalesReturn | null>(null)
   const [receiveNote, setReceiveNote] = useState('')
@@ -326,8 +326,6 @@ export default function OrderDetailPage() {
   const [revisionFreightAmount, setRevisionFreightAmount] = useState('0')
   const [revisionAdjustmentAmount, setRevisionAdjustmentAmount] = useState('0')
   const [revisionAdjustmentNote, setRevisionAdjustmentNote] = useState('')
-  const [revisionPaymentMethod, setRevisionPaymentMethod] = useState('线下转账')
-  const [revisionReceivingAccount, setRevisionReceivingAccount] = useState('')
   const [revisionNote, setRevisionNote] = useState('')
   //: 「调整回款分配」弹窗要调的那笔回款（第十批）。null = 关着。
   const [allocationPayment, setAllocationPayment] = useState<Payment | null>(null)
@@ -606,7 +604,6 @@ export default function OrderDetailPage() {
       setReturnFreightAmount('0')
       setReturnAdjustmentAmount('0')
       setReturnAdjustmentNote('')
-      setReturnReceivingAccount('')
       setReturnTrackingNo('')
       setReturnApplicationFile(null)
       setReturnReason('')
@@ -694,16 +691,12 @@ export default function OrderDetailPage() {
       freight: number
       adjustment: number
       adjustmentNote?: string
-      paymentMethod?: string
-      receivingAccount?: string
       note?: string
     }) => reviseReturnAmount(payload.id, {
       goods_refund_amount: payload.goods,
       freight_refund_amount: payload.freight,
       adjustment_amount: payload.adjustment,
       adjustment_note: payload.adjustmentNote,
-      payment_method: payload.paymentMethod,
-      receiving_account: payload.receivingAccount,
       note: payload.note,
     }),
     onSuccess: (row) => {
@@ -713,7 +706,6 @@ export default function OrderDetailPage() {
       setRevisionFreightAmount('0')
       setRevisionAdjustmentAmount('0')
       setRevisionAdjustmentNote('')
-      setRevisionReceivingAccount('')
       setRevisionNote('')
       refresh()
     },
@@ -728,9 +720,17 @@ export default function OrderDetailPage() {
     },
   })
   const settleReturnMutation = useMutation({
-    mutationFn: (payload: { id: number; reference?: string; note?: string }) =>
+    mutationFn: (payload: {
+      id: number
+      reference?: string
+      paymentMethod?: string
+      receivingAccount?: string
+      note?: string
+    }) =>
       settleReturn(payload.id, {
         refund_reference: payload.reference,
+        payment_method: payload.paymentMethod,
+        receiving_account: payload.receivingAccount,
         note: payload.note,
       }),
     onSuccess: (row) => {
@@ -745,6 +745,8 @@ export default function OrderDetailPage() {
       Toast.success(`售后单 ${row.return_no} 已确认退款${extra}${tail}`)
       setRefundTarget(null)
       setRefundReference('')
+      setSettlePaymentMethod('线下转账')
+      setSettleReceivingAccount('')
       setSettleNote('')
       refresh()
     },
@@ -1200,9 +1202,7 @@ export default function OrderDetailPage() {
       ? '退款金额只能填数字，货款/运费不能为负，调整可正可负，最多两位小数'
       : !returnTotalValid
         ? '退款总额必须大于 0（货款 + 运费 + 调整）'
-        : returnReceivingAccount.trim().length < 2
-          ? '请填写收款账户（客户收款用的账号）'
-          : !returnApplicationFile
+        : !returnApplicationFile
             ? '请上传退款登记表'
             : overReturnRow
               ? `${overReturnRow.sku || '该明细'} 本次最多还能退 ${overReturnRow.remaining_quantity_exact}`
@@ -1224,14 +1224,14 @@ export default function OrderDetailPage() {
     ? '退款金额只能填数字，货款/运费不能为负，调整可正可负，最多两位小数'
     : !revisionTotalValid
       ? '退款总额必须大于 0（货款 + 运费 + 调整）'
-      : revisionReceivingAccount.trim().length < 2
-        ? '请填写收款账户（客户收款用的账号）'
-        : ''
+      : ''
   const financeReturnReasonValid = financeReturnReason.trim().length >= 2
   const reviewNoteValid = reviewDecision === 'approve' || reviewNote.trim().length >= 2
   const refundReferenceValid = refundReference.trim().length >= 2
     && refundReference.trim().length <= 128
-  // 财务确认：金额、抵扣都由系统按审核后的售后单和订单欠款自动算，财务只核对流水。
+  const settlePaymentMethodValid = settlePaymentMethod.trim().length >= 2
+  const settleReceivingAccountValid = settleReceivingAccount.trim().length >= 2
+  // 财务确认：金额、抵扣都由系统按审核后的售后单和订单欠款自动算；收款信息由财务填写。
   const refundIsLegacyOffset = Boolean(refundTarget && Number(refundTarget.offset_amount_exact) > 0)
   const settleTotal = Number(refundTarget?.total_amount_exact ?? 0)
   const settleExpectedOffset = Math.max(0, Math.min(settleTotal, Number(unreceivedAmount || 0)))
@@ -1244,7 +1244,11 @@ export default function OrderDetailPage() {
           : '')
       : settleExpectedCash > 0 && !refundReferenceValid
         ? '有现金退还时，请填写退款流水/凭证说明（至少 2 个字）'
-        : ''
+        : settleExpectedCash > 0 && !settlePaymentMethodValid
+          ? '有现金退还时，请选择打款方式'
+          : settleExpectedCash > 0 && !settleReceivingAccountValid
+            ? '有现金退还时，请填写收款账户（客户收款用的账号）'
+            : ''
   const refundAttachmentBusy = uploadRefundAttachmentMutation.isPending
     || deleteRefundAttachmentMutation.isPending
   const cancelReturnReasonValid = cancelReturnReason.trim().length >= 2
@@ -1457,6 +1461,8 @@ export default function OrderDetailPage() {
     refundReturnMutation.reset()
     setRefundReference('')
     setRefundTarget(row)
+    setSettlePaymentMethod(row.payment_method?.trim() || '线下转账')
+    setSettleReceivingAccount(row.receiving_account ?? '')
     setSettleNote(row.settlement_note ?? '')
   }
 
@@ -1743,8 +1749,6 @@ export default function OrderDetailPage() {
                 setRevisionFreightAmount(row.freight_refund_amount_exact)
                 setRevisionAdjustmentAmount(row.adjustment_amount_exact)
                 setRevisionAdjustmentNote(row.adjustment_note ?? '')
-                setRevisionPaymentMethod(row.payment_method || '线下转账')
-                setRevisionReceivingAccount(row.receiving_account ?? '')
                 setRevisionNote('')
                 setRevisionTarget(row)
               }}>修改退款金额</Button>,
@@ -2708,8 +2712,9 @@ export default function OrderDetailPage() {
             <>
               <div className="toolbar">
                 <p className="workflow-guide">
-                  售后必须挂订单：业务员填退款金额构成（货款、运费、改价/其他调整）、打款方式、收款账户和退款登记表，
-                  主管审核 → 业务员或主管确认收到货 → 财务按审核后的总额退款。财务不改金额，系统自动先冲客户未付款，剩余才现金退。
+                  售后必须挂订单：业务员填退款金额构成（货款、运费、改价/其他调整）和退款登记表，
+                  主管审核 → 业务员或主管确认收到货 → 财务按审核后的总额退款，并由财务填写收款账户和打款方式。
+                  财务不改金额，系统自动先冲客户未付款，剩余才现金退。
                   {returnReviewingCount > 0 ? ` 当前有 ${returnReviewingCount} 张待主管审核。` : ''}
                   {returnReceivingPendingCount > 0 ? ` 当前有 ${returnReceivingPendingCount} 张待确认收到退货。` : ''}
                   {returnPendingCount > 0 ? ` 当前有 ${returnPendingCount} 张历史单待补退款总额。` : ''}
@@ -2731,8 +2736,6 @@ export default function OrderDetailPage() {
                       setReturnFreightAmount('0')
                       setReturnAdjustmentAmount('0')
                       setReturnAdjustmentNote('')
-                      setReturnPaymentMethod('线下转账')
-                      setReturnReceivingAccount('')
                       setReturnTrackingNo('')
                       setReturnApplicationFile(null)
                       setReturnDate(new Date())
@@ -3641,7 +3644,7 @@ export default function OrderDetailPage() {
         </div>
       </Modal>
 
-      {/* 销售售后申请：业务员填金额构成、打款信息、退款登记表和退货数量。 */}
+      {/* 销售售后申请：业务员只填金额构成、退款登记表和退货数量；收款信息归财务。 */}
       <Modal
         width={860}
         style={{ maxWidth: 'calc(100vw - 32px)' }}
@@ -3666,8 +3669,6 @@ export default function OrderDetailPage() {
                 freight_refund_amount: Number(returnFreightAmount),
                 adjustment_amount: Number(returnAdjustmentAmount),
                 adjustment_note: returnAdjustmentNote.trim() || undefined,
-                payment_method: returnPaymentMethod,
-                receiving_account: returnReceivingAccount.trim(),
                 application_attachment_file_id: returnApplicationFile?.id as number,
                 return_tracking_no: returnTrackingNo.trim() || undefined,
                 return_date: calendarDay(returnDate) ?? undefined,
@@ -3749,34 +3750,13 @@ export default function OrderDetailPage() {
             </div>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))', gap: 12 }}>
-            <div>
-              <FormLabel required>退款打款方式</FormLabel>
-              <Select
-                value={returnPaymentMethod}
-                onChange={(value) => setReturnPaymentMethod(value as string)}
-                optionList={[
-                  { value: '线下转账', label: '线下转账' },
-                  { value: '银行转账', label: '银行转账' },
-                  { value: '支付宝', label: '支付宝' },
-                  { value: '微信', label: '微信' },
-                  { value: '其他', label: '其他' },
-                ]}
-                style={{ width: '100%' }}
-              />
-              <p className="workflow-guide" style={{ margin: '6px 0 0' }}>
-                公司把这笔钱退给客户的方式，默认线下转账；财务按这里登记的方式打款。
-              </p>
-            </div>
-            <div>
-              <FormLabel required>收款账户</FormLabel>
-              <Input value={returnReceivingAccount} onChange={setReturnReceivingAccount} placeholder="客户收款账号 / 开户行 / 支付宝账号" />
-            </div>
-            <div>
-              <FormLabel>退回物流单号（选填）</FormLabel>
-              <Input value={returnTrackingNo} onChange={setReturnTrackingNo} placeholder="客户寄回货物的快递单号" />
-            </div>
+          <div>
+            <FormLabel>退回物流单号（选填）</FormLabel>
+            <Input value={returnTrackingNo} onChange={setReturnTrackingNo} placeholder="客户寄回货物的快递单号" />
           </div>
+          <p className="workflow-guide" style={{ margin: 0 }}>
+            收款账户和打款方式由财务在「确认退款」时填写，售后申请阶段不用填。
+          </p>
 
           <div>
             <FormLabel required>退款登记表附件</FormLabel>
@@ -3933,7 +3913,7 @@ export default function OrderDetailPage() {
               （货款 {formatMoney(reviewTarget.goods_refund_amount_exact, reviewTarget.currency)}
               · 运费 {formatMoney(reviewTarget.freight_refund_amount_exact, reviewTarget.currency)}
               · 调整 {formatMoney(reviewTarget.adjustment_amount_exact, reviewTarget.currency)}）。
-              收款账户：{reviewTarget.receiving_account || '—'}；打款方式：{reviewTarget.payment_method || '—'}。
+              收款账户和打款方式由财务在确认退款时填写。
             </div>
             <div>
               <FormLabel required>审核结果</FormLabel>
@@ -4120,12 +4100,12 @@ export default function OrderDetailPage() {
             <div className="workflow-guide">
               售后单 <strong>{financeReturnTarget.return_no}</strong>，退款总额
               <strong>{formatMoney(financeReturnTarget.total_amount_exact, financeReturnTarget.currency)}</strong>。
-              退回后原单和收货记录都保留，业务员或主管修改金额、收款信息，再交主管复审；货已收过，复审通过后不再重复确认收货。
+              退回后原单和收货记录都保留，业务员或主管只改退款金额，再交主管复审；货已收过，复审通过后不再重复确认收货。
             </div>
             <div>
               <FormLabel required>打回原因</FormLabel>
               <TextArea rows={3} maxLength={255} value={financeReturnReason} onChange={setFinanceReturnReason}
-                placeholder="例如：金额与实收数量不一致 / 收款账户不对 / 退款登记表金额不符" />
+                placeholder="例如：金额与实收数量不一致 / 退款登记表金额不符" />
             </div>
             <p className="workflow-guide">
               财务不能在这里直接改金额。原因会进审计，并显示在退货记录里，业务员改完重新审核。
@@ -4159,8 +4139,6 @@ export default function OrderDetailPage() {
                   freight: Number(revisionFreightAmount),
                   adjustment: Number(revisionAdjustmentAmount),
                   adjustmentNote: revisionAdjustmentNote.trim() || undefined,
-                  paymentMethod: revisionPaymentMethod,
-                  receivingAccount: revisionReceivingAccount.trim(),
                   note: revisionNote.trim() || undefined,
                 })
               }}
@@ -4214,27 +4192,9 @@ export default function OrderDetailPage() {
                 修改后总额：<strong style={{ fontSize: 18 }}>{formatMoney(revisionTotal.toFixed(2), revisionTarget.currency)}</strong>
               </span>
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))', gap: 12 }}>
-              <div>
-                <FormLabel required>退款打款方式</FormLabel>
-                <Select
-                  value={revisionPaymentMethod}
-                  onChange={(value) => setRevisionPaymentMethod(value as string)}
-                  optionList={[
-                    { value: '线下转账', label: '线下转账' },
-                    { value: '银行转账', label: '银行转账' },
-                    { value: '支付宝', label: '支付宝' },
-                    { value: '微信', label: '微信' },
-                    { value: '其他', label: '其他' },
-                  ]}
-                  style={{ width: '100%' }}
-                />
-              </div>
-              <div>
-                <FormLabel required>收款账户</FormLabel>
-                <Input value={revisionReceivingAccount} onChange={setRevisionReceivingAccount} placeholder="客户收款账号 / 开户行 / 支付宝账号" />
-              </div>
-            </div>
+            <p className="workflow-guide" style={{ margin: 0 }}>
+              收款账户和打款方式由财务在「确认退款」时填写；这里只改退款金额。
+            </p>
             <div>
               <FormLabel>修改说明（选填）</FormLabel>
               <TextArea rows={2} maxLength={255} value={revisionNote} onChange={setRevisionNote}
@@ -4310,6 +4270,8 @@ export default function OrderDetailPage() {
                   settleReturnMutation.mutate({
                     id: refundTarget.id,
                     reference: settleExpectedCash > 0 ? refundReference.trim() : undefined,
+                    paymentMethod: settlePaymentMethod.trim() || undefined,
+                    receivingAccount: settleReceivingAccount.trim() || undefined,
                     note: settleNote.trim() || undefined,
                   })
                 }}
@@ -4375,7 +4337,33 @@ export default function OrderDetailPage() {
                 </div>
                 <div className="workflow-guide">
                   系统按订单当前欠款自动先冲未付款，剩余才现金退；财务不改金额、不手选抵扣。
-                  收款账户：{refundTarget.receiving_account || '—'}；打款方式：{refundTarget.payment_method || '—'}。
+                  收款账户和打款方式由财务在这里按实际打款填写。
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))', gap: 12 }}>
+                  <div>
+                    <FormLabel required={settleExpectedCash > 0}>退款打款方式</FormLabel>
+                    <Select
+                      value={settlePaymentMethod}
+                      onChange={(value) => setSettlePaymentMethod(value as string)}
+                      optionList={[
+                        { value: '线下转账', label: '线下转账' },
+                        { value: '银行转账', label: '银行转账' },
+                        { value: '支付宝', label: '支付宝' },
+                        { value: '微信', label: '微信' },
+                        { value: '其他', label: '其他' },
+                      ]}
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+                  <div>
+                    <FormLabel required={settleExpectedCash > 0}>收款账户</FormLabel>
+                    <Input
+                      value={settleReceivingAccount}
+                      onChange={setSettleReceivingAccount}
+                      maxLength={128}
+                      placeholder="客户收款账号 / 开户行 / 支付宝账号"
+                    />
+                  </div>
                 </div>
               </>
             )}

@@ -305,8 +305,6 @@ def _payload(
         goods_refund_amount=D(refund),
         freight_refund_amount=D("0"),
         adjustment_amount=D("0"),
-        payment_method="线下转账",
-        receiving_account="测试账户 6222 0000 0000 0000",
         application_attachment_file_id=attachment_id,
         items=[ReturnItemInput(order_item_id=order_item_id, quantity=D(qty))],
     )
@@ -325,8 +323,9 @@ def test_create_records_refund_amount_and_no_offset(db):
     assert row.settled_goods_amount == D("30.00")
     assert row.total_amount == D("30.00")
     assert row.refund_amount == D("30.00")
-    assert row.payment_method == "线下转账"
-    assert row.receiving_account == "测试账户 6222 0000 0000 0000"
+    # 收款账户和打款方式归财务：申请阶段不填，财务确认退款时再写。
+    assert row.payment_method == ""
+    assert row.receiving_account is None
     assert row.application_attachment_file_id == 1
     # 审核前不自动抵扣，也没有生成应收调整。
     assert row.offset_amount == D("0.00")
@@ -378,8 +377,6 @@ def test_multi_item_return_sums_goods_amount(db):
             reason_code="customer_rejected",
             reason="客户两件商品一起退",
             goods_refund_amount=D("40.00"),
-            payment_method="线下转账",
-            receiving_account="测试账户 6222 0000 0000 0000",
             application_attachment_file_id=1,
             items=[
                 ReturnItemInput(order_item_id=1, quantity=D("2")),
@@ -448,8 +445,6 @@ def test_same_product_across_batches_does_not_double_count_reference(db):
             reason_code="customer_rejected",
             reason="客户整单退回",
             goods_refund_amount=D("100.00"),
-            payment_method="线下转账",
-            receiving_account="测试账户 6222 0000 0000 0000",
             application_attachment_file_id=1,
             items=[ReturnItemInput(order_item_id=1, quantity=D("10"))],
         ),
@@ -576,10 +571,17 @@ def test_refund_must_be_registered_then_cannot_void_or_change_amount(db):
     row = run(svc.create_return(s, USER, order, _payload("2", "20")))
     _approve(s, row)
     _receive(s, row)
-    run(svc.settle_return(s, FINANCE, row, refund_reference="银行流水 20261125001"))
+    run(svc.settle_return(
+        s, FINANCE, row,
+        refund_reference="银行流水 20261125001",
+        payment_method="银行转账",
+        receiving_account="客户账户 6222 0000 0000 0000",
+    ))
     assert row.status == "refunded"
     assert row.offset_amount == D("0.00")
     assert row.refund_amount == D("20.00")
+    assert row.payment_method == "银行转账"
+    assert row.receiving_account == "客户账户 6222 0000 0000 0000"
     with pytest.raises(AppError, match="已经实际退款"):
         run(svc.void_return(s, FINANCE, row, "想撤销"))
     with pytest.raises(AppError, match="不能改金额"):
@@ -878,12 +880,27 @@ def test_settle_auto_offset_then_cash_requires_reference(db):
     with pytest.raises(AppError, match="必须填写退款流水"):
         run(svc.settle_return(s, FINANCE, row))
 
+    # 财务只填流水还不够：现金退给谁、怎么退也必须由财务确认。
+    with pytest.raises(AppError, match="必须填写打款方式"):
+        run(svc.settle_return(
+            s, FINANCE, row,
+            refund_reference="银行流水 20261126001",
+        ))
+    with pytest.raises(AppError, match="必须填写收款账户"):
+        run(svc.settle_return(
+            s, FINANCE, row,
+            refund_reference="银行流水 20261126001",
+            payment_method="银行转账",
+        ))
+
     settled = run(
         svc.settle_return(
             s,
             FINANCE,
             row,
             refund_reference="银行流水 20261126001",
+            payment_method="银行转账",
+            receiving_account="客户账户 6222 0000 0000 0000",
             note="系统先抵欠款，再退剩余现金",
         )
     )
@@ -920,6 +937,8 @@ def test_settle_auto_offset_caps_at_customer_unpaid(db):
             FINANCE,
             row,
             refund_reference="银行流水 20261126002",
+            payment_method="银行转账",
+            receiving_account="客户账户 6222 0000 0000 0000",
         )
     )
     assert settled.status == "refunded"
@@ -959,8 +978,6 @@ def test_create_amount_breakdown_and_requires_application_attachment(db):
             freight_refund_amount=D("8.00"),
             adjustment_amount=D("-3.00"),
             adjustment_note="改价：售价减包装费",
-            payment_method="银行转账",
-            receiving_account="测试账户 6222 0000 0000 0000",
             application_attachment_file_id=1,
             items=[ReturnItemInput(order_item_id=1, quantity=D("3"))],
         ),
@@ -979,8 +996,6 @@ def test_create_amount_breakdown_and_requires_application_attachment(db):
                 reason_code="other",
                 reason="附件不存在测试",
                 goods_refund_amount=D("30.00"),
-                payment_method="线下转账",
-                receiving_account="测试账户 6222 0000 0000 0000",
                 application_attachment_file_id=999,
                 items=[ReturnItemInput(order_item_id=1, quantity=D("3"))],
             ),
@@ -1162,12 +1177,11 @@ def test_after_receipt_cancel_is_blocked_but_finance_can_void_revision(db):
         goods_refund_amount=D("20.00"),
         freight_refund_amount=D("0.00"),
         adjustment_amount=D("0.00"),
-        payment_method="银行转账",
-        receiving_account="新账户 6222 0000 0000 0001",
     ))
     assert row.status == "reviewing"
-    assert row.payment_method == "银行转账"
-    assert row.receiving_account == "新账户 6222 0000 0000 0001"
+    # 收款信息不由业务员/主管改；财务确认退款时填。
+    assert row.payment_method == ""
+    assert row.receiving_account is None
 
     run(svc.void_return(s, FINANCE, row, "客户取消退款"))
     assert row.status == "voided"

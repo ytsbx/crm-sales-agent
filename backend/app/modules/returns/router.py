@@ -172,7 +172,7 @@ async def revise_return_amount(
     user: CurrentUser = Depends(require_permission("order:manage", "order:assign")),
     session: AsyncSession = Depends(get_db),
 ):
-    """财务打回后，申请人或主管修改金额/收款信息，重新交主管复审。"""
+    """财务打回后，申请人或主管只修改金额，重新交主管复审。"""
     row = await _lock_return_with_order(session, user, return_id)
     await svc.revise_return_amount(
         session,
@@ -182,8 +182,6 @@ async def revise_return_amount(
         freight_refund_amount=payload.freight_refund_amount,
         adjustment_amount=payload.adjustment_amount,
         adjustment_note=payload.adjustment_note,
-        payment_method=payload.payment_method,
-        receiving_account=payload.receiving_account,
         note=payload.note,
         ip=client_ip(request),
     )
@@ -287,6 +285,8 @@ async def settle_return(
         user,
         row,
         refund_reference=payload.refund_reference,
+        payment_method=payload.payment_method,
+        receiving_account=payload.receiving_account,
         note=payload.note,
         ip=client_ip(request),
     )
