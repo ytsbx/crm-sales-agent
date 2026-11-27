@@ -1,3 +1,17 @@
+## 2026-11-27 · 售后生产迁移演练 + 退货边界回归
+
+- 生产状态（只读确认）：SSH `rag`，应用 `/opt/crm-sales-agent/app`，服务 `crm-sales.service` 为 active；生产库在容器 `crm-sales-db`（`postgres:18`），库 `crm_sales_agent`，当前 Alembic 版本仍为 `a1c4e8f2b6d9`；`sales_returns=0`、`sales_orders=0`、`files=40`、`business_files=37`。本轮未对生产执行迁移、未重启服务、未写生产数据。
+- 演练副本：从生产容器 `pg_dump` 导出 plain SQL，去掉本地 PG15 不支持的 `SET transaction_timeout`、`\restrict`、`\unrestrict` 后恢复到本地 `crm_prod_rehearsal_20261127`；恢复后版本 `a1c4e8f2b6d9`，计数与生产一致（customers 2566、users 16、files 40、business_files 37、orders 0、returns 0）。
+- 第一段升级 `b7e2c9d4a1f6`：`sales_returns.status` 由 varchar(16) 放宽到 varchar(32)，新增 `goods_refund_amount`、`adjustment_amount`、`adjustment_note`、`payment_method`、`receiving_account`、`application_attachment_file_id`、`return_tracking_no`、`warehouse_confirmed_by`、`warehouse_confirmed_at`、`warehouse_note`。在副本补造旧售后单 `MIG-RET-20261127`（id=900001，状态 `warehouse_pending`，`warehouse_confirmed_by=1`，`warehouse_note='旧仓库备注'`）。
+- 第二段升级 `f5c8a1d3e7b2`：旧状态自动变为 `receiving_pending`；`warehouse_confirmed_by/at/note` 正确改名为 `received_by/received_at/receiving_note`，值保留；`warehouse_*` 列数量为 0。升级后 `received_by=1`、`receiving_note='旧仓库备注'` 与补造数据一致。
+- 降级验证：`alembic downgrade a1c4e8f2b6d9` 成功，先降 `f5c8` 再降 `b7e2`，旧字段与旧状态结构恢复；补造单按既定回退逻辑变为 `completed`，新增字段全部消失。随后重新 `upgrade head`，副本回到 `f5c8a1d3e7b2`，旧 `warehouse_*` 列仍为 0。
+- ORM 兼容：用当前 `SalesReturn` 模型直接读取迁移后的副本，`orm_read_ok 900001 MIG-RET-20261127 completed`，新字段可正常映射。
+- 迁移计数复核：升级并补造后 customers 2566、users 16、files 40、business_files 37，orders/returns 各 1 条仅为本轮补造；没有丢客户、用户、附件或业务文件关联。
+- `alembic check` 未作为通过项：它会报出大量与售后无关的既有模型漂移（`case_evidences`、`biz_docs`、`sales_cases`、索引/注释差异等），不是本次两条售后迁移造成；本次改为按 `sales_returns` 列级与状态级核对，确认 `status` 长度 32、旧 `warehouse_*` 0 列、5 个新字段存在。
+- 边界回归：`test_sales_return.py` 由 23 项增至 25 项通过；新增“多明细售后按明细汇总货款”和“非人民币订单不能登记售后”。原有测试已覆盖驳回释放数量、取消释放数量、作废恢复应收、全额抵扣 `settled`、部分抵扣+现金退、抵扣上限、现金退款流水必填、财务不能确认收货、业务员不能审核、主管自审留痕；全量后端 2348 项通过。
+- 残余/未决：`confirm_received` 目前只落收货人、时间和备注，没有结构化“实收数量”字段；部分收货只能写进备注，不能按实收数量重算退款。本轮按“退货做到这里”不扩字段，记为已知边界。生产真实销售订单/售后为 0，迁移数据映射只能靠副本补造旧单验证；生产尚未部署本次代码与迁移。
+- 清理：本地演练副本和 `/tmp` 生产 dump 含真实客户数据，演练结束后删除；生产版本再次只读确认为 `a1c4e8f2b6d9`。
+
 ## 2026-11-27 · 售后申请附件归属校验
 
 - 问题：`create_return` 原来只校验“文件存在 + 当前账号上传”，没有校验文件是否挂在这张订单的售后申请附件上。`files.id` 是全局的，同一账号可以先给别的订单上传附件，再拿那个 file_id 来本单登记售后，等于把别单的退款登记表挂到本单。

@@ -332,6 +332,67 @@ def test_create_records_refund_amount_and_no_offset(db):
     assert audit.after_data["refund_amount"] == "30.00"
 
 
+def test_multi_item_return_sums_goods_amount(db):
+    s, order, item, batch_item, plans = db
+    second_item = SalesOrderItem(
+        id=2,
+        order_id=1,
+        sku_snapshot="SKU-R2",
+        specification="蓝色",
+        quantity=D("5"),
+        unit_price=D("20.0000"),
+        amount=D("100.00"),
+    )
+    second_batch = OrderShipmentBatch(
+        id=2,
+        order_id=1,
+        batch_no=2,
+        status="shipped",
+        actual_ship_date=date(2026, 11, 22),
+        created_at=NOW,
+    )
+    second_batch_item = OrderShipmentBatchItem(
+        id=2,
+        batch_id=2,
+        order_item_id=2,
+        sku_snapshot="SKU-R2",
+        planned_qty=D("5"),
+        shipped_qty=D("5"),
+    )
+    s._session.add_all([second_item, second_batch, second_batch_item])
+    s._session.flush()
+
+    row = run(svc.create_return(
+        s, USER, order,
+        ReturnCreate(
+            reason_code="customer_rejected",
+            reason="客户两件商品一起退",
+            goods_refund_amount=D("40.00"),
+            payment_method="线下转账",
+            receiving_account="测试账户 6222 0000 0000 0000",
+            application_attachment_file_id=1,
+            items=[
+                ReturnItemInput(order_item_id=1, quantity=D("2")),
+                ReturnItemInput(order_item_id=2, quantity=D("1")),
+            ],
+        ),
+    ))
+    assert row.goods_amount == D("40.00")
+    assert row.total_amount == D("40.00")
+    detail = s._session.execute(
+        select(SalesReturnItem).where(SalesReturnItem.return_id == row.id)
+    ).scalars().all()
+    assert len(detail) == 2
+    assert {str(line.order_item_id) for line in detail} == {"1", "2"}
+
+
+def test_non_cny_order_cannot_create_return(db):
+    s, order, item, batch_item, plans = db
+    order.currency = "USD"
+    with pytest.raises(AppError, match="只支持人民币"):
+        run(svc.create_return(s, USER, order, _payload("3", "30")))
+
+
 def test_return_over_quantity_and_cancel_frees_it(db):
     s, order, item, batch_item, plans = db
     row = run(svc.create_return(s, USER, order, _payload("3", "30")))
