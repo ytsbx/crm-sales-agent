@@ -38,6 +38,9 @@ async def test_customer_candidates_do_not_use_the_following_employees_mobile():
         raw.add(Customer(id=2, name="乙方包装公司"))
         raw.add(Customer(id=3, name="乙方包装公司", owner_id=99))
         raw.flush()
+        from tests.conftest import follow_customer
+
+        follow_customer(raw, 2, 7)
         matches = (await service.unbound_candidates(session, 8, user=viewer))["candidates"]
         assert [match["id"] for match in matches] == [2]
         assert all("手机号一致" not in str(reason) for reason in matches[0]["reasons"])

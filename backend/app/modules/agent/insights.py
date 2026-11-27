@@ -341,7 +341,9 @@ async def customer_summary(session: AsyncSession, user, *, customer_id: int) -> 
 
     customer = await customer_service.get_visible_customer(session, user, customer_id)
     overview = await customer_service.customer_overview(session, user, customer_id)
-    owner = await session.get(User, customer.owner_id) if customer.owner_id else None
+    from app.modules.customer.followers import followers_map
+
+    fmap = await followers_map(session, [customer.id])
     today = today_business()
 
     days_since_followup = None
@@ -399,8 +401,10 @@ async def customer_summary(session: AsyncSession, user, *, customer_id: int) -> 
             "source": customer.source,
             "status": customer.status,
             "pool_status": customer.pool_status,
-            "owner_id": customer.owner_id,
-            "owner_name": owner.name if owner else None,
+            "followers": [
+                {"user_id": item["user_id"], "name": item["name"]}
+                for item in fmap.get(customer.id, [])
+            ],
             "last_followup_at": customer.last_followup_at,
             "days_since_followup": days_since_followup,
         },

@@ -24,7 +24,7 @@ from app.core.response import paginate
 # 人民币这个字面量全项目只留一处（`core/trade_mode.py`），别在这里再写一遍
 from app.core.trade_mode import CNY
 from app.modules.approval.model import ApprovalInstance
-from app.modules.customer.model import Customer
+from app.modules.customer.model import Customer, CustomerFollower
 from app.modules.customer import service as customer_service
 from app.modules.followup.model import FollowUp
 from app.modules.lead.model import Lead
@@ -225,18 +225,25 @@ async def stale_customers(
     now = datetime.now(UTC)
     stale_date = now - timedelta(days=days)
 
-    stmt = await _scope_filter(
-        select(Customer).where(
-            Customer.deleted_at.is_(None),
-            Customer.pool_status == "private",
-            _customer_stale_clause(stale_date),
-        ).order_by(Customer.last_followup_at.asc().nullsfirst(), Customer.id),
-        user, Customer.owner_id, session,
-    )
+    stmt = select(Customer).where(
+        Customer.deleted_at.is_(None),
+        Customer.pool_status == "private",
+        _customer_stale_clause(stale_date),
+    ).order_by(Customer.last_followup_at.asc().nullsfirst(), Customer.id)
+    owner_ids_all = await scoped_owner_ids(session, user)
+    from app.modules.customer.visibility import customer_scope_clause_from
+
+    clause = customer_scope_clause_from(owner_ids_all)
+    if clause is not None:
+        stmt = stmt.where(clause)
     rows, total = await paginate(session, stmt, page, page_size)
 
-    # 负责人姓名：清单上要能看出"这是谁家的客户"
-    owner_ids = {c.owner_id for c in rows if c.owner_id}
+    from app.modules.customer.followers import followers_map
+
+    fmap = await followers_map(session, [c.id for c in rows])
+    owner_ids = {c.owner_id for c in rows if c.owner_id} | {
+        item["user_id"] for items in fmap.values() for item in items
+    }
     names: dict[int, str] = {}
     if owner_ids:
         names = {
@@ -274,8 +281,8 @@ async def stale_customers(
                 "id": c.id,
                 "name": c.name,
                 "level": c.level,
-                "owner_id": c.owner_id,
-                "owner_name": names.get(c.owner_id) if c.owner_id else None,
+                "followers": fmap.get(c.id, []),
+                "follower_count": len(fmap.get(c.id, [])),
                 "last_followup_at": c.last_followup_at,
                 "last_progress_at": c.last_progress_at,
                 "last_activity_at": last,
@@ -328,20 +335,18 @@ async def dashboard_summary(session: AsyncSession, user: CurrentUser) -> dict:
 
     stale_days = int(await settings_service.get_number(session, "customer_stale_days", "days", 30))
     stale_date = now - timedelta(days=stale_days)
-    stale_customers = (
-        await session.execute(
-            await _scope_filter(
-                select(func.count(Customer.id)).where(
-                    Customer.deleted_at.is_(None),
-                    Customer.pool_status == "private",
-                    _customer_stale_clause(stale_date),
-                ),
-                user,
-                Customer.owner_id,
-                session,
-            )
-        )
-    ).scalar_one()
+    _dash_owner_ids = await scoped_owner_ids(session, user)
+    from app.modules.customer.visibility import customer_scope_clause_from as _cust_clause
+
+    _stale_stmt = select(func.count(Customer.id)).where(
+        Customer.deleted_at.is_(None),
+        Customer.pool_status == "private",
+        _customer_stale_clause(stale_date),
+    )
+    _stale_clause = _cust_clause(_dash_owner_ids)
+    if _stale_clause is not None:
+        _stale_stmt = _stale_stmt.where(_stale_clause)
+    stale_customers = (await session.execute(_stale_stmt)).scalar_one()
 
     open_count, open_amount = (
         await session.execute(
@@ -1098,9 +1103,13 @@ async def quote_stats(session: AsyncSession, user: CurrentUser) -> dict:
 
 
 async def customer_stats(session: AsyncSession, user: CurrentUser) -> dict:
-    customer_scope = await _scope_filter(
-        select(Customer).where(Customer.deleted_at.is_(None)), user, Customer.owner_id, session,
-    )
+    customer_scope = select(Customer).where(Customer.deleted_at.is_(None))
+    _stats_owner_ids = await scoped_owner_ids(session, user)
+    from app.modules.customer.visibility import customer_scope_clause_from as _cust_clause2
+
+    _stats_clause = _cust_clause2(_stats_owner_ids)
+    if _stats_clause is not None:
+        customer_scope = customer_scope.where(_stats_clause)
     customers = (await session.execute(customer_scope)).scalars().all()
     by_source: dict[str, int] = {}
     by_level: dict[str, int] = {}
@@ -1425,8 +1434,15 @@ async def sales_user_stats(
     stmt = select(
         User.id,
         User.name,
-        select(func.count(Customer.id))
-        .where(Customer.owner_id == User.id, Customer.deleted_at.is_(None))
+        # 客户数：每个有效跟进人各算一次，只算私海客户
+        select(func.count(CustomerFollower.id))
+        .join(Customer, Customer.id == CustomerFollower.customer_id)
+        .where(
+            CustomerFollower.user_id == User.id,
+            CustomerFollower.deleted_at.is_(None),
+            Customer.deleted_at.is_(None),
+            Customer.pool_status == "private",
+        )
         .scalar_subquery(),
         select(func.count(Opportunity.id))
         .where(Opportunity.owner_id == User.id, Opportunity.deleted_at.is_(None))
@@ -2200,11 +2216,11 @@ async def team_summary(session: AsyncSession, user: CurrentUser) -> dict:
         )
     ).scalar_one()
 
-    # 客户分配：无负责人的客户（公海 + 从未分配）
+    # 公海客户数（客户没有默认负责人；公海 = 没人跟进、可被领取）
     unassigned_customers = (
         await session.execute(
             select(func.count(Customer.id)).where(
-                Customer.deleted_at.is_(None), Customer.owner_id.is_(None)
+                Customer.deleted_at.is_(None), Customer.pool_status == "public"
             )
         )
     ).scalar_one()
@@ -2293,14 +2309,19 @@ async def team_summary(session: AsyncSession, user: CurrentUser) -> dict:
 
         stale_rows = (
             await session.execute(
-                select(Customer.owner_id, func.count(Customer.id).label("stale"))
+                select(
+                    CustomerFollower.user_id,
+                    func.count(CustomerFollower.customer_id).label("stale"),
+                )
+                .join(Customer, Customer.id == CustomerFollower.customer_id)
                 .where(
+                    CustomerFollower.user_id.in_(member_ids),
+                    CustomerFollower.deleted_at.is_(None),
                     Customer.deleted_at.is_(None),
-                    Customer.owner_id.in_(member_ids),
                     Customer.pool_status == "private",
                     _customer_stale_clause(stale_date),
                 )
-                .group_by(Customer.owner_id)
+                .group_by(CustomerFollower.user_id)
             )
         ).all()
         for owner_id, stale in stale_rows:

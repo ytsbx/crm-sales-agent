@@ -88,6 +88,10 @@ def test_archive_keeps_explicit_shared_link(archive):
     doc.owner_id = 102
     # 任一可见挂载仍可共享，不要求每一处关联都可见。
     session._session.add(Customer(id=9, name="共享客户", owner_id=101))
+    session._session.flush()
+    from tests.conftest import follow_customer
+
+    follow_customer(session._session, 9, 101)
     session._session.add(BusinessFile(business_type="customer", business_id=9, file_id=1))
     assert asyncio.run(can_access_file(session, make_user(101, permissions=["customer:view"]), 1))
 

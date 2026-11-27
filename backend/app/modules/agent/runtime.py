@@ -736,6 +736,14 @@ async def action_display(session: AsyncSession, action: AgentAction, *, user: Cu
             return None
         if row is None or getattr(row, 'deleted_at', None) is not None:
             return None
+        if model is Customer:
+            from app.modules.customer.visibility import assert_customer_in_scope
+
+            try:
+                await assert_customer_in_scope(session, user, row)
+            except Exception:
+                return None
+            return row
         owners = await scoped_owner_ids(session, user)
         if owners is not None and not (row.owner_id in owners or (allow_unowned and row.owner_id is None)):
             return None

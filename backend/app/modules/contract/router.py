@@ -229,7 +229,6 @@ async def create_document_record(payload: DocumentCreate, request: Request, user
         raise AppError(ErrorCode.FORBIDDEN, "补充协议 / 续签需要主管权限", 403)
 
     customer = await customer_service.get_visible_customer(session, user, payload.customer_id)
-    await ensure_in_scope(session, user, owner_id=customer.owner_id, label="客户")
     if payload.order_id is not None:
         order = await session.get(SalesOrder, payload.order_id)
         if order is None:
@@ -261,7 +260,7 @@ async def create_document_record(payload: DocumentCreate, request: Request, user
         )
     # 唯一键保证重试不会重复创建“上传客户回签文件”待办。
     from app.modules.task.model import Task
-    owner_id = customer.owner_id or user.id
+    owner_id = doc.created_by or user.id
     exists = await session.execute(
         select(Task.id).where(Task.source_key == f"contract:signed-upload:{doc.id}").limit(1)
     )
@@ -638,7 +637,7 @@ async def _record_contract_event(
     await followup_service.record_and_notify(
         session,
         customer_id=doc.customer_id,
-        owner_id=customer.owner_id if customer else None,
+        owner_id=None,
         title=title,
         content=content,
         # ⚠️ **必须传 `customer`，不能传 `contract`**（2026-10-14 审查修）。

@@ -29,8 +29,12 @@ def test_only_authorized_tools_sent_to_model():
 
 @pytest.mark.parametrize('owner,permissions,visible',[(101,{'customer:view'},True),(999,{'customer:view'},False),(101,set(),False),(None,{'customer:view'},True)])
 def test_action_card_checks_scope_and_permission(db_session,owner,permissions,visible):
-    customer=Customer(name='不可泄露的客户',level='A',status='active',pool_status='private',owner_id=owner)
+    customer=Customer(name='不可泄露的客户',level='A',status='active',
+                      pool_status='public' if owner is None else 'private', owner_id=owner)
     db_session.add(customer);db_session.flush()
+    if owner is not None:
+        from tests.conftest import follow_customer
+        follow_customer(db_session, customer.id, owner)
     action=AgentAction(tool_name='create_followup',proposed_payload={'customer_id':customer.id,'content':'待确认'},status='awaiting_confirmation')
     result=asyncio.run(runtime.action_display(SyncSessionAsAsync(db_session),action,user=make_user(101,permissions=permissions)))
     assert ('不可泄露的客户' in str(result)) == visible
@@ -179,6 +183,8 @@ def test_opportunity_detail_does_not_read_other_modules_without_permission(db_se
     for model in (Sku,OpportunityItem): model.__table__.create(db_session.get_bind(),checkfirst=True)
     customer=Customer(name='test',level='A',status='active',pool_status='private',owner_id=101)
     db_session.add(customer);db_session.flush()
+    from tests.conftest import follow_customer
+    follow_customer(db_session, customer.id, 101)
     opp=Opportunity(customer_id=customer.id,title='test',owner_id=101,stage_id=1,status='open')
     db_session.add(opp);db_session.flush()
     ctx=ToolContext(SyncSessionAsAsync(db_session),make_user(101,permissions={'opportunity:view'}),1)
@@ -201,6 +207,8 @@ def test_opportunity_detail_hides_system_followup_without_source_permission(db_s
     customer = Customer(name="test-source", level="A", status="active", pool_status="private", owner_id=101)
     db_session.add(customer)
     db_session.flush()
+    from tests.conftest import follow_customer
+    follow_customer(db_session, customer.id, 101)
     opp = Opportunity(customer_id=customer.id, title="test-source", owner_id=101, stage_id=1, status="open")
     db_session.add(opp)
     db_session.flush()

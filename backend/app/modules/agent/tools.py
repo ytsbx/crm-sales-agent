@@ -206,7 +206,7 @@ async def _may_see_full_contact(ctx: ToolContext, customer: Customer) -> bool:
     from app.modules.contact_util import can_view_full_contact
 
     return await can_view_full_contact(
-        ctx.session, ctx.user, customer_id=customer.id, owner_id=customer.owner_id
+        ctx.session, ctx.user, customer_id=customer.id, owner_id=None
     )
 
 
@@ -290,12 +290,13 @@ async def search_customers(ctx: ToolContext, keyword: str = "") -> dict:
     stmt = select(Customer).where(Customer.deleted_at.is_(None))
     if keyword:
         stmt = stmt.where(Customer.name.ilike(f"%{keyword}%"))
-    stmt = await _scope(
-        stmt.order_by(Customer.id.desc()).limit(10),
-        ctx,
-        Customer.owner_id,
-        allow_unowned=True,
-    )
+    from app.modules.customer.visibility import customer_scope_clause_from
+
+    owner_ids = await scoped_owner_ids(ctx.session, ctx.user)
+    clause = customer_scope_clause_from(owner_ids)
+    if clause is not None:
+        stmt = stmt.where(clause)
+    stmt = stmt.order_by(Customer.id.desc()).limit(10)
     rows = (await ctx.session.execute(stmt)).scalars().all()
     return {
         "count": len(rows),
@@ -358,10 +359,9 @@ async def get_customer_overview(ctx: ToolContext, customer_id: int) -> dict:
     customer = await ctx.session.get(Customer, customer_id)
     if customer is None or customer.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
-    # 公海客户（无负责人）可见：与业务接口同一口径
-    await _ensure_in_scope(
-        ctx, Customer.owner_id, Customer.id, customer_id, "客户", allow_unowned=True
-    )
+    from app.modules.customer.visibility import assert_customer_in_scope
+
+    await assert_customer_in_scope(ctx.session, ctx.user, customer)
 
     unavailable: list[str] = []
 
@@ -820,9 +820,12 @@ async def calculate_price(
 
     # 带客户核价时，客户必须在该用户数据范围内（A11：与普通界面同一纪律）
     if payload.customer_id is not None:
-        await _ensure_in_scope(
-            ctx, Customer.owner_id, Customer.id, payload.customer_id, "客户", allow_unowned=True
-        )
+        from app.modules.customer.visibility import assert_customer_in_scope
+
+        customer = await ctx.session.get(Customer, payload.customer_id)
+        if customer is None or customer.deleted_at is not None:
+            raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
+        await assert_customer_in_scope(ctx.session, ctx.user, customer)
     result = await pricing_service.calculate_price(
         ctx.session,
         sku_id=payload.sku_id,
@@ -1430,14 +1433,12 @@ async def get_contact(ctx: ToolContext, contact_id: int) -> dict:
     if contact is None or contact.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "联系人不存在", 404)
     # 联系人没有 owner，范围跟所属客户走
-    await _ensure_in_scope(
-        ctx,
-        Customer.owner_id,
-        Customer.id,
-        contact.customer_id,
-        "客户",
-        allow_unowned=True,
-    )
+    if contact.customer_id is not None:
+        from app.modules.customer.visibility import assert_customer_in_scope
+
+        customer = await ctx.session.get(Customer, contact.customer_id)
+        if customer is not None:
+            await assert_customer_in_scope(ctx.session, ctx.user, customer)
     # ⚠️ **必须走统一脱敏口径**，不能手写字典把 `mobile/phone/email/wechat` 原样吐出去。
     #
     # `customer_service.serialize_contacts_masked` 的 docstring 点名了五个入口必须共用

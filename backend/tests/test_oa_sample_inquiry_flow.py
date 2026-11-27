@@ -71,6 +71,10 @@ async def test_new_sample_does_not_fall_back_for_explicit_invalid_owner():
     engine = _engine()
     with Session(engine) as raw:
         raw.add(Customer(id=1, name="测试客户", owner_id=101))
+        raw.flush()
+        from tests.conftest import follow_customer
+
+        follow_customer(raw, 1, 101)
         raw.commit()
         actor = make_user(101, permissions=("sample:manage",))
         request = Request({"type": "http", "headers": []})

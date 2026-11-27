@@ -9,7 +9,7 @@ from app.modules.pricing.router import pricing_history
 from app.modules.pricing.model import ProductCost, PriceRule, CustomerPriceRule
 from app.modules.product.model import Product, Sku
 from app.modules.quote.model import Quote, QuoteItem, QuoteVersion
-from tests.conftest import SyncSessionAsAsync, make_user
+from tests.conftest import SyncSessionAsAsync, follow_customer, make_user
 
 
 @pytest.fixture
@@ -19,10 +19,12 @@ def history_db(db_session):
     db_session.add_all([
         Customer(id=1, name="本人客户", owner_id=101),
         Customer(id=2, name="他人客户", owner_id=999),
-        Customer(id=3, name="公海客户", owner_id=None),
+        Customer(id=3, name="公海客户", owner_id=None, pool_status="public"),
         Product(id=1, name="产品"),
     ])
     db_session.flush()
+    follow_customer(db_session, 1, 101)
+    follow_customer(db_session, 2, 999)
     db_session.add(Sku(id=1, product_id=1, sku_code="SKU-1"))
     for qid, owner in ((1, 101), (2, 999)):
         db_session.add(Quote(id=qid, quote_no=f"Q-{qid}", customer_id=qid, owner_id=owner, status="sent"))

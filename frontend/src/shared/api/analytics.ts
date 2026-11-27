@@ -246,8 +246,8 @@ export interface StaleCustomer {
   id: number
   name: string
   level: string | null
-  owner_id: number | null
-  owner_name: string | null
+  followers?: { user_id: number; name: string; source: string; created_at: string }[]
+  follower_count?: number
   last_followup_at: string | null
   /** 距最近有效跟进/业务进展的天数；无记录时从建档起算。 */
   days_since: number | null

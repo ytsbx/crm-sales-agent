@@ -216,24 +216,31 @@ async def new_customer_rows(
     ids = [int(cid) for cid in first_deal_month]
     # 与明细同一套筛法：未删除的客户档案。**只按 id 取，不按建档时间取** ——
     # 那样又把口径拉回"建档月"了。
+    from app.modules.customer.model import CustomerFollower
+
     rows = (
         await session.execute(
-            select(Customer.id, Customer.name, Customer.owner_id).where(
-                Customer.deleted_at.is_(None), Customer.id.in_(ids)
+            select(Customer.id, Customer.name, CustomerFollower.user_id)
+            .join(CustomerFollower, CustomerFollower.customer_id == Customer.id)
+            .where(
+                Customer.deleted_at.is_(None),
+                CustomerFollower.deleted_at.is_(None),
+                Customer.pool_status == "private",
+                Customer.id.in_(ids),
             )
         )
     ).all()
     return [
         (
             first_deal_month[int(cid)],
-            owner_id,
+            user_id,
             int(cid),
             name,
             # 老快照（没冻日期）这里是 None —— 界面如实显示"未知"。
             # 绝不回头查当前订单补一个日期：那正是 R07 的自相矛盾来源。
             _deal_at_of(first_deal_detail.get(int(cid))),
         )
-        for cid, name, owner_id in rows
+        for cid, name, user_id in rows
     ]
 
 
@@ -476,21 +483,24 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
 
     # ---- 两种新客口径 ----
     new_by_created: dict[str, Decimal] = {}
+    from app.modules.customer.model import CustomerFollower
+
     rows = await session.execute(
-        scope(
-            select(
-                business_month(Customer.created_at), func.count()
-            )
-            .where(
-                Customer.deleted_at.is_(None),
-                business_year(Customer.created_at) == year,
-            )
-            .group_by(business_month(Customer.created_at)),
-            Customer.owner_id,
+        select(
+            business_month(Customer.created_at), CustomerFollower.user_id
+        )
+        .join(CustomerFollower, CustomerFollower.customer_id == Customer.id)
+        .where(
+            Customer.deleted_at.is_(None),
+            CustomerFollower.deleted_at.is_(None),
+            Customer.pool_status == "private",
+            business_year(Customer.created_at) == year,
         )
     )
-    for month, count in rows.all():
-        _bucket(new_by_created, month, count)
+    for month, follower_id in rows.all():
+        if owner_ids is not None and follower_id not in owner_ids:
+            continue
+        _bucket(new_by_created, month, 1)
 
     # 首次成交用**基准里的那份**（§4.1.5）：过去年份已冻结，当年实时。
     # 不再从 orders 现算 `min(created_at)`——那样事后取消人家的首单，
@@ -499,20 +509,25 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
     deals = {int(cid): month for cid, month in first_deal_month.items()}
     if deals:
         # 数据范围仍按客户**当前负责人**过滤（口径不变，只是基准不再现算）
-        owners = dict(
-            (
-                await session.execute(
-                    select(Customer.id, Customer.owner_id).where(
-                        Customer.deleted_at.is_(None), Customer.id.in_(list(deals))
-                    )
+        from app.modules.customer.model import CustomerFollower
+
+        follower_rows = (
+            await session.execute(
+                select(CustomerFollower.customer_id, CustomerFollower.user_id)
+                .join(Customer, Customer.id == CustomerFollower.customer_id)
+                .where(
+                    CustomerFollower.deleted_at.is_(None),
+                    Customer.deleted_at.is_(None),
+                    Customer.pool_status == "private",
+                    CustomerFollower.customer_id.in_(list(deals)),
                 )
-            ).all()
-        )
-        for customer_id, month in deals.items():
-            owner = owners.get(customer_id)
-            if owner is None:
+            )
+        ).all()
+        for customer_id, follower_id in follower_rows:
+            if owner_ids is not None and follower_id not in owner_ids:
                 continue
-            if owner_ids is not None and owner not in owner_ids:
+            month = deals.get(int(customer_id))
+            if month is None:
                 continue
             _bucket(new_by_first_deal, int(month[5:]), 1)
 

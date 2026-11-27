@@ -141,6 +141,10 @@ def _seed(session, *, owner_id: int | None) -> tuple[Customer, Contact]:
     )
     session.add(contact)
     session.flush()
+    if owner_id is not None:
+        from tests.conftest import follow_customer
+
+        follow_customer(session, customer.id, owner_id)
     return customer, contact
 
 

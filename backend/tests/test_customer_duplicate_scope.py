@@ -55,7 +55,7 @@ async def test_resolve_case_rechecks_both_customers_under_row_locks(monkeypatch)
 
     assert result.status == "resolved"
     assert calls == [(3, True), (9, True)]
-    assert result.before_owners == {"3": 3, "9": 9}
+    assert result.before_owners is None
 
 
 @pytest.mark.anyio
@@ -66,7 +66,7 @@ async def test_case_list_customer_filter_matches_both_sides_and_respects_scope(d
     from sqlalchemy.schema import CreateTable
 
     from app.modules.customer.model import Customer, CustomerDuplicateCase
-    from tests.conftest import SyncSessionAsAsync
+    from tests.conftest import SyncSessionAsAsync, follow_customer
 
     monkeypatch.setattr(duplicates, "scoped_owner_ids", AsyncMock(return_value=[101]))
     db_session.execute(CreateTable(CustomerDuplicateCase.__table__))
@@ -75,6 +75,8 @@ async def test_case_list_customer_filter_matches_both_sides_and_respects_scope(d
         for customer_id, owner_id in [(1, 101), (2, 101), (3, 101), (4, 101), (5, 999)]
     ])
     db_session.flush()
+    for customer_id in (1, 2, 3, 4):
+        follow_customer(db_session, customer_id, 101)
     db_session.add_all([
         CustomerDuplicateCase(id=case_id, customer_id=left, candidate_id=right,
                               status="pending", created_at=datetime.now(UTC))
@@ -129,12 +131,14 @@ async def test_batch_tag_audit_preserves_each_customers_before_and_after(
     from app.modules.customer.model import Customer, Tag, customer_tags
     from app.modules.customer.tags_router import batch_tag
     from app.modules.customer.tags_schema import CustomerBatchTag
-    from tests.conftest import SyncSessionAsAsync, make_user
+    from tests.conftest import SyncSessionAsAsync, follow_customer, make_user
 
     db_session.execute(CreateTable(Tag.__table__))
     db_session.execute(CreateTable(customer_tags))
     db_session.execute(CreateTable(AuditLog.__table__))
     db_session.add(Customer(id=1, name="审计样例客户", owner_id=101))
+    db_session.flush()
+    follow_customer(db_session, 1, 101)
     db_session.add_all([
         Tag(id=1, name="原标签甲"),
         Tag(id=2, name="原标签乙"),

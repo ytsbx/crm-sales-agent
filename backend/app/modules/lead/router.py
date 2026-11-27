@@ -366,9 +366,9 @@ async def convert_lead(
         # 只判存在不够：转化会在该客户下**建联系人和商机**（见下面的
         # create_contact_for_customer / create_opportunity_from_lead），
         # 用别人的客户 id 就等于往别人的客户里写数据。与单个客户接口同一口径。
-        from app.core.data_scope import ensure_in_scope
+        from app.modules.customer.visibility import assert_customer_in_scope
 
-        await ensure_in_scope(session, user, owner_id=customer.owner_id, label="客户")
+        await assert_customer_in_scope(session, user, customer)
     else:
         customer = Customer(
             name=lead.company_name or lead.name,
@@ -379,12 +379,21 @@ async def convert_lead(
             source=lead.source or "其他渠道",
             level=None,
             status="active",
-            pool_status="private" if lead.owner_id else "public",
-            owner_id=lead.owner_id,
+            pool_status="private",
             created_by=user.id,
         )
         session.add(customer)
         await session.flush()
+        from app.modules.customer.followers import add_followers
+
+        # 线索负责人（没有就是转化人）成为跟进人；客户没有默认负责人
+        await add_followers(
+            session,
+            customer.id,
+            [lead.owner_id or user.id],
+            source="lead_convert",
+            created_by=user.id,
+        )
 
     contact_id = None
     if payload.customer_mode == "existing":
@@ -399,7 +408,6 @@ async def convert_lead(
         customer = await customer_service.get_visible_customer(
             session, user, customer.id, for_update=True
         )
-        await ensure_in_scope(session, user, owner_id=customer.owner_id, label="客户")
     if payload.reuse_contact_id is not None:
         # 用户明确指定复用哪一条。只接受**已经挂在这个客户下**的 ——
         # 拿别人的联系人 id 过来复用，等于借转化做一次越权的改挂。
@@ -432,7 +440,7 @@ async def convert_lead(
                 name=lead.contact_name or lead.name,
                 mobile=lead.mobile,
                 email=lead.email,
-                owner_id=customer.owner_id,
+                owner_id=None,
                 source=lead.source or "线索转化",
             )
             contact_id = contact.id

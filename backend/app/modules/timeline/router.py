@@ -43,11 +43,11 @@ async def customer_timeline(
     customer = await session.get(Customer, customer_id)
     if customer is None or customer.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
-    # 公海客户（无负责人）的时间线仍可看：客户档案本身就对有查看权限的人可见，
+    # 公海客户的时间线仍可看：客户档案本身就对有查看权限的人可见，
     # 时间线是同一批信息的延续（口径已确认）
-    await ensure_in_scope(
-        session, user, owner_id=customer.owner_id, label="客户", allow_unowned=True
-    )
+    from app.modules.customer.visibility import assert_customer_in_scope
+
+    await assert_customer_in_scope(session, user, customer)
     return ok(await build_timeline(session, "customer", customer_id, user=user))
 
 
@@ -126,10 +126,10 @@ async def contact_timeline(
         customer = await session.get(Customer, contact.customer_id)
         if customer is None or customer.deleted_at is not None:
             raise AppError(ErrorCode.NOT_FOUND, "联系人所属客户不存在", 404)
-        await ensure_in_scope(
-            session, user, owner_id=customer.owner_id, label="客户", allow_unowned=True
-        )
-        owner_id = customer.owner_id
+        from app.modules.customer.visibility import assert_customer_in_scope
+
+        await assert_customer_in_scope(session, user, customer)
+        owner_id = None
     else:
         # B22-P2（用户已确认补）：没挂客户的联系人不再跳过范围检查，
         # 认它自己的负责人（添加人）；连负责人都没有的默认拒绝，不再人人可读。

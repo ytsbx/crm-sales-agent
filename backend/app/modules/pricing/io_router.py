@@ -452,14 +452,17 @@ async def import_customer_prices(
                 continue
             customer = found[0]
 
-        # 数据范围：与"能不能看这个客户"同一口径。无负责人（公海）放行。
-        if owner_ids is not None and customer.owner_id is not None:
-            if int(customer.owner_id) not in owner_ids:
+        # 数据范围：与"能不能看这个客户"同一口径（跟进人 / 公海）。
+        if owner_ids is not None:
+            from app.modules.customer.visibility import assert_customer_in_scope
+
+            try:
+                await assert_customer_in_scope(session, user, customer)
+            except AppError:
                 report.failed_row(
                     index,
                     code,
-                    "该客户不在你的数据范围内，不能为它维护专属价；"
-                    "请联系对应负责人或主管处理",
+                    "该客户不在你的数据范围内，不能为它维护专属价；请联系主管处理",
                 )
                 continue
 

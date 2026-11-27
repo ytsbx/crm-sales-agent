@@ -39,7 +39,7 @@ from app.core.importing import (
     read_preview_token,
     row_savepoint,
 )
-from app.modules.customer.model import Customer
+from app.modules.customer.model import Customer, CustomerFollower
 from app.modules.pricing.model import ProductCost
 from app.modules.product.io import sku_fields_from_row
 from app.modules.product.model import Product, Sku
@@ -142,6 +142,7 @@ def db():
             Sku,
             ProductCost,
             Customer,
+            CustomerFollower,
             CustomerDuplicateCase,
             SystemSetting,
             AuditLog,

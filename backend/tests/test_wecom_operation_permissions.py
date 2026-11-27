@@ -33,6 +33,11 @@ async def test_wecom_customer_actions_follow_crm_permissions_and_scope(db_sessio
         WeComExternalContact(id=22, external_userid="create-contact", name="待新建的联系人"),
         WeComExternalContact(id=23, external_userid="assign-contact", name="要指定负责人的联系人"),
     ])
+    db_session.flush()
+    from tests.conftest import follow_customer
+
+    follow_customer(db_session, 11, 101)
+    follow_customer(db_session, 12, 102)
     db_session.commit()
     actor = make_user(101, permissions=("wecom:view", "wecom:manage"))
     session = SyncSessionAsAsync(db_session)
@@ -58,12 +63,24 @@ async def test_wecom_customer_actions_follow_crm_permissions_and_scope(db_sessio
                                   json={"name": "指派客户", "owner_id": 102})).status_code == 403
         created = await client.post(f"{base}/22/create-customer", json={"name": "新客户"})
         assert created.status_code == 200
-        assert db_session.get(Customer, created.json()["data"]["customer_id"]).owner_id == actor.id
+        created_customer = db_session.get(Customer, created.json()["data"]["customer_id"])
+        assert created_customer.owner_id is None
         actor.permissions.add("customer:assign")
         assigned = await client.post(f"{base}/23/create-customer",
                                      json={"name": "指派客户", "owner_id": 102})
         assert assigned.status_code == 200
-        assert db_session.get(Customer, assigned.json()["data"]["customer_id"]).owner_id == 102
+        from app.modules.customer.model import CustomerFollower
+        from sqlalchemy import select
+
+        assigned_customer = db_session.get(Customer, assigned.json()["data"]["customer_id"])
+        assert assigned_customer.owner_id is None
+        follower_ids = db_session.scalars(
+            select(CustomerFollower.user_id).where(
+                CustomerFollower.customer_id == assigned_customer.id,
+                CustomerFollower.deleted_at.is_(None),
+            )
+        ).all()
+        assert set(follower_ids) == {actor.id, 102}
 
 
 @pytest.mark.anyio

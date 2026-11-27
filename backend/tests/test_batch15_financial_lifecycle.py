@@ -46,6 +46,9 @@ def db():
     template=ContractTemplate(doc_type='monthly',name='测试月结',version=1,body='{{customer.name}}',enabled=True,created_at=datetime.now(UTC))
     for row in (user,customer,template):s.add(row)
     run(s.flush())
+    from tests.conftest import follow_customer
+    run(asyncio.to_thread(lambda: None)) if False else None
+    follow_customer(s._session, customer.id, 1)
     return s,CurrentUser(user,set(),['admin'],'all'),customer,template
 
 

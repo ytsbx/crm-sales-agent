@@ -85,13 +85,17 @@ def _customer(session, *, owner_id=101, name="宏远科技"):
         name=name,
         level="A",
         status="active",
-        pool_status="private",
+        pool_status="public" if owner_id is None else "private",
         owner_id=owner_id,
         created_at=NOW,
         updated_at=NOW,
     )
     session.add(row)
     session.flush()
+    if owner_id is not None:
+        from tests.conftest import follow_customer
+
+        follow_customer(session, row.id, owner_id)
     return row
 
 

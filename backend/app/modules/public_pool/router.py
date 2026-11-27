@@ -112,13 +112,13 @@ async def claim_public_customer(
             action="pool_claim",
             business_type="customer",
             business_id=customer.id,
-            after={"owner_id": user.id},
+            after={"follower_added": user.id},
             ip=client_ip(request),
         )
     await session.commit()
     return ok(
         customer_service.serialize_customer(customer),
-        f"已领取客户「{customer.name}」" if claimed else f"客户「{customer.name}」已经是你的",
+        f"已领取客户「{customer.name}」" if claimed else f"客户「{customer.name}」已在你的跟进列表",
     )
 
 
@@ -146,12 +146,12 @@ async def assign_public_customer(
     # 此前这里用 get_customer_or_404（只判存在），本人范围的业务员
     # 拿 id 就能把别人名下的私有客户改给自己。
     customer = await customer_service.get_visible_customer(session, user, customer_id, for_update=True)
-    if payload.owner_id is None and customer.owner_id is not None:
+    if payload.owner_id is None and customer.pool_status != "public":
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
-            "该客户已有负责人，请用客户详情里的「放入公海」以留下变更历史",
+            "该客户不在公海，请用客户详情里的「放入公海」以留下变更历史",
         )
-    before_owner = customer.owner_id
+    before_pool_status = customer.pool_status
     documents = await customer_service.transfer_customer(
         session, user, customer, payload.owner_id, payload.reason or "公海指派"
     )
@@ -162,10 +162,11 @@ async def assign_public_customer(
         business_type="customer",
         business_id=customer.id,
         # 审计要能回答"原来归谁、改成了谁、为什么"（返工单 6.1 第 6 条）
-        before={"owner_id": before_owner},
+        before={"pool_status": before_pool_status},
         # B13-08：指派审计带单据 ids/数量
         after={
-            "owner_id": payload.owner_id, "reason": payload.reason,
+            "pool_status": customer.pool_status,
+            "assigned_user_id": payload.owner_id, "reason": payload.reason,
             "document_transfer": {
                 "moved": documents.get("moved", {}),
                 "moved_total": documents.get("moved_total", 0),
@@ -252,7 +253,7 @@ async def claim_public_lead(
             action="pool_claim",
             business_type="lead",
             business_id=lead.id,
-            after={"owner_id": user.id},
+            after={"follower_added": user.id},
             ip=client_ip(request),
         )
     await session.commit()

@@ -578,6 +578,7 @@ async def restore_sku(
 def serialize_recycle_customer(
     customer: Customer,
     *,
+    owner_id: int | None = None,
     owner_name: str | None = None,
     original_owner_id: int | None = None,
     original_owner_name: str | None = None,
@@ -595,9 +596,9 @@ def serialize_recycle_customer(
         "id": customer.id,
         "name": customer.name,
         "short_name": customer.short_name,
-        # 【当前负责人】成对下发。合并来源的负责人**在合并那一刻就被清空了**，
-        # 所以这里对合并来源必然是 (None, None) —— 想看的那个负责人见下面 original_*。
-        "owner_id": customer.owner_id,
+        # 【当前跟进人】成对下发（取第一位跟进人）。合并来源在合并时跟进人已迁走，
+        # 所以这里对合并来源是 (None, None) —— 想看的人见下面 original_*。
+        "owner_id": owner_id,
         "owner_name": owner_name,
         # 【原负责人】也是成对下发：合并来源取"合并前那张快照"，直接删除的取当时字段。
         # 从前只下发 `owner_name`（快照）+ `owner_id`（当前字段），两个字段说的不是
@@ -885,15 +886,39 @@ async def list_deleted_customers(
         for log in logs:
             merge_map.setdefault(log.source_customer_id, log)
 
-    # 原负责人：合并来源取"合并前快照"，直接删的取当前字段。快照里没有的记下来。
+    # 客户没有默认负责人：用**第一位跟进人**作为页面展示的“原跟进人/当前跟进人”。
+    from app.modules.customer.model import CustomerFollower
+
+    follower_rows = (
+        await session.execute(
+            select(CustomerFollower.customer_id, CustomerFollower.user_id)
+            .where(
+                CustomerFollower.customer_id.in_(ids),
+                CustomerFollower.deleted_at.is_(None),
+            )
+            .order_by(CustomerFollower.customer_id, CustomerFollower.created_at, CustomerFollower.id)
+        )
+    ).all() if ids else []
+    first_follower: dict[int, int] = {}
+    for cid, uid in follower_rows:
+        first_follower.setdefault(cid, uid)
+
+    # 原跟进人：合并来源取"合并前快照"，直接删的取当前第一位跟进人
+    # （老数据没有跟进人行时退回历史 owner_id）。
     original_owner: dict[int, int | None] = {}
     pending: set[int] = set()
     for customer in rows:
         log = merge_map.get(customer.id)
         if log is None:
-            original_owner[customer.id] = customer.owner_id
+            original_owner[customer.id] = (
+                first_follower.get(customer.id) or customer.owner_id
+            )
             continue
-        snapshot_owner = (log.merge_snapshot or {}).get("owner_id")
+        snapshot = log.merge_snapshot or {}
+        snapshot_owner = snapshot.get("owner_id")
+        if snapshot_owner is None:
+            snapshot_followers = snapshot.get("follower_ids") or []
+            snapshot_owner = snapshot_followers[0] if snapshot_followers else first_follower.get(customer.id)
         original_owner[customer.id] = snapshot_owner
         if snapshot_owner is None:
             pending.add(customer.id)
@@ -917,7 +942,8 @@ async def list_deleted_customers(
     # 当前负责人、原负责人、以及「谁删的」可能各是不同的人，一次把三批 id 都查了
     owner_names = await customer_service.owner_names(
         session,
-        [c.owner_id for c in rows]
+        list(first_follower.values())
+        + [c.owner_id for c in rows]
         + [original_owner.get(c.id) for c in rows]
         + [op for op, _dt, _after in audits.values()]
         + [log.operator_id for log in merge_map.values()],
@@ -961,7 +987,19 @@ async def list_deleted_customers(
         items.append(
             serialize_recycle_customer(
                 customer,
-                owner_name=owner_names.get(customer.owner_id) if customer.owner_id else None,
+                # 合并来源的跟进人在合并时已迁走：当前跟进人为空（历史见 original_*）
+                owner_id=(
+                    None if log is not None
+                    else (first_follower.get(customer.id) or customer.owner_id)
+                ),
+                owner_name=(
+                    None if log is not None
+                    else (
+                        owner_names.get(first_follower.get(customer.id))
+                        if first_follower.get(customer.id)
+                        else (owner_names.get(customer.owner_id) if customer.owner_id else None)
+                    )
+                ),
                 original_owner_id=original_id,
                 original_owner_name=owner_names.get(original_id) if original_id else None,
                 # 三态：None = 本来就没负责人（公海），True/False = 能不能接手

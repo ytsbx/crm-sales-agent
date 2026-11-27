@@ -208,7 +208,7 @@ async def main() -> int:
     _ = app.main
 
     from app.core.security import hash_password
-    from app.modules.customer.model import Customer, CustomerDuplicateCase
+    from app.modules.customer.model import Customer, CustomerDuplicateCase, CustomerFollower
     from app.modules.order.model import SalesOrder
     from app.modules.payment.model import ReceivablePlan
     from app.modules.quote.model import Quote
@@ -310,6 +310,13 @@ async def main() -> int:
                    wip_order_cust, delivered_order_cust, pastdue_receivable_cust,
                    future_receivable_cust, recent_quote_cust])
         await s.flush()
+        # 客户没有默认负责人：夹具按原 owner 补一条有效跟进人
+        await s.execute(text(
+            "insert into customer_followers (customer_id, user_id, source, created_at, updated_at) "
+            "select id, owner_id, 'fixture', now(), now() from customers "
+            "where owner_id is not null and deleted_at is null and name like :p"
+        ), {"p": f"{PREFIX}%"})
+        await s.flush()
         ids = {
             "dup_existing": dup_existing.id, "dup_incoming": dup_incoming.id,
             "stale": stale_cust.id, "accepted_sample": accepted_sample_cust.id,
@@ -389,10 +396,28 @@ async def main() -> int:
     b_token = login(f"{PREFIX.lower()}_b_{stamp}", "123456")
 
     async def owner_of(cid):
+        """最先加入的有效跟进人（客户没有默认负责人）。"""
         async with SessionLocal() as s:
             return (
-                await s.execute(select(Customer.owner_id).where(Customer.id == cid))
-            ).scalar_one()
+                await s.execute(
+                    select(CustomerFollower.user_id)
+                    .where(
+                        CustomerFollower.customer_id == cid,
+                        CustomerFollower.deleted_at.is_(None),
+                    )
+                    .order_by(CustomerFollower.created_at, CustomerFollower.id)
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+
+    async def followers_of(cid):
+        async with SessionLocal() as s:
+            return set((await s.execute(
+                select(CustomerFollower.user_id).where(
+                    CustomerFollower.customer_id == cid,
+                    CustomerFollower.deleted_at.is_(None),
+                )
+            )).scalars().all())
 
     async def task_owner(cid, status):
         async with SessionLocal() as s:
@@ -637,6 +662,9 @@ async def main() -> int:
             cust = await s.get(Customer, ids["draft_quote"])
             cust.owner_id = None
             cust.pool_status = "public"
+            await s.execute(text(
+                "delete from customer_followers where customer_id = :c"
+            ), {"c": cust.id})
             await s.commit()
             conflict_case = (await s.execute(select(PublicPoolRecycleCandidate.id).where(
                 PublicPoolRecycleCandidate.customer_id == ids["draft_quote"]))).scalar_one()
@@ -688,16 +716,19 @@ async def main() -> int:
             {"decision": "assign_new", "owner_id": b_id, "remark": f"{PREFIX}判给乙"},
         )
         check("裁定成功", status, 200)
-        check("归属按裁定改", await owner_of(ids["dup_existing"]), b_id)
-        check("**未完成待办跟着新负责人走**", await task_owner(ids["dup_existing"], "pending"), b_id)
+        existing_followers = await followers_of(ids["dup_existing"])
+        incoming_followers = await followers_of(ids["dup_incoming"])
+        check_true("选定的同事加入了双方跟进人",
+                   b_id in existing_followers and b_id in incoming_followers,
+                   f"{existing_followers}/{incoming_followers}")
+        check("**未完成待办不被抢走**（客户没有默认负责人）",
+              await task_owner(ids["dup_existing"], "pending"), a_id)
         check("**已完成待办的原负责人不动**（历史记录）",
               await task_owner(ids["dup_existing"], "done"), a_id)
         async with SessionLocal() as s:
             row = (await s.execute(select(CustomerDuplicateCase).where(
                 CustomerDuplicateCase.id == case_id))).scalars().first()
-            check_true("保存了裁定**前**的归属",
-                       str(ids["dup_existing"]) in (row.before_owners or {}), str(row.before_owners))
-            check("裁定后归属也保存了", row.resolved_owner_id, b_id)
+            check("裁定的指定人落库", row.resolved_owner_id, b_id)
 
         print("=== 9. 6.5 重复裁定与并发裁定 ===")
         status, res = call(
@@ -705,7 +736,8 @@ async def main() -> int:
             {"decision": "assign_new", "owner_id": a_id, "remark": f"{PREFIX}再裁一次"},
         )
         check("重复裁定被拒（已裁定过）", status, 422)
-        check("归属没有被第二次裁定改回去", await owner_of(ids["dup_existing"]), b_id)
+        check_true("第二次裁定未执行（跟进人未被再次改动）",
+                   await followers_of(ids["dup_existing"]) == existing_followers, "")
 
         # 并发：再造一对，两个线程同时对同一案件裁定
         # （命名同样要让短名是长名的子串，否则查重不命中、开不出案件）
@@ -749,10 +781,14 @@ async def main() -> int:
             after = (await s.execute(select(CustomerDuplicateCase).where(
                 CustomerDuplicateCase.id == race_case_id))).scalars().first()
             check("案件已结案", after.status, "resolved")
-            final_owner = (
-                await s.execute(select(Customer.owner_id).where(Customer.id == cc1))
-            ).scalar_one()
-            check("两条客户都落到同一个负责人名下", final_owner, after.resolved_owner_id)
+            final_followers = set((await s.execute(
+                select(CustomerFollower.user_id).where(
+                    CustomerFollower.customer_id == cc1,
+                    CustomerFollower.deleted_at.is_(None),
+                )
+            )).scalars().all())
+            check_true("两条客户都加入了胜出的同事",
+                       final_followers == {after.resolved_owner_id}, str(final_followers))
 
         print("=== 10. 6.5 队列真分页 ===")
         # 断言方式：**翻页能拿到不同的记录**才是真分页。

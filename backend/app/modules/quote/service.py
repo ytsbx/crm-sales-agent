@@ -3255,7 +3255,7 @@ async def notify_expired_quotes(session: AsyncSession) -> int:
     )
     rows = (
         await session.execute(
-            select(Quote, Customer.owner_id)
+            select(Quote)
             .join(Customer, Customer.id == Quote.customer_id)
             .where(
                 Quote.deleted_at.is_(None),
@@ -3272,18 +3272,14 @@ async def notify_expired_quotes(session: AsyncSession) -> int:
     ).all()
 
     created = 0
-    for quote, customer_owner_id in rows:
-        # 派给**这张报价的负责人**，不是客户当前的负责人：
-        # 协作单（客户归 A、这张报价由 B 做）按客户归属派会把提醒发给不相干的人，
-        # 真正做这张报价的人反而收不到。报价没写负责人时才回退到客户负责人。
-        owner_id = quote.owner_id or customer_owner_id
+    for (quote,) in rows:
+        # 派给**这张报价的负责人**（单据负责人，默认创建人）；客户没有默认负责人。
+        owner_id = quote.owner_id
         if owner_id is None:
-            # 报价与客户都没负责人 → 派不出去。别静默丢：留一条日志，
-            # 否则"记得提醒我"永远不来、又查不出为什么（脏数据没有出口）。
             import logging
 
             logging.getLogger("crm.quote").warning(
-                "报价 %s 已过期但无人可派（报价/客户都没有负责人），跳过建待办", quote.id
+                "报价 %s 已过期但无人可派（报价没有负责人），跳过建待办", quote.id
             )
             continue
         title = f"报价 {quote.quote_no} 已过有效期（{quote.valid_until}），请跟进续期或催单"

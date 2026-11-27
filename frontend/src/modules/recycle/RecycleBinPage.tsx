@@ -189,7 +189,7 @@ function LeadsPanel() {
       ? []
       : [{ title: '联系人', dataIndex: 'contact_name', width: 80, render: (v: string | null) => v ?? '-' }]),
     { title: '手机', dataIndex: 'mobile', width: compact ? 112 : 130, render: (v: string | null) => <MaskedContact value={v} /> },
-    { title: '负责人', dataIndex: 'owner_name', width: compact ? 84 : 110, render: (v: string | null) => v ?? '未分配' },
+    { title: '跟进人', dataIndex: 'owner_name', width: compact ? 84 : 110, render: (v: string | null) => v ?? '未分配' },
     {
       title: '原状态',
       dataIndex: 'status_label',
@@ -231,7 +231,7 @@ function LeadsPanel() {
               <Popconfirm
                 title="确认恢复这条线索？"
                 content={record.status === 'invalid'
-                  ? (record.owner_id != null ? '恢复后由原负责人继续跟进。' : '恢复后回到待领取的线索池。')
+                  ? (record.owner_id != null ? '恢复后由原跟进人继续跟进。' : '恢复后回到待领取的线索池。')
                   : undefined}
                 onConfirm={() => restoreMutation.mutate(record.id)}
               >
@@ -518,7 +518,7 @@ function CustomersPanel() {
   })
   useClampPage(query.data?.total, pager.page, pager.pageSize, pager.setPage)
 
-  // 「指定新负责人」弹窗只服务一种情况：**原负责人已停用（或账号没了）** ——
+  // 「指定接手人」弹窗只服务一种情况：**原跟进人已停用（或账号没了）** ——
   // 这种客户不指定人就恢复不出来（后端拿 `OWNER_REQUIRED_CODE` 拦）。
   // 其余情况点「恢复」是**一步到位**的，不该多弹一层。
   const [ownerPicker, setOwnerPicker] = useState<RecycleCustomer | null>(null)
@@ -567,7 +567,7 @@ function CustomersPanel() {
       void queryClient.invalidateQueries({ queryKey: ['customers'] })
     },
     onError: (error: Error, vars) => {
-      // 「还没指定新负责人」不是失败，是**这一步还没做完**：把选人框弹出来接着做。
+      // 「还没指定接手人」不是失败，是**这一步还没做完**：把选人框弹出来接着做。
       // 判据认后端给的**错误标识**，不匹配提示文字（文案改了也不会悄悄失效）。
       if (isOwnerRequiredError(error)) {
         if (vars.ownerId != null) {
@@ -589,13 +589,13 @@ function CustomersPanel() {
     },
   })
 
-  /** 点「恢复」：原负责人不能接手就先选人，否则直接恢复。 */
+  /** 点「恢复」：原跟进人不能接手就先选人，否则直接恢复。 */
   const startRestore = (record: RecycleCustomer) => {
     if (record.original_owner_active === false) {
       if (!canAssign) {
-        // 换负责人要分配权限，硬点也是 403 —— 直接说清去找谁，别让人白点一次
+        // 换跟进人要分配权限，硬点也是 403 —— 直接说清去找谁，别让人白点一次
         Toast.warning(
-          '这条客户的原负责人已停用，得另指定一位在职的负责人；' +
+          '这条客户的原跟进人已停用，得另指定一位在职的接手人；' +
             '请找有「分配客户」权限的同事处理',
         )
         return
@@ -614,7 +614,7 @@ function CustomersPanel() {
   const submitOwnerPick = () => {
     if (!ownerPicker) return
     if (pickedOwnerId == null) {
-      Toast.warning('请选择一位在职的新负责人')
+      Toast.warning('请选择一位在职的接手人')
       return
     }
     restoreMutation.mutate({ id: ownerPicker.id, ownerId: pickedOwnerId })
@@ -639,7 +639,7 @@ function CustomersPanel() {
     // 简称列等同于名称的后半截，占掉 120px 反而把名称挤成「宁波麦隆精…」—— 去掉
     { title: '客户名称', dataIndex: 'name', width: compact ? 118 : 200, ellipsis: true },
     {
-      title: '原负责人',
+      title: '原跟进人',
       dataIndex: 'original_owner_name',
       width: compact ? 100 : 130,
       // "待核实" ≠ "未分配"：前者是合并留痕里没记当时的负责人（只有管理员看得到），
@@ -647,7 +647,7 @@ function CustomersPanel() {
       render: (v: string | null, record: RecycleCustomer) => {
         if (record.owner_pending) return '待核实'
         if (!v) return '未分配'
-        // 已停用（或账号已不存在）：这条客户恢复时**必须先指定新负责人**。
+        // 已停用（或账号已不存在）：这条客户恢复时**必须先指定接手人**。
         // 提前标出来 —— 用户点之前就知道会弹选人框，而不是被拒了才知道。
         if (record.original_owner_active === false) {
           return (
@@ -739,7 +739,7 @@ function CustomersPanel() {
               if (record.removed_via !== 'direct' || !canRestoreRow(record)) {
                 return <span style={{ color: 'var(--crm-text-3)' }}>-</span>
               }
-              // 原负责人已停用的那条会先弹选人框（`startRestore` 里分派）
+              // 原跟进人已停用的那条会先弹选人框（`startRestore` 里分派）
               return <button type="button" className="crm-text-action" onClick={() => startRestore(record)}>恢复</button>
             },
           },
@@ -757,7 +757,7 @@ function CustomersPanel() {
           被合并掉的客户会显示「已并入某某」，可点进合并后的客户，那一类不提供恢复；
           直接删除的可以恢复。
           <span style={{ color: 'var(--crm-text-2)' }}>
-            原负责人已停用的，恢复时要先指定一位在职的接手人。
+            原跟进人已停用的，恢复时要先指定一位在职的接手人。
           </span>
           {canRestoreOwn && !canRestoreAny ? '你只能恢复自己负责的客户。' : ''}
         </p>
@@ -784,7 +784,7 @@ function CustomersPanel() {
       </SectionCard>
       <Modal
         width={520}
-        title="指定新负责人"
+        title="指定接手人"
         visible={ownerPicker !== null}
         // 取消不清"已经选过的人"以外的东西；选项本身在这里清掉是安全的
         onCancel={closeOwnerPicker}
@@ -795,12 +795,12 @@ function CustomersPanel() {
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div style={{ fontSize: 13, color: 'var(--crm-text-2)', lineHeight: 1.7 }}>
-            客户「{ownerPicker?.name}」的原负责人
+            客户「{ownerPicker?.name}」的原跟进人
             {ownerPicker?.original_owner_name ? `（${ownerPicker.original_owner_name}）` : ''}
             已停用，照原样恢复出来没人能接手。请指定一位在职的同事：
           </div>
           <div>
-            <FormLabel required>新负责人</FormLabel>
+            <FormLabel required>接手人</FormLabel>
             <Select
               value={pickedOwnerId ?? undefined}
               onChange={(value) => {
@@ -828,7 +828,7 @@ function CustomersPanel() {
             />
           </div>
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)', lineHeight: 1.7 }}>
-            恢复后，原本挂在这位原负责人名下的未完成待办、报价、订单等会跟着一起接过去；
+            恢复后，原本挂在这位原跟进人名下的未完成待办、报价、订单等会跟着一起接过去；
             其他同事手里的活、订单的历史业绩归属一个字不动。
           </div>
         </div>
@@ -850,7 +850,7 @@ function SamplesPanel() {
   return <SectionCard style={HUG}><div className="list-search-row"><Input showClear value={pager.keyword} onChange={pager.search} placeholder="搜索客户或商机" style={{ width: 380 }} /><span className="list-search-note">共 {query.data?.total ?? 0} 条 · 只列自己有权查看的删除记录</span></div>
     <Table<SampleRequestRow> className="recycle-table" rowKey="id" dataSource={query.data?.items ?? []} loading={query.isLoading} empty={emptyText(query, '回收站里没有样品')}
       columns={[{ title: '客户', dataIndex: 'customer_name' }, { title: '商机', dataIndex: 'opportunity_title' },
-        { title: '负责人', dataIndex: 'owner_name' }, { title: '原状态', dataIndex: 'status_label' },
+        { title: '跟进人', dataIndex: 'owner_name' }, { title: '原状态', dataIndex: 'status_label' },
         { title: '删除时间', dataIndex: 'deleted_at', render: fmt },
         ...(can('sample:manage') ? [{ title: '操作', render: (_: unknown, row: SampleRequestRow) => row.revision_locked
           ? <span style={HINT}>原版只读</span>

@@ -239,3 +239,16 @@ def make_user(user_id: int = 101, *, permissions=(), roles=("salesperson",), dat
     return CurrentUser(
         row, permissions=set(permissions), roles=list(roles), data_scope=data_scope
     )
+
+
+def follow_customer(raw, customer_id: int, user_id: int, *, source: str = "manual"):
+    """测试夹具：给客户补一条有效跟进人（客户没有默认负责人）。
+
+    很多用例用 `Customer(owner_id=X)` 造数；可见性现在只看跟进人，
+    所以造完客户要顺手 `follow_customer(raw, id, X)`。
+    """
+    from app.modules.customer.model import CustomerFollower
+
+    CustomerFollower.__table__.create(raw.get_bind(), checkfirst=True)
+    raw.add(CustomerFollower(customer_id=customer_id, user_id=user_id, source=source))
+    raw.flush()

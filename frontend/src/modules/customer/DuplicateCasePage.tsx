@@ -18,15 +18,15 @@ import './DuplicateCasePage.css'
 const DECISIONS = {
   keep_both: {
     label: '判为不同客户，各自保留',
-    description: '结案后，两条档案的负责人、待办和单据各自保留。',
+    description: '结案后，两条档案各自的跟进人、待办和单据保持不变。',
   },
   assign_existing: {
-    label: '都交给已有档案的负责人',
-    description: '两条档案分开保留。原负责人名下符合条件的待办和单据会随档案转交。',
+    label: '归并到同一组跟进人',
+    description: '两条档案分开保留，双方原有跟进人合并成一组，都能看到两边档案。',
   },
   assign_new: {
-    label: '指定同一位负责人',
-    description: '两条档案分开保留。原负责人名下符合条件的待办和单据会随档案转交。',
+    label: '指定一位同事共同跟进',
+    description: '两条档案分开保留，并把你选定的同事加入两条档案的跟进人。',
   },
 }
 type Decision = keyof typeof DECISIONS
@@ -48,7 +48,7 @@ function CaseCustomers({ record, customers }: { record: DuplicateCase; customers
           <div className="duplicate-case-customer" key={entry.id}>
             <span>{entry.title} · #{entry.id}</span>
             <Link to={`/customers/${entry.id}`}>{detail?.name ?? entry.name ?? `客户编号 ${entry.id}`}</Link>
-            {detail && <span>{detail.region || '未填写地区'} · {detail.owner_name || (detail.owner_id ? `负责人编号 ${detail.owner_id}` : '暂无负责人')}</span>}
+            {detail && <span>{detail.region || '未填写地区'} · {(detail.followers ?? []).map((item) => item.name).join('、') || '暂无跟进人'}</span>}
           </div>
         )
       })}
@@ -107,8 +107,6 @@ export default function DuplicateCasePage() {
   })
   const owners = (usersQuery.data?.items ?? []).map((user) => ({ value: user.id, label: `${user.name}（${user.username}）` }))
   if (form.owner && !owners.some((owner) => owner.value === form.owner?.value)) owners.unshift(form.owner)
-  const existingCustomer = customersQuery.data?.[1]
-  const assignExistingBlocked = query.data?.items.find((item) => item.id === record?.id)?.assign_existing_blocked_reason
 
   function showStatus(nextStatus: string) {
     const next = new URLSearchParams(params)
@@ -148,8 +146,7 @@ export default function DuplicateCasePage() {
     },
   })
   const canSubmit = Boolean(isReviewing && customersQuery.isSuccess && form.decision
-    && (form.decision !== 'assign_new' || form.owner)
-    && (form.decision !== 'assign_existing' || (existingCustomer?.owner_id && !assignExistingBlocked)))
+    && (form.decision !== 'assign_new' || form.owner))
   const rows = query.data?.items ?? []
 
   return (
@@ -254,21 +251,13 @@ export default function DuplicateCasePage() {
               <div>
                 <FormLabel required>裁定方式</FormLabel>
                 <Select aria-label="裁定方式" value={form.decision} placeholder="请选择裁定方式"
-                  optionList={DECISION_OPTIONS.map((option) => ({
-                    ...option,
-                    disabled: option.value === 'assign_existing' && Boolean(assignExistingBlocked),
-                  }))}
+                  optionList={DECISION_OPTIONS}
                   onChange={(value) => setForm({ ...form, decision: value as Decision })} style={{ width: '100%' }} />
-                {assignExistingBlocked && <p className="duplicate-case-hint">{assignExistingBlocked}</p>}
                 {form.decision && <p className="duplicate-case-hint">{DECISIONS[form.decision].description}</p>}
-                {form.decision === 'assign_existing' && customersQuery.isSuccess && !assignExistingBlocked &&
-                  <p className="duplicate-case-hint">{existingCustomer?.owner_id
-                    ? `两条档案将交给${existingCustomer.owner_name || `负责人编号 ${existingCustomer.owner_id}`}。`
-                    : '已有档案暂无负责人，请改选「指定同一位负责人」。'}</p>}
               </div>
               {form.decision === 'assign_new' && <div>
-                <FormLabel required>接手负责人</FormLabel>
-                <Select aria-label="接手负责人" remote filter value={form.owner?.value} placeholder="输入姓名或登录名查询在职同事"
+                <FormLabel required>共同跟进人</FormLabel>
+                <Select aria-label="共同跟进人" remote filter value={form.owner?.value} placeholder="输入姓名或登录名查询在职同事"
                   loading={usersQuery.isFetching} optionList={owners} onSearch={(value) => setOwnerKeyword(value.trim())}
                   onChange={(value) => setForm({ ...form, owner: owners.find((owner) => owner.value === value) })}
                   style={{ width: '100%' }} />

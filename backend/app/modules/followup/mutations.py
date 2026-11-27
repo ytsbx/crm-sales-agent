@@ -54,7 +54,7 @@ async def notify_manual_followup(session: AsyncSession, followup: FollowUp, user
     models = {'customer': Customer, 'lead': Lead, 'opportunity': Opportunity, 'quote': Quote, 'order': SalesOrder}
     customer = await session.get(Customer, followup.customer_id) if followup.customer_id else None
     source = await session.get(models[source_type], source_id) if source_type in models and source_id else None
-    owner_id = customer.owner_id if customer else (source.owner_id if source else followup.owner_id)
+    owner_id = source.owner_id if source else followup.owner_id
     await queue_manager_notification(
         session, event_key=f"followup:{action}:{followup.id}" + (f":{uuid4().hex}" if action == 'update' else ''),
         customer_id=followup.customer_id, owner_id=owner_id, operator_id=user.id,
@@ -109,7 +109,9 @@ async def create_manual_followup(session: AsyncSession, user: CurrentUser, paylo
         customer = await session.get(Customer, customer_id)
         if customer is None or customer.deleted_at is not None:
             raise AppError(ErrorCode.NOT_FOUND, "关联客户不存在", 404)
-        await ensure_in_scope(session, user, owner_id=customer.owner_id, label="客户", allow_unowned=True)
+        from app.modules.customer.visibility import assert_customer_in_scope
+
+        await assert_customer_in_scope(session, user, customer)
         objects["customer"] = customer
     if payload.contact_id:
         contact = await session.get(Contact, payload.contact_id)

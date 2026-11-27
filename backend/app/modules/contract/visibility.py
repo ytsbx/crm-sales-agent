@@ -6,9 +6,10 @@
 详情按"订单负责人"回退放行，附件却只认客户当前负责人，于是已签合同的原件
 谁也取不出来。
 
-口径（详情那边早就确认过的，这里只把它抽出来给所有入口共用）：
+口径（2026-11-27 起客户没有默认负责人）：
 
-    客户**当前**负责人 → 有订单就跟订单负责人 → 都没有就跟当初创建这份合同的人
+    客户任一有效跟进人在范围内 → 可见（公海客户对所有有权限的人可见）
+    → 有订单就跟订单负责人 → 都没有就跟当初创建这份合同的人
 
 都没有才落回"无归属"（各入口按自己的语义处理：详情按数据范围拒绝，
 附件同理拒）。**不含**权限码判定 —— 那是各模块自己的事（详情要 `contract:view`，
@@ -35,14 +36,11 @@ async def contract_scope_owner_id(
     客户可能被"超期未跟进自动回收"进公海、或被合并而清空负责人 —— 合同本身
     是已发生的商务事实，不能因为客户进公海就谁都点不开。
     """
-    customer = await session.get(Customer, doc.customer_id)
-    owner_id = customer.owner_id if customer is not None else None
-    if owner_id is None and doc.order_id:
+    if doc.order_id:
         order = await session.get(SalesOrder, doc.order_id)
-        owner_id = order.owner_id if order is not None else None
-    if owner_id is None:
-        owner_id = doc.created_by
-    return owner_id
+        if order is not None and order.owner_id is not None:
+            return order.owner_id
+    return doc.created_by
 
 
 async def contract_in_scope(session: AsyncSession, user, doc: ContractDocument) -> bool:
@@ -62,7 +60,7 @@ async def contract_in_scope(session: AsyncSession, user, doc: ContractDocument) 
 
     customer = await session.get(Customer, doc.customer_id)
     if customer is not None:
-        if customer.owner_id is not None and int(customer.owner_id) in owner_ids:
+        if customer.pool_status == "public":
             return True
         follower = await session.scalar(
             select(CustomerFollower.id)

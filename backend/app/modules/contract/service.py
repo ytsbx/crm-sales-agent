@@ -13,6 +13,7 @@ from app.core.draft_visibility import draft_scope
 from app.core.errors import AppError, ErrorCode
 from app.core.timebase import business_day_end, today_business
 from app.core.response import paginate
+from app.modules.user.model import User
 from app.modules.contract.model import (
     DOC_STATUS_LABEL,
     DOC_TYPE_LABEL,
@@ -1043,20 +1044,10 @@ async def list_documents(
             CustomerFollower.deleted_at.is_(None),
         ).exists()
         scope = or_(
-            and_(
-                Customer.owner_id.is_not(None),
-                or_(Customer.owner_id.in_(owner_ids), follower_exists),
-            ),
-            and_(
-                Customer.owner_id.is_(None),
-                SalesOrder.owner_id.is_not(None),
-                SalesOrder.owner_id.in_(owner_ids),
-            ),
-            and_(
-                Customer.owner_id.is_(None),
-                SalesOrder.owner_id.is_(None),
-                ContractDocument.created_by.in_(owner_ids),
-            ),
+            follower_exists,
+            Customer.pool_status == "public",
+            SalesOrder.owner_id.in_(owner_ids),
+            ContractDocument.created_by.in_(owner_ids),
         )
     if viewer_id is not None:
         stmt = stmt.where(draft_scope(ContractDocument, viewer_id, scope))
@@ -1311,7 +1302,17 @@ async def notify_expiring_monthly(session: AsyncSession, *, owner_id: int | None
         ContractDocument.expiry_date <= today + timedelta(days=days),
     ]
     if owner_id is not None:
-        conditions.append(Customer.owner_id == owner_id)
+        # 登录时只扫「自己是跟进人」的客户的协议（客户没有负责人）
+        from app.modules.customer.model import CustomerFollower
+
+        conditions.append(
+            Customer.id.in_(
+                select(CustomerFollower.customer_id).where(
+                    CustomerFollower.user_id == owner_id,
+                    CustomerFollower.deleted_at.is_(None),
+                )
+            )
+        )
     # ⚠️ **锁住这些协议行再建任务**（第十批审查 ⑦，2026-10-13）。
     #
     # 原来这里是普通查询（无锁）。实测的竞态：
@@ -1331,7 +1332,7 @@ async def notify_expiring_monthly(session: AsyncSession, *, owner_id: int | None
     # 拿锁后用 `populate_existing` 刷新，`should_remind(doc)` 判的就是**锁内最新**状态。
     rows = (
         await session.execute(
-            select(ContractDocument, Customer.owner_id, Customer.name)
+            select(ContractDocument, Customer.name)
             .join(Customer, Customer.id == ContractDocument.customer_id)
             .where(*conditions)
             .order_by(ContractDocument.id)
@@ -1340,8 +1341,18 @@ async def notify_expiring_monthly(session: AsyncSession, *, owner_id: int | None
         )
     ).all()
     created = 0
-    for doc, owner_id_of_doc, customer_name in rows:
-        owner = owner_id_of_doc
+    for doc, customer_name in rows:
+        # 客户没有负责人：提醒派给**合同创建人**（单据默认创建人）；
+        # 创建人不在职时退回正在扫描的这位（登录补扫场景），都没有就跳过。
+        owner = doc.created_by
+        if owner is not None:
+            creator = await session.get(User, owner)
+            if creator is None or creator.status != "active":
+                owner = None
+        if owner is None and owner_id is not None:
+            scanner = await session.get(User, owner_id)
+            if scanner is not None and scanner.status == "active":
+                owner = owner_id
         if owner is None:
             continue
         # 已被续签替代的旧协议**不再提醒**（第三批审查 P2，2026-10-12）：

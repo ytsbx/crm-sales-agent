@@ -25,6 +25,9 @@ def timeline_db():
         db.add_all([Customer(id=1, name='本人客户', owner_id=101), Customer(id=2, name='范围外客户', owner_id=999),
                     Lead(id=1, name='本人线索', owner_id=101), OpportunityStage(id=1, code='open', name='初步沟通')])
         db.flush()
+        from tests.conftest import follow_customer
+        follow_customer(db, 1, 101)
+        follow_customer(db, 2, 999)
         db.add(Opportunity(id=1, title='本人商机', customer_id=1, owner_id=101, stage_id=1))
         now = datetime.now(UTC)
         common = dict(customer_id=1, lead_id=1, opportunity_id=1)
@@ -105,7 +108,7 @@ async def test_contact_audit_uses_the_same_contact_masking_as_detail(timeline_db
     session = SyncSessionAsAsync(timeline_db)
     masked = await contact_timeline(1, make_user(101), session)
     # 一个非负责人的共享客户按公海规则可看，联系方式仍须脱敏。
-    timeline_db.get(Customer, 1).owner_id = None
+    timeline_db.get(Customer, 1).pool_status = "public"
     timeline_db.flush()
     public = await contact_timeline(1, make_user(102), session)
     assert "13900005678" in str(masked["data"])

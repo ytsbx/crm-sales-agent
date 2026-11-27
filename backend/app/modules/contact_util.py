@@ -131,14 +131,12 @@ async def can_view_full_contact(
 ) -> bool:
     """当前用户能否看到这条联系人的**完整**联系方式。
 
-    规则（用户 2026-10-06 确认）：
-    - 管理员角色 / `data_scope == "all"`（管理员与财务这类全量可见者）→ 可以；
+    规则（2026-11-27 起客户没有默认负责人，按跟进人判）：
+    - 管理员角色 / `data_scope == "all"` → 可以；
     - 持显式授权码 `customer:contact_full` → 可以；
-    - 客户负责人本人 → 可以（"我的客户我总得能打电话"）；
-    - 该负责人的主管（本团队）→ 可以。判定用 `scoped_owner_ids`：
-      `department` / `department_and_sub` 数据范围的人，其集合就是本团队（及下级）成员；
+    - 本人是该客户的有效跟进人 → 可以（"我的客户我总得能打电话"）；
+    - 该客户**任一跟进人**在用户的数据范围内（主管/本团队）→ 可以；
     - 其余能看到这个客户的人（例如公海客户的所有可见者）→ **脱敏**。
-      这也是"另授权"存在的意义：要完整信息就得显式给权限，而不是"能看客户就行"。
     """
     from app.core.data_scope import scoped_owner_ids
 
@@ -147,35 +145,33 @@ async def can_view_full_contact(
     if CONTACT_FULL_PERMISSION in getattr(user, "permissions", set()):
         return True
 
-    if owner_id is None and customer_id is not None:
-        owner_row = (
-            await session.execute(
-                select(Customer.owner_id).where(Customer.id == customer_id)
-            )
-        ).first()
-        owner_id = owner_row[0] if owner_row else None
-    if owner_id is None:
-        # 无负责人的客户（公海）：没人"负责"它，因此没有"负责人"这一档豁免
-        return False
-    if int(owner_id) == int(user.id):
-        return True
-
-    # 有效跟进人（多跟进人客户）：跟的人要看得到电话
     from app.modules.customer.model import CustomerFollower
 
-    if await session.scalar(
-        select(CustomerFollower.id)
-        .where(
-            CustomerFollower.customer_id == customer_id,
-            CustomerFollower.user_id == user.id,
-            CustomerFollower.deleted_at.is_(None),
+    follower_ids: list[int] = []
+    if customer_id is not None:
+        follower_ids = list(
+            (
+                await session.execute(
+                    select(CustomerFollower.user_id).where(
+                        CustomerFollower.customer_id == customer_id,
+                        CustomerFollower.deleted_at.is_(None),
+                    )
+                )
+            ).scalars().all()
         )
-        .limit(1)
-    ) is not None:
+    if user.id in follower_ids:
         return True
 
     allowed = await scoped_owner_ids(session, user)
-    return allowed is not None and int(owner_id) in allowed
+    if allowed is not None and any(uid in allowed for uid in follower_ids):
+        return True
+
+    # 兼容没有关联客户、只带 owner_id 的历史调用
+    if customer_id is None and owner_id is not None:
+        if int(owner_id) == int(user.id):
+            return True
+        return allowed is not None and int(owner_id) in allowed
+    return False
 
 
 async def full_contact_customer_ids(
@@ -183,8 +179,8 @@ async def full_contact_customer_ids(
 ) -> set[int] | None:
     """批量判定：哪些客户的联系人可以对当前用户显示完整信息。
 
-    返回 `None` 表示**不受限**（管理员/全量范围/显式授权）——
-    列表接口据此走"不脱敏"的快路径，不必逐个客户查一遍。
+    返回 `None` 表示**不受限**（管理员/全量范围/显式授权）。
+    规则与单条一致：本人是跟进人，或该客户任一跟进人在数据范围内。
     """
     from app.core.data_scope import scoped_owner_ids
 
@@ -197,29 +193,24 @@ async def full_contact_customer_ids(
         return set()
 
     allowed = await scoped_owner_ids(session, user)
-    if not allowed:
-        return set()
-    rows = (
-        await session.execute(
-            select(Customer.id, Customer.owner_id).where(Customer.id.in_(ids))
-        )
-    ).all()
+    if allowed is None:
+        return ids
     from app.modules.customer.model import CustomerFollower
 
-    follower_ids = set(
-        (await session.execute(
-            select(CustomerFollower.customer_id).where(
+    rows = (
+        await session.execute(
+            select(CustomerFollower.customer_id, CustomerFollower.user_id).where(
                 CustomerFollower.customer_id.in_(ids),
-                CustomerFollower.user_id == user.id,
                 CustomerFollower.deleted_at.is_(None),
             )
-        )).scalars().all()
-    )
-    return {
-        int(cid)
-        for cid, owner in rows
-        if (owner is not None and int(owner) in allowed) or cid in follower_ids
-    }
+        )
+    ).all()
+    allowed_set = set(allowed)
+    result: set[int] = set()
+    for cid, uid in rows:
+        if uid == user.id or uid in allowed_set:
+            result.add(int(cid))
+    return result
 
 
 async def lock_customer_row(session: AsyncSession, customer_id: int | None) -> None:
@@ -385,9 +376,11 @@ async def find_duplicate_customers(
     if exact:
         stmt = stmt.order_by(case((or_(*exact), 0), else_=1))
     if owner_ids is not None:
-        # 范围内的 + 公海（无负责人）。公海对所有人可见，漏掉它会让"我查重查不到、
-        # 但列表里翻得到"，用户会以为系统丢数据。
-        stmt = stmt.where(or_(Customer.owner_id.in_(owner_ids), Customer.owner_id.is_(None)))
+        # 跟进人范围 + 公海（`pool_status='public'` 对所有人可见）；
+        # 漏掉公海会让"我查重查不到、但列表里翻得到"，用户会以为系统丢数据。
+        from app.modules.customer.visibility import customer_scope_clause_from
+
+        stmt = stmt.where(customer_scope_clause_from(owner_ids))
     rows = (await session.execute(stmt.order_by(Customer.id).limit(max(limit * 4, 20)))).scalars().all()
 
     # 取候选客户的主联系人手机号，参与打分
@@ -437,7 +430,7 @@ async def find_duplicate_customers(
                     "name": customer.name,
                     "level": customer.level,
                     "region": customer.region,
-                    "owner_id": customer.owner_id,
+                    "owner_id": None,  # 客户没有默认负责人
                     "pool_status": customer.pool_status,
                     "score": best_score,
                     "reasons": best_reasons,
@@ -547,8 +540,10 @@ async def find_duplicate_contacts(
     # 数据范围：联系人跟着客户走；没客户的也放行
     owner_ids = await scoped_owner_ids(session, user)
     if owner_ids is not None:
+        from app.modules.customer.visibility import customer_scope_clause_from
+
         allowed_customers = select(Customer.id).where(
-            or_(Customer.owner_id.is_(None), Customer.owner_id.in_(owner_ids))
+            customer_scope_clause_from(owner_ids)
         )
         stmt = stmt.where(or_(Contact.customer_id.is_(None), Contact.customer_id.in_(allowed_customers)))
     visible = (await session.execute(stmt.order_by(Contact.id).limit(max(limit * 4, 20)))).scalars().all()

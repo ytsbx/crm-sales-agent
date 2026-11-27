@@ -74,8 +74,12 @@ async def process_notification_filter(session: AsyncSession, user: CurrentUser):
             continue
         stmt = select(model.id).where(model.id == Notification.business_id)
         if owners is not None:
-            stmt = stmt.where(or_(model.owner_id.in_(owners), model.owner_id.is_(None))
-                              if kind in ('customer', 'lead') else model.owner_id.in_(owners))
+            if kind == 'customer':
+                stmt = stmt.where(customer_scope_clause_from(owners))
+            elif kind == 'lead':
+                stmt = stmt.where(or_(model.owner_id.in_(owners), model.owner_id.is_(None)))
+            else:
+                stmt = stmt.where(model.owner_id.in_(owners))
         if kind == 'quote':
             stmt = stmt.where(model.deleted_at.is_(None))
         allowed.append(and_(Notification.business_type == kind, stmt.exists()))

@@ -152,7 +152,11 @@ async def create_order(
     # 只查存在性的话，业务员可以拿别人的客户/商机/报价建单——建出来的单子还挂在
     # 自己身上，等于把别人的客户资源搬进自己名下。
     customer = await session.get(Customer, payload.customer_id)
-    await ensure_in_scope(session, user, owner_id=customer.owner_id, label="客户")
+    if customer is None or customer.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
+    from app.modules.customer.visibility import assert_customer_in_scope
+
+    await assert_customer_in_scope(session, user, customer)
     # ⚠️ 负责人也要过范围闸（2026-10-14 审查修）。同一个函数里 `customer_id` /
     # `opportunity_id` / `quote_id` 三处都有 `ensure_in_scope`，**唯独 `owner_id`
     # 只过了 `ensure_refs`**（那只判"存在且未软删"，不看数据范围）——

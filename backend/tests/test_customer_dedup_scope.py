@@ -21,7 +21,7 @@ from app.modules.public_pool import router as pool_router
 from app.modules.public_pool.schema import PoolAssignRequest
 from app.modules.user.model import User
 from app.modules.wecom.model import WeComExternalContact
-from conftest import SyncSessionAsAsync, make_user
+from conftest import SyncSessionAsAsync, follow_customer, make_user
 
 
 @pytest.mark.anyio
@@ -31,6 +31,9 @@ async def test_batch_transfer_audit_records_actual_results(db_session, monkeypat
         Customer(id=41, name="需转交", owner_id=101),
         Customer(id=42, name="已是目标负责人", owner_id=102),
     ])
+    db_session.flush()
+    follow_customer(db_session, 41, 101)
+    follow_customer(db_session, 42, 102)
     db_session.commit()
     transfer = AsyncMock(return_value={"moved_total": 2, "skipped_total": 1})
     monkeypatch.setattr(tags_router.svc, "transfer_customer", transfer)
@@ -62,6 +65,8 @@ async def test_merge_preview_applies_price_visibility_and_resolution_permissions
     db_session.execute(CreateTable(CustomerDuplicateCase.__table__))
     for customer_id, price in [(41, 10), (42, 12)]:
         db_session.add(Customer(id=customer_id, name=f"客户 {customer_id}", owner_id=101))
+        db_session.flush()
+        follow_customer(db_session, customer_id, 101)
         db_session.add(CustomerPriceRule(customer_id=customer_id, sku_id=1, min_qty=1,
                                          agreed_price=price, effective_from=date(2026, 1, 1), status="active"))
     db_session.commit()
@@ -102,6 +107,8 @@ async def test_customer_merge_closes_its_pair_and_checks_other_cases(db_session,
     if third_pair:
         db_session.add(CustomerDuplicateCase(id=2, customer_id=third_pair[0], candidate_id=third_pair[1],
                                             status="pending", created_at=datetime.now(UTC)))
+    db_session.flush()
+    follow_customer(db_session, 41, 202)
     db_session.commit()
     session = SyncSessionAsAsync(db_session)
     user = make_user(data_scope="all")
@@ -120,16 +127,17 @@ async def test_customer_merge_closes_its_pair_and_checks_other_cases(db_session,
 
     await tags_router.merge_customers(payload, request, user, session)
     target = db_session.get(Customer, 42)
-    assert target.owner_id == (202 if owner_status == "active" else None)
-    assert target.pool_status == ("private" if owner_status == "active" else "public")
+    # 客户没有默认负责人：合并只并跟进人，目标转私海
+    assert target.owner_id is None
+    assert target.pool_status == "private"
     pending, total = await duplicates.list_cases(session, user=user)
     assert pending == [] and total == 0
     resolved, total = await duplicates.list_cases(session, user=user, status="resolved")
     assert total == 1 and resolved[0]["decision_label"] == "客户档案已合并"
-    assert db_session.query(CustomerOwnerHistory).count() == int(owner_status == "active")
+    assert db_session.query(CustomerOwnerHistory).count() == 0
     audit = db_session.query(AuditLog).filter_by(action="merge").one()
     assert audit.after_data["resolved_duplicate_case_ids"] == [1]
-    assert audit.after_data["target_owner_id"] == target.owner_id
+    assert audit.after_data["target_follower_ids"] == [202]
 
 
 class CustomerLockProbe(SyncSessionAsAsync):
@@ -163,6 +171,10 @@ async def test_contact_move_rejects_changed_parent_before_taking_primary(db_sess
         Contact(id=1, customer_id=41, name="待改挂"),
         Contact(id=2, customer_id=42, name="原主联系人", is_primary=True),
     ])
+    db_session.flush()
+    follow_customer(db_session, 41, 101)
+    follow_customer(db_session, 42, 101)
+    follow_customer(db_session, 43, 202)
     db_session.commit()
 
     def change_parent():
@@ -198,6 +210,8 @@ async def test_customer_transfer_audits_only_documents_actually_reassigned(db_se
         Quote(id=2, quote_no="Q-2", customer_id=41, owner_id=202),
         SalesOrder(id=3, order_no="O-3", customer_id=41, owner_id=101, sales_owner_id=101),
     ])
+    db_session.flush()
+    follow_customer(db_session, 41, 101)
     db_session.commit()
     result = await router.transfer_customer(
         41, CustomerTransfer(owner_id=102), Request({"type": "http", "headers": []}),
@@ -241,10 +255,15 @@ async def test_tag_name_conflict_preserves_outer_transaction(db_session, monkeyp
 @pytest.mark.parametrize("operation", ["transfer", "assign", "release", "pool", "batch"])
 async def test_transfer_checks_scope_on_locked_customer(db_session, monkeypatch, operation):
     db_session.add(Customer(id=41, name="客户", owner_id=101))
+    db_session.flush()
+    follow_customer(db_session, 41, 101)
     db_session.commit()
 
     def change_owner():
-        db_session.execute(update(Customer).where(Customer.id == 41).values(owner_id=202),
+        from app.modules.customer.model import CustomerFollower
+
+        db_session.execute(update(CustomerFollower).where(CustomerFollower.customer_id == 41)
+                           .values(user_id=202),
                            execution_options={"synchronize_session": False})
 
     session = CustomerLockProbe(db_session, change_owner)
@@ -274,6 +293,9 @@ async def test_merge_checks_current_scope_and_price_permission(db_session, chang
     for model in (Product, Sku, CustomerPriceRule):
         model.__table__.create(db_session.get_bind(), checkfirst=True)
     db_session.add_all([Customer(id=i, name=f"客户 {i}", owner_id=101) for i in (41, 42)])
+    db_session.flush()
+    follow_customer(db_session, 41, 101)
+    follow_customer(db_session, 42, 101)
     db_session.add(CustomerPriceRule(id=1, customer_id=41, sku_id=1, min_qty=1, agreed_price=10,
                                     effective_from=date(2026, 1, 1), status="active"))
     db_session.commit()
@@ -284,8 +306,11 @@ async def test_merge_checks_current_scope_and_price_permission(db_session, chang
                                             effective_from=date(2026, 1, 1), status="active"))
             db_session.flush()
         else:
+            from app.modules.customer.model import CustomerFollower
+
             customer_id = 41 if change == "source_owner" else 42
-            db_session.execute(update(Customer).where(Customer.id == customer_id).values(owner_id=202),
+            db_session.execute(update(CustomerFollower).where(CustomerFollower.customer_id == customer_id)
+                               .values(user_id=202),
                                execution_options={"synchronize_session": False})
 
     session = CustomerLockProbe(db_session, change_at_lock)
@@ -377,6 +402,8 @@ async def test_exact_duplicate_candidates_are_not_crowded_out(db_session, monkey
     ])
     db_session.add(Customer(id=65, name="不同名称", tax_no="EXACT-TAX", owner_id=101))
     db_session.flush()
+    for i in range(31, 66):
+        follow_customer(db_session, i, 101)
     db_session.add_all([Contact(id=i, name="张三", customer_id=i) for i in range(2, 65)])
     db_session.add(Contact(id=65, name="李四", customer_id=65, mobile="12345678901", email="same@example.test"))
     db_session.commit()

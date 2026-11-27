@@ -46,7 +46,7 @@ EXPORT_HEADERS = [
     "省份",
     "详细地址",
     "来源",
-    "负责人",
+    "跟进人",
     "状态",
     "公海/私海",
     "最近跟进",
@@ -87,7 +87,7 @@ def parse_date_checked(value: str | None) -> tuple[datetime | None, str | None]:
     return None, f"最后联系日期格式应为 YYYY-MM-DD（收到 {text}）"
 
 
-def customer_export_row(customer: Customer, owner_name: str | None) -> list:
+def customer_export_row(customer: Customer, follower_names: str | None) -> list:
     return [
         customer.name,
         customer.short_name or "",
@@ -95,7 +95,7 @@ def customer_export_row(customer: Customer, owner_name: str | None) -> list:
         customer.region or "",
         customer.address or "",
         customer.source or "",
-        owner_name or "",
+        follower_names or "",
         customer.status,
         "公海" if customer.pool_status == "public" else "私海",
         to_business(customer.last_followup_at).strftime("%Y-%m-%d") if customer.last_followup_at else "",
@@ -109,14 +109,14 @@ async def parse_upload(file: UploadFile) -> list[dict]:
 
 
 async def resolve_owner(session, username: str | None, default_user_id: int) -> int:
-    """负责人按登录名匹配，匹配不上就用当前操作人。"""
+    """按登录名匹配要追加的跟进人；空白就用当前操作人。"""
     return (await resolve_owner_checked(session, username, default_user_id))[0]
 
 
 async def resolve_owner_checked(
     session, username: str | None, default_user_id: int
 ) -> tuple[int, str | None, dict]:
-    """负责人映射：返回 (owner_id, 错误原因, 映射说明)。
+    """跟进人映射：返回 (user_id, 错误原因, 映射说明)。
 
     第七批 7.5 的口径（原实现是"匹配不上就落到导入人名下"）：
     - 空白 → 用导入人，并在映射说明里写清"默认：导入人"，预览时能核对；
@@ -136,7 +136,7 @@ async def resolve_owner_checked(
                 "resolved": "import_operator",
                 "owner_id": default_user_id,
                 "owner_name": getattr(row, "name", None),
-                "note": "文件未填负责人，按导入人归属",
+                "note": "文件未填负责人，导入人自动成为跟进人",
             },
         )
     found = (
@@ -151,7 +151,7 @@ async def resolve_owner_checked(
     if found.status != "active":
         return (
             default_user_id,
-            f"账号「{login}」（{found.name}）已停用，不能作为客户负责人",
+            f"账号「{login}」（{found.name}）已停用，不能作为跟进人",
             {},
         )
     return (

@@ -66,6 +66,9 @@ async def test_scan_keeps_protection_cap(pool_db, monkeypatch, idle_days, max_da
     db.add(SystemSetting(key='pool_recycle_max_protect_days',value={'days':max_days}))
     db.add(PublicPoolRule(level='B', days=30, enabled=True))
     db.flush()
+    from tests.conftest import follow_customer
+
+    follow_customer(db, 1, 1)
     monkeypatch.setattr(service.duplicates, 'is_disputed', AsyncMock(return_value=False))
     monkeypatch.setattr(service, '_notify_recycle_candidate', AsyncMock(return_value=0))
     result = await service.run_public_pool_recycle(SyncSessionAsAsync(db), 1)
@@ -104,6 +107,10 @@ async def test_rejected_recycle_candidate_is_reconsidered_after_30_days(pool_db,
         last_followup_at=rejected_at - timedelta(days=90),
     )
     db.add_all([customer, PublicPoolRule(level="C", days=60, enabled=True)])
+    db.flush()
+    from tests.conftest import follow_customer
+
+    follow_customer(db, 1, 1)
     db.commit()
     session = SyncSessionAsAsync(db)
 

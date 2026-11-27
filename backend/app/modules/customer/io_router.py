@@ -158,20 +158,15 @@ async def _export(
     )
     await _alert_if_abnormal(session, user=user, ip=client_ip(request) if request else None)
     await session.commit()
-    owner_ids = {row.owner_id for row in rows if row.owner_id}
-    owners: dict[int, str] = {}
-    if owner_ids:
-        owner_rows = (
-            await session.execute(
-                select(User.id, User.name).where(User.id.in_(owner_ids))
-            )
-        ).all()
-        owners = {int(uid): name for uid, name in owner_rows}
+    from app.modules.customer.followers import followers_map
+
+    follower_map = await followers_map(session, [row.id for row in rows])
 
     content = csv_bytes(
         [
             io_util.customer_export_row(
-                row, owners.get(row.owner_id) if row.owner_id else None
+                row,
+                "、".join(item["name"] for item in follower_map.get(row.id, [])),
             )
             for row in rows
         ],
@@ -456,13 +451,22 @@ async def import_customers(
                     country="中国",
                     status="active",
                     pool_status="private",
-                    owner_id=owner_id,
                     created_by=user.id,
                     last_followup_at=last_contact,
                     last_contact_unknown=last_contact is None,
                 )
                 session.add(customer)
                 await session.flush()
+                from app.modules.customer.followers import add_followers
+
+                # 导入人 + 文件里指定的人，都成为跟进人（客户没有默认负责人）
+                await add_followers(
+                    session,
+                    customer.id,
+                    sorted({user.id, owner_id}),
+                    source="import",
+                    created_by=user.id,
+                )
                 if last_contact is not None:
                     await write_audit(
                         session, operator_id=user.id, action="import", business_type="customer",
