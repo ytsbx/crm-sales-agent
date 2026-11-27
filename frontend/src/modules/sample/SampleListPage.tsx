@@ -1122,6 +1122,7 @@ export default function SampleListPage() {
           sampleId={oaTarget.id}
           customerName={oaTarget.customer_name || (oaTarget.customer_id ? '客户名称暂不可显示' : '未关联客户')}
           onClose={() => { setOaTarget(null); void refresh() }}
+          onMade={() => { setOaTarget(null); setMadeModal(true); void refresh() }}
         />
       )}
       <ConfirmRequiredModal
