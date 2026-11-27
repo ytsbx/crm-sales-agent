@@ -788,6 +788,7 @@ export default function SampleListPage() {
   // 拿什么比对全看这一笔。原来页面只发 remark、连 remark 都没传，
   // 快照永远是空的 —— 后端字段白做了（返工单 P2-7）。
   const [madeModal, setMadeModal] = useState(false)
+  const [pendingMadeId, setPendingMadeId] = useState<number | null>(null)
   const [madeForm, setMadeForm] = useState<{ remark: string; fileIds: number[] }>({
     remark: '',
     fileIds: [],
@@ -799,6 +800,15 @@ export default function SampleListPage() {
     queryFn: () => listBusinessFiles('sample', detailId!),
     enabled: madeModal && Boolean(detailId),
   })
+
+  // OA 审批通过后可能是在“新建样品”成功页直接打开的弹窗；
+  // 这时 detailId 还没切到这张单，不能只 setMadeModal(true)，否则会开错单。
+  useEffect(() => {
+    if (pendingMadeId !== null && detailId === pendingMadeId) {
+      setMadeModal(true)
+      setPendingMadeId(null)
+    }
+  }, [pendingMadeId, detailId])
 
   const madeMutation = useMutation({
     mutationFn: () =>
@@ -1122,7 +1132,13 @@ export default function SampleListPage() {
           sampleId={oaTarget.id}
           customerName={oaTarget.customer_name || (oaTarget.customer_id ? '客户名称暂不可显示' : '未关联客户')}
           onClose={() => { setOaTarget(null); void refresh() }}
-          onMade={() => { setOaTarget(null); setMadeModal(true); void refresh() }}
+          onMade={() => {
+            const id = oaTarget.id
+            setOaTarget(null)
+            if (id === detailId) setMadeModal(true)
+            else { setPendingMadeId(id); navigate(`/samples/${id}`) }
+            void refresh()
+          }}
         />
       )}
       <ConfirmRequiredModal
