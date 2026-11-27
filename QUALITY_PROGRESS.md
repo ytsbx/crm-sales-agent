@@ -6796,3 +6796,11 @@
 - 规则变更（已改测试）：客户多跟进人上线后，客户子资源在客户可见后展示该客户全部单据——`check_customer_contact_api` 的商机 total 由 0 改 1；`check_customer_handover_documents` 的客户订单子资源由只认搬过来的一张改为展示客户下全部订单。全局列表/详情仍按单据负责人、旧负责人直接打开订单仍 403 的断言保留。
 - 规则变更（已改测试）：业务单据默认负责人=创建人而非继承客户负责人——`check_twelfth_round_repairs` 的默认商机与默认复制改为归 admin；显式指定停用/不存在负责人仍分别断言 422/404，未放宽。`ops/smoke_ui.mjs` 的 12-R6 详情/列表负责人展示同步改为当前创建人。
 - 验证：`check_product_insights.py`、`check_customer_contact_api.py`、`check_customer_handover_documents.py`、`check_twelfth_round_repairs.py` 全过；`SMOKE_TWELFTH_ONLY=1` 界面冒烟通过；后端 pytest exit 0。待推 CI 复跑确认。
+
+## 2026-11-27 前端异常态入口跳转复核（本地，未部署）
+
+- 复核新增入口的落点和参数：`/quotes/{id}?version=` 只在版本属于该报价时生效；`/inquiries?inquiry_id=` 按询价 id 过滤；订单页 `payments/receivables/returns/shipments` 均为真实页签；`/settings?tab=tags` 为真实 tab。
+- 修复打样审批通过后的错单风险：`SampleListPage` 的「登记制作完成」原先只 `setMadeModal(true)`，但附件查询和提交使用路由 `detailId`；新建样品成功页直接点会打开空/错误样品。改为先导航到目标样品，`detailId` 对齐后再打开登记弹窗，提交 `459deea2`。
+- 修复订单草稿缺已接受报价的泛跳：来源为报价版本的草稿直达 `/quotes/{quote_id}`（不带历史 `version`，客户接受只对当前版本生效）；来源为询价的草稿回 `/inquiries?inquiry_id={id}` 转报价；仅手工草稿回落 `/quotes`，提交 `ce331d33`、`39a7d620`、`3810b465`。
+- 规则沙盒补空态/错误态入口：报价无版本时直达 `/quotes/{quoteId}` 建版；版本读取失败时弹窗内「重新读取版本」，提交 `3a6b87f2`。
+- 验证：`npx tsc -b` 通过；`npm run build` 通过（仅依赖内 module directive 提示）；`npm run lint` 0 error（41 条历史 warning）。生产未部署，生产仍为 `2a120470048e4301371b05fc57361cb939b56d6b` / DB `d4f6a8b0c2e1`。
