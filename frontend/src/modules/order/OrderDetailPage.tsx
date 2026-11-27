@@ -3455,17 +3455,21 @@ export default function OrderDetailPage() {
               </dl>
               <p className="workflow-guide">已签合同和已确认回款须先处理。未生效的交期变更会随订单作废。</p>
               {order.opportunity_id && (
-                <p className="workflow-guide">
-                  如需撤销商机成交，请先到
-                  <Link
-                    to={`/opportunities/${order.opportunity_id}`}
-                    style={{ margin: '0 4px' }}
-                    onClick={() => setCancelVisible(false)}
-                  >
-                    商机详情
-                  </Link>
-                  核对并处理。
-                </p>
+                can('opportunity:view') ? (
+                  <p className="workflow-guide">
+                    如需撤销商机成交，请先到
+                    <Link
+                      to={`/opportunities/${order.opportunity_id}`}
+                      style={{ margin: '0 4px' }}
+                      onClick={() => setCancelVisible(false)}
+                    >
+                      商机详情
+                    </Link>
+                    核对并处理。
+                  </p>
+                ) : (
+                  <p className="workflow-guide">如需撤销商机成交，请联系商机负责人处理。</p>
+                )
               )}
               <div className="order-cancel-reason">
                 <p className="workflow-guide" style={{ marginBottom: 6 }}>
