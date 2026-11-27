@@ -63,3 +63,31 @@ async def assert_customer_in_scope(
     raise AppError(
         ErrorCode.DATA_SCOPE_DENIED, "该客户不在你的数据范围内", 403
     )
+
+
+async def assert_customer_ready_for_business(
+    session: AsyncSession, customer: Customer, *, action: str
+) -> None:
+    """业务动作（下单/签合同/线索转化）前要求客户不是公海。
+
+    这是原来「无负责人默认拒绝、先认领再下单」规则的等价口径：
+    公海客户没有跟进人，不允许直接产生业务单据/转化，必须先领取或指派跟进人。
+    私海客户至少有一位跟进人（不变量），由调用方先做可见性校验。
+    """
+    from app.modules.customer.followers import active_follower_count
+
+    if not isinstance(customer, Customer):
+        # 单元测试里的轻量对象：真实性由调用点保证（生产入口都是 ORM 客户）
+        return
+    if customer.pool_status == "public":
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"该客户在公海（没有跟进人），请先领取或指派跟进人后再{action}",
+            422,
+        )
+    if await active_follower_count(session, customer.id) == 0:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"该客户没有跟进人，请先指定跟进人后再{action}",
+            422,
+        )

@@ -229,6 +229,9 @@ async def create_document_record(payload: DocumentCreate, request: Request, user
         raise AppError(ErrorCode.FORBIDDEN, "补充协议 / 续签需要主管权限", 403)
 
     customer = await customer_service.get_visible_customer(session, user, payload.customer_id)
+    from app.modules.customer.visibility import assert_customer_ready_for_business
+
+    await assert_customer_ready_for_business(session, customer, action="签合同")
     if payload.order_id is not None:
         order = await session.get(SalesOrder, payload.order_id)
         if order is None:
