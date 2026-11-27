@@ -2237,6 +2237,11 @@ async def readiness(session: AsyncSession) -> dict:
             )
         ).scalar_one(),
     }
+    # 「可导入联系人」：与预览导入同一套判定（只看数量，供首页卡片）。
+    from app.modules.wecom.customer_import import _plan, _snapshot
+
+    summary, _, _, _ = _plan(await _snapshot(session), "hold")
+    counts["importable_contacts"] = summary["import_contacts"]
     from app.core.config import settings
 
     return {
