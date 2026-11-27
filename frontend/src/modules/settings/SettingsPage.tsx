@@ -1327,7 +1327,7 @@ export default function SettingsPage() {
       title: '操作',
       // 120 不是 100：两个无边框小按钮（编辑 / 停用）加上单元格内边距，
       // 100 时「停用」会被省略成「…」，等于把功能藏掉了
-      width: isAdmin ? 230 : 120,
+      width: isAdmin ? 270 : 120,
       // 表格比容器宽时固定在右侧：编辑/停用这两个按钮永远看得见
       fixed: 'right' as const,
       render: (_: unknown, record: SystemUser) => record.status === 'archived' ? '—' : (
@@ -1376,13 +1376,17 @@ export default function SettingsPage() {
               {record.status === 'active' ? '停用' : '启用'}
             </Button>
           </Popconfirm>
+          {isAdmin && record.status === 'disabled' && (
+            <Button theme="borderless" size="small" type="danger"
+              disabled={accountRemoval.isPending}
+              onClick={() => confirmAccountRemoval(record, false)}>
+              删除
+            </Button>
+          )}
           {isAdmin && (
             <Dropdown trigger="click" render={
               <Dropdown.Menu>
                 <Dropdown.Item onClick={() => confirmAccountRemoval(record, true)}>离职归档</Dropdown.Item>
-                {record.status === 'disabled' && (
-                  <Dropdown.Item onClick={() => confirmAccountRemoval(record, false)}>删除空账号</Dropdown.Item>
-                )}
               </Dropdown.Menu>
             }>
               <Button size="small" theme="borderless" type="tertiary" disabled={accountRemoval.isPending}>更多</Button>
