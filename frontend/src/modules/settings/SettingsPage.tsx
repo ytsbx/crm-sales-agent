@@ -2459,7 +2459,19 @@ export default function SettingsPage() {
             .filter((member) => member.crm_user_id === null || member.crm_user_id === oaBindingTarget?.id)
             .map((member) => ({ value: member.id, label: oaMemberLabel(member) }))}
         />
-        {oaMembersQuery.isError && <p style={{ color: 'var(--crm-error)' }}>暂时读不到同序人员列表，请关闭后重试。</p>}
+        {oaMembersQuery.isError && (
+          <div style={{ display: 'grid', gap: 6, justifyItems: 'start' }}>
+            <p style={{ color: 'var(--crm-error)', margin: 0 }}>暂时读不到同序人员列表。</p>
+            <Button
+              size="small"
+              theme="borderless"
+              style={{ paddingLeft: 0 }}
+              onClick={() => void oaMembersQuery.refetch()}
+            >
+              重新读取同序人员
+            </Button>
+          </div>
+        )}
         {oaBindingTarget?.oa_user_id && !oaMembersQuery.isError && !oaMembersQuery.isPending
           && !oaMembersQuery.data?.some((member) => member.id === oaBindingTarget.oa_user_id)
           && <p>原绑定的同序人员已不在在职名单。请选择新的同序人员。</p>}
