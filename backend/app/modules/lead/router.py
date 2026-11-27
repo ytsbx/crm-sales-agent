@@ -366,9 +366,13 @@ async def convert_lead(
         # 只判存在不够：转化会在该客户下**建联系人和商机**（见下面的
         # create_contact_for_customer / create_opportunity_from_lead），
         # 用别人的客户 id 就等于往别人的客户里写数据。与单个客户接口同一口径。
-        from app.modules.customer.visibility import assert_customer_in_scope
+        from app.modules.customer.visibility import (
+            assert_customer_in_scope,
+            assert_customer_ready_for_business,
+        )
 
         await assert_customer_in_scope(session, user, customer)
+        await assert_customer_ready_for_business(session, customer, action="转化线索")
     else:
         customer = Customer(
             name=lead.company_name or lead.name,

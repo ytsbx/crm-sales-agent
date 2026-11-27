@@ -154,9 +154,13 @@ async def create_order(
     customer = await session.get(Customer, payload.customer_id)
     if customer is None or customer.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
-    from app.modules.customer.visibility import assert_customer_in_scope
+    from app.modules.customer.visibility import (
+        assert_customer_in_scope,
+        assert_customer_ready_for_business,
+    )
 
     await assert_customer_in_scope(session, user, customer)
+    await assert_customer_ready_for_business(session, customer, action="下单")
     # ⚠️ 负责人也要过范围闸（2026-10-14 审查修）。同一个函数里 `customer_id` /
     # `opportunity_id` / `quote_id` 三处都有 `ensure_in_scope`，**唯独 `owner_id`
     # 只过了 `ensure_refs`**（那只判"存在且未软删"，不看数据范围）——
