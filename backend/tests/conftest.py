@@ -251,8 +251,9 @@ def follow_customer(raw, customer_id: int, user_id: int, *, source: str = "manua
 
     from app.modules.customer.model import CustomerFollower
 
-    CustomerFollower.__table__.create(raw.get_bind(), checkfirst=True)
-    existing = raw.execute(
+    core = getattr(raw, "_session", raw)
+    CustomerFollower.__table__.create(core.get_bind(), checkfirst=True)
+    existing = core.execute(
         select(CustomerFollower.id).where(
             CustomerFollower.customer_id == customer_id,
             CustomerFollower.user_id == user_id,
@@ -261,5 +262,5 @@ def follow_customer(raw, customer_id: int, user_id: int, *, source: str = "manua
     ).first()
     if existing is not None:
         return
-    raw.add(CustomerFollower(customer_id=customer_id, user_id=user_id, source=source))
-    raw.flush()
+    core.add(CustomerFollower(customer_id=customer_id, user_id=user_id, source=source))
+    core.flush()
