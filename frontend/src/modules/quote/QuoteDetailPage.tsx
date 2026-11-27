@@ -2517,8 +2517,16 @@ export default function QuoteDetailPage() {
             「核价 / 报价复核」在同序 OA 的询价单上办理；这一层没通过时，正式对外发送仍会被拦。
           </div>
           {inquiryApprovalsQuery.isError && (
-            <div className="inline-note" role="status">
-              暂时无法确认关联询价的审批进度；这不影响保存草稿，请稍后重试。
+            <div className="inline-note" role="status" style={{ display: 'grid', gap: 6, justifyItems: 'start' }}>
+              <span>暂时无法确认关联询价的审批进度；这不影响保存草稿。</span>
+              <Button
+                size="small"
+                theme="borderless"
+                style={{ paddingLeft: 0 }}
+                onClick={() => void inquiryApprovalsQuery.refetch()}
+              >
+                重新读取审批进度
+              </Button>
             </div>
           )}
           {/* 不用表格：这里最多一两条，五列表格会把两三个词摊到一屏宽，
