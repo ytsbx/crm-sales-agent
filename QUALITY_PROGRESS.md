@@ -6803,4 +6803,5 @@
 - 修复打样审批通过后的错单风险：`SampleListPage` 的「登记制作完成」原先只 `setMadeModal(true)`，但附件查询和提交使用路由 `detailId`；新建样品成功页直接点会打开空/错误样品。改为先导航到目标样品，`detailId` 对齐后再打开登记弹窗，提交 `459deea2`。
 - 修复订单草稿缺已接受报价的泛跳：来源为报价版本的草稿直达 `/quotes/{quote_id}`（不带历史 `version`，客户接受只对当前版本生效）；来源为询价的草稿回 `/inquiries?inquiry_id={id}` 转报价；仅手工草稿回落 `/quotes`，提交 `ce331d33`、`39a7d620`、`3810b465`。
 - 规则沙盒补空态/错误态入口：报价无版本时直达 `/quotes/{quoteId}` 建版；版本读取失败时弹窗内「重新读取版本」，提交 `3a6b87f2`。
+- 应收计划页去掉会切回订单列表的「订单中心」链接，改为提示点订单号进入订单详情，在「应收计划」登记，提交 `31bfc210`。
 - 验证：`npx tsc -b` 通过；`npm run build` 通过（仅依赖内 module directive 提示）；`npm run lint` 0 error（41 条历史 warning）。生产未部署，生产仍为 `2a120470048e4301371b05fc57361cb939b56d6b` / DB `d4f6a8b0c2e1`。
