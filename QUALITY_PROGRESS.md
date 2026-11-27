@@ -6822,3 +6822,8 @@
 - 本月回款：工作台「本月回款金额」原先跳 `/receivables`，而该路由默认打开「应收计划」，不是这笔钱对应的「回款记录」。订单/回款页现在接受 `?tab=orders|receivables|payments`，卡片改为 `/receivables?tab=payments`；页内切换保留原行为。
 - 实机核验（本地 `127.0.0.1:5274`）：从工作台点击「公海客户」落到 `/customers?scope=pool`，范围选择显示「公海客户」；点击「本月回款金额」落到 `/receivables?tab=payments`，页签高亮「回款记录」；两处均为真实页面可继续操作。
 - 验证：`npx tsc -b`、`npm run build`、`npm run lint` 均通过；lint 0 error、41 条历史 warning。生产未部署。
+
+## 2026-11-27 撤掉「流程指引」独立前端模块（主人拍板）
+
+- 原因：`d21b904c` 把 11-25 全流程走查内容做成了独立菜单「智能与协同 → 流程指引」、`/guide` 路由和 `frontend/src/modules/guide/GuidePage.tsx`。它是静态文档页、没有后端接口，主人明确要求撤掉独立入口。
+- 处理：删除 `GuidePage.tsx` 与 `modules/guide` 目录；移除 `menu.ts` 的菜单项与不再使用的 `IconHelpCircle` 导入；移除 `router.tsx` 的懒加载和 `/guide` 路由。审计报告 `docs/全流程走查与撤回点-20261125.md` 保留，原报告第 5 项改为“不单独做前端页，保留本报告与各业务页提示”。
