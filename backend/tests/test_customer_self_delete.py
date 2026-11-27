@@ -148,6 +148,7 @@ def test_delete_route_allows_own_customer_and_writes_audit(monkeypatch):
 
     async def fake_delete(_session, row):
         deleted.append(row.id)
+        return 2
 
     async def fake_audit(*_args, **kwargs):
         audits.append(kwargs)
@@ -171,7 +172,8 @@ def test_delete_route_allows_own_customer_and_writes_audit(monkeypatch):
     assert audits[0]["action"] == "delete"
     assert audits[0]["business_type"] == "customer"
     assert audits[0]["business_id"] == 7
-    assert result["message"] == "客户已删除"
+    assert result["message"] == "客户已删除，2 条未完成待办已取消"
+    assert result["data"]["cancelled_task_count"] == 2
 
 
 # ---------------------------------------------------------------- 恢复：同一档归属规则

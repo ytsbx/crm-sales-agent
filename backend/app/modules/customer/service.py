@@ -1027,13 +1027,25 @@ def ensure_can_restore_customer(user: CurrentUser, customer: Customer) -> None:
     _ensure_own_customer_operation(user, customer, action="恢复")
 
 
-async def delete_customer(session: AsyncSession, customer: Customer) -> None:
+async def delete_customer(session: AsyncSession, customer: Customer) -> int:
     """软删客户：只置 `deleted_at`，名下联系人/商机/报价/订单/跟进一条都不动。
 
     这是刻意的（03-API §42.1）：恢复时把这些标记一去掉，关联资料自动回来；
     不物理删除、不改挂，避免"删客户"顺手抹掉业务单据或把单据变成孤儿。
+
+    唯一例外是**未完成的待办**：客户都删了，任务中心再挂着"去联系某某"
+    只会变成一堆点不开的孤儿任务，所以一并取消（返回取消条数，写进审计）。
+    恢复客户时任务不会自动恢复，需要重新建。
     """
+    from app.modules.task.model import Task
+
     customer.deleted_at = datetime.now(UTC)
+    result = await session.execute(
+        update(Task)
+        .where(Task.customer_id == customer.id, Task.status.in_(("pending", "doing")))
+        .values(status="cancelled", completion_note="客户已删除，自动取消")
+    )
+    return result.rowcount or 0
 
 
 async def lock_deleted_customer(

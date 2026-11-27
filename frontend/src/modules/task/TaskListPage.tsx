@@ -300,6 +300,7 @@ export default function TaskListPage() {
         // 就是那份原件（第十一批 11.6 复审：此前只认合同 + 商机 + 客户，
         // 报价/订单/打样一律退化成「客户 #3」，看不出业务来源是哪一份）。
         const link = primaryTaskLink(record)
+        if (record.customer_deleted) return '客户已删除'
         if (!link) return record.customer_id ? '客户不可查看' : '-'
         return (
           <Link to={link.to} title={link.label} style={{ color: 'var(--crm-primary)' }}>

@@ -295,7 +295,7 @@ async def delete_customer(
     # 先判"这条能不能删"再取快照/写审计：越权的请求不该留下任何删除痕迹
     svc.ensure_can_delete_customer(user, customer)
     before = svc.serialize_customer(customer)
-    await svc.delete_customer(session, customer)
+    cancelled_tasks = await svc.delete_customer(session, customer)
     await write_audit(
         session,
         operator_id=user.id,
@@ -303,10 +303,14 @@ async def delete_customer(
         business_type="customer",
         business_id=customer.id,
         before=before,
+        after={"cancelled_task_count": cancelled_tasks},
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(None, "客户已删除")
+    message = "客户已删除"
+    if cancelled_tasks:
+        message += f"，{cancelled_tasks} 条未完成待办已取消"
+    return ok({"cancelled_task_count": cancelled_tasks}, message)
 
 
 @router.post("/customers/{customer_id}/restore")

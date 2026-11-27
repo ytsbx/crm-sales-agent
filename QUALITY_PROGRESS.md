@@ -6560,3 +6560,11 @@
 - 发布包 SHA256 `ef942f35…059c`；无迁移、无依赖变更，数据库保持 `a1c4e8f2b6d9`。
 - `status=verified`，备份 `/opt/crm-sales-agent/backup/unified-0d1cc6bbac8d-ov_gtaus`；服务 active、`/health` 数据库 ok、公网 200、两端版本记录均 0d1cc6bb。
 - 生产 `task_rules` 现有：报价后未跟进、应收即将到期；「重点客户久未联系」已被删除（SQL 直删，无审计），以后需要可重建并用新开关控制启停。
+
+## 2026-11-27 删客户时清理待办、任务页区分「客户已删除」（本地完成，生产数据已清理）
+
+- 现象：任务中心有一条「A 级客户超过 14 天未联系：测试客户」，关联显示「客户不可查看」；实际客户 11-23 已删除，任务成了孤儿。
+- 规则：`delete_customer` 在软删客户时，把该客户 pending/doing 的待办一并置为 cancelled（completion_note=客户已删除，自动取消），返回取消条数写进删除审计；恢复客户不恢复任务。
+- 任务列表：客户已删除时返回 `customer_deleted=true`，前端显示「客户已删除」，与「客户不可查看（无权限）」区分。
+- 数据清理：生产 task id=14 已置 cancelled（completion_note=客户已删除，自动取消）；全库核查仅此一条孤儿。
+- 验证：新增 `test_customer_delete_tasks.py`（只取消本客户未完成、已完成和别的客户不动）；更新删除路由审计断言与任务名称测试；task/customer 相关测试全部通过；前端 `tsc` 由发布构建验证。

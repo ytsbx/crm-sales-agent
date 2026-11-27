@@ -8,6 +8,8 @@ export interface Task {
   customer_id?: number | null
   /** 仅返回当前用户可查看且未删除的客户名称。 */
   customer_name?: string | null
+  /** 关联客户已被删除（与"没权限看"区分） */
+  customer_deleted?: boolean
   contact_id?: number | null
   opportunity_id?: number | null
   lead_id?: number | null

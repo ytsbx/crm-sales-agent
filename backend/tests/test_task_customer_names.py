@@ -68,6 +68,8 @@ async def test_list_task_customer_name_scope(permissions, scope, owner, deleted,
             item = result['data']['items'][0]
             assert item['customer_name'] == expected
             assert item['customer_id'] == 2
+            # 客户已删除时单独标记，前端显示「客户已删除」，不写成「不可查看」
+            assert item['customer_deleted'] is (deleted and scope == 'all' and 'customer:view' in permissions)
     finally:
         engine.dispose()
 
