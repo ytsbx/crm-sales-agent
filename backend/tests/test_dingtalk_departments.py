@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
@@ -178,3 +178,33 @@ def test_align_departments_moves_existing_user_to_oa_department(monkeypatch):
         user = raw.get(User, 1)
         dept = raw.query(Department).filter_by(oa_department_id="oa-ai").one()
         assert user.department_id == dept.id != old_id
+
+
+# ---- 同序 OA 部门：上级不存在时递归补建 ----
+
+def test_oa_ensure_creates_missing_ancestors():
+    """只建子部门会让它落到根上，主管的「部门及下级」就看不到下级。"""
+    session, engine = _session()
+    departments = {
+        "root": {"id": "root", "name": "职能部门", "parent_id": None},
+        "mid": {"id": "mid", "name": "总经办", "parent_id": "root"},
+        "leaf": {"id": "leaf", "name": "财务部", "parent_id": "mid"},
+    }
+    dept, created = asyncio.run(svc.ensure_oa_department(session, departments, "leaf"))
+    assert created is True
+    with Session(engine) as raw:
+        rows = {row.oa_department_id: row for row in raw.scalars(select(Department)).all()}
+    assert set(rows) == {"root", "mid", "leaf"}
+    assert rows["leaf"].parent_id == rows["mid"].id
+    assert rows["mid"].parent_id == rows["root"].id
+    assert dept.oa_department_id == "leaf"
+
+
+def test_oa_ensure_rejects_department_cycle():
+    session, _engine = _session()
+    departments = {
+        "a": {"id": "a", "name": "甲部", "parent_id": "b"},
+        "b": {"id": "b", "name": "乙部", "parent_id": "a"},
+    }
+    with pytest.raises(AppError):
+        asyncio.run(svc.ensure_oa_department(session, departments, "a"))

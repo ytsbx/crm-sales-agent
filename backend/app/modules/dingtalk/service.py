@@ -1493,18 +1493,39 @@ async def ensure_dingtalk_department(
 
 async def ensure_oa_department(
     session: AsyncSession, departments: dict[str, dict[str, Any]], dept_id: str,
+    _visited: set[str] | None = None,
 ) -> tuple[Department, bool]:
-    """按同序部门 UUID 取/建 CRM 部门；规则与钉钉目录一致，编号分开存。"""
+    """按同序部门 UUID 取/建 CRM 部门；规则与钉钉目录一致，编号分开存。
+
+    上级部门在 CRM 里还不存在时会**递归先建上级**：只建子部门会让它落到根上，
+    主管的「部门及下级」数据范围就看不到下级了。
+    """
     if not dept_id:
         raise AppError(ErrorCode.PARAM_ERROR, "同序身份缺少部门", 422)
+    visited = _visited if _visited is not None else set()
+    if str(dept_id) in visited:
+        raise AppError(ErrorCode.PARAM_ERROR, "同序部门层级存在循环，请检查目录", 422)
+    visited.add(str(dept_id))
     dt = departments.get(str(dept_id)) or {}
     name = (dt.get("name") or "").strip()
     if not name:
         raise AppError(ErrorCode.PARAM_ERROR, "同序身份缺少部门", 422)
+    parent_dt = str(dt.get("parent_id") or "")
+    parent = None
+    if parent_dt:
+        parent = (await session.execute(
+            select(Department).where(Department.oa_department_id == parent_dt)
+        )).scalars().first()
+        if parent is None and parent_dt in departments:
+            parent, _created = await ensure_oa_department(
+                session, departments, parent_dt, visited)
     existing = (await session.execute(
         select(Department).where(Department.oa_department_id == str(dept_id))
     )).scalars().first()
     if existing is not None:
+        if parent is not None and existing.parent_id != parent.id:
+            existing.parent_id = parent.id
+            await session.flush()
         return existing, False
     same_name = list((await session.execute(
         select(Department).where(
@@ -1519,14 +1540,10 @@ async def ensure_oa_department(
         chosen = top[0] if len(top) == 1 else (same_name[0] if len(same_name) == 1 else None)
         if chosen is not None:
             chosen.oa_department_id = str(dept_id)
+            if parent is not None and chosen.parent_id != parent.id:
+                chosen.parent_id = parent.id
             await session.flush()
             return chosen, False
-    parent_dt = str(dt.get("parent_id") or "")
-    parent = None
-    if parent_dt:
-        parent = (await session.execute(
-            select(Department).where(Department.oa_department_id == parent_dt)
-        )).scalars().first()
     row = Department(name=name, parent_id=parent.id if parent else None,
                      oa_department_id=str(dept_id), status="active")
     session.add(row)
