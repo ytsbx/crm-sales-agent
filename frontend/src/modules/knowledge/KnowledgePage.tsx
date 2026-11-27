@@ -1578,6 +1578,20 @@ export default function KnowledgePage() {
             {quoteTarget?.customer_name
               ? `客户：${quoteTarget.customer_name}`
               : '这条需求还没关联客户——先去「编辑」补上客户再转报价。'}
+            {!quoteTarget?.customer_name && (
+              <button
+                type="button"
+                className="crm-text-action"
+                style={{ marginLeft: 4 }}
+                onClick={() => {
+                  const target = quoteTarget
+                  setQuoteTarget(null)
+                  if (target) openEdit(target)
+                }}
+              >
+                去编辑补客户
+              </button>
+            )}
             {quoteTarget?.inquiry_no ? ` · 需求编号 ${quoteTarget.inquiry_no}` : ''}
           </div>
           <div>
