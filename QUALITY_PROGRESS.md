@@ -1,3 +1,13 @@
+## 2026-11-27 · 销售售后生产发布（71eef6e4）
+
+- 发布入口：`ops/deploy/release.py` 统一入口，基线为生产已装的 `4dbb06413a7add905ba6795d3bee78eeb8b07b5a`，目标提交 `71eef6e4aff0d90741198f603e7c38a519f06444`；包 SHA256 `696f35c43ce692b0fc7e63fb82c74adce854b65594a727962517540bac1f38f6`，schema 2（显式放行两条售后迁移，requirements 未变）。
+- 数据库备份：`/opt/crm-sales-agent/backup/db-71eef6e4-20261127T020128Z.dump`（1.4M，`pg_restore --list` 可读）；发布包备份：`/opt/crm-sales-agent/backup/unified-71eef6e4aff0-fb53hlw9`。
+- 预检通过后正式执行：停服务 → 替换后端 app 与 guards → 依次执行 `a1c4e8f2b6d9 → b7e2c9d4a1f6 → f5c8a1d3e7b2` → 启动服务 → 公网核验 → 写版本记录；无迁移失败、无回滚。
+- 发布结果：`RELEASE.json` 为 `status=verified`，commit=`71eef6e4aff0d90741198f603e7c38a519f06444`，verified_at=`2026-11-27T02:02:07Z`；服务 `active`，后端 `/health` 返回 `database=ok`；公网 `https://crm.mandla.cn` 首页 200，直接引用入口脚本/CSS 200。
+- 生产库复核：Alembic 版本 `f5c8a1d3e7b2`；`sales_returns.status` 长度 32；旧 `warehouse_*` 列 0；`received_by/received_at/receiving_note/goods_refund_amount/application_attachment_file_id` 5 个新字段存在。生产业务计数保持 `sales_orders=0`、`sales_returns=0`、`files=40`、`business_files=37`。
+- 上线后日志：服务启动完成，定时任务正常注册；`journalctl` 无 error/traceback，后端日志仅正常启动与健康检查请求。生产当前没有真实销售订单/售后，售后功能的首笔真实业务仍待业务侧录入验证。
+- 回滚路径：数据库只能按上述备份人工恢复；代码/前端可按 unified 备份目录和发布记录恢复。发布包与备份保留，不自动清理。
+
 ## 2026-11-27 · 售后生产迁移演练 + 退货边界回归
 
 - 生产状态（只读确认）：SSH `rag`，应用 `/opt/crm-sales-agent/app`，服务 `crm-sales.service` 为 active；生产库在容器 `crm-sales-db`（`postgres:18`），库 `crm_sales_agent`，当前 Alembic 版本仍为 `a1c4e8f2b6d9`；`sales_returns=0`、`sales_orders=0`、`files=40`、`business_files=37`。本轮未对生产执行迁移、未重启服务、未写生产数据。
