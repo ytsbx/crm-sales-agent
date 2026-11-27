@@ -3,9 +3,9 @@
 - 新增售后状态 `finance_returned`（财务退回修改）。财务只写原因退回，不能自己改金额；申请人或主管改金额/收款信息后重新交主管复审，货已收过的复审通过直接回 `completed`，不重复确认收货。
 - 新增接口：`POST /returns/{id}/finance-return`（财务，`payment:manage`）、`POST /returns/{id}/revise-amount`（申请人或主管）；新增字段 `finance_return_reason`、`finance_returned_by`、`finance_returned_at`、`finance_return_count`。
 - 防护：货已确认收到后主管不能再驳回、申请人不能再取消；财务打回后若申请人已改金额但还没复审，财务可作废终止。历史抵扣单不能打回改金额，仍走原金额登记或作废。
-- 迁移 `e1a3c5d7b9f2`：在 `c3d5e7f9a1b2` 基础上加四个字段；在排除并发未提交 `d4f6` 迁移的临时副本上 `upgrade head`、`downgrade c3d5`、再 `upgrade head` 均成功，ORM 未报这四个字段的结构差异。
+- 迁移 `e1a3c5d7b9f2`：在 `c3d5e7f9a1b2` 基础上加四个字段；从 `git archive HEAD` 的发布树（不含并发未提交的 `d4f6` 客户跟进人迁移）在全新库 `upgrade head`，`alembic check` 返回 `No new upgrade operations detected`；另有临时副本 `downgrade c3d5 → upgrade head` 往返成功。
 - 测试：`test_sales_return.py` 36 项通过；全量后端 2358 项通过。前端 `tsc + vite build` 在临时副本通过（当前工作区因另一次未提交的 `QuoteListPage` 改动导致全量 build 阻塞，与本改动无关）。
-- 未发布生产：生产仍是 `eb688e8e / c3d5e7f9a1b2`，上线需执行 `c3d5e7f9a1b2 → e1a3c5d7b9f2`。
+- 提交 `a714f618`，已推 GitHub。未发布生产：生产仍是 `eb688e8e / c3d5e7f9a1b2`，上线需执行 `c3d5e7f9a1b2 → e1a3c5d7b9f2`。
 
 ## 2026-11-27 · 生产同步 alembic 修复（86353535 → eb688e8e）
 
