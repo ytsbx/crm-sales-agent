@@ -1,4 +1,5 @@
 import { formatBeijingTime } from '../../shared/beijing-time'
+import { Link } from 'react-router-dom'
 import { ApiError } from '../../shared/api/client'
 import { useState, type ComponentProps } from 'react'
 import {
@@ -827,8 +828,8 @@ function SandboxPanel({ fields: _fields }: { fields: ConditionFieldMeta[] }) {
     {
       ok: !versionsEmpty && !versionsFailed,
       reason: versionsFailed
-        ? '这张报价的版本列表没读出来，请刷新页面重试。'
-        : '这张报价还没有版本，先去报价中心建一版再回来试算。',
+        ? '这张报价的版本列表没读出来，请重新读取版本。'
+        : '这张报价还没有版本，先打开这张报价建一版再回来试算。',
     },
     // 报价单和版本列表都就绪、只是还没挑版本：按钮同样是灰的，一并说清楚
     {
@@ -903,6 +904,19 @@ function SandboxPanel({ fields: _fields }: { fields: ConditionFieldMeta[] }) {
           试算
         </GuardedButton>
       </div>
+
+      {versionsEmpty && quoteId && (
+        <div style={{ marginTop: 8, marginBottom: 12, fontSize: 12 }}>
+          <Link className="crm-text-action" to={`/quotes/${quoteId}`}>打开这张报价建一版</Link>
+        </div>
+      )}
+      {versionsFailed && (
+        <div style={{ marginTop: 8, marginBottom: 12 }}>
+          <Button size="small" theme="borderless" style={{ paddingLeft: 0 }} onClick={() => void versionsQuery.refetch()}>
+            重新读取版本
+          </Button>
+        </div>
+      )}
 
       {result && (
         <div style={{ marginTop: 14 }}>
