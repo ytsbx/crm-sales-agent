@@ -203,6 +203,12 @@ export default function OrderDraftsPage() {
   const draft = query.data
   const editable = draft.status === 'draft' && can('order:manage') && !busy
   const quoteAmount = selectedQuote?.current_version_amount_exact ?? selectedQuote?.current_version_amount
+  // 草稿如果是从某张报价建的，直接回到那张报价去点「客户接受」；
+  // 只有手工草稿没有来源报价时才落到报价中心列表，避免用户到了列表还要自己找。
+  // 这里不带 ?version：客户接受只对当前版本生效，带历史版本反而会落错版本。
+  const sourceQuoteLink = draft.source_context.quote_id
+    ? `/quotes/${draft.source_context.quote_id}`
+    : '/quotes'
   const confirmationError = confirm.variables?.id === draftId ? confirm.error?.message : undefined
   const draftMismatch = confirmationError?.startsWith('草稿明细、币种或付款条件与客户确认报价不一致')
   const confirmBlocked = !can('order:manage')
@@ -364,7 +370,7 @@ export default function OrderDraftsPage() {
               </GuardedButton>
               {can('quote:view') && !quotes.isPending && !quotes.isError && quoteOptions.length === 0 && (
                 <p className="workflow-guide">
-                  还没有可用的已接受报价，<Link className="crm-text-action" to="/quotes">去报价中心登记客户接受</Link>后回来下单。
+                  还没有可用的已接受报价，<Link className="crm-text-action" to={sourceQuoteLink}>{draft.source_context.quote_id ? '打开来源报价登记客户接受' : '去报价中心登记客户接受'}</Link>后回来下单。
                 </p>
               )}
             </>
