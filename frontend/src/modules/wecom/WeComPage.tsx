@@ -25,7 +25,6 @@ import {
   listWeComTransferItems,
   listWeComTransferPeople,
   retryWeComTransfer,
-  syncWeComDepartments,
   syncWeComExternalContacts,
   syncWeComFollowRelations,
   syncWeComUsers,
@@ -96,7 +95,7 @@ function TransferResultItem({ item, reviewLink }: { item: WeComTransferItem; rev
 }
 
 const SYNC_ACTIONS = {
-  departments: { label: '同步部门', description: '更新 CRM 部门及上下级关系', run: syncWeComDepartments, scope: 'contact' },
+  // 部门以同序 OA 为准（设置页「按同序对齐部门」），企微这边不再生成第二棵部门树。
   users: { label: '同步成员', description: '把企微员工与已有 CRM 账号对应起来', run: syncWeComUsers, scope: 'contact' },
   external: { label: '同步外部联系人', description: '拉取客户的昵称和企业名称，供建档前核对', run: syncWeComExternalContacts, scope: 'external' },
   follow: { label: '同步跟进关系', description: '查清每位联系人的企微跟进员工', run: syncWeComFollowRelations, scope: 'external' },
