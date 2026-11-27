@@ -1409,7 +1409,11 @@ export default function OrderDetailPage() {
           if (hasPayment) {
             return (
               <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                该期已有回款记录（含待确认/已驳回），请先处理回款
+                该期已有回款记录（含待确认/已驳回），请先
+                <button type="button" className="crm-text-action" style={{ margin: '0 2px' }} onClick={() => jumpToTab('payments')}>
+                  去回款记录
+                </button>
+                处理
               </span>
             )
           }
