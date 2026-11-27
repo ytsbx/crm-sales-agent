@@ -60,6 +60,15 @@ async def main():
     async def jobs():
         async with SessionLocal() as s:
             return (await s.execute(text("select to_jsonb(j) from wecom_sync_jobs j where job_type='external_contact' order by id"))).scalars().all()
+    async def wait_job(job_id):
+        # 外部联系人同步已改为后台任务（请求只负责建任务行），这里等它跑完再断言。
+        for _ in range(400):
+            async with SessionLocal() as s:
+                row=(await s.execute(text("select to_jsonb(j) from wecom_sync_jobs j where id=:id"),{'id':job_id})).scalar_one()
+            if row['status']!='running':
+                return row
+            await asyncio.sleep(0.05)
+        raise AssertionError(f'job {job_id} did not finish')
     try:
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond),base_url='https://mock.invalid') as external:
             adapter._client=adapter.WeComClient(http=external)
@@ -70,27 +79,30 @@ async def main():
                      {'follow_user':[None]}, {'follow_user':['']}, {'follow_user':[' ']}, {'follow_user':[True]}, {'follow_user':[{}]}]
                 for payload in bad:
                     mode.clear();mode['payload']=deepcopy(payload);calls.clear();before=await facts();oldjobs=await jobs()
-                    r=await c.post('/api/v1/integrations/wecom/sync-external-contacts')
+                    r=await c.post('/api/v1/integrations/wecom/sync-external-contacts');assert r.status_code==200 and r.json()['data']['status']=='running',r.text
                     after=await jobs();assert len(after)==len(oldjobs)+1
-                    job=after[-1]
+                    job=await wait_job(after[-1]['id'])
                     assert await facts()==before
                     assert all(path.endswith(('/gettoken','/get_follow_user_list')) for path,_,_ in calls)
-                    print('malformed',repr(payload),'HTTP',r.status_code,'job',job['status'],job['success_count'],job['fail_count'],flush=True)
-                    assert r.status_code==502 and '响应格式异常' in r.text,(r.status_code,r.text)
+                    print('malformed',repr(payload),'job',job['status'],job['success_count'],job['fail_count'],flush=True)
                     assert job['status']=='failed' and job['success_count']==0 and job['fail_count']==1,job
-                    assert 'isolated-secret' not in r.text and 'isolated-token' not in r.text
+                    err=job['error_message'] or ''
+                    assert '响应格式异常' in err,job
+                    assert 'isolated-secret' not in err and 'isolated-token' not in err,job
                 mode.clear();mode['payload']={'follow_user':[]};before=await facts();oldjobs=await jobs()
                 r=await c.post('/api/v1/integrations/wecom/sync-external-contacts');assert r.status_code==200,r.text
                 assert await facts()==before
-                after=await jobs();assert len(after)==len(oldjobs)+1 and after[-1]['status']=='success' and after[-1]['success_count']==0
+                after=await jobs();assert len(after)==len(oldjobs)+1
+                job=await wait_job(after[-1]['id']);assert job['status']=='success' and job['success_count']==0,job
                 print('PASS explicit empty member list remains successful zero with unchanged facts',flush=True)
                 for empty_page in [{'external_userid':[]}, {'external_contact_list':[]}]:
                     mode.clear();mode.update(payload={'follow_user':['member-a']},page_payload=empty_page,after_first=False)
                     before=await facts();oldjobs=await jobs()
                     r=await c.post('/api/v1/integrations/wecom/sync-external-contacts')
                     assert r.status_code==200,r.text
-                    after=await jobs()
-                    assert len(after)==len(oldjobs)+1 and after[-1]['status']=='success' and after[-1]['success_count']==0
+                    after=await jobs();assert len(after)==len(oldjobs)+1
+                    job=await wait_job(after[-1]['id'])
+                    assert job['status']=='success' and job['success_count']==0,job
                     assert await facts()==before
                 print('PASS both explicit empty customer page formats remain successful zero with unchanged facts',flush=True)
                 for page_payload in [{}, {'external_userid':'not-a-list'}, {'external_contact_list':[{}]}]:
@@ -99,9 +111,10 @@ async def main():
                         before=await facts();oldjobs=await jobs();calls.clear()
                         r=await c.post('/api/v1/integrations/wecom/sync-external-contacts')
                         after=await jobs();assert len(after)==len(oldjobs)+1
-                        print('malformed page',repr(page_payload),'after_first',after_first,'HTTP',r.status_code,'job',after[-1]['status'],flush=True)
-                        assert r.status_code==502 and '响应格式异常' in r.text,(r.status_code,r.text)
-                        assert after[-1]['status']=='failed' and after[-1]['success_count']==0 and after[-1]['fail_count']==1
+                        job=await wait_job(after[-1]['id'])
+                        print('malformed page',repr(page_payload),'after_first',after_first,'job',job['status'],flush=True)
+                        assert job['status']=='failed' and job['success_count']==0 and job['fail_count']==1,job
+                        assert '响应格式异常' in (job['error_message'] or ''),job
                         assert await facts()==before
                         if after_first:assert ('/cgi-bin/externalcontact/list','member-a','second') in calls
                 print('PASS malformed first/second pages retain one failure and no partial contacts or CRM mutations',flush=True)
@@ -110,7 +123,8 @@ async def main():
                 for repeat in range(2):
                     calls.clear();oldjobs=await jobs()
                     r=await c.post('/api/v1/integrations/wecom/sync-external-contacts');assert r.status_code==200,r.text
-                    after=await jobs();assert len(after)==len(oldjobs)+1 and after[-1]['status']=='success' and after[-1]['success_count']==2
+                    after=await jobs();assert len(after)==len(oldjobs)+1
+                    job=await wait_job(after[-1]['id']);assert job['status']=='success' and job['success_count']==2,job
                     current=await facts()
                     for table in ['customers','contacts','wecom_follow_relationships']:assert current[table]==before[table],table
                     matching=[row for row in current['wecom_external_contacts'] if row['external_userid'] in extids]

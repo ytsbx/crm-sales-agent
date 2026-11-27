@@ -194,21 +194,48 @@ async def sync_external_contacts(
     user: CurrentUser = Depends(require_wecom_action("wecom:sync_contacts")),
     session: AsyncSession = Depends(get_db),
 ):
-    job = await _run_sync(session, user=user, job_type="external_contact", operation=svc.sync_external_contacts)
+    """拉取企微外部联系人（只落企微事实）。
+
+    逐个成员拉客户列表，员工多时一轮要几十秒——网页请求只能等 30 秒，
+    客户端先断开，后端跟着被取消，用户看到「网络异常」而实际没同步。
+    与跟进关系同步一样改成后台任务：先落任务行、立即返回，页面轮询任务状态。
+    """
+    global _external_sync_task
+    running = (
+        await session.execute(
+            select(WeComSyncJob)
+            .where(
+                WeComSyncJob.job_type == "external_contact",
+                WeComSyncJob.status == "running",
+            )
+            .order_by(WeComSyncJob.id.desc())
+            .limit(1)
+        )
+    ).scalars().first()
+    if running is not None:
+        return ok(
+            svc.serialize_job(running),
+            "外部联系人同步正在进行中，完成后会自动刷新，请稍候",
+        )
+    job = await svc.start_job(session, job_type="external_contact", operator_id=user.id)
+    await session.commit()
     await write_audit(
         session,
         operator_id=user.id,
         action="wecom_sync_external_contacts",
         business_type="integration",
         business_id=job.id,
-        after={"success": job.success_count, "fail": job.fail_count},
+        after={"status": "running"},
         ip=client_ip(request),
     )
     await session.commit()
-    message = f"外部联系人同步完成，成功 {job.success_count} 条"
-    if job.fail_count:
-        message += f"；{job.fail_count} 个成员未完整同步，请查看同步记录后重试"
-    return ok(svc.serialize_job(job), message)
+    _external_sync_task = asyncio.create_task(
+        _run_external_contacts_background(job.id, user.id)
+    )
+    return ok(
+        svc.serialize_job(job),
+        "外部联系人同步已开始；联系人较多时需要一两分钟，完成后页面会自动刷新",
+    )
 
 
 logger = logging.getLogger(__name__)
@@ -255,6 +282,54 @@ async def _run_follow_relations_background(job_id: int, user_id: int) -> None:
                 operator_id=user_id,
                 source="SYSTEM",
                 action="wecom_sync_follow_relations",
+                business_type="integration",
+                business_id=job.id,
+                after={"success": 0, "fail": 1, "error": message},
+            )
+            await session.commit()
+
+
+#: 本进程正在跑的外部联系人同步任务（单 worker 部署；只用于防重复启动/任务被回收）。
+_external_sync_task: asyncio.Task | None = None
+
+
+async def _run_external_contacts_background(job_id: int, user_id: int) -> None:
+    """后台跑外部联系人同步：逐个成员拉列表，几十秒起步，不能占着网页请求。"""
+    from types import SimpleNamespace
+
+    from app.core.database import SessionLocal
+
+    async with SessionLocal() as session:
+        job = await session.get(WeComSyncJob, job_id, with_for_update=True)
+        if job is None or job.status != "running":
+            return
+        try:
+            await svc.sync_external_contacts(
+                session, user=SimpleNamespace(id=user_id), job=job
+            )
+            await write_audit(
+                session,
+                operator_id=user_id,
+                source="SYSTEM",
+                action="wecom_sync_external_contacts",
+                business_type="integration",
+                business_id=job.id,
+                after={"success": job.success_count, "fail": job.fail_count},
+            )
+            await session.commit()
+        except Exception as error:  # noqa: BLE001 —— 后台任务必须把失败写回任务行
+            logger.exception("外部联系人同步失败 job_id=%s", job_id)
+            await session.rollback()
+            job = await session.get(WeComSyncJob, job_id, with_for_update=True)
+            if job is None:
+                return
+            message = _translate(error).message[:500] or "同步异常，请查看服务器日志"
+            svc.finish_job(job, success=0, fail=1, error=message)
+            await write_audit(
+                session,
+                operator_id=user_id,
+                source="SYSTEM",
+                action="wecom_sync_external_contacts",
                 business_type="integration",
                 business_id=job.id,
                 after={"success": 0, "fail": 1, "error": message},
