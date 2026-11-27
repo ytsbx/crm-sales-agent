@@ -6590,3 +6590,5 @@
 - 发布包 SHA256 `ef521faa…ed7a`；无迁移、无依赖变更，数据库保持 `a1c4e8f2b6d9`。
 - `status=verified`，备份 `/opt/crm-sales-agent/backup/unified-8e43c6525dfb-t0z3uz25`；服务 active、`/health` ok、公网 200、两端版本记录均 8e43c652。
 - 生产核查：自动任务规则只剩「报价后未跟进」「应收即将到期」；旧规则遗留任务中，id=14（测试客户，客户已删）已取消，id=13（杭州谨行，客户仍在）仍为 pending，待主人决定是否取消。
+
+- 2026-11-27 主人确认后，旧规则遗留任务 id=13（杭州谨行）也已置 cancelled（completion_note=旧规则遗留待办，人工取消）；两条旧任务均清完。SQL 直改无任务审计。
