@@ -6712,7 +6712,7 @@
 - 现在部门共 10 个：4 个同序部门 + 5 个同序上级 + 手工销售部；企微来源仅剩财务部/大客户一部两行（与同序同名复用），其余企微部门已清理。审计 54 条（近 30 分钟 department 类型）。
 - 代码修复：`ensure_oa_department` 缺上级时递归先建上级（并有循环保护），避免以后按需建部门时子部门落到根上、主管「部门及下级」看不到下级；新增两个测试（递归补建、循环拒绝）；全量 2358 项通过；提交 `d3d71d4d`。
 - 发布：发布包 `7d61f742`（基线 2a120470 + 企微后台同步修复 + 去掉同步部门入口 + 紧凑提示条 + 递归部门修复），无迁移变更，SHA256 `4e5b4415…b36b`，已上传 `/tmp/crm-release-7d61f742/` 且预检通过。
-- 发布受阻：第一次 `--apply` 在 `systemctl stop` 处 60 秒超时失败，工具回滚成功（旧代码已恢复、服务 active、健康 ok；systemd 记录 SIGTERM 未退出、90 秒被 SIGKILL，疑有长连接/后台任务拖住优雅关闭）。随后重试被自动模式权限拦截（Production Deploy），生产仍是 `2a120470`。需要主人在终端执行一次（或给权限）：
+- 发布：第一次 `--apply` 在 `systemctl stop` 处 60 秒超时失败并自动回滚（systemd 记录 SIGTERM 未退出、90 秒被 SIGKILL，疑有长连接拖住优雅关闭）；随后重试成功，`RELEASE.json` 为 `status=verified`，`verified_at_utc=2026-11-27T03:37:50Z`，两端记录均为 `7d61f742`，备份 `unified-7d61f742b379-kedxksb4`。核验：服务 active、`/health database=ok`、公网 200、DB 仍为 `d4f6a8b0c2e1`、部门 10 个、`customer_followers` 2566 行、日志无 error/traceback。命令备查：
   `ssh rag "cd /tmp/crm-release-7d61f742 && python3 release.py deploy --bundle bundle.tar.gz --sha256 4e5b44152b93875787215fa33df1a80a80f4d90d7e28de354db902828b59b36b --apply"`
 - 回滚备份：部门改动前 `db-oadept-20261127T032538Z.dump`；发布失败自动回滚目录 `unified-7d61f742b379-l02bb_tt`。
 
