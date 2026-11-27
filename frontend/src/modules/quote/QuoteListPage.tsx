@@ -345,7 +345,9 @@ export default function QuoteListPage() {
         {/* 原来写「去「查价」页」—— 左侧菜单里没有叫「查价」的页，
             那个入口其实叫「价格中心」（2026-11-20 截图）。按菜单名写。 */}
         <div style={{ marginBottom: 12, fontSize: 12, color: 'var(--crm-text-3)' }}>
-          报价必须关联商机。还没有合适商机？去「价格中心」搜 SKU 选品，那里能一键新建快捷商机。
+          报价必须关联商机。还没有合适商机？去
+          <Link to="/prices?tab=lookup" style={{ margin: '0 4px' }}>「价格中心」</Link>
+          搜 SKU 选品，那里能一键新建快捷商机。
         </div>
         {canViewOpportunities ? <Select
           placeholder="按商机或客户名称搜索"

@@ -2712,7 +2712,8 @@ export default function QuoteDetailPage() {
                       改成服务端搜索后，依据总数判断空态，不再看"第一页有没有"。 */}
                   {!inquiriesCountQuery.isLoading && !customerHasInquiries && !row.inquiry_id && (
                     <span style={{ fontSize: 12, color: 'var(--crm-text-3)', alignSelf: 'center' }}>
-                      请到「定制需求」选择客户的当前版本，或打开该需求已经关联的原报价。
+                      请到<Link to="/inquiries" style={{ margin: '0 4px' }}>「定制需求」</Link>
+                      选择客户的当前版本，或打开该需求已经关联的原报价。
                     </span>
                   )}
                 </>
