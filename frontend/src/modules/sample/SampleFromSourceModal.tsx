@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { Checkbox, Input, Modal, TextArea, Toast } from '@douyinfe/semi-ui'
 import { createOrderDraft, getOrderDraftSource } from '../../shared/api/order'
 import { createSampleFromSource, getSampleSource, type SampleSourceRef } from '../../shared/api/sample'
@@ -69,6 +69,13 @@ export default function SampleFromSourceModal({ source, onClose, mode = 'sample'
     setDrafts(old => ({ ...old, [id]: { ...old[id], ...patch } }))
   }
   const rows = query.data?.items ?? []
+  const sourceLink = query.data
+    ? query.data.source.type === 'inquiry'
+      ? `/inquiries?inquiry_id=${query.data.source.id}`
+      : query.data.source.quote_id
+        ? `/quotes/${query.data.source.quote_id}?version=${query.data.source.id}`
+        : null
+    : null
   const rowsWithDraft = rows.map(row => ({ row, draft: drafts[row.source_item_id] })).filter(({ draft }) => Boolean(draft))
   const selected = rowsWithDraft.filter(({ draft }) => draft.selected)
   /** 没填数量的行（来源没记数量时就是这种）。行内与页脚用的是**同一个判据**。 */
@@ -153,6 +160,17 @@ export default function SampleFromSourceModal({ source, onClose, mode = 'sample'
       {rows.length === 0 && <div className="blocked-hint" role="alert" onClick={notifyBlocked} style={{ cursor: 'pointer' }}>
         <div className="blocked-hint-lead">这份来源里没有可{actionText === '建立订单草稿' ? '下单' : '打样'}的明细</div>
         <div>{noRowsDetail}</div>
+        {sourceLink && (
+          <div style={{ marginTop: 8 }}>
+            <Link
+              className="crm-text-action"
+              to={sourceLink}
+              onClick={(event) => event.stopPropagation()}
+            >
+              {query.data?.source.type === 'inquiry' ? '去询价补明细' : '去报价详情补明细'}
+            </Link>
+          </div>
+        )}
       </div>}
       {rowsWithDraft.map(({ row, draft }) => {
         const missing = draft.selected && (!Number.isFinite(Number(draft.quantity)) || !(Number(draft.quantity) > 0))
