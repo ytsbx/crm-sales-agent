@@ -1,3 +1,11 @@
+## 2026-11-27 企微首页「跟进关系」卡改为「可导入联系人」（已部署 b73b4afc）
+
+- 主人反馈「跟进关系 5,621」作为首页统计不指导操作：数据本身必须同步（跟进人/交接的依据），但不适合占一张卡。
+- 后端 `readiness.counts` 增加 `importable_contacts`：与预览导入同一套 `_plan` 计算（生产实测 0.6 秒），只给数量。
+- 前端 KPI 五项中移除「跟进关系」，改为「可导入联系人 / 核对后可批量导入」；同步入口仍在「更新企微数据」菜单。
+- 验证：全量后端测试通过、前端构建通过；发布 `status=verified`（合成提交 `b73b4afc`，基线 4ef176a2），两端记录一致，服务/健康/公网正常，DB 仍 `d4f6a8b0c2e1`。
+- 测试夹具 `follow_customer` 改为幂等并兼容同步/异步会话（并发会话在 model 里加了未提交的 legacy owner 事件，本次不涉及、未改动）。
+
 ## 2026-11-27 客户去掉「默认负责人」，只保留一组跟进人（待发布）
 
 - 主人拍板：客户没有默认负责人，客户就是一组跟进人；客户数每个跟进人各算一次；公海=没有跟进人（放入公海清空跟进人）；交接必须指定接手人；删除客户只有单一跟进人可自助，多人跟进需主管/管理员。
@@ -10,7 +18,10 @@
 - 前端：客户列表/详情/建档/批量转交/撞单/回收站/工作台/企微页去掉负责人显示与入口；跟进人弹窗支持转交/移除；业务单据负责人选择器保持不变。
 - 验证：后端全量 **2358+ 项通过**；前端 `vite build` 通过；隔离库脚本 `check_pool_scope_concurrency`、`check_pool_recycle_and_merge`、`check_wecom_customer_import`、`check_wecom_handover`、`check_recycle_bin`、`check_customer_timeline`、`check_customer_contact_api` 已按新语义更新并通过；`check_data_scope` 仍有 3 项沿用「系统模板生成合同」的旧用例（该入口已退役，另行更新），另有 1 项主管 price 快照待查。
 - 本地 8009/5275 截图确认：客户列表「跟进人」列、详情「跟进人：…」、跟进人弹窗（转交/移除）、转交弹窗。
-- 待发布：无迁移；生产发布前按惯例预检/备份，主人授权后执行。
+- 发布包：合成提交 `4e549e4a`（基线=生产已装 `7d61f742`，只叠加本次 93 文件改动，不含并发会话未上线的退货/迁移），无迁移变更，SHA256 `f946990e…87bc`。
+- 生产发布（2026-11-27，主人确认「放公海清空跟进人」后授权「发」）：`status=verified`，`verified_at_utc=2026-11-27T05:45:00Z`；两端记录均 `4e549e4a`，备份 `unified-4e549e4a7d5c-u6oow_71`。核验：服务 active、`/health database=ok`、公网 200、DB 仍 `d4f6a8b0c2e1`、`customer_followers` 2566 行 = customers 2566、日志无 error/traceback。
+- 规则回归修复（2026-11-27 主人选择「补回限制」）：改造把公海客户的下单/签合同/线索转化放开了（旧规则要求先认领）。已加 `assert_customer_ready_for_business`：公海或无跟进人的客户在这些入口返回 422「请先领取或指派跟进人」。合成提交 `4ef176a2`（基线 4e549e4a），无迁移；发布 `status=verified`，两端记录均 `4ef176a2`，备份 `unified-4ef176a2493c-ulv01mbr`；生产库仍 `d4f6a8b0c2e1`、当前公海客户 0。
+- 发布树验证：合成树全量 2358 项测试通过、前端 `vite build` 通过、`alembic heads` 仍为 `d4f6a8b0c2e1`。
 
 ## 2026-11-27 · 提示文案补齐跳转入口（未发布生产）
 
@@ -6793,3 +6804,26 @@
 - 规则变更（已改测试）：客户多跟进人上线后，客户子资源在客户可见后展示该客户全部单据——`check_customer_contact_api` 的商机 total 由 0 改 1；`check_customer_handover_documents` 的客户订单子资源由只认搬过来的一张改为展示客户下全部订单。全局列表/详情仍按单据负责人、旧负责人直接打开订单仍 403 的断言保留。
 - 规则变更（已改测试）：业务单据默认负责人=创建人而非继承客户负责人——`check_twelfth_round_repairs` 的默认商机与默认复制改为归 admin；显式指定停用/不存在负责人仍分别断言 422/404，未放宽。`ops/smoke_ui.mjs` 的 12-R6 详情/列表负责人展示同步改为当前创建人。
 - 验证：`check_product_insights.py`、`check_customer_contact_api.py`、`check_customer_handover_documents.py`、`check_twelfth_round_repairs.py` 全过；`SMOKE_TWELFTH_ONLY=1` 界面冒烟通过；后端 pytest exit 0。待推 CI 复跑确认。
+
+## 2026-11-27 前端异常态入口跳转复核（本地，未部署）
+
+- 复核新增入口的落点和参数：`/quotes/{id}?version=` 只在版本属于该报价时生效；`/inquiries?inquiry_id=` 按询价 id 过滤；订单页 `payments/receivables/returns/shipments` 均为真实页签；`/settings?tab=tags` 为真实 tab。
+- 修复打样审批通过后的错单风险：`SampleListPage` 的「登记制作完成」原先只 `setMadeModal(true)`，但附件查询和提交使用路由 `detailId`；新建样品成功页直接点会打开空/错误样品。改为先导航到目标样品，`detailId` 对齐后再打开登记弹窗，提交 `459deea2`。
+- 修复订单草稿缺已接受报价的泛跳：来源为报价版本的草稿直达 `/quotes/{quote_id}`（不带历史 `version`，客户接受只对当前版本生效）；来源为询价的草稿回 `/inquiries?inquiry_id={id}` 转报价；仅手工草稿回落 `/quotes`，提交 `ce331d33`、`39a7d620`、`3810b465`。
+- 规则沙盒补空态/错误态入口：报价无版本时直达 `/quotes/{quoteId}` 建版；版本读取失败时弹窗内「重新读取版本」，提交 `3a6b87f2`。
+- 应收计划页去掉会切回订单列表的「订单中心」链接，改为提示点订单号进入订单详情，在「应收计划」登记，提交 `31bfc210`。
+- 取消订单弹窗在「如需撤销商机成交」旁补关联商机详情入口，提交 `d01c5043`；无商机查看权限时改为联系负责人，不展示死链，提交 `167295a9`。
+- 验证：`npx tsc -b` 通过；`npm run build` 通过（仅依赖内 module directive 提示）；`npm run lint` 0 error（41 条历史 warning）。生产未部署，生产仍为 `2a120470048e4301371b05fc57361cb939b56d6b` / DB `d4f6a8b0c2e1`。
+
+## 2026-11-27 工作台指标卡深链纠正：公海客户 / 本月回款（本地已验证）
+
+- 发现两处「数字对、点进去不是这个口径」的落点，和之前应收计划页的错跳是同类问题：卡片本身是统计口径，目标页却没带对应筛选或页签。
+- 公海客户：工作台团队概览「公海客户」（公海池没有跟进人）原先跳 `/customers`，实际落在默认的「我跟进的 / 全部客户」，公海为 0 时也看不出原因。客户列表现在接受 `scope=mine|pool|all`，卡片改为 `/customers?scope=pool`；`scope` 只作初始筛选，不覆盖页内手动切换。
+- 本月回款：工作台「本月回款金额」原先跳 `/receivables`，而该路由默认打开「应收计划」，不是这笔钱对应的「回款记录」。订单/回款页现在接受 `?tab=orders|receivables|payments`，卡片改为 `/receivables?tab=payments`；页内切换保留原行为。
+- 实机核验（本地 `127.0.0.1:5274`）：从工作台点击「公海客户」落到 `/customers?scope=pool`，范围选择显示「公海客户」；点击「本月回款金额」落到 `/receivables?tab=payments`，页签高亮「回款记录」；两处均为真实页面可继续操作。
+- 验证：`npx tsc -b`、`npm run build`、`npm run lint` 均通过；lint 0 error、41 条历史 warning。生产未部署。
+
+## 2026-11-27 撤掉「流程指引」独立前端模块（主人拍板）
+
+- 原因：`d21b904c` 把 11-25 全流程走查内容做成了独立菜单「智能与协同 → 流程指引」、`/guide` 路由和 `frontend/src/modules/guide/GuidePage.tsx`。它是静态文档页、没有后端接口，主人明确要求撤掉独立入口。
+- 处理：删除 `GuidePage.tsx` 与 `modules/guide` 目录；移除 `menu.ts` 的菜单项与不再使用的 `IconHelpCircle` 导入；移除 `router.tsx` 的懒加载和 `/guide` 路由。审计报告 `docs/全流程走查与撤回点-20261125.md` 保留，原报告第 5 项改为“不单独做前端页，保留本报告与各业务页提示”。

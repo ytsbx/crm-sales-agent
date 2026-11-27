@@ -45,8 +45,8 @@ function Field({label,children,span,required,hint}:{label:string;children:ReactN
     {hint && <div style={{marginTop:5,fontSize:12,lineHeight:1.65,color:'var(--crm-text-3)'}}>{hint}</div>}
   </div>
 }
-export default function SampleDingTalkModal({sampleId,customerName,onClose}:{
-  sampleId:number;customerName:string;onClose:()=>void
+export default function SampleDingTalkModal({sampleId,customerName,onClose,onMade}:{
+  sampleId:number;customerName:string;onClose:()=>void;onMade?:()=>void
 }) {
   const client=useQueryClient()
   const query=useQuery({queryKey:['sample-dingtalk',sampleId],queryFn:()=>api.get<Options>(`/samples/${sampleId}/dingtalk`),refetchInterval:5000,refetchOnWindowFocus:true})
@@ -174,6 +174,7 @@ export default function SampleDingTalkModal({sampleId,customerName,onClose}:{
     onCancel={()=>{if(!mutate.isPending)onClose()}}
     footer={<div style={{display:'flex',flexWrap:'wrap',justifyContent:'flex-end',gap:10}}>
       <Button disabled={mutate.isPending} onClick={onClose}>关闭</Button>
+      {approval?.status === 'approved' && onMade && <Button type="primary" theme="outline" onClick={onMade}>登记制作完成</Button>}
       {submitted && query.data?.records[0]?.allowed_actions?.includes('resubmit') && <Button disabled={mutate.isPending} onClick={()=>setEdited({...draft,resubmit:true})}>修改后重新提交</Button>}
       {submitted && draft.mode==='standalone' && query.data?.records[0]?.provider==='self_oa' && query.data.records[0].status==='pending' && query.data.records[0].instance_id &&
         <Button type="danger" disabled={mutate.isPending||withdraw.isPending} onClick={()=>Modal.confirm({title:'撤回同序 OA 打样审批？',content:'只对仍在审批中的同序 OA 流程生效。',onOk:()=>withdraw.mutate(query.data!.records[0].id)})}>撤回同序 OA 审批</Button>}

@@ -203,6 +203,20 @@ export default function OrderDraftsPage() {
   const draft = query.data
   const editable = draft.status === 'draft' && can('order:manage') && !busy
   const quoteAmount = selectedQuote?.current_version_amount_exact ?? selectedQuote?.current_version_amount
+  // 草稿如果是从某张报价建的，直接回到那张报价去点「客户接受」；
+  // 从询价建的就先回询价转报价；只有手工草稿没有来源时才落到报价中心列表。
+  // 报价链接不带 ?version：客户接受只对当前版本生效，带历史版本反而会落错版本。
+  const sourceContext = draft.source_context
+  const sourceQuoteLink = sourceContext.type === 'quote_version' && sourceContext.quote_id
+    ? `/quotes/${sourceContext.quote_id}`
+    : sourceContext.type === 'inquiry'
+      ? `/inquiries?inquiry_id=${sourceContext.id}`
+      : '/quotes'
+  const sourceQuoteAction = sourceContext.type === 'quote_version' && sourceContext.quote_id
+    ? '打开来源报价登记客户接受'
+    : sourceContext.type === 'inquiry'
+      ? '去来源询价转报价'
+      : '去报价中心登记客户接受'
   const confirmationError = confirm.variables?.id === draftId ? confirm.error?.message : undefined
   const draftMismatch = confirmationError?.startsWith('草稿明细、币种或付款条件与客户确认报价不一致')
   const confirmBlocked = !can('order:manage')
@@ -214,7 +228,7 @@ export default function OrderDraftsPage() {
         : quotes.isPending
           ? '正在读取报价。'
           : quoteOptions.length === 0
-            ? '还没有可用的已接受报价。请先在报价中心登记客户接受，再回来下单。'
+            ? '还没有可用的已接受报价。'
             : dirty
               ? '请先在上方保存草稿。'
               : !selectedQuote
@@ -358,9 +372,16 @@ export default function OrderDraftsPage() {
             下单后会打开正式订单。系统先生成一条全款应收，可到订单的「应收计划」核对或拆分。
           </p>
           {confirmBlocked ? (
-            <GuardedButton theme="outline" disabled action="正式下单" blockedReasons={[confirmBlocked]}>
-              确认正式下单
-            </GuardedButton>
+            <>
+              <GuardedButton theme="outline" disabled action="正式下单" blockedReasons={[confirmBlocked]}>
+                确认正式下单
+              </GuardedButton>
+              {can('quote:view') && !quotes.isPending && !quotes.isError && quoteOptions.length === 0 && (
+                <p className="workflow-guide">
+                  还没有可用的已接受报价，<Link className="crm-text-action" to={sourceQuoteLink}>{sourceQuoteAction}</Link>后回来下单。
+                </p>
+              )}
+            </>
           ) : (
             <Popconfirm
               title="确认正式下单？"

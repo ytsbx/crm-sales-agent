@@ -5,10 +5,10 @@ import { requiredQuantityText } from '../../shared/number-input'
 import { paymentMoney } from '../../shared/payment-allocation'
 import PageHeader from '../../shared/components/PageHeader'
 import HelpTip from '../../shared/components/HelpTip'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { emptyText } from '../../shared/hooks/emptyText'
+import { emptyTextNode } from '../../shared/components/EmptyState'
 import { Button, DatePicker, Input, Modal, Popconfirm, Select, Table, Tabs, Toast } from '@douyinfe/semi-ui'
 
 import {
@@ -65,9 +65,15 @@ const EMPTY_ITEM = { sku_id: null as number | null, quantity: '', unit_price: ''
 
 export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: string }) {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const { can } = usePermissions()
   const currentUser = useAuthStore((state) => state.user)
-  const [selectedTab, setActiveKey] = useState(initialTab)
+  const requestedTab = searchParams.get('tab')
+  const resolvedInitialTab = TABS.some(({ itemKey }) => itemKey === requestedTab) ? requestedTab! : initialTab
+  const [selectedTab, setActiveKey] = useState(resolvedInitialTab)
+  // 深链 `?tab=payments` 只负责“打开哪一个页签”，不改变现有页内切换；
+  // 工作台的「本月回款金额」卡要落在回款记录，而不是默认的应收计划。
   const tab = TABS.find(({ itemKey }) => itemKey === selectedTab)
   const activeKey = tab && can(tab.permission) ? tab.itemKey : undefined
   /* 1024 宽内容区约 700px，销售订单八列合计 1114px，右侧「待回款 / 交期 /
@@ -659,7 +665,12 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
                 dataSource={ordersQuery.data?.items ?? []}
                 loading={ordersQuery.isLoading}
                 rowKey="id"
-                empty={emptyText(ordersQuery, '还没有订单，去报价中心把成交的报价转成订单')}
+                empty={emptyTextNode(
+                  ordersQuery,
+                  '还没有订单',
+                  '成交报价转成订单后，会出现在这里。',
+                  <Button size="small" theme="outline" onClick={() => navigate('/quotes')}>去报价中心</Button>,
+                )}
                 pagination={{
                   currentPage: page,
                   pageSize,
@@ -677,7 +688,9 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
 
           {activeKey === 'receivables' && (
             <>
-            <p className="workflow-guide">应收计划列的是约定要收的款。客户实际打款后，到订单详情的「应收计划」找到对应期登记。</p>
+            <p className="workflow-guide">
+              应收计划列的是约定要收的款。客户实际打款后，点订单号进入订单详情，在「应收计划」找到对应期登记。
+            </p>
             <Table<Receivable>
               className="receivables-table"
               columns={receivableColumns}
@@ -690,7 +703,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
                 total: receivablesQuery.data?.total ?? 0,
                 onPageChange: setReceivablesPage,
               }}
-              empty={emptyText(receivablesQuery, '还没有应收计划', '在订单详情查看应收计划，或联系财务生成。')}
+              empty={emptyTextNode(receivablesQuery, '还没有应收计划', '在订单详情查看应收计划，或联系财务生成。')}
             />
             </>
           )}
@@ -700,7 +713,8 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
             <p className="workflow-guide">{can('payment:manage')
               ? '先核对银行到账和凭证，再处理状态为「待确认」的回款。'
               : '财务确认后，回款才计入已收。可查看每笔的处理状态。'}
-              {can('order:view') && '点订单号可回到订单详情。'}</p>
+              {can('order:view') && <>点订单号可回到订单详情；也可以到<Link to="/orders" style={{ margin: '0 4px' }}>订单中心</Link>按订单查。</>}
+            </p>
             <Table<Payment>
               className="payments-table"
               columns={paymentColumns}
@@ -713,7 +727,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
                 total: paymentsQuery.data?.total ?? 0,
                 onPageChange: setPaymentsPage,
               }}
-              empty={emptyText(paymentsQuery, '还没有回款记录', '已经到账的款项可到订单对应的应收期登记。')}
+              empty={emptyTextNode(paymentsQuery, '还没有回款记录', '已经到账的款项可到订单对应的应收期登记。')}
             />
             </>
           )}

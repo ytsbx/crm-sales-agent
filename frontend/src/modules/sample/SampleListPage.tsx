@@ -276,14 +276,17 @@ function DetailCard({
   extra,
   action,
   children,
+  id,
 }: {
   title: string
   extra?: string
   action?: ReactNode
   children: ReactNode
+  id?: string
 }) {
   return (
     <section
+      id={id}
       style={{
         border: '1px solid var(--crm-border)',
         borderRadius: 10,
@@ -785,6 +788,7 @@ export default function SampleListPage() {
   // 拿什么比对全看这一笔。原来页面只发 remark、连 remark 都没传，
   // 快照永远是空的 —— 后端字段白做了（返工单 P2-7）。
   const [madeModal, setMadeModal] = useState(false)
+  const [pendingMadeId, setPendingMadeId] = useState<number | null>(null)
   const [madeForm, setMadeForm] = useState<{ remark: string; fileIds: number[] }>({
     remark: '',
     fileIds: [],
@@ -796,6 +800,15 @@ export default function SampleListPage() {
     queryFn: () => listBusinessFiles('sample', detailId!),
     enabled: madeModal && Boolean(detailId),
   })
+
+  // OA 审批通过后可能是在“新建样品”成功页直接打开的弹窗；
+  // 这时 detailId 还没切到这张单，不能只 setMadeModal(true)，否则会开错单。
+  useEffect(() => {
+    if (pendingMadeId !== null && detailId === pendingMadeId) {
+      setMadeModal(true)
+      setPendingMadeId(null)
+    }
+  }, [pendingMadeId, detailId])
 
   const madeMutation = useMutation({
     mutationFn: () =>
@@ -1119,6 +1132,13 @@ export default function SampleListPage() {
           sampleId={oaTarget.id}
           customerName={oaTarget.customer_name || (oaTarget.customer_id ? '客户名称暂不可显示' : '未关联客户')}
           onClose={() => { setOaTarget(null); void refresh() }}
+          onMade={() => {
+            const id = oaTarget.id
+            setOaTarget(null)
+            if (id === detailId) setMadeModal(true)
+            else { setPendingMadeId(id); navigate(`/samples/${id}`) }
+            void refresh()
+          }}
         />
       )}
       <ConfirmRequiredModal
@@ -2199,7 +2219,7 @@ export default function SampleListPage() {
                     锁定之后上传的**自动**按「后续补充资料」归类，不用用户选 ——
                     锁定与否由后端下发（`attachment_locked` / `attachment_lock`），
                     前端不自己按 made_at / status 推一遍（推出来的那份迟早和后端分叉）。 */}
-                <DetailCard title="附件" extra={detail.attachment_locked ? '已锁定' : '可上传'}>
+                <DetailCard id="sample-attachment-area" title="附件" extra={detail.attachment_locked ? '已锁定' : '可上传'}>
                   {detail.attachment_locked && (
                     <div
                       style={{
@@ -2285,8 +2305,21 @@ export default function SampleListPage() {
               <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>正在读附件…</div>
             )}
             {!madeFilesQuery.isLoading && (madeFilesQuery.data ?? []).length === 0 && (
-              <div style={{ fontSize: 12, color: 'var(--crm-warning)' }}>
-                这张单子上还没有附件。请先在上面的「附件」区上传图纸/确认件，再回来登记依据。
+              <div style={{ display: 'grid', gap: 6, justifyItems: 'start', fontSize: 12, color: 'var(--crm-warning)' }}>
+                <span>这张单子上还没有附件。请先在上面的「附件」区上传图纸/确认件，再回来登记依据。</span>
+                <Button
+                  size="small"
+                  theme="borderless"
+                  style={{ paddingLeft: 0, color: 'var(--crm-primary)' }}
+                  onClick={() => {
+                    setMadeModal(false)
+                    window.setTimeout(() => {
+                      document.getElementById('sample-attachment-area')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                    }, 50)
+                  }}
+                >
+                  去附件区上传
+                </Button>
               </div>
             )}
             <div style={{ display: 'grid', gap: 4 }}>

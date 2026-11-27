@@ -173,8 +173,9 @@ export default function NotificationSettingsPanel() {
         <section className="settings-delivery-card">
           <h4><IconHistogram aria-hidden="true" />企微送达情况</h4>
           <p className="settings-help">这里统计企业微信推送。站内通知可在 CRM 顶部铃铛查看。</p>
-          {channelsQuery.isError ? <p className="settings-help">请先重新读取通知渠道。</p>
-            : !appliedChannels ? <p className="settings-help">正在读取通知渠道…</p>
+          {channelsQuery.isError ? (
+            <p className="settings-help">通知渠道读取失败，可在上方「通知设置」重新读取。</p>
+          ) : !appliedChannels ? <p className="settings-help">正在读取通知渠道…</p>
             : !appliedChannels.wecom_enabled ? (
               <>
                 <p className="settings-delivery-status">
