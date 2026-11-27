@@ -1,3 +1,12 @@
+## 2026-11-27 · 订单完成必须财务确认全部回款（未发布生产）
+
+- 口径：报价过程不需要财务；订单完成 = 交付完成 + 财务确认全部回款。只要未收金额 >0 就不能标记完成，也不再接受“填个原因”放行。
+- 后端：`order.service.change_status` 的 `completed` 分支保留“实发数量盖住订单数量”的履约校验，再取 `payment_service.order_finance_summary`；未收 >0 抛 422。闸门放在服务层，因为网页 `POST /orders/{id}/status` 和 ERP 刷新/回调都走这里；只放路由会被 ERP 回传绕过。`order/router.py` 删掉重复判断，只在完成时取财务快照写审计。
+- 前端：`OrderDetailPage.tsx` 删除“完成原因”输入；未收款时「完成订单」禁用/弹窗拦截，并给“去回款记录”入口；发货页文案改为“财务确认全部回款后，才能完成订单”；完成 Toast、状态下拉和头部标签统一为“回款已确认”。
+- 测试：`test_order_completion_requires_paid.py` 2 项通过（带“月结客户，按合同账期收款”也 422；未收 0 才完成并写状态历史）；全量后端通过；临时前端副本 `tsc + vite build` 通过。QA 脚本 `check_order_completion_evidence.py`、`check_order_payment_api.py` 同步改为“未回款拒绝完成、财务确认后再完成”。
+- 文档：`docs/全流程走查与撤回点-20261125.md` 第 52 行、4.3 条改为 B 口径（覆盖原 A）。
+- 提交 `23716193`，已推 GitHub；生产未部署。
+
 ## 2026-11-27 · AI 分析按钮 loading 隔离
 
 - 问题：客户详情「客户总结」「跟进建议」共用同一个 `aiMutation.isPending`，点任意一个时两个按钮同时转圈，看起来像发了两个请求（主人截图）。
@@ -6412,7 +6421,7 @@
 - 后端 `POST /orders/{id}/status` 完成前计算 `order_finance_summary` 的未收金额；>0 且无 remark → 422「还有未收款 X 元，必须填写原因」；原因写入状态历史与审计，审计额外记未收金额快照。
 - 前端「完成交付」弹窗显示待收款金额并给必填「完成原因」；未填不能提交。
 - 确认系统未接 MES/ERP，履约状态全部人工维护，不存在回调入口需要单独豁免。
-- 验证：新增 `tests/test_order_completion_reason.py`（无原因 422、有原因通过且审计带金额）；全量 pytest、前端 tsc 与构建通过。
+- 验证：新增 `tests/test_order_completion_reason.py`（无原因 422、有原因通过且审计带金额）；全量 pytest、前端 tsc 与构建通过。（该口径已于 2026-11-27 被“财务确认全部回款”取代，测试改为 `test_order_completion_requires_paid.py`。）
 - 未部署：生产仍 3302a209，与此前 K4/K5/退款金额一起待下次发布。
 
 ## 2026-11-26 销售退货上线前生产只读扫描（结果：0 条）
