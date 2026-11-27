@@ -491,10 +491,10 @@ async def sync_contact_events(session: AsyncSession) -> None:
 async def unbound_contacts(
     session: AsyncSession, *, keyword: str | None, page: int, page_size: int
 ) -> tuple[list[dict], int]:
-    """待归一列表：归一状态仍为 pending 的外部联系人。
+    """待归一列表：归一状态仍为 pending 的外部联系人，按 id 倒序。
 
-    「多名跟进员工对应不同负责人」的排在最前：这类才是真正因为多人添加
-    才卡住的，要先看到；其余保持原来的 id 倒序。
+    多人跟进的客户不再扣住（绑定的员工都成为跟进人），卡住的只剩
+    没有可绑定员工、姓名缺失/冲突等真正需要人工处理的情况。
     """
     # 与「预览导入」同一套判定：每条为什么不能自动导入，直接标在名单上。
     # 局部导入：customer_import 反向依赖本模块的任务工具，模块级导入会成环。
