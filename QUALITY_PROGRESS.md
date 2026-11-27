@@ -4,6 +4,7 @@
 - 真实缺陷修复：`AppError` 导入；`Customer(owner_id=...)` 旧写法落库自动补同人跟进人（公海跳过）；客户关联待办改用客户专用范围校验；报价到期扫描单列解包；撞单 `assign_existing` 要求接手人在职；专属价公海判据改 `pool_status`；恢复「久未联系」扫描的时间 cutoff；候选恢复权限按快照 `owner_id` 判范围；公海联系人强制脱敏；月结提醒优先发给客户跟进人；放公海历史记最后一位跟进人；领取客户时接回上一任未完成待办与单据。
 - 测试/夹具按新规则更新：大批 `check_*` 与 pytest 夹具从单人 `owner_id` 改为跟进人集合；`customers.transfer_customer` 显式传 `from_user_id`/`only_from_owner_id` 才表示“替换某位跟进人”；确认冒烟客户新建不再期待负责人选择器，批量入口改「批量转交/确认转交」。
 - 验证：隔离库 `crm_iso_test_ci_final` 重建（`alembic upgrade head` + `scripts.seed`，后端 8033、OA 全置空）后，`ops/run_checks.sh` **全部通过**；`pytest -q` 通过；前端 `npm run build` 与 `node ops/confirmation_browser_smoke.mjs frontend/dist` 通过。未删关键断言、未放宽边界。
+- CI 第二轮 UI 仍红：`smoke_ui.mjs` 保存草稿后固定 `sleep(500)` 就点「生成草稿需求单」，慢机器上按钮还停在 `busy || dirty` 禁用态，点击被提示层接走、后端没收到生成请求，随后报“草稿文件未生成”。改为 `waitForEnabledButton` 等按钮真正可用再点，并轮询 `biz-docs` 直到生成；本地 `SMOKE_ORDER_DRAFT_ONLY=1` 通过，断言未放宽。
 
 ## 2026-11-27 企微首页「跟进关系」卡改为「可导入联系人」（已部署 b73b4afc）
 

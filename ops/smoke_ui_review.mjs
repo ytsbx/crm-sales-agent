@@ -440,6 +440,29 @@ async function createTimelineFixture(token, customerId, skuId) {
  * 有些交付物（商机看板、Copilot 抽屉）默认不出现，只有点一下才渲染出来；
  * 只截图列表页等于没验证。这里按文字找元素再派发真实点击事件。
  */
+/**
+ * 等按钮真的可用再点。
+ *
+ * 为什么需要（2026-11-27）：草稿保存成功后会 `markDirty(false)` 让「生成草稿需求单」
+ * 重新可用。CI 机器比本地慢，固定 `sleep(500)` 有时还停在 `busy || dirty` 的禁用态：
+ * 点击被 GuardedButton 的提示层接走，后端根本收不到生成请求，随后报“草稿文件未生成”。
+ * 这里直接等按钮解除禁用，既消除慢机器抖动，也不放宽任何业务断言。
+ */
+async function waitForEnabledButton(client, text, timeout = 15000) {
+  const expression = `(() => {
+    const hit = Array.from(document.querySelectorAll('button'))
+      .find((node) => (node.innerText || '').trim() === ${JSON.stringify(text)});
+    return Boolean(hit) && !hit.disabled;
+  })()`
+  const deadline = Date.now() + timeout
+  do {
+    const result = await client.send('Runtime.evaluate', { expression, returnByValue: true })
+    if (result.result.value === true) return true
+    await sleep(250)
+  } while (Date.now() < deadline)
+  return false
+}
+
 async function clickByText(client, text, { tag = 'button' } = {}) {
   const expression = `(() => {
     const nodes = Array.from(document.querySelectorAll(${JSON.stringify(tag)}));
@@ -1619,8 +1642,14 @@ async function main() {
         await setQuantity(2)
         let saved=await checkedJson(`/order-drafts/${draft.id}`,auth.token)
         if(saved.items[0].quantity!==2 || Number(saved.items[0].source_snapshot.original_quantity)!==10000) throw new Error('修改草稿覆盖了原数量或未保存')
-        await clickByText(client,'生成草稿需求单'); await sleep(600)
-        const docs=await checkedJson(`/biz-docs?order_draft_id=${draft.id}`,auth.token)
+        if(!await waitForEnabledButton(client,'生成草稿需求单')) throw new Error('保存后「生成草稿需求单」仍被禁用')
+        await clickByText(client,'生成草稿需求单')
+        let docs=[]
+        for(let i=0;i<20;i+=1){
+          docs=await checkedJson(`/biz-docs?order_draft_id=${draft.id}`,auth.token)
+          if(docs.length===1 && docs[0].title.includes('草稿')) break
+          await sleep(300)
+        }
         if(docs.length!==1 || !docs[0].title.includes('草稿')) throw new Error('草稿文件未生成或未标注草稿')
         await checkedJson(`/quote-versions/${item.orderDraft.version_id}/submit-approval`,auth.token,{method:'POST',body:JSON.stringify({reason:'虚构订单草稿验收'})})
         await checkedJson(`/quote-versions/${item.orderDraft.version_id}/mark-sent`,auth.token,{method:'POST',body:JSON.stringify({})})
