@@ -684,9 +684,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
           {activeKey === 'receivables' && (
             <>
             <p className="workflow-guide">
-              应收计划列的是约定要收的款。客户实际打款后，到
-              <Link to="/orders" style={{ margin: '0 4px' }}>订单中心</Link>
-              的「应收计划」找到对应期登记。
+              应收计划列的是约定要收的款。客户实际打款后，点订单号进入订单详情，在「应收计划」找到对应期登记。
             </p>
             <Table<Receivable>
               className="receivables-table"
