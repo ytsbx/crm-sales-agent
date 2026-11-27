@@ -305,6 +305,10 @@ export default function CustomerDetailPage() {
     onSuccess: (data) => setAiEnvelope(data),
     onError: (error: Error) => Toast.error(error.message),
   })
+  // 两个按钮共用一个 mutation，但 loading 不能共用：否则点「客户总结」时
+  // 旁边的「跟进建议」也跟着转，看起来像两个请求都发出去了。这里只让
+  // 当前点击的那个按钮转；另一个置灰，避免同时发两份分析。
+  const aiPendingKind = aiMutation.isPending ? aiMutation.variables : null
 
   const invalidateCustomer = () => {
     void queryClient.invalidateQueries({ queryKey: ['customer', customerId] })
@@ -1388,7 +1392,8 @@ export default function CustomerDetailPage() {
                 size="small"
                 type="tertiary"
                 theme="borderless"
-                loading={aiMutation.isPending}
+                loading={aiPendingKind === 'summary'}
+                disabled={aiMutation.isPending}
                 onClick={() => aiMutation.mutate('summary')}
               >
                 客户总结
@@ -1400,7 +1405,8 @@ export default function CustomerDetailPage() {
                 size="small"
                 type="tertiary"
                 theme="borderless"
-                loading={aiMutation.isPending}
+                loading={aiPendingKind === 'followup'}
+                disabled={aiMutation.isPending}
                 onClick={() => aiMutation.mutate('followup')}
               >
                 跟进建议
