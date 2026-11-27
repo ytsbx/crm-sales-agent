@@ -539,9 +539,6 @@ export default function WeComPage() {
         : counts.unbound_contacts > 0 && !counts.follow_relations && canSyncContacts && readiness.can_sync_external ? SYNC_ACTIONS.follow
           : undefined
   )
-  const previewButton = (primary: boolean) => <Button type="primary" theme={primary ? 'solid' : 'light'}
-    disabled={busy} loading={importPreviewMutation.isPending}
-    onClick={() => importPreviewMutation.mutate()}>预览导入</Button>
   let guideTitle = '整理企微客户'
   let guideText = '选择左侧联系人，核对后关联已有客户或创建客户档案。'
   if (canSync || canPreviewImport) {
@@ -597,26 +594,36 @@ export default function WeComPage() {
         </>}
       />
 
-      <SectionCard style={{ marginBottom: 12 }}>
-        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-          <div role="status" style={{ flex: '1 1 270px' }}>
-            <div style={{ fontWeight: 600, marginBottom: 4 }}>{guideTitle}</div>
-            <div style={{ color: 'var(--crm-text-2)', lineHeight: 1.6 }}>{guideText}</div>
-            {canSyncContacts && readiness && !readiness.can_sync_external && <div style={{ color: 'var(--crm-text-3)', marginTop: 4 }}>
-              当前无法更新外部联系人和跟进关系，请联系管理员检查企微客户联系配置。
-            </div>}
-            {canSyncContacts && counts?.follow_relations === 0 && isWeComIpDenied(lastFollowSync?.error_message) &&
-              <div style={{ color: 'var(--crm-text-3)', marginTop: 4 }}>上次同步跟进关系失败。{WECOM_IP_DENIED_NOTICE}</div>}
-          </div>
-          {(canSync || canPreviewImport) && <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
-            {readinessQuery.isError && <Button onClick={() => void readinessQuery.refetch()}>重新检查</Button>}
-            {counts && counts.unbound_contacts > 0 && canPreviewImport && previewButton(!nextSync)}
-            {nextSync && <Button type="primary" theme="solid" disabled={busy}
-              loading={syncMutation.isPending && syncMutation.variables === nextSync.run}
-              onClick={() => syncMutation.mutate(nextSync.run)}>{nextSync.label}</Button>}
-          </div>}
-        </div>
-      </SectionCard>
+      {/* 只保留一条紧凑提示，不再用整块白卡重复一次「同步成员」按钮（右侧菜单里已有）。 */}
+      {(readinessQuery.isError || (counts && nextSync) || (counts && counts.unbound_contacts > 0 && canPreviewImport)
+        || (counts && canSyncContacts && readiness && !readiness.can_sync_external)
+        || (counts && canSyncContacts && counts.follow_relations === 0 && isWeComIpDenied(lastFollowSync?.error_message))) && (
+        <Banner
+          type={readinessQuery.isError ? 'danger' : 'info'}
+          closeIcon={null}
+          style={{ marginBottom: 12 }}
+          description={(
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+              <span style={{ flex: '1 1 260px' }}>
+                {readinessQuery.isError ? '暂时无法读取同步状态，可以重新检查后再继续。'
+                  : counts && canSyncContacts && readiness && !readiness.can_sync_external
+                    ? '当前无法更新外部联系人和跟进关系，请联系管理员检查企微客户联系配置。'
+                    : counts && canSyncContacts && counts.follow_relations === 0 && isWeComIpDenied(lastFollowSync?.error_message)
+                      ? `上次同步跟进关系失败。${WECOM_IP_DENIED_NOTICE}`
+                      : <><strong>{guideTitle}</strong>　{guideText}</>}
+              </span>
+              {readinessQuery.isError && <Button size="small" onClick={() => void readinessQuery.refetch()}>重新检查</Button>}
+              {counts && counts.unbound_contacts > 0 && canPreviewImport
+                && <Button size="small" type="primary" theme={nextSync ? 'light' : 'solid'}
+                  disabled={busy} loading={importPreviewMutation.isPending}
+                  onClick={() => importPreviewMutation.mutate()}>预览导入</Button>}
+              {nextSync && <Button size="small" type="primary" theme="solid" disabled={busy}
+                loading={syncMutation.isPending && syncMutation.variables === nextSync.run}
+                onClick={() => syncMutation.mutate(nextSync.run)}>{nextSync.label}</Button>}
+            </div>
+          )}
+        />
+      )}
 
       {/* 五项指标按全局 4 列网格排，第五张「未建账号」被挤到第二行左边孤零零一张，
           下面又接着三栏卡片 —— 中间多出一条断掉的半行。
