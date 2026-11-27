@@ -48,6 +48,26 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
+#: 已退役、代码不再读写但生产仍有历史值的列。autogenerate 不把它们当成
+#: “模型少写了字段”，否则会生成删列迁移；历史数据仍需保留。
+LEGACY_AUTOGENERATE_COLUMNS = {
+    ("contract_documents", "template_id"),
+    ("contract_documents", "generated_file_id"),
+}
+
+
+def include_object(object_, name, type_, reflected, compare_to):
+    """只对明确登记的退役列/外键闭嘴，其余结构漂移继续报。"""
+    if type_ == "column" and getattr(object_, "table", None) is not None:
+        if (object_.table.name, name) in LEGACY_AUTOGENERATE_COLUMNS:
+            return False
+    if type_ == "foreign_key_constraint" and getattr(object_, "table", None) is not None:
+        if object_.table.name == "contract_documents" and any(
+            getattr(col, "name", None) == "template_id" for col in object_.columns
+        ):
+            return False
+    return True
+
 
 def run_migrations_offline() -> None:
     context.configure(
@@ -56,13 +76,19 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
+        include_object=include_object,
     )
     with context.begin_transaction():
         context.run_migrations()
 
 
 def do_run_migrations(connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        compare_type=True,
+        include_object=include_object,
+    )
     with context.begin_transaction():
         context.run_migrations()
 
