@@ -102,6 +102,8 @@ export function runPublicPoolRecycle() {
     cooldown_count?: number
     enabled_rule_count?: number
     unknown_contact_count?: number
+    /** 企业微信导入、尚未在 CRM 记录跟进：不是待补核，但暂不自动回收 */
+    wecom_unfollowed_count?: number
     protection_overridden_count?: number
     /** 本轮实际发出的预告通知条数（原负责人与复核主管分别计） */
     notified_count: number

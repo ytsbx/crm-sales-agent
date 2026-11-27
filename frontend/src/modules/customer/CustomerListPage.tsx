@@ -382,7 +382,8 @@ export default function CustomerListPage() {
       }),
   })
 
-  // 历史导入、联系时间未知的客户只在列表顶部汇总，不再逐行重复「待补核」。
+  // 非企微的历史导入、联系时间未知的客户只在列表顶部汇总，不再逐行重复「待补核」；
+  // 企业微信导入是同步联系人，没有历史联系时间可补，按「未跟进」处理。
   // 单独取 total：page_size=1 不会把几千条客户拉回前端；数量跟随当前数据范围。
   const unknownContactQuery = useQuery({
     queryKey: ['customers', 'unknown-contact', { scope, userId: currentUser?.id }],
@@ -465,8 +466,9 @@ export default function CustomerListPage() {
   }
 
   // 「活跃状态」原本是独立一列，现在并进客户名称的下方小字。
-  // `unknown` 有两种来源，不能都叫「待补核」：
-  //   · 历史导入没给联系日期 → 真正的待补核，由顶部汇总承接，行内不重复；
+  // `unknown` 不能都叫「待补核」：
+  //   · 企业微信导入只是同步联系人，没有“历史联系时间”可补，直接按「未跟进」；
+  //   · 非企微的历史导入没给联系日期 → 真正的待补核，由顶部汇总承接，行内不重复；
   //   · 新建客户还没记过跟进 → 只是「未跟进」，不是资料缺口。
   const activityLabel = (record: Customer) => {
     const value = record.activity_status
@@ -474,7 +476,8 @@ export default function CustomerListPage() {
     if (value === 'stale') return '沉睡'
     if (value === 'watch') return '关注'
     if (value === 'unknown' || !value) {
-      return record.last_contact_unknown ? '' : '未跟进'
+      if (record.last_contact_unknown && record.source !== '企业微信') return ''
+      return '未跟进'
     }
     return ''
   }
@@ -755,7 +758,11 @@ export default function CustomerListPage() {
             }}
             optionList={[
               { value: 'stale', label: '在途业务停滞' },
-              { value: 'unknown_contact', label: '历史导入待补核' },
+              // 企业微信导入不是历史档案，不产生“待补核”入口；只有真正存在
+              // 非企微历史导入缺口时才显示这个筛选，避免长期挂一个没人处理的指标。
+              ...(unknownContactCount > 0
+                ? [{ value: 'unknown_contact', label: '历史导入待补核' }]
+                : []),
             ]}
             style={{ width: 140 }}
             showClear
@@ -825,7 +832,7 @@ export default function CustomerListPage() {
 
         {activity === 'unknown_contact' && (
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 10 }}>
-            历史导入待补核：只显示联系时间未知、且还没有任何跟进或业务进展的客户；补一条真实跟进或导入带日期后自动移出。
+            历史导入待补核：只显示非企业微信来源、联系时间未知、且还没有任何跟进或业务进展的客户；补一条真实跟进或导入带日期后自动移出。
           </div>
         )}
 

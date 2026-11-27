@@ -11,7 +11,7 @@ export interface CustomerQuery {
   pool_status?: string
   /**
    * stale = 在途业务停滞（有未结束业务且最近跟进/进展早于阈值）
-   * unknown_contact = 历史导入且没有任何可信活动时间，联系时间待补核
+   * unknown_contact = 非企业微信的历史导入且没有任何可信活动时间，联系时间待补核
    */
   activity?: string
   page?: number

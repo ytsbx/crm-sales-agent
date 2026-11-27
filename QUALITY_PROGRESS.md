@@ -6891,3 +6891,11 @@
 - 发布：生产候选分支 `release/customer-unknown-20261127`，提交 `9e693c5f5addbc47c63af8b39f67d8f6be747564`，基线 `d259ad1b`；发布包 SHA256 `8139f2c39c62b26663cdecb9227f64e65bc20d04c7af4285100c02bb9c3c27a8`，备份 `/opt/crm-sales-agent/backup/unified-9e693c5f5add-us7bxk2d`。
 - 上线核验：`RELEASE.json` 与两端版本记录均为 `9e693c5f`、`status=verified`、`verified_at_utc=2026-11-27T10:11:30Z`；服务 active、`/health database=ok`、公网首页 200；数据库仍为 `d4f6a8b0c2e1`；`web-dist` 已含新提示文案；发布后日志无 error/traceback。
 - 边界：生产登录后的页面实点未做（打开公网客户中心只到登录页）；本次只核验了发布工具的文件/服务/健康/公网与新文案，业务口径仍按生产账号复核。
+
+## 2026-11-27 企业微信导入客户不再算「待补核」（本地已验证）
+
+- 主人反馈「根本不会有人去补核，这批客户主要来自企业微信导入」。核对生产库后确认：2,562 条 `source=企业微信` 客户全部带 `last_contact_unknown=true`，且没有跟进/业务进展；`source=手工录入` 只有 3 条。之前把它当成「历史 Excel 导入」是判断错误。
+- 口径纠正：企业微信导入只是同步联系人，不存在“上次联系时间”可补，不应产生待补核任务；列表行内直接显示「未跟进」。非企微的历史导入才保留真正的待补核汇总。
+- 前端：`CustomerListPage` 的 `activityLabel` 对企业微信来源不再隐藏标签；顶部待补核汇总和「历史导入待补核」筛选只由非企微客户触发，数量为 0 时筛选入口不渲染。
+- 后端：`customer/service.py::build_list_stmt` 的 `activity=unknown_contact` 增加排除 `source=企业微信`；`settings/service.py::run_public_pool_recycle` 把企微导入未跟进单独计入 `wecom_unfollowed_count`，不再混进 `unknown_contact_count`。企微客户仍保留 `last_contact_unknown` 的“不自动回收”保护，避免 10 月导入的 2,550 条一次性进入回收池。
+- 验证：`tests/test_customer_list_activity.py`、`tests/test_pool_protection_filter.py` 共 10 项通过；前端 `npx tsc -b`、`npm run build`、`npm run lint` 通过（lint 0 error / 41 条历史 warning）。

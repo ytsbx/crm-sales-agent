@@ -954,6 +954,7 @@ export default function SettingsPage() {
     { count: poolScan.protected_count, label: '仍在履约保护期' },
     { count: poolScan.disputed_count, label: '撞单争议待裁定' },
     { count: poolScan.unknown_contact_count, label: '最近联系时间待核实' },
+    { count: poolScan.wecom_unfollowed_count, label: '企业微信导入未跟进（暂不回收）' },
   ].filter(({ count }) => (count ?? 0) > 0) : []
 
   const autoTaskMutation = useMutation({

@@ -230,11 +230,15 @@ def build_list_stmt(
         # 历史导入的「联系时间待补核」：标记未知，且确实没有任何可信活动时间。
         # 只有标记不够——如果之后已经有报价/订单/回款，`last_progress_at` 会刷新，
         # 这类客户已经能判断活跃度，不该再挂在待补核名单里。
-        # 因此这里必须同时卡住两个时间，和客户列表的 `unknown` 标签口径一致。
+        # 企业微信导入只是同步联系人，不存在“历史联系时间”可补；它继续靠
+        # `last_contact_unknown` 保留「不自动回收」保护，但不进入待补核统计/筛选，
+        # 列表行内按「未跟进」显示。
+        # 因此这里必须同时卡住两个时间，并排除企业微信来源，和客户列表标签口径一致。
         return stmt.where(
             Customer.last_contact_unknown.is_(True),
             Customer.last_followup_at.is_(None),
             Customer.last_progress_at.is_(None),
+            or_(Customer.source.is_(None), Customer.source != "企业微信"),
         ).order_by(Customer.id.desc())
     if activity == "stale" and stale_before is not None:
         # 在途业务停滞：有未结束的业务，且最近一次跟进/进展早于阈值。
