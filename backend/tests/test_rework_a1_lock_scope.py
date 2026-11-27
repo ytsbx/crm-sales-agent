@@ -36,6 +36,10 @@ def raw():
 async def test_transfer_rechecks_scope_inside_lock(raw):
     # 锁外预检查时客户还归操作者；走到锁内时已被范围外同事接走 → 必须 403
     raw.add(Customer(id=1, name="并发客户", owner_id=999))
+    raw.flush()
+    from tests.conftest import follow_customer
+
+    follow_customer(raw, 1, 999)
     raw.commit()
     customer = raw.get(Customer, 1)
     user = make_user(101, permissions=("customer:assign",), data_scope="self")
@@ -50,10 +54,22 @@ async def test_transfer_rechecks_scope_inside_lock(raw):
 @pytest.mark.anyio
 async def test_transfer_in_scope_still_works(raw):
     raw.add(Customer(id=2, name="范围内客户", owner_id=101))
+    raw.flush()
+    from tests.conftest import follow_customer
+
+    follow_customer(raw, 2, 101)
     raw.commit()
     customer = raw.get(Customer, 2)
     user = make_user(101, permissions=("customer:assign",), data_scope="self")
     await transfer_customer(
         SyncSessionAsAsync(raw), user, customer, 999, "返工回归", move_documents=False
     )
-    assert raw.get(Customer, 2).owner_id == 999
+    from app.modules.customer.model import CustomerFollower
+    from sqlalchemy import select
+
+    follower_ids = raw.scalars(
+        select(CustomerFollower.user_id).where(
+            CustomerFollower.customer_id == 2, CustomerFollower.deleted_at.is_(None)
+        )
+    ).all()
+    assert set(follower_ids) == {999}

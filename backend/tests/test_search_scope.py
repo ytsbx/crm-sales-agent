@@ -55,6 +55,9 @@ def _seed(session, *, owner_id: int = 101, keyword: str = "宏远"):
     )
     session.add(customer)
     session.flush()
+    from tests.conftest import follow_customer
+
+    follow_customer(session, customer.id, owner_id)
 
     contact = Contact(
         customer_id=customer.id,

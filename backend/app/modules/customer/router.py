@@ -27,7 +27,6 @@ from app.modules.customer.schema import (
     CustomerRestore,
     CustomerTransfer,
     CustomerUpdate,
-    FollowerPrimary,
     FollowersAdd,
     PoolRelease,
 )
@@ -72,7 +71,6 @@ async def list_customers(
     rows, total = await paginate(session, stmt, page, page_size)
 
     counts = await svc.contact_counts(session, [c.id for c in rows])
-    owners = await svc.owner_names(session, [c.owner_id for c in rows])
     tag_map = await tag_svc.tags_of_customers(session, [c.id for c in rows])
     # 领导六阶段：算出来的字段（订单/打样/报价事实推导），不占人一分钟
     stage_map = await stage.stage_counts_map(session, [c.id for c in rows])
@@ -96,7 +94,6 @@ async def list_customers(
     items = [
         svc.serialize_customer(
             c,
-            owner_name=owners.get(c.owner_id) if c.owner_id else None,
             contact_count=counts.get(c.id, 0),
             tags=tag_map.get(c.id, []),
             stage=stage.derive_stage(*stage_map.get(c.id, (0, 0, 0))),
@@ -192,7 +189,7 @@ async def create_customer(
             after=svc.serialize_customer(customer),
             ip=client_ip(request),
         )
-        body = svc.serialize_customer(customer)
+        body = await _serialize_with_followers(session, customer)
         if reservation is not None:
             await idempotency.complete(
                 session, reservation, result_payload=body, result_id=customer.id
@@ -217,7 +214,6 @@ async def get_customer(
     session: AsyncSession = Depends(get_db),
 ):
     customer = await svc.get_visible_customer(session, user, customer_id)
-    owners = await svc.owner_names(session, [customer.owner_id])
     counts = await svc.contact_counts(session, [customer.id])
     tag_map = await tag_svc.tags_of_customers(session, [customer.id])
     from app.modules.customer.followers import followers_map
@@ -226,7 +222,6 @@ async def get_customer(
     return ok(
         svc.serialize_customer(
             customer,
-            owner_name=owners.get(customer.owner_id) if customer.owner_id else None,
             contact_count=counts.get(customer.id, 0),
             tags=tag_map.get(customer.id, []),
             followers=follower_map.get(customer.id, []),
@@ -279,7 +274,7 @@ async def update_customer(
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(svc.serialize_customer(customer), "已保存")
+    return ok(await _serialize_with_followers(session, customer), "已保存")
 
 
 @router.delete("/customers/{customer_id}")
@@ -305,7 +300,7 @@ async def delete_customer(
     """
     customer = await svc.get_visible_customer(session, user, customer_id, for_update=True)
     # 先判"这条能不能删"再取快照/写审计：越权的请求不该留下任何删除痕迹
-    svc.ensure_can_delete_customer(user, customer)
+    await svc.ensure_can_delete_customer(session, user, customer)
     before = svc.serialize_customer(customer)
     cancelled_tasks = await svc.delete_customer(session, customer)
     await write_audit(
@@ -365,7 +360,7 @@ async def restore_customer(
         ensure_permission(user, "customer:assign")
     customer = await svc.lock_deleted_customer(session, user, customer_id)
     # 先判"这条能不能恢复"再动数据/写审计：越权的请求不该留下任何恢复痕迹
-    svc.ensure_can_restore_customer(user, customer)
+    await svc.ensure_can_restore_customer(session, user, customer)
     before = svc.serialize_customer(customer)
     # 入参整个可以不传（恢复最常见的情形就是"归还原负责人"），
     # 所以 `payload` 有默认值 —— 不带 body 请求也能恢复，别逼调用方编一个空对象。
@@ -373,8 +368,8 @@ async def restore_customer(
         session, user, customer, new_owner_id=new_owner_id
     )
     base = "客户已恢复"
-    if new_owner_id is not None and new_owner_id != before.get("owner_id"):
-        base = "客户已恢复，负责人已一并换过来"
+    if new_owner_id is not None:
+        base = "客户已恢复，接手人已加入跟进人"
     await write_audit(
         session,
         operator_id=user.id,
@@ -394,7 +389,7 @@ async def restore_customer(
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(svc.serialize_customer(customer), _transfer_message(base, documents))
+    return ok(await _serialize_with_followers(session, customer), _transfer_message(base, documents))
 
 
 def _transfer_message(base: str, documents: dict) -> str:
@@ -424,7 +419,9 @@ async def transfer_customer(
     customer = await svc.get_visible_customer(session, user, customer_id, for_update=True)
     before = svc.serialize_customer(customer)
     documents = await svc.transfer_customer(
-        session, user, customer, payload.owner_id, payload.reason
+        session, user, customer, payload.owner_id, payload.reason,
+        # 转交 = 替换操作人自己的跟进；指定 from_user_id 可转交别人的
+        only_from_owner_id=payload.from_user_id or user.id,
     )
     await session.flush()
     # 「转给某个人」与「放回公海」是两种动作，审计分开记（第六批审查第 1 条）：
@@ -449,11 +446,11 @@ async def transfer_customer(
         ip=client_ip(request),
     )
     await session.commit()
-    data = svc.serialize_customer(customer)
+    data = await _serialize_with_followers(session, customer)
     # 「哪些单据跟着走了、有没有被同事先接走的」一并回给前端（§并发提示）：
     # 统一客户端只把 `data` 交给页面，所以这项必须放在 data 里，不能只写在 message。
     data["document_transfer"] = documents
-    return ok(data, _transfer_message("已放入公海" if to_pool else "负责人已变更", documents))
+    return ok(data, _transfer_message("已放入公海" if to_pool else "已转交", documents))
 
 
 @router.post("/customers/{customer_id}/followers")
@@ -497,8 +494,6 @@ async def add_customer_followers(
     follower_map = await followers_map(session, [customer.id])
     data = svc.serialize_customer(
         customer,
-        owner_name=(await svc.owner_names(session, [customer.owner_id])).get(customer.owner_id)
-        if customer.owner_id else None,
         followers=follower_map.get(customer.id, []),
     )
     return ok(data, f"已添加 {len(added)} 位跟进人")
@@ -535,52 +530,23 @@ async def remove_customer_follower(
     follower_map = await followers_map(session, [customer.id])
     data = svc.serialize_customer(
         customer,
-        owner_name=(await svc.owner_names(session, [customer.owner_id])).get(customer.owner_id)
-        if customer.owner_id else None,
         followers=follower_map.get(customer.id, []),
     )
     return ok(data, "已移除跟进人")
-
-
-@router.post("/customers/{customer_id}/set-primary")
-async def set_customer_primary(
-    customer_id: int,
-    payload: FollowerPrimary,
-    request: Request,
-    user: CurrentUser = Depends(require_permission("customer:assign")),
-    session: AsyncSession = Depends(get_db),
-):
-    """把某位跟进人设为默认负责人（不搬单据；整体转交走 /transfer）。"""
-    from app.modules.customer.followers import followers_map, set_default_follower
-
-    customer = await svc.get_visible_customer(session, user, customer_id, for_update=True)
-    before_owner = customer.owner_id
-    await set_default_follower(session, customer, payload.user_id)
-    await write_audit(
-        session,
-        operator_id=user.id,
-        action="set_primary_follower",
-        business_type="customer",
-        business_id=customer.id,
-        before={"owner_id": before_owner},
-        after={"owner_id": customer.owner_id},
-        ip=client_ip(request),
-    )
-    await session.commit()
-    follower_map = await followers_map(session, [customer.id])
-    data = svc.serialize_customer(
-        customer,
-        owner_name=(await svc.owner_names(session, [customer.owner_id])).get(customer.owner_id)
-        if customer.owner_id else None,
-        followers=follower_map.get(customer.id, []),
-    )
-    return ok(data, "默认负责人已更新")
 
 
 async def _follower_ids(session: AsyncSession, customer_id: int) -> list[int]:
     from app.modules.customer.followers import active_follower_ids
 
     return await active_follower_ids(session, customer_id)
+
+
+async def _serialize_with_followers(session: AsyncSession, customer) -> dict:
+    """客户响应带上有效跟进人（也让兼容别名 owner_* 取到第一位跟进人）。"""
+    from app.modules.customer.followers import followers_map
+
+    data = await followers_map(session, [customer.id])
+    return svc.serialize_customer(customer, followers=data.get(customer.id, []))
 
 
 @router.post("/customers/{customer_id}/release-to-pool")
@@ -606,6 +572,9 @@ async def release_to_pool(
     """
     customer = await svc.get_visible_customer(session, user, customer_id, for_update=True)
     reason = (payload.reason if payload else None) or None
+    from app.modules.customer.followers import active_follower_ids
+
+    cleared_follower_ids = sorted(await active_follower_ids(session, customer.id))
     # 注意传的是**原始 reason**（可能为空）—— 保护校验靠它判断"到底有没有填原因"。
     # 默认文案交给 default_reason，只用于归属历史，不参与例外判断。
     await svc.transfer_customer(
@@ -617,11 +586,16 @@ async def release_to_pool(
         action="release_to_pool",
         business_type="customer",
         business_id=customer.id,
-        after={"reason": reason},
+        after={
+            "reason": reason,
+            "pool_status": "public",
+            # 公海 = 没有跟进人：记下被清空的名单，事后可查
+            "cleared_follower_ids": cleared_follower_ids,
+        },
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(svc.serialize_customer(customer), "已放入公海")
+    return ok(await _serialize_with_followers(session, customer), "已放入公海，跟进人已清空")
 
 
 @router.post("/customers/{customer_id}/claim")
@@ -646,13 +620,13 @@ async def claim_customer(
             action="claim",
             business_type="customer",
             business_id=customer.id,
-            after={"owner_id": user.id},
+            after={"follower_added": user.id},
             ip=client_ip(request),
         )
     await session.commit()
     return ok(
-        svc.serialize_customer(customer),
-        "领取成功" if claimed else f"客户「{customer.name}」已经是你的",
+        await _serialize_with_followers(session, customer),
+        "领取成功，已加入跟进人" if claimed else f"客户「{customer.name}」已在你的跟进列表",
     )
 
 
@@ -991,6 +965,8 @@ async def assign_customer(
     before = svc.serialize_customer(customer)
     documents = await svc.transfer_customer(
         session, user, customer, payload.owner_id, payload.reason,
+        # 主管分配默认只把接手人加入跟进人，不替换谁；需要替换时显式给 from_user_id
+        only_from_owner_id=payload.from_user_id,
         # 原始 reason 参与保护校验，默认文案只进归属历史
         default_reason="主管分配",
     )
@@ -1008,7 +984,7 @@ async def assign_customer(
         ip=client_ip(request),
     )
     await session.commit()
-    data = svc.serialize_customer(customer)
+    data = await _serialize_with_followers(session, customer)
     data["document_transfer"] = documents  # 同 transfer：并发的如实交代要回给页面
     return ok(data, _transfer_message("已放入公海" if to_pool else "已分配", documents))
 
@@ -1050,7 +1026,7 @@ async def create_contact(
     contact = Contact(
         **payload.model_dump(),
         customer_id=customer.id,
-        owner_id=customer.owner_id,
+        owner_id=None,
         source="手工录入",
     )
     session.add(contact)
@@ -1233,7 +1209,7 @@ async def create_standalone_contact(
         name=data.pop("name"),
         mobile=data.get("mobile"),
         email=data.get("email"),
-        owner_id=customer.owner_id,
+        owner_id=None,
         source="手工录入",
         is_primary=data.get("is_primary"),
     )

@@ -158,9 +158,9 @@ async def _ensure_mapping_target_scope(
         target = await session.get(Customer, internal_id)
         if target is None or target.deleted_at is not None:
             raise AppError(ErrorCode.NOT_FOUND, f"客户编号 {internal_id} 不存在", 404)
-        await ensure_in_scope(
-            session, user, owner_id=target.owner_id, label="客户", allow_unowned=True
-        )
+        from app.modules.customer.visibility import assert_customer_in_scope
+
+        await assert_customer_in_scope(session, user, target)
         return
 
     if object_type == "sku":

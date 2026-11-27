@@ -72,7 +72,15 @@ class CustomerUpdate(PatchModel):
 
 
 class CustomerTransfer(BaseModel):
+    """转交客户：`owner_id` 是**接手人**（空 = 放入公海）。
+
+    客户没有默认负责人；转交 = 用接手人替换一位跟进人。
+    `from_user_id` 指定被替换的那位跟进人（默认操作人自己，主管分配时为空 = 只加入）。
+    """
+
     owner_id: int | None = None
+    #: 被替换的跟进人；不传时 /transfer 默认操作人自己，/assign 默认只加入不替换
+    from_user_id: int | None = None
     #: 直接写进 `customer_owner_history.reason`（`String(255)`）—— 超长撞列宽 500
     reason: str | None = Field(default=None, max_length=255)
 
@@ -81,17 +89,11 @@ class FollowersAdd(BaseModel):
     user_ids: list[int] = Field(min_length=1, max_length=50)
 
 
-class FollowerPrimary(BaseModel):
-    user_id: int
-
-
 class CustomerRestore(BaseModel):
     """恢复一个被**直接删除**的客户（03-API §42.2）。
 
-    为什么带一个可选的新负责人：**原负责人可能已经停用**（账号也可能没了）。
-    那种情况下把客户恢复出来，等于制造一条"挂在停用账号下"的脏数据 ——
-    所以服务层会拒绝并要一个人选，由调用方在这里一并指定。
-    不传就沿用原负责人（删除时**没有**清空过它）。
+    `owner_id` 是兼容参数：给了就作为**接手人**加入跟进人（客户转回私海）；
+    不传则只恢复删除标记（跟进人保留）。
     """
 
     model_config = ConfigDict(extra="ignore")

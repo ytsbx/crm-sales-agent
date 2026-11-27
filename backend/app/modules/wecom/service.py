@@ -640,7 +640,7 @@ async def bind_customer(
         session,
         customer_id=customer.id,
         name=row.name or row.external_userid,
-        owner_id=customer.owner_id,
+        owner_id=None,
         source="企业微信",
         is_primary=is_primary,
     )
@@ -678,7 +678,7 @@ async def create_customer_from_contact(
         customer_id=customer.id,
         name=row.name or row.external_userid,
         source="企业微信",
-        owner_id=customer.owner_id,
+        owner_id=None,
     )
     row.crm_contact_id = contact.id
     row.crm_customer_id = customer.id
@@ -736,11 +736,20 @@ async def collect_transfer_scope(
     #: 本函数产生的提示（当前只有"离职人没绑企微"一条）；调用方传了列表就并进去。
     local_warnings: list[str] = [] if warnings is None else warnings
 
-    # ---- 客户：撞单争议未结案的先标出来，它会被冻结，企微那边也不发转接 ----
+    # ---- 客户：离职人是有效跟进人的都要交接（客户没有默认负责人） ----
+    from app.modules.customer.model import CustomerFollower
+
     customers = (
         await session.execute(
-            select(Customer).where(
-                Customer.owner_id == handover.id, Customer.deleted_at.is_(None)
+            select(Customer)
+            .where(
+                Customer.deleted_at.is_(None),
+                Customer.id.in_(
+                    select(CustomerFollower.customer_id).where(
+                        CustomerFollower.user_id == handover.id,
+                        CustomerFollower.deleted_at.is_(None),
+                    )
+                ),
             )
         )
     ).scalars().all()
@@ -942,25 +951,6 @@ async def collect_transfer_scope(
         )
 
     return scope
-
-
-async def _remove_handover_followers(session: AsyncSession, handover_id: int) -> int:
-    """离职交接最后一步：把离职者从所有客户的跟进人里移除。
-
-    客户本身是否交接由客户项决定；这里只清理"共同跟进"关系，避免离职的人
-    还留在客户跟进人名单里继续看到数据。软删保留历史。
-    """
-    from app.modules.customer.model import CustomerFollower
-
-    result = await session.execute(
-        update(CustomerFollower)
-        .where(
-            CustomerFollower.user_id == handover_id,
-            CustomerFollower.deleted_at.is_(None),
-        )
-        .values(deleted_at=datetime.now(UTC))
-    )
-    return result.rowcount or 0
 
 
 async def _move_owner_if_still(
@@ -1372,7 +1362,7 @@ async def transfer_relations(
                 "customer",
                 customer_id,
                 "skipped",
-                "客户已回到公海" if customer.owner_id is None else "客户已由其他同事接手",
+                "客户已回到公海" if customer.pool_status == "public" else "客户已由其他同事接手",
             )
             customers_skipped += 1
             continue
@@ -1385,10 +1375,9 @@ async def transfer_relations(
     detail["customers"] = customers_moved
     detail["customers_skipped"] = customers_skipped
     detail["customers_frozen"] = len(frozen_customer_ids)
-    # 无论客户项是否交接成功，离职者都不再留在任何客户的跟进人里
-    detail["followers_removed"] = await _remove_handover_followers(
-        session, handover.id
-    )
+    # 跟进人按客户逐项替换（转交时先加接手人再移除离职人）；
+    # 冻结/跳过的客户保留离职人的跟进关系，不再统一清空。
+    detail["followers_removed"] = 0
 
     # 4) 商机负责人（只动 owner_id，created_by 保持原样）
     for row in scope["opportunity"]:
@@ -1849,9 +1838,7 @@ async def retry_transfer(
     fail_total = max(fail_total, still_open)
 
     detail = dict(job.detail or {})
-    detail["followers_removed"] = await _remove_handover_followers(
-        session, handover.id
-    )
+    detail["followers_removed"] = 0  # 跟进人按客户逐项替换，不再统一清理
     detail.update(
         {
             "customers": kind_counts.get("customer", 0),
@@ -1954,14 +1941,12 @@ async def _retry_move_crm(
         customer = await _lock_business_row(session, Customer, item.business_id)
         if customer is None or customer.deleted_at is not None:
             return False
-        if customer.owner_id != handover.id:
-            # 公海（owner_id 为空）也算"已不归离职人"：主管把客户放回公海是过得去
-            # 履约保护、会留痕的正规动作，交接不再把它接走 —— 与
-            # `customer_service.transfer_customer` 里那条判断同一口径（第九批复审收尾）。
-            raise _conflict(
-                f"客户「{customer.name}」",
-                "已被放回公海" if customer.owner_id is None else "可能已被重新分配",
-            )
+        from app.modules.customer.followers import is_follower
+
+        if not await is_follower(session, customer.id, handover.id):
+            # 离职人已不是这个客户的跟进人（可能已被主管重新分配或移除）：
+            # 交接不再覆盖，避免把别人刚接手的客户又抢走。
+            raise _conflict(f"客户「{customer.name}」", "可能已被重新分配")
         await customer_service.transfer_customer(
             session, _system_user(handover), customer, owner,
             f"离职继承重试：{handover.name} → {item.to_owner_name or ''}",

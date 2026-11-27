@@ -365,9 +365,9 @@ export default function WorkbenchPage() {
                 tone: (team.team_overdue_count ?? 0) > 0 ? 'error' : 'default',
               },
               {
-                label: '客户分配',
+                label: '公海客户',
                 value: team.unassigned_customer_count ?? 0,
-                hint: '无负责人，待分配',
+                hint: '没有跟进人，可领取',
                 onClick: () => navigate('/customers'),
               },
               {
@@ -825,7 +825,7 @@ export default function WorkbenchPage() {
                   </Tag>
                 </div>
                 <div style={{ marginTop: 4, fontSize: 12, color: 'var(--crm-text-2)' }}>
-                  负责人：{row.owner_name ?? '（无）'}
+                  跟进人：{(row.followers ?? []).map((item) => item.name).join('、') || '（无）'}
                   {row.contact_name ? ' · 主联系人：' : ''}
                   {row.contact_name}
                   {row.contact_name && row.contact_phone ? (

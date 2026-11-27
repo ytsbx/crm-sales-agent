@@ -306,9 +306,11 @@ async def seed_fixtures() -> dict:
         ids["cust_nosnap_tgt"] = nosnap_tgt.id
         ids["cust_mixed_src"] = mixed_src.id
         ids["cust_mixed_tgt"] = mixed_tgt.id
+        ids["cust_mixed_tgt_name"] = mixed_tgt.name
         ids["cust_chain_a"] = chain_a.id
         ids["cust_chain_b"] = chain_b.id
         ids["cust_chain_c"] = chain_c.id
+        await _seed_followers(s, PREFIX)
 
         # 产品 D：产品有效、其中一个 SKU 已被单独删 —— 用来验"删产品 vs 恢复 SKU"的并发
         product_d = Product(name=f"{PREFIX}产品D", created_by=admin.id)
@@ -357,6 +359,7 @@ async def seed_fixtures() -> dict:
         ids["cap_chain"] = [c.id for c in cap_chain]
         ids["cyc_a"] = cyc_a.id
         ids["cyc_b"] = cyc_b.id
+        await _seed_followers(s, PREFIX)
         # 名字也带着走：断言里要拿它核对"终点是谁"，别在用例里现拼字符串
         ids["long_second_name"] = long_chain[1].name
         ids["long_tail_name"] = long_chain[-1].name
@@ -381,7 +384,7 @@ async def _strip_owner_from_snapshot(source_id: int) -> None:
     async with SessionLocal() as s:
         await s.execute(
             text(
-                "update customer_merge_logs set merge_snapshot = merge_snapshot - 'owner_id'"
+                "update customer_merge_logs set merge_snapshot = merge_snapshot - 'owner_id' - 'follower_ids'"
                 " where source_customer_id = :p"
             ),
             {"p": source_id},
@@ -446,11 +449,13 @@ async def assert_target_needs_its_own_permission(ids: dict, admin: str, sales: s
     row = row_of(body, ids["cust_mixed_src"])
     check_true("业务员看得到自己那条被合并的记录", row is not None)
     ref = (row or {}).get("merged_into") or {}
-    check("目标不给名字", ref.get("name"), None)
-    check("目标不给 id（前端就没有可点的入口）", ref.get("id"), None)
-    check("目标标成无查看权限", ref.get("state"), "forbidden")
+    # 2026-11-27 多跟进人：合并会把来源的跟进人并进目标，来源的跟进人
+    # （这里就是业务员本人）合并后也能看到目标，所以这里应给出可点入口。
+    check("目标给名字", ref.get("name"), ids["cust_mixed_tgt_name"])
+    check("目标给 id（可点入口）", ref.get("id"), ids["cust_mixed_tgt"])
+    check("目标可查看", ref.get("state"), "ok")
     status, _ = call("GET", f"/customers/{ids['cust_mixed_tgt']}", token=sales)
-    check_true("目标详情本来也打不开（对照）", status == 403, f"实际 {status}")
+    check_true("合并后来源跟进人也能打开目标", status == 200, f"实际 {status}")
 
 
 async def assert_merge_chain_resolves(ids: dict, admin: str, sales: str) -> None:
@@ -750,6 +755,7 @@ async def assert_removed_by(ids: dict, admin: str) -> None:
         prod_with_id = p_with.id
         sku_with_id, sku_alone_id = sk_with.id, sk_alone.id
         cust_direct_id, cust_src_id, cust_tgt_id = c_direct.id, c_src.id, c_tgt.id
+        await _seed_followers(s, PREFIX)
         await s.commit()
 
     def sku_row(rid: int) -> dict:
@@ -1127,6 +1133,7 @@ async def assert_customer_restore(ids: dict, admin: str, sales: str) -> None:
                          status="active", pool_status="private")
         s.add_all([plain, with_data, src, tgt, alive, stale])
         await s.flush()
+        await _seed_followers(s, PREFIX)
         # 给"带数据"那条挂一个联系人：用来证明"删客户没动名下的东西"
         s.add(
             Contact(
@@ -1141,12 +1148,17 @@ async def assert_customer_restore(ids: dict, admin: str, sales: str) -> None:
         await s.commit()
 
     async def owner_of(cid: int) -> int | None:
+        """最新加入的有效跟进人（客户没有默认负责人）。"""
         async with SessionLocal() as s:
             return (
                 await s.execute(
-                    text("select owner_id from customers where id = :i"), {"i": cid}
+                    text(
+                        "select user_id from customer_followers where customer_id = :i "
+                        "and deleted_at is null order by created_at desc, id desc limit 1"
+                    ),
+                    {"i": cid},
                 )
-            ).scalar_one()
+            ).scalar_one_or_none()
 
     async def contact_count(cid: int) -> int:
         async with SessionLocal() as s:
@@ -1234,24 +1246,16 @@ async def assert_customer_restore(ids: dict, admin: str, sales: str) -> None:
         await s.commit()
     try:
         status, body = call("POST", f"/customers/{stale_id}/restore", token=admin, body={})
-        check("（5）原负责人已停用 → 422（不制造挂在停用账号下的脏数据）", status, 422)
+        check("（5）原跟进人停用也能恢复（客户没有默认负责人）", status, 200)
+        check("（5）恢复后原跟进人仍在名单里", await owner_of(stale_id), ids["lisi"])
+        check("（5）再删一次", call("DELETE", f"/customers/{stale_id}", token=admin)[0], 200)
         check(
-            "（5）错误**码**要能认出「得先指定新负责人」（调用方不靠文案判断）",
-            body.get("code"),
-            40003,
-        )
-        check_true(
-            "（5）理由指路了「指定新负责人」",
-            "负责人" in (body.get("message") or ""),
-            body.get("message"),
-        )
-        check(
-            "（5）恢复时指定新负责人 → 200",
+            "（5）恢复时指定接手人 → 200",
             call("POST", f"/customers/{stale_id}/restore", token=admin,
                  body={"owner_id": ids["zhangsan"]})[0],
             200,
         )
-        check("（5）负责人换成了指定那位", await owner_of(stale_id), ids["zhangsan"])
+        check("（5）接手人已加入跟进人", await owner_of(stale_id), ids["zhangsan"])
     finally:
         # 李四的状态**必须改回来**：后面还有别的断言按"在职"来
         async with SessionLocal() as s:
@@ -1293,6 +1297,7 @@ async def assert_customer_restore(ids: dict, admin: str, sales: str) -> None:
         )
         s.add(pub)
         await s.flush()
+        await _seed_followers(s, PREFIX)
         pub_id = pub.id
         await s.commit()
 
@@ -1328,6 +1333,7 @@ async def assert_customer_restore(ids: dict, admin: str, sales: str) -> None:
         )
         s.add(perm)
         await s.flush()
+        await _seed_followers(s, PREFIX)
         perm_id = perm.id
         await s.commit()
 
@@ -1380,6 +1386,17 @@ async def assert_customer_restore(ids: dict, admin: str, sales: str) -> None:
         perm_history,
         1,
     )
+
+
+async def _seed_followers(s, prefix: str) -> None:
+    """夹具客户按 owner 补一条有效跟进人（客户没有默认负责人）。"""
+    await s.execute(text(
+        "insert into customer_followers (customer_id, user_id, source, created_at, updated_at) "
+        "select c.id, c.owner_id, 'fixture', now(), now() from customers c "
+        "where c.owner_id is not null and c.name like :p and not exists ("
+        "  select 1 from customer_followers f where f.customer_id = c.id "
+        "  and f.user_id = c.owner_id and f.deleted_at is null)"
+    ), {"p": f"{prefix}%"})
 
 
 async def main() -> int:

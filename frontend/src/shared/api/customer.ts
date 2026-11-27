@@ -6,7 +6,6 @@ export interface CustomerQuery {
   level?: string
   status?: string
   source?: string
-  owner_id?: number
   /** true = 我跟进的（有效跟进人包含当前用户） */
   mine?: boolean
   pool_status?: string
@@ -30,14 +29,9 @@ export interface CustomerPayload {
   level?: string | null
   remark?: string | null
   /**
-   * 负责人。**可以不填**（主人 2026-10-13：「为啥只能谁创建谁是负责人，不能指定吗，
-   * 没有指定再是自己」）—— 不填 / 传 null 时后端归创建人自己
-   * （`customer/service.create_customer`）。要建给别人就在这里指定。
-   *
-   * ⚠️ 这个字段原来**没在前端类型里**，所以界面即使想传也传不出去，
-   * 看起来就像"只能谁建归谁"。
+   * 客户没有默认负责人（2026-11-27）：创建人自动成为跟进人，
+   * 其他人通过「跟进人」入口添加，不再在创建时指定。
    */
-  owner_id?: number | null
   /** 请求幂等键（第八批 8.15）：同一份表单的多次提交必须用同一把键 */
   request_key?: string
 }
@@ -230,7 +224,10 @@ export function setPrimaryContact(contactId: number) {
   return api.post<Contact>(`/contacts/${contactId}/set-primary`)
 }
 
-export function transferCustomer(customerId: number, payload: { owner_id: number | null; reason?: string }) {
+export function transferCustomer(
+  customerId: number,
+  payload: { owner_id: number | null; from_user_id?: number; reason?: string },
+) {
   return api.post<CustomerTransferResult>(`/customers/${customerId}/transfer`, payload)
 }
 
@@ -239,19 +236,14 @@ export function assignCustomer(customerId: number, payload: { owner_id: number |
   return api.post<CustomerTransferResult>(`/customers/${customerId}/assign`, payload)
 }
 
-/** 添加跟进人（默认负责人不变）。 */
+/** 添加跟进人。 */
 export function addCustomerFollowers(customerId: number, user_ids: number[]) {
   return api.post<Customer>(`/customers/${customerId}/followers`, { user_ids })
 }
 
-/** 移除跟进人（默认负责人需先换人）。 */
+/** 移除跟进人（最后一位不能直接移除）。 */
 export function removeCustomerFollower(customerId: number, userId: number) {
   return api.delete<Customer>(`/customers/${customerId}/followers/${userId}`)
-}
-
-/** 把某位跟进人设为默认负责人（不搬单据）。 */
-export function setCustomerPrimary(customerId: number, userId: number) {
-  return api.post<Customer>(`/customers/${customerId}/set-primary`, { user_id: userId })
 }
 
 // ---------------------------------------------------------------- 客户子资源（API §7）
@@ -294,7 +286,6 @@ export function exportCustomersFiltered(
     level?: string
     status?: string
     source?: string
-    owner_id?: number
     mine?: boolean
     pool_status?: string
   },
@@ -443,8 +434,8 @@ export interface MergeConflict {
 }
 
 export interface MergePreview {
-  source: { id: number; name: string; owner_id?: number | null; tax_no?: string | null }
-  target: { id: number; name: string; owner_id?: number | null; tax_no?: string | null }
+  source: { id: number; name: string; tax_no?: string | null }
+  target: { id: number; name: string; tax_no?: string | null }
   targets: MergeImpactTarget[]
   total_links: number
   conflicts: MergeConflict[]

@@ -45,6 +45,9 @@ def case():
     with Session(e,expire_on_commit=False) as raw:
         raw.add_all([User(id=i,username=f'user{i}',name=f'用户{i}',password_hash='isolated',status='inactive' if i==3 else 'active') for i in (1,2,3)])
         raw.add(Customer(id=1,name='客户',owner_id=1));raw.add(Contact(id=1,customer_id=1,name='联系人'))
+        raw.flush()
+        from tests.conftest import follow_customer
+        follow_customer(raw, 1, 1)
         raw.add(Quote(id=1,quote_no='REVIEW',customer_id=1,owner_id=1,current_version_id=2))
         raw.add_all([QuoteVersion(id=i,quote_id=1,version_no=i,currency='CNY',created_at=NOW,approval_status='pending',total_amount=D(100)) for i in (1,2)])
         raw.commit();yield raw,DB(raw)
@@ -202,6 +205,9 @@ async def test_stale_customer_contacts_follow_the_same_owner_scope(case):
                      created_at=NOW - timedelta(days=100)))
     raw.add(Contact(customer_id=2, name="范围外的联系人", mobile="18800002222", is_primary=True))
     raw.flush()
+    from tests.conftest import follow_customer
+
+    follow_customer(raw, 2, 2)
 
     user = make_user(1, permissions=("customer:view",), data_scope="self")
     allowed = await full_contact_customer_ids(session, user, {1, 2})

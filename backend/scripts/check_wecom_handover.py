@@ -188,6 +188,14 @@ async def seed_fixtures() -> dict:
         )
         s.add_all([normal, disputed, other])
         await s.flush()
+        from app.modules.customer.model import CustomerFollower
+
+        s.add_all([
+            CustomerFollower(customer_id=normal.id, user_id=handover.id, source="fixture"),
+            CustomerFollower(customer_id=disputed.id, user_id=handover.id, source="fixture"),
+            CustomerFollower(customer_id=other.id, user_id=colleague.id, source="fixture"),
+        ])
+        await s.flush()
 
         s.add(
             CustomerDuplicateCase(
@@ -554,6 +562,10 @@ async def main() -> int:
             )
             s.add(extra_customer)
             await s.flush()
+            from app.modules.customer.model import CustomerFollower
+
+            s.add(CustomerFollower(customer_id=extra_customer.id, user_id=ids["handover"], source="fixture"))
+            await s.flush()
             extra_sample = SampleRequest(
                 customer_id=extra_customer.id, owner_id=ids["handover"], status="approved",
                 requested_at=datetime.now(UTC),
@@ -580,13 +592,16 @@ async def main() -> int:
                 )
             ).scalar_one()
             check("逐项指定的打样归了指定的人", sample_owner, ids["colleague"])
-            cust_owner = (
+            cust_follower = (
                 await s.execute(
-                    text("select owner_id from customers where id = :i"),
+                    text(
+                        "select user_id from customer_followers where customer_id = :i "
+                        "and deleted_at is null order by created_at, id limit 1"
+                    ),
                     {"i": extra_customer_id},
                 )
             ).scalar_one()
-            check("逐项指定的客户也归了指定的人", cust_owner, ids["colleague"])
+            check("逐项指定的客户也归了指定的人", cust_follower, ids["colleague"])
             rows = (
                 await s.execute(
                     text(

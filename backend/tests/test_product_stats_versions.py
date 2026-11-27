@@ -132,6 +132,12 @@ async def test_repeat_count_follows_active_customer_scope_after_handover(db_sess
         Customer(id=3, name="同事的客户", owner_id=102),
         Customer(id=4, name="曾有订单被取消", owner_id=101),
     ])
+    db_session.flush()
+    from tests.conftest import follow_customer
+
+    follow_customer(db_session, 1, 101)
+    follow_customer(db_session, 3, 102)
+    follow_customer(db_session, 4, 101)
     for customer_id, order_owner in [(1, 102), (2, 101), (3, 101), (4, 101)]:
         for n in (1, 2):
             db_session.add(SalesOrder(

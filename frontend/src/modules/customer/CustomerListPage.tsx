@@ -96,8 +96,6 @@ const EMPTY_FORM: CustomerPayload = {
   source: '电话开发',
   level: null,
   remark: '',
-  // 不选负责人 = 归创建人自己（后端 `create_customer` 的口径）
-  owner_id: null,
 }
 
 export default function CustomerListPage() {
@@ -469,14 +467,14 @@ export default function CustomerListPage() {
             {text}
           </button>
           <div
-            title={[record.region, record.source, activityLabel(record.activity_status), compact ? `负责人 ${record.owner_name ?? '公海'}` : ''].filter(Boolean).join(' · ')}
+            title={[record.region, record.source, activityLabel(record.activity_status), compact ? (record.pool_status === 'public' ? '公海' : `跟进人 ${record.follower_count ?? 0}`) : ''].filter(Boolean).join(' · ')}
             style={{ marginTop: 2, color: 'var(--crm-text-3)', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
           >
             {compact ? `${record.level ?? '未分级'} · ` : ''}
             {[record.region, record.source, activityLabel(record.activity_status)]
               .filter(Boolean)
               .join(' · ')}
-            {compact ? ` · 负责人 ${record.owner_name ?? '公海'}` : ''}
+            {compact ? ` · ${record.pool_status === 'public' ? '公海' : `跟进人 ${record.follower_count ?? 0}`}` : ''}
           </div>
         </div>
       ),
@@ -618,13 +616,15 @@ export default function CustomerListPage() {
     ...(compact
       ? []
       : [{
-          title: '负责人',
-          dataIndex: 'owner_name',
-          width: 110,
-          render: (v: string | null, record: Customer) =>
-            v
-              ? `${v}${(record.follower_count ?? 0) > 1 ? ` +${(record.follower_count ?? 1) - 1}` : ''}`
-              : '公海',
+          title: '跟进人',
+          dataIndex: 'follower_count',
+          width: 130,
+          render: (_v: unknown, record: Customer) => {
+            if (record.pool_status === 'public') return '公海'
+            const names = (record.followers ?? []).map((item) => item.name)
+            if (!names.length) return '-'
+            return `${names.slice(0, 2).join('、')}${names.length > 2 ? ` +${names.length - 2}` : ''}`
+          },
         }]),
     {
       title: '状态',
@@ -742,9 +742,6 @@ export default function CustomerListPage() {
             onClick={() => {
               // 每次打开"新建客户"都是一次新表单 → 换一把新的幂等键
               createRequestKeyRef.current = newRequestKey()
-              if (!can('customer:assign')) {
-                setForm((current) => ({ ...current, owner_id: null }))
-              }
               setModalVisible(true)
             }}
           >
@@ -799,8 +796,8 @@ export default function CustomerListPage() {
             onClose={() => setBatchReceipt(null)} description={<div>
               <strong>{batchReceipt.affected
                 ? `已将 ${batchReceipt.affected} 个客户转给${batchReceipt.ownerName}`
-                : '本次没有变更客户负责人'}</strong>
-              {batchReceipt.already_assigned > 0 && <div>{batchReceipt.already_assigned} 个客户原本已由该同事负责。</div>}
+                : '本次没有变更客户跟进人'}</strong>
+              {batchReceipt.already_assigned > 0 && <div>{batchReceipt.already_assigned} 个客户原本已有该同事跟进。</div>}
               {batchReceipt.unavailable > 0 && <div>{batchReceipt.unavailable} 个客户已不可用。</div>}
               {batchReceipt.documents_moved > 0 && <div>随同交接了 {batchReceipt.documents_moved} 项单据或生成文件。</div>}
               {batchReceipt.documents_skipped > 0 && <div>{batchReceipt.documents_skipped} 项单据或生成文件已由其他同事接手，保留其归属。</div>}
@@ -836,7 +833,7 @@ export default function CustomerListPage() {
                 batchTransferMutation.reset()
                 setBatchTransferOpen(true)
               }}>
-                批量转移负责人
+                批量转交
               </Button>
             )}
             <div style={{ flex: 1 }} />
@@ -1201,7 +1198,7 @@ export default function CustomerListPage() {
       </Modal>
 
       <Modal
-        title="批量转移客户负责人"
+        title="批量转交客户"
         className="workflow-scroll-modal"
         width="min(500px, calc(100vw - 24px))"
         visible={batchTransferOpen}
@@ -1213,7 +1210,7 @@ export default function CustomerListPage() {
         }}
         okButtonProps={{ disabled: !batchOwner || !selectedIds.length }}
         confirmLoading={batchTransferMutation.isPending}
-        okText="确认转移"
+        okText="确认转交"
       >
         <div className="customer-handover">
           <div className="customer-handover-context">
@@ -1228,12 +1225,13 @@ export default function CustomerListPage() {
             enabled={batchTransferOpen}
             disabled={batchTransferMutation.isPending}
             style={{ width: '100%' }}
-            placeholder="按姓名或登录账号搜索新的负责人"
+            placeholder="按姓名或登录账号搜索接手人"
             value={batchOwner?.id}
             onChange={(id, name) => setBatchOwner(id && name ? { id, name } : null)}
           />
           <div className="customer-handover-context">
-            未完成待办和原负责人名下符合条件的单据会随客户交接。
+            只转交你名下的客户：接手人会加入跟进人，你从跟进人里移除；
+            你名下未完成的待办和单据会跟着交给接手人。
           </div>
           {batchTransferMutation.isError && <Banner type="warning" closeIcon={null} fullMode={false} description={batchTransferMutation.error.message} />}
         </div>
@@ -1377,29 +1375,6 @@ export default function CustomerListPage() {
             </div>
           </section>
 
-          <section className="form-card">
-            <div className="form-card-title">谁来跟这个客户</div>
-            <div className="form-card-grid">
-              <div>
-                <div className="form-field-label">负责人</div>
-                <UserSearchSelect
-                  queryScope="customer-create"
-                  enabled={modalVisible && can('customer:assign')}
-                  className="owner-picker"
-                  style={{ width: '100%' }}
-                  placeholder="按姓名或登录账号搜索"
-                  disabled={!can('customer:assign')}
-                  value={form.owner_id ?? undefined}
-                  onChange={(value) => setForm({ ...form, owner_id: value ?? null })}
-                />
-              </div>
-              <div className="form-tip">
-                {can('customer:assign')
-                  ? '不选就归你自己，之后也能在列表里转移。'
-                  : '没有分配权限时新客户归你；要指定别人请联系管理员。'}
-              </div>
-            </div>
-          </section>
         </div>
       </Modal>
     </div>

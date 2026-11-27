@@ -1041,10 +1041,16 @@ async def run_public_pool_recycle(
 
     for rule in rules:
         cutoff = now - timedelta(days=rule.days)
+        from app.modules.customer.model import CustomerFollower
+
         stmt = select(Customer).where(
             Customer.deleted_at.is_(None),
             Customer.pool_status == "private",
-            Customer.owner_id.is_not(None),
+            Customer.id.in_(
+                select(CustomerFollower.customer_id).where(
+                    CustomerFollower.deleted_at.is_(None)
+                )
+            ),
             level_filter(Customer.level, rule.level),
         )
         rows = (await session.execute(stmt)).scalars().all()
@@ -1059,7 +1065,6 @@ async def run_public_pool_recycle(
                 await session.execute(
                     select(Customer).where(
                         Customer.id == customer.id,
-                        Customer.owner_id == customer.owner_id,
                         Customer.deleted_at.is_(None),
                         Customer.pool_status == "private",
                         level_filter(Customer.level, rule.level),
@@ -1090,7 +1095,6 @@ async def run_public_pool_recycle(
                         "customer_id": customer.id,
                         "name": customer.name,
                         "level": rule.level,
-                        "owner_id": customer.owner_id,
                         "note": "最近联系时间未知（历史导入未提供），补核后才参与自动回收",
                     }
                 )
@@ -1156,9 +1160,13 @@ async def run_public_pool_recycle(
                 already_open.append(customer.id)
                 continue
 
+            from app.modules.customer.followers import active_follower_ids
+
+            snapshot_followers = await active_follower_ids(session, customer.id)
             candidate = PublicPoolRecycleCandidate(
                 customer_id=customer.id,
-                owner_id=customer.owner_id,
+                # 记录一位代表跟进人（恢复时把他加回跟进人）；不参与业务授权
+                owner_id=snapshot_followers[0] if snapshot_followers else None,
                 rule_id=rule.id,
                 level=rule.level,
                 rule_days=rule.days,
@@ -1389,8 +1397,15 @@ async def list_candidates(
         conditions.append(PublicPoolRecycleCandidate.status == status)
     allowed = await scoped_owner_ids(session, user)
     if allowed is not None:
-        # `all` 范围返回 None，不加过滤；其余只给本范围内的
-        conditions.append(PublicPoolRecycleCandidate.owner_id.in_(allowed))
+        # `all` 范围返回 None，不加过滤；其余按客户跟进人范围
+        from app.modules.customer.visibility import customer_scope_clause_from
+
+        visible_customers = select(Customer.id).where(
+            customer_scope_clause_from(allowed)
+        )
+        conditions.append(
+            PublicPoolRecycleCandidate.customer_id.in_(visible_customers)
+        )
 
     total = (
         await session.execute(
@@ -1474,12 +1489,19 @@ async def assert_candidate_in_scope(
     allowed = await scoped_owner_ids(session, user)
     if allowed is None:
         return  # `all` 范围：都能处理
-    if candidate.owner_id is None or candidate.owner_id not in allowed:
+    from app.modules.customer.visibility import assert_customer_in_scope
+
+    customer = await session.get(Customer, candidate.customer_id)
+    if customer is None:
+        raise AppError(ErrorCode.NOT_FOUND, "候选对应的客户不存在", 404)
+    try:
+        await assert_customer_in_scope(session, user, customer)
+    except AppError:
         raise AppError(
             ErrorCode.FORBIDDEN,
-            "这条回收候选不在你的管理范围内（该客户的原负责人不在你负责的团队里）",
+            "这条回收候选不在你的管理范围内（该客户不在你负责的团队里）",
             403,
-        )
+        ) from None
 
 
 async def decide_candidate(
@@ -1577,23 +1599,15 @@ async def decide_candidate(
     customer = await _customer_now(session, row.customer_id)
     if customer is None:
         raise AppError(ErrorCode.NOT_FOUND, "该客户已删除，无法回收", 404)
-    if customer.owner_id is None:
-        # 客户已经被别人领走 / 早就进了公海：这条提名过期了，直接作废
+    if customer.pool_status != "private":
+        # 客户早已进了公海：这条提名过期了，直接作废
         row.status = "superseded"
         row.decided_by = operator_id
         row.decided_at = now
-        row.decision_note = note or "客户已不在原负责人名下，提名作废"
+        row.decision_note = note or "客户已不在私海，提名作废"
         await session.flush()
         await session.commit()
         return serialize_candidate(row)
-    if row.owner_id is not None and customer.owner_id != row.owner_id:
-        # 中途换过人：提名时的依据已经不成立，让主管重新看
-        raise AppError(
-            ErrorCode.VERSION_CONFLICT,
-            "该客户的负责人已经变过（提名时是别人），这条提名的依据已失效，"
-            "请驳回它并重新扫描",
-            409,
-        )
 
     if level_code(customer.level) != level_code(row.level):
         raise AppError(
@@ -1663,7 +1677,7 @@ async def decide_candidate(
     session.add(
         CustomerOwnerHistory(
             customer_id=customer.id,
-            old_owner_id=customer.owner_id,
+            old_owner_id=None,
             new_owner_id=None,
             reason=(
                 f"{level_label(row.level)}客户超过 {row.rule_days} 天未跟进，"
@@ -1675,7 +1689,9 @@ async def decide_candidate(
             created_at=now,
         )
     )
-    customer.owner_id = None
+    from app.modules.customer.followers import clear_followers
+
+    await clear_followers(session, customer)
     customer.pool_status = "public"
     row.status = "executed"
     row.decided_by = operator_id
@@ -1747,48 +1763,48 @@ async def restore_candidate(
     if customer is None:
         raise AppError(ErrorCode.NOT_FOUND, "该客户已删除，无法恢复", 404)
 
-    if customer.owner_id is not None and customer.owner_id != row.owner_id:
-        # 已经被别人领走了：**不抢**，把冲突记下来交主管
-        row.restore_conflict_owner_id = customer.owner_id
+    if customer.pool_status != "public":
+        # 已经被别人领取/指派：**不抢**，把冲突记下来交主管
+        from app.modules.customer.followers import active_follower_ids
+
+        current_followers = await active_follower_ids(session, customer.id)
+        row.restore_conflict_owner_id = current_followers[0] if current_followers else None
         row.restore_note = note
         await session.flush()
         await write_audit(
             session, operator_id=operator_id, action="restore_pool_candidate_conflict",
             source=source, business_type="public_pool_candidate", business_id=row.id,
-            after={"customer_id": customer.id, "current_owner_id": customer.owner_id},
+            after={"customer_id": customer.id, "pool_status": customer.pool_status,
+                   "current_follower_ids": current_followers},
         )
         await session.commit()
-        current = await session.get(User, customer.owner_id)
         raise AppError(
             ErrorCode.VERSION_CONFLICT,
-            f"该客户已经被「{current.name if current else customer.owner_id}」领取，"
-            "不能直接恢复给原负责人；请交主管协调（这条冲突已记录）",
+            "该客户已经不在公海（已被领取或指派），不能直接恢复；请交主管协调"
+            "（这条冲突已记录）",
             409,
         )
 
     if row.owner_id is None:
-        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "这条回收没有原负责人，无法恢复")
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "这条回收没有可恢复的跟进人快照，无法恢复；请在客户中心指定跟进人",
+        )
 
     owner = await session.get(User, row.owner_id)
     if owner is None or owner.status != "active":
         raise AppError(
             ErrorCode.PARAM_ERROR,
-            f"原负责人「{owner.name if owner else row.owner_id}」已停用，不能恢复给他；"
+            f"原跟进人「{owner.name if owner else row.owner_id}」已停用，不能恢复给他；"
             "请改派给其他人",
             422,
         )
 
-    session.add(
-        CustomerOwnerHistory(
-            customer_id=customer.id,
-            old_owner_id=None,
-            new_owner_id=row.owner_id,
-            reason=f"恢复公海回收（候选编号 {row.id}）",
-            operator_id=operator_id,
-            created_at=now,
-        )
+    from app.modules.customer.followers import add_followers
+
+    await add_followers(
+        session, customer.id, [row.owner_id], source="pool_restore", created_by=operator_id
     )
-    customer.owner_id = row.owner_id
     customer.pool_status = "private"
     row.status = "restored"
     row.restored_at = now
@@ -2011,41 +2027,31 @@ async def run_auto_tasks(
                 created.append({"task_id": task.id, "title": task.title})
 
         elif rule.trigger_type == "customer_silent":
-            # 某等级客户 N 天没联系 → 给负责人建跟进任务
+            # 某等级客户 N 天没联系 → 给**每一位有效跟进人**各建一条跟进任务
+            # （客户没有默认负责人；同一客户同一人只留一条未完成）。
             levels = config.get("levels") or ["A"]
             if not isinstance(levels, list) or not all(isinstance(level, str) for level in levels):
                 errors.append({"rule_id": rule.id, "code": rule.code, "error": "levels 必须是客户等级列表"})
                 continue
+            from app.modules.customer.followers import active_follower_ids
+            from app.modules.customer.model import CustomerFollower
+
             rows = (
                 await session.execute(
                     select(Customer).where(
                         Customer.deleted_at.is_(None),
                         Customer.pool_status == "private",
-                        Customer.owner_id.is_not(None),
+                        Customer.id.in_(
+                            select(CustomerFollower.customer_id).where(
+                                CustomerFollower.deleted_at.is_(None)
+                            )
+                        ),
                         level_filter(Customer.level, levels),
                     )
                 )
             ).scalars().all()
-            # B23-06：派生缓存校准改为锁内重算（refresh_next_followup_at 先锁客户行），
-            # 避免无锁批量写把用户刚设的未来跟进时间擦成旧值/空。
-            from app.modules.customer.service import refresh_next_followup_at
-
+            title_template = str(action.get("title") or "客户久未联系，请跟进")
             for customer in rows:
-                await refresh_next_followup_at(session, customer.id)
-                await session.refresh(customer)
-                # 同一活跃时钟口径：业务进展（报价/打样/下单/回款）也算"有联系"
-                last = _last_active_at(customer)
-                if last is None:
-                    continue
-                if last.tzinfo is None:
-                    last = last.replace(tzinfo=UTC)
-                if last >= cutoff:
-                    continue
-                # 第三个时钟（文档 §2.3）：已约定下次跟进且还没到 → 本轮豁免。
-                # 销售说了"下个月联系"，今天不该再收到"你冷落了客户"。
-                # 这条豁免**只用于提醒**，不用于公海回收：约定是销售的承诺，
-                # 不该变成长期占位的挡箭牌（回收另有预告/复核/履约保护，见
-                # run_public_pool_recycle），两者要求不同，故意不共用。
                 agreed = customer.next_followup_at
                 if agreed is not None:
                     if agreed.tzinfo is None:
@@ -2056,24 +2062,25 @@ async def run_auto_tasks(
                              "next_followup_at": str(agreed)}
                         )
                         continue
-                if await _has_open_task(session, rule.id, customer_id=customer.id):
-                    continue
-                task = Task(
-                    title=f"{title_template}：{customer.name}",
-                    task_type="followup",
-                    customer_id=customer.id,
-                    **task_owner(customer.owner_id),
-                    priority="high",
-                    status="pending",
-                    due_at=now,
-                    source="system",
-                    source_rule_id=rule.id,
-                )
-                session.add(task)
-                await session.flush()
-                followup_customer_ids.add(customer.id)
-                created.append({"task_id": task.id, "title": task.title})
-
+                for follower_id in await active_follower_ids(session, customer.id):
+                    if await _has_open_task(
+                        session, rule.id, customer_id=customer.id, owner_id=follower_id
+                    ):
+                        continue
+                    task = Task(
+                        title=f"{title_template}：{customer.name}",
+                        task_type="followup",
+                        customer_id=customer.id,
+                        **task_owner(follower_id),
+                        priority="high",
+                        status="pending",
+                        due_at=now,
+                        source="system",
+                        source_rule_id=rule.id,
+                    )
+                    session.add(task)
+                    await session.flush()
+                    created.append({"task_id": task.id, "title": task.title})
         elif rule.trigger_type == "receivable_due":
             # 应收到期前 N 天 → 提醒负责人跟进回款
             # 已取消订单的应收不再派催收（整改审计点：取消订单必须全链路安静）
@@ -2176,7 +2183,7 @@ async def notify_due_followups(session: AsyncSession) -> int:
     ).all()
     sent = 0
     for customer, task in rows:
-        owner_id = task.owner_id or customer.owner_id
+        owner_id = task.owner_id
         if not owner_id:
             continue
         already = (

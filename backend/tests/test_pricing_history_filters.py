@@ -36,6 +36,9 @@ def test_sku_filter_does_not_match_longer_id_prefix(db_session, snapshot, nested
 async def test_customer_filter_matches_complete_id_and_delete_before_snapshot(history_db):
     history_db.add(Customer(id=12, name="另一个本人客户", owner_id=101))
     history_db.flush()
+    from tests.conftest import follow_customer
+    follow_customer(history_db, 12, 101)
+    history_db.flush()
     for log_id, customer_id in ((10, 1), (11, 12)):
         history_db.add(AuditLog(id=log_id, business_type="customer_price_rule", business_id=log_id,
                                 action="update", after_data={"customer_id": customer_id, "sku_id": 1}))

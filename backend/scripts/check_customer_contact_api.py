@@ -451,7 +451,9 @@ async def main():
     status, res = call('POST', f'/customers/{customer_id}/assign', token=admin,
                        body={'owner_id': zs_id, 'reason': f'CHK{RUN} 分配测试'})
     check('分配给张三', res.get('code'), 0)
-    check('负责人已变', res['data']['owner_id'], zs_id)
+    check_true('张三已加入跟进人',
+               zs_id in {f['user_id'] for f in res['data'].get('followers', [])},
+               str(res['data'].get('followers')))
 
     status, res = call('POST', f'/customers/{customer_id}/assign', token=admin,
                        body={'owner_id': 999999})
@@ -461,6 +463,8 @@ async def main():
     status, res = call('POST', f'/customers/{customer_id}/assign', token=admin,
                        body={'owner_id': admin_id})
     check('分配回管理员', res.get('code'), 0)
+    # 客户没有默认负责人：分配只是加跟进人，要把张三移出才能验证"别人客户不可见"
+    call('DELETE', f'/customers/{customer_id}/followers/{zs_id}', token=admin)
 
     print()
     print('=== 8. POST /customers/export（筛选导出 CSV）===')
@@ -681,8 +685,13 @@ async def main():
     status, res = call('POST', f'/customers/{zs_customer_id}/assign', token=admin,
                        body={'owner_id': other_user['id'], 'reason': '场景14 换负责人'})
     check('换负责人成功', res.get('code'), 0)
+    # 转交是"加接手人"；显式把张三移出跟进人，验证客户访问随之失去。
+    # 合同文档仍按**单据负责人**判（这份订单已归张三），不属于客户协作面。
+    call('DELETE', f'/customers/{zs_customer_id}/followers/{zs_id}', token=admin)
+    status, res = call('GET', f'/customers/{zs_customer_id}', token=zhangsan)
+    check('原负责人失去客户访问', res.get('code'), 40302)
     status, res = call('GET', f'/contract-documents/{doc_id}', token=zhangsan)
-    check('原负责人失去访问', res.get('code'), 40302)
+    check('单据负责人仍可读自己名下的合同', res.get('code'), 0)
     status, res = call('GET', f'/contract-documents/{doc_id}', token=admin)
     check('管理员仍可读', res.get('code'), 0)
     call('POST', f'/customers/{zs_customer_id}/assign', token=admin,

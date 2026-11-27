@@ -102,6 +102,9 @@ def test_reminder_only_unrated_repeat_and_rating(db):
     for i, level in enumerate([None,'','A'],1):
         s.add(Customer(id=i,name=f'客户{i}',level=level,owner_id=1,pool_status='private',last_followup_at=old))
     run(s.flush())
+    from tests.conftest import follow_customer
+    for i in (1,2,3):
+        follow_customer(s, i, 1)
     save(db,reminder_days=7)
     assert not run(run_auto_tasks(s,1))['tasks']
     save(db,reminder_days=7,reminder_enabled=True)
@@ -130,6 +133,9 @@ def test_recycle_only_unrated_and_no_automatic_release(db, monkeypatch):
     for i, level in enumerate([None,'','A'],1):
         s.add(Customer(id=i,name=f'客户{i}',level=level,owner_id=1,pool_status='private',last_followup_at=old))
     run(s.flush())
+    from tests.conftest import follow_customer
+    for i in (1,2,3):
+        follow_customer(s, i, 1)
     save(db,recycle_days=7)
     assert run(svc.run_public_pool_recycle(s,1))['nominated_count']==0
     save(db,recycle_days=7,recycle_enabled=True)

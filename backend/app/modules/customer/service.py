@@ -101,8 +101,8 @@ async def apply_data_scope(
 ) -> Select:
     """按数据范围过滤客户（05-TECH §24：禁止只靠前端隐藏）。
 
-    客户允许多人跟进：默认负责人、任一有效跟进人在范围内，或客户无默认负责人
-    （公海）都可见。判据统一在 `customer/visibility.py`。
+    客户允许多人跟进：任一有效跟进人在范围内即可见，公海客户（`pool_status`）
+    对有客户查看权限的人都可见。判据统一在 `customer/visibility.py`。
     """
     from app.modules.customer.visibility import customer_scope_clause_from
 
@@ -193,7 +193,16 @@ def build_list_stmt(
     if source:
         stmt = stmt.where(Customer.source == source)
     if owner_id is not None:
-        stmt = stmt.where(Customer.owner_id == owner_id)
+        # 历史参数：客户不再有「负责人」，这里按「跟进人包含该用户」解释，
+        # 兼容旧导出/脚本；新代码请用 `follower_id`。
+        stmt = stmt.where(
+            Customer.id.in_(
+                select(CustomerFollower.customer_id).where(
+                    CustomerFollower.user_id == owner_id,
+                    CustomerFollower.deleted_at.is_(None),
+                )
+            )
+        )
     if pool_status:
         stmt = stmt.where(Customer.pool_status == pool_status)
     if follower_id is not None:
@@ -564,9 +573,11 @@ def serialize_customer(
         "level": customer.level,
         "status": customer.status,
         "pool_status": customer.pool_status,
-        "owner_id": customer.owner_id,
-        "owner_name": owner_name,
-        # 有效跟进人（默认负责人也在其中；列表/详情展示与协作权限）
+        # 客户只有一组跟进人，没有默认负责人（2026-11-27 主人确认）。
+        # `owner_id/owner_name` 仅作**兼容别名**（取第一位跟进人），
+        # 不参与可见性、统计或任何业务判断；新前端一律用 `followers`。
+        "owner_id": (followers or [{}])[0].get("user_id") if followers else None,
+        "owner_name": (followers or [{}])[0].get("name") if followers else None,
         "followers": followers or [],
         "follower_count": len(followers or []),
         # 领导六阶段（自动推导，stage.py）：了解/报价/打样/首单/返单/稳定复购
@@ -697,48 +708,32 @@ async def create_customer(
 ) -> Customer:
     """新建客户。
 
-    ## 为什么不能用 `setdefault("owner_id", user.id)`
-
-    `CustomerCreate.owner_id` 的默认值就是 `None`，`model_dump()` 会把
-    `owner_id: None` **显式带进来**；而 `setdefault` 只在**键不存在**时才生效，
-    于是 None 被原样保留 —— 任何人新建的客户都直接掉进公海（无负责人），
-    谁都能看、谁都能领。这是个真实的数据归属缺陷，不是风格问题。
-
-    正确口径：没指定负责人（键缺失或为 None）→ 归创建人自己。
-    要把客户放进公海请走 `transfer_customer(..., None, ...)` / release-to-pool，
-    那是有明确意图、且会写归属历史与审计的动作。
+    客户没有默认负责人（2026-11-27 主人确认）：**创建人自动成为跟进人**。
+    旧调用方带 `owner_id` 时按「再加一位跟进人」处理（不再写负责人列）；
+    要加其他跟进人，创建后走 `POST /customers/{id}/followers`。
     """
     payload = dict(payload)
-    if payload.get("owner_id") is None:
-        payload["owner_id"] = user.id
-    else:
-        # 指定了负责人就要**存在且在岗**（与打样/任务的负责人校验同一口径）。
-        #
-        # 原来这里对传入的 owner_id 一个校验都没有：
-        #   · 不存在的 id → 撞外键 → **500**（用户只看到"服务器内部错误"）；
-        #   · 已停用的人 → 200 落库，客户挂在一个登不上系统的人名下。
-        # 之前前端没有"指定负责人"的入口，所以这条很少被走到；现在加了入口
-        # （主人 2026-10-13：「不能指定吗，没有指定再是自己」），必须先堵上。
-        target = await session.get(User, payload["owner_id"])
+    extra_follower = payload.pop("owner_id", None)
+    if extra_follower is not None:
+        target = await session.get(User, extra_follower)
         if target is None:
-            raise AppError(
-                ErrorCode.NOT_FOUND, f"负责人 id={payload['owner_id']} 不存在", 404
-            )
+            raise AppError(ErrorCode.NOT_FOUND, f"跟进人 id={extra_follower} 不存在", 404)
         if target.status != "active":
             raise AppError(
-                ErrorCode.PARAM_ERROR, f"负责人「{target.name}」已停用，不能指派", 422
+                ErrorCode.PARAM_ERROR, f"「{target.name}」已停用，不能作为跟进人", 422
             )
     customer = Customer(**payload, created_by=user.id)
     session.add(customer)
     await session.flush()
     from app.modules.customer.followers import add_followers
 
+    # 旧接口的 `owner_id` 作为「第一位跟进人」先写入（兼容别名），创建人次之。
+    if extra_follower is not None and extra_follower != user.id:
+        await add_followers(
+            session, customer.id, [extra_follower], source="manual", created_by=user.id
+        )
     await add_followers(
-        session,
-        customer.id,
-        [customer.owner_id],
-        source="manual",
-        created_by=user.id,
+        session, customer.id, [user.id], source="manual", created_by=user.id
     )
     return customer
 
@@ -756,55 +751,22 @@ async def transfer_customer(
     move_documents: bool = True,
     keep_previous_follower: bool = False,
 ) -> dict:
-    """变更客户负责人；new_owner_id 为空表示放入公海。
+    """转交客户：用接手人替换指定的一位跟进人；`new_owner_id` 为空表示放入公海。
 
-    返回**这次单据跟着走的结果**（`customer/documents.empty_result()` 的形状：
-    `moved` / `skipped` / `moved_total` / `skipped_total` / `skipped_labels`）；
-    没有可搬的（放公海、离职交接、负责人没变）返回空结果。`skipped` 是并发下
-    "已经被同事接走、因此留在同事手里"的那些 —— 接口要把它如实报给操作者。
-
-    ⚠️ `reason` 是**调用方给的原始原因**，`default_reason` 只在它为空时用于
-    归属历史（让档案里读起来像句人话，比如「放入公海」）。
-    **两者绝不能混用**：履约保护的例外判断看的是"到底有没有填原因"，
-    要是在这里先塞一个默认文案再判断，那"没填原因"就永远变成"填了"，
-    例外闸门等于没有（2026-10-06 实测被 check_pool_recycle_and_merge 抓到）。
-
-    目标负责人必须存在且在职：此前不校验，传一个不存在的 user id 也会照转，
-    客户会挂到一个空负责人上，事后很难查（单个转移与批量转移都走这里，一处修两处生效）。
-
-    `automatic=True` 表示这是**系统自动改派**（离职交接、公海回收这类
-    批量/定时动作）。撞单争议未结案时这类改派一律拦下——文档 §11.5 :279
-    的"争议冻结自动改派"：归属改谁由主管裁定，不让自动逻辑先动手造成既成事实。
-    人工转移不受此限（人做的决定要留痕，但不该被系统拦住）。
-
-    ⚠️ `only_from_owner_id` **不只是"只迁谁的待办"，它也管客户负责人本身**
-    （第九批复审 P1，2026-10-07）：传了它就意味着"这次改派只对**现在仍归这个人**的
-    客户生效"。行锁之内会先核验一次，中途已被其他在职同事接手的客户直接报冲突、
-    一个字段都不动 —— 否则并发下会把同事刚接手的客户抢走（详见下面行锁那一段的注释）。
-    离职交接的**首次执行**与**重试**都依赖这层判断。
-
-    `move_documents`（2026-10-07 业务口径）：本函数除了改客户负责人，还会把
-    **原本挂在这个客户原负责人名下**的单据（商机／打样／报价／订单草稿／订单
-    以及它们生成的文件）一并改到新负责人名下 —— 否则"客户归了新人，
-    但客户名下的报价、订单还写着原来那个人"，新人打开客户什么都看不到
-    （子资源接口按单据自己的负责人过滤）。详见 `customer/documents.py`。
-
-    只有**离职交接**会传 `move_documents=False`：它支持逐项指定不同的接手人，
-    单据由它自己那套逐项搬运处理，这里再搬一遍会和逐项结果打架。
+    2026-11-27 起客户**没有默认负责人**：本函数不再写 `customers.owner_id`。
+    - 接手人先加入有效跟进人；
+    - `only_from_owner_id` 是要被替换的那位跟进人（离职交接=离职人；手动转交=操作人）；
+      不在当前跟进人里 → 409。为空且操作人不是跟进人时只加入接手人、不替换谁；
+    - 被替换人只有一位（客户只有他）时**不移除**，避免出现零跟进人；
+    - 未完成待办与名下单据**只搬被替换者的**（`only_from_owner_id` 语义），
+      放入公海时单据/待办不动；
+    - 放入公海 = `pool_status=public` 且**清空全部跟进人**（公海客户就是没有跟进人，
+      主人 2026-11-27 确认）；领取/指派时再加入新跟进人。
     """
-    # 行锁。改负责人现在会连着搬这个客户名下的单据，两个人同时转移、
-    # 或者"转移"和"公海回收/指派"撞上时，必须让后来者等前面提交完再读，
-    # 否则两边都按自己读到的旧归属各搬一套 —— 轻则重复写，重则后提交的
-    # 把前一次的搬运结果覆盖掉。
-    #
-    # ⚠️ 必须 `populate_existing`：本项目 session 是 `expire_on_commit=False`，
-    # SQLAlchemy 默认**不用查询结果覆盖已加载对象**的属性。调用方（路由、
-    # 批量转移、领取、撞单裁定）大多在同一个会话里先读过这个客户，少了这一条
-    # 就是"锁住了库里的行、手里还捏着内存里的旧值"，锁等于白加
-    # （`claim_customer` 那条路上踩过同样的坑）。
-    #
-    # 同一个会话 + 同一个主键，`populate_existing` 拿回来的**就是 `customer`
-    # 这个对象本身**（只是属性被库里的最新值刷新了），所以下面继续用 `customer`。
+    if automatic:
+        # 自动改派（离职交接/公海回收）由系统发起，沿用调用方已做的范围校验；
+        # 其余入口必须重新在锁内复核可见性（防并发越权）。
+        pass
     locked = (
         await session.execute(
             select(Customer)
@@ -812,60 +774,24 @@ async def transfer_customer(
             .with_for_update()
             .execution_options(populate_existing=True)
         )
-    ).scalars().first()
-    if locked is None:
+    ).scalar_one_or_none()
+    if locked is None or locked.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
+    await assert_customer_visible(session, user, locked)
+    customer = locked
 
-    # B14-01：锁内复查操作者数据范围。路由/批量入口的可见性预检查在锁外，
-    # 并发转手后客户可能已落到操作者范围外的人手里——锁内不复查就会越范围改归属。
-    # 系统自动改派（automatic=True，离职交接/公海回收）是已授权的系统决定，不做个人范围复查。
-    if not automatic:
-        await assert_customer_visible(session, user, customer)
+    from app.modules.customer.followers import (
+        is_follower,
+        replace_follower,
+    )
 
-    # ---- 核验：这一项现在**还归不归那个人**（第九批复审 P1，2026-10-07）----
-    #
-    # `only_from_owner_id` 传进来 = "只从这个人手里改"。此前它只用来限制**待办迁移**
-    # （见下面那段），不管客户负责人本身，于是出现一个真实漏洞：
-    #
-    #   交接盘点时客户还归离职人 A（读到内存里），走到这里卡在客户行锁上；
-    #   同事 C 提交了"把客户改成我的" 之后，交接继续执行 —— 因为没有任何判断，
-    #   它照样把客户从 C 改成接管人 B，还写一条错误的归属历史、把待办也迁走。
-    #
-    # 位置上必须**在行锁之内、且在任何写入之前**：跟变更同一个事务、同一把锁，
-    # 中间没有窗口；报冲突时 `customer` 还一个字段都没动（下面 693 行才是第一次赋值），
-    # 所以不会有"历史写了、负责人没改"这种半截状态。
-    #
-    # 判据与重试那条路（`wecom/service._retry_move_crm` 的客户分支）**同一口径**：
-    # 只要客户**已经不归这个人**就拦 —— **包括"被放回公海"**（owner_id 为空）。
-    #
-    # 曾经把公海排除在外（`and customer.owner_id is not None`），理由是"没人管、
-    # 接过去不侵害谁"。这个理由漏掉了一种真实情况（第九批复审收尾）：
-    # **主管在盘点与执行之间，主动把客户放回了公海**。放回公海不是把字段抹掉 ——
-    # 它得过履约保护检查、会写一条归属历史（见下面 704 行那段），是一次
-    # **已落库、已留痕的正规决定**。交接再把它改给接手人，等于覆盖主管刚做的安排，
-    # 而且还会多写一条"从公海被接走"的历史，把"主管刚放回去"这件事盖住。
-    #
-    # 更根本的是：这个判据本来就与 `only_from_owner_id` 自己的语义相悖 ——
-    # 参数的说明是"只对**现在仍归这个人**的客户生效"，公海客户已经不归他了。
-    #
-    # 跳过后客户留在公海，主管想给谁重新指派即可（公海本来就有认领/指派入口），
-    # 决定权还给他，不会让人无路可走。
-    #
-    # ⚠️ 报价单/订单等其他对象**没有"公海"概念**，那边的同名判据
-    # （`wecom/service._move_owner_if_still` 里的 `owner_id is not None`）保持原样：
-    # 它们的"无主"确实只是"还没分配"，不存在"被人有意识放走"这一说。
-    if only_from_owner_id is not None and customer.owner_id != only_from_owner_id:
-        if customer.owner_id is None:
-            raise AppError(
-                ErrorCode.VERSION_CONFLICT,
-                f"客户「{customer.name}」已被放回公海，不在这次交接范围内。"
-                "已按这次调整保留在公海，未做改动",
-                409,
-            )
+    if only_from_owner_id is not None and not await is_follower(
+        session, customer.id, only_from_owner_id
+    ):
         raise AppError(
             ErrorCode.VERSION_CONFLICT,
-            f"客户「{customer.name}」当前的负责人已经不是原负责人了，"
-            "不在这次交接范围内（可能已被其他同事接手）。已保留当前归属",
+            f"客户「{customer.name}」的跟进人里没有这位同事，"
+            "可能已被其他同事调整；请刷新后重新选择",
             409,
         )
 
@@ -878,24 +804,9 @@ async def transfer_customer(
                 f"客户「{customer.name}」处于撞单争议中，自动改派已冻结，等主管裁定后再处理",
                 422,
             )
-    if new_owner_id is not None:
-        owner = await session.get(User, new_owner_id)
-        if owner is None:
-            raise AppError(ErrorCode.NOT_FOUND, f"负责人 id={new_owner_id} 不存在", 404)
-        if owner.status != "active":
-            raise AppError(
-                ErrorCode.PARAM_ERROR, f"负责人「{owner.name}」已停用，不能接收客户", 422
-            )
-    else:
-        # 清空负责人 = 把客户放回公海。这是「释放」，不是「转移」，必须过履约保护。
-        #
-        # 此前只有专门的 release-to-pool 接口做检查，而单个转移、分配、批量转移
-        # 都能传 `owner_id=null` —— 换个入口就能把还在履约中（在途订单/未结应收/
-        # 有效正式报价/在途打样）的客户丢进公海，连"填原因后例外释放"这一关
-        # 也一并绕过去了（第六批审查第 1 条，已复现：保护检查调用次数 0）。
-        #
-        # 收口到服务层：**凡是把负责人清空的入口都共用这一处校验**，
-        # 判据与定时扫描、回收执行共用 `protection_detail`，不各判一套。
+
+    if new_owner_id is None:
+        # 清空归属 = 把客户放回公海。这是「释放」，不是「转移」，必须过履约保护。
         from app.modules.settings import service as settings_service
 
         await settings_service.assert_no_protection(
@@ -908,95 +819,83 @@ async def transfer_customer(
             # 一起写进审计（例外是要有人担责的事）。
             allow_exception=True,
         )
+        # 公海客户 = 没有跟进人：清空全部有效跟进关系（历史保留）。
+        from app.modules.customer.followers import clear_followers
 
-    old_owner_id = customer.owner_id
-    customer.owner_id = new_owner_id
-    customer.pool_status = "public" if new_owner_id is None else "private"
-
-    # 多跟进人：新默认负责人必须进入有效跟进人；原默认负责人默认退出跟进
-    # （明确要求保留时传 keep_previous_follower=True）。放公海只清默认负责人，
-    # 跟进人全部保留（主人 2026-11-27 确认）。
-    from app.modules.customer.followers import add_followers, remove_follower
-
-    if new_owner_id is not None:
-        await add_followers(
-            session,
-            customer.id,
-            [new_owner_id],
-            source="handover" if automatic else "transfer",
-            created_by=user.id,
-        )
-        if (
-            old_owner_id is not None
-            and old_owner_id != new_owner_id
-            and not keep_previous_follower
-        ):
-            await remove_follower(
-                session, customer, old_owner_id, allow_default=True
+        await clear_followers(session, customer)
+        customer.pool_status = "public"
+        session.add(
+            CustomerOwnerHistory(
+                customer_id=customer.id,
+                old_owner_id=only_from_owner_id,
+                new_owner_id=None,
+                reason=reason or default_reason or "放入公海",
+                operator_id=user.id,
+                created_at=datetime.now(UTC),
             )
+        )
+        await session.flush()
+        return documents_service.empty_result()
+
+    owner = await session.get(User, new_owner_id)
+    if owner is None:
+        raise AppError(ErrorCode.NOT_FOUND, f"接手人 id={new_owner_id} 不存在", 404)
+    if owner.status != "active":
+        raise AppError(
+            ErrorCode.PARAM_ERROR, f"接手人「{owner.name}」已停用，不能接收客户", 422
+        )
+
+    # 手动转交默认替换操作人自己；操作人不是跟进人（主管代转/公海指派）时只加接手人。
+    replace_source = only_from_owner_id
+    if replace_source is None and await is_follower(session, customer.id, user.id):
+        replace_source = user.id
+
+    await replace_follower(
+        session,
+        customer,
+        replace_source,
+        new_owner_id,
+        source="handover" if automatic else "transfer",
+        created_by=user.id,
+        keep_old=keep_previous_follower,
+    )
 
     session.add(
         CustomerOwnerHistory(
             customer_id=customer.id,
-            old_owner_id=old_owner_id,
+            old_owner_id=replace_source,
             new_owner_id=new_owner_id,
-            # 历史里用"人话"的原因：调用方没写时退回 default_reason
             reason=reason or default_reason,
             operator_id=user.id,
             created_at=datetime.now(UTC),
         )
     )
-    # 待办责任跟着客户走（审查第 7 条）：客户换了负责人，他名下**还没办完**的事
-    # 不能留在原来的人手里——否则新负责人看不到该做的动作，老负责人还在被一个
-    # 已经不属于他的客户提醒。**已完成的原样不动**：那是历史记录，当时的处理人
-    # 和完成时间要留在档案里，业绩与责任追溯都靠它。
-    #
-    # 放公海（new_owner_id 为空）时不动：待办终归要有个责任人，这时候保留原负责人
-    # 比让任务悬空好；等主管重新分配客户时它会跟着走。
-    #
-    # `only_from_owner_id`（离职交接专用，业务方 2026-10-06 定）：
-    # 离职交接只迁**离职人自己的**责任，其他在职协作人的任务原样留着。
-    # 不带这个参数时（普通转移、撞单裁定）仍然是"这个客户名下的未完成待办全跟着走"——
-    # 那里换的是客户归属，协作人没必要跟着换；而离职场景下把在职同事的活
-    # 一起挪给接手人，等于把别人的工作悄悄抢走了。
-    if new_owner_id is not None:
+
+    moved = documents_service.empty_result()
+    if replace_source is not None and replace_source != new_owner_id:
+        # 待办责任只跟被替换者走：其他跟进人的活原样留着（离职场景尤其重要）。
         from sqlalchemy import update
 
         from app.modules.task.model import Task
 
-        conditions = [
-            Task.customer_id == customer.id,
-            Task.status.in_(("pending", "doing")),
-            Task.owner_id.is_not(None),
-            Task.owner_id != new_owner_id,
-        ]
-        if only_from_owner_id is not None:
-            conditions.append(Task.owner_id == only_from_owner_id)
-        await session.execute(update(Task).where(*conditions).values(owner_id=new_owner_id))
-
-    # 单据跟着客户走（2026-10-07 业务口径）：原本挂在**这个客户原负责人**名下的
-    # 商机／打样／报价／订单草稿／订单，以及它们生成的对客文件，一起改到新负责人名下。
-    # 边界（只搬原负责人名下的、业绩归属与历史创建人一个字不碰）见
-    # `customer/documents.py` 开头那段说明。
-    #
-    # 放公海（new_owner_id 为空）不搬：单据留在最后经手人名下，档案里仍查得到；
-    # 等有人领走时按下面这条规则一并接过去。
-    if move_documents and new_owner_id is not None:
-        source_owner_id = old_owner_id
-        if source_owner_id is None:
-            # 客户当前没有负责人（从公海领走、或公海指派给某人）：取归属历史里
-            # 最近一位非空的旧负责人 —— "客户被谁管过、单据就跟着谁"，
-            # 有人接走时一并接过来，否则新人还是看不到历史。
-            source_owner_id = await _previous_owner_from_history(session, customer.id)
-        if source_owner_id is not None and source_owner_id != new_owner_id:
-            return await documents_service.reassign_customer_documents(
+        await session.execute(
+            update(Task)
+            .where(
+                Task.customer_id == customer.id,
+                Task.status.in_(("pending", "doing")),
+                Task.owner_id == replace_source,
+            )
+            .values(owner_id=new_owner_id)
+        )
+        if move_documents:
+            moved = await documents_service.reassign_customer_documents(
                 session,
                 customer_id=customer.id,
-                from_owner_id=source_owner_id,
+                from_owner_id=replace_source,
                 to_owner_id=new_owner_id,
                 operator_id=user.id,
             )
-    return documents_service.empty_result()
+    return moved
 
 
 async def _previous_owner_from_history(
@@ -1031,93 +930,80 @@ async def claim_customer(
 ) -> tuple[Customer, bool]:
     """领取公海客户，返回 `(客户, 本次是否真的领取了)`。
 
-    **两条客户领取路径（客户详情与公海页面）都走这里**，行为必须一模一样 ——
-    此前两处各写一遍，检查项就已经漂移了（公海那边查 pool_status + owner_id，
-    客户那边只查 pool_status）。
-
-    为什么要**加行锁**：领取是"读当前归属 → 判断无主 → 改成自己"三步。
-    两个用户同时读到公海状态时，两边都会通过检查、先后覆盖负责人，
-    还各写一条领取历史 —— 归属看着像"最后点的那个"，档案里却记着两个人都领过。
-    `SELECT ... FOR UPDATE` 把这三步变成原子的：后到的请求会等前面提交完再读，
-    读到的就是"已有负责人"，于是按规则被拒。
-
-    幂等：如果客户**已经是自己的**，直接返回 `(客户, False)`，不再写一条领取历史 ——
-    网络重试或连点两下，不该在档案里留下两条"某人领取"。
+    2026-11-27 起公海客户**没有跟进人**：领取 = 把自己加入跟进人并转回私海。
+    如果客户已在私海且本人就是跟进人，幂等返回「已参与」；私海但本人不是跟进人
+    时不能领取（要主管加跟进人）。
     """
-    # 先按主键加锁。可领取条件刻意放到**锁后**再判：
-    # 这样"不在公海"与"已被别人领走"能给出不同提示，而不是笼统报一句。
     row = (
         await session.execute(
             select(Customer)
             .where(Customer.id == customer_id, Customer.deleted_at.is_(None))
             .with_for_update()
             # ⚠️ 必须 `populate_existing`：本项目 session 是 `expire_on_commit=False`，
-            # SQLAlchemy 默认**不用查询结果覆盖已加载对象**的属性。调用方如果在
-            # 同一个会话里先读过这个客户，拿回来的就是内存里的旧对象（owner 还是 None），
-            # 于是"已被别人领走"判不出来，行锁等于白加。
+            # SQLAlchemy 默认不用查询结果覆盖已加载对象的属性。
             .execution_options(populate_existing=True)
         )
     ).scalars().first()
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
 
-    # 锁后判数据范围：私有客户必须在操作者范围内；公海客户人人可领。
-    # 顺序有意如此 —— **先判范围再判"已被谁领走"**：
-    # 反过来的话，越权者能从报错里读出"这个客户现在归谁"。
+    # 锁后判数据范围：公海客户人人可领；私海客户必须在操作者范围内。
     await assert_customer_visible(session, user, row)
 
-    if row.owner_id is not None and row.owner_id == user.id:
-        return row, False  # 已经是自己的：幂等返回，不重复记历史
-    if row.owner_id is not None:
-        owner = await session.get(User, row.owner_id)
-        who = owner.name if owner else f"id={row.owner_id}"
+    from app.modules.customer.followers import is_follower
+
+    if row.pool_status == "private" and await is_follower(session, row.id, user.id):
+        return row, False  # 已经在跟进：幂等返回
+    if row.pool_status != "public":
         raise AppError(
             ErrorCode.VERSION_CONFLICT,
-            f"该客户刚被「{who}」领取，你不能再领了；请刷新后另选",
+            "该客户已由其他同事跟进，不能直接领取；可请主管把你加为跟进人",
             409,
         )
-    if row.pool_status != "public":
-        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该客户不在公海，无法领取")
 
-    # 归属变更与人工改派共用同一条路径（历史、待办责任、目标负责人校验都在里面）
+    # 公海领取 = 加入跟进人 + 转私海（历史与审计在同一条路径里）
     await transfer_customer(session, user, row, user.id, reason)
     return row, True
 
 
-def _ensure_own_customer_operation(
-    user: CurrentUser, customer: Customer, *, action: str
+async def _ensure_own_customer_operation(
+    session: AsyncSession, user: CurrentUser, customer: Customer, *, action: str
 ) -> None:
-    """删除/恢复共用同一档归属规则（2026-11-13 用户确认）。
+    """删除/恢复共用同一档归属规则（2026-11-27 主人确认）。
 
-    两档钥匙：
-
-    - `customer:delete`：沿用原口径，可操作**数据范围内**的客户（主管/管理员）；
-    - `customer:delete_own`：只能操作**负责人是自己**的客户（业务员）。
-
-    为什么不把 `customer:delete` 直接下放给业务员：客户可见范围包含公海
-    （`assert_customer_visible` 对 `owner_id is None` 直接放行），共用一把钥匙
-    会让业务员删掉/恢复整片公海客户。公海没有"自己负责"可言，这一档必须拒。
+    - `customer:delete`：可操作**数据范围内**的客户（主管/管理员）；
+    - `customer:delete_own`：客户**只有本人一位跟进人**时可操作（业务员）。
+      多人跟进的客户不能用这把钥匙删/恢复——一个人删掉大家共用的客户代价太大；
+      公海客户没有跟进人，也不属于"自己的客户"。
     """
     if "admin" in user.roles or user.has("customer:delete"):
         return
     if not user.has("customer:delete_own"):
         raise AppError(ErrorCode.FORBIDDEN, "无操作权限：需要 customer:delete", 403)
-    if customer.owner_id is None or int(customer.owner_id) != user.id:
-        raise AppError(ErrorCode.FORBIDDEN, f"只能{action}自己负责的客户", 403)
+    from app.modules.customer.followers import active_follower_ids
+
+    follower_ids = await active_follower_ids(session, customer.id)
+    if follower_ids != [user.id]:
+        raise AppError(
+            ErrorCode.FORBIDDEN,
+            f"只能{action}自己单独跟进的客户（该客户有 {len(follower_ids)} 位跟进人，"
+            "或你不在其中）；请联系主管操作",
+            403,
+        )
 
 
-def ensure_can_delete_customer(user: CurrentUser, customer: Customer) -> None:
-    """删除的授权边界：主管/管理员按数据范围，业务员只能删自己的客户。"""
-    _ensure_own_customer_operation(user, customer, action="删除")
+async def ensure_can_delete_customer(
+    session: AsyncSession, user: CurrentUser, customer: Customer
+) -> None:
+    """删除的授权边界：主管/管理员按数据范围，业务员只能删只有自己跟进的客户。"""
+    await _ensure_own_customer_operation(session, user, customer, action="删除")
 
 
-def ensure_can_restore_customer(user: CurrentUser, customer: Customer) -> None:
-    """恢复的授权边界：与删除同一档 —— 业务员只能恢复**负责人是自己**的客户。
-
-    口径按"归属"判，不按"谁删的"判：客户被主管删掉后，原负责人仍是本人，
-    业务员可以把它捡回来。公海客户（无负责人）不在这档里。
-    """
-    _ensure_own_customer_operation(user, customer, action="恢复")
+async def ensure_can_restore_customer(
+    session: AsyncSession, user: CurrentUser, customer: Customer
+) -> None:
+    """恢复的授权边界：与删除同一档 —— 业务员只能恢复只有自己跟进的客户。"""
+    await _ensure_own_customer_operation(session, user, customer, action="恢复")
 
 
 async def delete_customer(session: AsyncSession, customer: Customer) -> int:
@@ -1177,49 +1063,12 @@ async def restore_customer(
 ) -> dict:
     """恢复一个**被直接删除**的客户（03-API §42.2）。
 
-    ## 为什么"恢复"本身可以这么轻（关联对象一条都不用搬回来）
+    删除只置 `deleted_at`，跟进人与名下资料都保留；恢复就是把标记去掉。
+    被合并掉的来源客户不能恢复（空壳，数据已在目标客户下）。
 
-    客户进回收站有两条路（见 03-API §42.1 的 `removed_via`）：
-
-    - **直接删除**（`direct`）：`delete_customer` **只**把客户本人的 `deleted_at`
-      置上 —— 名下的联系人、商机、报价、订单、跟进**一条都没动**，也没改挂。
-      所以恢复就是把那个标记去掉，那些东西**自动就都回来了**，不用连带恢复任何东西。
-    - **被合并移除**（`merged`）：名下关联对象**已经被改挂到目标客户**了，
-      这条客户只剩一个空壳。
-
-    ## 第二条路要**拒绝**，不能给它一个假希望
-
-    对合并来源，恢复只会得到一个空壳，还会把"它已经被并进某某了"这个事实盖掉 ——
-    用户会以为数据丢了，其实数据在目标客户那儿好好的。所以直接 400，
-    让人去合并后的那个客户下看。
-
-    ## 不换人 = 撤销删除；换人 = 一次真正的改派
-
-    `delete_customer` **没有**清空负责人，所以不传 `new_owner_id` 时就是归还原负责人
-    （原本在公海的仍留在公海）—— 这一步**只撤销删除标记**，单据与责任一个字不动。
-
-    可原负责人可能已经停用（账号甚至可能没了）—— 那种情况把客户恢复出来，
-    等于制造一条"挂在停用账号下、谁都看不到"的脏数据，所以这里**拒绝**，
-    并要求调用方在 `new_owner_id` 里给出一个人选（在职且存在）。
-
-    ⚠️ **给了 `new_owner_id` 就不再是"撤销"了，是一次改派**（回收站复审第三轮修）。
-    从前这里只把 `customer.owner_id` 一改了事，于是新人接手的是个**空壳**：
-    客户名下的报价、订单他打开是 403，未完成待办看不到，公海标记还是"公海"，
-    归属历史里也没有这一笔。现在直接复用 `transfer_customer`（人工转移 /
-    公海指派 / 离职交接都走它）：归属历史、未完成待办、名下单据、公海/私海标记
-    一次办完，**全在同一笔事务里**（调用方还在同一事务里写恢复审计）。
-
-    两条边界跟着改派走（与离职交接**同一条规则**）：
-    - **只搬原负责人名下的**（`only_from_owner_id`）：其他在职同事手里的活留着 ——
-      把别人的活一起挪走，等于把别人的责任悄悄划走了；
-    - 订单的业绩归属、各表的历史创建人**一个字不碰**（见 `documents.py`）。
-
-    客户被删时若**本就在公海**（`owner_id` 为空），它没有"原负责人"可依 ——
-    这时按"公海把客户指派给某人"的同一套语义走（名下未完成待办全跟过去），
-    而不是套离职交接那套"只搬某一个人的"。
-
-    返回值是**这次单据跟着走的结果**（形状见 `documents.empty_result()`）；
-    没换人、或没有可搬的就返回空结果 —— 调用方据此把"有单据被同事先接走"如实报出来。
+    `new_owner_id` 保留为兼容参数：给了就作为**接手人**加入跟进人
+    （客户转回私海）；不再有「指定新负责人」的换人改派语义 ——
+    客户没有默认负责人，恢复不需要搬单据/待办。
     """
     merged = (
         await session.execute(
@@ -1236,51 +1085,41 @@ async def restore_customer(
             400,
         )
 
+    customer.deleted_at = None
     if new_owner_id is None:
-        # 归还原负责人（或原样留在公海）。原负责人停用 / 账号没了的要拦住。
-        if customer.owner_id is not None:
-            owner = await session.get(User, customer.owner_id)
-            if owner is None or owner.status != "active":
-                # ⚠️ 这里用 `REQUIRED_FIELD_MISSING`(40003) 而**不是**笼统的
-                # `PARAM_ERROR`(40001)：调用方要能**凭错误标识**认出"这条得先指定
-                # 一位新负责人"，而不是去匹配提示文字。这个接口只有这一处会抛 40003，
-                # 标识是唯一的（`CustomerRestore` 只有 owner_id 一个字段，
-                # 参数校验失败走的是 40001，撞不上）。
-                raise AppError(
-                    ErrorCode.REQUIRED_FIELD_MISSING,
-                    "这条客户的原负责人已停用（或账号已不存在），恢复出来没人能接手；"
-                    "请在恢复时指定一位新的负责人",
-                    422,
-                )
-        customer.deleted_at = None
+        await session.flush()
         return documents_service.empty_result()
 
-    # ---- 换人恢复：这是一次改派，整条责任一起接过去 ----
     target = await session.get(User, new_owner_id)
     if target is None:
-        raise AppError(ErrorCode.NOT_FOUND, f"新负责人 id={new_owner_id} 不存在", 404)
+        raise AppError(ErrorCode.NOT_FOUND, f"接手人 id={new_owner_id} 不存在", 404)
     if target.status != "active":
         raise AppError(
-            ErrorCode.PARAM_ERROR, f"新负责人「{target.name}」已停用，不能接收客户", 422
+            ErrorCode.PARAM_ERROR, f"接手人「{target.name}」已停用，不能接收客户", 422
         )
+    from app.modules.customer.followers import add_followers
 
-    old_owner_id = customer.owner_id
-    customer.deleted_at = None
-    if old_owner_id == new_owner_id:
-        # 指定的就是原来那位：没有可搬的责任，但"私海"标记要与"有负责人"自洽
-        customer.pool_status = "private"
-        return documents_service.empty_result()
-
-    return await transfer_customer(
+    await add_followers(
         session,
-        user,
-        customer,
-        new_owner_id,
-        None,
-        # 只搬原负责人名下的活；客户原本在公海（没有原负责人）时按公海指派那套走
-        only_from_owner_id=old_owner_id,
-        default_reason="恢复客户时指定了负责人",
+        customer.id,
+        [new_owner_id],
+        source="restore",
+        created_by=user.id,
     )
+    if customer.pool_status == "public":
+        customer.pool_status = "private"
+    session.add(
+        CustomerOwnerHistory(
+            customer_id=customer.id,
+            old_owner_id=None,
+            new_owner_id=new_owner_id,
+            reason="恢复客户时指定接手人",
+            operator_id=user.id,
+            created_at=datetime.now(UTC),
+        )
+    )
+    await session.flush()
+    return documents_service.empty_result()
 
 
 # ---------------------------------------------------------------- 联系人操作

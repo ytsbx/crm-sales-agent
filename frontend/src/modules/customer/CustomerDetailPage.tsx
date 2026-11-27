@@ -26,7 +26,6 @@ import {
   transferCustomer,
   addCustomerFollowers,
   removeCustomerFollower,
-  setCustomerPrimary,
   updateContact,
   updateCustomer,
   type ContactDuplicateMatch,
@@ -165,6 +164,7 @@ export default function CustomerDetailPage() {
   const [followerToAdd, setFollowerToAdd] = useState<number | undefined>(undefined)
   const transferModal = transferCustomerId === customerId
   const [transferTo, setTransferTo] = useState<SystemUser | null>(null)
+  const [transferFrom, setTransferFrom] = useState<{ user_id: number; name: string } | null>(null)
   const [transferSearch, setTransferSearch] = useState('')
   const [transferKeyword, setTransferKeyword] = useState('')
   const [transferReceipt, setTransferReceipt] = useState<{ customerId: number; ownerName: string; documents?: DocumentTransfer } | null>(null)
@@ -337,10 +337,14 @@ export default function CustomerDetailPage() {
   })
 
   const transferMutation = useMutation({
-    mutationFn: (owner: SystemUser) => transferCustomer(customerId, { owner_id: owner.id }),
+    mutationFn: (owner: SystemUser) => transferCustomer(customerId, {
+      owner_id: owner.id,
+      from_user_id: transferFrom?.user_id,
+    }),
     onSuccess: (result, owner) => {
       setTransferReceipt({ customerId: result.id, ownerName: owner.name, documents: result.document_transfer })
       setTransferCustomerId(null)
+      setTransferFrom(null)
       invalidateCustomer()
       for (const key of ['customer-opportunities', 'customer-orders', 'customer-quotes']) {
         void queryClient.invalidateQueries({ queryKey: [key, result.id] })
@@ -365,15 +369,6 @@ export default function CustomerDetailPage() {
     },
     onError: (error: Error) => Toast.error(error.message),
   })
-  const primaryFollowerMutation = useMutation({
-    mutationFn: (userId: number) => setCustomerPrimary(customerId, userId),
-    onSuccess: () => {
-      Toast.success('默认负责人已更新')
-      invalidateCustomer()
-    },
-    onError: (error: Error) => Toast.error(error.message),
-  })
-
   const duplicateCaseMutation = useMutation({
     mutationFn: () => openDuplicateCases(customerId),
     onSuccess: (result) => {
@@ -525,8 +520,8 @@ export default function CustomerDetailPage() {
   const customerError = customerQuery.error
   const customerUnavailable = customerError instanceof ApiError && (customerError.status === 403 || customerError.status === 404)
   const customer = customerUnavailable ? undefined : customerQuery.data
-  const transferUsers = (usersQuery.data?.items ?? []).filter((row) => row.id !== customer?.owner_id)
-  if (transferTo && transferTo.id !== customer?.owner_id && !transferUsers.some((row) => row.id === transferTo.id)) {
+  const transferUsers = (usersQuery.data?.items ?? []).filter((row) => row.id !== transferFrom?.user_id)
+  if (transferTo && transferTo.id !== transferFrom?.user_id && !transferUsers.some((row) => row.id === transferTo.id)) {
     transferUsers.unshift(transferTo)
   }
   const receipt = transferReceipt?.customerId === customerId ? transferReceipt : null
@@ -534,7 +529,7 @@ export default function CustomerDetailPage() {
     <Banner fullMode={false} type={receipt.documents?.skipped_total ? 'warning' : 'success'}
       onClose={() => setTransferReceipt(null)}
       description={<div>
-        <strong>负责人已转给{receipt.ownerName}</strong>
+        <strong>已转交给{receipt.ownerName}</strong>
         {receipt.documents && <div>
           {receipt.documents.moved_total > 0
             ? `已交接 ${receipt.documents.moved_total} 项单据或生成文件。`
@@ -572,13 +567,13 @@ export default function CustomerDetailPage() {
   }
 
   const canEditContact = can('customer:update')
-  // 删除入口：主管/管理员按数据范围；业务员只能删"负责人是自己"的客户。
-  // 公海客户没有负责人，不满足业务员这一档，按钮不出现（后端同样会拒）。
+  // 删除入口：主管/管理员按数据范围；业务员只能删**只有自己一位跟进人**的客户。
+  const followerIds = (customer.followers ?? []).map((item) => item.user_id)
   const canDeleteCustomer =
     can('customer:delete') ||
     (can('customer:delete_own') &&
-      customer.owner_id != null &&
-      customer.owner_id === currentUser?.id)
+      followerIds.length === 1 &&
+      followerIds[0] === currentUser?.id)
   /* 联系人表在「左表 + 右决策人卡」的窄容器里（1440 时左栏约 830），
      2026-11-19 实拍底部多出一条横向滚动条：列宽是写的，但 auto 布局下
      邮箱那列按内容自然宽度撑开、外加单元格边距，五列合起来超了容器。
@@ -685,8 +680,10 @@ export default function CustomerDetailPage() {
         meta={
           <>
             <span>
-              负责人：{customer.owner_name ?? '未分配'}
-              {(customer.follower_count ?? 0) > 1 ? ` · ${customer.follower_count} 人跟进` : ''}
+              跟进人：
+              {customer.pool_status === 'public'
+                ? '公海'
+                : (customer.followers ?? []).map((item) => item.name).join('、') || '-'}
             </span>
             <span>地区：{customer.region ?? '-'}</span>
             <span>来源：{customer.source ?? '-'}</span>
@@ -772,15 +769,6 @@ export default function CustomerDetailPage() {
                     </Dropdown.Item>
                   )}
                   {can('customer:assign') && (
-                    <Dropdown.Item onClick={() => {
-                      setTransferTo(null)
-                      setTransferSearch('')
-                      setTransferKeyword('')
-                      transferMutation.reset()
-                      setTransferCustomerId(customerId)
-                    }}>转移负责人</Dropdown.Item>
-                  )}
-                  {can('customer:assign') && (
                     <Dropdown.Item
                       disabled={duplicateCaseMutation.isPending}
                       onClick={() => duplicateCaseMutation.mutate()}
@@ -806,7 +794,7 @@ export default function CustomerDetailPage() {
                       type="danger"
                       onClick={() =>
                         Modal.confirm({
-                          title: '放入公海后负责人会清空，确认？',
+                          title: '放入公海后跟进人会全部清空，确认？',
                           onOk: () => poolMutation.mutate({ action: 'release' }),
                         })
                       }
@@ -1487,7 +1475,7 @@ export default function CustomerDetailPage() {
           {contactEditing?.contact_masked && (
             <BlockedHint reasons={[
               '你对这条联系人的手机、座机、邮箱、微信号没有完整查看权限（显示为星号），所以这里不能改，也不会把这几个字段提交上去。',
-              '要改联系方式：请让客户负责人本人操作，或请管理员为你开通「客户联系方式完整查看」权限后重试。',
+              '要改联系方式：请让客户跟进人本人操作，或请管理员为你开通「客户联系方式完整查看」权限后重试。',
             ]} action="修改联系方式" />
           )}
           <div style={{ display: 'flex', gap: 12 }}>
@@ -1701,29 +1689,29 @@ export default function CustomerDetailPage() {
       </Modal>
 
       <Modal
-        title="转移客户负责人"
+        title="转交跟进人"
         className="workflow-scroll-modal"
         width="min(480px, calc(100vw - 24px))"
         visible={transferModal}
-        onCancel={() => { if (!transferMutation.isPending) setTransferCustomerId(null) }}
+        onCancel={() => { if (!transferMutation.isPending) { setTransferCustomerId(null); setTransferFrom(null) } }}
         onOk={() => {
-          if (transferTo && transferTo.id !== customer.owner_id && !transferMutation.isPending) {
+          if (transferTo && !transferMutation.isPending) {
             transferMutation.mutate(transferTo)
           }
         }}
-        okButtonProps={{ disabled: !transferTo || transferTo.id === customer.owner_id }}
+        okButtonProps={{ disabled: !transferTo }}
         confirmLoading={transferMutation.isPending}
-        okText="确认转移"
+        okText="确认转交"
       >
         <div className="customer-handover">
           <div className="customer-handover-context">
             <strong>{customer.name}</strong>
-            <div>当前负责人 {customer.owner_name ?? '未分配'}</div>
+            <div>转交 {transferFrom?.name ?? '我'} 的跟进</div>
           </div>
           <div>
-            <FormLabel required>新负责人</FormLabel>
+            <FormLabel required>接手人</FormLabel>
             <Select
-              aria-label="新负责人"
+              aria-label="接手人"
               placeholder="输入姓名或登录名查找在职员工"
               value={transferTo?.id}
               onChange={(value) => setTransferTo(transferUsers.find((row) => row.id === value) ?? null)}
@@ -1745,7 +1733,7 @@ export default function CustomerDetailPage() {
           </div>
           <div className="customer-handover-context">
             <strong>随客户交接</strong>
-            <div>未完成的待办，以及原负责人名下的商机、报价、打样、订单和生成文件。</div>
+            <div>{transferFrom?.name ?? '你'} 名下未完成的待办、商机、报价、打样、订单和生成文件会跟着交给接手人。</div>
             <div>其他同事负责的单据、已完成的待办和历史业绩归属保留。</div>
           </div>
           {transferMutation.isError && <Banner type="warning" fullMode={false} closeIcon={null} description={transferMutation.error.message} />}
@@ -1968,28 +1956,30 @@ export default function CustomerDetailPage() {
       >
         <div style={{ display: 'grid', gap: 10 }}>
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-            默认负责人负责客户归属与业绩统计；其他跟进人同样可以查看客户、记录跟进。
+            所有跟进人都能查看客户、记录跟进；客户没有默认负责人。
           </div>
           {(customer.followers ?? []).map((follower) => (
             <div key={follower.user_id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ fontWeight: follower.user_id === customer.owner_id ? 600 : 400 }}>
-                {follower.name}
-              </span>
-              {follower.user_id === customer.owner_id ? (
-                <Tag size="small" color="blue">默认负责人</Tag>
-              ) : (
-                <>
-                  <Button size="small" theme="borderless"
-                    loading={primaryFollowerMutation.isPending}
-                    onClick={() => primaryFollowerMutation.mutate(follower.user_id)}>
-                    设为默认
-                  </Button>
-                  <Button size="small" theme="borderless" type="danger"
-                    loading={removeFollowerMutation.isPending}
-                    onClick={() => removeFollowerMutation.mutate(follower.user_id)}>
-                    移除
-                  </Button>
-                </>
+              <span>{follower.name}</span>
+              {can('customer:assign') && (
+                <Button size="small" theme="borderless"
+                  onClick={() => {
+                    setTransferFrom({ user_id: follower.user_id, name: follower.name })
+                    setTransferTo(null)
+                    setTransferSearch('')
+                    setTransferKeyword('')
+                    transferMutation.reset()
+                    setTransferCustomerId(customerId)
+                  }}>
+                  转交
+                </Button>
+              )}
+              {can('customer:assign') && (
+                <Button size="small" theme="borderless" type="danger"
+                  loading={removeFollowerMutation.isPending}
+                  onClick={() => removeFollowerMutation.mutate(follower.user_id)}>
+                  移除
+                </Button>
               )}
             </div>
           ))}

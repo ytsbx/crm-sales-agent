@@ -24,11 +24,9 @@ from app.modules.customer.model import (
     Customer,
     CustomerDuplicateCase,
     CustomerMergeLog,
-    CustomerOwnerHistory,
     Tag,
     customer_tags,
 )
-from app.modules.user.model import User
 
 
 def _now() -> datetime:
@@ -556,11 +554,11 @@ async def merge_preview(
 
     return {
         "source": {
-            "id": source.id, "name": source.name, "owner_id": source.owner_id,
+            "id": source.id, "name": source.name,
             "tax_no": source.tax_no,
         },
         "target": {
-            "id": target.id, "name": target.name, "owner_id": target.owner_id,
+            "id": target.id, "name": target.name,
             "tax_no": target.tax_no,
         },
         "targets": targets,
@@ -572,23 +570,7 @@ async def merge_preview(
             "合并不可逆：来源客户会被软删，上列关联全部改挂到目标客户。"
             "历史报价、合同签署文件、打样图纸与确认记录的内容不会改写，"
             "只是档案归属换到目标客户。"
-            + (
-                # ⚠️ 归属口径要说清（2026-10-14 审查）：合并**只改 `customer_id`**，
-                # 单据的负责人一个都不动。而 `customer/documents.py` 里定的是
-                # "客户的负责人从 A 换成 B 时，把原本挂在 A 名下的**这个客户的**单据
-                # 一起改成 B"——两个客户负责人不同时，合并后 B 打开客户，
-                # 「报价 / 订单」标签页可能仍然是空的（那些标签页按**单据自己的负责人**
-                # 过滤），用户会以为合并把数据弄丢了。
-                # 这里不擅自改单据归属（那等于替别人做交接决定），但**必须提前说清**。
-                (
-                    f"注意：来源客户的负责人（id={source.owner_id}）与目标客户"
-                    f"（id={target.owner_id}）**不是同一个人** —— 合并不会改单据负责人，"
-                    "所以原来记在来源负责人名下的报价 / 订单，合并后仍需他本人（或主管"
-                    "）才能看到；要让新负责人接手，请另外走一次「转移负责人」。"
-                    if source.owner_id != target.owner_id
-                    else ""
-                )
-            )
+            + "合并后两条客户的跟进人会并成一组，双方都能看到合并后的档案。"
         ),
     }
 
@@ -718,7 +700,6 @@ async def merge_customers(
     )).all()
     if any(_has_third_customer(case, source.id, target.id) for case in pending_cases):
         raise AppError(ErrorCode.VERSION_CONFLICT, _THIRD_CUSTOMER_CASE_MESSAGE, 409)
-    before_owners = {str(source.id): source.owner_id, str(target.id): target.owner_id}
 
     # 按选定的口径把一边的专属价转成**历史资料**
     # （`pricing/model.CustomerPriceRule.status` 写明 historical 不参与匹配与
@@ -752,6 +733,11 @@ async def merge_customers(
                 .values(status="historical")
             )
 
+    from app.modules.customer.followers import active_follower_ids
+
+    source_follower_ids = sorted(set(await active_follower_ids(session, source.id)))
+    target_follower_ids = sorted(set(await active_follower_ids(session, target.id)))
+
     snapshot = {
         "name": source.name,
         "short_name": source.short_name,
@@ -765,7 +751,10 @@ async def merge_customers(
         "level": source.level,
         "status": source.status,
         "pool_status": source.pool_status,
-        "owner_id": source.owner_id,
+        # 客户没有默认负责人；跟进人快照用于合并来源在回收站的可见性。
+        # `owner_id` 只写一位代表跟进人，供只认旧字段的代码读，不参与业务授权。
+        "follower_ids": source_follower_ids,
+        "owner_id": source_follower_ids[0] if source_follower_ids else None,
         "remark": source.remark,
     }
 
@@ -857,34 +846,20 @@ async def merge_customers(
                    "domain", "tax_no", "source", "level", "remark"):
         if getattr(target, column) in (None, "") and snapshot.get(column):
             setattr(target, column, snapshot[column])
-    owner_resolution = "kept_target"
-    if target.owner_id is None and source.owner_id is not None:
-        source_owner_active = await session.scalar(
-            select(User.id).where(User.id == source.owner_id, User.status == "active").with_for_update(read=True)
-        )
-        if source_owner_active is not None:
-            target.owner_id = source.owner_id
-            target.pool_status = "private"
-            owner_resolution = "inherited_active_owner"
-            session.add(CustomerOwnerHistory(
-                customer_id=target.id, old_owner_id=None, new_owner_id=target.owner_id,
-                reason="合并客户时继承在职负责人", operator_id=user.id, created_at=_now(),
-            ))
-        else:
-            target.pool_status = "public"
-            owner_resolution = "kept_public_inactive_source_owner"
+    # 跟进人取并集：合并后双方原来能看到的同事都继续能看；
+    # 来源客户的跟进关系随即清空（它已经软删，留着的行没有意义）。
+    from app.modules.customer.followers import add_followers, clear_followers
 
-    # 跟进人取并集：合并后双方原来能看到的同事都继续能看（默认负责人沿用目标）。
-    from app.modules.customer.followers import active_follower_ids, add_followers
-
-    union_followers = set(await active_follower_ids(session, target.id))
-    union_followers.update(await active_follower_ids(session, source.id))
-    if target.owner_id is not None:
-        union_followers.add(target.owner_id)
+    union_followers = set(target_follower_ids)
+    union_followers.update(source_follower_ids)
     if union_followers:
         await add_followers(
-            session, target.id, union_followers, source="merge", created_by=user.id
+            session, target.id, sorted(union_followers), source="merge", created_by=user.id
         )
+        target.pool_status = "private"
+    else:
+        target.pool_status = "public"
+    await clear_followers(session, source)
 
     merged_at = _now()
     for case in pending_cases:
@@ -892,13 +867,12 @@ async def merge_customers(
         case.decision = MERGED_DECISION
         case.resolved_by = user.id
         case.resolved_at = merged_at
-        case.resolved_owner_id = target.owner_id
-        case.before_owners = before_owners
+        case.resolved_owner_id = None
+        case.before_owners = None
         case.remark = "两份档案已合并，查重待办随合并结案。"
 
     # 5) 来源软删 + 标记（避免它仍出现在列表/公海里）
     source.deleted_at = merged_at
-    source.owner_id = None
     source.pool_status = "public"
 
     log = CustomerMergeLog(
@@ -937,8 +911,7 @@ async def merge_customers(
         "snapshot": snapshot,
         "conflicts": conflicts_applied,
         "resolved_duplicate_case_ids": [case.id for case in pending_cases],
-        "owner_resolution": owner_resolution,
-        "target_owner_id": target.owner_id,
+        "target_follower_ids": sorted(union_followers),
     }
 
 

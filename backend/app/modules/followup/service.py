@@ -197,15 +197,39 @@ async def queue_manager_notification(
     owner = await session.get(User, owner_id) if owner_id else None
     actor = await session.get(User, operator_id) if operator_id else None
     customer = await session.get(Customer, customer_id) if customer_id else None
+    # 客户没有默认负责人：主管通知按「所有跟进人所在部门」的并集投递，
+    # 内容里列跟进人姓名而不是"负责人"。
+    department_ids: set[int] = set()
+    follower_names: list[str] = []
+    if customer is not None:
+        from app.modules.customer.model import CustomerFollower
+
+        rows = (
+            await session.execute(
+                select(User.id, User.name, User.department_id)
+                .join(CustomerFollower, CustomerFollower.user_id == User.id)
+                .where(
+                    CustomerFollower.customer_id == customer.id,
+                    CustomerFollower.deleted_at.is_(None),
+                )
+                .order_by(CustomerFollower.created_at)
+            )
+        ).all()
+        follower_names = [name for _uid, name, _dept in rows]
+        department_ids = {dept for _uid, _name, dept in rows if dept is not None}
+    if owner is not None and owner.department_id is not None:
+        department_ids.add(owner.department_id)
     event.notification_payload = {
-        "department_id": owner.department_id if owner else None,
+        "department_ids": sorted(department_ids),
+        # 兼容旧字段：只保留一个时仍写 department_id
+        "department_id": next(iter(department_ids)) if len(department_ids) == 1 else None,
         "customer_id": customer_id,
         "source_type": source_type, "source_id": source_id,
         "exclude_user_id": exclude_user_id, "required_permission": required_permission,
         "title": title,
         "content": f"客户：{customer.name if customer else '未关联'}；"
                    f"操作者：{actor.name if actor else '系统'}；"
-                   f"负责人：{owner.name if owner else '未分配'}；{content}",
+                   f"跟进人：{'、'.join(follower_names) if follower_names else '无'}；{content}",
     }
     await session.flush()
     await notification_service.materialize_business_notifications(session, event_id=event.id)

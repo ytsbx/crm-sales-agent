@@ -449,12 +449,30 @@ async def create_customer(
     ensure_permission(user, "customer:create")
     if not payload.name.strip():
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "客户名称必填", 422)
-    # 指定别人当负责人是分配动作，和客户中心的创建接口同一道口子。
+    # 指定别人一起跟进是分配动作，和客户中心的创建接口同一道口子。
     if payload.owner_id is not None:
         ensure_permission(user, "customer:assign")
     result = await svc.create_customer_from_contact(
         session, user=user, contact_id=contact_id, payload=payload.model_dump()
     )
+    if payload.owner_id is not None:
+        from app.modules.customer.followers import add_followers
+        from app.modules.user.model import User
+
+        target = await session.get(User, payload.owner_id)
+        if target is None:
+            raise AppError(ErrorCode.NOT_FOUND, f"跟进人 id={payload.owner_id} 不存在", 404)
+        if target.status != "active":
+            raise AppError(
+                ErrorCode.PARAM_ERROR, f"「{target.name}」已停用，不能作为跟进人", 422
+            )
+        await add_followers(
+            session,
+            result["customer_id"],
+            [payload.owner_id],
+            source="manual",
+            created_by=user.id,
+        )
     await write_audit(
         session,
         operator_id=user.id,

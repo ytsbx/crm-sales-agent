@@ -48,6 +48,8 @@ def test_manual_sample_create_same_request_key_is_idempotent():
             User(id=101, name="负责人", username="owner", password_hash="fixture"),
             Customer(id=1, name="客户", owner_id=101),
         ])
+        raw.flush()
+        raw.add(CustomerFollower(customer_id=1, user_id=101, source="manual"))
         raw.commit()
         session = SyncSessionAsAsync(raw)
 

@@ -41,7 +41,6 @@ import GuardedButton from '../../shared/components/GuardedButton'
 import type { Customer, TagTone } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
-import UserSearchSelect from '../../shared/components/UserSearchSelect'
 import HelpTip from '../../shared/components/HelpTip'
 import { optionMatcher } from '../../shared/components/optionMatch'
 import { UNRATED_OPTION, customerLevelPayload, customerLevelValue } from '../../shared/customer-level'
@@ -74,7 +73,7 @@ function TransferResultItem({ item, reviewLink }: { item: WeComTransferItem; rev
         <div className="wecom-transfer-result-status">
           <span>CRM</span>
           <Tag size="small" color={item.crm_status === 'moved' ? 'green' : JOB_STATUS_TONE[item.crm_status] ?? (item.crm_status === 'frozen' || item.crm_taken ? 'orange' : 'grey')}>
-            {item.crm_taken ? '负责人已变更' : item.crm_status_label}
+            {item.crm_taken ? '已被同事接手' : item.crm_status_label}
           </Tag>
           {item.crm_error && <span>{humanizeBackendText(item.crm_error)}</span>}
           {item.crm_status === 'frozen' && <span>请先完成撞单裁定，再发起一次交接。</span>}
@@ -108,16 +107,14 @@ function isWeComIpDenied(message?: string | null) {
 }
 
 const IMPORT_REVIEW_GUIDANCE: Record<string, string> = {
-  '多名跟进员工对应不同负责人': '这条客户所在的公司在企微里被多位员工添加，且分别对应不同 CRM 账号；同公司的联系人必须一起归一个负责人，所以单看这一条可能只有一个跟进人。请和同事确认归谁后，用「关联已有客户」沿用原负责人，或用「创建新客户」确认（新建客户归当前操作人）。',
   '有跟进员工没有对应的 CRM 账号': '加这位客户的企微员工还没开通 CRM 账号（详情里显示「未开通 CRM」）。给 TA 开账号并绑定后可以批量导入；或由主管用「创建新客户」逐条确认归属。',
-  '没有跟进员工，无法确定负责人': 'CRM 里没同步到这条客户的跟进员工，可能是跟进关系还没同步。先在「更新企微数据」里同步跟进关系；仍然没有的话，用「创建新客户」手工建档。',
-  '负责人未唯一匹配，需绑定或分配': '企微里没有跟进员工，或跟进员工没开通 CRM 账号、对应了多个不同账号，系统无法决定客户归谁。请用「关联已有客户」沿用原负责人，或用「创建新客户」逐条确认（新建客户归当前操作人）。',
+  '没有跟进员工，无法确定归属': 'CRM 里没同步到这条客户的跟进员工，可能是跟进关系还没同步。先在「更新企微数据」里同步跟进关系；仍然没有的话，用「创建新客户」手工建档。',
+  '客户在公海，请先领取后再导入': '同名客户目前在公海、没有跟进人。请先到客户中心领取或指派跟进人，再回来导入。',
   '只有公司简称，需确认公司全称': '在待确认联系人里按简称查找，核实全称后再关联已有客户或新建档案。',
   '联系人姓名为空或超长': '核对联系人姓名，修正企微资料后重新同步。',
   '客户名称超长': '核对企微公司全称，修正资料后重新同步。',
   '已有同来源联系人，请核对关联': '到客户中心核对已有联系人和所属客户。',
   '存在同名或不可用客户，需人工确认': '先到客户中心核对同名档案及其状态，再决定关联哪家客户。',
-  '已有客户负责人不同，需人工确认': '与原跟进员工和现任负责人核对后，再逐条处理。',
 }
 
 /** 名单上一行放下「谁加了这个客户」：未开通 CRM 的直接标出来，方便判断归谁。 */
@@ -171,7 +168,7 @@ export default function WeComPage() {
 
   const [createContact, setCreateContact] = useState<WeComUnboundContact | null>(null)
   const [createdCustomer, setCreatedCustomer] = useState<{ customer_id: number; customer_name: string } | null>(null)
-  const [createForm, setCreateForm] = useState({ name: '', region: '', level: '', owner_id: null as number | null })
+  const [createForm, setCreateForm] = useState({ name: '', region: '', level: '' })
   const [transferVisible, setTransferVisible] = useState(Boolean(transferToResume))
   const [transferResultPage, setTransferResultPage] = useState(1)
   const [transferResultFilter, setTransferResultFilter] = useState<'all' | 'pending' | 'frozen'>('all')
@@ -377,13 +374,12 @@ export default function WeComPage() {
         name: createForm.name.trim(),
         region: createForm.region || null,
         level: customerLevelPayload(createForm.level),
-        owner_id: createForm.owner_id,
       }),
     onSuccess: (result) => {
       Toast.success(`已创建客户「${result.customer_name}」`)
       setCreateContact(null)
       setCreatedCustomer(result)
-      setCreateForm({ name: '', region: '', level: '', owner_id: null })
+      setCreateForm({ name: '', region: '', level: '' })
       refresh()
     },
   })
@@ -834,7 +830,7 @@ export default function WeComPage() {
                     </div>
                     {active.import_hold_peers && active.import_hold_peers.length > 0 && (
                       <div style={{ marginTop: 2 }}>
-                        同公司的其他待确认联系人：{active.import_hold_peers.join('、')}。同公司必须一起归一个负责人，搜索公司全称可以看到这几条。
+                        同公司的其他待确认联系人：{active.import_hold_peers.join('、')}。同公司的联系人会一起建档，搜索公司全称可以看到这几条。
                       </div>
                     )}
                   </div>
@@ -937,7 +933,6 @@ export default function WeComPage() {
                         name: active.corp_name || active.name || '',
                         region: '',
                         level: '',
-                        owner_id: null,
                       })
                       setCreateContact(active)
                     }}
@@ -1084,18 +1079,6 @@ export default function WeComPage() {
               style={{ width: '100%' }}
             />
           </div>
-          <div>
-            <div style={{ marginBottom: 4 }}>负责人</div>
-            <UserSearchSelect
-              queryScope="wecom-customer-create"
-              enabled={Boolean(createContact) && can('customer:assign')}
-              disabled={createMutation.isPending || !can('customer:assign')}
-              placeholder={can('customer:assign') ? '不选就归你自己，可搜索同事' : '没有分配权限，新客户归你自己'}
-              value={createForm.owner_id ?? undefined}
-              onChange={(value) => setCreateForm({ ...createForm, owner_id: value ?? null })}
-              style={{ width: '100%' }}
-            />
-          </div>
           <p className="receivable-picker-guide">新档案的来源记为「企业微信」。</p>
           {createMutation.error && (
             <Banner type="danger" fullMode={false} closeIcon={null} description={createMutation.error.message} />
@@ -1161,7 +1144,7 @@ export default function WeComPage() {
                     <div>
                       <strong>{customer.name}</strong>
                       <p className="receivable-picker-guide">
-                        {[customer.region, customer.owner_name ? `负责人 ${customer.owner_name}` : null].filter(Boolean).join(' · ')}
+                        {[customer.region].filter(Boolean).join(' · ')}
                       </p>
                     </div>
                     <Button size="small" theme="outline" aria-pressed={bindTarget?.id === customer.id} disabled={bindMutation.isPending}
@@ -1214,7 +1197,7 @@ export default function WeComPage() {
           <div className="receivable-picker">
             {staleImportPreview ? (
               <Banner type="warning" fullMode={false} closeIcon={null} title="导入预览已过期"
-                description="客户资料或负责人已变化。请刷新预览，重新核对后再确认导入。">
+                description="客户资料或跟进人已变化。请刷新预览，重新核对后再确认导入。">
                 <Button size="small" theme="outline" loading={importPreviewMutation.isPending}
                   onClick={() => importPreviewMutation.mutate()}>重新预览</Button>
               </Banner>
@@ -1232,7 +1215,7 @@ export default function WeComPage() {
               <p className="receivable-picker-guide">
                 新建公司客户 {importPreview.new_company_customers} 个、个人客户 {importPreview.new_personal_customers} 个，
                 关联已有客户的联系人 {importPreview.existing_customer_contacts} 位。
-                新建客户会把匹配到的原跟进员工都加为跟进人，最早添加的那位作为默认负责人；关联时沿用已有客户的负责人并补上跟进人。
+                新建客户会把匹配到的原跟进员工都加为跟进人；关联已有客户时只补跟进人，不改动已有资料。
               </p>
             )}
             {!canImport && <p className="receivable-picker-guide">需要有客户导入、创建和分配权限的同事确认导入。</p>}
@@ -1383,7 +1366,7 @@ export default function WeComPage() {
                 description={
                   <span>
                     含 <b>{transferPreview.sample_count}</b> 张在途打样单。
-                    交过去之后接手人才看得到、能继续跟；原负责人将看不到。
+                    交过去之后接手人才看得到、能继续跟；原跟进人将从客户跟进人里移除。
                   </span>
                 }
               />

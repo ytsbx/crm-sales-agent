@@ -40,6 +40,10 @@ def manual_order_db(db_session, monkeypatch):
         Product(id=1, name="测试产品"),
         Sku(id=1, product_id=1, sku_code="SKU-MANUAL", name="测试规格"),
     ])
+    db_session.flush()
+    from tests.conftest import follow_customer
+
+    follow_customer(db_session, 1, 101)
     db_session.commit()
     monkeypatch.setattr(service, "generate_order_no", AsyncMock(side_effect=["SO-1", "SO-2", "SO-3"]))
     followup = AsyncMock()

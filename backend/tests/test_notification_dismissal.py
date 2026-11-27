@@ -113,6 +113,10 @@ async def test_read_all_covers_all_visible_pages_and_keeps_hidden_notice_unread(
                          business_event_id=2, business_type="lead", business_id=1),
             Notification(id=4, user_id=20, type="task", title="Another user"),
         ])
+        db.flush()
+        from tests.conftest import follow_customer
+
+        follow_customer(db, 1, 10)
         db.commit()
         session = SyncSessionAsAsync(db)
         viewer = make_user(10, permissions=["customer:view"], data_scope="self")

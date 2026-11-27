@@ -15,11 +15,9 @@ from app.modules.user.model import User
 from app.modules.wecom.model import WeComExternalContact, WeComFollowRelationship
 from app.modules.wecom.service import finish_job, start_job
 
-#: 导入扣住原因：多人跟进且分别对应不同负责人（待确认列表要优先展示这一类）
-HOLD_MULTI_OWNER = '多名跟进员工对应不同负责人'
 HOLD_UNMAPPED_FOLLOWER = '有跟进员工没有对应的 CRM 账号'
-HOLD_NO_FOLLOWER = '没有跟进员工，无法确定负责人'
-HOLD_OWNER_UNRESOLVED = '负责人未唯一匹配，需绑定或分配'
+HOLD_NO_FOLLOWER = '没有跟进员工，无法确定归属'
+HOLD_CUSTOMER_IN_POOL = '客户在公海，请先领取后再导入'
 
 
 def _name(value) -> str:
@@ -131,19 +129,6 @@ def _plan(snapshot, policy):
                 group['follower_times'][crm_user_id] = add_time
         group['rows'].append((r, row_followers, row_times))
 
-    def _earliest(group) -> int | None:
-        """默认负责人：加得最早的人（add_time），其次 user id 最小。"""
-        follower_ids = group['follower_ids']
-        if not follower_ids:
-            return None
-        times = group['follower_times']
-
-        def sort_key(uid: int):
-            value = times.get(uid)
-            return (value is None, value or datetime.min.replace(tzinfo=UTC), uid)
-
-        return sorted(follower_ids, key=sort_key)[0]
-
     ready = []
     for group in groups.values():
         follower_ids = group['follower_ids']
@@ -156,23 +141,20 @@ def _plan(snapshot, policy):
             held.extend((r.id, reason) for r, _, _ in group['rows'])
             continue
         target = group['target']
-        if target is not None and target.owner_id is not None:
-            # 既有私海客户：默认负责人保持不变；如果它不是跟进人，执行时补进去。
-            owner_id = target.owner_id
-        else:
-            owner_id = _earliest(group)
-        group['owner_id'] = owner_id
-        group['rows'] = [
-            (r, next(iter(row_followers)) if len(row_followers) == 1 else owner_id)
-            for r, row_followers, _ in group['rows']
-        ]
+        if target is not None and target.pool_status == 'public':
+            # 公海客户 = 没有跟进人；直接补跟进人等于悄悄替别人认领，扣住走人工领取。
+            held.extend((r.id, HOLD_CUSTOMER_IN_POOL) for r, _, _ in group['rows'])
+            continue
+        # 客户没有默认负责人：所有绑定员工都成为跟进人；联系人不再单独挂 owner。
+        group['owner_id'] = None
+        group['rows'] = [(r, None) for r, _, _ in group['rows']]
         ready.append(group)
     # 绑定、公司名、负责人、关联及跟进关系变化都会让旧预览失效。
     signature = {
         'policy': policy,
         'rows': [[r.id, r.external_userid, r.name, r.corp_name, r.raw_data, r.last_sync_at.isoformat() if r.last_sync_at else None] for r in rows],
         'users': [[u.id, u.wecom_userid, u.status] for u in users],
-        'customers': [[c.id, c.name, c.customer_type, c.status, c.owner_id, bool(c.deleted_at)] for c in customers],
+        'customers': [[c.id, c.name, c.customer_type, c.status, c.pool_status, bool(c.deleted_at)] for c in customers],
         'contacts': [[c.id, c.external_userid, c.customer_id, bool(c.deleted_at)] for c in contacts],
         'followers': [[f.id, f.external_contact_id, f.wecom_userid, f.status] for f in followers],
         'customer_followers': [[f.customer_id, f.user_id, bool(f.deleted_at)] for f in customer_followers],
@@ -187,7 +169,7 @@ def _plan(snapshot, policy):
         'new_personal_customers': sum(g['target'] is None and g['kind'] == '个人' for g in ready),
         'existing_customer_contacts': sum(len(g['rows']) for g in ready if g['target'] is not None),
         'import_followers': sum(len(g['follower_ids']) for g in ready),
-        'new_unassigned_customers': sum(g['target'] is None and g['owner_id'] is None for g in ready),
+        'new_unassigned_customers': 0,
         'held_contacts': len(held), 'held_reasons': dict(reasons),
     }
     return summary, ready, held_map, peer_map
@@ -220,7 +202,7 @@ async def execute_import(session: AsyncSession, *, digest: str, policy='hold', o
         await session.execute(text("SELECT pg_advisory_xact_lock(hashtext('crm:wecom-customer-import'))"))
     summary, groups, _, _ = _plan(await _snapshot(session, lock=True), policy)
     if summary['digest'] != digest:
-        raise AppError(ErrorCode.VERSION_CONFLICT, '客户或负责人数据已变化，请重新预览后导入', 409)
+        raise AppError(ErrorCode.VERSION_CONFLICT, '客户或跟进人数据已变化，请重新预览后导入', 409)
     job = await start_job(session, job_type='customer_import', operator_id=operator_id)
     now = datetime.now(UTC)
     for group in groups:
@@ -228,7 +210,7 @@ async def execute_import(session: AsyncSession, *, digest: str, policy='hold', o
         created = customer is None
         if created:
             customer = Customer(name=group['name'], customer_type=group['kind'], country='中国',
-                source='企业微信', level=None, owner_id=group['owner_id'],
+                source='企业微信', level=None,
                 pool_status='private',
                 created_by=operator_id, last_contact_unknown=True,
                 remark='企业微信客户导入；原始跟进关系保留在企业微信模块。')
@@ -243,8 +225,6 @@ async def execute_import(session: AsyncSession, *, digest: str, policy='hold', o
         from app.modules.customer.followers import add_followers
 
         follower_ids = set(group['follower_ids'])
-        if customer.owner_id is not None:
-            follower_ids.add(customer.owner_id)
         await add_followers(
             session,
             customer.id,

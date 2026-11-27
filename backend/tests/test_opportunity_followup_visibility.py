@@ -20,6 +20,8 @@ def followup_db(db_session):
     db_session.add(Customer(id=1, name="本人客户", owner_id=101))
     db_session.add(OpportunityStage(id=1, code="open", name="初步沟通"))
     db_session.flush()
+    from tests.conftest import follow_customer
+    follow_customer(db_session, 1, 101)
     db_session.add(Opportunity(id=1, title="本人商机", customer_id=1, stage_id=1, owner_id=101))
     db_session.flush()
     db_session.add(Quote(id=1, quote_no="Q-PRIVATE", customer_id=1, opportunity_id=1, owner_id=101))

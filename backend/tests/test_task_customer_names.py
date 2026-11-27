@@ -56,7 +56,13 @@ async def test_list_task_customer_name_scope(permissions, scope, owner, deleted,
     try:
         with Session(engine) as raw:
             raw.add(Customer(id=2, name='名称测试客户', owner_id=owner,
+                             pool_status='public' if owner is None else 'private',
                              deleted_at=datetime.now(UTC) if deleted else None))
+            raw.flush()
+            if owner is not None:
+                from tests.conftest import follow_customer
+
+                follow_customer(raw, 2, owner)
             raw.add(Task(id=1, title='敲定订单', owner_id=1, customer_id=2))
             raw.commit()
             result = await list_tasks(

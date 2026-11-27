@@ -41,8 +41,8 @@ def relation(i=1, row_id=1, uid='staff-1'):
     return Obj(id=i, external_contact_id=row_id, wecom_userid=uid, status='active')
 
 
-def company(i=1, name='甲有限公司', owner=1, kind='企业', deleted=False, status='active'):
-    return Obj(id=i, name=name, customer_type=kind, owner_id=owner, deleted_at=deleted or None, status=status)
+def company(i=1, name='甲有限公司', owner=1, kind='企业', deleted=False, status='active', pool='private'):
+    return Obj(id=i, name=name, customer_type=kind, owner_id=owner, deleted_at=deleted or None, status=status, pool_status=pool)
 
 
 def snapshot(rows, users=None, customers=None, contacts=None, followers=None, customer_followers=None):
@@ -68,7 +68,7 @@ def test_uncertain_names_stay_pending(kwargs):
     ([],[relation()], '有跟进员工没有对应的 CRM 账号'),
     ([user(status='disabled')],[relation()], '有跟进员工没有对应的 CRM 账号'),
     ([user(),user(2)],[relation()], '有跟进员工没有对应的 CRM 账号'),
-    ([user()],[], '没有跟进员工，无法确定负责人'),
+    ([user()],[], '没有跟进员工，无法确定归属'),
 ])
 def test_no_bound_follower_still_holds(users,followers,reason):
     result,_,held,_=_plan(snapshot([row()],users=users,followers=followers),'hold')
@@ -86,9 +86,9 @@ def test_multiple_bound_followers_import_as_followers_not_held():
     assert held=={}
     group=groups[0]
     assert group['follower_ids']=={1,2}
-    # 没有 add_time 时按 user id 取最小作默认负责人
-    assert group['owner_id']==1
-    assert all(owner in {1,2} for _,owner in group['rows'])
+    # 客户没有默认负责人：所有绑定员工都是跟进人，联系人不再挂 owner
+    assert group['owner_id'] is None
+    assert all(owner is None for _,owner in group['rows'])
 
 
 def test_company_with_different_followers_imports_one_customer():
@@ -118,8 +118,8 @@ def test_existing_customer_with_other_owner_gets_followers_not_held():
                  followers=[relation(), relation(2,1,'staff-2')]), 'hold')
     assert result['held_contacts']==0 and result['import_contacts']==1
     assert held=={}
-    # 既有客户的默认负责人保持不变（2），新的跟进人（1）补进去
-    assert groups[0]['owner_id']==2
+    # 既有客户不写负责人；组内的绑定员工都补成跟进人
+    assert groups[0]['owner_id'] is None
     assert groups[0]['follower_ids']=={1,2}
 
 
@@ -160,11 +160,11 @@ async def test_company_import_real_persistence_idempotent_and_audited(db):
     result=await execute_import(session,digest=preview['digest'],source='SYSTEM')
     raw.commit()
     c=raw.scalars(select(Customer)).one()
-    assert c.owner_id==1 and c.pool_status=='private' and c.level is None
+    assert c.owner_id is None and c.pool_status=='private' and c.level is None
     assert c.last_contact_unknown and c.last_followup_at is None
     contacts=raw.scalars(select(Contact)).all()
     assert len(contacts)==2 and {x.external_userid for x in contacts}=={'ext-1','ext-2'}
-    assert all(x.customer_id==c.id and x.owner_id==1 for x in contacts)
+    assert all(x.customer_id==c.id and x.owner_id is None for x in contacts)
     from app.modules.customer.model import CustomerFollower
     followers=raw.scalars(select(CustomerFollower).where(CustomerFollower.deleted_at.is_(None))).all()
     assert {f.user_id for f in followers}=={1,2}

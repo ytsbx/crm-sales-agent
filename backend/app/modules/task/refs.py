@@ -161,8 +161,9 @@ async def normalize_task_refs(
             skipped.append("客户（由关联推断而来，已不存在）")
         else:
             try:
-                await ensure_in_scope(session, user, owner_id=final_customer.owner_id,
-                                      label="客户", allow_unowned=True)
+                from app.modules.customer.visibility import assert_customer_in_scope
+
+                await assert_customer_in_scope(session, user, final_customer)
             except AppError:
                 if strict:
                     raise

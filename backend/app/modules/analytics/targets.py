@@ -263,13 +263,19 @@ async def targets_with_actuals(
     )
     customer_year = business_year(Customer.created_at)
     customer_month = business_month(Customer.created_at)
+    # 新客建档口径：每个有效跟进人各算一次（只算私海客户）
+    from app.modules.customer.model import CustomerFollower
+
     customer_stmt = (
-        select(customer_month, Customer.owner_id, func.count())
+        select(customer_month, CustomerFollower.user_id, func.count(func.distinct(Customer.id)))
+        .join(CustomerFollower, CustomerFollower.customer_id == Customer.id)
         .where(
             Customer.deleted_at.is_(None),
+            CustomerFollower.deleted_at.is_(None),
+            Customer.pool_status == "private",
             customer_year == year,
         )
-        .group_by(customer_month, Customer.owner_id)
+        .group_by(customer_month, CustomerFollower.user_id)
     )
     #: 全公司目标行（`user_id`/`department_id` 都为空）必须用**全量**口径取数。
     #: ⚠️ 捕获必须在这一行**之前**完成：下面那句 `sales_stmt.where(...)` 会就地收窄
@@ -285,7 +291,7 @@ async def targets_with_actuals(
         # 销售额看"本范围的人签的单"，所以按签单归属过滤（与上面的分组同一列）；
         # 新客户仍是客户维度，按当前负责人
         sales_stmt = sales_stmt.where(sales_owner.in_(owner_ids or [0]))
-        customer_stmt = customer_stmt.where(Customer.owner_id.in_(owner_ids or [0]))
+        customer_stmt = customer_stmt.where(CustomerFollower.user_id.in_(owner_ids or [0]))
 
 
     sales_actual: dict[tuple[str, int | None], Decimal] = {}

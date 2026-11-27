@@ -1174,9 +1174,9 @@ async def _ensure_customer_visible(
     customer = await session.get(Customer, customer_id)
     if customer is None or customer.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
-    await ensure_in_scope(
-        session, user, owner_id=customer.owner_id, label="客户", allow_unowned=True
-    )
+    from app.modules.customer.visibility import assert_customer_in_scope
+
+    await assert_customer_in_scope(session, user, customer)
 
 
 async def _guard_level_override(
@@ -1300,9 +1300,9 @@ async def lookup_price(
     customer = await session.get(Customer, customer_id)
     if customer is None or customer.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
-    await ensure_in_scope(
-        session, user, owner_id=customer.owner_id, label="客户", allow_unowned=True
-    )
+    from app.modules.customer.visibility import assert_customer_in_scope
+
+    await assert_customer_in_scope(session, user, customer)
 
     result = await svc.lookup_applicable_price(
         session,
@@ -1811,9 +1811,12 @@ async def _scope_pricing_history(session, user, stmt, audit_model):
     customer_source = select(Customer.id).where(
         Customer.id == customer_id, Customer.deleted_at.is_(None)
     )
-    customer_scope = [] if owners is None else [
-        or_(Customer.owner_id.is_(None), Customer.owner_id.in_(owners))
-    ]
+    if owners is None:
+        customer_scope = []
+    else:
+        from app.modules.customer.visibility import customer_scope_clause_from
+
+        customer_scope = [customer_scope_clause_from(owners)]
     conditions = [
         allow("quote", quote_source, [quote_scope], is_admin or user.has("quote:view")),
         allow("quote_item", item_source, [quote_scope, version_scope], is_admin or user.has("quote:view")),

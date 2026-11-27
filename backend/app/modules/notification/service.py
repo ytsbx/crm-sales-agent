@@ -398,7 +398,10 @@ async def materialize_business_notifications(
                     Role.status == ROLE_ACTIVE,
                     User.status == 'active',
                 ).distinct()
-                if payload.get('department_id') is not None:
+                dept_ids = payload.get('department_ids') or []
+                if dept_ids:
+                    stmt_users = stmt_users.where(User.department_id.in_(dept_ids))
+                elif payload.get('department_id') is not None:
                     stmt_users = stmt_users.where(User.department_id == payload['department_id'])
                 recipients = (await session.execute(stmt_users)).scalars().all()
                 channels = await channel_settings(session)
@@ -424,8 +427,7 @@ async def materialize_business_notifications(
                     if customer:
                         if not is_admin and not viewer.has('customer:view'):
                             continue
-                        if owner_ids is not None and customer.owner_id is not None and customer.owner_id not in owner_ids:
-                            continue
+                        # 客户没有默认负责人：收件人按跟进人部门筛选，不再看 owner_id
                     row = await notify(session, user_id=recipient.id, type_='followup',
                                        title=payload['title'], content=payload['content'],
                                        business_type=source_type, business_id=source_id,

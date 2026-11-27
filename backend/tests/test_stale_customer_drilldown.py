@@ -45,6 +45,9 @@ async def test_new_customers_wait_until_threshold(monkeypatch):
                                  last_followup_at=now-timedelta(days=followup) if followup else None,
                                  last_progress_at=now-timedelta(days=progress) if progress else None))
                 raw.add(_open_order(id, id))
+                raw.flush()
+                from tests.conftest import follow_customer
+                follow_customer(raw, id, 1)
             raw.commit()
             cutoff = now-timedelta(days=30)
             ids = set(raw.scalars(select(Customer.id).where(service._customer_stale_clause(cutoff))))
@@ -70,6 +73,13 @@ async def test_stale_pagination_keeps_true_total_and_scope(monkeypatch):
             raw.add(Customer(id=206, name='other owner', owner_id=2, pool_status='private', created_at=old))
             raw.add(Customer(id=207, name='public', owner_id=1, pool_status='public', created_at=old))
             raw.add(Customer(id=208, name='deleted', owner_id=1, pool_status='private', created_at=old, deleted_at=old))
+            raw.flush()
+            from tests.conftest import follow_customer
+            for id in range(1, 206):
+                follow_customer(raw, id, 1)
+            follow_customer(raw, 206, 2)
+            follow_customer(raw, 207, 1)
+            follow_customer(raw, 208, 1)
             raw.commit()
             s = SyncSessionAsAsync(raw)
             user = make_user(1)

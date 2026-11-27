@@ -24,6 +24,9 @@ def customer_db(db_session):
     customer = Customer(id=1, name="隔离金额客户", owner_id=101)
     db_session.add(customer)
     db_session.flush()
+    from tests.conftest import follow_customer
+
+    follow_customer(db_session, 1, 101)
     return db_session, SyncSessionAsAsync(db_session)
 
 

@@ -18,34 +18,10 @@ from app.modules.customer.model import (
     Customer,
     CustomerDuplicateCase,
 )
-from app.modules.user.model import ROLE_ACTIVE, Role, user_roles
+from app.modules.user.model import User
 
 DECISIONS = tuple(DECISION_LABEL)
 MERGED_DECISION = "merged"
-IMPORTED_ADMIN_OWNER_MESSAGE = (
-    "新导入的客户目前由管理员负责。请选「指定同一位负责人」，未完成待办会随档案转交。"
-)
-
-
-def _imported_owner_needing_selection(
-    case: CustomerDuplicateCase, imported_owner: int | None, existing_owner: int | None
-) -> int | None:
-    if case.source == "import" and existing_owner is not None and imported_owner != existing_owner:
-        return imported_owner
-    return None
-
-
-async def _admin_owner_ids(session: AsyncSession, owner_ids: set[int]) -> set[int]:
-    if not owner_ids:
-        return set()
-    stmt = (
-        select(user_roles.c.user_id)
-        .join(Role, Role.id == user_roles.c.role_id)
-        .where(user_roles.c.user_id.in_(owner_ids), Role.code == "admin", Role.status == ROLE_ACTIVE)
-    )
-    return set((await session.execute(stmt)).scalars().all())
-
-
 async def is_disputed(session: AsyncSession, customer_id: int) -> bool:
     """该客户是否处于撞单争议中（有未决裁定单）。
 
@@ -87,11 +63,11 @@ def serialize_case(case: CustomerDuplicateCase, names: dict[int, str]) -> dict:
         "status": case.status,
         "decision": case.decision,
         "decision_label": decision_label,
-        "resolved_owner_id": case.resolved_owner_id,
+        "resolved_owner_id": None,
         "resolved_by": case.resolved_by,
         "resolved_at": case.resolved_at.isoformat() if case.resolved_at else None,
-        #: 裁定前的归属（`{客户id: 原负责人id}`），与 resolved_* 配成一对
-        "before_owners": case.before_owners or {},
+        #: 客户没有负责人；保留字段兼容旧前端
+        "before_owners": {},
         "remark": case.remark,
         "created_at": case.created_at.isoformat() if case.created_at else None,
     }
@@ -268,20 +244,9 @@ async def list_cases(
         ).scalars().all()
     } if ids else {}
     names = {cid: customer.name for cid, customer in customers.items()}
-    owners_to_check = {
-        case.id: _imported_owner_needing_selection(
-            case, customers[case.customer_id].owner_id, customers[case.candidate_id].owner_id
-        )
-        for case in cases
-        if case.status == "pending" and case.customer_id in customers and case.candidate_id in customers
-    }
-    admins = await _admin_owner_ids(session, {uid for uid in owners_to_check.values() if uid is not None})
     return [
         {
             **serialize_case(case, names),
-            "assign_existing_blocked_reason": (
-                IMPORTED_ADMIN_OWNER_MESSAGE if owners_to_check.get(case.id) in admins else None
-            ),
         }
         for case in cases
     ], int(total)
@@ -296,17 +261,13 @@ async def resolve_case(
     remark: str | None,
     actor: CurrentUser,
 ) -> CustomerDuplicateCase:
-    """人工裁定。
+    """人工裁定（2026-11-27 起客户没有默认负责人）。
 
-    四条纪律：
-    - 人选择沿用已有客户负责人，或明确指定负责人；代码不按建档时间推导；
-    - `keep_both` 只结案、不动归属，也**不合并**：判为两家不同就各留各的；
-    - 裁定只改归属，不删数据；真要合并走既有的 /customers/merge（它单独留痕）；
-    - **归属变更复用普通转移那条路径**（`customer_service.transfer_customer`）：
-      包括目标负责人在职校验、归属历史、以及**未完成待办的迁移**。
-      此前这里是手写一遍"改 owner_id + 写历史"，于是裁定之后
-      **待办一条都没跟着走** —— 新负责人看不到该做的动作，老负责人还在被
-      一个已经不属于他的客户提醒（返工单 6.5）。两处各写一遍必然漂移。
+    - `keep_both`：判为两家不同客户，只结案、不动数据；
+    - `assign_existing`：判为同一家生意——把两条客户的跟进人**并成一组**
+      （各自的人都能看到两边档案），不合并记录、不删数据；
+    - `assign_new`：指定一位同事加入两条客户的跟进人（钉住归属人）。
+    真正把重复档案合成一条走 `/customers/merge`（单独留痕）。
     """
     from app.modules.customer import service as customer_service
 
@@ -332,57 +293,51 @@ async def resolve_case(
     if locked is None:
         raise AppError(ErrorCode.NOT_FOUND, "撞单记录不存在", 404)
     case = locked
-
     if case.status != "pending":
         raise AppError(ErrorCode.PARAM_ERROR, "该撞单已裁定过", 422)
 
-    # 裁定**前**两条客户的归属：与下面的 `resolved_owner_id`（裁定后）配成一对，
-    # 事后回看才答得出"这次裁定把谁从谁手里改到了谁名下"。
-    before_owners = {
-        str(cid): customer.owner_id for cid, customer in locked_customers.items()
-    }
+    from app.modules.customer.followers import active_follower_ids, add_followers
 
+    resolved_user_id: int | None = None
     if decision in ("assign_existing", "assign_new"):
         if decision == "assign_existing":
-            target = locked_customers[case.candidate_id]
-            if target.owner_id is None:
+            # 以「已有客户」为基准并入两条客户的跟进人
+            base = locked_customers[case.candidate_id]
+            target_ids = set(await active_follower_ids(session, base.id))
+        else:
+            if owner_id is None:
                 raise AppError(
-                    ErrorCode.PARAM_ERROR, "已有客户没有负责人，无法按它归属", 422
+                    ErrorCode.REQUIRED_FIELD_MISSING, "裁定归属必须指定负责人", 422
                 )
-            imported_owner = _imported_owner_needing_selection(
-                case, locked_customers[case.customer_id].owner_id, target.owner_id
+            target = await session.get(User, owner_id)
+            if target is None:
+                raise AppError(ErrorCode.NOT_FOUND, f"负责人 id={owner_id} 不存在", 404)
+            if target.status != "active":
+                raise AppError(
+                    ErrorCode.PARAM_ERROR, f"「{target.name}」已停用，不能接收客户", 422
+                )
+            target_ids = {owner_id}
+            resolved_user_id = owner_id
+        union_ids = set(target_ids)
+        for customer in locked_customers.values():
+            union_ids.update(await active_follower_ids(session, customer.id))
+        for customer in locked_customers.values():
+            await add_followers(
+                session,
+                customer.id,
+                sorted(union_ids),
+                source="duplicate_resolution",
+                created_by=actor.id,
             )
-            if imported_owner is not None and await _admin_owner_ids(session, {imported_owner}):
-                raise AppError(ErrorCode.PARAM_ERROR, IMPORTED_ADMIN_OWNER_MESSAGE, 422)
-            owner_id = target.owner_id
-        elif owner_id is None:
-            raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "裁定归属必须指定负责人", 422)
-
-        # 两条都落到同一个负责人名下：裁定的是"这条生意归谁"，不是改一条留一条。
-        # **走普通转移那条路径**，于是在职校验、归属历史、待办迁移三件事
-        # 与"手工改负责人"完全一致（返工单 6.5 的核心要求）。
-        from app.modules.customer import service as customer_service
-
-        for cid in (case.customer_id, case.candidate_id):
-            customer = locked_customers[cid]
-            if customer.owner_id != owner_id:
-                await customer_service.transfer_customer(
-                    session,
-                    actor,
-                    customer,
-                    owner_id,
-                    f"撞单裁定编号 {case.id}（{DECISION_LABEL[decision]}）",
-                )
-            elif customer.pool_status != "private":
-                # 归属本来就是这个人，但客户还在公海状态：把状态掰回来
+            if customer.pool_status == "public":
                 customer.pool_status = "private"
 
     case.status = "resolved"
     case.decision = decision
-    case.resolved_owner_id = owner_id
+    case.resolved_owner_id = resolved_user_id
     case.resolved_by = actor.id
     case.resolved_at = datetime.now(UTC)
     case.remark = remark
-    case.before_owners = before_owners
+    case.before_owners = None
     await session.flush()
     return case

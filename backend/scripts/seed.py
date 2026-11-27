@@ -390,6 +390,9 @@ async def seed() -> None:
             )
             session.add(customer)
             await session.flush()
+            from app.modules.customer.model import CustomerFollower
+
+            session.add(CustomerFollower(customer_id=customer.id, user_id=owner.id, source="seed"))
             for cname, title, mobile, is_primary in item["contacts"]:
                 session.add(
                     Contact(

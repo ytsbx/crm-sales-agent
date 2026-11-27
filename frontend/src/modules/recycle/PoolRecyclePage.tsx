@@ -37,7 +37,7 @@ const REVIEW_GUIDE: Record<RecycleStatus, string> = {
   // 那一行，再复述一遍怎么操作就是同一句话说了两遍，还把表格又往下压了一行（2026-11-21 巡检）。
   pending: '',
   deferred: '暂缓保留原候选。到「最早可回收」的时间后，可以决定是否批准；也可以随时驳回结案。',
-  executed: '符合恢复条件时，有权限的同事可以把客户交还原负责人。',
+  executed: '符合恢复条件时，有权限的同事可以把客户交还原跟进人。',
   rejected: '驳回已结案。满 30 天后，系统按客户当时的跟进和业务情况重新判断。',
 }
 
@@ -57,7 +57,7 @@ export function PoolRecyclePanel() {
   const { can } = usePermissions()
   const canRestore = can('customer:pool_review') && can('customer:pool_restore')
 
-  // 1024 下六列排不开（会横向滚动），窄屏把「原负责人 / 最近有效联系 / 保护事项」
+  // 1024 下六列排不开（会横向滚动），窄屏把「原跟进人 / 最近有效联系 / 保护事项」
   // 三列收起来：复核时主要看客户、最早可回收、以及三个动作。
   /* 规则说明默认收起（见下方注释） */
   const [rulesOpen, setRulesOpen] = useState(false)
@@ -155,7 +155,7 @@ export function PoolRecyclePanel() {
     onSuccess: (row, { candidate }) => {
       setReceipt({ ...row, customer_name: candidate.customer_name, owner_name: candidate.owner_name })
       void queryClient.invalidateQueries({ queryKey: ['customer', candidate.customer_id] })
-      Toast.success('客户已恢复给原负责人')
+      Toast.success('客户已恢复给原跟进人')
       refreshCandidates()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -188,8 +188,8 @@ export function PoolRecyclePanel() {
         : decision === 'approve' && protected_
           ? `当前记录有履约事项（${(row.protection ?? []).join('、')}）。确需例外回收，请说明依据。`
           : decision === 'approve' ? '符合条件的客户会立即进入公海。若系统提示有新的履约保护，核对后确需例外回收，可补填依据。'
-            : decision === 'reject' ? '客户继续由原负责人负责。本次复核结案，30 天内系统不会重新提名。'
-              : '客户继续由原负责人负责。到「已暂缓」查看具体可批准时间。',
+            : decision === 'reject' ? '客户继续由原跟进人负责。本次复核结案，30 天内系统不会重新提名。'
+              : '客户继续由原跟进人负责。到「已暂缓」查看具体可批准时间。',
       placeholder: decision === 'approve'
         ? '例如：已核实客户结束合作，同意回收'
         : '例如：客户明确表示需要延长跟进周期',
@@ -202,12 +202,12 @@ export function PoolRecyclePanel() {
     decideMutation.mutate({ candidate: row, decision, note, early })
   }
 
-  /** 单条恢复：把已回收的客户还给原负责人（已被别人领走时会报冲突）。 */
+  /** 单条恢复：把已回收的客户还给原跟进人（已被别人领走时会报冲突）。 */
   const restore = async (row: RecycleCandidateRow) => {
     const note = await notePrompt.ask({
-      title: `恢复「${row.customer_name ?? `客户 ${row.customer_id}`}」给原负责人`,
+      title: `恢复「${row.customer_name ?? `客户 ${row.customer_id}`}」给原跟进人`,
       label: '恢复原因',
-      description: '客户会从公海回到原负责人名下，其他同事不再能领取。',
+      description: '客户会从公海回到原跟进人名下，其他同事不再能领取。',
       placeholder: '例如：客户回访后确认继续合作',
       required: true,
       maxLength: 255,
@@ -325,7 +325,7 @@ export function PoolRecyclePanel() {
                 <strong>{receipt.customer_name ?? `客户编号 ${receipt.customer_id}`} · {receipt.restored_at ? '已恢复' : receipt.status_label}</strong>
                 {receipt.status === 'deferred' && <div>下次可批准时间 {fmtDay(receipt.earliest_action_at)}</div>}
                 {receipt.status === 'rejected' && <div>可再次评估时间 {fmtDay(receipt.reconsider_at)}</div>}
-                {receipt.restored_at && <div>已交还{receipt.owner_name ?? '原负责人'}</div>}
+                {receipt.restored_at && <div>已交还{receipt.owner_name ?? '原跟进人'}</div>}
                 {(receipt.restore_note || receipt.decision_note) && <div>{receipt.restore_note || receipt.decision_note}</div>}
               </div>
               {receiptStatus && receiptStatus !== candidateStatus && (
@@ -422,7 +422,7 @@ export function PoolRecyclePanel() {
                               setSelectedCandidateIds((ids) => checked ? [...ids, row.id] : ids.filter((id) => id !== row.id))
                             }} />}
                         </div>
-                        <div>原负责人 {row.owner_name ?? '未记录'}{row.level ? ` · ${row.level} 级` : ''}</div>
+                        <div>原跟进人 {row.owner_name ?? '未记录'}{row.level ? ` · ${row.level} 级` : ''}</div>
                         {isReviewQueue && <>
                           <div>最近活跃 {fmtDay(row.last_active_at)}</div>
                           <div>最早可回收 {fmtDay(row.earliest_action_at)}</div>
@@ -476,7 +476,7 @@ export function PoolRecyclePanel() {
                 ? []
                 : [
                     {
-                      title: '原负责人',
+                      title: '原跟进人',
                       dataIndex: 'owner_name',
                       width: 80,
                       render: (v: string | null) => v ?? '-',

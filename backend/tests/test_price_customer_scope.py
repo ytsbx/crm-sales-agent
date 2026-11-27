@@ -39,9 +39,17 @@ def _session():
 
 
 def _add_customer(session, name: str, owner_id: int | None) -> int:
-    row = Customer(name=name, owner_id=owner_id)
+    from app.modules.customer.model import CustomerFollower
+
+    row = Customer(
+        name=name, owner_id=owner_id,
+        pool_status="public" if owner_id is None else "private",
+    )
     session.add(row)
     asyncio.run(session.flush())
+    if owner_id is not None:
+        session.add(CustomerFollower(customer_id=row.id, user_id=owner_id, source="manual"))
+        asyncio.run(session.flush())
     return row.id
 
 

@@ -264,6 +264,11 @@ async def main() -> int:
                                    status='active', pool_status='public', owner_id=None)
         s.add(public_customer)
         await s.flush()
+        from app.modules.customer.model import CustomerFollower
+
+        for row in (customer, source_customer, delete_control_customer):
+            s.add(CustomerFollower(customer_id=row.id, user_id=owner.id, source="fixture"))
+        await s.flush()
         s.add_all([
             Contact(customer_id=customer.id, name=f'{PREFIX}目标主联系人-{stamp}',
                     mobile='13900000002', is_primary=True),

@@ -661,7 +661,9 @@ async def list_quotes(
     owner_ids = await scoped_owner_ids(session, user)
     customer_scope = [Customer.deleted_at.is_(None)]
     if owner_ids is not None:
-        customer_scope.append(or_(Customer.owner_id.in_(owner_ids), Customer.owner_id.is_(None)))
+        from app.modules.customer.visibility import customer_scope_clause_from
+
+        customer_scope.append(customer_scope_clause_from(owner_ids))
     visible_customers = select(Customer.id).where(*customer_scope)
     visible_opportunities = select(Opportunity.id).where(
         Opportunity.customer_id.in_(visible_customers),

@@ -98,9 +98,7 @@ export interface Customer {
   level?: string | null
   status: string
   pool_status: string
-  owner_id?: number | null
-  owner_name?: string | null
-  /** 有效跟进人（默认负责人也在其中） */
+  /** 有效跟进人（客户没有默认负责人，见 2026-11-27） */
   followers?: {
     user_id: number
     name: string

@@ -439,8 +439,8 @@ async def ensure_customer_in_scope_for_price(
 ) -> Customer:
     """客户专属价的**唯一范围判据**：新增 / 修改 / 删除 / 列表都走它。
 
-    口径：管理员（`scoped_owner_ids` 返回 None）不限；无负责人的客户（公海）放行；
-    其余要求该客户的负责人在操作人的数据范围内。
+    口径：与客户可见性同一份判据（`customer/visibility.py`）：管理员不限；
+    公海客户放行；其余要求任一有效跟进人在操作人的数据范围内。
 
     为什么要收成函数（审查 2026-10-07 第二轮实测）：上一轮只给**新增和修改**接了这个
     判据，删除和列表漏了 —— 于是"本人仅自己"范围的业务员拿 id 就能删掉别人客户的
@@ -452,14 +452,16 @@ async def ensure_customer_in_scope_for_price(
     customer = await session.get(Customer, customer_id)
     if customer is None or customer.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "客户不存在或已删除", 404)
-    owner_ids = await scoped_owner_ids(session, user)
-    if owner_ids is not None and customer.owner_id is not None:
-        if int(customer.owner_id) not in owner_ids:
-            raise AppError(
-                ErrorCode.DATA_SCOPE_DENIED,
-                "该客户不在你的数据范围内，不能为它维护专属价；请联系对应负责人或主管处理",
-                403,
-            )
+    from app.modules.customer.visibility import assert_customer_in_scope
+
+    try:
+        await assert_customer_in_scope(session, user, customer)
+    except AppError:
+        raise AppError(
+            ErrorCode.DATA_SCOPE_DENIED,
+            "该客户不在你的数据范围内，不能为它维护专属价；请联系主管处理",
+            403,
+        ) from None
     return customer
 
 

@@ -240,8 +240,7 @@ async def merge_customers(
             "moved": result["moved"],
             "conflicts": result.get("conflicts"),
             "resolved_duplicate_case_ids": result["resolved_duplicate_case_ids"],
-            "target_owner_id": result["target_owner_id"],
-            "owner_resolution": result["owner_resolution"],
+            "target_follower_ids": result.get("target_follower_ids"),
         },
         ip=client_ip(request),
     )
@@ -410,9 +409,12 @@ async def batch_transfer(
                 raise
             unavailable_ids.append(customer_id)
             continue
-        if customer.owner_id == payload.owner_id:
-            already_assigned_ids.append(customer_id)
-            continue
+        if payload.owner_id is not None:
+            from app.modules.customer.followers import is_follower
+
+            if await is_follower(session, customer.id, payload.owner_id):
+                already_assigned_ids.append(customer_id)
+                continue
         documents = await svc.transfer_customer(
             session, user, customer, payload.owner_id, payload.reason,
             # 原始 reason 参与保护校验，默认文案只进归属历史
