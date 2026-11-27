@@ -114,7 +114,7 @@ async def main():
             assert sum(r['processed'] for r in result) == 1, result
             notifications = await notices()
             assert {n.user_id for n in notifications} == {manager.id, user_ids[0]}
-            assert all('操作者：'+actor.name in n.content and '负责人：'+sales.name in n.content for n in notifications)
+            assert all('操作者：'+actor.name in n.content and '跟进人：'+sales.name in n.content for n in notifications)
             assert all(n.business_type == 'order' and n.business_id == order_id for n in notifications)
             async with SessionLocal() as s:
                 await record_and_notify(s, customer_id=customer_id, owner_id=sales.id,

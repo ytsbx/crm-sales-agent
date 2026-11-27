@@ -12,6 +12,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    event,
     BigInteger,
     Boolean,
     Column,
@@ -158,6 +159,23 @@ class CustomerFollower(Base, IdMixin, TimestampMixin):
     source: Mapped[str] = mapped_column(String(32), default="manual")
     created_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+# 兼容旧数据/旧调用方：直接把 `owner_id` 塞进 Customer(...) 的历史写法，
+# 在落库时补一条同人的跟进人。新业务统一走 `add_followers`，不会经过这里。
+@event.listens_for(Customer, "after_insert")
+def _materialize_legacy_owner_as_follower(mapper, connection, target):
+    # 公海客户的定义就是「没有跟进人」，历史 owner_id 只是残留列，不能复活跟进关系。
+    if not target.owner_id or target.pool_status == "public":
+        return
+    connection.execute(
+        CustomerFollower.__table__.insert().values(
+            customer_id=target.id,
+            user_id=target.owner_id,
+            source="legacy_owner",
+            created_by=target.owner_id,
+        )
+    )
 
 
 class Tag(Base, IdMixin, TimestampMixin):

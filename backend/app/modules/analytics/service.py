@@ -241,20 +241,6 @@ async def stale_customers(
     from app.modules.customer.followers import followers_map
 
     fmap = await followers_map(session, [c.id for c in rows])
-    owner_ids = {c.owner_id for c in rows if c.owner_id} | {
-        item["user_id"] for items in fmap.values() for item in items
-    }
-    names: dict[int, str] = {}
-    if owner_ids:
-        names = {
-            uid: name
-            for uid, name in (
-                await session.execute(
-                    select(User.id, User.name).where(User.id.in_(owner_ids))
-                )
-            ).all()
-        }
-
     # 主联系人（有就带上电话，清单上能直接照着打）
     contacts: dict[int, tuple[str | None, str | None]] = {}
     if rows:

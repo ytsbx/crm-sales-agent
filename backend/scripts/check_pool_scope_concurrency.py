@@ -236,11 +236,10 @@ async def main() -> int:
             priv_lead, batch_ok_lead, conv_lead, stale_lead, race_lead, race_lead2,
         ])
         await s.flush()
-        from app.modules.customer.model import CustomerFollower
+        from app.modules.customer.followers import add_followers
 
         for customer, user_id in ((priv_cust, boss.id), (dept_cust, rusher.id), (cross_cust, outsider.id)):
-            s.add(CustomerFollower(customer_id=customer.id, user_id=user_id, source="fixture"))
-        await s.flush()
+            await add_followers(s, customer.id, [user_id], source="fixture")
         # 已转客户的线索指向一张真实客户（真实数据的形态），否则用例跑的是
         # "一个不可能存在的组合"，拦下来也说明不了什么
         conv_lead.converted_customer_id = priv_cust.id
@@ -263,6 +262,7 @@ async def main() -> int:
 
     async def owner_of(customer_id: int):
         """最新加入的有效跟进人（客户没有默认负责人；转交/领取都是加人）。"""
+        from app.modules.customer.model import CustomerFollower
         async with SessionLocal() as s:
             return (
                 await s.execute(

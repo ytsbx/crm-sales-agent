@@ -390,9 +390,8 @@ async def seed() -> None:
             )
             session.add(customer)
             await session.flush()
-            from app.modules.customer.model import CustomerFollower
-
-            session.add(CustomerFollower(customer_id=customer.id, user_id=owner.id, source="seed"))
+            # `Customer(owner_id=...)` 的兼容事件已把该 owner 落成第一位跟进人；
+            # 这里不再重复插，否则会撞 `uq_customer_followers_active`。
             for cname, title, mobile, is_primary in item["contacts"]:
                 session.add(
                     Contact(

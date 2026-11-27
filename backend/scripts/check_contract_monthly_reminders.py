@@ -34,7 +34,7 @@ from app.core.config import settings
 from app.core.database import SessionLocal
 from app.modules.contract.model import ContractDocument, ContractTemplate
 from app.modules.contract.service import notify_expiring_monthly
-from app.modules.customer.model import Customer
+from app.modules.customer.model import Customer, CustomerFollower
 from app.modules.followup.model import FollowUp
 from app.modules.notification.model import BusinessEvent, Notification
 from app.modules.task.model import Task
@@ -226,13 +226,14 @@ async def main():
         })
         task_ids.append(manual["id"])
         api("POST", f"/customers/{customer_id}/transfer", token=admin,
-            body={"owner_id": lisi_id, "reason": f"{MARKER} 交接"})
+            body={"owner_id": lisi_id, "from_user_id": zhangsan_id,
+                  "reason": f"{MARKER} 交接"})
         moved = api("GET", f"/tasks/{manual['id']}", token=admin)
         check("未完成的待办跟着新负责人走了",
               moved["owner_id"] == lisi_id, moved["owner_id"])
         still_done = api("GET", f"/tasks/{task_a['id']}", token=admin)
         check("已完成的待办**不跟着走**（历史记录保留原处理人）",
-              still_done["owner_id"] == zhangsan_id, still_done["owner_id"])
+              still_done["owner_id"] == task_a["owner_id"], still_done["owner_id"])
 
         print("=== 6. 签署 / 作废进客户时间线 ===")
         timeline = api("GET", f"/customers/{customer_id}/timeline?limit=200", token=admin)
@@ -283,8 +284,12 @@ async def main():
             owner_row = (
                 await session.execute(
                     select(User.id, User.username)
-                    .join(Customer, Customer.owner_id == User.id)
-                    .where(Customer.id == customer_id)
+                    .join(CustomerFollower, CustomerFollower.user_id == User.id)
+                    .where(
+                        CustomerFollower.customer_id == customer_id,
+                        CustomerFollower.deleted_at.is_(None),
+                    )
+                    .order_by(CustomerFollower.created_at, CustomerFollower.id)
                 )
             ).first()
         if owner_row is None:

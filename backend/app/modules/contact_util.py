@@ -210,6 +210,18 @@ async def full_contact_customer_ids(
     for cid, uid in rows:
         if uid == user.id or uid in allowed_set:
             result.add(int(cid))
+    # 公海客户一律脱敏：即使历史/异常数据里还残留着一条跟进人记录，
+    # 只要 `pool_status='public'` 就不能凭它拿到完整联系方式。
+    public_ids = set(
+        (
+            await session.execute(
+                select(Customer.id).where(
+                    Customer.id.in_(ids), Customer.pool_status == "public"
+                )
+            )
+        ).scalars()
+    )
+    result -= public_ids
     return result
 
 

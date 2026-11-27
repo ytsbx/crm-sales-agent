@@ -62,7 +62,7 @@ async def scenario(mode):
         c=await writer.get(Customer,cid)
         if mode=='transfer':
             user=CurrentUser(await writer.get(User,uids[2]),roles=['admin'],permissions={'customer:assign'},data_scope='all')
-            await customers.transfer_customer(writer,user,c,uids[1],'synthetic transfer during scan')
+            await customers.transfer_customer(writer,user,c,uids[1],'synthetic transfer during scan', only_from_owner_id=uids[0])
         elif mode=='delete':await customers.delete_customer(writer,c)
         else:c.last_followup_at=NOW;await writer.flush()
         await writer.commit();pause.resume.set()
@@ -70,8 +70,18 @@ async def scenario(mode):
     async with SessionLocal() as s:
         rows=(await s.execute(select(Candidate).where(Candidate.customer_id==cid))).scalars().all()
         notices=(await s.execute(select(Notification).where(Notification.business_id==cid,Notification.user_id.in_(uids)))).scalars().all()
-        assert report['nominated_count']==0 and report['notified_count']==0 and not rows and not notices,(mode,report,rows,notices)
-        print(mode+': stale snapshot creates no candidate or notice')
+        if mode == 'transfer':
+            # 2026-11-27 客户改为"一组跟进人"后，转交会把新同事加进来；
+            # 客户仍然私海且确实久未联系，新接手人被提名是**合法结果**。
+            # 这个交错要守的是：绝不能拿扫描开始时的旧快照去通知旧跟进人。
+            assert not any(r.owner_id == uids[0] for r in rows), (mode, report, rows)
+            assert not any(n.user_id == uids[0] for n in notices), (mode, report, notices)
+            assert rows and all(r.owner_id == uids[1] for r in rows), (mode, report, rows)
+            assert notices and all(n.user_id == uids[1] for n in notices), (mode, report, notices)
+            print('transfer: stale snapshot never notifies old follower; new follower gets fresh candidate')
+        else:
+            assert report['nominated_count']==0 and report['notified_count']==0 and not rows and not notices,(mode,report,rows,notices)
+            print(mode+': stale snapshot creates no candidate or notice')
     # Isolate next scenario by soft-deleting this synthetic customer.
     async with SessionLocal() as s:
         c=await s.get(Customer,cid);c.deleted_at=NOW;await s.commit()
@@ -157,7 +167,7 @@ async def held_scan():
         user=CurrentUser(await writer.get(User,uids[2]),roles=['admin'],permissions={'customer:assign'},data_scope='all')
         writer_pid=await writer.scalar(text('select pg_backend_pid()'))
         async def transfer():
-            await customers.transfer_customer(writer,user,c,uids[1],'isolated held scan')
+            await customers.transfer_customer(writer,user,c,uids[1],'isolated held scan', only_from_owner_id=uids[0])
             await writer.commit()
         transfer_job=asyncio.create_task(transfer())
         async with SessionLocal() as observer:
@@ -170,7 +180,9 @@ async def held_scan():
         gate.resume.set();result=await asyncio.wait_for(job,5);assert result['nominated_count']==1
         await asyncio.wait_for(transfer_job,5)
         async with SessionLocal() as verify:
-            assert (await verify.get(Customer,cid)).owner_id==uids[1]
+            from app.modules.customer.followers import active_follower_ids
+            owners=await active_follower_ids(verify,cid)
+            assert uids[1] in owners and uids[0] not in owners
     await retire(cid);print('transfer actually waits (pg_blocking_pids) on held scan row lock, then finishes')
 async def protection_entry(mode):
     async with SessionLocal() as s:

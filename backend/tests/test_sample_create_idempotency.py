@@ -49,7 +49,7 @@ def test_manual_sample_create_same_request_key_is_idempotent():
             Customer(id=1, name="客户", owner_id=101),
         ])
         raw.flush()
-        raw.add(CustomerFollower(customer_id=1, user_id=101, source="manual"))
+        # 兼容桥已按 owner_id 自动补了跟进人，不再重复插。
         raw.commit()
         session = SyncSessionAsAsync(raw)
 

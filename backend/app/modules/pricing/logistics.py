@@ -13,7 +13,7 @@
 from datetime import UTC, datetime
 from decimal import Decimal, ROUND_HALF_UP
 
-from sqlalchemy import Select, or_, select
+from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.data_scope import scoped_owner_ids

@@ -820,14 +820,22 @@ async def transfer_customer(
             allow_exception=True,
         )
         # 公海客户 = 没有跟进人：清空全部有效跟进关系（历史保留）。
-        from app.modules.customer.followers import clear_followers
+        from app.modules.customer.followers import active_follower_ids, clear_followers
 
+        old_followers = await active_follower_ids(session, customer.id)
+        # 归属历史要记下“最后一位经手人”，领取时才能按它把单据接过来。
+        # 新模型没有唯一负责人：优先记调用方指定的被替换人，否则记第一位跟进人。
+        history_owner = (
+            only_from_owner_id
+            if only_from_owner_id is not None
+            else (old_followers[0] if old_followers else None)
+        )
         await clear_followers(session, customer)
         customer.pool_status = "public"
         session.add(
             CustomerOwnerHistory(
                 customer_id=customer.id,
-                old_owner_id=only_from_owner_id,
+                old_owner_id=history_owner,
                 new_owner_id=None,
                 reason=reason or default_reason or "放入公海",
                 operator_id=user.id,
@@ -961,8 +969,34 @@ async def claim_customer(
             409,
         )
 
+    # 公海领取前先记住“最后一位经手人”：客户在公海没有跟进人，但它的
+    # 单据/未完成待办还挂在上一任名下，领取时要一并接过来（旧口径）。
+    previous_owner_id = await _previous_owner_from_history(session, row.id)
+
     # 公海领取 = 加入跟进人 + 转私海（历史与审计在同一条路径里）
     await transfer_customer(session, user, row, user.id, reason)
+
+    if previous_owner_id is not None and previous_owner_id != user.id:
+        from sqlalchemy import update
+
+        from app.modules.task.model import Task
+
+        await session.execute(
+            update(Task)
+            .where(
+                Task.customer_id == row.id,
+                Task.status.in_(("pending", "doing")),
+                Task.owner_id == previous_owner_id,
+            )
+            .values(owner_id=user.id)
+        )
+        await documents_service.reassign_customer_documents(
+            session,
+            customer_id=row.id,
+            from_owner_id=previous_owner_id,
+            to_owner_id=user.id,
+            operator_id=user.id,
+        )
     return row, True
 
 

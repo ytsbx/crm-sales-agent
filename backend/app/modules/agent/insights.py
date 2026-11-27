@@ -32,7 +32,6 @@ from app.modules.order.model import SalesOrder
 from app.modules.payment import service as payment_service
 from app.modules.payment.model import ReceivablePlan
 from app.modules.task.model import Task
-from app.modules.user.model import User
 
 ZERO = Decimal(0)
 

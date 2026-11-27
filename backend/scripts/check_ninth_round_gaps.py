@@ -294,10 +294,8 @@ async def main() -> None:
         # 把客户改到"没有 task:view"的那个人名下：这时是"看不到"（None），
         # 不是"一条都没有"（[]）—— 两者不能混
         async with SessionLocal() as s:
-            await s.execute(
-                text("update customers set owner_id = :u where id = :c"),
-                {"u": user_n_id, "c": customer_id},
-            )
+            from app.modules.customer.followers import add_followers
+            await add_followers(s, customer_id, [user_n_id], source="fixture")
             await s.commit()
         _, res = call("POST", "/agent/customer-summary", token_n, body={"customer_id": customer_id})
         payload = res.get("data") or {}

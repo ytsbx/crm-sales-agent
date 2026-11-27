@@ -264,11 +264,10 @@ async def main() -> int:
                                    status='active', pool_status='public', owner_id=None)
         s.add(public_customer)
         await s.flush()
-        from app.modules.customer.model import CustomerFollower
+        from app.modules.customer.followers import add_followers
 
         for row in (customer, source_customer, delete_control_customer):
-            s.add(CustomerFollower(customer_id=row.id, user_id=owner.id, source="fixture"))
-        await s.flush()
+            await add_followers(s, row.id, [owner.id], source="fixture")
         s.add_all([
             Contact(customer_id=customer.id, name=f'{PREFIX}目标主联系人-{stamp}',
                     mobile='13900000002', is_primary=True),
@@ -717,9 +716,11 @@ async def main() -> int:
     status, _ = call('POST', '/contract-documents', outsider_token,
                      {'customer_id': oc_cid, 'template_id': 999999, 'parent_id': 1})
     check('业务员发起补充协议 / 续签被按权限拒绝（恰好 403，不是"别的失败"）', status, 403)
+    # 2026-11-27 合同生成改为「上传原文件」且统一要求 order:manage；
+    # 业务员连普通起草也被权限挡下，不再存在「只挡补充/续签」的旧口径。
     status, _ = call('POST', '/contract-documents', outsider_token,
                      {'customer_id': oc_cid, 'template_id': 999999})
-    check('业务员仍可普通起草合同（对照：只挡补充/续签）', status != 403, True)
+    check('业务员起草合同被 order:manage 权限拒绝', status, 403)
 
     print('=== 3.5 线索转化 / 归属指定 / 合同幂等键 / 原件保护 ===')
     from datetime import UTC as _UTC
@@ -781,7 +782,9 @@ async def main() -> int:
     status, _ = call('POST', '/contract-documents', outsider_token,
                      {'customer_id': oc_cid, 'template_id': 999999,
                       'request_key': f'{PREFIX}KEY{stamp}'})
-    check('命中别人的合同幂等键不会把那份合同交出来', status, 409)
+    # 没有 order:manage 时在建单第一道门就 403，连幂等键分支都进不去；
+    # 「不会把别人的合同交出来」仍然成立，只是拒绝更早。
+    check('无创建权限时幂等键不会交出别人的合同（403）', status, 403)
     # 对照：同一个 key + 同一客户 + 同一模板仍走幂等返回（不是被上面的保护误伤）。
     # 三个字段必须全部一致：这正是"键相同内容不同就拒绝"的另一面。
     status, res = call('POST', '/contract-documents', owner_token,

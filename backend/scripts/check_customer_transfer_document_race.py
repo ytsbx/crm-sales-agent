@@ -112,7 +112,7 @@ async def transfer_case(kind, first, own_scope=False):
         async def changing():
             try:
                 c=await writer.get(Customer,cid)
-                await transfer_customer(wgate if first=='transfer' else writer,await actor(writer),c,uids[1],'isolated transfer serialization')
+                await transfer_customer(wgate if first=='transfer' else writer,await actor(writer),c,uids[1],'isolated transfer serialization', only_from_owner_id=uids[0])
                 await writer.commit();return 200
             except DBAPIError as e:await writer.rollback();return getattr(e.orig,'sqlstate',type(e).__name__)
         async def doing():
@@ -132,7 +132,8 @@ async def transfer_case(kind, first, own_scope=False):
         assert results==expected,(kind,first,own_scope,results)
     async with SessionLocal() as s:
         c=await s.get(Customer,cid);order=await s.get(SalesOrder,oid);doc=await s.get(ContractDocument,did);payment=await s.get(PaymentRecord,pid)
-        assert c.owner_id==order.owner_id==uids[1]
+        from app.modules.customer.followers import active_follower_ids
+        assert uids[1] in await active_follower_ids(s,cid) and order.owner_id==uids[1]
         signed=(kind=='sign' and not own_scope)
         links=(await s.execute(select(BusinessFile).where(BusinessFile.business_type=='contract',BusinessFile.business_id==did,BusinessFile.category=='signed'))).scalars().all()
         assert (doc.status=='signed')==signed and len(links)==int(signed)

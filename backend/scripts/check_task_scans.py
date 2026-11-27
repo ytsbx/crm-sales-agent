@@ -154,7 +154,9 @@ async def main():
             patch_rule(f'/task-rules/{rule_ids[0]}', {'name': None}, expected=400)
             # 手动与定时扫描同时执行也只创建一份；坏规则不挡住其余规则。
             results = await asyncio.gather(scan(), scan())
-            assert sum(r['created_count'] for r in results) == 5, results
+            # 全局规则会扫到库里所有匹配客户，不能拿总数断言；只数本套件前缀的 5 条。
+            scoped = sum(1 for r in results for t in r['tasks'] if prefix in t['title'])
+            assert scoped == 5, results
             # await1、await2、到期未成单 expire，加冷落、逾期应收，共五项。
             assert all(r['failed_rule_count'] == 1 for r in results)
             assert all(any(row['customer_id'] == customers['future'].id for row in r['agreed_skipped']) for r in results)

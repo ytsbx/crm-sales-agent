@@ -313,8 +313,10 @@ async def main() -> int:
         # 客户没有默认负责人：夹具按原 owner 补一条有效跟进人
         await s.execute(text(
             "insert into customer_followers (customer_id, user_id, source, created_at, updated_at) "
-            "select id, owner_id, 'fixture', now(), now() from customers "
-            "where owner_id is not null and deleted_at is null and name like :p"
+            "select c.id, c.owner_id, 'fixture', now(), now() from customers c "
+            "where c.owner_id is not null and c.deleted_at is null and c.name like :p "
+            "and not exists (select 1 from customer_followers f where f.customer_id=c.id "
+            "and f.user_id=c.owner_id and f.deleted_at is null)"
         ), {"p": f"{PREFIX}%"})
         await s.flush()
         ids = {
@@ -787,8 +789,8 @@ async def main() -> int:
                     CustomerFollower.deleted_at.is_(None),
                 )
             )).scalars().all())
-            check_true("两条客户都加入了胜出的同事",
-                       final_followers == {after.resolved_owner_id}, str(final_followers))
+            check_true("胜出的同事已加入客户跟进人（原跟进人保留）",
+                       after.resolved_owner_id in final_followers, str(final_followers))
 
         print("=== 10. 6.5 队列真分页 ===")
         # 断言方式：**翻页能拿到不同的记录**才是真分页。

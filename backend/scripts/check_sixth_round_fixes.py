@@ -418,9 +418,11 @@ async def owner_of(customer_id: int) -> int | None:
     async with SessionLocal() as s:
         return (
             await s.execute(
-                text("select owner_id from customers where id = :i"), {"i": customer_id}
+                text("select user_id from customer_followers "
+                     "where customer_id = :i and deleted_at is null "
+                     "order by created_at, id limit 1"), {"i": customer_id}
             )
-        ).scalar_one()
+        ).scalar_one_or_none()
 
 
 # ---------------------------------------------------------------- 各段

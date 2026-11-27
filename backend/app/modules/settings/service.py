@@ -1489,6 +1489,21 @@ async def assert_candidate_in_scope(
     allowed = await scoped_owner_ids(session, user)
     if allowed is None:
         return  # `all` 范围：都能处理
+    allowed_set = set(allowed)
+    # 候选权限比对**提名快照里的原负责人**：客户进公海后没有跟进人，
+    # 按"当前客户可见性"判会让所有能看公海的人都变成可操作，跨部门主管
+    # 也能恢复别人的客户；而客户后来被别人领走时，又会在授权层先撞 403，
+    # 走不到服务层本该给出的 409 冲突提示。
+    if candidate.owner_id is not None:
+        if candidate.owner_id not in allowed_set:
+            raise AppError(
+                ErrorCode.FORBIDDEN,
+                "这条回收候选不在你的管理范围内（该客户的原负责人不在你负责的团队里）",
+                403,
+            )
+        return
+
+    # 没有快照的历史候选才退回客户可见性判断。
     from app.modules.customer.visibility import assert_customer_in_scope
 
     customer = await session.get(Customer, candidate.customer_id)
@@ -2051,7 +2066,23 @@ async def run_auto_tasks(
                 )
             ).scalars().all()
             title_template = str(action.get("title") or "客户久未联系，请跟进")
+            # B23-06：派生缓存校准改为锁内重算（refresh_next_followup_at 先锁客户行），
+            # 避免无锁批量写把用户刚设的未来跟进时间擦成旧值/空。
+            from app.modules.customer.service import refresh_next_followup_at
+
             for customer in rows:
+                await refresh_next_followup_at(session, customer.id)
+                await session.refresh(customer)
+                # 同一活跃时钟口径：业务进展（报价/打样/下单/回款）也算"有联系"。
+                # 2026-11-27 去掉默认负责人后，这段冷落判定曾漏掉，导致所有私海
+                # 客户每轮都被派"久未联系"任务，与规则里的 N 天完全无关。
+                last = _last_active_at(customer)
+                if last is None:
+                    continue
+                if last.tzinfo is None:
+                    last = last.replace(tzinfo=UTC)
+                if last >= cutoff:
+                    continue
                 agreed = customer.next_followup_at
                 if agreed is not None:
                     if agreed.tzinfo is None:
@@ -2080,6 +2111,7 @@ async def run_auto_tasks(
                     )
                     session.add(task)
                     await session.flush()
+                    followup_customer_ids.add(customer.id)
                     created.append({"task_id": task.id, "title": task.title})
         elif rule.trigger_type == "receivable_due":
             # 应收到期前 N 天 → 提醒负责人跟进回款

@@ -121,6 +121,35 @@ class _SyncCtxAsAsync:
         return self._ctx.__exit__(*exc)
 
 
+@pytest.fixture(autouse=True)
+def _ensure_customer_followers_table(monkeypatch):
+    """任何建了 customers 的测试库都补建 customer_followers。
+
+    2026-11-27 客户模型引入 `Customer.after_insert` 兼容桥：旧写法
+    `Customer(owner_id=...)` 落库时会自动补一条跟进人。各测试文件自己维护
+    `create_all(tables=[...])` 列表，不可能逐个记得这张新表；漏了会直接
+    `no such table: customer_followers`。在测试基建处统一补齐，避免每个用例
+    都要重复抄一遍表清单。
+    """
+    from app.core.base import Base as _Base
+    from app.modules.customer.model import Customer as _Customer
+    from app.modules.customer.model import CustomerFollower as _CustomerFollower
+
+    original = _Base.metadata.create_all
+
+    def create_all(bind, tables=None, **kwargs):
+        if tables is not None:
+            tables = list(tables)
+            if (
+                _Customer.__table__ in tables
+                and _CustomerFollower.__table__ not in tables
+            ):
+                tables.append(_CustomerFollower.__table__)
+        return original(bind, tables=tables, **kwargs)
+
+    monkeypatch.setattr(_Base.metadata, "create_all", create_all)
+
+
 def make_engine():
     """建一个建好业务表的内存 SQLite 引擎（每调用一次就是一个全新库）。"""
     from sqlalchemy import create_engine

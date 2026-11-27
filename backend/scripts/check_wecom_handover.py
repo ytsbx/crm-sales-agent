@@ -188,14 +188,10 @@ async def seed_fixtures() -> dict:
         )
         s.add_all([normal, disputed, other])
         await s.flush()
-        from app.modules.customer.model import CustomerFollower
+        from app.modules.customer.followers import add_followers
 
-        s.add_all([
-            CustomerFollower(customer_id=normal.id, user_id=handover.id, source="fixture"),
-            CustomerFollower(customer_id=disputed.id, user_id=handover.id, source="fixture"),
-            CustomerFollower(customer_id=other.id, user_id=colleague.id, source="fixture"),
-        ])
-        await s.flush()
+        for cid, uid in ((normal.id, handover.id), (disputed.id, handover.id), (other.id, colleague.id)):
+            await add_followers(s, cid, [uid], source="fixture")
 
         s.add(
             CustomerDuplicateCase(
@@ -562,10 +558,9 @@ async def main() -> int:
             )
             s.add(extra_customer)
             await s.flush()
-            from app.modules.customer.model import CustomerFollower
+            from app.modules.customer.followers import add_followers
 
-            s.add(CustomerFollower(customer_id=extra_customer.id, user_id=ids["handover"], source="fixture"))
-            await s.flush()
+            await add_followers(s, extra_customer.id, [ids["handover"]], source="fixture")
             extra_sample = SampleRequest(
                 customer_id=extra_customer.id, owner_id=ids["handover"], status="approved",
                 requested_at=datetime.now(UTC),

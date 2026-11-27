@@ -85,10 +85,16 @@ async def normalize_task_refs(
         if obj is None or getattr(obj, "deleted_at", None) is not None:
             return False, "已不存在或已被删除", None
         try:
-            # `getattr` 而不是直接取属性：不是每个模型都有 `owner_id`
-            # （打样单就没有），取不到时按"无主"处理，由 `allow_unowned` 决定放不放。
-            await ensure_in_scope(session, user, owner_id=getattr(obj, "owner_id", None),
-                                  label=label, allow_unowned=allow_unowned)
+            if model is Customer:
+                # 客户改用统一的跟进人可见性；`customers.owner_id` 已不是负责人，
+                # 再拿它做范围判断会把「别人的私海客户」误当成无主公海放行。
+                from app.modules.customer.visibility import assert_customer_in_scope
+                await assert_customer_in_scope(session, user, obj)
+            else:
+                # `getattr` 而不是直接取属性：不是每个模型都有 `owner_id`
+                # （打样单就没有），取不到时按"无主"处理，由 `allow_unowned` 决定放不放。
+                await ensure_in_scope(session, user, owner_id=getattr(obj, "owner_id", None),
+                                      label=label, allow_unowned=allow_unowned)
         except AppError:
             # 严格模式把这个 403 原样抛出去（它的文案本来就只说类别、不点名字）
             if strict:

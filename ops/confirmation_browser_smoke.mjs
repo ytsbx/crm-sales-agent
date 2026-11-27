@@ -789,11 +789,11 @@ try {
   await waitFor(reassignRestore)
   const beforeReassign=recycleRequests.length
   await evaluate(`${reassignRestore}.click()`)
-  await waitFor(`document.body.innerText.includes('指定新负责人')`)
+  await waitFor(`document.body.innerText.includes('指定接手人')`)
   const ownerModal=`document.querySelector('.semi-modal-content')`
   const ownerSubmit=`Array.from(${ownerModal}.querySelectorAll('button')).find(b=>b.innerText.trim()==='恢复并交给这位')`
   await evaluate(`${ownerSubmit}.click()`)
-  await waitFor(`document.body.innerText.includes('请选择一位在职的新负责人')`)
+  await waitFor(`document.body.innerText.includes('请选择一位在职的接手人')`)
   assert.equal(recycleRequests.length,beforeReassign,'missing replacement owner must not submit')
   const ownerSelect=`${ownerModal}.querySelector('.semi-select')`
   await evaluate(`${ownerSelect}.click()`)
@@ -805,7 +805,7 @@ try {
   await sleep(250)
   assert.equal(recycleRequests.length,beforeReassign,'cancel after selecting replacement owner must not submit')
   await evaluate(`${reassignRestore}.click()`)
-  await waitFor(`document.body.innerText.includes('指定新负责人')`)
+  await waitFor(`document.body.innerText.includes('指定接手人')`)
   assert.equal(await evaluate(`${ownerModal}.innerText.includes('在职员工乙')`),false,'reopening must clear the cancelled selection')
   await evaluate(`${ownerSelect}.click()`)
   await waitFor(newOwner)
@@ -905,18 +905,35 @@ try {
     console.log(`BROWSER_SETTINGS_${path.split('/').at(-1)}_CANCEL_NO_WRITE_CONFIRM_ONCE=true`)
   }
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/customers`})
-  for (const mode of ['create','batch']) {
-    const buttonLabel=mode==='create'?'新建客户':'批量转移负责人'
-    if (mode==='batch') {
-      const checkbox=`document.querySelector('.semi-table-tbody input[type=checkbox]')`
-      await waitFor(checkbox)
-      await evaluate(`${checkbox}.click()`)
-    }
-    const button=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()===${JSON.stringify(buttonLabel)})`
-    await waitFor(button)
-    await evaluate(`${button}.click()`)
+  // 客户已取消「默认负责人」：新建时不再选人，创建人自动成为跟进人；
+  // 只有批量转交仍然需要选接手人。两条路径分开验，避免测试停留在旧口径。
+  {
+    const createButton=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()==='新建客户')`
+    await waitFor(createButton)
+    await evaluate(`${createButton}.click()`)
     const modal=`document.querySelector('.semi-modal-content')`
-    const picker=mode==='create'?`${modal}.querySelector('.owner-picker')`:`${modal}.querySelector('.semi-select')`
+    await waitFor(modal)
+    assert.equal(await evaluate(`Boolean(${modal}.querySelector('.owner-picker'))`),false,'新建客户不应再出现负责人选择器')
+    await evaluate(`(()=>{const el=${modal}.querySelector('input[placeholder^="公司全称"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,'隔离按需选人客户');el.dispatchEvent(new Event('input',{bubbles:true}))})()`)
+    await waitFor(`${modal}.querySelector('input[placeholder^="公司全称"]').value==='隔离按需选人客户'`)
+    const before=customerOwnerWrites.length
+    await evaluate(`Array.from(${modal}.querySelectorAll('button')).find(b=>b.innerText.trim()==='创建').click()`)
+    for(let i=0;customerOwnerWrites.length===before&&i<40;i++)await sleep(100)
+    assert.equal(customerOwnerWrites.length,before+1)
+    assert.equal(customerOwnerWrites.at(-1).body.owner_id,undefined,'新建客户不再提交负责人')
+    assert.ok(customerOwnerWrites.at(-1).body.request_key,'create keeps idempotency key')
+    await waitFor(`!${modal}`)
+    console.log('BROWSER_CUSTOMER_CREATE_DEFAULTS_TO_CREATOR_FOLLOWER_NO_OWNER_FIELD=true')
+  }
+  {
+    const checkbox=`document.querySelector('.semi-table-tbody input[type=checkbox]')`
+    await waitFor(checkbox)
+    await evaluate(`${checkbox}.click()`)
+    const batchButton=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()==='批量转交')`
+    await waitFor(batchButton)
+    await evaluate(`${batchButton}.click()`)
+    const modal=`document.querySelector('.semi-modal-content')`
+    const picker=`${modal}.querySelector('.semi-select')`
     await waitFor(picker)
     await evaluate(`${picker}.click()`)
     const input=`${picker}.querySelector('input')`
@@ -944,19 +961,14 @@ try {
     await waitFor(lastOption)
     await evaluate(`${lastOption}.click()`)
     await waitFor(`${picker}.innerText.includes('末页在职员工')`)
-    if(mode==='create') {
-      await evaluate(`(()=>{const el=${modal}.querySelector('input[placeholder^="公司全称"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,'隔离按需选人客户');el.dispatchEvent(new Event('input',{bubbles:true}))})()`)
-      await waitFor(`${modal}.querySelector('input[placeholder^="公司全称"]').value==='隔离按需选人客户'`)
-    }
     const before=customerOwnerWrites.length
-    await evaluate(`Array.from(${modal}.querySelectorAll('button')).find(b=>b.innerText.trim()===${JSON.stringify(mode==='create'?'创建':'确认转移')}).click()`)
+    await evaluate(`Array.from(${modal}.querySelectorAll('button')).find(b=>b.innerText.trim()==='确认转交').click()`)
     for(let i=0;customerOwnerWrites.length===before&&i<40;i++)await sleep(100)
     assert.equal(customerOwnerWrites.length,before+1)
     assert.equal(customerOwnerWrites.at(-1).body.owner_id,311)
-    if(mode==='batch')assert.deepEqual(customerOwnerWrites.at(-1).body.customer_ids,[9])
-    else assert.ok(customerOwnerWrites.at(-1).body.request_key,'create keeps idempotency key')
+    assert.deepEqual(customerOwnerWrites.at(-1).body.customer_ids,[9])
     await waitFor(`!${modal}`)
-    console.log(`BROWSER_CUSTOMER_${mode}_OWNER_REMOTE_NAME_ACCOUNT_PAGING_PRESERVE_SUBMIT_ID=true`)
+    console.log('BROWSER_CUSTOMER_BATCH_OWNER_REMOTE_NAME_ACCOUNT_PAGING_PRESERVE_SUBMIT_ID=true')
   }
   costDraft=true
   quoteCostProblems=[{item_id:401,sku_id:1,label:'COST-SKU',reason:'成本未维护'}]

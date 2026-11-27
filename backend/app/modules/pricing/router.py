@@ -1169,8 +1169,6 @@ async def _ensure_customer_visible(
     """核价/查价带客户时，客户必须在该用户数据范围内（与客户列表同口径）。"""
     if customer_id is None:
         return
-    from app.core.data_scope import ensure_in_scope
-
     customer = await session.get(Customer, customer_id)
     if customer is None or customer.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
@@ -1292,8 +1290,6 @@ async def lookup_price(
     - 成本/最低保护价只对有 `price:manage` 的角色返回（方案 §7 字段脱敏）；
     - 缺价返回 `status=pending`（待定价），不做成本推算兜底（D4/D5 已确认）。
     """
-    from app.core.data_scope import ensure_in_scope
-
     sku = await session.get(Sku, sku_id)
     if sku is None:
         raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)

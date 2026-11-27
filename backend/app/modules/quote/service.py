@@ -3305,7 +3305,7 @@ async def notify_expired_quotes(session: AsyncSession) -> int:
         )
         created += 1
     await session.flush()
-    for customer_id in sorted({quote.customer_id for quote, _ in rows}):
+    for customer_id in sorted({quote.customer_id for (quote,) in rows}):
         await refresh_next_followup_at(session, customer_id)
     return created
 

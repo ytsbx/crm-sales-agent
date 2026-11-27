@@ -46,10 +46,9 @@ def _add_customer(session, name: str, owner_id: int | None) -> int:
         pool_status="public" if owner_id is None else "private",
     )
     session.add(row)
+    # `Customer.after_insert` 兼容桥会自动把 owner_id 落成一条跟进人；
+    # 这里再补一条会撞 customer_followers 的活跃唯一约束。
     asyncio.run(session.flush())
-    if owner_id is not None:
-        session.add(CustomerFollower(customer_id=row.id, user_id=owner_id, source="manual"))
-        asyncio.run(session.flush())
     return row.id
 
 

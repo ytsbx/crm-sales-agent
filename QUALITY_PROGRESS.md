@@ -1,3 +1,10 @@
+## 2026-11-27 CI 红修复：客户跟进人模型切换后的回归（本轮）
+
+- 现象：GitHub run `45951907356`（head `dd47ddf8`）双 job 红。后端 pyflakes 16 条里 `pricing/io_router.py:461` 缺 `AppError` 导入是真实 `NameError`；确认冒烟仍在点已移除的「同步部门」、旧客户负责人选择器和旧转交文案。
+- 真实缺陷修复：`AppError` 导入；`Customer(owner_id=...)` 旧写法落库自动补同人跟进人（公海跳过）；客户关联待办改用客户专用范围校验；报价到期扫描单列解包；撞单 `assign_existing` 要求接手人在职；专属价公海判据改 `pool_status`；恢复「久未联系」扫描的时间 cutoff；候选恢复权限按快照 `owner_id` 判范围；公海联系人强制脱敏；月结提醒优先发给客户跟进人；放公海历史记最后一位跟进人；领取客户时接回上一任未完成待办与单据。
+- 测试/夹具按新规则更新：大批 `check_*` 与 pytest 夹具从单人 `owner_id` 改为跟进人集合；`customers.transfer_customer` 显式传 `from_user_id`/`only_from_owner_id` 才表示“替换某位跟进人”；确认冒烟客户新建不再期待负责人选择器，批量入口改「批量转交/确认转交」。
+- 验证：隔离库 `crm_iso_test_ci_final` 重建（`alembic upgrade head` + `scripts.seed`，后端 8033、OA 全置空）后，`ops/run_checks.sh` **全部通过**；`pytest -q` 通过；前端 `npm run build` 与 `node ops/confirmation_browser_smoke.mjs frontend/dist` 通过。未删关键断言、未放宽边界。
+
 ## 2026-11-27 企微首页「跟进关系」卡改为「可导入联系人」（已部署 b73b4afc）
 
 - 主人反馈「跟进关系 5,621」作为首页统计不指导操作：数据本身必须同步（跟进人/交接的依据），但不适合占一张卡。

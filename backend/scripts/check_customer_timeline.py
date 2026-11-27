@@ -58,10 +58,9 @@ async def main():
                          last_followup_at=contact_at, next_followup_at=next_at)
             s.add(c)
             await s.flush()
-            from app.modules.customer.model import CustomerFollower
+            from app.modules.customer.followers import add_followers
 
-            s.add(CustomerFollower(customer_id=c.id, user_id=sales.id, source="fixture"))
-            await s.flush()
+            await add_followers(s, c.id, [sales.id], source="fixture")
             customer_id = c.id
             o = SalesOrder(order_no=marker, customer_id=c.id, owner_id=sales.id,
                            delivery_date=date(2026, 12, 1), total_amount=1000)

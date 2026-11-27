@@ -560,15 +560,15 @@ async def main() -> int:
 
     # 反过来必须成立：**公海客户**（无负责人）对所有可见者一律脱敏 ——
     # 这正是"完整信息需另授权"要挡的那条路。把夹具客户临时改成公海再搜一次。
-    async def _set_owner(owner_id: int | None) -> None:
+    async def _set_public(is_public: bool) -> None:
         async with SessionLocal() as s:
             await s.execute(
-                text("update customers set owner_id = :o where id = :c"),
-                {"o": owner_id, "c": IDS["customer"]},
+                text("update customers set pool_status = :p where id = :c"),
+                {"p": "public" if is_public else "private", "c": IDS["customer"]},
             )
             await s.commit()
 
-    await _set_owner(None)
+    await _set_public(True)
     try:
         public_blob = json.dumps(
             group_of(search(staff_token, PREFIX), "contact")["items"], ensure_ascii=False
@@ -580,7 +580,7 @@ async def main() -> int:
         )
         check_true("脱敏后仍保留可辨识片段", "1111" in public_blob, public_blob[:200])
     finally:
-        await _set_owner(IDS["staff"])
+        await _set_public(False)
 
     # 空白关键词：不能变成全库通配
     blank = search(staff_token, "%20%20%20")

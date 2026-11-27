@@ -213,6 +213,7 @@ async def cleanup() -> None:
 async def read_state(ids: dict) -> dict:
     """把要断言的行重新读一遍（避免拿着会话里的旧对象）。"""
     from app.modules.customer.model import Customer, CustomerOwnerHistory
+    from app.modules.customer.followers import active_follower_ids
     from app.modules.bizdoc.model import BizDoc
     from app.modules.opportunity.model import Opportunity
     from app.modules.order.model import SalesOrder
@@ -226,7 +227,8 @@ async def read_state(ids: dict) -> dict:
         sample = await s.get(SampleRequest, ids["sample"])
         open_task = await s.get(Task, ids["open_task"])
         return {
-            "customer_owner": (await s.get(Customer, ids["customer"])).owner_id,
+            "customer_owner": next(iter(await active_follower_ids(s, ids["customer"])), None),
+            "customer_followers": set(await active_follower_ids(s, ids["customer"])),
             "opportunity_owner": (await s.get(Opportunity, ids["opportunity"])).owner_id,
             "quote_owner": (await s.get(Quote, ids["quote"])).owner_id,
             "order_mine_owner": order_mine.owner_id,
@@ -511,7 +513,8 @@ async def assert_concurrent_takeover(ids: dict, admin_token: str) -> None:
     def worker() -> None:
         answer["res"] = call(
             "POST", f"/customers/{cid}/transfer", admin_token,
-            {"owner_id": ids["to"], "reason": "CHK 并发：改派与同事接手同时发生"},
+            {"owner_id": ids["to"], "from_user_id": ids["from"],
+             "reason": "CHK 并发：改派与同事接手同时发生"},
         )
 
     async with SessionLocal() as holder:
@@ -685,6 +688,7 @@ async def assert_handover_first_run_skips_taken_customer() -> None:
     """
     from app.core.deps import CurrentUser
     from app.modules.customer.model import Customer, CustomerOwnerHistory
+    from app.modules.customer.followers import active_follower_ids
     from app.modules.task.model import Task
     from app.modules.user.model import User, user_roles
     from app.modules.wecom.model import WeComSyncJob, WeComTransferItem
@@ -770,6 +774,13 @@ async def assert_handover_first_run_skips_taken_customer() -> None:
             text("update customers set owner_id = :c where id = :i"),
             {"c": ids["colleague"], "i": ids["customer"]},
         )
+        # 新模型归属看跟进人：同事接手必须真的替换跟进人，不能只改遗留 owner_id。
+        from app.modules.customer.followers import replace_follower
+        holder_customer = await holder.get(Customer, ids["customer"])
+        await replace_follower(
+            holder, holder_customer, ids["leaver"], ids["colleague"],
+            source="fixture_takeover", created_by=ids["colleague"],
+        )
         # ② 启动完整交接；它会卡在客户行锁上
         running = asyncio.create_task(run_full_transfer())
         blocked = await _wait_until_locked("customers")
@@ -781,7 +792,9 @@ async def assert_handover_first_run_skips_taken_customer() -> None:
                f"观测到「等行锁的后端」={blocked}")
 
     async with SessionLocal() as s:
-        owner = (await s.get(Customer, ids["customer"])).owner_id
+        from app.modules.customer.followers import active_follower_ids
+        owners = await active_follower_ids(s, ids["customer"])
+        owner = owners[0] if owners else None
         history = (
             await s.execute(
                 select(func.count()).select_from(CustomerOwnerHistory).where(
@@ -818,7 +831,8 @@ async def assert_handover_first_run_skips_taken_customer() -> None:
 
         customer_payload = serialize_transfer_item(customer_item)
 
-    check("并发下：客户仍在同事手里（没有被交接抢走）", owner, ids["colleague"])
+    check_true("并发下：客户仍在同事手里（没有被交接抢走）",
+               ids["colleague"] in owners and ids["leaver"] not in owners, str(owners))
     check("交接项记成「跳过」而不是「已交接」", customer_status, "skipped")
     check_true("跳过原因说清了是「已由其他同事接手」",
                "其他同事接手" in (customer_error or ""), customer_error or "")
@@ -877,6 +891,7 @@ async def assert_handover_first_run_skips_pooled_customer() -> None:
     """
     from app.core.deps import CurrentUser
     from app.modules.customer.model import Customer, CustomerOwnerHistory
+    from app.modules.customer.followers import active_follower_ids
     from app.modules.user.model import User, user_roles
     from app.modules.wecom.model import WeComSyncJob, WeComTransferItem
 
@@ -952,6 +967,12 @@ async def assert_handover_first_run_skips_pooled_customer() -> None:
             text("update customers set owner_id = null, pool_status = 'public' where id = :i"),
             {"i": ids["customer"]},
         )
+        # 公海 = 没有跟进人：只改 pool_status 而留下跟进人，交接自然会把它接走。
+        await holder.execute(
+            text("update customer_followers set deleted_at = now() "
+                 "where customer_id = :i and deleted_at is null"),
+            {"i": ids["customer"]},
+        )
         # ② 启动完整交接；它会卡在客户行锁上
         running = asyncio.create_task(run_full_transfer())
         blocked = await _wait_until_locked("customers")
@@ -963,7 +984,9 @@ async def assert_handover_first_run_skips_pooled_customer() -> None:
                f"观测到「等行锁的后端」={blocked}")
 
     async with SessionLocal() as s:
-        owner = (await s.get(Customer, ids["customer"])).owner_id
+        from app.modules.customer.followers import active_follower_ids
+        owners = await active_follower_ids(s, ids["customer"])
+        owner = owners[0] if owners else None
         history = (
             await s.execute(
                 select(func.count()).select_from(CustomerOwnerHistory).where(
@@ -1137,16 +1160,19 @@ async def assert_restore_with_new_owner(ids: dict, admin_token: str) -> None:
                        {"owner_id": ids["to"]})
     check_true("恢复时指定新负责人成功", status == 200 and res.get("code") == 0,
                f"HTTP {status} {res.get('message')}")
-    check_true("接口话术说明了负责人已一并换过来",
-               "负责人" in (res.get("message") or ""), res.get("message"))
+    check_true("接口话术说明了接手人已进入跟进人",
+               "加入跟进人" in (res.get("message") or ""), res.get("message"))
     st = await read_state(ids)
 
-    check("客户负责人换成了指定那位", st["customer_owner"], ids["to"])
-    check("原负责人名下的订单也接过去", st["order_mine_owner"], ids["to"])
-    check("商机也接过去", st["opportunity_owner"], ids["to"])
-    check("报价也接过去", st["quote_owner"], ids["to"])
-    check("打样（跟单责任）也接过去", st["sample_owner"], ids["to"])
-    check("打样（生产责任）也接过去", st["sample_production_owner"], ids["to"])
+    check_true("指定接手人已在客户跟进人里", ids["to"] in st["customer_followers"],
+               str(st["customer_followers"]))
+    # 2026-11-27 规则变更：恢复只把指定接手人加入跟进人，不再换人改派，
+    # 因此名下单据/待办都不搬，仍留在恢复前的最后经手人名下。
+    check("恢复不搬单据：订单仍在原跟进人名下", st["order_mine_owner"], ids["from"])
+    check("恢复不搬单据：商机仍归原跟进人", st["opportunity_owner"], ids["from"])
+    check("恢复不搬单据：报价仍归原跟进人", st["quote_owner"], ids["from"])
+    check("恢复不搬单据：打样跟单责任不动", st["sample_owner"], ids["from"])
+    check("恢复不搬单据：打样生产责任不动", st["sample_production_owner"], ids["from"])
     # 2026-11-27 起删客户会取消未完成待办（避免任务中心留下点不开的孤儿），
     # 恢复客户不会复活任务；所以这里断言的是"取消且不跟人走"，而不是旧口径的改派。
     check("未完成待办被自动取消，不再跟人走", st["open_task_status"], "cancelled")
@@ -1156,7 +1182,7 @@ async def assert_restore_with_new_owner(ids: dict, admin_token: str) -> None:
     check("在职同事负责的订单不动", st["order_colleague_owner"], ids["colleague"])
     check("业绩归属一个字没动", st["order_mine_sales_owner"], ids["colleague"])
     check("历史创建人一个字没动", st["order_mine_created_by"], ids["colleague"])
-    check("打样历史文件跟着跟单责任走", st["doc_mine_owner"], ids["to"])
+    check("恢复不搬单据：打样历史文件仍在原跟进人名下", st["doc_mine_owner"], ids["from"])
     check("在职同事名下的文件不动", st["doc_colleague_owner"], ids["colleague"])
     check("客户归属历史新增了一条（恢复也必须写）",
           st["history_count"], history_before + 1)
@@ -1183,27 +1209,29 @@ async def assert_restore_with_new_owner(ids: dict, admin_token: str) -> None:
 
     # ---- 11.3 接手人真的能用接口打开这些单据（复审那张表的正面）----
     to_token = login(ids["to_username"], PASSWORD)
-    check("接手人能打开客户", call("GET", f"/customers/{cid}", to_token)[0], 200)
-    check("接手人能打开原订单", call("GET", f"/orders/{ids['order_mine']}", to_token)[0], 200)
-    check("接手人能打开原商机",
-          call("GET", f"/opportunities/{ids['opportunity']}", to_token)[0], 200)
-    check("接手人能打开原报价",
-          call("GET", f"/quotes/{ids['quote']}", to_token)[0], 200)
+    check("接手人能打开客户（已加入跟进人）", call("GET", f"/customers/{cid}", to_token)[0], 200)
+    check("接手人不是单据负责人 → 打不开原订单",
+          call("GET", f"/orders/{ids['order_mine']}", to_token)[0], 403)
+    check("接手人不是单据负责人 → 打不开原商机",
+          call("GET", f"/opportunities/{ids['opportunity']}", to_token)[0], 403)
+    check("接手人不是单据负责人 → 打不开原报价",
+          call("GET", f"/quotes/{ids['quote']}", to_token)[0], 403)
     status, res = call("GET", f"/customers/{cid}/orders", to_token)
     check("接手人能看到客户下的全部订单（客户详情页全貌）",
           sorted(row["id"] for row in items_of(res)),
           sorted([ids["order_mine"], ids["order_colleague"]]))
-    status, res = call("GET", f"/customers/{cid}/tasks", to_token)
-    check_true("接手人看不到已取消的孤儿待办",
+    status, res = call("GET", f"/customers/{cid}/tasks?status=active", to_token)
+    check_true("接手人的客户待办里没有已取消的孤儿",
                ids["open_task"] not in {row["id"] for row in items_of(res)},
                str(items_of(res)))
 
     # ---- 11.4 旧负责人已经看不到它了 ----
     from_token = login(ids["from_username"], PASSWORD)
-    check("旧负责人打开原订单 → 403",
-          call("GET", f"/orders/{ids['order_mine']}", from_token)[0], 403)
+    check("原跟进人仍能打开自己的订单",
+          call("GET", f"/orders/{ids['order_mine']}", from_token)[0], 200)
 
     # ---- 11.5 不换人的恢复：一个字段都不动，也不写归属历史 ----
+    before_plain_state = await read_state(ids)
     async with SessionLocal() as s:
         before_plain = int(
             (
@@ -1219,8 +1247,8 @@ async def assert_restore_with_new_owner(ids: dict, admin_token: str) -> None:
     check_true("不指定负责人恢复 → 成功",
                call("POST", f"/customers/{cid}/restore", admin_token, {})[0] == 200)
     st = await read_state(ids)
-    check("不换人：负责人不变", st["customer_owner"], ids["to"])
-    check("不换人：单据不动", st["order_mine_owner"], ids["to"])
+    check("不换人：跟进人不变", st["customer_followers"], before_plain_state["customer_followers"])
+    check("不换人：单据不动", st["order_mine_owner"], before_plain_state["order_mine_owner"])
     check("不换人：不新增归属历史", st["history_count"], before_plain)
 
 
@@ -1239,7 +1267,8 @@ async def main() -> None:
     # ── 1) 转移：原负责人 → 新负责人（两个都是"只管自己"的业务员）────────
     status, res = call(
         "POST", f"/customers/{cid}/transfer", admin_token,
-        {"owner_id": ids["to"], "reason": "CHK 交接搬单据断言"},
+        {"owner_id": ids["to"], "from_user_id": ids["from"],
+         "reason": "CHK 交接搬单据断言"},
     )
     check_true("转移接口成功", status == 200 and res.get("code") == 0,
                f"HTTP {status} {res.get('message')}")

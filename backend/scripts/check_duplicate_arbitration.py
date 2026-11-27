@@ -83,6 +83,10 @@ async def main():
         admin = (await s.execute(select(User).where(User.username == 'admin'))).scalars().one()
         admin_id = admin.id
         actor = CurrentUser(admin, permissions=set(), roles=[], data_scope='all')
+        from app.modules.customer.followers import active_follower_ids
+
+        async def followers(cid):
+            return set(await active_follower_ids(s, cid))
 
         # 同名同域名的两家「公司」：疑似撞单，但归属分别是甲、乙
         existing = Customer(name=f'{PREFIX}宏远贸易', domain='chkda.example.com',
@@ -125,9 +129,9 @@ async def main():
         check_true('新客户也在争议里', await dup.is_disputed(s, incoming_id))
 
         print('=== 2. 争议冻结自动改派 ===')
-        check('裁定前：已有客户归属没变', (await s.get(Customer, existing_id)).owner_id, a_id)
-        check('裁定前：新客户归属没变（不依建档先后）',
-              (await s.get(Customer, incoming_id)).owner_id, b_id)
+        check('裁定前：已有客户跟进人没变', await followers(existing_id), {a_id})
+        check('裁定前：新客户跟进人没变（不依建档先后）',
+              await followers(incoming_id), {b_id})
 
         try:
             await transfer_customer(s, actor, await s.get(Customer, existing_id), b_id,
@@ -136,13 +140,14 @@ async def main():
         except AppError as exc:
             check('离职交接被冻结拦下（422）', exc.http_status, 422)
         await s.rollback()
-        check('被拦下后归属仍是原样', (await s.get(Customer, existing_id)).owner_id, a_id)
+        check('被拦下后跟进人仍是原样', await followers(existing_id), {a_id})
 
         # 人工转移不受冻结影响
         await transfer_customer(s, actor, await s.get(Customer, incoming_id), a_id,
-                                '人工调整', automatic=False)
+                                '人工调整', automatic=False, only_from_owner_id=b_id)
         await s.commit()
-        check('人工转移不被冻结拦住', (await s.get(Customer, incoming_id)).owner_id, a_id)
+        got = await followers(incoming_id)
+        check_true('人工转移不被冻结拦住（接手人已加入跟进人）', a_id in got, str(got))
 
         print('=== 3. 主管裁定并留痕 ===')
         # 上面每次 commit/rollback 都会把 case 标记过期，进 resolve_case 前
@@ -154,11 +159,12 @@ async def main():
         case = await s.get(CustomerDuplicateCase, case_id)
         check('裁定已结案', case.status, 'resolved')
         check('裁定结论', case.decision, 'assign_new')
-        check('归属按人写的结论改', (await s.get(Customer, existing_id)).owner_id, b_id)
-        history = (await s.execute(text(
-            "select count(*) from customer_owner_history where customer_id = :c "
-            "and reason like '%撞单裁定%'"), {'c': existing_id})).scalar_one()
-        check_true('归属变更留了痕', history > 0, f'匹配 {history} 条')
+        both_existing = await followers(existing_id)
+        both_incoming = await followers(incoming_id)
+        check_true('裁定把胜出同事并入双方跟进人',
+                   b_id in both_existing and b_id in both_incoming,
+                   f'{both_existing}/{both_incoming}')
+        check('裁定记录保存实际负责人', case.resolved_owner_id, b_id)
         check_true('裁定后解冻', not await dup.is_disputed(s, existing_id))
 
         print('=== 4. keep_both：判为两家不同，各自保留、不合并 ===')
@@ -171,18 +177,12 @@ async def main():
         case2_id = cases2[0].id
         await s.commit()
         case2 = await s.get(CustomerDuplicateCase, case2_id)
-        before_pair = (
-            (await s.get(Customer, case2.customer_id)).owner_id,
-            (await s.get(Customer, case2.candidate_id)).owner_id,
-        )
+        before_pair = (await followers(case2.customer_id), await followers(case2.candidate_id))
         case2 = await s.get(CustomerDuplicateCase, case2_id)
         await dup.resolve_case(s, case=case2, decision='keep_both', owner_id=None,
                                remark='不是同一家', actor=actor)
         await s.commit()
-        after_pair = (
-            (await s.get(Customer, case2.customer_id)).owner_id,
-            (await s.get(Customer, case2.candidate_id)).owner_id,
-        )
+        after_pair = (await followers(case2.customer_id), await followers(case2.candidate_id))
         check('keep_both 不动归属', after_pair, before_pair)
         still = (await s.execute(text(
             "select count(*) from customers where id in (:a, :b) and deleted_at is null"),
@@ -218,17 +218,19 @@ async def main():
         await s.rollback()
         check('拒绝后案件仍待裁定',
               (await s.get(CustomerDuplicateCase, existing_case_id)).status, 'pending')
-        check('拒绝后公海客户仍无负责人', (await s.get(Customer, public_id)).owner_id, None)
+        check('拒绝后公海客户仍没有跟进人', await followers(public_id), set())
 
         await dup.resolve_case(s, case=await s.get(CustomerDuplicateCase, existing_case_id),
                                decision='assign_existing', owner_id=None,
                                remark='沿用已有客户负责人', actor=actor)
         await s.commit()
         assigned_public = await s.get(Customer, public_id)
-        check('无需传负责人 ID，也能沿用已有归属', assigned_public.owner_id, b_id)
+        public_followers = await followers(public_id)
+        check_true('无需传负责人 ID，也能沿用已有跟进人', b_id in public_followers, str(public_followers))
         check('分配后的公海客户转为私海', assigned_public.pool_status, 'private')
-        check('裁定记录保存实际负责人',
-              (await s.get(CustomerDuplicateCase, existing_case_id)).resolved_owner_id, b_id)
+        # assign_existing 是合并跟进人，不再指定唯一负责人
+        check('沿用已有归属时不写唯一负责人',
+              (await s.get(CustomerDuplicateCase, existing_case_id)).resolved_owner_id, None)
 
     await cleanup()
     print()

@@ -249,7 +249,7 @@ async def _customer_delete_race_once(actor,restricted,attempt):
      await asyncio.gather(worker,return_exceptions=True)
      print(f'  （第 {attempt} 轮未观察到锁等待，重试）')
      return False
-    result=await customers.transfer_customer(cid,CustomerTransfer(owner_id=3,reason='转交在职同事'),REQ,actor,b);assert result['code']==0
+    result=await customers.transfer_customer(cid,CustomerTransfer(owner_id=3,from_user_id=restricted.id,reason='转交在职同事'),REQ,actor,b);assert result['code']==0
     try:
      await asyncio.wait_for(worker,10);raise AssertionError('旧负责人仍能删除客户')
     except AppError as e:
@@ -260,8 +260,11 @@ async def _customer_delete_race_once(actor,restricted,attempt):
     if not worker.done():worker.cancel()
     await asyncio.gather(worker,return_exceptions=True)
  async with SessionLocal() as s:
-  c=await s.get(Customer,cid);assert c.owner_id==3 and c.deleted_at is None
-  print('OLD OWNER DELETE terminal owner',c.owner_id,'deleted',c.deleted_at is not None,'actor',restricted.id)
+  c=await s.get(Customer,cid)
+  from app.modules.customer.followers import active_follower_ids
+  owners=await active_follower_ids(s,cid)
+  assert 3 in owners and c.deleted_at is None
+  print('OLD OWNER DELETE terminal follower',3 in owners,'deleted',c.deleted_at is not None,'actor',restricted.id)
 
 async def lead_target_deleted_race(actor,restricted):
  cid=await fresh_customer(restricted.id,'LEAD-DELETE')
@@ -307,7 +310,7 @@ async def deadlock(actor,old):
    first=asyncio.create_task(request(a,tasks.complete_task(tid,TaskComplete(),REQ,old,a)));second=None
    try:
     await asyncio.wait_for(reached.wait(),10);pid=await b.scalar(text('select pg_backend_pid()'))
-    second=asyncio.create_task(request(b,customers.transfer_customer(cid,CustomerTransfer(owner_id=3,reason='交接客户'),REQ,actor,b)))
+    second=asyncio.create_task(request(b,customers.transfer_customer(cid,CustomerTransfer(owner_id=3,from_user_id=old.id,reason='交接客户'),REQ,actor,b)))
     await wait_locked(pid,second);release.set()
     results=await asyncio.wait_for(asyncio.gather(first,second),15)
     assert all(x==('OK',0) for x in results),results
@@ -319,7 +322,10 @@ async def deadlock(actor,old):
     await asyncio.gather(*[w for w in (first,second) if w],return_exceptions=True)
  finally:tasks._sync_next_followup=original
  async with SessionLocal() as s:
-  c=await s.get(Customer,cid);t=await s.get(Task,tid);print('DEADLOCK terminal customer owner',c.owner_id,'task',t.status,'owner',t.owner_id)
+  c=await s.get(Customer,cid);t=await s.get(Task,tid)
+  from app.modules.customer.followers import active_follower_ids
+  owners=await active_follower_ids(s,cid)
+  print('DEADLOCK terminal customer follower3',3 in owners,'task',t.status,'owner',t.owner_id)
 
 async def future_contact(actor, restricted):
  cid=await fresh_customer(restricted.id,'CONTACT')

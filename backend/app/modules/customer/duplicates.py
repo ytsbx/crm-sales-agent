@@ -304,6 +304,17 @@ async def resolve_case(
             # 以「已有客户」为基准并入两条客户的跟进人
             base = locked_customers[case.candidate_id]
             target_ids = set(await active_follower_ids(session, base.id))
+            # 沿用已有客户的跟进人时，这些人也必须仍是在职的——停用账号不能
+            # 借撞单裁定把公海客户重新划到自己名下。
+            for uid in sorted(target_ids):
+                target = await session.get(User, uid)
+                if target is None or target.status != "active":
+                    name = target.name if target else f"id={uid}"
+                    raise AppError(
+                        ErrorCode.PARAM_ERROR,
+                        f"「{name}」已停用或不存在，不能接收客户",
+                        422,
+                    )
         else:
             if owner_id is None:
                 raise AppError(

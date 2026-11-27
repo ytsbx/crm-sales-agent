@@ -52,7 +52,6 @@ async def notify_manual_followup(session: AsyncSession, followup: FollowUp, user
          if getattr(followup, f"{kind}_id")), ('customer', None)
     )
     models = {'customer': Customer, 'lead': Lead, 'opportunity': Opportunity, 'quote': Quote, 'order': SalesOrder}
-    customer = await session.get(Customer, followup.customer_id) if followup.customer_id else None
     source = await session.get(models[source_type], source_id) if source_type in models and source_id else None
     owner_id = source.owner_id if source else followup.owner_id
     await queue_manager_notification(

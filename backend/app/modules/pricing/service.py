@@ -447,8 +447,6 @@ async def ensure_customer_in_scope_for_price(
     专属价（删完那个客户后续报价改用通用价，等于悄悄改价），列表还能把全公司的
     专属价连同客户名一起翻出来。**判据散着写就一定会漏，所以四处共用这一份。**
     """
-    from app.core.data_scope import scoped_owner_ids
-
     customer = await session.get(Customer, customer_id)
     if customer is None or customer.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "客户不存在或已删除", 404)
@@ -660,7 +658,8 @@ def customer_specific_allowed(customer) -> bool:
     ## 判据只此一处（2026-10-14 审查修）
 
     专属价是**协议价**："数据范围放行只代表这个客户你能看，不代表他的协议价你能看"。
-    项目已确认的口径是 **公海客户（`owner_id IS NULL`）不参与专属价匹配**。
+    项目已确认的口径是 **公海客户不参与专属价匹配**；2026-11-27 起客户取消默认
+    负责人后，公海判据统一改为 `pool_status='public'`，不能再拿 `owner_id IS NULL`。
 
     这条判据原来在调用方**各写一份**（`pricing/router.py` 的查价接口、
     `quote/service.py` 的机会项带价），而另外两个出口漏了 ——
@@ -673,7 +672,7 @@ def customer_specific_allowed(customer) -> bool:
     现在改成"默认由本函数按客户推导"，调用方不传就自动是对的；
     要覆盖（例如管理员刻意要看协议价）可以显式传 `include_customer_specific=`。
     """
-    return getattr(customer, "owner_id", None) is not None
+    return getattr(customer, "pool_status", "private") != "public"
 
 
 async def lookup_applicable_price(

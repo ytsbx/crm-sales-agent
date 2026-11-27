@@ -633,10 +633,8 @@ async def _record_contract_event(
     注意：**只有真实业务动作才走这里**。生成草稿不记——草稿不代表签约
     （审查原话："草稿生成不能记成已经签约"）。
     """
-    from app.modules.customer.model import Customer
     from app.modules.followup import service as followup_service
 
-    customer = await session.get(Customer, doc.customer_id)
     await followup_service.record_and_notify(
         session,
         customer_id=doc.customer_id,

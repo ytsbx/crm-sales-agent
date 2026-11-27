@@ -53,7 +53,7 @@ from _test_support import require_api_base, require_isolated_db
 require_isolated_db()
 
 import app.main  # noqa: F401  保证所有模型都注册进 metadata
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from app.core.database import SessionLocal
 from app.core.security import hash_password
@@ -330,9 +330,16 @@ async def build_sample_chain() -> None:
 
 
 async def owner_of(customer_id: int) -> int | None:
+    from app.modules.customer.model import CustomerFollower
     async with SessionLocal() as s:
-        row = await s.get(Customer, customer_id)
-        return row.owner_id if row else None
+        return (
+            await s.execute(
+                select(CustomerFollower.user_id).where(
+                    CustomerFollower.customer_id == customer_id,
+                    CustomerFollower.deleted_at.is_(None),
+                ).order_by(CustomerFollower.created_at, CustomerFollower.id).limit(1)
+            )
+        ).scalar_one_or_none()
 
 
 async def candidate_row(candidate_id: int) -> dict:
