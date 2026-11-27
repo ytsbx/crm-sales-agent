@@ -247,8 +247,19 @@ def follow_customer(raw, customer_id: int, user_id: int, *, source: str = "manua
     很多用例用 `Customer(owner_id=X)` 造数；可见性现在只看跟进人，
     所以造完客户要顺手 `follow_customer(raw, id, X)`。
     """
+    from sqlalchemy import select
+
     from app.modules.customer.model import CustomerFollower
 
     CustomerFollower.__table__.create(raw.get_bind(), checkfirst=True)
+    existing = raw.execute(
+        select(CustomerFollower.id).where(
+            CustomerFollower.customer_id == customer_id,
+            CustomerFollower.user_id == user_id,
+            CustomerFollower.deleted_at.is_(None),
+        )
+    ).first()
+    if existing is not None:
+        return
     raw.add(CustomerFollower(customer_id=customer_id, user_id=user_id, source=source))
     raw.flush()

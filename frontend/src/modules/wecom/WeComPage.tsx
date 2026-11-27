@@ -637,7 +637,11 @@ export default function WeComPage() {
             value: readiness?.counts.external_contacts ?? '-',
             hint: '企微侧同步到的总数',
           },
-          { label: '跟进关系', value: readiness?.counts.follow_relations ?? '-', hint: '企微员工与联系人的关系' },
+          {
+            label: '可导入联系人',
+            value: readiness?.counts.importable_contacts ?? '-',
+            hint: '核对后可批量导入',
+          },
           { label: '待确认联系人', value: readiness?.counts.unbound_contacts ?? '-', hint: '建档或关联前待核对' },
           {
             label: '未匹配账号',

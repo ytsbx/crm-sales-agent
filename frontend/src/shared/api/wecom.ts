@@ -18,6 +18,8 @@ export interface WeComReadiness {
     wecom_users: number
     external_contacts: number
     follow_relations: number
+    /** 与预览导入同一口径：当前能自动导入的联系人数 */
+    importable_contacts: number
     unbound_contacts: number
     unmatched_users: number
   }
