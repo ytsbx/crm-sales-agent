@@ -673,8 +673,9 @@ try {
     }
     throw Error('企微同步菜单没有提交：'+label)
   }
+  // 部门已改为以同序 OA 为准，企微页面不再提供「同步部门」入口。
   for(const [label,endpoint] of [
-    ['同步部门','sync-departments'],['同步成员','sync-users'],
+    ['同步成员','sync-users'],
     ['同步外部联系人','sync-external-contacts'],['同步跟进关系','sync-follow-relations'],
   ]) {
     await chooseWecomSync(label)
@@ -682,12 +683,12 @@ try {
     console.log(`BROWSER_WECOM_${endpoint}_MENU_NO_WRITE_SELECT_CORRECT_ENDPOINT=true`)
   }
   rejectWecomSync=true
-  await chooseWecomSync('同步部门')
+  await chooseWecomSync('同步成员')
   await waitFor(`document.body.innerText.includes('隔离失败任务')`)
   assert.equal(failedWecomJobs.length,1)
   rejectWecomSync=false
-  await chooseWecomSync('同步部门')
-  assert.equal(wecomRequests.at(-1),'sync-departments')
+  await chooseWecomSync('同步成员')
+  assert.equal(wecomRequests.at(-1),'sync-users')
   console.log('BROWSER_WECOM_FAILURE_REFRESH_AND_RETRY=true')
   const bindButton=`Array.from(document.querySelectorAll('button')).filter(b=>b.innerText.trim()==='关联已有客户')[1]`
   await waitFor(bindButton)
