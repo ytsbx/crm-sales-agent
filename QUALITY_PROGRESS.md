@@ -1,3 +1,16 @@
+## 2026-11-27 · `alembic check` 清理（模型导入与结构对齐）
+
+- 根因：`alembic/env.py` 漏导入 `cases`、`bizdoc`、`contract`、`dingtalk`、`product_insight` 五个业务模型，以及 `app.core.idempotency.RequestKey`。这些表没进 `Base.metadata`，自动检查把库里真实存在的表当成“应该删掉”，造成大批假红。
+- 修复：补齐上述模型导入；其余差异按“以库为准、非破坏性”处理——唯一索引/约束的声明形式、索引名称、`Integer`/`BigInteger` 类型、`request_keys.result_payload` 的 JSON 类型、重复的自动索引、列注释，全部在 ORM 元数据中对齐，不删表、不删索引、不改生产数据。
+- 新迁移 `c3d5e7f9a1b2`：只处理三处真实结构差异：
+  1. `order_drafts.updated_at` 先回填空值再设 NOT NULL；
+  2. `quote_versions.pricing_basis` 设 NOT NULL（生产该行非空）；
+  3. `order_schedule_changes.order_id` 补外键到 `sales_orders.id`。
+- 验证：隔离库 `alembic check` 两次均返回 `No new upgrade operations detected`；在**全新空库**上从零 `upgrade head` 后再跑也返回同一结果；`downgrade f5c8 → upgrade c3d5` 往返成功。
+- 测试：全量后端 **2348 项通过**。首次全量运行曾出现 1 个偶发失败和 10 个共享测试库错误，单测单跑与重跑全量均通过，判定为并发测试库污染，不是代码回归。
+- 提交：`f0cafef5 fix(alembic): load all ORM models and align metadata with schema`，已推 GitHub。
+- 生产状态：生产仍在 `71eef6e4` / `f5c8a1d3e7b2`，新迁移 `c3d5e7f9a1b2` **尚未部署**；若要生产也变绿，需要再做一次小型 release。
+
 ## 2026-11-27 · 销售售后生产发布（71eef6e4）
 
 - 发布入口：`ops/deploy/release.py` 统一入口，基线为生产已装的 `4dbb06413a7add905ba6795d3bee78eeb8b07b5a`，目标提交 `71eef6e4aff0d90741198f603e7c38a519f06444`；包 SHA256 `696f35c43ce692b0fc7e63fb82c74adce854b65594a727962517540bac1f38f6`，schema 2（显式放行两条售后迁移，requirements 未变）。
