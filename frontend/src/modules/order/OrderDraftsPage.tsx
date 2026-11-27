@@ -214,7 +214,7 @@ export default function OrderDraftsPage() {
         : quotes.isPending
           ? '正在读取报价。'
           : quoteOptions.length === 0
-            ? '还没有可用的已接受报价。请先在报价中心登记客户接受，再回来下单。'
+            ? '还没有可用的已接受报价。'
             : dirty
               ? '请先在上方保存草稿。'
               : !selectedQuote
@@ -358,9 +358,16 @@ export default function OrderDraftsPage() {
             下单后会打开正式订单。系统先生成一条全款应收，可到订单的「应收计划」核对或拆分。
           </p>
           {confirmBlocked ? (
-            <GuardedButton theme="outline" disabled action="正式下单" blockedReasons={[confirmBlocked]}>
-              确认正式下单
-            </GuardedButton>
+            <>
+              <GuardedButton theme="outline" disabled action="正式下单" blockedReasons={[confirmBlocked]}>
+                确认正式下单
+              </GuardedButton>
+              {can('quote:view') && !quotes.isPending && !quotes.isError && quoteOptions.length === 0 && (
+                <p className="workflow-guide">
+                  还没有可用的已接受报价，<Link className="crm-text-action" to="/quotes">去报价中心登记客户接受</Link>后回来下单。
+                </p>
+              )}
+            </>
           ) : (
             <Popconfirm
               title="确认正式下单？"
