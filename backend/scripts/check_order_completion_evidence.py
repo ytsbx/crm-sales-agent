@@ -148,7 +148,7 @@ def main() -> int:
           (summary.get("shipped"), summary.get("all_shipped")), (1.0, True))
     _, res = call("POST", f"/orders/{oid}/status", admin,
                   {"status": "completed", "remark": "套件：月结客户，按合同账期收款"})
-    check("未回款仍不能完成", db(f"select status from sales_orders where id={oid}"), "pending")
+    check("未回款仍不能完成", db(f"select status from sales_orders where id={oid}"), "shipped")
     check_true("  文案说清未收款", "未收款" in str(res.get("message")), str(res.get("message"))[:60])
 
     print("\n=== ④ 财务确认全部回款 → 可以完成 ===")
