@@ -12,7 +12,7 @@ from conftest import SyncSessionAsAsync, make_user
 @pytest.mark.anyio
 async def test_private_revision_does_not_expose_link_on_parent_read_or_write(db_session):
     for model in (SampleRequest, SampleItem, SampleShipment, ApprovalInstance):
-        model.__table__.create(db_session.get_bind())
+        model.__table__.create(db_session.get_bind(), checkfirst=True)
     author = make_user(101, permissions=("sample:view", "sample:manage"), data_scope="all")
     coworker = make_user(102, permissions=("sample:view", "sample:manage"))
     parent = SampleRequest(id=10, owner_id=102, created_by=102, status="shipped", version=1)

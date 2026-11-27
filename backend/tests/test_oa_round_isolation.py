@@ -19,7 +19,7 @@ def round_db(monkeypatch):
     engine = make_engine()
     for table in (SampleRequest.__table__, ContractTemplate.__table__,
                   ContractDocument.__table__, OaInstance.__table__):
-        table.create(engine)
+        table.create(engine, checkfirst=True)
     monkeypatch.setattr(settings, 'dingtalk_push_off', False)
     with Session(engine, expire_on_commit=False) as db:
         yield db

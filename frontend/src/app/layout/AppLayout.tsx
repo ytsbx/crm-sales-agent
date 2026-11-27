@@ -40,7 +40,9 @@ export default function AppLayout() {
   const clear = useAuthStore((state) => state.clear)
   // 弹窗在改成密码之前一直有效；「我知道了」按用户记住，刷新后不再重复弹。
   const [credentialsDismissed, setCredentialsDismissed] = useState(false)
-  const credentialsStorageKey = user ? `initial-password-dismissed:${user.id}` : null
+  const credentialsStorageKey = user?.id
+    ? `initial-password-dismissed:${user?.id}`
+    : null
   useEffect(() => {
     setCredentialsDismissed(
       Boolean(credentialsStorageKey && readLocalStorage(credentialsStorageKey) === '1'),
