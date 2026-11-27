@@ -194,5 +194,6 @@
   "withdraw_contract_oa": "撤回合同审批",
   "withdraw_oa_instance": "撤回钉钉审批",
   "attach_refund_attachment": "上传退款附件",
-  "remove_refund_attachment": "删除退款附件"
+  "remove_refund_attachment": "删除退款附件",
+  "confirm_return_received": "确认收到退货"
 }

@@ -224,6 +224,7 @@ async def read_state(ids: dict) -> dict:
         order_mine = await s.get(SalesOrder, ids["order_mine"])
         order_colleague = await s.get(SalesOrder, ids["order_colleague"])
         sample = await s.get(SampleRequest, ids["sample"])
+        open_task = await s.get(Task, ids["open_task"])
         return {
             "customer_owner": (await s.get(Customer, ids["customer"])).owner_id,
             "opportunity_owner": (await s.get(Opportunity, ids["opportunity"])).owner_id,
@@ -234,7 +235,9 @@ async def read_state(ids: dict) -> dict:
             "order_colleague_owner": order_colleague.owner_id,
             "sample_owner": sample.owner_id,
             "sample_production_owner": sample.production_owner_id,
-            "open_task_owner": (await s.get(Task, ids["open_task"])).owner_id,
+            "open_task_owner": open_task.owner_id,
+            "open_task_status": open_task.status,
+            "open_task_note": open_task.completion_note,
             "done_task_owner": (await s.get(Task, ids["done_task"])).owner_id,
             # 历史生成文件（customer_id 为空的那三张）
             "doc_mine_owner": (await s.get(BizDoc, ids["doc_mine"])).owner_id,
@@ -1144,7 +1147,11 @@ async def assert_restore_with_new_owner(ids: dict, admin_token: str) -> None:
     check("报价也接过去", st["quote_owner"], ids["to"])
     check("打样（跟单责任）也接过去", st["sample_owner"], ids["to"])
     check("打样（生产责任）也接过去", st["sample_production_owner"], ids["to"])
-    check("没办完的待办也接过去", st["open_task_owner"], ids["to"])
+    # 2026-11-27 起删客户会取消未完成待办（避免任务中心留下点不开的孤儿），
+    # 恢复客户不会复活任务；所以这里断言的是"取消且不跟人走"，而不是旧口径的改派。
+    check("未完成待办被自动取消，不再跟人走", st["open_task_status"], "cancelled")
+    check_true("取消原因标明客户已删除",
+               "客户已删除" in (st["open_task_note"] or ""), str(st["open_task_note"]))
     check("已完成的待办不动（历史记录要留档）", st["done_task_owner"], ids["from"])
     check("在职同事负责的订单不动", st["order_colleague_owner"], ids["colleague"])
     check("业绩归属一个字没动", st["order_mine_sales_owner"], ids["colleague"])
@@ -1186,8 +1193,8 @@ async def assert_restore_with_new_owner(ids: dict, admin_token: str) -> None:
     check("接手人能看到客户下的订单（同事那张仍看不到）",
           sorted(row["id"] for row in items_of(res)), [ids["order_mine"]])
     status, res = call("GET", f"/customers/{cid}/tasks", to_token)
-    check_true("接手人能看到客户下没办完的待办（从前是空列表）",
-               ids["open_task"] in {row["id"] for row in items_of(res)},
+    check_true("接手人看不到已取消的孤儿待办",
+               ids["open_task"] not in {row["id"] for row in items_of(res)},
                str(items_of(res)))
 
     # ---- 11.4 旧负责人已经看不到它了 ----

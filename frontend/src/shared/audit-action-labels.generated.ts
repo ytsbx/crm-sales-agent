@@ -38,6 +38,7 @@ export const SHARED_ACTION_LABELS: Record<string, string> = {
   'complete': '完成',
   'confirm': '确认',
   'confirm_agent_action': '确认 AI 动作',
+  'confirm_return_received': '确认收到退货',
   'confirm_schedule_change': '确认交期变更',
   'confirm_win': '确认赢单',
   'convert': '线索转化',
