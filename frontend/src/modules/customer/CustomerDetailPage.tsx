@@ -1393,7 +1393,7 @@ export default function CustomerDetailPage() {
                 type="tertiary"
                 theme="borderless"
                 loading={aiPendingKind === 'summary'}
-                disabled={aiMutation.isPending}
+                disabled={aiMutation.isPending && aiPendingKind !== 'summary'}
                 onClick={() => aiMutation.mutate('summary')}
               >
                 客户总结
@@ -1406,7 +1406,7 @@ export default function CustomerDetailPage() {
                 type="tertiary"
                 theme="borderless"
                 loading={aiPendingKind === 'followup'}
-                disabled={aiMutation.isPending}
+                disabled={aiMutation.isPending && aiPendingKind !== 'followup'}
                 onClick={() => aiMutation.mutate('followup')}
               >
                 跟进建议
