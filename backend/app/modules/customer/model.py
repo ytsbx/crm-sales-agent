@@ -150,7 +150,9 @@ class CustomerFollower(Base, IdMixin, TimestampMixin):
         Index("ix_customer_followers_user", "user_id"),
     )
 
-    customer_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("customers.id"))
+    customer_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("customers.id", ondelete="CASCADE")
+    )
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"))
     #: backfill / wecom_import / manual / transfer / claim / handover / merge
     source: Mapped[str] = mapped_column(String(32), default="manual")

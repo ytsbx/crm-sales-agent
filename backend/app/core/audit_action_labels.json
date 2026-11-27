@@ -197,5 +197,8 @@
   "remove_refund_attachment": "删除退款附件",
   "confirm_return_received": "确认收到退货",
   "finance_return": "财务退回修改",
-  "revise_return_amount": "修改被退回的退款金额"
+  "revise_return_amount": "修改被退回的退款金额",
+  "add_followers": "添加跟进人",
+  "remove_follower": "移除跟进人",
+  "set_primary_follower": "设为主跟进人"
 }

@@ -10,6 +10,7 @@
  */
 export const SHARED_ACTION_LABELS: Record<string, string> = {
   'accept': '客户接受',
+  'add_followers': '添加跟进人',
   'add_item': '新增明细',
   'amend': '修订',
   'approve': '审批通过',
@@ -118,6 +119,7 @@ export const SHARED_ACTION_LABELS: Record<string, string> = {
   'reject_pool_candidate': '驳回回收',
   'release': '释放回池',
   'release_to_pool': '放入公海',
+  'remove_follower': '移除跟进人',
   'remove_refund_attachment': '删除退款附件',
   'remove_voucher': '移除凭证',
   'rename': '重命名',
@@ -152,6 +154,7 @@ export const SHARED_ACTION_LABELS: Record<string, string> = {
   'send_email': '发邮件',
   'set_items': '整批替换明细',
   'set_primary': '设为主联系人',
+  'set_primary_follower': '设为主跟进人',
   'set_role_data_scope': '改角色数据范围',
   'set_role_permissions': '改角色权限',
   'set_roles': '改用户角色',

@@ -4,7 +4,7 @@ import hashlib
 import json
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import and_, func, or_, select, text, update
+from sqlalchemy import and_, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
