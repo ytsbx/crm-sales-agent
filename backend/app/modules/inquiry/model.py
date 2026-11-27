@@ -10,7 +10,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, DateTime, Index, Numeric, String, Text, func
+from sqlalchemy import BigInteger, DateTime, Index, Numeric, String, Text, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base import Base, IdMixin, JSONType
@@ -52,6 +52,23 @@ class CustomInquiry(Base, IdMixin):
     __table_args__ = (
         Index("ix_custom_inquiries_customer", "customer_id"),
         Index("ix_custom_inquiries_status", "status"),
+        Index("ix_custom_inquiries_no", "inquiry_no"),
+        Index("ix_custom_inquiries_origin", "origin"),
+        Index("ix_custom_inquiries_root", "root_id"),
+        # 同一修订链的版本号唯一；原始记录 root_id 为空，用 COALESCE 把自己算进链
+        Index(
+            "uq_custom_inquiries_chain_version",
+            text("COALESCE(root_id, id)"),
+            "version",
+            unique=True,
+        ),
+        # 一个洞察只能转出一条需求；软删后允许再转
+        Index(
+            "uq_custom_inquiries_source_insight",
+            "source_insight_id",
+            unique=True,
+            postgresql_where=text("source_insight_id is not null and deleted_at is null"),
+        ),
     )
 
     # 需求编号（文档场景09）：尚无正式 SKU 时，询价/报价/打样三头都靠它
@@ -61,7 +78,7 @@ class CustomInquiry(Base, IdMixin):
     # **不设唯一约束**：编号标识需求、version 标识修订，同一条需求的 v1/v2
     # 是两行、共用同一个编号——加唯一索引会让"修订一次就写不进去"。
     # 新号不撞旧号由取号器的 taken 探针保证（它按"号是否已存在"逐个探测）。
-    inquiry_no: Mapped[str | None] = mapped_column(String(32), index=True, nullable=True)
+    inquiry_no: Mapped[str | None] = mapped_column(String(32), nullable=True)
     title: Mapped[str] = mapped_column(String(200))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 修订链（文档 §3.3/§四"需求及修订"）：客户改了三次要求，要能看出怎么变的。

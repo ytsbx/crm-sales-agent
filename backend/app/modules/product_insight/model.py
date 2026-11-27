@@ -15,10 +15,10 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     String,
     Text,
-    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -76,7 +76,7 @@ class ProductInsight(Base, IdMixin):
     # 审计、以及后续任何对外事件（通知/时间线）的键都要带上它，否则第二轮会撞上
     # 第一轮的固定键被去重吞掉，事后看不出"审过几轮、每轮批的是哪份内容"。
     review_round: Mapped[int] = mapped_column(
-        BigInteger, default=1, server_default="1", nullable=False
+        Integer, default=1, server_default="1", nullable=False
     )
     # 当前这一轮是**哪次提交**开的：弱网重试靠它认幂等，不靠"状态是不是待评审"。
     review_request_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -116,7 +116,8 @@ class ProductInsightRound(Base, IdMixin):
     __table_args__ = (
         # 同一轮只允许一行。它同时是**并发保护**：两个请求同时提交一轮，
         # 数据库层面只会留下一行（应用层的行锁负责给出友好提示，这里是底线）。
-        UniqueConstraint("insight_id", "round", name="uq_insight_round"),
+        # 库里是唯一索引；按索引声明，避免 autogenerate 误判为“删索引、加约束”
+        Index("uq_insight_round", "insight_id", "round", unique=True),
         Index("ix_insight_round_insight", "insight_id"),
     )
 

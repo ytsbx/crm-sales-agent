@@ -10,11 +10,16 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from app.core.audit import AuditLog  # noqa: F401  保证 autogenerate 能看到审计表
 from app.core.base import Base
 from app.core.config import settings
+from app.core.idempotency import RequestKey  # noqa: F401  保证 autogenerate 能看到幂等表
 from app.modules.approval import model as approval_model  # noqa: F401
 from app.modules.analytics import model as analytics_model  # noqa: F401
 from app.modules.agent import model as agent_model  # noqa: F401
 from app.modules.auth import model as auth_model  # noqa: F401  登录会话表
+from app.modules.bizdoc import model as bizdoc_model  # noqa: F401
+from app.modules.cases import model as cases_model  # noqa: F401
+from app.modules.contract import model as contract_model  # noqa: F401
 from app.modules.customer import model as customer_model  # noqa: F401
+from app.modules.dingtalk import model as dingtalk_model  # noqa: F401
 from app.modules.followup import model as followup_model  # noqa: F401
 from app.modules.inquiry import model as inquiry_model  # noqa: F401
 from app.modules.file import model as file_model  # noqa: F401
@@ -27,6 +32,7 @@ from app.modules.payment import model as payment_model  # noqa: F401
 from app.modules.returns import model as returns_model  # noqa: F401
 from app.modules.pricing import model as pricing_model  # noqa: F401
 from app.modules.product import model as product_model  # noqa: F401
+from app.modules.product_insight import model as product_insight_model  # noqa: F401
 from app.modules.quote import model as quote_model  # noqa: F401
 from app.modules.sample import model as sample_model  # noqa: F401
 from app.modules.settings import model as settings_model  # noqa: F401

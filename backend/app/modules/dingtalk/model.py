@@ -134,6 +134,7 @@ class OaInstance(Base, IdMixin):
         # 现在业务键只做普通索引（列表按它查），唯一性交给 idempotency_key，
         # 由调用方按"第几轮提交"决定它的值。
         Index("ix_oa_instances_business", "inquiry_id", "inquiry_version", "oa_type"),
+        Index("ix_oa_instances_provider", "provider"),
         UniqueConstraint("idempotency_key", name="uq_oa_instance_idempotency"),
         Index("ix_oa_instances_instance", "instance_id"),
         Index("ix_oa_instances_status", "status"),

@@ -35,12 +35,12 @@ import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, DateTime, Index, String, UniqueConstraint, select, update
+from sqlalchemy import BigInteger, DateTime, Index, JSON, String, UniqueConstraint, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.base import Base, IdMixin, JSONType
+from app.core.base import Base, IdMixin
 from app.core.errors import AppError, ErrorCode
 
 #: 键长上限：前端 uuid(36) 或"表单名+时间戳"都够；超长直接拒绝，
@@ -71,7 +71,7 @@ class RequestKey(Base, IdMixin):
     #: 成功后的响应体（原样回放，保证"同键返回同一份结果"）。
     #: Q4 决策2 起新行存**精确 JSON 原文**（顶层字符串）；历史行是 dict（float 形状），
     #: 回放时按顶层类型区分：str 逐字读回（parse_float=Decimal），dict 走老路。
-    result_payload: Mapped[dict | str | None] = mapped_column(JSONType, nullable=True)
+    result_payload: Mapped[dict | str | None] = mapped_column(JSON, nullable=True)
     #: 成功后指向的业务对象，便于排查"这个键建了哪条数据"
     result_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     result_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

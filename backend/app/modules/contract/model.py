@@ -11,7 +11,7 @@
 
 from datetime import date, datetime
 
-from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base import Base, IdMixin, JSONType
@@ -56,6 +56,10 @@ class ContractTemplate(Base, IdMixin):
 
 class ContractDocument(Base, IdMixin):
     __tablename__ = "contract_documents"
+    __table_args__ = (
+        # 上传幂等键唯一；与库里的唯一约束同名同列
+        UniqueConstraint("request_key", name="uq_contract_document_request_key"),
+    )
 
     doc_no: Mapped[str] = mapped_column(String(32), unique=True)
     doc_type: Mapped[str] = mapped_column(String(16), default="contract")

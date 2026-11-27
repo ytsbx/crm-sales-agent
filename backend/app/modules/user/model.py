@@ -4,7 +4,7 @@
 本实现把数据范围挂在角色上（self / department / department_and_sub / all）。
 """
 
-from sqlalchemy import Boolean, false, BigInteger, ForeignKey, String, Table, Column
+from sqlalchemy import Boolean, false, BigInteger, ForeignKey, Index, String, Table, Column
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base import Base, IdMixin, TimestampMixin
@@ -21,15 +21,20 @@ ROLE_ACTIVE = "active"
 
 class Department(Base, IdMixin, TimestampMixin):
     __tablename__ = "departments"
+    __table_args__ = (
+        # 库里是命名唯一索引；按索引声明，避免 autogenerate 误判为“删索引、加约束”
+        Index("uq_departments_dingtalk_department_id", "dingtalk_department_id", unique=True),
+        Index("uq_departments_oa_department_id", "oa_department_id", unique=True),
+    )
 
     parent_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     name: Mapped[str] = mapped_column(String(128))
     wecom_department_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     #: 同序/钉钉通讯录的部门编号。按需同步：只有真有 CRM 用户的部门才落库，
     #: 不导入整套组织树；用来避免同名部门（如两处「财务部」）被并错。
-    dingtalk_department_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
+    dingtalk_department_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     #: 同序 OA 自己的部门编号（UUID），与钉钉编号分开存，避免两套编号混用。
-    oa_department_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
+    oa_department_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="active")
 
 

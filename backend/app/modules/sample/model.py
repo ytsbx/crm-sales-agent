@@ -19,6 +19,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     String,
     Text,
@@ -167,7 +168,7 @@ class SampleRequest(Base, IdMixin):
     # 已批准后改车间依据）自增一次。通知/时间线的事件键带上它，否则第二轮会撞上
     # 第一轮的固定键被去重吞掉，事后看不出"驳回过几次、每轮批的是哪版资料"。
     review_round: Mapped[int] = mapped_column(
-        BigInteger, default=1, server_default="1", nullable=False
+        Integer, default=1, server_default="1", nullable=False
     )
     # 当前这一轮是**哪次提交**开的（弱网重试靠它认幂等，不靠"状态是不是待审批"——
     # "待审批时调重提"仍然按原口径被拦）。换轮次时清空。
@@ -178,7 +179,7 @@ class SampleRequest(Base, IdMixin):
     # 和已经做出来/寄走的实物对不上。改成"原单出 V2、旧版冻结只读"。
     # `parent_id` 指向被取代的那一版；**有子版本即视为冻结**，不另设状态位。
     version: Mapped[int] = mapped_column(
-        BigInteger, default=1, server_default="1", nullable=False
+        Integer, default=1, server_default="1", nullable=False
     )
     parent_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("sample_requests.id"), nullable=True
@@ -318,7 +319,10 @@ class SampleRequest(Base, IdMixin):
 
 class SampleItem(Base, IdMixin):
     __tablename__ = "sample_items"
-    __table_args__ = (Index("ix_sample_items_request", "sample_request_id"),)
+    __table_args__ = (
+        Index("ix_sample_items_request", "sample_request_id"),
+        Index("ix_sample_items_inquiry", "inquiry_id"),
+    )
 
     sample_request_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("sample_requests.id")

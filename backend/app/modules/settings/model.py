@@ -105,7 +105,7 @@ class PublicPoolRecycleCandidate(Base, IdMixin):
     #: 复核时谁拦着、拦的理由都摆在眼前；执行前还会再算一次，两次都要看。
     protection_snapshot: Mapped[list | None] = mapped_column(JSONType, nullable=True)
 
-    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending")
     #: 预告生成时间 / 预告到期时间（到期前不动，给业务员一个缓冲）
     notice_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

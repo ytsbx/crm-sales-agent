@@ -20,6 +20,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -47,6 +48,7 @@ class SalesOrder(Base, IdMixin, TimestampMixin):
         Index("ix_sales_orders_customer", "customer_id"),
         # 同一报价版本只能转一次订单（幂等）
         Index("ix_sales_orders_quote_version", "quote_version_id", unique=True),
+        Index("ix_sales_orders_sales_owner", "sales_owner_id"),
     )
 
     order_no: Mapped[str] = mapped_column(String(32), unique=True)
@@ -74,12 +76,22 @@ class SalesOrder(Base, IdMixin, TimestampMixin):
     #:
     #: ⚠️ 它们都已经含在 `total_amount` 里，展示时只做拆分，不要再相加一次。
     #: 可空：历史订单没有留存，展示时明确写"待核实"，不拿今天的数据回填冒充。
-    goods_amount: Mapped[Decimal | None] = mapped_column(Numeric(16, 2), nullable=True)
-    logistics_amount: Mapped[Decimal | None] = mapped_column(Numeric(16, 2), nullable=True)
-    other_charge_amount: Mapped[Decimal | None] = mapped_column(Numeric(16, 2), nullable=True)
-    discount_amount: Mapped[Decimal | None] = mapped_column(Numeric(16, 2), nullable=True)
+    goods_amount: Mapped[Decimal | None] = mapped_column(
+        Numeric(16, 2), nullable=True, comment="产品货款（Σ 产品单价×数量）"
+    )
+    logistics_amount: Mapped[Decimal | None] = mapped_column(
+        Numeric(16, 2), nullable=True, comment="运费（代收代付，已含在 total_amount 里）"
+    )
+    other_charge_amount: Mapped[Decimal | None] = mapped_column(
+        Numeric(16, 2), nullable=True, comment="其他附加费用（非运费、非折扣，已含在 total_amount 里）"
+    )
+    discount_amount: Mapped[Decimal | None] = mapped_column(
+        Numeric(16, 2), nullable=True, comment="优惠（负数，与报价/库内约定一致）"
+    )
     #: 转单时报价版本用的产品核价口径，随单冻结（历史订单为 NULL = 当时是旧口径）。
-    pricing_basis: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    pricing_basis: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, comment="转单时报价版本的产品核价口径；NULL=历史订单（含运费的老口径）"
+    )
     currency: Mapped[str] = mapped_column(String(8), default="CNY")
     status: Mapped[str] = mapped_column(String(24), default="pending")
     erp_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -229,7 +241,16 @@ class OrderScheduleChange(Base, IdMixin):
     """
 
     __tablename__ = "order_schedule_changes"
-    __table_args__ = (Index("ix_order_schedule_changes_order", "order_id"),)
+    __table_args__ = (
+        Index("ix_order_schedule_changes_order", "order_id"),
+        # 同一订单同时只允许一张待确认的变更单；已确认的历史单可以有多张
+        Index(
+            "uq_schedule_change_pending_per_order",
+            "order_id",
+            unique=True,
+            postgresql_where=text("status = 'pending'"),
+        ),
+    )
 
     order_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("sales_orders.id"))
     old_delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)

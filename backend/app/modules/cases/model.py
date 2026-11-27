@@ -15,9 +15,10 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
-    UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -41,6 +42,14 @@ class SalesCase(Base, IdMixin):
         Index("ix_sales_cases_customer", "customer_id"),
         # 列表要按"有没有被修订版取代"过滤，给它一个索引
         Index("ix_sales_cases_revision_of", "revision_of_id"),
+        # 同一原案例的同一修订版本只允许一条，且只约束未删除的修订稿
+        Index(
+            "uq_case_revision_version",
+            "revision_of_id",
+            "version",
+            unique=True,
+            postgresql_where=text("revision_of_id is not null and deleted_at is null"),
+        ),
     )
 
     title: Mapped[str] = mapped_column(String(200))
@@ -71,7 +80,7 @@ class SalesCase(Base, IdMixin):
     # ---- 修订版与审核历史（第四批 §5.1.5，口径已确认＝修订稿）----
     # 已发布案例**不允许原地改**：批准的是 A 版内容，改完变成 B 版却被复用审核结论。
     # 要改就另开修订稿重新走审核，批准后替换当前发布版；被取代的那一版转 superseded。
-    version: Mapped[int] = mapped_column(BigInteger, default=1, server_default="1", nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default="1", nullable=False)
     revision_of_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("sales_cases.id"), nullable=True
     )
@@ -118,8 +127,9 @@ class CaseEvidence(Base, IdMixin):
 
     __tablename__ = "case_evidences"
     __table_args__ = (
-        # 同一案例、同一单据只挂一次（重复提交不该在证据列表里出现两遍）
-        UniqueConstraint("case_id", "kind", "business_id", name="uq_case_evidence"),
+        # 同一案例、同一单据只挂一次（重复提交不该在证据列表里出现两遍）。
+        # 库里是唯一索引而不是唯一约束，模型按索引声明，避免 autogenerate 误判。
+        Index("uq_case_evidence", "case_id", "kind", "business_id", unique=True),
         Index("ix_case_evidence_case", "case_id"),
     )
 

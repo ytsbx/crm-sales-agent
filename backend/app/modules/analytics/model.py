@@ -150,6 +150,7 @@ class ActualSnapshot(Base):
     """
 
     __tablename__ = "analytics_actual_snapshots"
+    __table_args__ = (Index("ix_analytics_actual_snapshots_period", "period"),)
 
     period: Mapped[str] = mapped_column(String(7), primary_key=True)  # YYYY-MM
     scope_key: Mapped[str] = mapped_column(String(32), primary_key=True)

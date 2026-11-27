@@ -232,7 +232,7 @@ class CustomerDuplicateCase(Base, IdMixin):
     evidence: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     #: 来源：import（批量导入）/ create（建档）/ manual（人工发起）
     source: Mapped[str] = mapped_column(String(16), default="manual")
-    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending")
     decision: Mapped[str | None] = mapped_column(String(24), nullable=True)
     #: 裁定后的归属负责人（人为指定）
     resolved_owner_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

@@ -22,6 +22,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -76,7 +77,10 @@ class Quote(Base, IdMixin, TimestampMixin):
 
 class QuoteVersion(Base, IdMixin):
     __tablename__ = "quote_versions"
-    __table_args__ = (Index("ix_quote_versions_quote", "quote_id"),)
+    __table_args__ = (
+        Index("ix_quote_versions_quote", "quote_id"),
+        UniqueConstraint("quote_id", "version_no", name="uq_quote_versions_quote_version"),
+    )
 
     quote_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("quotes.id"))
     version_no: Mapped[int] = mapped_column(BigInteger, default=1)
@@ -93,16 +97,22 @@ class QuoteVersion(Base, IdMixin):
     #: 存到版本上而不是全局开关：口径是**随版本**变的，同一张报价单的新旧版本可以
     #: 分别处在两个口径上，事后必须能答出"这一版当时按什么算的"。
     pricing_basis: Mapped[str] = mapped_column(
-        String(32), default=PRICING_BASIS_ACTUAL_PASS_THROUGH
+        String(32),
+        default=PRICING_BASIS_ACTUAL_PASS_THROUGH,
+        comment="产品核价口径。单一口径：actual_pass_through = 产品单价不含运费，运费按已确认的实际金额由公司代收代付（2026-10-09 统一，不再有 legacy）。",
     )
     #: 运费收费金额 = 客户承担的运费（代收代付）。与 `other_charge_amount` 一起
     #: 把 `charge_amount` 拆开，只为**显示与对账**；三者关系恒为
     #: `charge_amount == logistics_amount + other_charge_amount`。
     #: ⚠️ 这三个都**已经含在** `total_amount` 里了（总额公式没变），
     #: 前端/文件任何地方都**不能**再把它加到总额上——会重复计费。
-    logistics_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
+    logistics_amount: Mapped[Decimal] = mapped_column(
+        Numeric(16, 2), default=0, comment="运费收费金额（= 客户承担的运费，代收代付）"
+    )
     #: 非运费、非折扣的附加费用合计（`charge_amount` 减去运费的那一部分）。
-    other_charge_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
+    other_charge_amount: Mapped[Decimal] = mapped_column(
+        Numeric(16, 2), default=0, comment="非运费、非折扣的附加费用合计"
+    )
     currency: Mapped[str] = mapped_column(String(8), default="CNY")
     # 外贸报价才用：报价时点的汇率快照（内贸留空）
     exchange_rate_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(16, 6), nullable=True)
@@ -140,7 +150,10 @@ class QuoteVersion(Base, IdMixin):
 
 class QuoteItem(Base, IdMixin):
     __tablename__ = "quote_items"
-    __table_args__ = (Index("ix_quote_items_version", "quote_version_id"),)
+    __table_args__ = (
+        Index("ix_quote_items_version", "quote_version_id"),
+        Index("ix_quote_items_inquiry", "inquiry_id"),
+    )
 
     quote_version_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("quote_versions.id"))
     # 与商机需求明细的追溯关系（06-需求澄清清单第 2-4 条的缺口）
@@ -178,7 +191,11 @@ class QuoteItem(Base, IdMixin):
     #: 算出虚高的毛利率、命中免审（第七批 P1-1 实测：低于保护价却被自动批准）。
     #:
     #: `None` = 本列上线（2026-10-13）之前的历史明细，判据回退到旧的"成本≤0 视为缺失"。
-    cost_complete_snapshot: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    cost_complete_snapshot: Mapped[bool | None] = mapped_column(
+        Boolean,
+        nullable=True,
+        comment="生成快照时产品成本四项是否填全；NULL=历史数据（按旧判据）",
+    )
     #: 是否存在成本依据；False=无记录，True=有记录（包含零元缺项），NULL=历史未知。
     cost_present_snapshot: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     package_cost_snapshot: Mapped[Decimal] = mapped_column(Numeric(16, 4), default=0)
@@ -224,7 +241,9 @@ class QuoteCharge(Base, IdMixin):
     #: 金额列分不出来，只能单独记一个"确认过没有 + 什么时候确认的"。
     #: 与 `product_costs.stopped_at` 同一手法：时间戳而不是布尔，翻记录能看出时刻。
     logistics_confirmed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
+        DateTime(timezone=True),
+        nullable=True,
+        comment="物流费用被业务确认的时刻；NULL=尚未确认（金额为 0 不等于已确认零运费）",
     )
 
 
