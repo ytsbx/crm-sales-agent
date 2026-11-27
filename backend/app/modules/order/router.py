@@ -1017,17 +1017,9 @@ async def change_status(
     if payload.status == "completed":
         from app.modules.payment import service as payment_service
 
+        # 真正的完成闸门在 `order.service.change_status`（ERP 回调也共用）；
+        # 这里只取一份财务快照写审计，不重复判一次。
         finance_after = await payment_service.order_finance_summary(session, order.id)
-        unreceived = Decimal(finance_after.get("unreceived_amount_exact") or "0")
-        if unreceived > 0 and not (payload.remark or "").strip():
-            # 完成是交付事实，不等于钱已收齐（月结客户很常见）。有未收款时必须
-            # 写清为什么可以先完成，避免事后只看到"已交付未收款"却不知道原因。
-            raise AppError(
-                ErrorCode.STATUS_NOT_ALLOWED,
-                f"这张订单还有未收款 {unreceived} 元；确认完成交付必须填写原因"
-                "（例如：月结客户，按合同账期收款）",
-                422,
-            )
     await svc.change_status(
         session, order, new_status=payload.status, operator_id=user.id, remark=payload.remark
     )

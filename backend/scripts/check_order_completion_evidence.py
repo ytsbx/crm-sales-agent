@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from datetime import date
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -78,6 +79,9 @@ def _cleanup() -> None:
     for sql in (
         f"delete from order_shipment_batch_items where batch_id in (select id from order_shipment_batches where order_id in {orders})",
         f"delete from order_shipment_batches where order_id in {orders}",
+        f"delete from payment_allocations where payment_id in (select id from payment_records where order_id in {orders})",
+        f"delete from payment_records where order_id in {orders}",
+        f"delete from receivable_plans where order_id in {orders}",
         f"delete from order_status_history where order_id in {orders}",
         f"delete from order_milestones where order_id in {orders}",
         f"delete from sales_order_items where order_id in {orders}",
@@ -136,7 +140,7 @@ def main() -> int:
     check_true("  文案说清还差多少", "还差" in str(res.get("message")),
                str(res.get("message"))[:56])
 
-    print("\n=== ③ 批次真的发出、发够了 → 可以完成 ===")
+    print("\n=== ③ 批次真的发出、发够了，但财务未确认回款 → 仍不能完成 ===")
     _, res = call("POST", f"/orders/{oid}/shipments/{batch}/ship", admin, {})
     check_true("登记发货成功", res.get("code") == 0, f"code={res.get('code')}")
     summary = (call("GET", f"/orders/{oid}/shipments", admin)[1].get("data") or {}).get("summary") or {}
@@ -144,9 +148,28 @@ def main() -> int:
           (summary.get("shipped"), summary.get("all_shipped")), (1.0, True))
     _, res = call("POST", f"/orders/{oid}/status", admin,
                   {"status": "completed", "remark": "套件：月结客户，按合同账期收款"})
-    check("发够了可以完成", db(f"select status from sales_orders where id={oid}"), "completed")
+    check("未回款仍不能完成", db(f"select status from sales_orders where id={oid}"), "pending")
+    check_true("  文案说清未收款", "未收款" in str(res.get("message")), str(res.get("message"))[:60])
 
-    print("\n=== ④ 已完成回退必须写理由（纠错留痕）===")
+    print("\n=== ④ 财务确认全部回款 → 可以完成 ===")
+    _, res = call("POST", "/receivables", admin,
+                  {"order_id": oid, "plan_name": "全款",
+                   "due_date": date.today().isoformat(), "amount": 200})
+    check_true("建应收节点", res.get("code") == 0, f"code={res.get('code')}")
+    plan_id = (res.get("data") or {}).get("id")
+    _, res = call("POST", "/payments", admin,
+                  {"receivable_plan_id": plan_id,
+                   "received_date": date.today().isoformat(),
+                   "received_amount": 200, "payment_method": "bank"})
+    check_true("登记回款", res.get("code") == 0, f"code={res.get('code')}")
+    payment_id = (res.get("data") or {}).get("id")
+    _, res = call("POST", f"/payments/{payment_id}/confirm", admin, {})
+    check_true("财务确认回款", res.get("code") == 0, f"code={res.get('code')}")
+    _, res = call("POST", f"/orders/{oid}/status", admin,
+                  {"status": "completed", "remark": "套件：财务确认全部回款"})
+    check("财务确认后可以完成", db(f"select status from sales_orders where id={oid}"), "completed")
+
+    print("\n=== ⑤ 已完成回退必须写理由（纠错留痕）===")
     _, res = call("POST", f"/orders/{oid}/status", admin, {"status": "in_production"})
     check("不写理由：状态保持 completed",
           db(f"select status from sales_orders where id={oid}"), "completed")
@@ -162,7 +185,7 @@ def main() -> int:
                ),
                "")
 
-    print("\n=== ⑤ 非完成态之间的正常流转不受影响（不能把闸门做成全拦）===")
+    print("\n=== ⑥ 非完成态之间的正常流转不受影响（不能把闸门做成全拦）===")
     _, res = call("POST", f"/orders/{oid}/status", admin, {"status": "shipped"})
     check_true("生产中→已发货 不需要理由", res.get("code") == 0, f"code={res.get('code')}")
     _, res = call("POST", f"/orders/{oid}/status", admin, {"status": "delivered"})

@@ -690,6 +690,20 @@ async def change_status(
                 f"整单还有未发量，不能标记完成（{detail}）——"
                 "请先登记发货批次或调整批次计划",
             )
+        # 2026-11-27 口径：订单完成 = 交付完成 + 财务已确认全部回款。
+        # 放在共用服务层，而不是只放在网页路由里：ERP 刷新/回调也走这里，
+        # 否则 ERP 把"已签收但未收款"的单回传成完成，会绕过财务确认。
+        from app.modules.payment import service as payment_service
+
+        finance = await payment_service.order_finance_summary(session, order.id)
+        unreceived = Decimal(str(finance.get("unreceived_amount_exact") or "0"))
+        if unreceived > 0:
+            raise AppError(
+                ErrorCode.STATUS_NOT_ALLOWED,
+                f"这张订单还有未收款 {unreceived} 元，财务确认全部回款后才能标记完成。"
+                "请到「回款记录」确认待确认的回款。",
+                422,
+            )
     # 「已完成」是**履约事实的结论**，回退等于推翻它 —— 必须留理由（issue #10：
     # 从前已完成改成"生产中"也一路放行，看板上的完成率可以被手工改来改去）。
     # 这里只要求"说清为什么"，不额外发明审批流：理由进 `order_status_history`，

@@ -268,8 +268,6 @@ export default function OrderDetailPage() {
   const narrowScreen = viewportWidth < 1200
   const [statusVisible, setStatusVisible] = useState(false)
   const [targetStatus, setTargetStatus] = useState<string | null>(null)
-  // 完成交付但还有未收款时，必须填原因（写进状态历史与审计）
-  const [statusRemark, setStatusRemark] = useState('')
   const [orderMoreVisible, setOrderMoreVisible] = useState(false)
   //: 取消订单是**不可逆的终态动作**，单独一个确认弹窗把影响讲清楚
   //: （见下面「取消订单」那个 Modal）。
@@ -533,23 +531,19 @@ export default function OrderDetailPage() {
   }
 
   const statusMutation = useMutation({
-    mutationFn: () => changeOrderStatus(
-      orderId, targetStatus!,
-      targetStatus === 'completed' && statusRemark.trim()
-        ? statusRemark.trim()
-        : '在订单详情页更新',
-    ),
+    mutationFn: () => changeOrderStatus(orderId, targetStatus!, '在订单详情页更新'),
     onSuccess: (result) => {
       // 文案要说清**是什么对象**变了，不能只写"已更新为「已发货」"——
       // 提示是全局浮层，用户切到别的页面它还会挂几秒，没有主语就完全对不上号。
-      Toast.success(`${result.order_no} 的履约状态已更新为「${result.status === 'completed' ? '交付已完成' : result.status_label}」`)
+      Toast.success(result.status === 'completed'
+        ? `${result.order_no} 已完成，全部回款已由财务确认`
+        : `${result.order_no} 的履约状态已更新为「${result.status_label}」`)
       setStatusVisible(false)
       refresh()
     },
   })
   const openStatusEditor = (status: string | null = null) => {
     statusMutation.reset()
-    setStatusRemark('')
     setTargetStatus(status)
     setStatusVisible(true)
   }
@@ -993,7 +987,7 @@ export default function OrderDetailPage() {
     onSuccess: (result) => {
       Toast.success(
         result.summary.all_shipped
-          ? '已全部发完，可以确认完成交付'
+          ? '已全部发完，财务确认全部回款后即可完成订单'
           : `已登记发货，剩余未发 ${shipmentQuantity(result.summary.remaining_exact ?? result.summary.remaining)}`,
       )
       closeShipment()
@@ -1256,18 +1250,17 @@ export default function OrderDetailPage() {
   const remainingToShip = shipment?.summary.remaining_exact ?? shipment?.summary.remaining
   const completingDelivery = targetStatus === 'completed'
   const completionBlocked = completingDelivery && remainingToShip != null && Number(remainingToShip) > 0
-    ? `还有 ${shipmentQuantity(remainingToShip)} 件未发。请先登记发货，再确认完成交付。`
+    ? `还有 ${shipmentQuantity(remainingToShip)} 件未发。请先登记发货，再完成订单。`
     : ''
   const needsShipment = targetStatus === 'shipped' || targetStatus === 'delivered'
   const shippedAmount = shipment?.summary.shipped_exact ?? shipment?.summary.shipped
   const shipmentBlocked = needsShipment && shippedAmount != null && Number(shippedAmount) <= 0
     ? '请先到「发货批次」登记实际发货，再更新状态。' : ''
-  const completionNeedsReason = completingDelivery && hasUnreceived
-  const completionReasonBlocked = completionNeedsReason && !statusRemark.trim()
-    ? `还有未收款 ${waitingForPayment.replace('待收款 ', '')}，请填写原因（例如：月结客户，按合同账期收款）。`
+  const completionPaymentBlocked = completingDelivery && hasUnreceived
+    ? `${waitingForPayment}，财务确认全部回款后才能完成订单。`
     : ''
   const statusBlocked = targetStatus
-    ? completionBlocked || shipmentBlocked || completionReasonBlocked
+    ? completionBlocked || shipmentBlocked || completionPaymentBlocked
     : '先选择要更新的履约状态。'
   const shipmentPlanBlocked = orderCancelled
     ? '订单已取消，不能再排发货批次。'
@@ -1886,9 +1879,11 @@ export default function OrderDetailPage() {
         title={order.order_no}
         tags={
           <>
-            <Tag color={STATUS_TONE[order.status] ?? 'grey'}>{order.status === 'completed' ? '交付已完成' : order.status_label}</Tag>
+            <Tag color={STATUS_TONE[order.status] ?? 'grey'}>{order.status_label}</Tag>
             {order.status === 'completed' && (
-              <Tag color={hasUnreceived ? 'orange' : 'green'}>{hasUnreceived ? waitingForPayment : '已收清'}</Tag>
+              <Tag color={hasUnreceived ? 'orange' : 'green'}>
+                {hasUnreceived ? `历史遗留${waitingForPayment.replace('待收款 ', '未收 ')}` : '回款已确认'}
+              </Tag>
             )}
             {order.erp_order_id ? <Tag color="blue">ERP/MES：{order.erp_order_id}</Tag> : <Tag>未推送 ERP/MES</Tag>}
           </>
@@ -2582,8 +2577,12 @@ export default function OrderDetailPage() {
               {canManage && shipment?.summary.all_shipped && !orderCancelled && order.status !== 'completed' && (
                 <div className="workflow-next" style={{ marginBottom: 12 }}>
                   <strong>发货已登记完毕</strong>
-                  <p className="workflow-guide">确认交付完成后，财务可继续按约定收款。</p>
-                  <Button size="small" theme="outline" onClick={() => openStatusEditor('completed')}>完成交付</Button>
+                  <p className="workflow-guide">
+                    {hasUnreceived
+                      ? `${waitingForPayment}。财务确认全部回款后，才能完成订单。`
+                      : '全部回款已由财务确认，可以完成订单。'}
+                  </p>
+                  <Button size="small" theme="outline" disabled={hasUnreceived} onClick={() => openStatusEditor('completed')}>完成订单</Button>
                 </div>
               )}
               <Table<ShipmentBatchRow>
@@ -3262,7 +3261,7 @@ export default function OrderDetailPage() {
 
       <Modal
         width={520}
-        title="人工更新履约状态"
+        title="更新订单状态"
         visible={statusVisible}
         onCancel={() => setStatusVisible(false)}
         footer={
@@ -3270,14 +3269,14 @@ export default function OrderDetailPage() {
             <Button onClick={() => setStatusVisible(false)}>取消</Button>
             <GuardedButton
               theme="outline"
-              action={completingDelivery ? '确认完成交付' : '更新状态'}
+              action={completingDelivery ? '确认完成订单' : '更新状态'}
               disabled={Boolean(statusBlocked)}
               blockedReasons={statusBlocked ? [statusBlocked] : []}
               loading={statusMutation.isPending}
               hintBelow
               onClick={() => statusMutation.mutate()}
             >
-              {completingDelivery ? '确认完成交付' : '更新'}
+              {completingDelivery ? '确认完成订单' : '更新'}
             </GuardedButton>
           </div>
         }
@@ -3297,27 +3296,27 @@ export default function OrderDetailPage() {
             { value: 'in_production', label: '生产中' },
             { value: 'shipped', label: '已发货' },
             { value: 'delivered', label: '已签收' },
-            { value: 'completed', label: '交付已完成' },
+            { value: 'completed', label: '已完成（回款已确认）' },
             // 「已取消」**故意不在这里**：取消订单是不可逆的终态动作，
             // 还要连带处理回款与应收，必须走右上角那个专门的「取消订单」。
             // 放在这个下拉里，用户看不到后果，规则也会被绕过。
           ]}
           style={{ width: '100%' }}
         />
-        {completionNeedsReason && !completionBlocked && (
+        {completionPaymentBlocked && !completionBlocked && (
           <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
             <p className="workflow-guide" style={{ margin: 0 }}>
-              {waitingForPayment}。完成是交付事实，不代表钱已收齐；请说明为什么可以先完成，
-              原因会写进状态历史与审计。
+              {waitingForPayment}。订单要等财务确认全部回款后才能完成；请先到「回款记录」
+              确认待确认的回款，确认后未收金额归零再回来完成订单。
             </p>
-            <FormLabel required>完成原因</FormLabel>
-            <TextArea
-              aria-label="完成原因"
-              rows={2}
-              placeholder="例如：月结客户，按合同账期收款"
-              value={statusRemark}
-              onChange={setStatusRemark}
-            />
+            <Button size="small" theme="borderless" style={{ justifyContent: 'flex-start', paddingLeft: 0 }} onClick={() => {
+              setStatusVisible(false)
+              setActiveKey('payments')
+              orderTabsRef.current?.scrollIntoView({ block: 'start' })
+              orderTabsRef.current?.focus({ preventScroll: true })
+            }}>
+              去回款记录
+            </Button>
           </div>
         )}
         {completionBlocked && (

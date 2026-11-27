@@ -483,7 +483,7 @@ def main():
     status, res = call('POST', f'/orders/{b_order_id}/status', token=admin,
                        body={'status': 'completed'})
     check('未发完禁止整单完成', res.get('code'), 40002)
-    # 第 2 批：剩余 4 件，发完后闸门放行
+    # 第 2 批：剩余 4 件，发完后还要过财务回款闸门
     status, res = call('POST', f'/orders/{b_order_id}/shipments', token=admin,
                        body={'items': [{'order_item_id': b_item_id, 'planned_qty': 4}]})
     batch2 = res['data']['batch_id']
@@ -505,7 +505,25 @@ def main():
     check('all_shipped=True', res['data']['summary']['all_shipped'], True)
     status, res = call('POST', f'/orders/{b_order_id}/status', token=admin,
                        body={'status': 'completed', 'remark': '套件：月结客户，按合同账期收款'})
-    check('发完后整单可完成', res.get('code'), 0)
+    check('发完但未回款仍禁止整单完成', res.get('code'), 40002)
+
+    # 2026-11-27 口径：订单完成 = 交付完成 + 财务已确认全部回款。
+    status, res = call('POST', '/receivables', token=admin,
+                       body={'order_id': b_order_id, 'plan_name': '全款',
+                             'due_date': base_due, 'amount': 500})
+    check('建 500 元应收节点', res.get('code'), 0)
+    b_plan_id = res['data']['id']
+    status, res = call('POST', '/payments', token=admin,
+                       body={'receivable_plan_id': b_plan_id,
+                             'received_date': date.today().isoformat(),
+                             'received_amount': 500, 'payment_method': 'bank'})
+    check('登记 500 元回款', res.get('code'), 0)
+    b_payment_id = res['data']['id']
+    status, res = call('POST', f'/payments/{b_payment_id}/confirm', token=admin, body={})
+    check('财务确认回款', res.get('code'), 0)
+    status, res = call('POST', f'/orders/{b_order_id}/status', token=admin,
+                       body={'status': 'completed', 'remark': '套件：财务确认全部回款'})
+    check('财务确认后整单可完成', res.get('code'), 0)
 
     print()
     print('=== 12.1 并发：取消订单与登记发货不能两头都赢（§3.5）===')
