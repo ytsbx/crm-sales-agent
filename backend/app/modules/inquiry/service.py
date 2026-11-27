@@ -42,13 +42,16 @@ async def apply_scope(stmt: Select, user: CurrentUser, session: AsyncSession) ->
     owner_ids = await scoped_owner_ids(session, user)
     from app.modules.customer.visibility import customer_scope_clause_from
 
-    conditions = [
-        CustomInquiry.created_by == user.id,
-        and_(CustomInquiry.origin == "customer", CustomInquiry.customer_id.is_(None)),
-    ]
+    conditions = [CustomInquiry.created_by == user.id]
     customer_scope = customer_scope_clause_from(owner_ids)
+    customer_conditions = [CustomInquiry.customer_id.is_(None)]
     if customer_scope is not None:
-        conditions.append(customer_scope)
+        customer_conditions.append(customer_scope)
+    # 客户询价按客户范围放宽；内部开发需求（origin != customer）绝不能借
+    # `Customer.owner_id IS NULL` 混进来，否则「仅本人」的洞察转需求会对全公司可见。
+    conditions.append(
+        and_(CustomInquiry.origin == "customer", or_(*customer_conditions))
+    )
     if user.has("product:review"):
         # 评审岗之间共享内部开发需求。**只放这一类**——客户询价仍按上面那三条，
         # 别把评审权当成"看更多客户数据的通行证"。

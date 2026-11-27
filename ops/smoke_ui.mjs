@@ -615,10 +615,11 @@ async function checkTwelfthRepairs(client, auth, problems) {
   const disabled = await post('/opportunity-stages', {code: `${prefix}D`, name: `${prefix}停用`, sequence: sequence + 1})
   const target = await post('/opportunity-stages', {code: `${prefix}T`, name: `${prefix}目标`, sequence: sequence + 2})
   const opportunity = await post('/opportunities', {customer_id: customer.id, title: `${prefix}商机`, stage_id: source.id})
-  if (opportunity.owner_id !== owner.id || opportunity.owner_name !== owner.name) problems.push('12-R6 新建返回的继承负责人 ID/姓名不一致')
+  // 2026-11-27 新口径：业务单据默认负责人 = 创建人；冒烟用 admin 登录，客户负责人是 zhangsan。
+  if (opportunity.owner_id !== auth.user.id || opportunity.owner_name !== auth.user.name) problems.push('12-R6 新建返回的默认负责人（创建人）ID/姓名不一致')
   await checkedJson(`/opportunity-stages/${disabled.id}`, auth.token, {method: 'DELETE'})
   await client.send('Page.navigate', {url: `${APP_BASE}/opportunities/${opportunity.id}`})
-  if (!await waitForText(client, `负责人：${owner.name}`)) problems.push('12-R6 详情负责人展示错误')
+  if (!await waitForText(client, `负责人：${auth.user.name}`)) problems.push('12-R6 详情负责人展示错误')
   if (await clickByText(client, '推进阶段') !== 'clicked') throw new Error('12-R2 无法打开推进阶段弹窗')
   if (!await waitForText(client, '选择目标阶段')) throw new Error('12-R2 推进阶段弹窗没有加载')
   const opened = await client.send('Runtime.evaluate', {
@@ -638,7 +639,7 @@ async function checkTwelfthRepairs(client, auth, problems) {
   const row = await client.send('Runtime.evaluate', {
     expression: `Array.from(document.querySelectorAll('tr')).find(row=>row.innerText.includes(${JSON.stringify(opportunity.title)}))?.innerText ?? ''`, returnByValue: true,
   })
-  if (!row.result.value.includes(owner.name)) problems.push('12-R6 列表负责人展示错误')
+  if (!row.result.value.includes(auth.user.name)) problems.push('12-R6 列表负责人展示错误')
   if (await clickByText(client, '看板') !== 'clicked') throw new Error('12-R2 无法打开看板')
   if (!await waitForText(client, '已停用')) problems.push('12-R2 看板未保留停用阶段标识')
   // 「推进 →」同被 a11y 改版换成 <button class="crm-text-action">（OpportunityBoard），

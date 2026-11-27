@@ -6750,3 +6750,12 @@
 - 数据库备份 `/opt/crm-sales-agent/backup/db-2a120470-20261127T031056Z.dump`（1.37MB，容器内 `pg_restore --list` 1045 项可读）；代码/前端备份 `/opt/crm-sales-agent/backup/unified-2a120470048e-s9vy97qi`。
 - 执行：预检通过 → `c3d5e7f9a1b2 → d4f6a8b0c2e1`（只建表+回填，无回滚）→ 启动 → 核验 `status=verified`。生产核验：服务 active、`/health database=ok`、公网 200、两端记录均 `2a120470`、DB `d4f6a8b0c2e1`、`customer_followers` 2566 行 = 有负责人客户 2566（无负责人 0）；日志无 error/traceback。
 - 迁移顺序提醒：另一会话的售后迁移 `e1a3c5d7b9f2` 与本迁移同以 `c3d5e7f9a1b2` 为父，本包发布后生产 head 变为 `d4f6a8b0c2e1`；售后包再发布前需把 `e1a3c5d7b9f2` 的 down_revision 改为 `d4f6a8b0c2e1`（或加合并修订），否则会因多 head 失败。
+
+
+## 2026-11-27 CI 修复：客户子资源全貌 + 内部需求越权 + 默认负责人口径
+
+- CI run `45934091974`（head `578afe19`）红在 4 个后端套件 + 1 条第十二批 UI 断言。逐项按「产品规则是否变了」判定，不为了变绿放宽边界。
+- 真 bug（已修实现）：`inquiry/service.py::apply_scope` 把 `customer_scope_clause_from` 无条件拼到条件里，该条件含 `Customer.owner_id IS NULL`；内部开发需求走 outer join 后 `customer_id=None` 天然命中，导致 `data_scope=self` 的同事能看到别人的内部需求。改为只在 `origin='customer'` 分支放宽客户范围，内部需求仍只认 `created_by` 或 `product:review`。`check_product_insights.py` 已通过。
+- 规则变更（已改测试）：客户多跟进人上线后，客户子资源在客户可见后展示该客户全部单据——`check_customer_contact_api` 的商机 total 由 0 改 1；`check_customer_handover_documents` 的客户订单子资源由只认搬过来的一张改为展示客户下全部订单。全局列表/详情仍按单据负责人、旧负责人直接打开订单仍 403 的断言保留。
+- 规则变更（已改测试）：业务单据默认负责人=创建人而非继承客户负责人——`check_twelfth_round_repairs` 的默认商机与默认复制改为归 admin；显式指定停用/不存在负责人仍分别断言 422/404，未放宽。`ops/smoke_ui.mjs` 的 12-R6 详情/列表负责人展示同步改为当前创建人。
+- 验证：`check_product_insights.py`、`check_customer_contact_api.py`、`check_customer_handover_documents.py`、`check_twelfth_round_repairs.py` 全过；`SMOKE_TWELFTH_ONLY=1` 界面冒烟通过；后端 pytest exit 0。待推 CI 复跑确认。

@@ -1190,8 +1190,9 @@ async def assert_restore_with_new_owner(ids: dict, admin_token: str) -> None:
     check("接手人能打开原报价",
           call("GET", f"/quotes/{ids['quote']}", to_token)[0], 200)
     status, res = call("GET", f"/customers/{cid}/orders", to_token)
-    check("接手人能看到客户下的订单（同事那张仍看不到）",
-          sorted(row["id"] for row in items_of(res)), [ids["order_mine"]])
+    check("接手人能看到客户下的全部订单（客户详情页全貌）",
+          sorted(row["id"] for row in items_of(res)),
+          sorted([ids["order_mine"], ids["order_colleague"]]))
     status, res = call("GET", f"/customers/{cid}/tasks", to_token)
     check_true("接手人看不到已取消的孤儿待办",
                ids["open_task"] not in {row["id"] for row in items_of(res)},
@@ -1271,11 +1272,12 @@ async def main() -> None:
           st["doc_prod_only_owner"], ids["from"])
     check("在职同事名下的文件不动", st["doc_colleague_owner"], ids["colleague"])
 
-    # ── 2) 新负责人用接口看：只看到搬过来的那一张 ────────────────────────
+    # ── 2) 新负责人用接口看：客户详情页展示该客户全部订单 ────────────────
     to_token = login(ids["to_username"], PASSWORD)
     status, res = call("GET", f"/customers/{cid}/orders", to_token)
-    check("新负责人只看到搬过来的那一张（同事那张仍看不到）",
-          sorted(row["id"] for row in items_of(res)), [ids["order_mine"]])
+    check("新负责人能看到客户下的全部订单（客户详情页全貌）",
+          sorted(row["id"] for row in items_of(res)),
+          sorted([ids["order_mine"], ids["order_colleague"]]))
     check_true("（上面这条接口确实通了）", status == 200, f"HTTP {status}")
 
     # ── 3) 旧负责人用订单明细接口看：已经不是他的了 ──────────────────────

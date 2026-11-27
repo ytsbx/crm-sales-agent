@@ -124,25 +124,32 @@ def owners(admin, me):
     _, listing = h.call("GET", f"/opportunities?customer_id={h.FIX['cust']}", admin)
     listed = next(row for row in listing["data"]["items"] if row["id"] == assigned["id"])
     h.check("12-R6 新建详情列表一致", [assigned["owner_name"], detail["data"]["owner_name"], listed["owner_name"]], [admin_name] * 3)
-    inherited = create(admin, "管理员代建默认继承")
+    inherited = create(admin, "管理员代建默认归创建人")
     me_name = h.db("select name from users where id=:i", {"i": h.FIX["me"]})[0][0]
-    h.check("12-R6 默认继承客户负责人", (inherited["owner_id"], inherited["owner_name"]), (h.FIX["me"], me_name))
+    # 2026-11-27 新口径：业务单据默认负责人 = 创建人，不再继承客户负责人。
+    h.check("12-R6 默认归创建人（管理员）", (inherited["owner_id"], inherited["owner_name"]), (h.FIX["admin"], admin_name))
     own = create(me, "分给自己", owner_id=h.FIX["me"])
     h.check("12-R6 分给自己姓名", own["owner_name"], me_name)
     h.check("12-R6 创建人未被负责人覆盖", h.db("select created_by from opportunities where id=:i", {"i": assigned["id"]})[0][0], h.FIX["me"])
     h.check("12-R6 审计仍是操作者", h.db("select operator_id from audit_logs where business_type='opportunity' and business_id=:i and action='create'", {"i": assigned["id"]})[0][0], h.FIX["me"])
     # 停用来源负责人，但不改变原商机归属；另选在职员工仍可跨部门复制。
     execute("update opportunities set owner_id=:owner where id=:i", {"owner": h.FIX["retired"], "i": h.FIX["opp"]})
-    for body in ({}, {"owner_id": h.FIX["retired"]}, {"owner_id": 999999999}):
-        rejected("12-R5 默认或显式非法负责人", "POST", f"/opportunities/{h.FIX['opp']}/clone", admin,
-                 {"title": h.PREFIX + "非法复制", **body}, 404 if body.get("owner_id") == 999999999 else 422)
+    # 默认不再继承来源负责人：不传 owner_id 时归创建人（admin），应当成功。
+    status, response = h.call("POST", f"/opportunities/{h.FIX['opp']}/clone", admin,
+                              {"title": h.PREFIX + "默认归创建人复制"})
+    h.check("12-R5 默认归创建人成功", status, 200)
+    h.check("12-R5 默认归创建人 ID", response["data"]["owner_id"], h.FIX["admin"])
+    # 显式指定停用/不存在的人才拒绝。
+    for body, expected in (({"owner_id": h.FIX["retired"]}, 422), ({"owner_id": 999999999}, 404)):
+        rejected("12-R5 显式指定非法负责人", "POST", f"/opportunities/{h.FIX['opp']}/clone", admin,
+                 {"title": h.PREFIX + "非法复制", **body}, expected)
     status, response = h.call("POST", f"/opportunities/{h.FIX['opp']}/clone", admin,
                               {"title": h.PREFIX + "改选在职复制", "owner_id": h.FIX["admin"]})
     h.check("12-R5 改选在职负责人成功", status, 200)
     h.check("12-R5 原商机历史归属不改", h.db("select owner_id from opportunities where id=:i", {"i": h.FIX["opp"]})[0][0], h.FIX["retired"])
     status, response = h.call("POST", f"/opportunities/{own['id']}/clone", admin, {"title": h.PREFIX + "在职默认复制"})
-    h.check("12-R5 在职默认继承成功", status, 200)
-    h.check("12-R5 在职默认继承 ID", response["data"]["owner_id"], h.FIX["me"])
+    h.check("12-R5 在职默认归创建人成功", status, 200)
+    h.check("12-R5 在职默认归创建人 ID", response["data"]["owner_id"], h.FIX["admin"])
     rejected("12-R5 范围外来源不可复制", "POST", f"/opportunities/{assigned['id']}/clone", me,
              {"title": h.PREFIX + "越权来源"}, 403)
 

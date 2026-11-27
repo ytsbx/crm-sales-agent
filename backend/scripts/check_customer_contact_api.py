@@ -559,7 +559,9 @@ async def main():
 
     status, res = call('GET', f'/customers/{zs_customer_id}/opportunities', token=zhangsan)
     check('张三看自己客户的商机', res.get('code'), 0)
-    check('客户可见不等于名下商机可见', res['data']['total'], 0)
+    # 2026-11-27 多跟进人：客户可见后，客户详情页展示该客户**全部**商机；
+    # 全局商机列表/详情仍按商机负责人，这条子资源不再按商机负责人二次过滤。
+    check('跟进人能看到客户名下全部商机', res['data']['total'], 1)
 
     status, res = call('GET', f'/customers/{zs_customer_id}/opportunities', token=admin)
     check('管理员能看到', res['data']['total'], 1)
