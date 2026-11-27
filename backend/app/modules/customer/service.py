@@ -113,6 +113,55 @@ def not_deleted(stmt: Select) -> Select:
     return stmt.where(Customer.deleted_at.is_(None))
 
 
+def in_flight_business_clause():
+    """客户是否还有「在途业务」。
+
+    只有存在未结束的业务时才值得催跟进：开放商机、已发送/已接受的报价、
+    在途打样、未完成订单、未收清应收、待处理需求（询盘）。
+    从没进过业务的导入联系人、只记过一条跟进但没有后续业务的客户，都不算。
+    """
+    from app.modules.inquiry.model import CustomInquiry
+    from app.modules.opportunity.model import Opportunity
+    from app.modules.order.model import SalesOrder
+    from app.modules.payment.model import ReceivablePlan
+    from app.modules.quote.model import Quote
+    from app.modules.sample.model import SampleRequest
+
+    return or_(
+        select(Opportunity.id).where(
+            Opportunity.customer_id == Customer.id,
+            Opportunity.deleted_at.is_(None),
+            Opportunity.status == "open",
+        ).exists(),
+        select(Quote.id).where(
+            Quote.customer_id == Customer.id,
+            Quote.deleted_at.is_(None),
+            Quote.status.in_(("sent", "accepted")),
+        ).exists(),
+        select(SampleRequest.id).where(
+            SampleRequest.customer_id == Customer.id,
+            SampleRequest.deleted_at.is_(None),
+            SampleRequest.status.in_(("pending", "approved", "shipped")),
+        ).exists(),
+        select(SalesOrder.id).where(
+            SalesOrder.customer_id == Customer.id,
+            SalesOrder.status.not_in(("completed", "cancelled")),
+        ).exists(),
+        select(ReceivablePlan.id)
+        .join(SalesOrder, SalesOrder.id == ReceivablePlan.order_id)
+        .where(
+            SalesOrder.customer_id == Customer.id,
+            SalesOrder.status != "cancelled",
+            ReceivablePlan.status.not_in(("paid", "cancelled")),
+        ).exists(),
+        select(CustomInquiry.id).where(
+            CustomInquiry.customer_id == Customer.id,
+            CustomInquiry.deleted_at.is_(None),
+            CustomInquiry.status.in_(("open", "developing")),
+        ).exists(),
+    )
+
+
 def build_list_stmt(
     keyword: str | None = None,
     level: str | None = None,
@@ -157,10 +206,11 @@ def build_list_stmt(
         else_=Customer.last_progress_at,
     )
     if activity == "stale" and stale_before is not None:
-        # 久未联系：按最近联系时间从早到晚，最该补联系的排前面
-        return stmt.where(last_active < stale_before).order_by(
-            last_active.asc(), Customer.id.asc()
-        )
+        # 在途业务停滞：有未结束的业务，且最近一次跟进/进展早于阈值。
+        # 没有在途业务的客户（导入后从没碰过）不在这里催。
+        return stmt.where(
+            in_flight_business_clause(), last_active < stale_before
+        ).order_by(last_active.asc(), Customer.id.asc())
     return stmt.order_by(Customer.id.desc())
 
 

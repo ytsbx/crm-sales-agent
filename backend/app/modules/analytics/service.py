@@ -25,6 +25,7 @@ from app.core.response import paginate
 from app.core.trade_mode import CNY
 from app.modules.approval.model import ApprovalInstance
 from app.modules.customer.model import Customer
+from app.modules.customer import service as customer_service
 from app.modules.followup.model import FollowUp
 from app.modules.lead.model import Lead
 from app.modules.lead.service import STATUS_LABEL as LEAD_STATUS_LABEL
@@ -64,8 +65,14 @@ ZERO = Decimal(0)
 
 
 def _customer_stale_clause(stale_date):
-    """有效活动均过期才提醒；无活动记录时，从建档时间起算。"""
+    """有效活动均过期且**仍有在途业务**才提醒。
+
+    「在途业务」见 `customer_service.in_flight_business_clause()`：开放商机 /
+    已发送或已接受报价 / 在途打样 / 未完成订单 / 未收清应收 / 待处理需求。
+    没有在途业务的客户（导入后从没碰过、或业务都结束了）不该被催跟进。
+    """
     return and_(
+        customer_service.in_flight_business_clause(),
         or_(Customer.last_followup_at.is_(None), Customer.last_followup_at < stale_date),
         or_(Customer.last_progress_at.is_(None), Customer.last_progress_at < stale_date),
         or_(

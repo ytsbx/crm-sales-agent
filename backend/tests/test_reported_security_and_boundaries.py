@@ -17,6 +17,7 @@ from app.modules.followup.model import FollowUp
 from app.modules.sample.model import SampleRequest
 from app.modules.lead.model import Lead,LeadAssignment
 from app.modules.lead import service as leads,io_router
+from app.modules.order.model import SalesOrder
 from app.modules.quote.model import Quote,QuoteVersion,QuoteItem,QuoteCharge
 from app.modules.quote import service as quotes,router as quote_router
 from app.modules.approval.model import ApprovalInstance,ApprovalRecord
@@ -194,6 +195,9 @@ async def test_stale_customer_contacts_follow_the_same_owner_scope(case):
     raw.get(Customer, 1).pool_status = "private"
     raw.get(Contact, 1).mobile = "18800001111"
     raw.get(Contact, 1).is_primary = True
+    # 待跟进口径要求有在途业务
+    raw.add(SalesOrder(id=1, order_no="SO-STALE-SCOPE", customer_id=1,
+                       total_amount=D("100"), currency="CNY", status="pending"))
     raw.add(Customer(id=2, name="其他负责人的客户", owner_id=2, pool_status="private",
                      created_at=NOW - timedelta(days=100)))
     raw.add(Contact(customer_id=2, name="范围外的联系人", mobile="18800002222", is_primary=True))

@@ -214,7 +214,7 @@ const SETTINGS_SEARCH = [
     description: {
       unrated: '设置未分级客户的提醒与处理方式。',
       pool: '设置公海回收、未跟进天数、预告期和暂缓期。',
-      auto: '设置报价未跟进、重点客户久未联系和应收即将到期的待办提醒。',
+      auto: '设置报价未跟进和应收即将到期的待办提醒。',
     }[panel.key] ?? SETTING_GROUPS.find((group) => `g-${group.id}` === panel.key)?.note ?? '',
     place: '业务规则',
     to: `/settings?tab=rules&section=${panel.key}`,

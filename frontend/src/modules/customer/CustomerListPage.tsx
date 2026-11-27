@@ -685,7 +685,7 @@ export default function CustomerListPage() {
               setActivity(value as string | undefined)
               setPage(1)
             }}
-            optionList={[{ value: 'stale', label: '久未联系' }]}
+            optionList={[{ value: 'stale', label: '在途业务停滞' }]}
             style={{ width: 140 }}
             showClear
           />
@@ -751,7 +751,7 @@ export default function CustomerListPage() {
 
         {activity === 'stale' && (
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 10 }}>
-            久未联系：按最近一次跟进/业务进展从早到晚排序，从未联系过的客户按建档时间算。
+            在途业务停滞：只显示有未结束业务（商机 / 报价 / 打样 / 订单 / 应收 / 需求）的客户，按最近一次跟进或业务进展从早到晚排序。
           </div>
         )}
 

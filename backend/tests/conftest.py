@@ -129,6 +129,7 @@ def make_engine():
     from app.core.idempotency import RequestKey
     from app.modules.bizdoc.model import BizDoc, BizDocTemplate
     from app.modules.customer.model import Contact, Customer
+    from app.modules.inquiry.model import CustomInquiry
     from app.modules.lead.model import Lead
     from app.modules.opportunity.model import Opportunity, OpportunityStage
     from app.modules.order.model import OrderMilestone, SalesOrder
@@ -136,6 +137,7 @@ def make_engine():
     from app.modules.pricing.model import ExchangeRate
     from app.modules.quote.model import Quote, QuoteVersion
     from app.modules.returns.model import SalesReturn, SalesReturnItem, SalesReturnPlanAdjustment
+    from app.modules.sample.model import SampleRequest
     from app.modules.user.model import Department, User
 
     _register_sqlite_bigint_as_integer()
@@ -175,6 +177,9 @@ def make_engine():
             SalesReturn,
             SalesReturnItem,
             SalesReturnPlanAdjustment,
+            # 「在途业务」判定要查打样和定制需求（客户列表/工作台口径）
+            SampleRequest,
+            CustomInquiry,
         )
     ]
     engine = create_engine("sqlite+pysqlite:///:memory:")

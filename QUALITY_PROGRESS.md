@@ -6630,3 +6630,11 @@
 - 现象：通知弹层的日期范围选择框太窄，「起始/截止」被截断成「起…/截…」。
 - 修复：宽度 174→236，占位文案改为「开始/结束」；本地截图确认两个输入完整显示。
 - 生产发布：合成提交 4dbb0641（基线 8e43c652），SHA256 `2130ecdd…23ab`；`status=verified`，备份 `/opt/crm-sales-agent/backup/unified-4dbb06413a7a-ohfljdai`；服务 active、/health ok、公网 200、两端版本记录一致、数据库仍 a1c4e8f2b6d9。
+
+## 2026-11-27 「待跟进」改为「在途业务停滞」（本地验证完成）
+
+- 背景：原口径把导入后从未跟进的联系人（2,553 个）全算待跟进；主人要求只催有业务可做的客户。
+- 口径：客户存在在途业务——开放商机 / 已发送或已接受报价 / 在途打样（pending/approved/shipped）/ 未完成订单 / 未收清应收 / 待处理需求（open/developing）——且最近跟进或业务进展超过 `customer_stale_days` 天才算。
+- 后端：新增 `customer_service.in_flight_business_clause()`；客户列表 `activity=stale` 和 `analytics._customer_stale_clause`（工作台卡片+清单、同源头）都加上该条件。
+- 前端：工作台卡片提示改为「有在途业务但 N 天无进展」；清单口径说明更新；客户中心筛选「久未联系」改为「在途业务停滞」；自动待办设置说明去掉已删除的久未联系规则。
+- 验证：新增/更新测试（无在途业务、业务已结束、最近有活动都不算；在途且停滞才列出）；customer/task/analytics 相关 359 项通过；本地 8009 实测 stale_total=41、dashboard stale_customer_count=41，两者一致。

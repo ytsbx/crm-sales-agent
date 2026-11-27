@@ -205,7 +205,7 @@ export default function WorkbenchPage() {
       label: '待跟进客户',
       value: String(summary?.stale_customer_count ?? '-'),
       help: '超过设定天数没有有效跟进或业务进展的客户。点这张卡可以直接看是哪几家。',
-      hint: `${summary?.stale_customer_days ?? '-'} 天无有效跟进或业务进展`,
+      hint: `有在途业务但 ${summary?.stale_customer_days ?? '-'} 天无进展`,
       tone: (summary?.stale_customer_count ?? 0) > 0 ? 'warning' : 'default',
       // ⚠️ 从前这里跳 `/customers`（不带任何筛选），而客户列表既没有「待跟进」
       // 筛选项也没有「最近跟进」列 —— 报了警却看不到是哪几个（审查指出）。
@@ -784,8 +784,10 @@ export default function WorkbenchPage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div style={{ fontSize: 12, color: 'var(--crm-text-2)' }}>
             口径：你可见的私海客户里，
-            超过 <b>{staleQuery.data?.days ?? summary?.stale_customer_days ?? '-'} 天</b>
-            没有有效跟进或业务进展；从未有活动记录的客户，从建档时间起算。
+            有<b>在途业务</b>（未结束商机 / 已发送或已接受报价 / 在途打样 /
+            未完成订单 / 未收清应收 / 待处理需求），且超过
+            <b> {staleQuery.data?.days ?? summary?.stale_customer_days ?? '-'} 天</b>
+            没有有效跟进或业务进展。没有在途业务的客户不在这里催。
           </div>
           {staleQuery.isLoading && <div style={{ color: 'var(--crm-text-3)' }}>正在加载…</div>}
           {staleQuery.isError && (
@@ -794,7 +796,7 @@ export default function WorkbenchPage() {
             </div>
           )}
           {staleQuery.data && staleQuery.data.total === 0 && (
-            <div style={{ color: 'var(--crm-text-3)' }}>没有待跟进的客户，保持得很好。</div>
+            <div style={{ color: 'var(--crm-text-3)' }}>没有在途业务停滞的客户，保持得很好。</div>
           )}
           {(staleQuery.data?.items ?? []).map((row) => (
             <div

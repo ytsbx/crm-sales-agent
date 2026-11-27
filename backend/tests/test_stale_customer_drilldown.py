@@ -9,6 +9,16 @@ from sqlalchemy.orm import Session
 from conftest import SyncSessionAsAsync, make_engine, make_user
 from app.modules.analytics import service
 from app.modules.customer.model import Customer
+from app.modules.order.model import SalesOrder
+from decimal import Decimal
+
+
+def _open_order(order_id: int, customer_id: int) -> SalesOrder:
+    """在途订单：客户没有在途业务时不再进入待跟进口径。"""
+    return SalesOrder(
+        id=order_id, order_no=f"SO-STALE-{order_id}", customer_id=customer_id,
+        total_amount=Decimal("100"), currency="CNY", status="pending",
+    )
 
 
 @pytest.mark.anyio
@@ -34,6 +44,7 @@ async def test_new_customers_wait_until_threshold(monkeypatch):
                                  pool_status='private', created_at=now-timedelta(days=age),
                                  last_followup_at=now-timedelta(days=followup) if followup else None,
                                  last_progress_at=now-timedelta(days=progress) if progress else None))
+                raw.add(_open_order(id, id))
             raw.commit()
             cutoff = now-timedelta(days=30)
             ids = set(raw.scalars(select(Customer.id).where(service._customer_stale_clause(cutoff))))
@@ -55,6 +66,7 @@ async def test_stale_pagination_keeps_true_total_and_scope(monkeypatch):
             old = datetime.now(UTC)-timedelta(days=40)
             raw.add_all(Customer(id=id, name=f'customer {id}', owner_id=1,
                                  pool_status='private', created_at=old) for id in range(1, 206))
+            raw.add_all(_open_order(id, id) for id in range(1, 206))
             raw.add(Customer(id=206, name='other owner', owner_id=2, pool_status='private', created_at=old))
             raw.add(Customer(id=207, name='public', owner_id=1, pool_status='public', created_at=old))
             raw.add(Customer(id=208, name='deleted', owner_id=1, pool_status='private', created_at=old, deleted_at=old))
