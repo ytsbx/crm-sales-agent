@@ -530,6 +530,13 @@ export default function OrderDetailPage() {
     void queryClient.invalidateQueries({ queryKey: ['payments'] })
   }
 
+  // 提示里的跳转统一走这里：切页签 + 把页签滚到视口内，避免用户自己找入口。
+  const jumpToTab = (tab: string) => {
+    setActiveKey(tab)
+    orderTabsRef.current?.scrollIntoView({ block: 'start' })
+    orderTabsRef.current?.focus({ preventScroll: true })
+  }
+
   const statusMutation = useMutation({
     mutationFn: () => changeOrderStatus(orderId, targetStatus!, '在订单详情页更新'),
     onSuccess: (result) => {
@@ -1262,6 +1269,15 @@ export default function OrderDetailPage() {
   const statusBlocked = targetStatus
     ? completionBlocked || shipmentBlocked || completionPaymentBlocked
     : '先选择要更新的履约状态。'
+  // 后端兜底拒绝时也可能带“去回款/去发货”的去处；能判断出类型就给按钮，
+  // 不让用户只看到一句红字、还得自己找页签。
+  const statusErrorJump = !statusMutation.error
+    ? null
+    : /未收款|回款/.test(statusMutation.error.message)
+      ? { tab: 'payments', label: '去回款记录' }
+      : /未发|发货/.test(statusMutation.error.message)
+        ? { tab: 'shipments', label: '去发货批次' }
+        : null
   const shipmentPlanBlocked = orderCancelled
     ? '订单已取消，不能再排发货批次。'
     : shipment?.summary.all_shipped
@@ -1794,6 +1810,7 @@ export default function OrderDetailPage() {
          那张卡也是一个绿色的「¥0.00」，绿色在这里等于说"收到钱了"。
          改成收到钱才绿。 */
       tone: Number(order.received_amount_exact ?? order.received_amount ?? 0) > 0 ? 'success' : 'default',
+      hint: <button type="button" className="crm-text-action" onClick={() => jumpToTab('payments')}>查看回款记录</button>,
     },
     {
       label: '客户未付款余额',
@@ -1802,11 +1819,13 @@ export default function OrderDetailPage() {
          原来只要 >0 就染橙，等于每张新订单都亮一个橙灯，警告用滥了。
          真正的逾期由「回款中心」的逾期红字承担。 */
       tone: 'default',
+      hint: <button type="button" className="crm-text-action" onClick={() => jumpToTab('payments')}>去确认回款</button>,
     },
     {
       label: '已分配到应收期',
       help: '到账的钱已经分配到具体应收期的金额。剩下的会留在「已到账待分配」里。',
       value: formatMoney(toTwoDecimals(summary?.allocated_amount_exact ?? summary?.allocated_amount ?? 0), order.currency),
+      hint: <button type="button" className="crm-text-action" onClick={() => jumpToTab('receivables')}>查看应收计划</button>,
     },
     // 这两张也是「有异常才有意义」：钱都分配完、没有待确认的，
     // 它们就是两个 ¥0.00 的空卡，把 4+2 的第二行撑出来。
@@ -2117,11 +2136,7 @@ export default function OrderDetailPage() {
             <p className="workflow-guide">{financeNext.hint}</p>
             {/* 原来是默认 primary 的浅蓝实底药丸 —— 主人不喜欢蓝色整块填充，
                 这里推进到主按钮语言：白底 + 主色描边 + 主色字。 */}
-            <Button size="small" type="primary" theme="outline" onClick={() => {
-              setActiveKey(financeNext.tab)
-              orderTabsRef.current?.scrollIntoView({ block: 'start' })
-              orderTabsRef.current?.focus({ preventScroll: true })
-            }}>{financeNext.label}</Button>
+            <Button size="small" type="primary" theme="outline" onClick={() => jumpToTab(financeNext.tab)}>{financeNext.label}</Button>
           </div>
         )}
         {/* 订单金额组成（2026-10-09「产品价格与运费分离」）：订单页要能解释
@@ -2582,7 +2597,14 @@ export default function OrderDetailPage() {
                       ? `${waitingForPayment}。财务确认全部回款后，才能完成订单。`
                       : '全部回款已由财务确认，可以完成订单。'}
                   </p>
-                  <Button size="small" theme="outline" disabled={hasUnreceived} onClick={() => openStatusEditor('completed')}>完成订单</Button>
+                  <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <Button size="small" theme="outline" disabled={hasUnreceived} onClick={() => openStatusEditor('completed')}>完成订单</Button>
+                    {hasUnreceived && (
+                      <button type="button" className="crm-text-action" onClick={() => jumpToTab('payments')}>
+                        去「回款记录」确认
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
               <Table<ShipmentBatchRow>
@@ -3311,26 +3333,44 @@ export default function OrderDetailPage() {
             </p>
             <Button size="small" theme="borderless" style={{ justifyContent: 'flex-start', paddingLeft: 0 }} onClick={() => {
               setStatusVisible(false)
-              setActiveKey('payments')
-              orderTabsRef.current?.scrollIntoView({ block: 'start' })
-              orderTabsRef.current?.focus({ preventScroll: true })
+              jumpToTab('payments')
             }}>
               去回款记录
             </Button>
           </div>
         )}
-        {completionBlocked && (
+        {(completionBlocked || shipmentBlocked) && (
           <Button size="small" theme="borderless" style={{ marginTop: 8 }} onClick={() => {
             setStatusVisible(false)
-            setActiveKey('shipments')
-            orderTabsRef.current?.scrollIntoView({ block: 'start' })
-            orderTabsRef.current?.focus({ preventScroll: true })
+            jumpToTab('shipments')
           }}>
             去发货批次
           </Button>
         )}
         {statusMutation.error && (
-          <Banner type="danger" fullMode={false} closeIcon={null} description={statusMutation.error.message} />
+          <Banner
+            type="danger"
+            fullMode={false}
+            closeIcon={null}
+            description={(
+              <div>
+                <p style={{ margin: 0 }}>{statusMutation.error.message}</p>
+                {statusErrorJump && (
+                  <Button
+                    size="small"
+                    theme="borderless"
+                    style={{ marginTop: 6, paddingLeft: 0 }}
+                    onClick={() => {
+                      setStatusVisible(false)
+                      jumpToTab(statusErrorJump.tab)
+                    }}
+                  >
+                    {statusErrorJump.label}
+                  </Button>
+                )}
+              </div>
+            )}
+          />
         )}
       </Modal>
 
@@ -3378,9 +3418,7 @@ export default function OrderDetailPage() {
               </p>
               <Button size="small" theme="borderless" onClick={() => {
                 setCancelVisible(false)
-                setActiveKey('payments')
-                orderTabsRef.current?.scrollIntoView({ block: 'start' })
-                orderTabsRef.current?.focus({ preventScroll: true })
+                jumpToTab('payments')
               }}>查看回款记录</Button>
             </Banner>
           ) : (

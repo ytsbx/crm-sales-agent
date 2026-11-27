@@ -633,7 +633,8 @@ export default function LogisticsPage() {
 
         <Tabs.TabPane tab="线路速查" itemKey="routes">
           <div style={{ color: 'var(--crm-text-3)', fontSize: 13, margin: '12px 0' }}>
-            线路由运费费率推导而来，维护费率请到「价格中心 › 运费费率」。
+            线路由运费费率推导而来，维护费率请到
+            <Link to="/prices?tab=logistics" style={{ marginLeft: 4 }}>「价格中心 › 运费费率」</Link>。
           </div>
           <Table
             size="small"
