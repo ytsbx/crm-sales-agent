@@ -5,7 +5,7 @@ import { requiredQuantityText } from '../../shared/number-input'
 import { paymentMoney } from '../../shared/payment-allocation'
 import PageHeader from '../../shared/components/PageHeader'
 import HelpTip from '../../shared/components/HelpTip'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { emptyTextNode } from '../../shared/components/EmptyState'
@@ -66,9 +66,14 @@ const EMPTY_ITEM = { sku_id: null as number | null, quantity: '', unit_price: ''
 export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: string }) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const { can } = usePermissions()
   const currentUser = useAuthStore((state) => state.user)
-  const [selectedTab, setActiveKey] = useState(initialTab)
+  const requestedTab = searchParams.get('tab')
+  const resolvedInitialTab = TABS.some(({ itemKey }) => itemKey === requestedTab) ? requestedTab! : initialTab
+  const [selectedTab, setActiveKey] = useState(resolvedInitialTab)
+  // 深链 `?tab=payments` 只负责“打开哪一个页签”，不改变现有页内切换；
+  // 工作台的「本月回款金额」卡要落在回款记录，而不是默认的应收计划。
   const tab = TABS.find(({ itemKey }) => itemKey === selectedTab)
   const activeKey = tab && can(tab.permission) ? tab.itemKey : undefined
   /* 1024 宽内容区约 700px，销售订单八列合计 1114px，右侧「待回款 / 交期 /

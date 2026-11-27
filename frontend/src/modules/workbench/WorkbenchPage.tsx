@@ -257,7 +257,7 @@ export default function WorkbenchPage() {
         </div>
       ),
       tone: 'default',
-      onClick: () => navigate('/receivables'),
+      onClick: () => navigate('/receivables?tab=payments'),
     },
   ]
 
@@ -368,7 +368,7 @@ export default function WorkbenchPage() {
                 label: '公海客户',
                 value: team.unassigned_customer_count ?? 0,
                 hint: '没有跟进人，可领取',
-                onClick: () => navigate('/customers'),
+                onClick: () => navigate('/customers?scope=pool'),
               },
               {
                 label: '本月团队成交',

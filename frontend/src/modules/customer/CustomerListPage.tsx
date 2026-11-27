@@ -119,16 +119,21 @@ export default function CustomerListPage() {
   const [keyword, setKeyword] = useState('')
   const [level, setLevel] = useState<string | undefined>()
   const [activity, setActivity] = useState<string | undefined>()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const requestedScope = searchParams.get('scope')
+  const defaultScope: Scope = currentUser?.data_scope === 'all' ? 'all' : 'mine'
   // 默认范围跟着数据权限走：管理员看全部，业务员看自己的——
-  // 否则管理员打开客户中心会是一片空白（他名下本来就没有客户）
+  // 否则管理员打开客户中心会是一片空白（他名下本来就没有客户）。
+  // `scope` 参数只认这三个值：工作台的「公海客户」卡要直达公海池，不能落在默认范围。
   const [scope, setScope] = useState<Scope>(
-    currentUser?.data_scope === 'all' ? 'all' : 'mine',
+    requestedScope === 'mine' || requestedScope === 'pool' || requestedScope === 'all'
+      ? requestedScope
+      : defaultScope,
   )
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   // 第二个页签「回收复核」（2026-11-19 主人：公海回收不用单独做一个板块）。
   // 复核本来就是公海池的下一步：同一张卡里先看池子，再看谁该被回收、直接批 / 驳。
-  const [searchParams, setSearchParams] = useSearchParams()
 
   const [modalVisible, setModalVisible] = useState(false)
   const [form, setForm] = useState<CustomerPayload>(EMPTY_FORM)
