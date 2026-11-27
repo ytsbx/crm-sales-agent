@@ -2180,12 +2180,16 @@ button.notice-item-main:hover .notice-item-action {
 .lead-row-actions {
   display: flex;
   align-items: center;
+  /* 表头「操作」按全站规则居中；行内动作也要跟着居中，
+     否则一条 5 个文字链的动作组会从左边排起，表头飘在右半边（2026-11-27 实拍）。 */
+  justify-content: center;
   flex-wrap: wrap;
   gap: 4px;
 }
 .lead-row-actions-compact {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+  justify-items: center;
   gap: 2px 6px;
   white-space: nowrap;
 }
@@ -2229,6 +2233,8 @@ button.notice-item-main:hover .notice-item-action {
   overflow-wrap: anywhere;
 }
 .lead-mobile-record .lead-row-actions {
+  /* 手机卡片是另一套阅读节奏：动作从卡片左边起，不跟着桌面表头居中。 */
+  justify-content: flex-start;
   border-top: 1px solid var(--crm-border);
   padding-top: 6px;
 }
