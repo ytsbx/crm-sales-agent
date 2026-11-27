@@ -3056,6 +3056,16 @@ export default function QuoteDetailPage() {
             <div className="send-context-hint">
               系统不会替你发送文件 —— 请先用「下载 PDF」或企业微信把报价发给客户，
               再回来登记这次发送。登记后这一版会锁定（不能再改），商机会推进到「已报价」。
+              {version && quote && (
+                <button
+                  type="button"
+                  className="crm-text-action"
+                  style={{ display: 'block', marginTop: 6 }}
+                  onClick={() => void showDownloadResult(downloadQuotePdf(version.id, `${quote.quote_no}-V${version.version_no}.pdf`))}
+                >
+                  下载这版 PDF
+                </button>
+              )}
             </div>
           </div>
 
