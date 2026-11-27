@@ -1764,7 +1764,7 @@ export default function CustomerDetailPage() {
         okButtonProps={{ disabled: pendingTagIds.length === 0 }}
       >
         <div style={{ marginBottom: 8, color: 'var(--crm-text-3)', fontSize: 12 }}>
-          标签是受控字典，可在<Link to="/settings?tab=tags" style={{ margin: '0 4px' }}>「系统设置 › 客户标签」</Link>里维护。
+          标签是受控字典，可在<Link className="crm-text-action customer-tag-settings-link" to="/settings?tab=tags" style={{ margin: '0 4px' }}>「系统设置 › 客户标签」</Link>里维护。
         </div>
         <Select
           multiple
@@ -1780,7 +1780,7 @@ export default function CustomerDetailPage() {
         />
         {(tagsQuery.data ?? []).length === 0 && !tagsQuery.isLoading && (
           <div style={{ marginTop: 8, color: 'var(--crm-text-3)', fontSize: 12 }}>
-            还没有任何标签，先去「系统设置 › 客户标签」建一个。
+            还没有任何标签，先在上面建一个。
           </div>
         )}
       </Modal>

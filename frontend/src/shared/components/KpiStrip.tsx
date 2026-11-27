@@ -6,6 +6,8 @@ export interface KpiItem {
   label: string
   value: ReactNode
   hint?: ReactNode
+  /** hint 是提示胶囊（默认）还是卡底的可点击文字入口。 */
+  hintVariant?: 'chip' | 'link'
   /** 指标口径不清楚时，用一句话解释它统计的是什么。 */
   help?: string
   tone?: 'default' | 'primary' | 'success' | 'warning' | 'error'
@@ -64,7 +66,10 @@ export default function KpiStrip({
               {item.value}
             </div>
             {item.hint && (
-              <div style={{ marginTop: 'var(--crm-space-3)' }}>
+              <div
+                className={item.hintVariant === 'link' ? 'kpi-hint-link' : undefined}
+                style={{ marginTop: 'var(--crm-space-3)' }}
+              >
                 {item.href ? (
                   <Link
                     className={tone.chip}
@@ -73,6 +78,8 @@ export default function KpiStrip({
                   >
                     {item.hint}
                   </Link>
+                ) : item.hintVariant === 'link' ? (
+                  item.hint
                 ) : (
                   <span className={tone.chip}>{item.hint}</span>
                 )}

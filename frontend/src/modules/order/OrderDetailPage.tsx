@@ -1810,6 +1810,7 @@ export default function OrderDetailPage() {
          那张卡也是一个绿色的「¥0.00」，绿色在这里等于说"收到钱了"。
          改成收到钱才绿。 */
       tone: Number(order.received_amount_exact ?? order.received_amount ?? 0) > 0 ? 'success' : 'default',
+      hintVariant: 'link' as const,
       hint: <button type="button" className="crm-text-action" onClick={() => jumpToTab('payments')}>查看回款记录</button>,
     },
     {
@@ -1819,12 +1820,14 @@ export default function OrderDetailPage() {
          原来只要 >0 就染橙，等于每张新订单都亮一个橙灯，警告用滥了。
          真正的逾期由「回款中心」的逾期红字承担。 */
       tone: 'default',
+      hintVariant: 'link' as const,
       hint: <button type="button" className="crm-text-action" onClick={() => jumpToTab('payments')}>去确认回款</button>,
     },
     {
       label: '已分配到应收期',
       help: '到账的钱已经分配到具体应收期的金额。剩下的会留在「已到账待分配」里。',
       value: formatMoney(toTwoDecimals(summary?.allocated_amount_exact ?? summary?.allocated_amount ?? 0), order.currency),
+      hintVariant: 'link' as const,
       hint: <button type="button" className="crm-text-action" onClick={() => jumpToTab('receivables')}>查看应收计划</button>,
     },
     // 这两张也是「有异常才有意义」：钱都分配完、没有待确认的，
@@ -1839,6 +1842,7 @@ export default function OrderDetailPage() {
               order.currency,
             ),
             tone: 'warning' as const,
+            hintVariant: 'link' as const,
             hint: <button type="button" className="crm-text-action" onClick={() => jumpToTab('returns')}>查看退货记录</button>,
           },
         ]
@@ -1853,6 +1857,7 @@ export default function OrderDetailPage() {
               order.currency,
             ),
             tone: 'warning' as const,
+            hintVariant: 'link' as const,
             hint: <button type="button" className="crm-text-action" onClick={() => jumpToTab('payments')}>去调整分配</button>,
           },
         ]
@@ -1865,6 +1870,7 @@ export default function OrderDetailPage() {
               summary?.pending_confirm_amount_exact ?? summary?.pending_confirm_amount ?? 0,
               order.currency,
             ),
+            hintVariant: 'link' as const,
             hint: <button type="button" className="crm-text-action" onClick={() => jumpToTab('payments')}>去确认回款</button>,
           },
         ]
@@ -1879,6 +1885,7 @@ export default function OrderDetailPage() {
             // 并排，会被读成 ¥1（2026-11-16 订单详情巡检）。
             value: `${summary.overdue_count} 个`,
             tone: 'error' as const,
+            hintVariant: 'link' as const,
             hint: <button type="button" className="crm-text-action" onClick={() => jumpToTab('receivables')}>查看逾期应收</button>,
           },
         ]

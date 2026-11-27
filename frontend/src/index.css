@@ -1618,6 +1618,23 @@ button.notice-item-main:hover .notice-item-action {
   display: none;
 }
 
+/* 指标卡底部的文字入口：不套色块胶囊，避免四张异常卡各挂一个彩色标签。
+   只留一行蓝字 + 下划线反馈，和卡片左对齐。 */
+.kpi-hint-link {
+  font-size: 12px;
+  line-height: 1.4;
+}
+.kpi-hint-link .crm-text-action {
+  color: var(--crm-primary);
+}
+.kpi-hint-link .crm-text-action:hover {
+  text-decoration: underline;
+}
+
+.customer-tag-settings-link:hover {
+  text-decoration: underline;
+}
+
 /* 行内危险链接（设置页每行的「停用」）：平时跟普通次要文字一样灰，
    鼠标移上去才变红。一屏九行全红会把页面喊成一片噪音（2026-11-16）。 */
 .crm-danger-hover.semi-button,
