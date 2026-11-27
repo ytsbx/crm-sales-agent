@@ -45,8 +45,8 @@ def company(i=1, name='甲有限公司', owner=1, kind='企业', deleted=False, 
     return Obj(id=i, name=name, customer_type=kind, owner_id=owner, deleted_at=deleted or None, status=status)
 
 
-def snapshot(rows, users=None, customers=None, contacts=None, followers=None):
-    return rows, users if users is not None else [user()], customers or [], contacts or [], followers if followers is not None else [relation(row_id=r.id, i=r.id) for r in rows]
+def snapshot(rows, users=None, customers=None, contacts=None, followers=None, customer_followers=None):
+    return rows, users if users is not None else [user()], customers or [], contacts or [], followers if followers is not None else [relation(row_id=r.id, i=r.id) for r in rows], customer_followers or []
 
 
 def test_explicit_company_groups_contacts_but_personal_names_are_not_identity():
@@ -69,34 +69,58 @@ def test_uncertain_names_stay_pending(kwargs):
     ([user(status='disabled')],[relation()], '有跟进员工没有对应的 CRM 账号'),
     ([user(),user(2)],[relation()], '有跟进员工没有对应的 CRM 账号'),
     ([user()],[], '没有跟进员工，无法确定负责人'),
-    ([user(),user(2,'staff-2')],[relation(),relation(2,1,'staff-2')], '多名跟进员工对应不同负责人'),
 ])
-def test_unbound_disabled_ambiguous_and_multiple_owners_never_enter_pool(users,followers,reason):
+def test_no_bound_follower_still_holds(users,followers,reason):
     result,_,held,_=_plan(snapshot([row()],users=users,followers=followers),'hold')
     assert result['held_contacts']==1
-    assert result['new_unassigned_customers']==0
     assert result['import_contacts']==0
-    # 每条扣住的原因要能指向具体做法，而不是统一的「未唯一匹配」
     assert held=={1: reason}
 
 
-def test_company_with_different_owners_needs_confirmation():
-    result,_,held,peers=_plan(snapshot(
+def test_multiple_bound_followers_import_as_followers_not_held():
+    result,groups,held,_=_plan(
+        snapshot([row()], users=[user(),user(2,'staff-2')],
+                 followers=[relation(),relation(2,1,'staff-2')]), 'hold')
+    assert result['held_contacts']==0 and result['import_contacts']==1
+    assert result['import_followers']==2
+    assert held=={}
+    group=groups[0]
+    assert group['follower_ids']=={1,2}
+    # 没有 add_time 时按 user id 取最小作默认负责人
+    assert group['owner_id']==1
+    assert all(owner in {1,2} for _,owner in group['rows'])
+
+
+def test_company_with_different_followers_imports_one_customer():
+    result,groups,held,_=_plan(snapshot(
         [row(1,full='甲有限公司'),row(2,name='客户乙',full='甲有限公司')],
         users=[user(),user(2,'staff-2')], followers=[relation(),relation(2,2,'staff-2')]),'hold')
-    assert result['held_contacts']==2
-    # 同公司一条客户，两个跟进人对应两个账号 → 都扣住，并互相成为「同公司联系人」
-    assert held=={1:'多名跟进员工对应不同负责人',2:'多名跟进员工对应不同负责人'}
-    assert peers=={1:['客户乙'],2:['客户甲']}
+    assert result['held_contacts']==0
+    assert result['import_contacts']==2
+    assert len(groups)==1
+    assert groups[0]['follower_ids']=={1,2}
+    assert held=={}
 
 
 @pytest.mark.parametrize('customers', [
     [company(),company(2)], [company(deleted=True)], [company(status='disabled')],
-    [company(kind='个人')], [company(owner=2)],
+    [company(kind='个人')],
 ])
 def test_existing_customer_conflicts_are_not_merged(customers):
     result,_,_,_=_plan(snapshot([row(full='甲有限公司')],customers=customers),'hold')
     assert result['import_contacts']==0 and result['held_contacts']==1
+
+
+def test_existing_customer_with_other_owner_gets_followers_not_held():
+    result,groups,held,_=_plan(
+        snapshot([row(full='甲有限公司')], users=[user(),user(2,'staff-2')],
+                 customers=[company(owner=2)],
+                 followers=[relation(), relation(2,1,'staff-2')]), 'hold')
+    assert result['held_contacts']==0 and result['import_contacts']==1
+    assert held=={}
+    # 既有客户的默认负责人保持不变（2），新的跟进人（1）补进去
+    assert groups[0]['owner_id']==2
+    assert groups[0]['follower_ids']=={1,2}
 
 
 def test_existing_personal_name_and_source_link_need_review():
@@ -117,9 +141,12 @@ def db():
     for model in (External,Follow,WeComSyncJob,AuditLog):model.__table__.create(engine)
     with Session(engine) as raw:
         raw.add(User(id=1,name='员工甲',username='test-owner',password_hash='not-a-real-hash',status='active',wecom_userid='staff-1'))
+        raw.add(User(id=2,name='员工乙',username='test-owner-2',password_hash='not-a-real-hash',status='active',wecom_userid='staff-2'))
         for i in (1,2):
             raw.add(External(id=i,external_userid=f'ext-{i}',name=f'联系人{i}',raw_data={'corp_full_name':'甲有限公司'},normalize_status='pending'))
             raw.add(Follow(id=i,external_contact_id=i,wecom_userid='staff-1',status='active'))
+        # 联系人 1 同时被员工乙跟进：导入后应落成两个跟进人
+        raw.add(Follow(id=3,external_contact_id=1,wecom_userid='staff-2',status='active'))
         raw.commit()
         yield raw, SyncSessionAsAsync(raw)
     engine.dispose()
@@ -138,6 +165,10 @@ async def test_company_import_real_persistence_idempotent_and_audited(db):
     contacts=raw.scalars(select(Contact)).all()
     assert len(contacts)==2 and {x.external_userid for x in contacts}=={'ext-1','ext-2'}
     assert all(x.customer_id==c.id and x.owner_id==1 for x in contacts)
+    from app.modules.customer.model import CustomerFollower
+    followers=raw.scalars(select(CustomerFollower).where(CustomerFollower.deleted_at.is_(None))).all()
+    assert {f.user_id for f in followers}=={1,2}
+    assert preview['import_followers']==2
     assert sum(x.is_primary for x in contacts)==1
     assert raw.scalar(select(func.count()).select_from(AuditLog))==1
     for ext in raw.scalars(select(External)):

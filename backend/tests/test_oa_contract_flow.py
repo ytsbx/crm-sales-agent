@@ -13,7 +13,7 @@ from app.core.config import settings
 from app.core.errors import AppError
 from app.modules.contract.model import ContractDocument
 from app.modules.contract.router import delete_document
-from app.modules.customer.model import Customer
+from app.modules.customer.model import Customer, CustomerFollower
 from app.modules.dingtalk.model import OaInstance
 from app.modules.file.model import FileRecord
 from app.modules.oa import client as oa_client
@@ -36,7 +36,7 @@ def _engine():
     Base.metadata.create_all(
         engine,
         tables=[
-            User.__table__, Customer.__table__, FileRecord.__table__,
+            User.__table__, Customer.__table__, CustomerFollower.__table__, FileRecord.__table__,
             ContractTemplate.__table__, ContractDocument.__table__,
             SalesOrder.__table__, Quote.__table__, QuoteVersion.__table__,
             OaInstance.__table__, SystemSetting.__table__,

@@ -235,8 +235,10 @@ async def list_cases(
         ))
     owner_ids = await scoped_owner_ids(session, user)
     if owner_ids is not None:
+        from app.modules.customer.visibility import customer_scope_clause_from
+
         visible_customers = select(Customer.id).where(
-            or_(Customer.owner_id.is_(None), Customer.owner_id.in_(owner_ids))
+            customer_scope_clause_from(owner_ids)
         )
         conditions.append(CustomerDuplicateCase.customer_id.in_(visible_customers))
         conditions.append(CustomerDuplicateCase.candidate_id.in_(visible_customers))

@@ -15,6 +15,7 @@ from app.modules.customer import documents as documents_service
 from app.modules.customer.model import (
     Contact,
     Customer,
+    CustomerFollower,
     CustomerMergeLog,
     CustomerOwnerHistory,
 )
@@ -100,13 +101,13 @@ async def apply_data_scope(
 ) -> Select:
     """按数据范围过滤客户（05-TECH §24：禁止只靠前端隐藏）。
 
-    `department_and_sub` 取本部门及所有下级部门，见 app/core/data_scope.py。
-    客户允许没有负责人（公海），所以这里额外放行 owner_id 为空的行。
+    客户允许多人跟进：默认负责人、任一有效跟进人在范围内，或客户无默认负责人
+    （公海）都可见。判据统一在 `customer/visibility.py`。
     """
-    owner_ids = await scoped_owner_ids(session, user)
-    if owner_ids is None:
-        return stmt
-    return stmt.where(or_(Customer.owner_id.in_(owner_ids), Customer.owner_id.is_(None)))
+    from app.modules.customer.visibility import customer_scope_clause_from
+
+    clause = customer_scope_clause_from(await scoped_owner_ids(session, user))
+    return stmt if clause is None else stmt.where(clause)
 
 
 def not_deleted(stmt: Select) -> Select:
@@ -169,6 +170,7 @@ def build_list_stmt(
     source: str | None = None,
     owner_id: int | None = None,
     pool_status: str | None = None,
+    follower_id: int | None = None,
     activity: str | None = None,
     stale_before: datetime | None = None,
 ) -> Select:
@@ -194,6 +196,16 @@ def build_list_stmt(
         stmt = stmt.where(Customer.owner_id == owner_id)
     if pool_status:
         stmt = stmt.where(Customer.pool_status == pool_status)
+    if follower_id is not None:
+        # 「我跟进的」= 我是有效跟进人之一，而不是"默认负责人是我"
+        stmt = stmt.where(
+            Customer.id.in_(
+                select(CustomerFollower.customer_id).where(
+                    CustomerFollower.user_id == follower_id,
+                    CustomerFollower.deleted_at.is_(None),
+                )
+            )
+        )
     # “最近有效联系/进展”，两者都没有就退回建档时间；与 activity_status 口径一致。
     last_active = case(
         (
@@ -536,6 +548,7 @@ def serialize_customer(
     recent_order_count: int = 0,
     current_opportunity_count: int = 0,
     activity_status: str = "unknown",
+    followers: list[dict] | None = None,
 ) -> dict:
     return {
         "id": customer.id,
@@ -553,6 +566,9 @@ def serialize_customer(
         "pool_status": customer.pool_status,
         "owner_id": customer.owner_id,
         "owner_name": owner_name,
+        # 有效跟进人（默认负责人也在其中；列表/详情展示与协作权限）
+        "followers": followers or [],
+        "follower_count": len(followers or []),
         # 领导六阶段（自动推导，stage.py）：了解/报价/打样/首单/返单/稳定复购
         "stage": stage,
         "stage_label": stage_module.STAGE_LABELS.get(stage) if stage else None,
@@ -645,17 +661,11 @@ async def assert_customer_visible(
     （05-TECH §24：禁止只靠前端隐藏）。
 
     公海客户（owner_id 为空）对所有有 customer:view 的人可见 ——
-    这正是公海的意义。
+    这正是公海的意义。多跟进人客户的判断统一走 `customer/visibility.py`。
     """
-    if customer.owner_id is None:
-        return
-    owner_ids = await scoped_owner_ids(session, user)
-    if owner_ids is None:  # 数据范围 all
-        return
-    if int(customer.owner_id) not in owner_ids:
-        raise AppError(
-            ErrorCode.DATA_SCOPE_DENIED, "该客户不在你的数据范围内", 403
-        )
+    from app.modules.customer.visibility import assert_customer_in_scope
+
+    await assert_customer_in_scope(session, user, customer)
 
 
 async def get_customer_or_404(session: AsyncSession, customer_id: int) -> Customer:
@@ -721,6 +731,15 @@ async def create_customer(
     customer = Customer(**payload, created_by=user.id)
     session.add(customer)
     await session.flush()
+    from app.modules.customer.followers import add_followers
+
+    await add_followers(
+        session,
+        customer.id,
+        [customer.owner_id],
+        source="manual",
+        created_by=user.id,
+    )
     return customer
 
 
@@ -735,6 +754,7 @@ async def transfer_customer(
     only_from_owner_id: int | None = None,
     default_reason: str | None = None,
     move_documents: bool = True,
+    keep_previous_follower: bool = False,
 ) -> dict:
     """变更客户负责人；new_owner_id 为空表示放入公海。
 
@@ -892,6 +912,29 @@ async def transfer_customer(
     old_owner_id = customer.owner_id
     customer.owner_id = new_owner_id
     customer.pool_status = "public" if new_owner_id is None else "private"
+
+    # 多跟进人：新默认负责人必须进入有效跟进人；原默认负责人默认退出跟进
+    # （明确要求保留时传 keep_previous_follower=True）。放公海只清默认负责人，
+    # 跟进人全部保留（主人 2026-11-27 确认）。
+    from app.modules.customer.followers import add_followers, remove_follower
+
+    if new_owner_id is not None:
+        await add_followers(
+            session,
+            customer.id,
+            [new_owner_id],
+            source="handover" if automatic else "transfer",
+            created_by=user.id,
+        )
+        if (
+            old_owner_id is not None
+            and old_owner_id != new_owner_id
+            and not keep_previous_follower
+        ):
+            await remove_follower(
+                session, customer, old_owner_id, allow_default=True
+            )
+
     session.add(
         CustomerOwnerHistory(
             customer_id=customer.id,

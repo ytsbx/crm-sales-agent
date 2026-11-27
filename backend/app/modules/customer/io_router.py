@@ -285,6 +285,7 @@ async def export_customers_filtered(
                 status=payload.status,
                 source=payload.source,
                 owner_id=payload.owner_id,
+                follower_id=user.id if payload.mine else None,
                 pool_status=payload.pool_status,
             )
         ),

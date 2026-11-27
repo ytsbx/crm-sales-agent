@@ -498,7 +498,7 @@ async def unbound_contacts(
     """
     # 与「预览导入」同一套判定：每条为什么不能自动导入，直接标在名单上。
     # 局部导入：customer_import 反向依赖本模块的任务工具，模块级导入会成环。
-    from app.modules.wecom.customer_import import HOLD_MULTI_OWNER, import_hold_details
+    from app.modules.wecom.customer_import import import_hold_details
 
     hold_reasons, hold_peers = await import_hold_details(session)
 
@@ -515,7 +515,7 @@ async def unbound_contacts(
         )
     ids = list((await session.execute(stmt)).scalars().all())
     total = len(ids)
-    ids.sort(key=lambda cid: (0 if hold_reasons.get(cid) == HOLD_MULTI_OWNER else 1, -cid))
+    ids.sort(key=lambda cid: -cid)
     page_ids = ids[(page - 1) * page_size : page * page_size]
     rows = (
         await session.execute(
@@ -935,6 +935,25 @@ async def collect_transfer_scope(
         )
 
     return scope
+
+
+async def _remove_handover_followers(session: AsyncSession, handover_id: int) -> int:
+    """离职交接最后一步：把离职者从所有客户的跟进人里移除。
+
+    客户本身是否交接由客户项决定；这里只清理"共同跟进"关系，避免离职的人
+    还留在客户跟进人名单里继续看到数据。软删保留历史。
+    """
+    from app.modules.customer.model import CustomerFollower
+
+    result = await session.execute(
+        update(CustomerFollower)
+        .where(
+            CustomerFollower.user_id == handover_id,
+            CustomerFollower.deleted_at.is_(None),
+        )
+        .values(deleted_at=datetime.now(UTC))
+    )
+    return result.rowcount or 0
 
 
 async def _move_owner_if_still(
@@ -1359,6 +1378,10 @@ async def transfer_relations(
     detail["customers"] = customers_moved
     detail["customers_skipped"] = customers_skipped
     detail["customers_frozen"] = len(frozen_customer_ids)
+    # 无论客户项是否交接成功，离职者都不再留在任何客户的跟进人里
+    detail["followers_removed"] = await _remove_handover_followers(
+        session, handover.id
+    )
 
     # 4) 商机负责人（只动 owner_id，created_by 保持原样）
     for row in scope["opportunity"]:
@@ -1819,6 +1842,9 @@ async def retry_transfer(
     fail_total = max(fail_total, still_open)
 
     detail = dict(job.detail or {})
+    detail["followers_removed"] = await _remove_handover_followers(
+        session, handover.id
+    )
     detail.update(
         {
             "customers": kind_counts.get("customer", 0),

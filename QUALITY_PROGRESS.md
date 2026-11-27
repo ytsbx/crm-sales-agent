@@ -1,3 +1,20 @@
+## 2026-11-27 · 财务打回最小闭环（未发布生产）
+
+- 新增售后状态 `finance_returned`（财务退回修改）。财务只写原因退回，不能自己改金额；申请人或主管改金额/收款信息后重新交主管复审，货已收过的复审通过直接回 `completed`，不重复确认收货。
+- 新增接口：`POST /returns/{id}/finance-return`（财务，`payment:manage`）、`POST /returns/{id}/revise-amount`（申请人或主管）；新增字段 `finance_return_reason`、`finance_returned_by`、`finance_returned_at`、`finance_return_count`。
+- 防护：货已确认收到后主管不能再驳回、申请人不能再取消；财务打回后若申请人已改金额但还没复审，财务可作废终止。历史抵扣单不能打回改金额，仍走原金额登记或作废。
+- 迁移 `e1a3c5d7b9f2`：在 `c3d5e7f9a1b2` 基础上加四个字段；在排除并发未提交 `d4f6` 迁移的临时副本上 `upgrade head`、`downgrade c3d5`、再 `upgrade head` 均成功，ORM 未报这四个字段的结构差异。
+- 测试：`test_sales_return.py` 36 项通过；全量后端 2358 项通过。前端 `tsc + vite build` 在临时副本通过（当前工作区因另一次未提交的 `QuoteListPage` 改动导致全量 build 阻塞，与本改动无关）。
+- 未发布生产：生产仍是 `eb688e8e / c3d5e7f9a1b2`，上线需执行 `c3d5e7f9a1b2 → e1a3c5d7b9f2`。
+
+## 2026-11-27 · 生产同步 alembic 修复（86353535 → eb688e8e）
+
+- 生产同步前实际为 `c46c26cc` / `f5c8a1d3e7b2`；第一次同步到 `86353535`，执行 `f5c8a1d3e7b2 → c3d5e7f9a1b2`，服务/公网核验通过。
+- 首次生产 `alembic check` 仍发现 `contract_documents` 有历史列 `template_id`、`generated_file_id` 和旧外键。生产该表 13 行，两列各有 1 行非空，不能直接删列；改为在 `alembic/env.py` 的 autogenerate 中登记这两列为退役字段，保留数据，其余结构漂移继续检查。
+- 第二次同步到 `eb688e8e`；生产最终状态：commit `eb688e8e952e243530586811220aeb6cdfd928a4`、DB `c3d5e7f9a1b2`、服务 active、`/health database=ok`、公网 200、生产 `alembic check` 返回 `No new upgrade operations detected`（exit 0）。
+- 备份：`db-86353535-20261127T023623Z.dump`、`db-eb688e8e-20261127T023909Z.dump`；代码/前端备份目录 `unified-86353535887e-7q305p6q`、`unified-eb688e8e952e-ht0ybtni`。
+- 注意：`contract_documents.template_id/generated_file_id` 仍是库里的退役历史列，未删除；新代码不读写，autogenerate 已显式忽略。
+
 ## 2026-11-27 · `alembic check` 清理（模型导入与结构对齐）
 
 - 根因：`alembic/env.py` 漏导入 `cases`、`bizdoc`、`contract`、`dingtalk`、`product_insight` 五个业务模型，以及 `app.core.idempotency.RequestKey`。这些表没进 `Base.metadata`，自动检查把库里真实存在的表当成“应该删掉”，造成大批假红。
@@ -6664,3 +6681,16 @@
 - 现象：刘帅帅（liushuaishuai）每次刷新都弹「你的登录账号已生成」。原因是 `initial_password_pending` 在改密码前一直为 true，而弹窗的「我知道了」只存在组件 state，刷新即丢。
 - 修复：按用户把"已知道"记到 localStorage（`initial-password-dismissed:<userId>`），刷新/重新进入不再重复弹；改完密码后后端会清掉 `initial_password_pending`，弹窗自然消失。设置页的初始密码提示条仍保留。
 - 验证：前端 `tsc -b` + `vite build` 通过。
+
+## 2026-11-27 客户改为「一组跟进人」+ 业务单据默认归创建人（已本地验证，待发布）
+
+- 背景：企微里同一客户常被公司多人添加，`customers.owner_id` 只能放一个人，导致导入时多人跟进被判「负责人不唯一」而扣住（2000+ 条进不来），非负责同事看不到客户。主人拍板：客户从「一个负责人」改成「一组跟进人」，`owner_id` 保留为默认负责人（导入/创建自动填，只用于展示和客户数统计）；业务单据默认负责人=创建人，创建时可指定；离职交接沿用现有流程，公海释放保留跟进人。
+- 数据模型：新增 `customer_followers`（customer_id/user_id/source/created_by/deleted_at，软删保留退出历史；`(customer_id,user_id) WHERE deleted_at IS NULL` 部分唯一索引）。迁移 `d4f6a8b0c2e1`（down_revision `c3d5e7f9a1b2`）只建表+回填每个客户一条默认负责人跟进人，可重复执行，downgrade 删表。已在隔离库 `crm_iso_followers_test`/`crm_iso_followers_backfill` 验证回填与幂等；本地演示库已升级到 `d4f6a8b0c2e1`，回填 89 条。
+- 可见性：新增 `customer/visibility.py::customer_scope_clause_from`（默认负责人 ∈ 范围 OR 有效跟进人 ∈ 范围 OR 无负责人），接入客户列表/详情、跟进、合同、联系人、文件、通知、搜索、询价、专属价、撞单、回收站等客户可见性入口；商机/报价/打样/订单/合同的全局列表和详情仍按各自负责人，业绩口径 `sales_owner_id` 不动。客户子资源在客户可见后展示该客户全部单据。
+- 企微导入：`_plan` 收集组内所有绑定到 CRM 账号的跟进人，不再因多人扣住；无人绑定仍扣住并给出原因。默认负责人取最早添加者；已有私海客户保留原默认负责人、只补跟进人；公海客户保持公海。`execute_import` 补齐跟进人（来源 `wecom_import`）。
+- 业务单据默认归创建人：商机（含线索转商机、复制）、报价（创建/复制/询价转报价，`QuoteCreate` 新增 `owner_id`）、打样（含来源建打样）、订单（报价转订单 owner=转单人，`sales_owner_id` 仍记报价人；手工单/订单草稿支持显式 `owner_id`）。前端商机/报价/打样/来源建单弹窗加「负责人」选择，默认当前用户。
+- 跟进人管理：新增 `POST /customers/{id}/followers`、`DELETE /customers/{id}/followers/{user_id}`、`POST /customers/{id}/set-primary`（`customer:assign`，审计留痕）；默认负责人不可直接移除。转交时新负责人加入并成默认，原默认移除（可保留）；放公海只清默认、保留全部跟进人；领取/指派加入跟进人。离职交接：默认负责人走现有转交流程，仅跟进人的离职只移除跟进关系。合并取跟进人并集；撞单裁定改走转交。客户删除/恢复保留跟进人。
+- 接口/前端：`GET /customers` 新增 `mine=true`（「我跟进的」）；`serialize_customer` 返回 `followers`、`follower_count`。客户列表范围改「我跟进的」、负责人列显示「负责人 +N」；客户详情头部「跟进人（N）」可增删/设默认；企微页面多人不再提示「负责人不唯一」，导入说明改为「绑定的员工都会成为跟进人，最早添加者为默认负责人」。
+- 统计口径：客户数仍按默认负责人算一次；「在途业务停滞」的可见范围改用跟进人范围（口径不变）。
+- 验证：新增 `test_customer_followers.py`；更新企微导入/同步、商机复制、价格客户范围等测试与 5 个自建测试引擎。全量后端 2358 项通过（pytest exit 0）；前端 `tsc -b` + `vite build` 通过；本地 8009 接口与客户详情页已确认返回/展示跟进人。
+- 待发布：包含新迁移，需按「迁移变更」发布路径（先备份 DB），发布前向主人确认。

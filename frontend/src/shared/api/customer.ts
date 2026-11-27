@@ -7,6 +7,8 @@ export interface CustomerQuery {
   status?: string
   source?: string
   owner_id?: number
+  /** true = 我跟进的（有效跟进人包含当前用户） */
+  mine?: boolean
   pool_status?: string
   /** stale = 在途业务停滞（有未结束业务且最近跟进/进展早于阈值） */
   activity?: string
@@ -237,6 +239,21 @@ export function assignCustomer(customerId: number, payload: { owner_id: number |
   return api.post<CustomerTransferResult>(`/customers/${customerId}/assign`, payload)
 }
 
+/** 添加跟进人（默认负责人不变）。 */
+export function addCustomerFollowers(customerId: number, user_ids: number[]) {
+  return api.post<Customer>(`/customers/${customerId}/followers`, { user_ids })
+}
+
+/** 移除跟进人（默认负责人需先换人）。 */
+export function removeCustomerFollower(customerId: number, userId: number) {
+  return api.delete<Customer>(`/customers/${customerId}/followers/${userId}`)
+}
+
+/** 把某位跟进人设为默认负责人（不搬单据）。 */
+export function setCustomerPrimary(customerId: number, userId: number) {
+  return api.post<Customer>(`/customers/${customerId}/set-primary`, { user_id: userId })
+}
+
 // ---------------------------------------------------------------- 客户子资源（API §7）
 
 export function listCustomerOpportunities(
@@ -278,6 +295,7 @@ export function exportCustomersFiltered(
     status?: string
     source?: string
     owner_id?: number
+    mine?: boolean
     pool_status?: string
   },
   filename = '客户列表.csv',

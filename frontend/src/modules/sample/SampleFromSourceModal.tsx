@@ -7,6 +7,7 @@ import { createSampleFromSource, getSampleSource, type SampleSourceRef } from '.
 import { formatQuantityText } from '../../shared/number-input'
 import { newRequestKey } from '../../shared/api/requestKey'
 import BlockedHint, { useBlockedNotify } from '../../shared/components/BlockedHint'
+import UserSearchSelect from '../../shared/components/UserSearchSelect'
 
 type Draft = { selected: boolean; quantity: string; specification: string; remark: string; unit_price: string | null }
 
@@ -32,6 +33,7 @@ export default function SampleFromSourceModal({ source, onClose, mode = 'sample'
   const navigate = useNavigate()
   const client = useQueryClient()
   const [drafts, setDrafts] = useState<Record<number, Draft>>({})
+  const [ownerId, setOwnerId] = useState<number | undefined>(undefined)
   // 初始化时生成一次；重试时仍在事件处理器里换新键，避免渲染阶段读写 ref。
   const requestKey = useRef(newRequestKey())
   const sending = useRef(false)
@@ -42,7 +44,7 @@ export default function SampleFromSourceModal({ source, onClose, mode = 'sample'
     }])))
   }, [query.data, mode])
   const mutation = useMutation<{ id: number }, Error, void>({
-    mutationFn: () => (mode === 'order' ? createOrderDraft : createSampleFromSource)({ ...source, ...(mode === 'sample' ? { use_dingtalk: true } : {}), request_key: requestKey.current,
+    mutationFn: () => (mode === 'order' ? createOrderDraft : createSampleFromSource)({ ...source, owner_id: ownerId, ...(mode === 'sample' ? { use_dingtalk: true } : {}), request_key: requestKey.current,
       items: (query.data?.items ?? []).filter(row => drafts[row.source_item_id]?.selected).map(row => {
         const draft = drafts[row.source_item_id]
         return { source_item_id: row.source_item_id, quantity: draft.quantity,
@@ -132,6 +134,17 @@ export default function SampleFromSourceModal({ source, onClose, mode = 'sample'
     {query.data && <>
       <p>来源：{query.data.source.no} V{query.data.source.version}{query.data.source.is_historical ? '（历史版本）' : ''} · 客户：{query.data.customer_name}</p>
       <p>{mode === 'order' ? '草稿仅供提前准备，不进入生产、不生成应收、不计成交。正式下单前须核对客户确认报价；来源原数量不改。' : '原采购数量保留不变；本次样品数量默认 1 件，可单独修改。草稿与历史版本均可使用。'}</p>
+      <div style={{ marginBottom: 8 }}>
+        <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>负责人</div>
+        <UserSearchSelect
+          queryScope={`${mode}-source-owner`}
+          enabled
+          placeholder="默认自己，可搜索同事"
+          value={ownerId}
+          onChange={(value) => setOwnerId(value)}
+          style={{ width: '100%' }}
+        />
+      </div>
       {/* 一条明细都没有是**确认按钮灰着的头号原因**（主人截图那一屏就是它），
           所以正文里就把「为什么 + 怎么办」说全，不留到页脚去猜。
           这段文字同时也是「点得动」的落点：确认键是灰的（原生 disabled 不派发点击），

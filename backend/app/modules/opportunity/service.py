@@ -552,8 +552,9 @@ async def clone_opportunity(
     已经躺着一条无效需求。校验放在**创建商机之前**：失败就整次不写，
     不留下"商机建了、明细没进去"的半成品。历史来源单据一个字不动。
     """
-    final_owner_id = owner_id if owner_id is not None else source.owner_id
-    await assert_owner_active(session, final_owner_id)
+    final_owner_id = owner_id if owner_id is not None else user.id
+    if owner_id is not None:
+        await assert_owner_active(session, final_owner_id)
     from app.modules.customer import service as customer_service
     target_customer_id = customer_id if customer_id is not None else source.customer_id
     await customer_service.get_visible_customer(session, user, target_customer_id)

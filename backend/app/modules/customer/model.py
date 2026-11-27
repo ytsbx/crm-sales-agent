@@ -128,6 +128,36 @@ class CustomerOwnerHistory(Base, IdMixin):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class CustomerFollower(Base, IdMixin, TimestampMixin):
+    """客户跟进人（一个客户可以有多名同事共同跟进）。
+
+    `customers.owner_id` 保留为**默认负责人**（也是有效跟进人之一），用于展示、
+    客户数统计和旧接口兼容；可见性与协作以本表为准。软删保留退出历史，删除后
+    同一人可以重新加入（部分唯一索引只约束 `deleted_at IS NULL` 的行）。
+    """
+
+    __tablename__ = "customer_followers"
+    __table_args__ = (
+        Index(
+            "uq_customer_followers_active",
+            "customer_id",
+            "user_id",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+            sqlite_where=text("deleted_at IS NULL"),
+        ),
+        Index("ix_customer_followers_customer", "customer_id"),
+        Index("ix_customer_followers_user", "user_id"),
+    )
+
+    customer_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("customers.id"))
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"))
+    #: backfill / wecom_import / manual / transfer / claim / handover / merge
+    source: Mapped[str] = mapped_column(String(32), default="manual")
+    created_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class Tag(Base, IdMixin, TimestampMixin):
     """客户标签（02-ER §5 tags）。
 

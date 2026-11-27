@@ -874,6 +874,18 @@ async def merge_customers(
             target.pool_status = "public"
             owner_resolution = "kept_public_inactive_source_owner"
 
+    # 跟进人取并集：合并后双方原来能看到的同事都继续能看（默认负责人沿用目标）。
+    from app.modules.customer.followers import active_follower_ids, add_followers
+
+    union_followers = set(await active_follower_ids(session, target.id))
+    union_followers.update(await active_follower_ids(session, source.id))
+    if target.owner_id is not None:
+        union_followers.add(target.owner_id)
+    if union_followers:
+        await add_followers(
+            session, target.id, union_followers, source="merge", created_by=user.id
+        )
+
     merged_at = _now()
     for case in pending_cases:
         case.status = "resolved"

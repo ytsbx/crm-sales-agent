@@ -19,7 +19,7 @@ from conftest import SyncSessionAsAsync, make_engine
 
 from app.core.base import Base
 from app.core.errors import AppError
-from app.modules.customer.model import Customer
+from app.modules.customer.model import Customer, CustomerFollower
 from app.modules.pricing import service as pricing
 from app.modules.product.model import Product, Sku
 from app.modules.user.model import User
@@ -29,7 +29,7 @@ def _engine():
     engine = make_engine()
     Base.metadata.create_all(
         engine,
-        tables=[User.__table__, Customer.__table__, Product.__table__, Sku.__table__],
+        tables=[User.__table__, Customer.__table__, CustomerFollower.__table__, Product.__table__, Sku.__table__],
     )
     return engine
 

@@ -279,6 +279,14 @@ async def create_quote(
 
         # 客户/联系人存在性由 svc.create_quote 统一校验（Agent 工具同路）。
         # §8.14：主数据未确认只提示、不阻断（字段权威业务尚未拍板）
+        if payload.owner_id is not None:
+            target_customer_id = payload.customer_id or (
+                opportunity.customer_id if opportunity is not None else None
+            )
+            if target_customer_id is not None:
+                await _require_quote_recipient(
+                    session, payload.owner_id, target_customer_id
+                )
         unconfirmed_master: set[str] = set()
         created = await svc.create_quote(
             session,
@@ -286,6 +294,7 @@ async def create_quote(
             opportunity=opportunity,
             customer_id=payload.customer_id,
             contact_id=payload.contact_id,
+            owner_id=payload.owner_id,
             currency=payload.currency,
             exchange_rate=payload.exchange_rate,
             valid_until=payload.valid_until,
@@ -711,10 +720,12 @@ async def clone_quote(
     """
     source = await svc.get_visible_quote(session, user, quote_id)
     target_customer_id = payload.customer_id or source.customer_id
-    target_owner_id = payload.owner_id if payload.owner_id is not None else source.owner_id
+    target_owner_id = payload.owner_id if payload.owner_id is not None else user.id
     if payload.customer_id is not None:
         if await session.get(Customer, payload.customer_id) is None:
             raise AppError(ErrorCode.NOT_FOUND, f"客户 id={payload.customer_id} 不存在", 404)
+    if payload.owner_id is not None:
+        await _require_quote_recipient(session, payload.owner_id, target_customer_id)
 
     # 币种沿用源报价当前版本的快照；汇率不复制（汇率是时点数据，
     # 复制一个旧汇率会让新报价按过期汇率算，比让它重新解析更危险）。
@@ -777,6 +788,7 @@ async def clone_quote(
         contact_id=payload.contact_id if payload.contact_id is not None else source.contact_id,
         currency=source_currency,
         exchange_rate=None,
+        owner_id=target_owner_id,
         valid_until=payload.valid_until or source.valid_until,
         payment_terms=source_version.payment_terms if source_version else None,
         delivery_terms=source_version.delivery_terms if source_version else None,

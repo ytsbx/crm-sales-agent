@@ -128,7 +128,7 @@ def make_engine():
     from app.core.base import Base
     from app.core.idempotency import RequestKey
     from app.modules.bizdoc.model import BizDoc, BizDocTemplate
-    from app.modules.customer.model import Contact, Customer
+    from app.modules.customer.model import Contact, Customer, CustomerFollower
     from app.modules.inquiry.model import CustomInquiry
     from app.modules.lead.model import Lead
     from app.modules.opportunity.model import Opportunity, OpportunityStage
@@ -150,6 +150,7 @@ def make_engine():
             Department,
             User,
             Customer,
+            CustomerFollower,
             Contact,
             Lead,
             OpportunityStage,

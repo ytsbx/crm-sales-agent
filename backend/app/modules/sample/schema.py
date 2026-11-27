@@ -162,6 +162,8 @@ class SampleSourceItem(BaseModel):
 
 class SampleFromSource(SampleSource):
     use_dingtalk: bool = False
+    #: 负责人：不填 = 创建人自己（多跟进人下不再继承来源负责人）
+    owner_id: int | None = None
     request_key: UUID
     items: list[SampleSourceItem] = Field(min_length=1, max_length=200)
     remark: str | None = Field(default=None, max_length=2000)

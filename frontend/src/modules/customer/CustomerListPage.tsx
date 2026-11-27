@@ -36,7 +36,7 @@ import { getPersistedAuthToken } from '../../shared/auth-token'
 type Scope = 'mine' | 'pool' | 'all'
 
 const SCOPE_OPTIONS = [
-  { value: 'mine', label: '我负责的' },
+  { value: 'mine', label: '我跟进的' },
   { value: 'pool', label: '公海客户' },
   { value: 'all', label: '全部客户' },
 ]
@@ -374,7 +374,7 @@ export default function CustomerListPage() {
         activity,
         page,
         page_size: pageSize,
-        owner_id: scope === 'mine' ? currentUser?.id : undefined,
+        mine: scope === 'mine' ? true : undefined,
         pool_status: scope === 'pool' ? 'public' : undefined,
       }),
   })
@@ -414,7 +414,7 @@ export default function CustomerListPage() {
       await exportCustomersFiltered({
         keyword: keyword || undefined,
         level,
-        owner_id: scope === 'mine' ? currentUser?.id : undefined,
+        mine: scope === 'mine' ? true : undefined,
         pool_status: scope === 'pool' ? 'public' : undefined,
         purpose: exportPurpose,
         purpose_note: exportPurpose === 'other' ? exportPurposeNote.trim() : undefined,
@@ -621,7 +621,10 @@ export default function CustomerListPage() {
           title: '负责人',
           dataIndex: 'owner_name',
           width: 110,
-          render: (v: string | null) => v ?? '公海',
+          render: (v: string | null, record: Customer) =>
+            v
+              ? `${v}${(record.follower_count ?? 0) > 1 ? ` +${(record.follower_count ?? 1) - 1}` : ''}`
+              : '公海',
         }]),
     {
       title: '状态',

@@ -6,6 +6,7 @@ from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser, ensure_permission
 from app.core.errors import AppError
 from app.modules.customer.model import Customer
+from app.modules.customer.visibility import customer_scope_clause_from
 from app.modules.lead.model import Lead
 from app.modules.notification.model import BusinessEvent, Notification
 from app.modules.opportunity.model import Opportunity
@@ -85,7 +86,7 @@ async def process_notification_filter(session: AsyncSession, user: CurrentUser):
     if admin or user.has('customer:view'):
         customers = select(Customer.id).where(Customer.id == customer_id)
         if owners is not None:
-            customers = customers.where(or_(Customer.owner_id.in_(owners), Customer.owner_id.is_(None)))
+            customers = customers.where(customer_scope_clause_from(owners))
         customer_visible = or_(customer_visible, customers.exists())
     event = select(BusinessEvent.id).where(
         BusinessEvent.id == Notification.business_event_id,

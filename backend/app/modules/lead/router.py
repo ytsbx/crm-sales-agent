@@ -446,7 +446,7 @@ async def convert_lead(
             customer_id=customer.id,
             primary_contact_id=contact_id,
             title=payload.opportunity_title or f"{customer.name} 商机",
-            owner_id=customer.owner_id or user.id,
+            owner_id=user.id,
             created_by=user.id,
             expected_amount=payload.expected_amount,
             expected_close_date=payload.expected_close_date,

@@ -77,6 +77,14 @@ class CustomerTransfer(BaseModel):
     reason: str | None = Field(default=None, max_length=255)
 
 
+class FollowersAdd(BaseModel):
+    user_ids: list[int] = Field(min_length=1, max_length=50)
+
+
+class FollowerPrimary(BaseModel):
+    user_id: int
+
+
 class CustomerRestore(BaseModel):
     """恢复一个被**直接删除**的客户（03-API §42.2）。
 
@@ -122,6 +130,8 @@ class CustomerExportFilter(BaseModel):
     status: str | None = None
     source: str | None = None
     owner_id: int | None = None
+    #: true = 只导出我跟进的客户（有效跟进人包含当前用户）
+    mine: bool = False
     pool_status: str | None = None
 
     @model_validator(mode="after")

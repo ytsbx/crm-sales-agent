@@ -278,8 +278,8 @@ async def test_follower_names_resolve_without_creating_or_binding_accounts():
         # 谁没有 CRM 账号，名单上要能直接看出来
         assert followers['bound']['crm_user_id']==1 and followers['bound']['crm_user_name']=='CRM姓名'
         assert followers['unbound']['crm_user_id'] is None
-        # 有跟进员工没对应 CRM 账号 → 负责人不唯一，导入预览会扣住
-        assert rows[0]['import_hold_reason']=='有跟进员工没有对应的 CRM 账号'
+        # 有已绑定账号的跟进人 → 可导入；未绑定账号的同事只留在企微侧
+        assert rows[0]['import_hold_reason'] is None
         assert raw.query(User).count()==1
         assert raw.query(WeComUser).filter_by(wecom_userid='unbound').one().user_id is None
     engine.dispose()
@@ -305,7 +305,7 @@ async def test_unbound_list_leaves_importable_contacts_without_hold_reason():
 
 
 @pytest.mark.anyio
-async def test_unbound_list_shows_multi_owner_contacts_first():
+async def test_unbound_list_keeps_id_order_and_no_multi_owner_reason():
     from app.modules.wecom.model import WeComUser
     from app.modules.user.model import User
     engine=make_engine()
@@ -326,9 +326,11 @@ async def test_unbound_list_shows_multi_owner_contacts_first():
         raw.flush()
         rows,total=await service.unbound_contacts(SyncSessionAsAsync(raw),keyword=None,page=1,page_size=10)
         assert total==3
-        # 多人跟进导致的排最前，其余保持 id 倒序
-        assert [row['id'] for row in rows]==[2,3,1]
-        assert rows[0]['import_hold_reason']=='多名跟进员工对应不同负责人'
+        # 多人跟进不再扣住；列表保持 id 倒序
+        assert [row['id'] for row in rows]==[3,2,1]
+        assert rows[0]['import_hold_reason'] is None
+        assert rows[1]['import_hold_reason'] is None
+        assert rows[2]['import_hold_reason']=='有跟进员工没有对应的 CRM 账号'
         first,_=await service.unbound_contacts(SyncSessionAsAsync(raw),keyword=None,page=1,page_size=1)
-        assert [row['id'] for row in first]==[2]
+        assert [row['id'] for row in first]==[3]
     engine.dispose()

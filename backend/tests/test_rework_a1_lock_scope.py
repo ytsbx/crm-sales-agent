@@ -8,7 +8,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppError
-from app.modules.customer.model import Customer, CustomerOwnerHistory
+from app.modules.customer.model import Customer, CustomerFollower, CustomerOwnerHistory
 from app.modules.customer.service import transfer_customer
 from app.modules.user.model import User
 from tests.conftest import SyncSessionAsAsync, _register_sqlite_bigint_as_integer, make_user
@@ -21,7 +21,7 @@ def raw():
     # 转移连带待办迁移只摸 Task；全建会撞个别模型的 SQLite 不兼容表达式，逐张建
     from app.modules.task.model import Task
 
-    for table in (User.__table__, Customer.__table__, CustomerOwnerHistory.__table__, Task.__table__):
+    for table in (User.__table__, Customer.__table__, CustomerFollower.__table__, CustomerOwnerHistory.__table__, Task.__table__):
         table.create(engine, checkfirst=True)
     with Session(engine, expire_on_commit=False) as session:
         session.add_all([

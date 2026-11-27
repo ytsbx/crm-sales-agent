@@ -371,6 +371,7 @@ export function getSampleSource(source: SampleSourceRef) {
 }
 export function createSampleFromSource(payload: SampleSourceRef & {
   use_dingtalk?: boolean
+  owner_id?: number
   request_key: string; items: { source_item_id: number; quantity: number | string; specification?: string; remark?: string }[]
 }) {
   return api.post<SampleRequestRow>('/samples/from-source', payload)

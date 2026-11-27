@@ -16,6 +16,7 @@ import {
   type Opportunity,
 } from '../../shared/api/opportunity'
 import { usePermissions } from '../../shared/hooks/permissions'
+import UserSearchSelect from '../../shared/components/UserSearchSelect'
 import { emptyNode } from '../../shared/components/EmptyState'
 import OpportunityBoard from './OpportunityBoard'
 import SectionCard from '../../shared/components/SectionCard'
@@ -35,6 +36,7 @@ const EMPTY_FORM = {
   title: '',
   expected_amount: '',
   expected_close_date: null as Date | null,
+  owner_id: null as number | null,
   competitor: '',
   next_action: '',
 }
@@ -111,6 +113,7 @@ export default function OpportunityListPage() {
         expected_close_date: form.expected_close_date
           ? calendarDay(form.expected_close_date)
           : null,
+        owner_id: form.owner_id,
         competitor: form.competitor || null,
         next_action: form.next_action || null,
       }),
@@ -476,6 +479,17 @@ export default function OpportunityListPage() {
                   placeholder="不确定就空着"
                   value={form.expected_close_date ?? undefined}
                   onChange={(date) => setForm({ ...form, expected_close_date: (date as Date) ?? null })}
+                  style={{ width: '100%' }}
+                />
+              </div>
+              <div>
+                <div className="form-field-label">负责人</div>
+                <UserSearchSelect
+                  queryScope="opportunity-owner"
+                  enabled={createVisible}
+                  placeholder="默认自己，可搜索同事"
+                  value={form.owner_id ?? undefined}
+                  onChange={(value) => setForm({ ...form, owner_id: value ?? null })}
                   style={{ width: '100%' }}
                 />
               </div>
