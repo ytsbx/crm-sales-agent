@@ -212,7 +212,7 @@ export default function OrderDraftsPage() {
     : sourceContext.type === 'inquiry'
       ? `/inquiries?inquiry_id=${sourceContext.id}`
       : '/quotes'
-  const sourceQuoteAction = sourceContext.type === 'quote_version'
+  const sourceQuoteAction = sourceContext.type === 'quote_version' && sourceContext.quote_id
     ? '打开来源报价登记客户接受'
     : sourceContext.type === 'inquiry'
       ? '去来源询价转报价'
