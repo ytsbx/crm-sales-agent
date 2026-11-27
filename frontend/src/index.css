@@ -1635,6 +1635,40 @@ button.notice-item-main:hover .notice-item-action {
    装进同一张卡的两栏，卡高由内容决定 —— 谁也不用去凑谁的高度。
    之前在网格里各占一卡时，不管并排还是叠放都会剩一块空白：
    并排 → 矮的那张下面空；两列叠 → 高的那列把另一列撑出空。 */
+/* 客户概览：保持四列密度，但让地址和下次跟进跨两列；
+   避免 4 列等宽时地址/跟进时间被挤成半截。备注单独占整行。
+   窄屏退回两列/一列，跨列规则同步取消。 */
+.customer-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 20px 24px;
+  align-items: start;
+}
+
+.customer-field-wide {
+  grid-column: span 2;
+}
+
+.customer-field-full {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 980px) {
+  .customer-overview-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 600px) {
+  .customer-overview-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .customer-field-wide,
+  .customer-field-full {
+    grid-column: auto;
+  }
+}
+
 .customer-info-head {
   display: flex;
   align-items: center;

@@ -1,6 +1,6 @@
 import { formatBeijingTime } from '../../shared/beijing-time'
 import { UNRATED_OPTION, customerLevelValue, customerLevelPayload, customerLevelLabel } from '../../shared/customer-level'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Banner, Button, Checkbox, Dropdown, Input, Modal, Popconfirm, Select, Table, Tabs, Tag, TextArea, Toast } from '@douyinfe/semi-ui'
@@ -82,19 +82,29 @@ function Field({
   label,
   value,
   hideIfEmpty,
+  hint,
+  className,
+  style,
 }: {
   label: string
   value: string
   hideIfEmpty?: boolean
+  /** 值下面单独一行的提示，例如“已到约定时间”；不要塞进值里挤换行。 */
+  hint?: string
+  className?: string
+  style?: CSSProperties
 }) {
   // 空值不渲染：客户卡片有十几个字段，实测一半都是「-」，
   // 全铺出来既让人以为资料残缺，也把真有内容的字段淹掉了。
   // 只有名称/类型/国家这类**总该有值**的字段才不加这个开关。
   if (hideIfEmpty && (value == null || value === '' || value === '-')) return null
   return (
-    <div>
+    <div className={className} style={style}>
       <div style={{ color: 'var(--crm-text-3)', fontSize: 13, marginBottom: 4 }}>{label}</div>
-      <div style={{ fontSize: 14 }}>{value}</div>
+      <div style={{ fontSize: 14, overflowWrap: 'anywhere' }}>{value}</div>
+      {hint && (
+        <div style={{ color: 'var(--crm-error)', fontSize: 12, marginTop: 4 }}>{hint}</div>
+      )}
     </div>
   )
 }
@@ -856,22 +866,29 @@ export default function CustomerDetailPage() {
 
         <div style={{ marginTop: 16 }}>
           {activeKey === 'overview' && (
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-                gap: 20,
-              }}
-            >
+            <div className="customer-overview-grid">
               <Field label="客户名称" value={customer.name} />
               {/* 可空字段一律 hideIfEmpty：空值不占格子，有内容的字段才显眼。
                   客户名称 / 客户类型 / 国家地区是「总该有值」的，不加这个开关。 */}
               <Field label="客户简称" value={customer.short_name ?? '-'} hideIfEmpty />
               <Field label="客户类型" value={customer.customer_type ?? '-'} />
-              <Field label="国家 / 地区" value={`${customer.country ?? '-'} / ${customer.region ?? '-'}`} />
+              <Field
+                label="国家 / 地区"
+                value={
+                  [customer.country, customer.region]
+                    .map((part) => (part ?? '').trim())
+                    .filter((part) => part && part !== '-')
+                    .join(' / ') || '-'
+                }
+              />
               <Field label="统一社会信用代码" value={customer.tax_no ?? '-'} hideIfEmpty />
               <Field label="官网域名" value={customer.domain ?? '-'} hideIfEmpty />
-              <Field label="详细地址" value={customer.address ?? '-'} hideIfEmpty />
+              <Field
+                className="customer-field-wide"
+                label="详细地址"
+                value={customer.address ?? '-'}
+                hideIfEmpty
+              />
               {/* 三个时钟分开显示（文档 §2.3）：联系过 ≠ 业务有进展 ≠ 约好了下次。
                   合成一个时间字段就回答不了"到底哪一样断了" */}
               <Field
@@ -893,19 +910,27 @@ export default function CustomerDetailPage() {
                 }
               />
               <Field
+                className="customer-field-wide"
                 label="约定下次跟进"
                 hideIfEmpty
                 value={
                   customer.next_followup_at
-                    ? `${formatBeijingTime(customer.next_followup_at)}${
-                        new Date(customer.next_followup_at).getTime() < Date.now()
-                          ? '（已到约定时间）'
-                          : ''
-                      }`
+                    ? formatBeijingTime(customer.next_followup_at)
                     : '-'
                 }
+                hint={
+                  customer.next_followup_at &&
+                  new Date(customer.next_followup_at).getTime() < Date.now()
+                    ? '已到约定时间'
+                    : undefined
+                }
               />
-              <Field label="备注" value={customer.remark ?? '-'} hideIfEmpty />
+              <Field
+                className="customer-field-full"
+                label="备注"
+                value={customer.remark ?? '-'}
+                hideIfEmpty
+              />
               <div style={{ gridColumn: '1 / -1' }}>
                 <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 6 }}>
                   客户标签
