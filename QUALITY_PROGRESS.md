@@ -10,7 +10,8 @@
 - 前端：客户列表/详情/建档/批量转交/撞单/回收站/工作台/企微页去掉负责人显示与入口；跟进人弹窗支持转交/移除；业务单据负责人选择器保持不变。
 - 验证：后端全量 **2358+ 项通过**；前端 `vite build` 通过；隔离库脚本 `check_pool_scope_concurrency`、`check_pool_recycle_and_merge`、`check_wecom_customer_import`、`check_wecom_handover`、`check_recycle_bin`、`check_customer_timeline`、`check_customer_contact_api` 已按新语义更新并通过；`check_data_scope` 仍有 3 项沿用「系统模板生成合同」的旧用例（该入口已退役，另行更新），另有 1 项主管 price 快照待查。
 - 本地 8009/5275 截图确认：客户列表「跟进人」列、详情「跟进人：…」、跟进人弹窗（转交/移除）、转交弹窗。
-- 发布包：合成提交 `4e549e4a`（基线=生产已装 `7d61f742`，只叠加本次 93 文件改动，不含并发会话未上线的退货/迁移），无迁移变更，SHA256 `f946990e…87bc`；已上传 `/tmp/crm-release-4e549e4a/` 并预检通过。待主人授权后 `--apply`。
+- 发布包：合成提交 `4e549e4a`（基线=生产已装 `7d61f742`，只叠加本次 93 文件改动，不含并发会话未上线的退货/迁移），无迁移变更，SHA256 `f946990e…87bc`。
+- 生产发布（2026-11-27，主人确认「放公海清空跟进人」后授权「发」）：`status=verified`，`verified_at_utc=2026-11-27T05:45:00Z`；两端记录均 `4e549e4a`，备份 `unified-4e549e4a7d5c-u6oow_71`。核验：服务 active、`/health database=ok`、公网 200、DB 仍 `d4f6a8b0c2e1`、`customer_followers` 2566 行 = customers 2566、日志无 error/traceback。
 - 发布树验证：合成树全量 2358 项测试通过、前端 `vite build` 通过、`alembic heads` 仍为 `d4f6a8b0c2e1`。
 
 ## 2026-11-27 · 提示文案补齐跳转入口（未发布生产）
