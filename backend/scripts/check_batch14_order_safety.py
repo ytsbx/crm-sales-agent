@@ -19,6 +19,7 @@ from app.modules.user.model import User
 from app.modules.order import service, router
 from app.modules.order.model import SalesOrder, SalesOrderItem, OrderShipmentBatch, OrderShipmentBatchItem
 from app.modules.order.schema import OrderUpdate, ShipmentBatchCreate, ShipmentBatchShip
+from app.modules.payment.model import PaymentRecord
 
 
 async def main():
@@ -96,6 +97,16 @@ async def main():
         await service.ship_shipment_batch(s,order,tail,payload=ShipmentBatchShip(),operator_id=new_user.id)
         view=await service.order_shipments(s,order)
         assert view['summary']['all_shipped'] and Decimal(view['summary']['remaining_exact'])==0
+        # 2026-11-27 新口径：完成前必须财务确认全部回款。本套件只验发货精度，
+        # 补一笔与订单总额相等的已确认回款，避免被回款闸门误判成“发货没发完”。
+        s.add(PaymentRecord(
+            order_id=oid, received_date=today_business(),
+            received_amount=Decimal('10000000000000.00'), currency='CNY',
+            payment_method='bank', status='confirmed',
+            confirmed_by=new_user.id, confirmed_at=datetime.now(UTC),
+            created_by=new_user.id, created_at=datetime.now(UTC),
+        ))
+        await s.commit()
         await service.change_status(s,order,new_status='completed',operator_id=new_user.id)
         assert order.status=='completed'
         await s.commit()
