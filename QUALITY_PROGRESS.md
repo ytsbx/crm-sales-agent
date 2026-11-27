@@ -6827,3 +6827,9 @@
 
 - 原因：`d21b904c` 把 11-25 全流程走查内容做成了独立菜单「智能与协同 → 流程指引」、`/guide` 路由和 `frontend/src/modules/guide/GuidePage.tsx`。它是静态文档页、没有后端接口，主人明确要求撤掉独立入口。
 - 处理：删除 `GuidePage.tsx` 与 `modules/guide` 目录；移除 `menu.ts` 的菜单项与不再使用的 `IconHelpCircle` 导入；移除 `router.tsx` 的懒加载和 `/guide` 路由。审计报告 `docs/全流程走查与撤回点-20261125.md` 保留，原报告第 5 项改为“不单独做前端页，保留本报告与各业务页提示”。
+
+## 2026-11-27 客户列表「待补核」标签纠偏（生产候选）
+
+- 根因：`activity_status=unknown` 被统一渲染成「待补核」；历史导入与新建未跟进客户混用同一标签。
+- 修复：新增 `last_contact_unknown` 区分；历史导入无活动客户改为顶部汇总，新建客户显示「未跟进」；新增 `activity=unknown_contact` 筛选（标记未知且两个活动时间都为空）。
+- 验证：后端列表筛选回归 3 项通过；前端 `tsc -b` / `build` / `lint` 通过；本地 `crm_sales_agent` 接口 `unknown_contact total=0`，不误报活跃客户。
