@@ -6693,5 +6693,7 @@
 - 接口/前端：`GET /customers` 新增 `mine=true`（「我跟进的」）；`serialize_customer` 返回 `followers`、`follower_count`。客户列表范围改「我跟进的」、负责人列显示「负责人 +N」；客户详情头部「跟进人（N）」可增删/设默认；企微页面多人不再提示「负责人不唯一」，导入说明改为「绑定的员工都会成为跟进人，最早添加者为默认负责人」。
 - 统计口径：客户数仍按默认负责人算一次；「在途业务停滞」的可见范围改用跟进人范围（口径不变）。
 - 验证：新增 `test_customer_followers.py`；更新企微导入/同步、商机复制、价格客户范围等测试与 5 个自建测试引擎。全量后端 2358 项通过（pytest exit 0）；前端 `tsc -b` + `vite build` 通过；本地 8009 接口与客户详情页已确认返回/展示跟进人。
-- 发布准备：生产当前为 `eb688e8e` / DB `c3d5e7f9a1b2`（迁移父版本正好是生产 head）。发布包由合成提交 `2a120470`（基线 eb688e8e + 本改动 57 文件）构建，schema 2（`--allow-migration-change`），SHA256 `a9b63120…28f2`；已上传 `/tmp/crm-release-2a120470/`（rag）。预检/正式执行需主人授权：先 `pg_dump` 备份，再 `deploy --apply --db-backup`。
+- 生产发布（2026-11-27，主人授权「发」）：基线 `eb688e8e` / DB `c3d5e7f9a1b2`；发布包由合成提交 `2a120470`（基线 + 本改动 57 文件）构建，schema 2（`--allow-migration-change`），SHA256 `a9b63120…28f2`。
+- 数据库备份 `/opt/crm-sales-agent/backup/db-2a120470-20261127T031056Z.dump`（1.37MB，容器内 `pg_restore --list` 1045 项可读）；代码/前端备份 `/opt/crm-sales-agent/backup/unified-2a120470048e-s9vy97qi`。
+- 执行：预检通过 → `c3d5e7f9a1b2 → d4f6a8b0c2e1`（只建表+回填，无回滚）→ 启动 → 核验 `status=verified`。生产核验：服务 active、`/health database=ok`、公网 200、两端记录均 `2a120470`、DB `d4f6a8b0c2e1`、`customer_followers` 2566 行 = 有负责人客户 2566（无负责人 0）；日志无 error/traceback。
 - 迁移顺序提醒：另一会话的售后迁移 `e1a3c5d7b9f2` 与本迁移同以 `c3d5e7f9a1b2` 为父，本包发布后生产 head 变为 `d4f6a8b0c2e1`；售后包再发布前需把 `e1a3c5d7b9f2` 的 down_revision 改为 `d4f6a8b0c2e1`（或加合并修订），否则会因多 head 失败。
