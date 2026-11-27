@@ -760,6 +760,7 @@ async def create_quote(
     opportunity: Opportunity | None = None,
     customer_id: int | None = None,
     contact_id: int | None = None,
+    owner_id: int | None = None,
     currency: str = "CNY",
     exchange_rate: Decimal | None = None,
     valid_until=None,
@@ -871,7 +872,7 @@ async def create_quote(
         opportunity_id=opportunity.id if opportunity else None,
         customer_id=customer_id,
         contact_id=contact_id or (opportunity.primary_contact_id if opportunity else None),
-        owner_id=(opportunity.owner_id if opportunity else None) or user.id,
+        owner_id=owner_id or user.id,
         status="draft",
         valid_until=valid_until
         or (today_business() + timedelta(days=valid_days)),

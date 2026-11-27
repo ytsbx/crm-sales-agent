@@ -781,10 +781,9 @@ def _visible_customer_predicate(merge_subq, owner_ids: list[int]):
     """
     snapshot_owner = merge_subq.c.snapshot["owner_id"].as_integer()
     is_merged = merge_subq.c.sid.is_not(None)
-    directly_deleted = and_(
-        is_merged.is_(False),
-        or_(Customer.owner_id.in_(owner_ids), Customer.owner_id.is_(None)),
-    )
+    from app.modules.customer.visibility import customer_scope_clause_from
+
+    directly_deleted = and_(is_merged.is_(False), customer_scope_clause_from(owner_ids))
     merged_in_scope = and_(
         is_merged, snapshot_owner.is_not(None), snapshot_owner.in_(owner_ids)
     )

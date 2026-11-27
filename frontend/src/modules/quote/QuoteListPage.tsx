@@ -15,6 +15,7 @@ import { usePermissions } from '../../shared/hooks/permissions'
 import type { TagTone } from '../../shared/types'
 import { optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
 import StatusDot from '../../shared/components/StatusDot'
+import UserSearchSelect from '../../shared/components/UserSearchSelect'
 
 const STATUS_OPTIONS = [
   { value: 'draft', label: '草稿' },
@@ -51,6 +52,7 @@ export default function QuoteListPage() {
   const [pageSize, setPageSize] = useState(20)
   const [createVisible, setCreateVisible] = useState(false)
   const [selectedOpportunity, setSelectedOpportunity] = useState<{ label: string; value: number } | null>(null)
+  const [quoteOwnerId, setQuoteOwnerId] = useState<number | undefined>(undefined)
   const [opportunitySearch, setOpportunitySearch] = useState('')
   const [opportunityKeyword, setOpportunityKeyword] = useState('')
   // 一次"新建报价"意图一把键（第八批 8.15）：在 mutationFn 里现生成的话，
@@ -98,6 +100,7 @@ export default function QuoteListPage() {
     mutationFn: () =>
       createQuote({
         opportunity_id: selectedOpportunity!.value,
+        owner_id: quoteOwnerId,
         request_key: createRequestKeyRef.current,
       }),
     onSuccess: (data) => {
@@ -367,6 +370,15 @@ export default function QuoteListPage() {
           ) : undefined}
           style={{ width: '100%' }}
         /> : <p className="workflow-guide">当前账号没有查看商机的权限。请联系管理员开通，再新建报价。</p>}
+        <div style={{ marginTop: 12, marginBottom: 4 }}>负责人</div>
+        <UserSearchSelect
+          queryScope="quote-owner"
+          enabled={createVisible}
+          placeholder="默认自己，可搜索同事"
+          value={quoteOwnerId}
+          onChange={(value) => setQuoteOwnerId(value)}
+          style={{ width: '100%' }}
+        />
         {canViewOpportunities && !selectedOpportunity && (
           <p className="workflow-guide" style={{ marginTop: 8 }}>
             先在上面选一个商机，「生成报价单」才可用。

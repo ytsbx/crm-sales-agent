@@ -361,10 +361,10 @@ async def create_sample(
     if not customer_id and not opportunity:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "必须指定商机或客户")
 
-    # 负责人：传入 > 商机负责人 > 当前用户
+    # 负责人：传入 > 当前用户（谁做谁负责，不再继承商机/客户负责人）
     owner_id = payload.owner_id
     if owner_id is None:
-        owner_id = (opportunity.owner_id if opportunity else None) or user.id
+        owner_id = user.id
     # 落库前校验关联完整性（审查 C3-02）：以前"不存在的负责人"要到 flush 才炸成 500，
     # "已停用的负责人"更是直接 200 落库
     await _assert_active_owner(session, user, owner_id, "负责人")

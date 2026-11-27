@@ -100,6 +100,14 @@ export interface Customer {
   pool_status: string
   owner_id?: number | null
   owner_name?: string | null
+  /** 有效跟进人（默认负责人也在其中） */
+  followers?: {
+    user_id: number
+    name: string
+    source: string
+    created_at: string
+  }[]
+  follower_count?: number
   contact_count: number
   /** 领导六阶段（自动推导：了解/报价/打样/首单/返单/稳定复购） */
   stage?: string | null

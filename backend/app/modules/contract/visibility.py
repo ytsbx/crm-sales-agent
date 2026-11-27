@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.draft_visibility import ensure_draft_access
@@ -56,5 +57,23 @@ async def contract_in_scope(session: AsyncSession, user, doc: ContractDocument) 
     owner_ids = await scoped_owner_ids(session, user)
     if owner_ids is None:  # None = 看全部
         return True
+    # 多跟进人：客户当前负责人或任一有效跟进人在范围内，合同可见
+    from app.modules.customer.model import CustomerFollower
+
+    customer = await session.get(Customer, doc.customer_id)
+    if customer is not None:
+        if customer.owner_id is not None and int(customer.owner_id) in owner_ids:
+            return True
+        follower = await session.scalar(
+            select(CustomerFollower.id)
+            .where(
+                CustomerFollower.customer_id == customer.id,
+                CustomerFollower.user_id.in_(owner_ids),
+                CustomerFollower.deleted_at.is_(None),
+            )
+            .limit(1)
+        )
+        if follower is not None:
+            return True
     owner_id = await contract_scope_owner_id(session, doc)
     return owner_id is not None and owner_id in owner_ids

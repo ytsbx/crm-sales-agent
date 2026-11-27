@@ -27,6 +27,8 @@ from app.modules.customer.schema import (
     CustomerRestore,
     CustomerTransfer,
     CustomerUpdate,
+    FollowerPrimary,
+    FollowersAdd,
     PoolRelease,
 )
 from app.modules.settings import service as settings_service
@@ -43,6 +45,7 @@ async def list_customers(
     status: str | None = None,
     source: str | None = None,
     owner_id: int | None = None,
+    mine: bool = False,
     pool_status: str | None = None,
     activity: str | None = None,
     page: int = Query(1, ge=1),
@@ -61,6 +64,7 @@ async def list_customers(
         status=status,
         source=source,
         owner_id=owner_id,
+        follower_id=user.id if mine else None,
         pool_status=pool_status,
         activity=activity,
         stale_before=stale_cutoff,
@@ -74,6 +78,9 @@ async def list_customers(
     stage_map = await stage.stage_counts_map(session, [c.id for c in rows])
     historical_orders = await stage.historical_order_counts_map(session, [c.id for c in rows])
     current_opportunities = await stage.current_opportunity_counts_map(session, [c.id for c in rows])
+    from app.modules.customer.followers import followers_map
+
+    follower_map = await followers_map(session, [c.id for c in rows])
 
     def activity_status(customer: Customer) -> str:
         facts = [value for value in (customer.last_followup_at, customer.last_progress_at) if value]
@@ -97,6 +104,7 @@ async def list_customers(
             recent_order_count=stage_map.get(c.id, (0, 0, 0))[0],
             current_opportunity_count=current_opportunities.get(c.id, 0),
             activity_status=activity_status(c),
+            followers=follower_map.get(c.id, []),
         )
         for c in rows
     ]
@@ -212,12 +220,16 @@ async def get_customer(
     owners = await svc.owner_names(session, [customer.owner_id])
     counts = await svc.contact_counts(session, [customer.id])
     tag_map = await tag_svc.tags_of_customers(session, [customer.id])
+    from app.modules.customer.followers import followers_map
+
+    follower_map = await followers_map(session, [customer.id])
     return ok(
         svc.serialize_customer(
             customer,
             owner_name=owners.get(customer.owner_id) if customer.owner_id else None,
             contact_count=counts.get(customer.id, 0),
             tags=tag_map.get(customer.id, []),
+            followers=follower_map.get(customer.id, []),
         )
     )
 
@@ -442,6 +454,133 @@ async def transfer_customer(
     # 统一客户端只把 `data` 交给页面，所以这项必须放在 data 里，不能只写在 message。
     data["document_transfer"] = documents
     return ok(data, _transfer_message("已放入公海" if to_pool else "负责人已变更", documents))
+
+
+@router.post("/customers/{customer_id}/followers")
+async def add_customer_followers(
+    customer_id: int,
+    payload: FollowersAdd,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("customer:assign")),
+    session: AsyncSession = Depends(get_db),
+):
+    """给客户添加跟进人（可一次多个）。默认负责人不变。"""
+    from app.modules.customer.followers import add_followers, followers_map
+    from app.modules.user.model import User
+
+    customer = await svc.get_visible_customer(session, user, customer_id, for_update=True)
+    targets = sorted({int(uid) for uid in payload.user_ids})
+    users = (await session.execute(select(User).where(User.id.in_(targets)))).scalars().all()
+    by_id = {row.id: row for row in users}
+    missing = [uid for uid in targets if uid not in by_id]
+    if missing:
+        raise AppError(ErrorCode.NOT_FOUND, f"用户 id={missing[0]} 不存在", 404)
+    inactive = [row.name for row in users if row.status != "active"]
+    if inactive:
+        raise AppError(ErrorCode.PARAM_ERROR, f"「{inactive[0]}」已停用，不能作为跟进人", 422)
+    before = sorted(await _follower_ids(session, customer.id))
+    added = await add_followers(
+        session, customer.id, targets, source="manual", created_by=user.id
+    )
+    after = sorted(await _follower_ids(session, customer.id))
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="add_followers",
+        business_type="customer",
+        business_id=customer.id,
+        before={"follower_ids": before},
+        after={"follower_ids": after, "added": added},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    follower_map = await followers_map(session, [customer.id])
+    data = svc.serialize_customer(
+        customer,
+        owner_name=(await svc.owner_names(session, [customer.owner_id])).get(customer.owner_id)
+        if customer.owner_id else None,
+        followers=follower_map.get(customer.id, []),
+    )
+    return ok(data, f"已添加 {len(added)} 位跟进人")
+
+
+@router.delete("/customers/{customer_id}/followers/{follower_user_id}")
+async def remove_customer_follower(
+    customer_id: int,
+    follower_user_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("customer:assign")),
+    session: AsyncSession = Depends(get_db),
+):
+    """移除跟进人；默认负责人不能直接移除（先换默认负责人）。"""
+    from app.modules.customer.followers import followers_map, remove_follower
+
+    customer = await svc.get_visible_customer(session, user, customer_id, for_update=True)
+    before = sorted(await _follower_ids(session, customer.id))
+    removed = await remove_follower(session, customer, follower_user_id)
+    if not removed:
+        raise AppError(ErrorCode.NOT_FOUND, "该同事不是这个客户的跟进人", 404)
+    after = sorted(await _follower_ids(session, customer.id))
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="remove_follower",
+        business_type="customer",
+        business_id=customer.id,
+        before={"follower_ids": before},
+        after={"follower_ids": after, "removed": follower_user_id},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    follower_map = await followers_map(session, [customer.id])
+    data = svc.serialize_customer(
+        customer,
+        owner_name=(await svc.owner_names(session, [customer.owner_id])).get(customer.owner_id)
+        if customer.owner_id else None,
+        followers=follower_map.get(customer.id, []),
+    )
+    return ok(data, "已移除跟进人")
+
+
+@router.post("/customers/{customer_id}/set-primary")
+async def set_customer_primary(
+    customer_id: int,
+    payload: FollowerPrimary,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("customer:assign")),
+    session: AsyncSession = Depends(get_db),
+):
+    """把某位跟进人设为默认负责人（不搬单据；整体转交走 /transfer）。"""
+    from app.modules.customer.followers import followers_map, set_default_follower
+
+    customer = await svc.get_visible_customer(session, user, customer_id, for_update=True)
+    before_owner = customer.owner_id
+    await set_default_follower(session, customer, payload.user_id)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="set_primary_follower",
+        business_type="customer",
+        business_id=customer.id,
+        before={"owner_id": before_owner},
+        after={"owner_id": customer.owner_id},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    follower_map = await followers_map(session, [customer.id])
+    data = svc.serialize_customer(
+        customer,
+        owner_name=(await svc.owner_names(session, [customer.owner_id])).get(customer.owner_id)
+        if customer.owner_id else None,
+        followers=follower_map.get(customer.id, []),
+    )
+    return ok(data, "默认负责人已更新")
+
+
+async def _follower_ids(session: AsyncSession, customer_id: int) -> list[int]:
+    from app.modules.customer.followers import active_follower_ids
+
+    return await active_follower_ids(session, customer_id)
 
 
 @router.post("/customers/{customer_id}/release-to-pool")
@@ -702,11 +841,8 @@ async def customer_opportunities(
 
     ensure_permission(user, "opportunity:view")
     await svc.get_visible_customer(session, user, customer_id)
-    stmt = await opp_svc.apply_data_scope(
-        opp_svc.build_opportunity_stmt(customer_id=customer_id, status=status),
-        user,
-        session,
-    )
+    # 客户可见后，跟进人能看到该客户的全部商机（客户详情页内的历史全貌）
+    stmt = opp_svc.build_opportunity_stmt(customer_id=customer_id, status=status)
     rows, total = await paginate(session, stmt, page, page_size)
     stages = await opp_svc.stage_map(session)
     _, owners, counts = await opp_svc.enrichment(session, rows)
@@ -749,8 +885,8 @@ async def customer_quotes(
     stmt = select(Quote).where(
         Quote.customer_id == customer_id, Quote.deleted_at.is_(None)
     )
-    owner_ids = await scoped_owner_ids(session, user)
-    stmt = stmt.where(draft_scope(Quote, user.id, Quote.owner_id.in_(owner_ids) if owner_ids is not None else None))
+    # 客户可见后，跟进人能看到该客户的全部报价（私有草稿仍只对创建人可见）
+    stmt = stmt.where(draft_scope(Quote, user.id))
     if status:
         stmt = stmt.where(Quote.status == status)
     rows, total = await paginate(session, stmt.order_by(Quote.id.desc()), page, page_size)
@@ -813,9 +949,6 @@ async def customer_orders(
     ensure_permission(user, "order:view")
     await svc.get_visible_customer(session, user, customer_id)
     stmt = select(SalesOrder).where(SalesOrder.customer_id == customer_id)
-    owner_ids = await scoped_owner_ids(session, user)
-    if owner_ids is not None:
-        stmt = stmt.where(SalesOrder.owner_id.in_(owner_ids))
     if status:
         stmt = stmt.where(SalesOrder.status == status)
     rows, total = await paginate(session, stmt.order_by(SalesOrder.id.desc()), page, page_size)
@@ -1049,11 +1182,13 @@ async def list_all_contacts(
             or_(Contact.name.ilike(like), Contact.mobile.ilike(like), Contact.email.ilike(like))
         )
 
-    # 数据范围：按联系人所属客户过滤
+    # 数据范围：按联系人所属客户过滤（多跟进人：任一跟进人在范围内即可）
     owner_ids = await scoped_owner_ids(session, user)
     if owner_ids is not None:
+        from app.modules.customer.visibility import customer_scope_clause_from
+
         allowed = select(Customer.id).where(
-            Customer.deleted_at.is_(None), Customer.owner_id.in_(owner_ids)
+            Customer.deleted_at.is_(None), customer_scope_clause_from(owner_ids)
         )
         stmt = stmt.where(or_(Contact.customer_id.in_(allowed), Contact.customer_id.is_(None)))
 

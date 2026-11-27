@@ -7,7 +7,7 @@ from starlette.requests import Request
 
 from app.core.audit import AuditLog
 from app.modules.approval.model import ApprovalInstance
-from app.modules.customer.model import Customer
+from app.modules.customer.model import Customer, CustomerFollower
 from app.modules.sample import router as sample_router
 from app.modules.sample.model import SampleItem, SampleRequest, SampleShipment
 from app.modules.sample.schema import SampleCreate
@@ -34,7 +34,7 @@ def test_manual_sample_create_same_request_key_is_idempotent():
         conn.exec_driver_sql("BEGIN")
 
     for table in (
-        User.__table__, Customer.__table__, SampleRequest.__table__, SampleItem.__table__,
+        User.__table__, Customer.__table__, CustomerFollower.__table__, SampleRequest.__table__, SampleItem.__table__,
         SampleShipment.__table__, ApprovalInstance.__table__, AuditLog.__table__,
         Role.__table__, Permission.__table__,
         user_roles, role_permissions,

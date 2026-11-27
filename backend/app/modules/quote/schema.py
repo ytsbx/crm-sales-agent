@@ -20,6 +20,8 @@ class QuoteCreate(BaseModel):
     opportunity_id: int | None = None
     customer_id: int | None = None
     contact_id: int | None = None
+    #: 负责人：不填 = 创建人自己（多跟进人下不再继承客户/商机负责人）
+    owner_id: int | None = None
     valid_until: date | None = None
     payment_terms: str | None = Field(default=None, max_length=128)
     delivery_terms: str | None = None

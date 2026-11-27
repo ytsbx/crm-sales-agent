@@ -491,7 +491,8 @@ async def create_opportunity(
     stage = await svc.get_initial_stage(session, payload.stage_id)
 
     data = payload.model_dump(exclude={"stage_id"})
-    owner_id = data.pop("owner_id", None) or customer.owner_id or user.id
+    # 默认负责人 = 创建人（谁做谁负责）；显式指定他人时按现有口径校验存在且在岗。
+    owner_id = data.pop("owner_id", None) or user.id
     # 负责人只校验"存在且在职"（第十二批 12.8 已拍板）：有 opportunity:manage 的人
     # 可以把商机交给**任意在职同事**，不受接收人的部门/数据范围限制 —— 与"复制商机"
     # 「改派商机」用同一把尺子（那两处一直是 `assert_owner_active`）。从前这里按数据

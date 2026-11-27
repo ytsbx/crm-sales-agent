@@ -45,9 +45,9 @@ def test_clone_preserves_contact_only_for_same_customer(customer_id, expected_co
         customer_lookup.assert_awaited_once_with(session, user, customer_id)
         assert clone.customer_id == customer_id and clone.primary_contact_id == expected_contact_id
         assert clone.status == 'open' and clone.stage_id == 1
+        # 复制默认归创建人（谁做谁负责），不再继承源商机负责人
+        assert clone.owner_id == 77
         assert source.customer_id == 1 and source.primary_contact_id == 9 and source.status == 'win'
-        if expected_contact_id is None:
-            session.get.assert_awaited_once_with(User, 77)
     asyncio.run(scenario())
 
 

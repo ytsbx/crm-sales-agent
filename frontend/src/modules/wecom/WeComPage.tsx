@@ -662,7 +662,7 @@ export default function WeComPage() {
           </div>
           {rows.some((row) => row.import_hold_reason) && (
             <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 10 }}>
-              标出原因的不会随「预览导入」批量进入客户中心；多人跟进导致的排在最前，点开可看原因和处理办法。
+              标出原因的不会随「预览导入」批量进入客户中心，点开可看原因和处理办法。
             </div>
           )}
           <Input
@@ -1222,7 +1222,7 @@ export default function WeComPage() {
               <p className="receivable-picker-guide">
                 新建公司客户 {importPreview.new_company_customers} 个、个人客户 {importPreview.new_personal_customers} 个，
                 关联已有客户的联系人 {importPreview.existing_customer_contacts} 位。
-                新建客户由匹配到的原跟进员工负责，关联时沿用已有客户的负责人。
+                新建客户会把匹配到的原跟进员工都加为跟进人，最早添加的那位作为默认负责人；关联时沿用已有客户的负责人并补上跟进人。
               </p>
             )}
             {!canImport && <p className="receivable-picker-guide">需要有客户导入、创建和分配权限的同事确认导入。</p>}

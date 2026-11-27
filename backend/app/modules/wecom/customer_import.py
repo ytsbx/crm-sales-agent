@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import write_audit
 from app.core.errors import AppError, ErrorCode
 from app.modules.contact_util import create_contact_for_customer
-from app.modules.customer.model import Contact, Customer
+from app.modules.customer.model import Contact, Customer, CustomerFollower
 from app.modules.user.model import User
 from app.modules.wecom.model import WeComExternalContact, WeComFollowRelationship
 from app.modules.wecom.service import finish_job, start_job
@@ -49,20 +49,27 @@ async def _snapshot(session: AsyncSession, *, lock=False):
         WeComFollowRelationship.external_contact_id.in_([r.id for r in rows]),
         WeComFollowRelationship.status == 'active',
     ).order_by(WeComFollowRelationship.id))).scalars().all() if rows else []
-    return rows, users, customers, contacts, followers
+    customer_followers = (
+        await session.execute(
+            select(CustomerFollower).order_by(CustomerFollower.id)
+        )
+    ).scalars().all()
+    return rows, users, customers, contacts, followers, customer_followers
 
 
 def _plan(snapshot, policy):
     if policy != 'hold':
         raise AppError(ErrorCode.PARAM_ERROR, '未匹配负责人策略无效', 422)
-    rows, users, customers, contacts, followers = snapshot
+    rows, users, customers, contacts, followers, customer_followers = snapshot
     mapped = defaultdict(set)
     for u in users:
         if u.status == 'active' and u.wecom_userid:
             mapped[u.wecom_userid].add(u.id)
     follows = defaultdict(set)
+    follow_add_time = {}
     for r in followers:
         follows[r.external_contact_id].add(r.wecom_userid)
+        follow_add_time[(r.external_contact_id, r.wecom_userid)] = getattr(r, 'add_time', None)
     existing = defaultdict(list)
     for c in customers:
         existing[_key(c.name)].append(c)
@@ -99,45 +106,67 @@ def _plan(snapshot, policy):
             held.append((r.id, reason))
             continue
         group_key = ('企业', _key(full)) if full else ('个人', r.external_userid)
-        group = groups.setdefault(group_key, {'name': name, 'kind': kind, 'target': target, 'rows': [], 'owners': set(), 'owner_unknown': False, 'no_follower': False, 'unmapped_follower': False})
-        owner_ids = set()
-        unresolved = not follows[r.id]
-        if unresolved:
-            group['no_follower'] = True
+        group = groups.setdefault(group_key, {
+            'name': name, 'kind': kind, 'target': target, 'rows': [],
+            'follower_ids': set(), 'follower_times': {},
+            'has_followers': False, 'has_unmapped': False,
+        })
+        row_followers: set[int] = set()
+        row_times: dict[int, datetime | None] = {}
+        if follows[r.id]:
+            group['has_followers'] = True
         for uid in follows[r.id]:
             if len(mapped[uid]) != 1:
-                unresolved = True
-                group['unmapped_follower'] = True
+                group['has_unmapped'] = True
             else:
-                owner_ids.update(mapped[uid])
-        owner = next(iter(owner_ids)) if not unresolved and len(owner_ids) == 1 else None
-        group['rows'].append((r, owner))
-        group['owners'].update(owner_ids)
-        group['owner_unknown'] |= unresolved or owner is None
+                crm_user_id = next(iter(mapped[uid]))
+                row_followers.add(crm_user_id)
+                row_times[crm_user_id] = follow_add_time.get((r.id, uid))
+        group['follower_ids'].update(row_followers)
+        for crm_user_id, add_time in row_times.items():
+            old = group['follower_times'].get(crm_user_id)
+            if crm_user_id not in group['follower_times'] or (
+                add_time is not None and (old is None or add_time < old)
+            ):
+                group['follower_times'][crm_user_id] = add_time
+        group['rows'].append((r, row_followers, row_times))
+
+    def _earliest(group) -> int | None:
+        """默认负责人：加得最早的人（add_time），其次 user id 最小。"""
+        follower_ids = group['follower_ids']
+        if not follower_ids:
+            return None
+        times = group['follower_times']
+
+        def sort_key(uid: int):
+            value = times.get(uid)
+            return (value is None, value or datetime.min.replace(tzinfo=UTC), uid)
+
+        return sorted(follower_ids, key=sort_key)[0]
+
     ready = []
     for group in groups.values():
-        owner = next(iter(group['owners'])) if not group['owner_unknown'] and len(group['owners']) == 1 else None
-        group['owner_id'] = owner
-        if owner is None:
-            # 原因要能对应到具体做法：多人不同账号、跟进人没开账号、压根没同步到跟进人，
-            # 处理方式完全不同，不能都写成「未唯一匹配」。
-            if len(group['owners']) > 1:
-                reason = HOLD_MULTI_OWNER
-            elif group['unmapped_follower']:
-                reason = HOLD_UNMAPPED_FOLLOWER
-            elif group['no_follower']:
-                reason = HOLD_NO_FOLLOWER
-            else:
-                reason = HOLD_OWNER_UNRESOLVED
-            peers = [(_name(rr.name) or '未命名') for rr, _ in group['rows']]
+        follower_ids = group['follower_ids']
+        if not follower_ids:
+            reason = HOLD_UNMAPPED_FOLLOWER if group['has_followers'] else HOLD_NO_FOLLOWER
+            peers = [(_name(rr.name) or '未命名') for rr, _, _ in group['rows']]
             if len(group['rows']) > 1:
-                for row_index, (rr, _) in enumerate(group['rows']):
+                for row_index, (rr, _, _) in enumerate(group['rows']):
                     peer_map[rr.id] = [name for index, name in enumerate(peers) if index != row_index]
-            held.extend((r.id, reason) for r, _ in group['rows'])
-        elif group['target'] is not None and group['target'].owner_id != owner:
-            held.extend((r.id, '已有客户负责人不同，需人工确认') for r, _ in group['rows'])
+            held.extend((r.id, reason) for r, _, _ in group['rows'])
+            continue
+        target = group['target']
+        if target is not None and target.owner_id is not None:
+            # 既有私海客户：默认负责人保持不变；如果它不是跟进人，执行时补进去。
+            owner_id = target.owner_id
         else:
-            ready.append(group)
+            owner_id = _earliest(group)
+        group['owner_id'] = owner_id
+        group['rows'] = [
+            (r, next(iter(row_followers)) if len(row_followers) == 1 else owner_id)
+            for r, row_followers, _ in group['rows']
+        ]
+        ready.append(group)
     # 绑定、公司名、负责人、关联及跟进关系变化都会让旧预览失效。
     signature = {
         'policy': policy,
@@ -146,6 +175,7 @@ def _plan(snapshot, policy):
         'customers': [[c.id, c.name, c.customer_type, c.status, c.owner_id, bool(c.deleted_at)] for c in customers],
         'contacts': [[c.id, c.external_userid, c.customer_id, bool(c.deleted_at)] for c in contacts],
         'followers': [[f.id, f.external_contact_id, f.wecom_userid, f.status] for f in followers],
+        'customer_followers': [[f.customer_id, f.user_id, bool(f.deleted_at)] for f in customer_followers],
     }
     digest = hashlib.sha256(json.dumps(signature, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
     reasons = Counter(reason for _, reason in held)
@@ -156,6 +186,7 @@ def _plan(snapshot, policy):
         'new_company_customers': sum(g['target'] is None and g['kind'] == '企业' for g in ready),
         'new_personal_customers': sum(g['target'] is None and g['kind'] == '个人' for g in ready),
         'existing_customer_contacts': sum(len(g['rows']) for g in ready if g['target'] is not None),
+        'import_followers': sum(len(g['follower_ids']) for g in ready),
         'new_unassigned_customers': sum(g['target'] is None and g['owner_id'] is None for g in ready),
         'held_contacts': len(held), 'held_reasons': dict(reasons),
     }
@@ -204,11 +235,23 @@ async def execute_import(session: AsyncSession, *, digest: str, policy='hold', o
             session.add(customer)
             await session.flush()
         else:
-            # 既有客户不改负责人、等级、状态或已有联系人。
+            # 既有客户：只补跟进人，不改负责人、等级、状态或已有联系人。
             customer = (await session.execute(select(Customer).where(Customer.id == customer.id)
                 .with_for_update().execution_options(populate_existing=True))).scalars().one()
-            if customer.deleted_at is not None or customer.status != 'active' or customer.owner_id != group['owner_id']:
+            if customer.deleted_at is not None or customer.status != 'active':
                 raise AppError(ErrorCode.VERSION_CONFLICT, '客户状态已变化，请重新预览', 409)
+        from app.modules.customer.followers import add_followers
+
+        follower_ids = set(group['follower_ids'])
+        if customer.owner_id is not None:
+            follower_ids.add(customer.owner_id)
+        await add_followers(
+            session,
+            customer.id,
+            follower_ids,
+            source='wecom_import',
+            created_by=operator_id,
+        )
         for row, owner in group['rows']:
             contact = await create_contact_for_customer(session, customer_id=customer.id,
                 name=_name(row.name), owner_id=owner, source='企业微信')

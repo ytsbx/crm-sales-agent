@@ -62,7 +62,7 @@ async def load_source(session, user, *, quote_version_id=None, inquiry_id=None):
     return {'source': context, 'customer_id': customer_id, 'customer_name': customer.name,
             'opportunity_id': opportunity_id, 'contact_id': contact_id,
             'opportunity_title': opportunity.title if opportunity else None,
-            'owner_id': (opportunity.owner_id if opportunity else customer.owner_id) or user.id,
+            'owner_id': user.id,
             'items': items}
 
 
@@ -93,10 +93,18 @@ async def create_from_source(session, user, payload, *, ip=None):
         return existing, True
     source = await load_source(session, user, quote_version_id=payload.quote_version_id, inquiry_id=payload.inquiry_id)
     available = {row['source_item_id']: row for row in source['items']}
+    owner_id = payload.owner_id or user.id
+    from app.modules.user.model import User
+
+    owner = await session.get(User, owner_id)
+    if owner is None:
+        raise AppError(ErrorCode.NOT_FOUND, f"负责人 id={owner_id} 不存在", 404)
+    if owner.status != "active":
+        raise AppError(ErrorCode.PARAM_ERROR, f"负责人「{owner.name}」已停用", 422)
     if any(row.source_item_id not in available for row in payload.items):
         raise AppError(ErrorCode.PARAM_ERROR, '所选明细不属于该来源版本', 422)
     sample = SampleRequest(customer_id=source['customer_id'], opportunity_id=source['opportunity_id'],
-                           contact_id=source['contact_id'], owner_id=source['owner_id'],
+                           contact_id=source['contact_id'], owner_id=owner_id,
                            status='pending', requested_at=service.now(), created_at=service.now(), remark=payload.remark, source_context={**source['source'], 'dingtalk_oa': {'mode': 'standalone', 'fields': {}}},
                            request_key=key, request_hash=digest, created_by=user.id)
     session.add(sample)

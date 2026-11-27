@@ -475,12 +475,9 @@ def customer_scope_condition(owner_ids: list[int] | None):
     alive = Customer.deleted_at.is_(None)
     if owner_ids is None:
         return alive
-    # 范围内的 + 公海（无负责人）。公海客户对所有人可见，漏掉它会出现
-    # "详情页能维护、列表里却查不到"这种自相矛盾。
-    return and_(
-        or_(Customer.owner_id.in_(owner_ids), Customer.owner_id.is_(None)),
-        alive,
-    )
+    from app.modules.customer.visibility import customer_scope_clause_from
+
+    return and_(customer_scope_clause_from(owner_ids), alive)
 
 
 async def ensure_customer_price_targets(

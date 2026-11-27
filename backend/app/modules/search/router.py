@@ -98,7 +98,8 @@ def _group_denied(key: str, user: CurrentUser) -> bool:
 
 
 async def _scope(
-    stmt, user: CurrentUser, column, session: AsyncSession, *, allow_unowned: bool = False
+    stmt, user: CurrentUser, column, session: AsyncSession, *, allow_unowned: bool = False,
+    customer_scope: bool = False,
 ):
     """统一走 app/core/data_scope.py（`department_and_sub` 递归到下级部门）。
 
@@ -108,6 +109,10 @@ async def _scope(
     owner_ids = await scoped_owner_ids(session, user)
     if owner_ids is None:
         return stmt
+    if customer_scope:
+        from app.modules.customer.visibility import customer_scope_clause_from
+
+        return stmt.where(customer_scope_clause_from(owner_ids))
     cond = column.in_(owner_ids)
     if allow_unowned:
         cond = or_(cond, column.is_(None))
@@ -163,6 +168,7 @@ async def global_search(
             Customer.owner_id,
             session,
             allow_unowned=True,
+            customer_scope=True,
         )
         items_by_group["customer"] = [
             {
@@ -198,6 +204,7 @@ async def global_search(
             Customer.owner_id,
             session,
             allow_unowned=True,
+            customer_scope=True,
         )
         contact_rows = (await session.execute(contact_stmt)).all()
         # 是否给完整联系方式：**与其他入口共用同一条规则**（用户 2026-10-06 确认：

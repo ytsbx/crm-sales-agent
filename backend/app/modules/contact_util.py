@@ -160,6 +160,20 @@ async def can_view_full_contact(
     if int(owner_id) == int(user.id):
         return True
 
+    # 有效跟进人（多跟进人客户）：跟的人要看得到电话
+    from app.modules.customer.model import CustomerFollower
+
+    if await session.scalar(
+        select(CustomerFollower.id)
+        .where(
+            CustomerFollower.customer_id == customer_id,
+            CustomerFollower.user_id == user.id,
+            CustomerFollower.deleted_at.is_(None),
+        )
+        .limit(1)
+    ) is not None:
+        return True
+
     allowed = await scoped_owner_ids(session, user)
     return allowed is not None and int(owner_id) in allowed
 
@@ -190,10 +204,21 @@ async def full_contact_customer_ids(
             select(Customer.id, Customer.owner_id).where(Customer.id.in_(ids))
         )
     ).all()
+    from app.modules.customer.model import CustomerFollower
+
+    follower_ids = set(
+        (await session.execute(
+            select(CustomerFollower.customer_id).where(
+                CustomerFollower.customer_id.in_(ids),
+                CustomerFollower.user_id == user.id,
+                CustomerFollower.deleted_at.is_(None),
+            )
+        )).scalars().all()
+    )
     return {
         int(cid)
         for cid, owner in rows
-        if owner is not None and int(owner) in allowed
+        if (owner is not None and int(owner) in allowed) or cid in follower_ids
     }
 
 

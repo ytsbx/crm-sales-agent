@@ -6681,3 +6681,16 @@
 - 现象：刘帅帅（liushuaishuai）每次刷新都弹「你的登录账号已生成」。原因是 `initial_password_pending` 在改密码前一直为 true，而弹窗的「我知道了」只存在组件 state，刷新即丢。
 - 修复：按用户把"已知道"记到 localStorage（`initial-password-dismissed:<userId>`），刷新/重新进入不再重复弹；改完密码后后端会清掉 `initial_password_pending`，弹窗自然消失。设置页的初始密码提示条仍保留。
 - 验证：前端 `tsc -b` + `vite build` 通过。
+
+## 2026-11-27 客户改为「一组跟进人」+ 业务单据默认归创建人（已本地验证，待发布）
+
+- 背景：企微里同一客户常被公司多人添加，`customers.owner_id` 只能放一个人，导致导入时多人跟进被判「负责人不唯一」而扣住（2000+ 条进不来），非负责同事看不到客户。主人拍板：客户从「一个负责人」改成「一组跟进人」，`owner_id` 保留为默认负责人（导入/创建自动填，只用于展示和客户数统计）；业务单据默认负责人=创建人，创建时可指定；离职交接沿用现有流程，公海释放保留跟进人。
+- 数据模型：新增 `customer_followers`（customer_id/user_id/source/created_by/deleted_at，软删保留退出历史；`(customer_id,user_id) WHERE deleted_at IS NULL` 部分唯一索引）。迁移 `d4f6a8b0c2e1`（down_revision `c3d5e7f9a1b2`）只建表+回填每个客户一条默认负责人跟进人，可重复执行，downgrade 删表。已在隔离库 `crm_iso_followers_test`/`crm_iso_followers_backfill` 验证回填与幂等；本地演示库已升级到 `d4f6a8b0c2e1`，回填 89 条。
+- 可见性：新增 `customer/visibility.py::customer_scope_clause_from`（默认负责人 ∈ 范围 OR 有效跟进人 ∈ 范围 OR 无负责人），接入客户列表/详情、跟进、合同、联系人、文件、通知、搜索、询价、专属价、撞单、回收站等客户可见性入口；商机/报价/打样/订单/合同的全局列表和详情仍按各自负责人，业绩口径 `sales_owner_id` 不动。客户子资源在客户可见后展示该客户全部单据。
+- 企微导入：`_plan` 收集组内所有绑定到 CRM 账号的跟进人，不再因多人扣住；无人绑定仍扣住并给出原因。默认负责人取最早添加者；已有私海客户保留原默认负责人、只补跟进人；公海客户保持公海。`execute_import` 补齐跟进人（来源 `wecom_import`）。
+- 业务单据默认归创建人：商机（含线索转商机、复制）、报价（创建/复制/询价转报价，`QuoteCreate` 新增 `owner_id`）、打样（含来源建打样）、订单（报价转订单 owner=转单人，`sales_owner_id` 仍记报价人；手工单/订单草稿支持显式 `owner_id`）。前端商机/报价/打样/来源建单弹窗加「负责人」选择，默认当前用户。
+- 跟进人管理：新增 `POST /customers/{id}/followers`、`DELETE /customers/{id}/followers/{user_id}`、`POST /customers/{id}/set-primary`（`customer:assign`，审计留痕）；默认负责人不可直接移除。转交时新负责人加入并成默认，原默认移除（可保留）；放公海只清默认、保留全部跟进人；领取/指派加入跟进人。离职交接：默认负责人走现有转交流程，仅跟进人的离职只移除跟进关系。合并取跟进人并集；撞单裁定改走转交。客户删除/恢复保留跟进人。
+- 接口/前端：`GET /customers` 新增 `mine=true`（「我跟进的」）；`serialize_customer` 返回 `followers`、`follower_count`。客户列表范围改「我跟进的」、负责人列显示「负责人 +N」；客户详情头部「跟进人（N）」可增删/设默认；企微页面多人不再提示「负责人不唯一」，导入说明改为「绑定的员工都会成为跟进人，最早添加者为默认负责人」。
+- 统计口径：客户数仍按默认负责人算一次；「在途业务停滞」的可见范围改用跟进人范围（口径不变）。
+- 验证：新增 `test_customer_followers.py`；更新企微导入/同步、商机复制、价格客户范围等测试与 5 个自建测试引擎。全量后端 2358 项通过（pytest exit 0）；前端 `tsc -b` + `vite build` 通过；本地 8009 接口与客户详情页已确认返回/展示跟进人。
+- 待发布：包含新迁移，需按「迁移变更」发布路径（先备份 DB），发布前向主人确认。

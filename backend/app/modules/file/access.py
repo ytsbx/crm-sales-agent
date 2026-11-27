@@ -23,6 +23,7 @@ from app.core.draft_visibility import draft_scope
 from app.core.errors import AppError
 from app.modules.contract.model import ContractTemplate
 from app.modules.customer.model import Customer
+from app.modules.customer.visibility import customer_scope_clause_from
 from app.modules.file.model import BusinessFile
 from app.modules.lead.model import Lead
 from app.modules.opportunity.model import Opportunity
@@ -336,7 +337,9 @@ async def visible_object(
         # 分支当时没跟上。只对**真正按负责人划分**的模型加 NULL 分支；
         # 其它模型保持原样（它们的 `owner_id` 语义不同，不该被这条推广误放）。
         owner_column = getattr(model, owner_field)
-        if owner_field == "owner_id" and model.__name__ in ("Customer", "Lead"):
+        if business_type == "customer":
+            stmt = stmt.where(customer_scope_clause_from(owner_ids))
+        elif owner_field == "owner_id" and model.__name__ == "Lead":
             stmt = stmt.where(
                 or_(owner_column.in_(owner_ids), owner_column.is_(None))
             )

@@ -7,6 +7,7 @@ from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
 from app.modules.customer.model import Customer
+from app.modules.customer.visibility import customer_scope_clause_from
 from app.modules.followup.model import FollowUp
 from app.modules.lead.model import Lead
 from app.modules.opportunity.model import Opportunity
@@ -52,7 +53,10 @@ async def followup_scope_filter(session: AsyncSession, user: CurrentUser):
                         ("quote", Quote), ("order", SalesOrder)):
         column = getattr(FollowUp, f"{kind}_id")
         owner_condition = model.owner_id.in_(owner_ids)
-        if kind in ("customer", "lead"):
+        if kind == "customer":
+            # 多跟进人：客户可见（默认负责人/任一跟进人/公海）即可见
+            owner_condition = customer_scope_clause_from(owner_ids)
+        elif kind == "lead":
             owner_condition = or_(owner_condition, model.owner_id.is_(None))
         ids = select(model.id).where(owner_condition)
         allowed.append(and_(*higher_empty, column.in_(ids)))
@@ -83,4 +87,23 @@ async def system_source_filter(session: AsyncSession, user: CurrentUser):
                 stmt = stmt.where(model.deleted_at.is_(None))
             allowed.append(and_(*higher_sources_empty, stmt.exists()))
         higher_sources_empty.append(column.is_(None))
-    return or_(FollowUp.followup_type != "系统", and_(*higher_sources_empty), *allowed)
+    no_source_customer_visible = None
+    if owner_ids is not None:
+        # 没有挂任何来源单据的系统事实：客户可见（含多跟进人）即可见；
+        # 挂了来源单据的仍要按来源单据权限判定，不能借客户可见绕过。
+        no_source_customer_visible = and_(
+            *higher_sources_empty,
+            FollowUp.customer_id.is_not(None),
+            select(Customer.id)
+            .where(
+                Customer.id == FollowUp.customer_id,
+                customer_scope_clause_from(owner_ids),
+            )
+            .exists(),
+        )
+    return or_(
+        FollowUp.followup_type != "系统",
+        and_(*higher_sources_empty),
+        *([no_source_customer_visible] if no_source_customer_visible is not None else []),
+        *allowed,
+    )

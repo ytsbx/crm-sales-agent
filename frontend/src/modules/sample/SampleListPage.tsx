@@ -69,6 +69,7 @@ import BizDocPanel from '../../shared/components/BizDocPanel'
 import type { TagTone } from '../../shared/types'
 import { optionMatcher } from '../../shared/components/optionMatch'
 import RecordSearchSelect from '../../shared/components/RecordSearchSelect'
+import UserSearchSelect from '../../shared/components/UserSearchSelect'
 import GuardedButton from '../../shared/components/GuardedButton'
 
 /** 样品（PRD §19 / 03-API §26）。 */
@@ -402,6 +403,7 @@ export default function SampleListPage() {
   const [form, setForm] = useState<{
     opportunity_id?: number
     customer_id?: number
+    owner_id?: number
     remark: string
     items: ItemDraft[]
   }>({ remark: '', items: [{ quantity: '1' }] })
@@ -589,6 +591,7 @@ export default function SampleListPage() {
         use_dingtalk: true,
         opportunity_id: form.opportunity_id ?? null,
         customer_id: form.customer_id ?? null,
+        owner_id: form.owner_id,
         remark: form.remark.trim() || null,
         items: form.items.map(draftPayload),
       })
@@ -1287,6 +1290,17 @@ export default function SampleListPage() {
               lookup={getCustomer}
               labelOf={(customer) => customer.name}
               onChange={(customer) => setForm({ ...form, customer_id: customer?.id })}
+            />
+          </div>
+          <div>
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>负责人</div>
+            <UserSearchSelect
+              queryScope="sample-owner"
+              enabled={createVisible}
+              placeholder="默认自己，可搜索同事"
+              value={form.owner_id}
+              onChange={(value) => setForm({ ...form, owner_id: value })}
+              style={{ width: '100%' }}
             />
           </div>
 

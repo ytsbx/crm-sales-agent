@@ -103,7 +103,15 @@ async def create(session, user, payload):
     if any(i.source_item_id not in available for i in payload.items):
         raise AppError(ErrorCode.PARAM_ERROR, '所选明细不属于该来源版本', 422)
     currency = await ensure_currency_allowed(session, data['currency'], label='订单草稿币种')
-    draft = OrderDraft(customer_id=data['customer_id'], opportunity_id=data['opportunity_id'], owner_id=data['owner_id'],
+    owner_id = payload.owner_id or data['owner_id']
+    from app.modules.user.model import User
+
+    owner = await session.get(User, owner_id)
+    if owner is None:
+        raise AppError(ErrorCode.NOT_FOUND, f"负责人 id={owner_id} 不存在", 404)
+    if owner.status != "active":
+        raise AppError(ErrorCode.PARAM_ERROR, f"负责人「{owner.name}」已停用", 422)
+    draft = OrderDraft(customer_id=data['customer_id'], opportunity_id=data['opportunity_id'], owner_id=owner_id,
         source_context=data['source'], currency=currency, payment_terms=payload.payment_terms if payload.payment_terms is not None else data['payment_terms'],
         delivery_date=payload.delivery_date, remark=payload.remark, request_key=key, request_hash=digest, created_by=user.id)
     session.add(draft)

@@ -58,6 +58,8 @@ class ReceivablePlanIn(BaseModel):
 class OrderFromQuote(BaseModel):
     delivery_date: date | None = None
     remark: str | None = None
+    #: 负责人：不填 = 转单人自己（业绩签单归属仍保留报价负责人）
+    owner_id: int | None = None
     #: 收款计划：不传 = 一条「全款」。详见 `ReceivablePlanIn`。
     receivable_plan: ReceivablePlanIn | None = None
 
@@ -252,6 +254,8 @@ class OrderDraftLine(BaseModel):
 
 class OrderDraftCreate(SampleSource):
     request_key: UUID
+    #: 负责人：不填 = 创建人自己
+    owner_id: int | None = None
     items: list[OrderDraftLine] = Field(min_length=1, max_length=200)
     delivery_date: date | None = None
     payment_terms: str | None = Field(default=None, max_length=128)

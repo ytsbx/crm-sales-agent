@@ -4,7 +4,7 @@ import hashlib
 import json
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import func, or_, select, text, update
+from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1033,7 +1033,31 @@ async def list_documents(
         # 用 `or_` 逐级表达（而不是 `COALESCE(...) IN (...)`）：三级归属全为空的
         # 合同在 `COALESCE` 写法下结果是 NULL，`NULL IN (...)` 仍不成立；
         # 逐级 `or_` 更直白，也和 `visibility.py` 的 if 链一一对应。
-        scope = func.coalesce(Customer.owner_id, SalesOrder.owner_id, ContractDocument.created_by).in_(owner_ids)
+        # 多跟进人：客户当前负责人或任一有效跟进人在范围内 → 可见；
+        # 否则沿用"订单负责人 → 创建人"的回退链（与 visibility.py 一致）
+        from app.modules.customer.model import CustomerFollower
+
+        follower_exists = select(CustomerFollower.id).where(
+            CustomerFollower.customer_id == ContractDocument.customer_id,
+            CustomerFollower.user_id.in_(owner_ids),
+            CustomerFollower.deleted_at.is_(None),
+        ).exists()
+        scope = or_(
+            and_(
+                Customer.owner_id.is_not(None),
+                or_(Customer.owner_id.in_(owner_ids), follower_exists),
+            ),
+            and_(
+                Customer.owner_id.is_(None),
+                SalesOrder.owner_id.is_not(None),
+                SalesOrder.owner_id.in_(owner_ids),
+            ),
+            and_(
+                Customer.owner_id.is_(None),
+                SalesOrder.owner_id.is_(None),
+                ContractDocument.created_by.in_(owner_ids),
+            ),
+        )
     if viewer_id is not None:
         stmt = stmt.where(draft_scope(ContractDocument, viewer_id, scope))
     elif scope is not None:

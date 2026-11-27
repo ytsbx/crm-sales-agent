@@ -241,6 +241,7 @@ async def create_order_from_quote(
     user=None,
     delivery_date: date | None = None,
     remark: str | None = None,
+    owner_id: int | None = None,
     receivable_plan=None,
 ) -> SalesOrder:
     """已接受的报价只保留一张有效订单。取消后重新确认新版才能补单。"""
@@ -333,7 +334,7 @@ async def create_order_from_quote(
         opportunity_id=quote.opportunity_id,
         quote_id=quote.id,
         quote_version_id=version.id,
-        owner_id=quote.owner_id,
+        owner_id=owner_id or user_id,
         # 签单归属此刻写死（文档 :61）：往后交接或手工改负责人，业绩都算这一个人
         sales_owner_id=quote.owner_id,
         total_amount=version.total_amount,

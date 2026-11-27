@@ -40,17 +40,15 @@ async def apply_scope(stmt: Select, user: CurrentUser, session: AsyncSession) ->
         return stmt.where(draft_scope(CustomInquiry, user.id))
     stmt = stmt.outerjoin(Customer, Customer.id == CustomInquiry.customer_id)
     owner_ids = await scoped_owner_ids(session, user)
+    from app.modules.customer.visibility import customer_scope_clause_from
+
     conditions = [
         CustomInquiry.created_by == user.id,
-        Customer.owner_id.in_(owner_ids or [0]),
-        and_(
-            CustomInquiry.origin == "customer",
-            or_(
-                Customer.owner_id.is_(None),
-                CustomInquiry.customer_id.is_(None),
-            ),
-        ),
+        and_(CustomInquiry.origin == "customer", CustomInquiry.customer_id.is_(None)),
     ]
+    customer_scope = customer_scope_clause_from(owner_ids)
+    if customer_scope is not None:
+        conditions.append(customer_scope)
     if user.has("product:review"):
         # 评审岗之间共享内部开发需求。**只放这一类**——客户询价仍按上面那三条，
         # 别把评审权当成"看更多客户数据的通行证"。
@@ -307,7 +305,7 @@ async def create_quote_from_inquiry(
             primary_contact_id=inquiry.contact_id,
             title=inquiry.title,
             stage_id=stage.id,
-            owner_id=customer.owner_id or user.id,
+            owner_id=user.id,
             status="open",
             created_by=user.id,
         )

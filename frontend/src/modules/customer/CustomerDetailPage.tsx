@@ -24,6 +24,9 @@ import {
   releaseCustomerToPool,
   setPrimaryContact,
   transferCustomer,
+  addCustomerFollowers,
+  removeCustomerFollower,
+  setCustomerPrimary,
   updateContact,
   updateCustomer,
   type ContactDuplicateMatch,
@@ -37,6 +40,7 @@ import { getCustomerTimeline, listFollowups, type FollowUp } from '../../shared/
 import { listOpportunities, type Opportunity } from '../../shared/api/opportunity'
 import { listOrders, type Order } from '../../shared/api/order'
 import { listQuotes, type Quote } from '../../shared/api/quote'
+import UserSearchSelect from '../../shared/components/UserSearchSelect'
 import { usePermissions } from '../../shared/hooks/permissions'
 import { useTabLabel } from '../../shared/hooks/useTabLabel'
 import { useAuthStore } from '../../shared/store/auth'
@@ -147,6 +151,8 @@ export default function CustomerDetailPage() {
   const [editModal, setEditModal] = useState(false)
   const [editForm, setEditForm] = useState<CustomerPayload>({ name: '' })
   const [transferCustomerId, setTransferCustomerId] = useState<number | null>(null)
+  const [followersVisible, setFollowersVisible] = useState(false)
+  const [followerToAdd, setFollowerToAdd] = useState<number | undefined>(undefined)
   const transferModal = transferCustomerId === customerId
   const [transferTo, setTransferTo] = useState<SystemUser | null>(null)
   const [transferSearch, setTransferSearch] = useState('')
@@ -326,6 +332,32 @@ export default function CustomerDetailPage() {
         void queryClient.invalidateQueries({ queryKey: [key, result.id] })
       }
     },
+  })
+
+  const addFollowerMutation = useMutation({
+    mutationFn: () => addCustomerFollowers(customerId, [followerToAdd!]),
+    onSuccess: () => {
+      Toast.success('已添加跟进人')
+      setFollowerToAdd(undefined)
+      invalidateCustomer()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+  const removeFollowerMutation = useMutation({
+    mutationFn: (userId: number) => removeCustomerFollower(customerId, userId),
+    onSuccess: () => {
+      Toast.success('已移除跟进人')
+      invalidateCustomer()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+  const primaryFollowerMutation = useMutation({
+    mutationFn: (userId: number) => setCustomerPrimary(customerId, userId),
+    onSuccess: () => {
+      Toast.success('默认负责人已更新')
+      invalidateCustomer()
+    },
+    onError: (error: Error) => Toast.error(error.message),
   })
 
   const duplicateCaseMutation = useMutation({
@@ -638,7 +670,10 @@ export default function CustomerDetailPage() {
         }
         meta={
           <>
-            <span>负责人：{customer.owner_name ?? '未分配'}</span>
+            <span>
+              负责人：{customer.owner_name ?? '未分配'}
+              {(customer.follower_count ?? 0) > 1 ? ` · ${customer.follower_count} 人跟进` : ''}
+            </span>
             <span>地区：{customer.region ?? '-'}</span>
             <span>来源：{customer.source ?? '-'}</span>
             <span>联系人：{customer.contact_count}</span>
@@ -665,6 +700,11 @@ export default function CustomerDetailPage() {
                 }}
               >
                 编辑客户
+              </Button>
+            )}
+            {can('customer:assign') && (
+              <Button type="tertiary" onClick={() => setFollowersVisible(true)}>
+                跟进人（{customer.follower_count ?? 0}）
               </Button>
             )}
             {can('followup:create') && (
@@ -1885,6 +1925,61 @@ export default function CustomerDetailPage() {
             合并原因（可选，会记入合并日志）
           </div>
           <Input value={mergeReason} onChange={setMergeReason} placeholder="如：重复录入" />
+        </div>
+      </Modal>
+
+      <Modal
+        title="跟进人"
+        visible={followersVisible}
+        onCancel={() => setFollowersVisible(false)}
+        footer={<Button onClick={() => setFollowersVisible(false)}>关闭</Button>}
+        width={520}
+      >
+        <div style={{ display: 'grid', gap: 10 }}>
+          <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+            默认负责人负责客户归属与业绩统计；其他跟进人同样可以查看客户、记录跟进。
+          </div>
+          {(customer.followers ?? []).map((follower) => (
+            <div key={follower.user_id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontWeight: follower.user_id === customer.owner_id ? 600 : 400 }}>
+                {follower.name}
+              </span>
+              {follower.user_id === customer.owner_id ? (
+                <Tag size="small" color="blue">默认负责人</Tag>
+              ) : (
+                <>
+                  <Button size="small" theme="borderless"
+                    loading={primaryFollowerMutation.isPending}
+                    onClick={() => primaryFollowerMutation.mutate(follower.user_id)}>
+                    设为默认
+                  </Button>
+                  <Button size="small" theme="borderless" type="danger"
+                    loading={removeFollowerMutation.isPending}
+                    onClick={() => removeFollowerMutation.mutate(follower.user_id)}>
+                    移除
+                  </Button>
+                </>
+              )}
+            </div>
+          ))}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 4 }}>
+            <UserSearchSelect
+              queryScope="customer-follower"
+              enabled={followersVisible}
+              placeholder="搜索同事添加为跟进人"
+              value={followerToAdd}
+              onChange={(value) => setFollowerToAdd(value)}
+              style={{ flex: 1 }}
+            />
+            <Button
+              theme="solid"
+              disabled={!followerToAdd}
+              loading={addFollowerMutation.isPending}
+              onClick={() => addFollowerMutation.mutate()}
+            >
+              添加
+            </Button>
+          </div>
         </div>
       </Modal>
 

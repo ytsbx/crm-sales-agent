@@ -21,7 +21,7 @@ from app.core.base import Base
 from app.core.config import settings
 from app.core.deps import get_current_user
 from app.core.errors import AppError, register_exception_handlers
-from app.modules.customer.model import Contact, Customer
+from app.modules.customer.model import Contact, Customer, CustomerFollower
 from app.modules.customer import service as customer_service
 from app.modules.dingtalk.model import OaInstance
 from app.modules.file.model import BusinessFile, FileRecord
@@ -47,7 +47,7 @@ def _engine():
     _register_sqlite_bigint_as_integer()
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine, tables=[
-        User.__table__, Department.__table__, Customer.__table__, Contact.__table__,
+        User.__table__, Department.__table__, Customer.__table__, CustomerFollower.__table__, Contact.__table__,
         SampleRequest.__table__, ApprovalInstance.__table__, FileRecord.__table__, BusinessFile.__table__,
         CustomInquiry.__table__, OaInstance.__table__, Opportunity.__table__,
         SystemSetting.__table__, AuditLog.__table__,

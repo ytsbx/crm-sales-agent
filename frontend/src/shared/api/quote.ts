@@ -303,6 +303,8 @@ export function listQuotes(query: {
 export function createQuote(payload: {
   opportunity_id?: number
   customer_id?: number
+  /** 负责人：不填 = 当前用户自己 */
+  owner_id?: number
   valid_until?: string
   /**
    * 请求幂等键（第八批 8.15）：同一份表单的多次提交必须带**同一把**键，

@@ -263,6 +263,8 @@ async def convert_to_order(
     quote = await session.get(Quote, version.quote_id)
     if quote is not None:
         await ensure_in_scope(session, user, owner_id=quote.owner_id, label="报价单")
+    if payload.owner_id is not None:
+        await ensure_in_scope(session, user, owner_id=payload.owner_id, label="负责人")
 
     # ⚠️ **必须先确认**（审查 2026-10-10）：这个按钮点一下会**生成一张正式订单、
     # 复制全部明细、并生成一条"全款"应收**（金额 = 该版总额）。订单是正式履约依据，
@@ -310,6 +312,7 @@ async def convert_to_order(
         user=user,
         delivery_date=payload.delivery_date,
         remark=payload.remark,
+        owner_id=payload.owner_id,
         receivable_plan=payload.receivable_plan,
     )
     await write_audit(
