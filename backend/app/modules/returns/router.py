@@ -21,9 +21,11 @@ from app.modules.file.model import FileRecord
 from app.modules.order.service import get_visible_order
 from app.modules.returns import service as svc
 from app.modules.returns.schema import (
+    ReturnAmountRevision,
     ReturnAmountUpdate,
     ReturnCancel,
     ReturnCreate,
+    ReturnFinanceReturn,
     ReturnRefund,
     ReturnReview,
     ReturnSettle,
@@ -132,12 +134,62 @@ async def review_return(
         f"售后申请 {row.return_no} 已通过主管审核，待确认收到退货"
         if row.status == "receiving_pending"
         else (
-            f"售后申请 {row.return_no} 已通过审核，待填退款总额"
-            if row.status == "pending"
-            else f"售后申请 {row.return_no} 已驳回，可退数量已释放"
+            f"售后申请 {row.return_no} 已通过复审，货已收到，待财务退款"
+            if row.status == "completed"
+            else (
+                f"售后申请 {row.return_no} 已通过审核，待填退款总额"
+                if row.status == "pending"
+                else f"售后申请 {row.return_no} 已驳回，可退数量已释放"
+            )
         )
     )
     return ok(data, message)
+
+
+@router.post("/returns/{return_id}/finance-return")
+async def finance_return(
+    return_id: int,
+    payload: ReturnFinanceReturn,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("payment:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """财务打回：只退回修改并写原因，财务不改金额。"""
+    row = await _lock_return_with_order(session, user, return_id)
+    await svc.finance_return(
+        session, user, row, payload.reason, ip=client_ip(request)
+    )
+    data = await svc.serialize_return(session, row)
+    await session.commit()
+    return ok(data, f"售后申请 {row.return_no} 已退回修改，等待业务员或主管调整")
+
+
+@router.post("/returns/{return_id}/revise-amount")
+async def revise_return_amount(
+    return_id: int,
+    payload: ReturnAmountRevision,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("order:manage", "order:assign")),
+    session: AsyncSession = Depends(get_db),
+):
+    """财务打回后，申请人或主管修改金额/收款信息，重新交主管复审。"""
+    row = await _lock_return_with_order(session, user, return_id)
+    await svc.revise_return_amount(
+        session,
+        user,
+        row,
+        goods_refund_amount=payload.goods_refund_amount,
+        freight_refund_amount=payload.freight_refund_amount,
+        adjustment_amount=payload.adjustment_amount,
+        adjustment_note=payload.adjustment_note,
+        payment_method=payload.payment_method,
+        receiving_account=payload.receiving_account,
+        note=payload.note,
+        ip=client_ip(request),
+    )
+    data = await svc.serialize_return(session, row)
+    await session.commit()
+    return ok(data, f"售后申请 {row.return_no} 已修改，等待主管复审")
 
 
 @router.post("/returns/{return_id}/receive-confirm")

@@ -164,8 +164,18 @@ def db(monkeypatch):
             checksum="return-unlinked",
             uploaded_by=1,
         )
+        finance_user = User(
+            id=3,
+            username="finance",
+            password_hash="x",
+            name="财务",
+            status="active",
+            created_at=NOW,
+            updated_at=NOW,
+        )
         raw.add_all([
             user,
+            finance_user,
             customer,
             application_file,
             reviewer_file,
@@ -975,3 +985,189 @@ def test_create_amount_breakdown_and_requires_application_attachment(db):
                 items=[ReturnItemInput(order_item_id=1, quantity=D("3"))],
             ),
         ))
+
+
+def _finance_return(session, row, reason="财务核对：金额与实收数量不一致"):
+    return run(svc.finance_return(session, FINANCE, row, reason))
+
+
+def test_finance_return_moves_to_returned_and_keeps_receipt(db):
+    s, order, item, batch_item, plans = db
+    row = run(svc.create_return(s, USER, order, _payload("10", "100")))
+    _approve(s, row)
+    _receive(s, row)
+    assert row.status == "completed"
+    received_at = row.received_at
+
+    returned = _finance_return(s, row)
+    assert returned.status == "finance_returned"
+    assert returned.finance_return_reason == "财务核对：金额与实收数量不一致"
+    assert returned.finance_returned_by == FINANCE.id
+    assert returned.finance_return_count == 1
+    # 货已经确认收到，收货记录不能因为财务打回而丢。
+    assert returned.received_at == received_at
+    assert returned.received_by == USER.id
+
+    audit = s._session.execute(
+        select(AuditLog).where(
+            AuditLog.business_type == "sales_return",
+            AuditLog.business_id == row.id,
+            AuditLog.action == "finance_return",
+        )
+    ).scalars().one()
+    assert audit.before_data["status"] == "completed"
+    assert audit.after_data["status"] == "finance_returned"
+    assert audit.after_data["reason"] == "财务核对：金额与实收数量不一致"
+
+    data = run(svc.serialize_return(s, row))
+    assert data["status"] == "finance_returned"
+    assert data["status_label"] == "财务退回修改"
+    assert data["finance_return_reason"] == "财务核对：金额与实收数量不一致"
+    assert data["finance_returned_by_name"] == "财务"
+    assert data["finance_return_count"] == 1
+
+
+def test_only_finance_can_return_and_only_completed(db):
+    s, order, item, batch_item, plans = db
+    row = run(svc.create_return(s, USER, order, _payload("3", "30")))
+    with pytest.raises(AppError, match="只有财务"):
+        run(svc.finance_return(s, SALESPERSON_WITHOUT_PAYMENT, row, "还没审核就想打回"))
+
+    _approve(s, row)
+    with pytest.raises(AppError, match="待确认收到退货"):
+        _finance_return(s, row)
+    _receive(s, row)
+    with pytest.raises(AppError, match="至少 2 个字"):
+        run(svc.finance_return(s, FINANCE, row, "x"))
+
+
+def test_finance_return_then_revision_reapproval_skips_receive(db):
+    s, order, item, batch_item, plans = db
+    row = run(svc.create_return(s, USER, order, _payload("10", "100")))
+    _approve(s, row)
+    _receive(s, row)
+    _finance_return(s, row, "财务核对：只收到 7 件，按 70 元退")
+
+    # 财务不能自己改金额；只有申请人或主管能改。
+    with pytest.raises(AppError, match="只有申请人本人或主管"):
+        run(svc.revise_return_amount(
+            s, FINANCE, row,
+            goods_refund_amount=D("70.00"),
+            freight_refund_amount=D("0.00"),
+            adjustment_amount=D("0.00"),
+        ))
+
+    revised = run(svc.revise_return_amount(
+        s, USER, row,
+        goods_refund_amount=D("70.00"),
+        freight_refund_amount=D("0.00"),
+        adjustment_amount=D("0.00"),
+        adjustment_note="按实收 7 件重算",
+        note="财务打回后按实收修改",
+    ))
+    assert revised.status == "reviewing"
+    assert revised.goods_refund_amount == D("70.00")
+    assert revised.total_amount == D("70.00")
+    assert revised.refund_amount == D("70.00")
+    assert revised.reviewed_by is None
+    assert revised.reviewed_at is None
+    assert revised.finance_return_reason == "财务核对：只收到 7 件，按 70 元退"
+    assert revised.received_at is not None
+
+    # 货已经收过，复审通过后直接回待财务退款，不再要求重复确认收货。
+    approved = _approve(s, revised)
+    assert approved.status == "completed"
+    assert approved.received_at is not None
+
+    run(svc.settle_return(s, FINANCE, approved, refund_reference=None))
+    assert approved.status == "settled"
+    assert approved.total_amount == D("70.00")
+    assert approved.offset_amount == D("70.00")
+    assert approved.refund_amount == D("0.00")
+    assert s._session.get(ReceivablePlan, 1).amount == D("0.00")
+    assert s._session.get(ReceivablePlan, 2).amount == D("30.00")
+
+
+def test_revision_requires_creator_or_supervisor(db):
+    s, order, item, batch_item, plans = db
+    row = run(svc.create_return(s, USER, order, _payload("3", "30")))
+    _approve(s, row)
+    _receive(s, row)
+    _finance_return(s, row)
+
+    with pytest.raises(AppError, match="只有申请人本人或主管"):
+        run(svc.revise_return_amount(
+            s, SALESPERSON_WITHOUT_PAYMENT, row,
+            goods_refund_amount=D("20.00"),
+            freight_refund_amount=D("0.00"),
+            adjustment_amount=D("0.00"),
+        ))
+
+    revised = run(svc.revise_return_amount(
+        s, REVIEWER, row,
+        goods_refund_amount=D("20.00"),
+        freight_refund_amount=D("0.00"),
+        adjustment_amount=D("0.00"),
+    ))
+    assert revised.status == "reviewing"
+
+
+def test_supervisor_cannot_reject_after_goods_received(db):
+    s, order, item, batch_item, plans = db
+    row = run(svc.create_return(s, USER, order, _payload("3", "30")))
+    _approve(s, row)
+    _receive(s, row)
+    _finance_return(s, row)
+    run(svc.revise_return_amount(
+        s, USER, row,
+        goods_refund_amount=D("20.00"),
+        freight_refund_amount=D("0.00"),
+        adjustment_amount=D("0.00"),
+    ))
+
+    with pytest.raises(AppError, match="已经确认收到退货"):
+        run(svc.review_return(
+            s, REVIEWER, row, decision="reject", note="金额还是不对"
+        ))
+    assert row.status == "reviewing"
+
+
+def test_finance_return_cannot_be_repeated_and_void_is_allowed(db):
+    s, order, item, batch_item, plans = db
+    row = run(svc.create_return(s, USER, order, _payload("3", "30")))
+    _approve(s, row)
+    _receive(s, row)
+    _finance_return(s, row)
+
+    with pytest.raises(AppError, match="不能打回"):
+        _finance_return(s, row, "再打回一次")
+    run(svc.void_return(s, FINANCE, row, "客户取消退款"))
+    assert row.status == "voided"
+    overview = run(svc.returnable_overview(s, order.id))
+    assert overview["items"][0]["remaining_quantity_exact"] == "10.000"
+
+
+def test_after_receipt_cancel_is_blocked_but_finance_can_void_revision(db):
+    s, order, item, batch_item, plans = db
+    row = run(svc.create_return(s, USER, order, _payload("3", "30")))
+    _approve(s, row)
+    _receive(s, row)
+    _finance_return(s, row)
+
+    with pytest.raises(AppError, match="已经确认收到退货"):
+        run(svc.cancel_return(s, USER, row, "客户说不退了"))
+
+    run(svc.revise_return_amount(
+        s, USER, row,
+        goods_refund_amount=D("20.00"),
+        freight_refund_amount=D("0.00"),
+        adjustment_amount=D("0.00"),
+        payment_method="银行转账",
+        receiving_account="新账户 6222 0000 0000 0001",
+    ))
+    assert row.status == "reviewing"
+    assert row.payment_method == "银行转账"
+    assert row.receiving_account == "新账户 6222 0000 0000 0001"
+
+    run(svc.void_return(s, FINANCE, row, "客户取消退款"))
+    assert row.status == "voided"

@@ -5,7 +5,9 @@
 2. 主管审核：只审数量、原因和金额构成，通过后进入“待确认收到退货”；
 3. 确认收货：业务员或主管点收退回货物后进入“待财务退款”；
 4. 财务确认退款：不改金额、不手填抵扣；系统按订单当前欠款自动先冲未付款，剩余才现金退；
-5. 申请可取消；确认收货前/待财务退款时可作废；已退款/已抵扣结清后不能作废。
+5. 财务发现金额/收款信息不对可打回；业务员或主管修改后重新交主管复审，
+   货已收过的复审通过直接回到待财务退款；财务也可以作废终止；
+6. 申请可取消；确认收货前/待财务退款时可作废；已退款/已抵扣结清后不能作废。
 
 历史自动抵扣单仍保留原 `sales_return_plan_adjustments`，作废时按原快照恢复。
 """
@@ -52,6 +54,7 @@ ACTIVE_RETURN_STATUSES = (
     "pending",
     "receiving_pending",
     "completed",
+    "finance_returned",
     "refunded",
     "settled",
 )
@@ -466,23 +469,43 @@ async def review_return(
             f"「{RETURN_STATUS_LABEL.get(row.status, row.status)}」的售后申请不在待审核状态",
             422,
         )
+    if decision == "reject" and row.received_at is not None:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "这张售后单已经确认收到退货，不能直接驳回；"
+            "金额有误请让申请人修改后重新审核，确实不做这笔退款请财务作废",
+            422,
+        )
     before = row.status
     row.reviewed_by = user.id
     row.reviewed_at = datetime.now(UTC)
     row.review_note = (note or "").strip() or None
     if decision == "approve":
         # 申请时已填金额的新单进入待确认收货；兼容没有金额的历史旧单。
-        row.status = "receiving_pending" if row.settled_goods_amount is not None else "pending"
+        # 财务打回后货已经收过，复审通过直接回到待财务退款，不再重复点收。
+        if row.settled_goods_amount is None:
+            row.status = "pending"
+        elif row.received_at is not None:
+            row.status = "completed"
+        else:
+            row.status = "receiving_pending"
         title = "销售售后申请已通过主管审核"
-        content = (
-            f"订单售后申请 {row.return_no} 已通过主管审核，"
-            + (
+        if row.status == "completed":
+            content = (
+                f"订单售后申请 {row.return_no} 已通过主管复审，"
+                f"退款总额 {format(row.total_amount or ZERO, '.2f')} 元；"
+                "货已确认收到，待财务退款。"
+            )
+        elif row.status == "receiving_pending":
+            content = (
+                f"订单售后申请 {row.return_no} 已通过主管审核，"
                 f"退款总额 {format(row.total_amount or ZERO, '.2f')} 元，待确认收到退货；"
                 "业务员或主管确认收到货后由财务退款。"
-                if row.status == "receiving_pending"
-                else "待填退款总额。"
             )
-        )
+        else:
+            content = (
+                f"订单售后申请 {row.return_no} 已通过主管审核，待填退款总额。"
+            )
     else:
         row.status = "rejected"
         title = "销售售后申请被主管驳回"
@@ -595,6 +618,227 @@ async def confirm_received(
     return row
 
 
+async def finance_return(
+    session: AsyncSession,
+    user,
+    row: SalesReturn,
+    reason: str,
+    *,
+    ip: str | None = None,
+) -> SalesReturn:
+    """财务打回：只退回修改，不替业务员改金额。
+
+    财务发现金额、收款账户或凭证不对时，写清原因把单退回业务员/主管；
+    原单、收货记录和审计都保留。修改后重新走主管审核，通过后直接回到
+    “待财务退款”，不再重复确认收货。
+    """
+    if not user.has("payment:manage"):
+        raise AppError(
+            ErrorCode.FORBIDDEN,
+            "只有财务可以打回售后单（需要 payment:manage 权限）",
+            403,
+        )
+    if row.status != "completed":
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"「{RETURN_STATUS_LABEL.get(row.status, row.status)}」的售后单不能打回；"
+            "只有待财务退款的新售后单可以退回修改",
+            422,
+        )
+    if row.currency != "CNY":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "本项目只支持人民币售后", 422)
+    # 历史抵扣单的金额和应收快照绑定，打回改金额会破坏还原口径；
+    # 这类单只能按原金额登记现金退款，或走作废。
+    adjustment_count = (
+        await session.execute(
+            select(func.count())
+            .select_from(SalesReturnPlanAdjustment)
+            .where(SalesReturnPlanAdjustment.return_id == row.id)
+        )
+    ).scalar_one()
+    if _money(row.offset_amount) > 0 or adjustment_count:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "这是历史“抵扣客户未付款”的售后单，不能打回改金额；"
+            "请按原金额登记现金退款，或先作废后重新登记",
+            409,
+        )
+    reason_text = (reason or "").strip()
+    if len(reason_text) < 2:
+        raise AppError(ErrorCode.PARAM_ERROR, "财务打回必须填写原因（至少 2 个字）", 422)
+
+    before = {
+        "status": row.status,
+        "total_amount": format(row.total_amount or ZERO, ".2f"),
+        "finance_return_count": row.finance_return_count or 0,
+    }
+    row.status = "finance_returned"
+    row.finance_return_reason = reason_text
+    row.finance_returned_by = user.id
+    row.finance_returned_at = datetime.now(UTC)
+    row.finance_return_count = (row.finance_return_count or 0) + 1
+    # 财务还没实际付款；清掉可能残留的结算痕迹，金额仍以审核后的原数展示。
+    row.settled_by = None
+    row.settled_at = None
+    row.refund_reference = None
+
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="finance_return",
+        business_type="sales_return",
+        business_id=row.id,
+        before=before,
+        after={
+            "status": row.status,
+            "reason": row.finance_return_reason,
+            "finance_return_count": row.finance_return_count,
+            "total_amount": format(row.total_amount or ZERO, ".2f"),
+        },
+        ip=ip,
+    )
+    order = await get_order_or_404(session, row.order_id)
+    await record_and_notify(
+        session,
+        customer_id=order.customer_id,
+        owner_id=order.owner_id,
+        operator_id=user.id,
+        title="财务退回售后申请修改",
+        content=(
+            f"订单售后申请 {row.return_no} 被财务退回修改，原因：{reason_text}；"
+            f"退款总额 {format(row.total_amount or ZERO, '.2f')} 元，"
+            "请业务员或主管修改后重新提交审核。"
+        ),
+        business_type="sales_return",
+        business_id=row.id,
+        order_id=order.id,
+        event_key=f"order:return:finance-return:{row.id}:{row.finance_return_count}",
+    )
+    await session.flush()
+    return row
+
+
+async def revise_return_amount(
+    session: AsyncSession,
+    user,
+    row: SalesReturn,
+    *,
+    goods_refund_amount: Decimal,
+    freight_refund_amount: Decimal,
+    adjustment_amount: Decimal,
+    adjustment_note: str | None = None,
+    payment_method: str | None = None,
+    receiving_account: str | None = None,
+    note: str | None = None,
+    ip: str | None = None,
+) -> SalesReturn:
+    """财务打回后，由申请人或主管修改金额和收款信息，再交主管复审。
+
+    财务没有改金额权限；这里也不允许财务调用。修改后状态回到 `reviewing`，
+    货已收过的单据复审通过会直接回到 `completed`，不重复点收。
+    """
+    if not (
+        row.created_by == user.id
+        or user.has("order:assign")
+        or "admin" in user.roles
+    ):
+        raise AppError(
+            ErrorCode.FORBIDDEN,
+            "只有申请人本人或主管能修改被财务退回的售后单",
+            403,
+        )
+    if row.status != "finance_returned":
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"「{RETURN_STATUS_LABEL.get(row.status, row.status)}」的售后单不能修改金额；"
+            "只有财务退回修改的单可以改",
+            422,
+        )
+    if row.currency != "CNY":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "本项目只支持人民币售后", 422)
+
+    goods = _money(goods_refund_amount)
+    freight = _money(freight_refund_amount)
+    adjustment = _money(adjustment_amount)
+    if goods < 0 or freight < 0:
+        raise AppError(ErrorCode.PARAM_ERROR, "货款和运费退款不能小于 0", 422)
+    total = _money(goods + freight + adjustment)
+    if total <= 0:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "退款总额必须大于 0", 422)
+
+    before = {
+        "status": row.status,
+        "goods_refund_amount": format(row.goods_refund_amount or ZERO, ".2f"),
+        "freight_refund_amount": format(row.freight_refund_amount or ZERO, ".2f"),
+        "adjustment_amount": format(row.adjustment_amount or ZERO, ".2f"),
+        "total_amount": format(row.total_amount or ZERO, ".2f"),
+        "payment_method": row.payment_method,
+        "receiving_account": row.receiving_account,
+    }
+    row.goods_refund_amount = goods
+    row.freight_refund_amount = freight
+    row.adjustment_amount = adjustment
+    row.adjustment_note = (adjustment_note or "").strip() or None
+    row.settled_goods_amount = total
+    row.total_amount = total
+    row.refund_amount = total
+    row.offset_amount = ZERO
+    if payment_method:
+        row.payment_method = payment_method.strip()
+    if receiving_account:
+        row.receiving_account = receiving_account.strip()
+    # 金额改了，原来的主管审核结论不再有效，必须重新审。
+    row.status = "reviewing"
+    row.reviewed_by = None
+    row.reviewed_at = None
+    row.review_note = None
+    row.settled_by = None
+    row.settled_at = None
+    row.refund_reference = None
+
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="revise_return_amount",
+        business_type="sales_return",
+        business_id=row.id,
+        before=before,
+        after={
+            "status": row.status,
+            "goods_refund_amount": format(goods, ".2f"),
+            "freight_refund_amount": format(freight, ".2f"),
+            "adjustment_amount": format(adjustment, ".2f"),
+            "adjustment_note": row.adjustment_note,
+            "total_amount": format(total, ".2f"),
+            "payment_method": row.payment_method,
+            "receiving_account": row.receiving_account,
+            "note": (note or "").strip() or None,
+            "finance_return_reason": row.finance_return_reason,
+        },
+        ip=ip,
+    )
+    order = await get_order_or_404(session, row.order_id)
+    await record_and_notify(
+        session,
+        customer_id=order.customer_id,
+        owner_id=order.owner_id,
+        operator_id=user.id,
+        title="售后退款金额已修改，待主管复审",
+        content=(
+            f"订单售后申请 {row.return_no} 已按财务退回意见修改，"
+            f"退款总额 {format(total, '.2f')} 元"
+            f"（货款 {format(goods, '.2f')}、运费 {format(freight, '.2f')}、"
+            f"调整 {format(adjustment, '.2f')}），待主管复审。"
+        ),
+        business_type="sales_return",
+        business_id=row.id,
+        order_id=order.id,
+        event_key=f"order:return:revise:{row.id}:{row.finance_return_count or 0}",
+    )
+    await session.flush()
+    return row
+
+
 async def cancel_return(
     session: AsyncSession,
     user,
@@ -603,6 +847,12 @@ async def cancel_return(
     *,
     ip: str | None = None,
 ) -> SalesReturn:
+    if row.received_at is not None:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "这张售后单已经确认收到退货，不能取消；请让财务作废，或修改金额后重新审核",
+            422,
+        )
     if row.status not in ("reviewing", "pending"):
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
@@ -1003,7 +1253,14 @@ async def void_return(
     *,
     ip: str | None = None,
 ) -> SalesReturn:
-    if row.status not in ("receiving_pending", "completed"):
+    # 财务打回后业务员已改金额、还没复审时，财务仍可作废终止；
+    # 否则一直挂在“待主管审核”会没有出口。
+    post_finance_revision = (
+        row.status == "reviewing"
+        and row.received_at is not None
+        and (row.finance_return_count or 0) > 0
+    )
+    if row.status not in ("receiving_pending", "completed", "finance_returned") and not post_finance_revision:
         if row.status == "refunded":
             raise AppError(
                 ErrorCode.STATUS_NOT_ALLOWED,
@@ -1172,6 +1429,7 @@ async def serialize_return(session: AsyncSession, row: SalesReturn) -> dict:
         [
             row.created_by,
             row.reviewed_by,
+            row.finance_returned_by,
             row.received_by,
             row.settled_by,
             row.refunded_by,
@@ -1242,6 +1500,10 @@ async def serialize_return(session: AsyncSession, row: SalesReturn) -> dict:
         "reviewed_at": row.reviewed_at.isoformat() if row.reviewed_at else None,
         "review_note": row.review_note,
         "self_reviewed": bool(row.reviewed_by and row.created_by == row.reviewed_by),
+        "finance_return_reason": row.finance_return_reason,
+        "finance_returned_by_name": names.get(row.finance_returned_by or 0),
+        "finance_returned_at": row.finance_returned_at.isoformat() if row.finance_returned_at else None,
+        "finance_return_count": row.finance_return_count or 0,
         "received_by_name": names.get(row.received_by or 0),
         "received_at": row.received_at.isoformat() if row.received_at else None,
         "receiving_note": row.receiving_note,

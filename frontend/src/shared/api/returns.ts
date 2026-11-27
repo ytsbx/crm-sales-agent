@@ -5,6 +5,7 @@ export type SalesReturnStatus =
   | 'pending'
   | 'receiving_pending'
   | 'completed'
+  | 'finance_returned'
   | 'refunded'
   | 'settled'
   | 'rejected'
@@ -87,6 +88,11 @@ export interface SalesReturn {
   reviewed_by_name?: string | null
   reviewed_at?: string | null
   review_note?: string | null
+  /** 财务退回修改：原因、操作人、时间、累计次数。 */
+  finance_return_reason?: string | null
+  finance_returned_by_name?: string | null
+  finance_returned_at?: string | null
+  finance_return_count?: number
   /** 审核人就是申请人本人：界面标「本人审核」，审计里也留痕。 */
   self_reviewed?: boolean
   received_by_name?: string | null
@@ -189,6 +195,26 @@ export function updateReturnAmount(
     refund_amount: refundAmount,
     note: note || undefined,
   })
+}
+
+export interface ReturnAmountRevisionPayload {
+  goods_refund_amount: number
+  freight_refund_amount: number
+  adjustment_amount: number
+  adjustment_note?: string
+  payment_method?: string
+  receiving_account?: string
+  note?: string
+}
+
+/** 财务打回：只退回修改，财务不改金额。 */
+export function financeReturn(returnId: number, reason: string) {
+  return api.post<SalesReturn>(`/returns/${returnId}/finance-return`, { reason })
+}
+
+/** 财务打回后，申请人或主管修改金额/收款信息，重新交主管复审。 */
+export function reviseReturnAmount(returnId: number, payload: ReturnAmountRevisionPayload) {
+  return api.post<SalesReturn>(`/returns/${returnId}/revise-amount`, payload)
 }
 
 export interface ReturnSettlePayload {

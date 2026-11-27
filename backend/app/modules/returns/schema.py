@@ -91,6 +91,48 @@ class ReturnAmountUpdate(BaseModel):
     note: str | None = Field(default=None, max_length=255)
 
 
+class ReturnAmountRevision(BaseModel):
+    """财务打回后，业务员/主管修改退款金额和收款信息。
+
+    财务不能自己改金额：财务只打回并写原因，业务员/主管改完重新交主管审核。
+    """
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    goods_refund_amount: Decimal = Field(
+        ge=0, max_digits=16, decimal_places=2
+    )
+    freight_refund_amount: Decimal = Field(
+        default=0, ge=0, max_digits=16, decimal_places=2
+    )
+    adjustment_amount: Decimal = Field(
+        default=0, max_digits=16, decimal_places=2
+    )
+    adjustment_note: str | None = Field(default=None, max_length=255)
+    payment_method: str | None = Field(default=None, min_length=2, max_length=32)
+    receiving_account: str | None = Field(default=None, min_length=2, max_length=128)
+    note: str | None = Field(default=None, max_length=255)
+
+    @model_validator(mode="after")
+    def _total_must_be_positive(self):
+        total = (
+            self.goods_refund_amount
+            + self.freight_refund_amount
+            + self.adjustment_amount
+        )
+        if total <= 0:
+            raise ValueError("退款总额必须大于 0")
+        return self
+
+
+class ReturnFinanceReturn(BaseModel):
+    """财务退回修改：原因必填，至少 2 个字。"""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    reason: str = Field(min_length=2, max_length=255)
+
+
 class ReturnSettle(BaseModel):
     """财务确认退款：金额由系统按订单欠款自动拆分，财务只登记退款结果。
 
