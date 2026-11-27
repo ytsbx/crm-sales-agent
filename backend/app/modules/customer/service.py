@@ -226,6 +226,16 @@ def build_list_stmt(
         (Customer.last_followup_at >= Customer.last_progress_at, Customer.last_followup_at),
         else_=Customer.last_progress_at,
     )
+    if activity == "unknown_contact":
+        # 历史导入的「联系时间待补核」：标记未知，且确实没有任何可信活动时间。
+        # 只有标记不够——如果之后已经有报价/订单/回款，`last_progress_at` 会刷新，
+        # 这类客户已经能判断活跃度，不该再挂在待补核名单里。
+        # 因此这里必须同时卡住两个时间，和客户列表的 `unknown` 标签口径一致。
+        return stmt.where(
+            Customer.last_contact_unknown.is_(True),
+            Customer.last_followup_at.is_(None),
+            Customer.last_progress_at.is_(None),
+        ).order_by(Customer.id.desc())
     if activity == "stale" and stale_before is not None:
         # 在途业务停滞：有未结束的业务，且最近一次跟进/进展早于阈值。
         # 没有在途业务的客户（导入后从没碰过）不在这里催。

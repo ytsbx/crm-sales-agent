@@ -382,6 +382,22 @@ export default function CustomerListPage() {
       }),
   })
 
+  // 历史导入、联系时间未知的客户只在列表顶部汇总，不再逐行重复「待补核」。
+  // 单独取 total：page_size=1 不会把几千条客户拉回前端；数量跟随当前数据范围。
+  const unknownContactQuery = useQuery({
+    queryKey: ['customers', 'unknown-contact', { scope, userId: currentUser?.id }],
+    queryFn: () =>
+      listCustomers({
+        activity: 'unknown_contact',
+        page: 1,
+        page_size: 1,
+        mine: scope === 'mine' ? true : undefined,
+        pool_status: scope === 'pool' ? 'public' : undefined,
+      }),
+    enabled: view === 'list',
+  })
+  const unknownContactCount = unknownContactQuery.data?.total ?? 0
+
   /* 刚创建成功、需要在列表里闪一下的客户 id（1.5 秒后清空） */
   const [flashCustomerId, setFlashCustomerId] = useState<number | null>(null)
   const createMutation = useMutation({
@@ -448,9 +464,20 @@ export default function CustomerListPage() {
     )
   }
 
-  // 「活跃状态」原本是独立一列，现在并进客户名称的下方小字
-  const activityLabel = (value?: string) =>
-    value === 'active' ? '活跃' : value === 'stale' ? '沉睡' : value === 'watch' ? '关注' : '待补核'
+  // 「活跃状态」原本是独立一列，现在并进客户名称的下方小字。
+  // `unknown` 有两种来源，不能都叫「待补核」：
+  //   · 历史导入没给联系日期 → 真正的待补核，由顶部汇总承接，行内不重复；
+  //   · 新建客户还没记过跟进 → 只是「未跟进」，不是资料缺口。
+  const activityLabel = (record: Customer) => {
+    const value = record.activity_status
+    if (value === 'active') return '活跃'
+    if (value === 'stale') return '沉睡'
+    if (value === 'watch') return '关注'
+    if (value === 'unknown' || !value) {
+      return record.last_contact_unknown ? '' : '未跟进'
+    }
+    return ''
+  }
 
   const columns = [
     {
@@ -472,11 +499,11 @@ export default function CustomerListPage() {
             {text}
           </button>
           <div
-            title={[record.region, record.source, activityLabel(record.activity_status), compact ? (record.pool_status === 'public' ? '公海' : `跟进人 ${record.follower_count ?? 0}`) : ''].filter(Boolean).join(' · ')}
+            title={[record.region, record.source, activityLabel(record), compact ? (record.pool_status === 'public' ? '公海' : `跟进人 ${record.follower_count ?? 0}`) : ''].filter(Boolean).join(' · ')}
             style={{ marginTop: 2, color: 'var(--crm-text-3)', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
           >
             {compact ? `${record.level ?? '未分级'} · ` : ''}
-            {[record.region, record.source, activityLabel(record.activity_status)]
+            {[record.region, record.source, activityLabel(record)]
               .filter(Boolean)
               .join(' · ')}
             {compact ? ` · ${record.pool_status === 'public' ? '公海' : `跟进人 ${record.follower_count ?? 0}`}` : ''}
@@ -666,6 +693,39 @@ export default function CustomerListPage() {
           </div>
         ) : (
         <div className="customer-list-body" style={canPoolReview ? { marginTop: 16 } : undefined}>
+        {unknownContactCount > 0 && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              flexWrap: 'wrap',
+              marginBottom: 10,
+              padding: '8px 10px',
+              background: 'var(--crm-surface-high)',
+              borderRadius: 4,
+              fontSize: 13,
+              lineHeight: 1.6,
+              color: 'var(--crm-text-2)',
+            }}
+          >
+            <span>
+              有 <strong style={{ color: 'var(--crm-text)' }}>{unknownContactCount}</strong>{' '}
+              位历史导入客户没有联系时间（待补核），不参与自动回收；补录真实跟进后自动恢复。
+            </span>
+            <button
+              type="button"
+              className="crm-text-action"
+              style={{ fontSize: 13, flex: '0 0 auto' }}
+              onClick={() => {
+                setActivity(activity === 'unknown_contact' ? undefined : 'unknown_contact')
+                setPage(1)
+              }}
+            >
+              {activity === 'unknown_contact' ? '清除筛选' : '查看'}
+            </button>
+          </div>
+        )}
         <div className="toolbar customer-list-toolbar">
           <Input
             placeholder="搜索客户名称 / 简称 / 地址"
@@ -693,7 +753,10 @@ export default function CustomerListPage() {
               setActivity(value as string | undefined)
               setPage(1)
             }}
-            optionList={[{ value: 'stale', label: '在途业务停滞' }]}
+            optionList={[
+              { value: 'stale', label: '在途业务停滞' },
+              { value: 'unknown_contact', label: '历史导入待补核' },
+            ]}
             style={{ width: 140 }}
             showClear
           />
@@ -757,6 +820,12 @@ export default function CustomerListPage() {
         {activity === 'stale' && (
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 10 }}>
             在途业务停滞：只显示有未结束业务（商机 / 报价 / 打样 / 订单 / 应收 / 需求）的客户，按最近一次跟进或业务进展从早到晚排序。
+          </div>
+        )}
+
+        {activity === 'unknown_contact' && (
+          <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 10 }}>
+            历史导入待补核：只显示联系时间未知、且还没有任何跟进或业务进展的客户；补一条真实跟进或导入带日期后自动移出。
           </div>
         )}
 

@@ -6881,3 +6881,11 @@
 - 执行：`--apply` 返回 `status=verified`，`verified_at_utc=2026-11-27T09:11:45Z`；代码/前端备份 `/opt/crm-sales-agent/backup/unified-d259ad1bb9b0-j9g4qxu1`。
 - 生产核验：服务 active、`/health` 的 `database=ok`、公网首页 200；两端版本记录均为 `d259ad1b`；数据库仍为 `d4f6a8b0c2e1`（未迁移）；`web-dist` 中检索不到「流程指引」；发布后日志无 error/traceback。
 - 边界：本次生产只做了发布工具的文件/服务/健康/公网核验，没有用生产真实账号做登录后业务点击；三条重点入口和报价→订单→回款→售后退货的真实点击证据仍是本地 demo 环境的结果。
+
+## 2026-11-27 客户列表「待补核」标签纠偏（本地已验证）
+
+- 根因：客户列表把 `activity_status=unknown` 一律写成「待补核」。按主人反馈，生产客户目前没有跟进记录，凡是没有跟进/业务进展的客户都命中；2,562 条历史导入与新建未跟进客户混在同一个标签里，造成满屏重复。
+- 修复：`CustomerListPage` 的 `activityLabel` 改为按 `last_contact_unknown` 区分：历史导入未知且无任何活动 → 行内不再显示，改由列表顶部一行汇总；新建客户只是未跟进 → 显示「未跟进」；有报价/订单/回款等业务进展 → 正常显示活跃/关注/沉睡。
+- 新增 `activity=unknown_contact` 筛选：只匹配 `last_contact_unknown=true` 且 `last_followup_at`、`last_progress_at` 都为空历史导入客户；顶部「查看」可筛出这批客户，补一条真实跟进或导入带日期后自动移出。
+- 验证：`tests/test_customer_list_activity.py` 3 项通过（含新增筛选回归）；`npx tsc -b`、`npm run build`、`npm run lint` 通过（lint 0 error / 41 条历史 warning）；本地 `crm_sales_agent` 3 个客户均有跟进，`activity=unknown_contact` 接口 `total=0`，确认筛选不会把正常活跃客户算进待补核。
+- 边界：重启本地 `8008` 后浏览器会话失效，未做登录后的页面实点；生产未发布，等主人授权。

@@ -9,7 +9,10 @@ export interface CustomerQuery {
   /** true = 我跟进的（有效跟进人包含当前用户） */
   mine?: boolean
   pool_status?: string
-  /** stale = 在途业务停滞（有未结束业务且最近跟进/进展早于阈值） */
+  /**
+   * stale = 在途业务停滞（有未结束业务且最近跟进/进展早于阈值）
+   * unknown_contact = 历史导入且没有任何可信活动时间，联系时间待补核
+   */
   activity?: string
   page?: number
   page_size?: number

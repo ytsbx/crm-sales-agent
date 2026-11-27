@@ -55,6 +55,32 @@ def test_stale_filter_requires_in_flight_business_and_orders_by_last_activity():
     engine.dispose()
 
 
+def test_unknown_contact_filter_only_returns_history_rows_without_activity():
+    """待补核只看「历史导入标记为未知」且确实没有任何活动时间的客户。
+
+    已有报价/订单/回款的客户，`last_progress_at` 已经能证明有过业务往来，
+    即使当年导入时没给联系日期，也不该再挂在待补核名单里。
+    """
+    engine = make_engine()
+    now = datetime.now(UTC)
+    with Session(engine) as session:
+        session.add_all([
+            Customer(id=1, name="历史导入无活动", owner_id=1,
+                     last_contact_unknown=True),
+            Customer(id=2, name="历史导入但有业务进展", owner_id=1,
+                     last_contact_unknown=True,
+                     last_progress_at=now - timedelta(days=10)),
+            Customer(id=3, name="新客户未跟进", owner_id=1,
+                     last_contact_unknown=False),
+        ])
+        session.commit()
+        rows = session.execute(
+            build_list_stmt(activity="unknown_contact")
+        ).scalars().all()
+        assert [row.id for row in rows] == [1]
+    engine.dispose()
+
+
 def test_no_activity_filter_keeps_original_order():
     engine = make_engine()
     with Session(engine) as session:

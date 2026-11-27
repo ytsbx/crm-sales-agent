@@ -121,6 +121,12 @@ export interface Customer {
   tags?: { id: number; name: string; type: string; status: string }[]
   remark?: string | null
   last_followup_at?: string | null
+  /**
+   * 历史导入时没有提供联系日期 → 标记"上次联系时间未知"。
+   * 它和"只是还没跟进"不同：前者是历史资料缺口，后者是新客户的正常起点。
+   * 列表不能把两者都写成「待补核」。
+   */
+  last_contact_unknown?: boolean
   /** 最近业务进展（报价/打样/下单/回款刷新）——与"最近跟进"分开看，§2.3 */
   last_progress_at?: string | null
   /** 约定的下次跟进时间（派生自未完成的跟进任务）——三时钟的第三个 */
