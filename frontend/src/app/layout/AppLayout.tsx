@@ -38,7 +38,18 @@ export default function AppLayout() {
   const location = useLocation()
   const user = useAuthStore((state) => state.user)
   const clear = useAuthStore((state) => state.clear)
-  const [credentialsDismissed, setCredentialsDismissed] = useState<number | null>(null)
+  // 弹窗在改成密码之前一直有效；「我知道了」按用户记住，刷新后不再重复弹。
+  const [credentialsDismissed, setCredentialsDismissed] = useState(false)
+  const credentialsStorageKey = user ? `initial-password-dismissed:${user.id}` : null
+  useEffect(() => {
+    setCredentialsDismissed(
+      Boolean(credentialsStorageKey && readLocalStorage(credentialsStorageKey) === '1'),
+    )
+  }, [credentialsStorageKey])
+  const dismissCredentials = () => {
+    setCredentialsDismissed(true)
+    if (credentialsStorageKey) writeLocalStorage(credentialsStorageKey, '1')
+  }
   const openTab = useTabsStore((state) => state.openTab)
   const openCopilot = useCopilotStore((state) => state.openWith)
   // 移动端（场景23）：侧边栏变成抽屉，顶栏汉堡键开合
@@ -288,10 +299,10 @@ export default function AppLayout() {
 
       {/* 全局 Copilot 抽屉：任何页面都能拉开，自动带上当前页面的业务上下文 */}
       <CopilotDrawer />
-      <Modal title="你的登录账号已生成" visible={Boolean(user?.initial_password_pending && credentialsDismissed !== user?.id)}
-        onCancel={() => setCredentialsDismissed(user?.id ?? null)}
-        footer={<><Button onClick={() => setCredentialsDismissed(user?.id ?? null)}>我知道了</Button>
-          <Button theme="solid" onClick={() => { setCredentialsDismissed(user?.id ?? null); navigate('/settings?tab=profile') }}>去修改账号密码</Button></>}>
+      <Modal title="你的登录账号已生成" visible={Boolean(user?.initial_password_pending && !credentialsDismissed)}
+        onCancel={dismissCredentials}
+        footer={<><Button onClick={dismissCredentials}>我知道了</Button>
+          <Button theme="solid" onClick={() => { dismissCredentials(); navigate('/settings?tab=profile') }}>去修改账号密码</Button></>}>
         <p>登录名：<strong style={{ overflowWrap: 'anywhere' }}>{user?.username}</strong></p>
         <p>可继续用钉钉扫码登录 CRM。如需使用账号密码登录，请联系管理员并尽快修改初始密码。</p>
       </Modal>

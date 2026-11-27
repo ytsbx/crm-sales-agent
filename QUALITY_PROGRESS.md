@@ -6645,3 +6645,9 @@
 - 基线为另一会话刚发布的 71eef6e4（退货改造，迁移 f5c8a1d3e7b2 已应用）；本包无新增迁移。
 - 发布包 SHA256 `c682797d…b527`；`status=verified`，备份 `/opt/crm-sales-agent/backup/unified-c46c26ccc7d7-pfr5zvdz`。
 - 核验：服务 active、`/health` 数据库 ok、公网 200、两端版本记录均 c46c26cc、数据库仍为 f5c8a1d3e7b2。
+
+## 2026-11-27 初始账号弹窗每次刷新都弹出（待发布）
+
+- 现象：刘帅帅（liushuaishuai）每次刷新都弹「你的登录账号已生成」。原因是 `initial_password_pending` 在改密码前一直为 true，而弹窗的「我知道了」只存在组件 state，刷新即丢。
+- 修复：按用户把"已知道"记到 localStorage（`initial-password-dismissed:<userId>`），刷新/重新进入不再重复弹；改完密码后后端会清掉 `initial_password_pending`，弹窗自然消失。设置页的初始密码提示条仍保留。
+- 验证：前端 `tsc -b` + `vite build` 通过。
