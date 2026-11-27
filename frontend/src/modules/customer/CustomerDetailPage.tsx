@@ -1764,7 +1764,7 @@ export default function CustomerDetailPage() {
         okButtonProps={{ disabled: pendingTagIds.length === 0 }}
       >
         <div style={{ marginBottom: 8, color: 'var(--crm-text-3)', fontSize: 12 }}>
-          标签是受控字典，可在「系统设置 › 客户标签」里维护。
+          标签是受控字典，可在<Link to="/settings?tab=tags" style={{ margin: '0 4px' }}>「系统设置 › 客户标签」</Link>里维护。
         </div>
         <Select
           multiple

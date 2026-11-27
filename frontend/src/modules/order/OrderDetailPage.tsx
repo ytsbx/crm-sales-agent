@@ -1839,6 +1839,7 @@ export default function OrderDetailPage() {
               order.currency,
             ),
             tone: 'warning' as const,
+            hint: <button type="button" className="crm-text-action" onClick={() => jumpToTab('returns')}>查看退货记录</button>,
           },
         ]
       : []),
@@ -1852,6 +1853,7 @@ export default function OrderDetailPage() {
               order.currency,
             ),
             tone: 'warning' as const,
+            hint: <button type="button" className="crm-text-action" onClick={() => jumpToTab('payments')}>去调整分配</button>,
           },
         ]
       : []),
@@ -1863,6 +1865,7 @@ export default function OrderDetailPage() {
               summary?.pending_confirm_amount_exact ?? summary?.pending_confirm_amount ?? 0,
               order.currency,
             ),
+            hint: <button type="button" className="crm-text-action" onClick={() => jumpToTab('payments')}>去确认回款</button>,
           },
         ]
       : []),
@@ -1876,6 +1879,7 @@ export default function OrderDetailPage() {
             // 并排，会被读成 ¥1（2026-11-16 订单详情巡检）。
             value: `${summary.overdue_count} 个`,
             tone: 'error' as const,
+            hint: <button type="button" className="crm-text-action" onClick={() => jumpToTab('receivables')}>查看逾期应收</button>,
           },
         ]
       : []),

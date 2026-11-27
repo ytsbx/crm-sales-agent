@@ -1193,7 +1193,7 @@ export default function CustomerListPage() {
             />
             {(tagsQuery.data ?? []).length === 0 && !tagsQuery.isLoading && (
               <div style={{ marginTop: 6, fontSize: 12, color: 'var(--crm-text-3)' }}>
-                还没有标签，先去「系统设置 › 客户标签」建一个。
+                还没有标签，先去<button type="button" className="crm-text-action" style={{ margin: '0 4px' }} onClick={() => { setBatchTagOpen(false); navigate('/settings?tab=tags') }}>「系统设置 › 客户标签」</button>建一个。
               </div>
             )}
           </div>
