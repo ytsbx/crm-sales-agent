@@ -21,7 +21,7 @@ from app.core.data_scope import ensure_in_scope, scoped_owner_ids
 from app.core.errors import AppError, ErrorCode
 from app.core.timebase import today_business
 from app.modules.customer.model import Customer
-from app.modules.file.model import FileRecord
+from app.modules.file.model import BusinessFile, FileRecord
 from app.modules.followup.service import record_and_notify
 from app.modules.order.model import (
     OrderShipmentBatch,
@@ -242,6 +242,26 @@ async def create_return(
         raise AppError(
             ErrorCode.FORBIDDEN,
             "退款登记表只能用当前账号刚上传的附件",
+            403,
+        )
+    # 只校验“文件存在 + 当前账号上传”还不够：文件中心的 file_id 是全局的，
+    # 同一账号可能先给别的订单传过附件，再拿那个 id 来这边登记售后，等于把
+    # 别的订单的退款登记表挂到这张订单上。这里必须再反查业务附件挂载：
+    # 只有“挂在本订单、类别为 return_application”的文件才能作为本单登记表。
+    application_link = (
+        await session.execute(
+            select(BusinessFile.id).where(
+                BusinessFile.file_id == application_file.id,
+                BusinessFile.business_type == "order",
+                BusinessFile.business_id == order.id,
+                BusinessFile.category == "return_application",
+            )
+        )
+    ).first()
+    if application_link is None:
+        raise AppError(
+            ErrorCode.FORBIDDEN,
+            "退款登记表附件没有挂到这张订单的售后申请附件，请重新上传",
             403,
         )
     ids = [item.order_item_id for item in payload.items]

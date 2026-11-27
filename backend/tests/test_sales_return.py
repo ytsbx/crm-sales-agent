@@ -24,7 +24,7 @@ from app.core.audit import AuditLog
 from app.core.base import Base
 from app.core.errors import AppError
 from app.modules.customer.model import Customer
-from app.modules.file.model import FileRecord
+from app.modules.file.model import BusinessFile, FileRecord
 from app.modules.order.model import (
     OrderShipmentBatch,
     OrderShipmentBatchItem,
@@ -97,6 +97,7 @@ def db(monkeypatch):
             SalesReturnItem.__table__,
             SalesReturnPlanAdjustment.__table__,
             FileRecord.__table__,
+            BusinessFile.__table__,
             AuditLog.__table__,
             NumberingRule.__table__,
             NumberSequence.__table__,
@@ -133,12 +134,59 @@ def db(monkeypatch):
             checksum="return-app-reviewer",
             uploaded_by=2,
         )
-        raw.add_all([user, customer, application_file, reviewer_file])
+        other_order_file = FileRecord(
+            id=3,
+            storage_provider="local",
+            object_key="2026/11/return-application-other-order.xlsx",
+            file_name="别的订单退款登记表.xlsx",
+            mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            size=1024,
+            checksum="return-app-other-order",
+            uploaded_by=1,
+        )
+        wrong_category_file = FileRecord(
+            id=4,
+            storage_provider="local",
+            object_key="2026/11/order-general-attachment.pdf",
+            file_name="普通订单附件.pdf",
+            mime_type="application/pdf",
+            size=1024,
+            checksum="order-general",
+            uploaded_by=1,
+        )
+        unlinked_file = FileRecord(
+            id=5,
+            storage_provider="local",
+            object_key="2026/11/unlinked-return.xlsx",
+            file_name="未挂订单的退款登记表.xlsx",
+            mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            size=1024,
+            checksum="return-unlinked",
+            uploaded_by=1,
+        )
+        raw.add_all([
+            user,
+            customer,
+            application_file,
+            reviewer_file,
+            other_order_file,
+            wrong_category_file,
+            unlinked_file,
+        ])
         order = SalesOrder(
             id=1,
             order_no="SO-RET-1",
             customer_id=1,
             owner_id=1,
+            total_amount=D("100.00"),
+            currency="CNY",
+            status="completed",
+        )
+        other_order = SalesOrder(
+            id=2,
+            order_no="SO-RET-2",
+            customer_id=1,
+            owner_id=2,
             total_amount=D("100.00"),
             currency="CNY",
             status="completed",
@@ -188,7 +236,33 @@ def db(monkeypatch):
                 created_at=NOW,
             ),
         ]
-        raw.add_all([order, item, batch, batch_item, *plans])
+        business_links = [
+            BusinessFile(
+                business_type="order",
+                business_id=1,
+                file_id=1,
+                category="return_application",
+            ),
+            BusinessFile(
+                business_type="order",
+                business_id=1,
+                file_id=2,
+                category="return_application",
+            ),
+            BusinessFile(
+                business_type="order",
+                business_id=2,
+                file_id=3,
+                category="return_application",
+            ),
+            BusinessFile(
+                business_type="order",
+                business_id=1,
+                file_id=4,
+                category="general",
+            ),
+        ]
+        raw.add_all([order, other_order, item, batch, batch_item, *plans, *business_links])
         raw.flush()
         yield AsyncSession(raw), order, item, batch_item, plans
 
@@ -783,6 +857,24 @@ def test_settle_auto_offset_caps_at_customer_unpaid(db):
     assert plans[0].amount == D("30.00")
     assert plans[1].amount == D("60.00")
     assert run(payment_svc.order_finance_summary(s, 1))["unreceived_amount_exact"] == "0.00"
+
+
+def test_create_rejects_attachment_not_linked_to_this_order(db):
+    """同一账号上传的文件也不能跨订单借用：必须真挂在这张订单且类别是退款登记表。"""
+    s, order, item, batch_item, plans = db
+    for attachment_id in (3, 4, 5):
+        with pytest.raises(AppError, match="没有挂到这张订单的售后申请附件"):
+            run(
+                svc.create_return(
+                    s, USER, order, _payload("3", "30", attachment_id=attachment_id)
+                )
+            )
+
+
+def test_create_rejects_attachment_uploaded_by_another_user(db):
+    s, order, item, batch_item, plans = db
+    with pytest.raises(AppError, match="当前账号刚上传"):
+        run(svc.create_return(s, USER, order, _payload("3", "30", attachment_id=2)))
 
 
 def test_create_amount_breakdown_and_requires_application_attachment(db):
