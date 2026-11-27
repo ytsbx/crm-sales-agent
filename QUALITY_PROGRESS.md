@@ -6638,3 +6638,4 @@
 - 后端：新增 `customer_service.in_flight_business_clause()`；客户列表 `activity=stale` 和 `analytics._customer_stale_clause`（工作台卡片+清单、同源头）都加上该条件。
 - 前端：工作台卡片提示改为「有在途业务但 N 天无进展」；清单口径说明更新；客户中心筛选「久未联系」改为「在途业务停滞」；自动待办设置说明去掉已删除的久未联系规则。
 - 验证：新增/更新测试（无在途业务、业务已结束、最近有活动都不算；在途且停滞才列出）；customer/task/analytics 相关 359 项通过；本地 8009 实测 stale_total=41、dashboard stale_customer_count=41，两者一致。
+- 发布准备：生产基线已由另一会话推进到 71eef6e4（退货改造，迁移 f5c8a1d3e7b2）；本改动按新基线构建发布包（c46c26cc，SHA256 `c682797d…b527`），预检通过，待授权发布。
