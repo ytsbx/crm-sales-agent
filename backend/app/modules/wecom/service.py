@@ -284,9 +284,16 @@ def _apply_follow_snapshot(row: WeComFollowRelationship, item: dict, now: dateti
         row.status = "active"
 
 
-async def sync_external_contacts(session: AsyncSession, *, user: CurrentUser) -> WeComSyncJob:
-    """同步外部联系人。只落"企微侧事实"，不碰 CRM 客户与联系人。"""
-    job = await start_job(session, job_type="external_contact", operator_id=user.id)
+async def sync_external_contacts(
+    session: AsyncSession, *, user: CurrentUser, job: WeComSyncJob | None = None
+) -> WeComSyncJob:
+    """同步外部联系人。只落"企微侧事实"，不碰 CRM 客户与联系人。
+
+    逐个成员拉客户列表，员工多时要几十秒，不能占着网页请求（浏览器 30 秒就
+    超时取消）。路由会先建好任务行、立即返回，再在后台用独立会话调用这里；
+    `job` 由调用方传入时沿用那一行，避免重复建任务。
+    """
+    job = job or await start_job(session, job_type="external_contact", operator_id=user.id)
     api = wecom_client.get_client()
     await _lock_contact_sync(session)
     contacts = await api.list_all_external_contacts()

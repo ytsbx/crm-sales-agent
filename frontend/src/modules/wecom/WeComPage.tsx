@@ -304,7 +304,11 @@ export default function WeComPage() {
     mutationFn: (run: () => Promise<WeComSyncJob>) => run(),
     onSuccess: (job) => {
       if (job.status === 'running') {
-        Toast.info('跟进关系同步已开始，联系人较多时需要几分钟，完成后会自动刷新')
+        Toast.info(
+          job.job_type === 'external_contact'
+            ? '外部联系人同步已开始，员工较多时需要一两分钟，完成后会自动刷新'
+            : '跟进关系同步已开始，联系人较多时需要几分钟，完成后会自动刷新',
+        )
         refresh()
         return
       }
