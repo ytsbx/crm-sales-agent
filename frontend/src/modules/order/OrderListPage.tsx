@@ -5,10 +5,10 @@ import { requiredQuantityText } from '../../shared/number-input'
 import { paymentMoney } from '../../shared/payment-allocation'
 import PageHeader from '../../shared/components/PageHeader'
 import HelpTip from '../../shared/components/HelpTip'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { emptyText } from '../../shared/hooks/emptyText'
+import { emptyTextNode } from '../../shared/components/EmptyState'
 import { Button, DatePicker, Input, Modal, Popconfirm, Select, Table, Tabs, Toast } from '@douyinfe/semi-ui'
 
 import {
@@ -65,6 +65,7 @@ const EMPTY_ITEM = { sku_id: null as number | null, quantity: '', unit_price: ''
 
 export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: string }) {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const { can } = usePermissions()
   const currentUser = useAuthStore((state) => state.user)
   const [selectedTab, setActiveKey] = useState(initialTab)
@@ -659,7 +660,12 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
                 dataSource={ordersQuery.data?.items ?? []}
                 loading={ordersQuery.isLoading}
                 rowKey="id"
-                empty={emptyText(ordersQuery, '还没有订单，去报价中心把成交的报价转成订单')}
+                empty={emptyTextNode(
+                  ordersQuery,
+                  '还没有订单',
+                  '成交报价转成订单后，会出现在这里。',
+                  <Button size="small" theme="outline" onClick={() => navigate('/quotes')}>去报价中心</Button>,
+                )}
                 pagination={{
                   currentPage: page,
                   pageSize,
@@ -694,7 +700,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
                 total: receivablesQuery.data?.total ?? 0,
                 onPageChange: setReceivablesPage,
               }}
-              empty={emptyText(receivablesQuery, '还没有应收计划', '在订单详情查看应收计划，或联系财务生成。')}
+              empty={emptyTextNode(receivablesQuery, '还没有应收计划', '在订单详情查看应收计划，或联系财务生成。')}
             />
             </>
           )}
@@ -718,7 +724,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
                 total: paymentsQuery.data?.total ?? 0,
                 onPageChange: setPaymentsPage,
               }}
-              empty={emptyText(paymentsQuery, '还没有回款记录', '已经到账的款项可到订单对应的应收期登记。')}
+              empty={emptyTextNode(paymentsQuery, '还没有回款记录', '已经到账的款项可到订单对应的应收期登记。')}
             />
             </>
           )}
