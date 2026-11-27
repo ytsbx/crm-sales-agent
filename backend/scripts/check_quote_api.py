@@ -641,9 +641,10 @@ def main():
                 try:
                     await conn.execute(
                         'insert into quote_versions (quote_id, version_no, subtotal_amount, '
-                        'charge_amount, discount_amount, total_amount, currency, approval_status, '
-                        'approval_required, created_by, created_at) '
-                        "values ($1, $2, 0, 0, 0, 0, 'CNY', 'not_submitted', false, 1, $3)",
+                        'charge_amount, discount_amount, total_amount, pricing_basis, currency, '
+                        'approval_status, approval_required, created_by, created_at) '
+                        "values ($1, $2, 0, 0, 0, 0, 'actual_pass_through', 'CNY', "
+                        "'not_submitted', false, 1, $3)",
                         row['quote_id'], row['version_no'], dt.now(UTC),
                     )
                     result['blocked'] = False
