@@ -141,14 +141,14 @@ export default function NotificationBell() {
           type="dateRange"
           size="small"
           density="compact"
-          placeholder={['起始', '截止']}
+          placeholder={['开始', '结束']}
           showClear
           value={dateRange ?? undefined}
           onChange={(value) => {
             setDateRange(Array.isArray(value) && value.length === 2 ? value as [Date, Date] : null)
             setPage(1)
           }}
-          style={{ width: 174 }}
+          style={{ width: 236 }}
         />
       </div>
       <div className="notice-list" ref={listRef} aria-busy={listQuery.isFetching}>
