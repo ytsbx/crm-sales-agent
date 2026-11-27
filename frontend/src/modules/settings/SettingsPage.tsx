@@ -2285,6 +2285,7 @@ export default function SettingsPage() {
                         </div>
                         <div className="settings-group-foot">
                           {group.hint}
+                          {group.id === 'company' && <>{' '}<Link to="/documents">去文档管理</Link></>}
                           {group.id === 'customer' && <>{' '}<Link to="?tab=rules&section=auto">前往自动任务</Link></>}
                         </div>
                       </section>

@@ -640,7 +640,11 @@ export default function WorkbenchPage() {
             {canViewCustomers && tasksQuery.isSuccess && tasks.length === 0 && (
               <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>今天没有待办，轻松一下</div>
             )}
-            {!canViewCustomers && <div className="workflow-guide">去「查看任务」查看自己的待办。</div>}
+            {!canViewCustomers && (
+              <div className="workflow-guide">
+                还没有客户查看权限，<Link to="/tasks">去「销售任务」</Link>查看自己的待办。
+              </div>
+            )}
           </div>
         </SectionCard>}
 

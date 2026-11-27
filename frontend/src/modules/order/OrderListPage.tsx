@@ -677,7 +677,11 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
 
           {activeKey === 'receivables' && (
             <>
-            <p className="workflow-guide">应收计划列的是约定要收的款。客户实际打款后，到订单详情的「应收计划」找到对应期登记。</p>
+            <p className="workflow-guide">
+              应收计划列的是约定要收的款。客户实际打款后，到
+              <Link to="/orders" style={{ margin: '0 4px' }}>订单中心</Link>
+              的「应收计划」找到对应期登记。
+            </p>
             <Table<Receivable>
               className="receivables-table"
               columns={receivableColumns}
@@ -700,7 +704,8 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
             <p className="workflow-guide">{can('payment:manage')
               ? '先核对银行到账和凭证，再处理状态为「待确认」的回款。'
               : '财务确认后，回款才计入已收。可查看每笔的处理状态。'}
-              {can('order:view') && '点订单号可回到订单详情。'}</p>
+              {can('order:view') && <>点订单号可回到订单详情；也可以到<Link to="/orders" style={{ margin: '0 4px' }}>订单中心</Link>按订单查。</>}
+            </p>
             <Table<Payment>
               className="payments-table"
               columns={paymentColumns}
