@@ -1,3 +1,11 @@
+## 2026-11-27 · 生产同步 alembic 修复（86353535 → eb688e8e）
+
+- 生产同步前实际为 `c46c26cc` / `f5c8a1d3e7b2`；第一次同步到 `86353535`，执行 `f5c8a1d3e7b2 → c3d5e7f9a1b2`，服务/公网核验通过。
+- 首次生产 `alembic check` 仍发现 `contract_documents` 有历史列 `template_id`、`generated_file_id` 和旧外键。生产该表 13 行，两列各有 1 行非空，不能直接删列；改为在 `alembic/env.py` 的 autogenerate 中登记这两列为退役字段，保留数据，其余结构漂移继续检查。
+- 第二次同步到 `eb688e8e`；生产最终状态：commit `eb688e8e952e243530586811220aeb6cdfd928a4`、DB `c3d5e7f9a1b2`、服务 active、`/health database=ok`、公网 200、生产 `alembic check` 返回 `No new upgrade operations detected`（exit 0）。
+- 备份：`db-86353535-20261127T023623Z.dump`、`db-eb688e8e-20261127T023909Z.dump`；代码/前端备份目录 `unified-86353535887e-7q305p6q`、`unified-eb688e8e952e-ht0ybtni`。
+- 注意：`contract_documents.template_id/generated_file_id` 仍是库里的退役历史列，未删除；新代码不读写，autogenerate 已显式忽略。
+
 ## 2026-11-27 · `alembic check` 清理（模型导入与结构对齐）
 
 - 根因：`alembic/env.py` 漏导入 `cases`、`bizdoc`、`contract`、`dingtalk`、`product_insight` 五个业务模型，以及 `app.core.idempotency.RequestKey`。这些表没进 `Base.metadata`，自动检查把库里真实存在的表当成“应该删掉”，造成大批假红。
