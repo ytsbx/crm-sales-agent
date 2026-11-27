@@ -1,6 +1,14 @@
+## 2026-11-27 · 收款账户和打款方式归财务（未发布生产）
+
+- 口径修正：收款账户和打款方式由财务在「确认退款」时填写，业务员申请阶段不填，主管审核、财务打回后的「修改退款金额」也不能改这两项。
+- 后端：`ReturnCreate`、`ReturnAmountRevision` 不再接收 `payment_method`/`receiving_account`；申请单落库时两项为空；`ReturnSettle` 接收这两项，现金退款时强制要求打款方式、收款账户和退款流水，写审计。
+- 前端：售后申请表单移除打款方式/收款账户；财务打回后的修改弹窗只改金额；财务确认退款弹窗新增可编辑的打款方式、收款账户，现金退款时必填。
+- 测试：`test_sales_return.py` 32 项通过；全量后端通过；临时前端副本 `tsc + vite build` 通过。
+- 提交 `24430a2b`，已推 GitHub。生产未部署，仍是 `eb688e8e / c3d5e7f9a1b2`。
+
 ## 2026-11-27 · 财务打回最小闭环（未发布生产）
 
-- 新增售后状态 `finance_returned`（财务退回修改）。财务只写原因退回，不能自己改金额；申请人或主管改金额/收款信息后重新交主管复审，货已收过的复审通过直接回 `completed`，不重复确认收货。
+- 新增售后状态 `finance_returned`（财务退回修改）。财务只写原因退回，不能自己改金额；申请人或主管只改退款金额后重新交主管复审，货已收过的复审通过直接回 `completed`，不重复确认收货；收款账户和打款方式由财务在确认退款时填写。
 - 新增接口：`POST /returns/{id}/finance-return`（财务，`payment:manage`）、`POST /returns/{id}/revise-amount`（申请人或主管）；新增字段 `finance_return_reason`、`finance_returned_by`、`finance_returned_at`、`finance_return_count`。
 - 防护：货已确认收到后主管不能再驳回、申请人不能再取消；财务打回后若申请人已改金额但还没复审，财务可作废终止。历史抵扣单不能打回改金额，仍走原金额登记或作废。
 - 迁移 `e1a3c5d7b9f2`：在 `c3d5e7f9a1b2` 基础上加四个字段；从 `git archive HEAD` 的发布树（不含并发未提交的 `d4f6` 客户跟进人迁移）在全新库 `upgrade head`，`alembic check` 返回 `No new upgrade operations detected`；另有临时副本 `downgrade c3d5 → upgrade head` 往返成功。
