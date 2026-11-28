@@ -6997,3 +6997,11 @@
 
 - 主人明确指示 B11-02 默认密码项“不用管，标记已完成”。按既定口径关闭，不修改后端闸门、不补强制改密。
 - 台账已把 B11-02 从 P1 活账移出；后端 P1 活账由 2 条降为 1 条，只剩 B11-01 登录 CSRF。
+
+## 2026-11-28 B11-01 钉钉 state 浏览器绑定
+
+- 问题：`/auth/dingtalk/authorize` 只生成进程内一次性 state，callback 只校验“这个 state 存在过”，不校验它是否由同一浏览器发起；攻击者可用自己的合法 state 诱导受害者回调，把受害者登进攻击者账号。
+- 修复：authorize 生成/复用随机浏览器绑定值，写入 `HttpOnly + SameSite=Lax` cookie，Path 限定 `{api_prefix}/auth/dingtalk`，HTTPS 下加 Secure；服务端 state 存 `(过期时刻, SHA-256(绑定值))`。callback 同时校验 state 与 cookie，任一缺失/不匹配/过期即回登录页错误，且在身份交换之前拒绝。
+- 兼容：同一浏览器多个登录标签页共用同一绑定值，各自 state 独立有效；旧 cookie 格式不合法时换发新值。state/ticket 仍为进程内一次性信物，不改单实例部署口径。
+- 测试：新增 `backend/tests/test_dingtalk_login_state_binding.py` 8 项，覆盖同浏览器接受、换浏览器拒绝、缺 cookie 拒绝、多标签并行、cookie 格式纠正、authorize 下发 cookie 属性、callback 同/异浏览器行为；相关登录/回调测试 57 项通过，后端全量 **2374 passed**。
+- 残余：本地开发若 callback 直连 8008 而 authorize 走 5275 代理，cookie 因端口/主机不同不会带回；这是本地链路问题，生产同源域名不受影响。真实钉钉扫码未在本轮执行。

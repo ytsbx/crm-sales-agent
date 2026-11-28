@@ -1,5 +1,7 @@
 # B11–B15 高严重度复核（证伪）
 
+> 2026-11-28 更新：**B11-01 已修**（state 绑定 HttpOnly + SameSite=Lax cookie，回调同时校验）；**B11-02 按主人决定关闭、不处理**。下表保留复核时点结论，当前状态以 `review/LEDGER.md` 为准。
+
 - 范围：B11/B12/B13/B14/B15 的 P1；P2 未逐条复核。
 - 方法：重读登录 state、文件 category、客户 360/合并、转移锁、企微归一与候选、异常落库；能静态断言的进测试，异常原文泄露用 httpx 真异常做控制。
 - 复现：`cd backend && PYTHONPATH=. .venv/bin/python -m pytest ../review/repro/test_b11_b15_highlights.py -q`

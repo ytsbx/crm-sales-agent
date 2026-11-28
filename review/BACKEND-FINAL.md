@@ -79,7 +79,7 @@
 | B09-01 | 确认 | 传 `release_stage` 但阶段快照缺失时，降级成“整体 approved” |
 | B09-02 | **误报** | 默认 5 万档，金额 2 位/毛利 4 位小数，float 翻不了档；应降 P3 统一 Decimal |
 | B10-01 | 确认 | 打样缺 `business_stages.sample` 时直接落 approved |
-| B11-01 | 确认 | state 不绑定浏览器，登录 CSRF 可把受害者登成攻击者账号 |
+| B11-01 | **已修** | state 绑定发起登录的浏览器：`/authorize` 下发 HttpOnly + SameSite=Lax cookie，回调同时校验 state 与 cookie；换浏览器/无 cookie 均在身份交换前拒绝 |
 | B11-02 | **已关闭（不处理）** | 默认密码 123456 是既定口径；主人 2026-11-28 明确决定不修，标记完成，不计活账 |
 | B12-03 | **证伪（已修）** | `signed` 映射为 `CONTRACT_PENDING_SIGNATURE`，正式登记仍走审批/原件/权限 |
 | B13-01 | **降 P2** | 客户 360 金额汇总含取消单；仅展示口径，不参与结算 |

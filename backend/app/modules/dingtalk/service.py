@@ -37,6 +37,7 @@
 from collections import deque
 
 
+import hashlib
 import json
 import logging
 import secrets
@@ -1775,7 +1776,10 @@ async def align_departments(session: AsyncSession) -> dict:
 # 两样**短期信物**，寿命都是几十秒：
 #
 # - `state`：发起扫码时生成，回调时校验并**消费**。防的是"别人换个 code 把回调
-#   塞给你"——只有我们自己发出去过的 state 才认。
+#   塞给你"——只有我们自己发出去过的 state 才认。**还必须绑定发起登录的浏览器**：
+#   只认 state 不认浏览器，就挡不住登录 CSRF（攻击者拿自己的合法 state 诱导
+#   受害者回调，把受害者登进攻击者账号）。绑定值放在 HttpOnly cookie 里，
+#   浏览器跨站带不上来；服务端只存它的 SHA-256，不存原值。
 # - `ticket`：回调处理完之后，把**已经签好的令牌**装进去，交给前端那一步用。
 #   走 URL 的绝不能是令牌本身（会进浏览器历史、会进服务器访问日志），
 #   所以用一层一次性信物过渡，60 秒内不来换就作废。
@@ -1791,16 +1795,36 @@ async def align_departments(session: AsyncSession) -> dict:
 
 LOGIN_STATE_TTL_SECONDS = 300
 LOGIN_TICKET_TTL_SECONDS = 60
+#: 发起登录的浏览器绑定 cookie。必须 HttpOnly（JS 读不到）+ SameSite=Lax
+#: （钉钉回调是跨站顶层跳转，Strict 会被浏览器拦掉）+ Path 限定在登录路由。
+LOGIN_STATE_COOKIE_NAME = "crm_dingtalk_login_browser"
+LOGIN_STATE_COOKIE_PATH = f"{app_settings.api_prefix.rstrip('/')}/auth/dingtalk"
 
 _short_lock = threading.Lock()
-#: state -> 过期时刻（monotonic 秒）
-_login_states: dict[str, float] = {}
+#: state -> (过期时刻（monotonic 秒）, 浏览器绑定值的 SHA-256)
+_login_states: dict[str, tuple[float, str]] = {}
 #: ticket -> (已签发的令牌, 过期时刻)
 _login_tickets: dict[str, tuple[str, float]] = {}
 
 
+def ensure_login_browser_token(value: str | None = None) -> str:
+    """取浏览器绑定值；没有或格式不对就新发一个。
+
+    只接受 URL-safe token 的字符集和长度范围。旧 cookie 被篡改成超长/怪字符时
+    不复用，直接换新；调用方负责把返回值重新写回 cookie。
+    """
+    if value and 32 <= len(value) <= 128:
+        if all(ch.isascii() and (ch.isalnum() or ch in "-_") for ch in value):
+            return value
+    return secrets.token_urlsafe(32)
+
+
+def _browser_binding_digest(browser_token: str) -> str:
+    return hashlib.sha256(browser_token.encode("utf-8")).hexdigest()
+
+
 def _sweep_states(now: float) -> None:
-    for k in [k for k, exp in _login_states.items() if exp <= now]:
+    for k in [k for k, (exp, _binding) in _login_states.items() if exp <= now]:
         _login_states.pop(k, None)
 
 
@@ -1809,25 +1833,39 @@ def _sweep_tickets(now: float) -> None:
         _login_tickets.pop(k, None)
 
 
-def issue_login_state() -> str:
-    """发起一次扫码登录：生成并记住一个一次性 state。"""
+def issue_login_state(browser_token: str) -> str:
+    """发起一次扫码登录：生成 state，并记住它只属于这个浏览器。
+
+    `browser_token` 来自 HttpOnly cookie；服务端只存摘要。同一个浏览器短时间
+    开多个登录标签页时，这些 state 都绑同一个 cookie 值，互不影响。
+    """
     now = time.monotonic()
     state = secrets.token_urlsafe(24)
+    binding = _browser_binding_digest(browser_token)
     with _short_lock:
         _sweep_states(now)
-        _login_states[state] = now + LOGIN_STATE_TTL_SECONDS
+        _login_states[state] = (now + LOGIN_STATE_TTL_SECONDS, binding)
     return state
 
 
-def consume_login_state(state: str | None) -> bool:
-    """校验并**消费** state：用过一次即作废（防重放）。"""
-    if not state:
+def consume_login_state(state: str | None, browser_token: str | None) -> bool:
+    """校验并**消费** state：用过一次、过期、或不是这个浏览器发起的，都拒绝。
+
+    为什么绑定值缺失时直接拒绝：老调用方不传 cookie 等于把 state 变成"谁拿到
+    都能用"，正是登录 CSRF 的入口。宁可让漏传的代码登录失败，也不静默放行。
+    """
+    if not state or not browser_token:
         return False
     now = time.monotonic()
     with _short_lock:
-        expires = _login_states.pop(state, None)
+        item = _login_states.pop(state, None)
         _sweep_states(now)
-    return expires is not None and expires > now
+    if item is None:
+        return False
+    expires, binding = item
+    if expires <= now:
+        return False
+    return secrets.compare_digest(binding, _browser_binding_digest(browser_token))
 
 
 def issue_login_ticket(token: str) -> str:

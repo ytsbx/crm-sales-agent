@@ -13,7 +13,8 @@
    账号停用 —— 五种情况各有说法，不混成一句"登录失败"；
 4. **不取第一个**：一个钉钉号对上多个系统账号时**明确拒绝**
    （取第一个 = 把别人的账号登进来，与「重名一律不猜」同一条纪律）；
-5. **state 一次性**：用过即废、过期即废、不认识即拒（防重放 / 防伪造回调）；
+5. **state 一次性 + 浏览器绑定**：用过即废、换浏览器即拒、过期即废、不认识即拒
+   （防重放 / 防伪造回调 / 防登录 CSRF）；
 6. **ticket 一次性**：同上，且过期后取不出来。
 
 ## 为什么用替身
@@ -258,15 +259,21 @@ async def main():
                 _, r5 = await dt_service.resolve_login_user(s, code='c')
         check('账号停用', r5, 'disabled')
 
-        print('6) state：一次性（用过即废 / 不认识即拒 / 过期即废）')
-        st = dt_service.issue_login_state()
-        check('刚发的 state 认', dt_service.consume_login_state(st), True)
-        check('同一个再用一次 → 拒（防重放）', dt_service.consume_login_state(st), False)
-        check('瞎编的 state → 拒', dt_service.consume_login_state('nope-nope'), False)
-        check('空 state → 拒', dt_service.consume_login_state(None), False)
-        st2 = dt_service.issue_login_state()
-        dt_service._login_states[st2] = 0.0  # 直接改成"已过期"
-        check('过期的 state → 拒', dt_service.consume_login_state(st2), False)
+        print('6) state：一次性 + 绑定发起登录的浏览器（用过即废 / 换浏览器即拒 / 过期即废）')
+        browser = dt_service.ensure_login_browser_token(None)
+        st = dt_service.issue_login_state(browser)
+        check('刚发、同一浏览器 → 认', dt_service.consume_login_state(st, browser), True)
+        check('同一个再用一次 → 拒（防重放）', dt_service.consume_login_state(st, browser), False)
+        st_other = dt_service.issue_login_state(browser)
+        check('换一台浏览器拿同一个 state → 拒（防登录 CSRF）',
+              dt_service.consume_login_state(st_other, 'x' * 43), False)
+        check('瞎编的 state → 拒', dt_service.consume_login_state('nope-nope', browser), False)
+        check('空 state → 拒', dt_service.consume_login_state(None, browser), False)
+        check('空浏览器绑定 → 拒', dt_service.consume_login_state(
+            dt_service.issue_login_state(browser), None), False)
+        st2 = dt_service.issue_login_state(browser)
+        dt_service._login_states[st2] = (0.0, dt_service._browser_binding_digest(browser))
+        check('过期的 state → 拒', dt_service.consume_login_state(st2, browser), False)
 
         print('7) ticket：一次性 + 过期即废')
         tk = dt_service.issue_login_ticket('token-abc')

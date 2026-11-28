@@ -3,7 +3,7 @@
 import logging
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import func, select
@@ -329,12 +329,16 @@ _CALLBACK_FLOW_ERROR: dict[str, str] = {
 
 
 @router.get("/dingtalk/authorize")
-async def dingtalk_authorize(request: Request):
+async def dingtalk_authorize(request: Request, response: Response):
     """扫码登录第一步：拿到钉钉授权地址（前端负责跳过去）。
 
     **这里不签发任何东西**，只生成一个一次性 state 并回一个 URL。
     未就绪时**当场报错**，而不是给个跳过去必然失败的地址 ——
     "扫完码才说不行"最费人时间。
+
+    state 必须绑定"发起登录的这台浏览器"（B11-01）：这里下发一个 HttpOnly
+    cookie，回调时两值必须对得上。只校验 state 存在过，挡不住攻击者拿自己的
+    合法 state 诱导受害者回调、把受害者登进攻击者账号。
     """
     if not settings.dingtalk_login_ready:
         reason = (
@@ -347,10 +351,27 @@ async def dingtalk_authorize(request: Request):
             f"钉钉扫码登录暂不可用：{reason}。请改用账号密码登录，或联系管理员开通。",
             503,
         )
-    state = dingtalk_service.issue_login_state()
+    browser_token = dingtalk_service.ensure_login_browser_token(
+        request.cookies.get(dingtalk_service.LOGIN_STATE_COOKIE_NAME)
+    )
+    state = dingtalk_service.issue_login_state(browser_token)
     url = dingtalk_service.get_client().build_login_url(
         redirect_uri=_dingtalk_redirect_uri(request), state=state
     )
+    # HttpOnly：JS 读不到；SameSite=Lax：钉钉回调是跨站顶层跳转，Strict 会丢 cookie；
+    # Path 只覆盖登录路由，别的接口收不到这个绑定值。HTTPS 下加 Secure。
+    secure_cookie = _external_base(request).startswith("https://")
+    response.set_cookie(
+        key=dingtalk_service.LOGIN_STATE_COOKIE_NAME,
+        value=browser_token,
+        max_age=dingtalk_service.LOGIN_STATE_TTL_SECONDS,
+        path=dingtalk_service.LOGIN_STATE_COOKIE_PATH,
+        httponly=True,
+        samesite="lax",
+        secure=secure_cookie,
+    )
+    # state 和浏览器绑定值是这次登录的临时凭据，不能被代理或浏览器缓存复用。
+    response.headers["Cache-Control"] = "no-store"
     return ok({"authorize_url": url})
 
 
@@ -374,8 +395,10 @@ async def dingtalk_callback(
         )
         return RedirectResponse(f"{target}?dingtalk_error={quote(text)}", status_code=303)
 
-    # state 一次性消费：没有 / 用过 / 过期，一律当成"不是我们发起的这次登录"。
-    if not dingtalk_service.consume_login_state(state):
+    # state 一次性消费 + 浏览器绑定：没有 cookie、用过、过期、或不是发起这个
+    # state 的那台浏览器，一律当成"不是我们发起的这次登录"。
+    browser_token = request.cookies.get(dingtalk_service.LOGIN_STATE_COOKIE_NAME)
+    if not dingtalk_service.consume_login_state(state, browser_token):
         return back("state")
 
     try:
