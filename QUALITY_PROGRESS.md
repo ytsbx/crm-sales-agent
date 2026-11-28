@@ -6903,3 +6903,6 @@
 - 上线核验：`status=verified`、`verified_at_utc=2026-11-27T10:24:40Z`；两端版本记录均为 `d606c66b`；服务 active、`/health database=ok`、公网首页 200；数据库仍为 `d4f6a8b0c2e1`；生产 `web-dist` 已含「企业微信导入未跟进」和「非企业微信来源」新文案；发布后日志无 error/traceback。
 - 生产接口口径核验：直接调用已部署的 `build_list_stmt(activity="unknown_contact")` 统计，`unknown_contact_total=0`，确认 2,562 条企微客户不再进入待补核筛选。
 - 追加（2026-11-28）：主人截图反馈「企业微信 · 未跟进」还是会满屏重复。口径再收一档：企微导入客户行内只显示来源「企业微信」，不再显示「未跟进」；新建未跟进客户仍显示「未跟进」，非企微历史导入仍由顶部汇总承接。前端构建/lint 通过（41 条历史 warning，0 error）。
+- 发布：生产候选分支 `release/customer-label-20261128`，提交 `9b4ff055222e1a8ee26d4f7204a876c7b14f6c4c`，基线 `d606c66b`；发布包 SHA256 `f0cde306c7c04c24a7b7e038d7fa5f78a00f1643a9b25a3bc7bf0e2750e3607e`。
+- 上线核验：`status=verified`、`verified_at_utc=2026-11-28T01:21:26Z`；两端版本记录均为 `9b4ff055`；服务 active、`/health database=ok`、公网首页 200；数据库仍为 `d4f6a8b0c2e1`；当前 `index.html` 引用 `CustomerListPage-BWp3z9C2.js`，该 chunk 的逻辑是 `last_contact_unknown ? '' : '未跟进'`，企微导入行内只保留来源。
+- 备份：`/opt/crm-sales-agent/backup/unified-9b4ff055222e-j6gkewy0`。首次 `--apply` 在重启后 30 秒健康检查超时，已自动回滚并恢复 `d606c66b`；原失败备份 `/opt/crm-sales-agent/backup/unified-9b4ff055222e-f2445l1u` 保留；第二次 `--apply` 通过。
