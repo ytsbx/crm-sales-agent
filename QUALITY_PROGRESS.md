@@ -6979,3 +6979,10 @@
 - 当前保留两份档案的三种裁定中，「判为不同」只结案。其余两种都会将两份档案的原有跟进人加到两边，「指定一位」还会追加被指定同事。真实合并是独立入口，有影响预览、权限检查，成功后自动结清本对待裁定。
 - 建议将常用入口收为「同一个客户，去合并」和「不同客户，各自保留」。去合并预填本对档案，仍经现有预览、选择保留档案及确认。若需要继续保留两份档案并同步跟进关系，须先明确是否保留该特殊入口；本轮未更改行为。
 - 相关合并、裁定、查重隔离测试 34 项通过。
+
+## 2026-11-28 P0 实测复核
+
+- F01-01：隔离 SQLite 调当前 `create_version`，已有有效订单时返回 `409 40903 这张报价已生成有效订单，请在原订单中处理`；同报价第二版本再 `create_order_from_quote` 也返回同一 40903。前端 `QuoteDetailPage.tsx` 的「新建版本」和「转销售订单」入口均按 `hasActiveOrder` 隐藏。
+- F10-01：FastAPI TestClient 用只有 `wecom:view + wecom:manage`、无客户权限的账号实测，候选客户返回 403 需要 `customer:view`，绑客返回 403 需要 `customer:update`，建客返回 403 需要 `customer:create`。候选服务使用 `scoped_owner_ids`，绑客使用 `get_visible_customer`。
+- 复现脚本：`review/verification/p0_f01_create_version_guard.py`、`review/verification/p0_f10_permission_gates.py`；两条均输出 `BLOCKED (PASS)`。
+- 结论：后端 P0 仍为 0；前端原两条 P0 已不再成立，当前全量活 P0 为 0。`B04-01` 维持“不成立、降为待确认”的设计缺口，不作为 P0 施工项。

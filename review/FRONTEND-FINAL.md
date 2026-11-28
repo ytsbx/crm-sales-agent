@@ -28,10 +28,12 @@
 
 ## 二、P0 / P1 清单
 
-### P0（2）
+### P0（原 2 条，2026-11-28 实测均已关闭）
 
-1. **F01-01**：报价已转订单后仍可新建版本，再审批、发送、接受、转单；后端只按 `quote_version_id` 查重，可生成第二张订单和应收。
-2. **F10-01**：企微候选/建客/绑客只校验 `wecom` 权限，候选卡无条件渲染；服务层明确“故意不做数据范围过滤”。默认暴露面是 `sales_manager` 跨部门（其 `department_and_sub` 范围被绕过），自定义角色可把 `wecom:*` 单独授给无 `customer:view` 的账号。与 B15-01/B15-02 同根，建议合并定级。
+1. **F01-01（原 P0）**：报价已转订单后仍可新建版本，再审批、发送、接受、转单；后端只按 `quote_version_id` 查重，可生成第二张订单和应收。**当前状态：已修。** 实测 `create_version` 与跨版本转单均返回 40903，前端入口按 `hasActiveOrder` 隐藏。
+2. **F10-01（原 P0）**：企微候选/建客/绑客只校验 `wecom` 权限，候选卡无条件渲染；服务层明确“故意不做数据范围过滤”。默认暴露面是 `sales_manager` 跨部门（其 `department_and_sub` 范围被绕过），自定义角色可把 `wecom:*` 单独授给无 `customer:view` 的账号。与 B15-01/B15-02 同根，建议合并定级。**当前状态：已修。** 实测候选、绑客、建客三个入口分别要求 `customer:view/update/create`，裸企微权限均 403；候选按 `scoped_owner_ids`、绑客按 `get_visible_customer` 过滤。
+
+> 2026-11-28 实测结论：前端当前活 P0 = 0。复现脚本 `review/verification/p0_f01_create_version_guard.py`、`review/verification/p0_f10_permission_gates.py` 均输出 `BLOCKED (PASS)`。
 
 ### P1（18 条确认口径）
 
