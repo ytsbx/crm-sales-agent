@@ -6910,3 +6910,4 @@
 - 发布：生产候选分支 `release/customer-source-20261128`，提交 `d3d6098c7492363a918e20cadcddfaae22d59bd4`，基线 `9b4ff055`；发布包 SHA256 `d82e204cfdf9d8f21ccc2130ca567d04b79c45f49b70853afa3b930137722879`。
 - 上线核验：`status=verified`、`verified_at_utc=2026-11-28T01:26:39Z`；两端版本记录均为 `d3d6098c`；服务 active、`/health database=ok`、公网首页 200；数据库仍为 `d4f6a8b0c2e1`；当前 `index.html` 引用 `CustomerListPage-ozvvXIhS.js`，chunk 内为 `source === '企业微信' ? '' : source`，企微客户行内不再显示来源，其他来源保留。
 - 备份：`/opt/crm-sales-agent/backup/unified-d3d6098c7492-u0lq_9o9`。
+- 追加（2026-11-28）：主人指出「客户来源应该有一个其他，然后自己填」。原代码有 `source === '其他'` 的输入框分支，但 `SOURCE_OPTIONS` 把「其他」删了，导致分支永远走不到。现补回「其他」选项；选中后必须填写具体来源（最多 32 字），空着点创建会提示；打开/取消/创建成功都重置自定义来源，避免旧输入残留。前端构建/lint 通过（0 error / 41 条历史 warning）。
