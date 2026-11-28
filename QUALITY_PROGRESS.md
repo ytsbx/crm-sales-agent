@@ -1,3 +1,11 @@
+## 2026-11-28 清理多跟进人改造的遗留检查与文档
+
+- `03-API`/`04-UI`/`02-ER` 已补 2026-11-27「客户无默认负责人」变更说明：客户只以 `customer_followers` 为准、`owner_id` 为历史字段；补 `customer_followers` 表结构，覆盖旧的负责人/公海/转交/恢复/导入描述。
+- `check_data_scope.py`：原来 3 项退役模板合同用例在当前代码上已通过（不再需要改）；唯一失败的「主管读价格快照」是夹具没有核价历史，已补一条主管可见的产品成本审计，越权回归 **全部通过**。
+- `check_process_notifications.py`：按新口径改写为「业务动作与手工跟进只留时间线、无主管通知」，在隔离库跑通。
+- 旧脚本的 `Customer(owner_id=…)`：模型层已有兼容事件（`after_insert` 时补同名跟进人，公海不补），配合夹具改动，抽查的客户/公海/交接/合并/报表脚本全部通过：`check_customer_contact_api`、`check_customer_timeline`、`check_customer_merge`、`check_pool_scope_concurrency`、`check_pool_recycle_and_merge`、`check_pool_recycle_notice`、`check_pool_scan_race`、`check_wecom_customer_import`、`check_wecom_handover`、`check_recycle_bin`、`check_customer_handover_documents`、`check_customer_transfer_document_race`、`check_contract_monthly_reminders`、`check_sales_attribution`、`check_stats_data_scope`、`check_delivery_analytics`、`check_duplicate_arbitration`、`check_approval_rules`、`check_sixth_round_fixes`、`check_sixth_round_p2`。
+- 残余：`check_batch11_repairs.py` 仍按旧「打样审批在 CRM 内完成」流程，当前代码要求先在同序 OA 审批（与本次无关的既存过时用例），需要单独更新。
+
 ## 2026-11-28 取消主管跟进/业务动作站内通知（已部署 1ce7ec77）
 
 - 主人确认：跟进记录太频繁不该通知主管；转单、合同签署/补充等业务动作也不需要推主管，"主管能看就行"。管理员本来就不在这类通知名单（只发给 sales_manager）。
