@@ -383,7 +383,8 @@ export default function CustomerListPage() {
   })
 
   // 非企微的历史导入、联系时间未知的客户只在列表顶部汇总，不再逐行重复「待补核」；
-  // 企业微信导入是同步联系人，没有历史联系时间可补；行内只保留来源，不逐行显示「未跟进」。
+  // 企业微信导入是同步联系人，没有历史联系时间可补；这批客户占绝大多数，
+  // 逐行重复「企业微信」来源没有信息量，行内不再显示，其他来源仍保留。
   // 单独取 total：page_size=1 不会把几千条客户拉回前端；数量跟随当前数据范围。
   const unknownContactQuery = useQuery({
     queryKey: ['customers', 'unknown-contact', { scope, userId: currentUser?.id }],
@@ -468,7 +469,7 @@ export default function CustomerListPage() {
   // 「活跃状态」原本是独立一列，现在并进客户名称的下方小字。
   // `unknown` 不能都叫「待补核」：
   //   · 企业微信导入只是同步联系人，没有“历史联系时间”可补，也不逐行显示
-  //     「未跟进」——几千条客户会把列表刷成一堵重复的墙，只保留来源即可；
+  //     「未跟进」或「企业微信」——几千条客户会把列表刷成一堵重复的墙；
   //   · 非企微的历史导入没给联系日期 → 真正的待补核，由顶部汇总承接，行内不重复；
   //   · 新建客户还没记过跟进 → 只是「未跟进」，不是资料缺口。
   const activityLabel = (record: Customer) => {
@@ -481,6 +482,10 @@ export default function CustomerListPage() {
     }
     return ''
   }
+
+  // 企微导入占绝大多数，来源逐行显示只会重复；其他来源仍有区分价值。
+  const sourceLabel = (record: Customer) =>
+    record.source === '企业微信' ? '' : record.source
 
   const columns = [
     {
@@ -502,11 +507,11 @@ export default function CustomerListPage() {
             {text}
           </button>
           <div
-            title={[record.region, record.source, activityLabel(record), compact ? (record.pool_status === 'public' ? '公海' : `跟进人 ${record.follower_count ?? 0}`) : ''].filter(Boolean).join(' · ')}
+            title={[record.region, sourceLabel(record), activityLabel(record), compact ? (record.pool_status === 'public' ? '公海' : `跟进人 ${record.follower_count ?? 0}`) : ''].filter(Boolean).join(' · ')}
             style={{ marginTop: 2, color: 'var(--crm-text-3)', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
           >
             {compact ? `${record.level ?? '未分级'} · ` : ''}
-            {[record.region, record.source, activityLabel(record)]
+            {[record.region, sourceLabel(record), activityLabel(record)]
               .filter(Boolean)
               .join(' · ')}
             {compact ? ` · ${record.pool_status === 'public' ? '公海' : `跟进人 ${record.follower_count ?? 0}`}` : ''}
