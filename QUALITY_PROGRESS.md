@@ -6924,3 +6924,6 @@
 - 生产口径实测：直接调用已部署的 `find_duplicate_customers(company_name="11")`，返回 1 条、分数 70、原因「企业名称一致」——只在真的存在同名客户「11」时提示，不再命中手机号/门牌号包含 11 的无关客户。
 - 备份：`/opt/crm-sales-agent/backup/unified-5445fd3779a3-9ggq2_jb`。
 - 追加（2026-11-28）：主人复测表头仍居中、名字靠左。根因不是 Semi 的 `align` 没生效，而是全站 CSS `text-align: center !important` 压在表头上。给客户名称列加 `className: 'cell-left'`，并在 `index.css` 同时命中 thead/tbody 写 `text-align: left !important`。构建产物已确认出现该规则。
+- 发布：生产候选分支 `release/customer-cell-left-20261128`，提交 `37c8954d0df238984380e97b5c99e5351c60e87f`，基线 `5445fd37`；发布包 SHA256 `414cd4e9257d19123e09ce94d838e713f6d792832aa9618bc9a3813ac14845bd`。
+- 上线核验：`status=verified`、`verified_at_utc=2026-11-28T01:47:34Z`；两端版本记录均为 `37c8954d`；服务 active、`/health database=ok`、公网首页 200；数据库仍为 `d4f6a8b0c2e1`；生产当前 CSS 为 `index-DsfhMQyL.css`，已含 `.semi-table-thead .semi-table-row-head.cell-left,...{text-align:left!important}`。
+- 备份：`/opt/crm-sales-agent/backup/unified-37c8954d0df2-7cyovog4`。
