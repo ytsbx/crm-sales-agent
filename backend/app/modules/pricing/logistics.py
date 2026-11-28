@@ -71,6 +71,7 @@ def serialize_rate(rate: LogisticsRate) -> dict:
 
 
 def serialize_quote(quote: LogisticsQuote) -> dict:
+    raw = quote.raw_data or {}
     return {
         "id": quote.id,
         "customer_id": quote.customer_id,
@@ -78,12 +79,13 @@ def serialize_quote(quote: LogisticsQuote) -> dict:
         "sku_id": quote.sku_id,
         "quantity": _f(quote.quantity),
         "quantity_exact": format(quote.quantity, "f") if quote.quantity is not None else None,
-        "quantity_unit": (quote.raw_data or {}).get("quantity_unit"),
+        "quantity_unit": raw.get("quantity_unit"),
         "origin": quote.origin,
         "destination": quote.destination,
         "shipping_method": quote.shipping_method,
         "chargeable_weight": _f(quote.chargeable_weight),
         "actual_weight": _f(quote.actual_weight),
+        "weight_missing": bool((raw.get("measures") or {}).get("weight_missing")),
         "volume": _f(quote.volume),
         "currency": quote.currency,
         "amount": _f(quote.amount),
@@ -181,8 +183,9 @@ async def compute_weight_and_volume(
     warnings: list[str] = []
 
     unit_weight = weight_override if weight_override is not None else sku.weight
-    if unit_weight is None:
-        warnings.append("该 SKU 没有维护单重，无法计算实际重量")
+    weight_missing = unit_weight is None or unit_weight <= 0
+    if weight_missing:
+        warnings.append("该 SKU 缺少有效单重，请补填单重或在本次试算中指定实际单重")
         unit_weight = ZERO
 
     unit_volume, volume_source, volume_problem = sku_unit_volume(sku)
@@ -220,6 +223,7 @@ async def compute_weight_and_volume(
 
     return {
         "actual_weight": actual_weight,
+        "weight_missing": weight_missing,
         "volume": volume,
         "volumetric_weight": volumetric_weight,
         "volumetric_enabled": volumetric_enabled,
@@ -490,6 +494,18 @@ async def prepare(
         destination=destination,
         shipping_method=shipping_method,
     )
+
+    if measures["weight_missing"]:
+        eligible_rates = [
+            rate for rate in rates
+            if (measures["volumetric_weight"] > 0 and rate.unit_price_per_kg > 0)
+            or (measures["volume"] > 0 and rate.unit_price_per_volume and rate.unit_price_per_volume > 0)
+        ]
+        if eligible_rates:
+            measures["warnings"].append("以下运费仅按体积估算，补齐单重后费用可能变化")
+        elif rates:
+            measures["warnings"].append("可用费率无法按现有体积数据计费，补齐单重后可再试算")
+        rates = eligible_rates
 
     options = [
         quote_rate(

@@ -28,6 +28,7 @@ from app.modules.product.schema import SkuCreate
     ("weight", "Infinity"),
     ("weight", "-5"),
     ("weight", "1.0001"),
+    ("weight", "0.0000"),
     ("carton_qty", "1.9"),
 ])
 def test_master_rejects_values_that_cannot_be_saved(field, value):
@@ -41,7 +42,7 @@ def test_master_rejects_values_that_cannot_be_saved(field, value):
     ("weight", "999999999.999", Decimal("999999999.999")),
     ("carton_volume", "99999999.9999", Decimal("99999999.9999")),
     ("weight", "7.7700", Decimal("7.77")),
-    ("weight", "0.0000", Decimal(0)),
+    ("weight", "0.001", Decimal("0.001")),
     ("carton_qty", "999999999999", 999999999999),
     ("carton_qty", "1e3", 1000),
 ])

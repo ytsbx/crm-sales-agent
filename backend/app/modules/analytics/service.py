@@ -2151,6 +2151,9 @@ async def team_summary(session: AsyncSession, user: CurrentUser) -> dict:
     if user.data_scope not in TEAM_SCOPES:
         return {"is_team_view": False, "data_scope": user.data_scope}
 
+    is_admin = "admin" in user.roles
+    can_view_tasks = is_admin or user.has("task:view")
+    can_view_opportunities = is_admin or user.has("opportunity:view")
     now = datetime.now(UTC)
     # 团队"本月成交"按业务时区（§9.10 复审），与工作台同口径
     today = today_business()
@@ -2172,23 +2175,25 @@ async def team_summary(session: AsyncSession, user: CurrentUser) -> dict:
 
     # 用同一批数据计算团队总数和停用员工小计，无负责人任务仍计入原团队口径。
     disabled = User.status.in_(("disabled", "archived"))
-    overdue = Task.due_at < now
-    team_task_count, team_overdue_count, disabled_task_count, disabled_overdue_count = (
-        await session.execute(
-            scoped(
-                select(
-                    func.count(Task.id),
-                    func.count(Task.id).filter(overdue),
-                    func.count(Task.id).filter(disabled),
-                    func.count(Task.id).filter(disabled, overdue),
+    disabled_task_count = 0
+    if can_view_tasks:
+        overdue = Task.due_at < now
+        team_task_count, team_overdue_count, disabled_task_count, disabled_overdue_count = (
+            await session.execute(
+                scoped(
+                    select(
+                        func.count(Task.id),
+                        func.count(Task.id).filter(overdue),
+                        func.count(Task.id).filter(disabled),
+                        func.count(Task.id).filter(disabled, overdue),
+                    )
+                    .select_from(Task)
+                    .outerjoin(User, User.id == Task.owner_id)
+                    .where(Task.status.in_(["pending", "doing"])),
+                    Task.owner_id,
                 )
-                .select_from(Task)
-                .outerjoin(User, User.id == Task.owner_id)
-                .where(Task.status.in_(["pending", "doing"])),
-                Task.owner_id,
             )
-        )
-    ).one()
+        ).one()
 
     # 待审批报价（团队提交的）
     pending_approval = (
@@ -2222,23 +2227,25 @@ async def team_summary(session: AsyncSession, user: CurrentUser) -> dict:
     # 这两个数字是考核口径（前端渲染成"本月团队成交"计数与成交额）。
     # `Opportunity` 没有 `won_at` 列，正确来源就是阶段历史 —— 与
     # `opportunity_cycle`（:896 用 max(entered_at)）同一份数据。
-    won_ids = _won_this_month_cte(month_start)
-    won_count, won_amount, disabled_won_count, disabled_won_amount = (
-        await session.execute(
-            scoped(
-                select(
-                    func.count(Opportunity.id),
-                    func.coalesce(func.sum(Opportunity.expected_amount), 0),
-                    func.count(Opportunity.id).filter(disabled),
-                    func.coalesce(func.sum(Opportunity.expected_amount).filter(disabled), 0),
+    disabled_won_count = 0
+    if can_view_opportunities:
+        won_ids = _won_this_month_cte(month_start)
+        won_count, won_amount, disabled_won_count, disabled_won_amount = (
+            await session.execute(
+                scoped(
+                    select(
+                        func.count(Opportunity.id),
+                        func.coalesce(func.sum(Opportunity.expected_amount), 0),
+                        func.count(Opportunity.id).filter(disabled),
+                        func.coalesce(func.sum(Opportunity.expected_amount).filter(disabled), 0),
+                    )
+                    .select_from(Opportunity)
+                    .outerjoin(User, User.id == Opportunity.owner_id)
+                    .where(Opportunity.id.in_(won_ids)),
+                    Opportunity.owner_id,
                 )
-                .select_from(Opportunity)
-                .outerjoin(User, User.id == Opportunity.owner_id)
-                .where(Opportunity.id.in_(won_ids)),
-                Opportunity.owner_id,
             )
-        )
-    ).one()
+        ).one()
 
     # 团队成员明细：各自的待办 / 逾期 / 本月成交额 / 待跟进客户
     stale_date = now - timedelta(
@@ -2250,7 +2257,7 @@ async def team_summary(session: AsyncSession, user: CurrentUser) -> dict:
         member_id: {"todo": 0, "overdue": 0, "amount": ZERO, "stale": 0}
         for member_id in member_ids
     }
-    if member_ids:
+    if member_ids and can_view_tasks:
         task_rows = (
             await session.execute(
                 select(
@@ -2277,6 +2284,7 @@ async def team_summary(session: AsyncSession, user: CurrentUser) -> dict:
             member_stats[owner_id]["todo"] = int(todo or 0)
             member_stats[owner_id]["overdue"] = int(overdue or 0)
 
+    if member_ids and can_view_opportunities:
         won_rows = (
             await session.execute(
                 select(
@@ -2293,6 +2301,7 @@ async def team_summary(session: AsyncSession, user: CurrentUser) -> dict:
         for owner_id, amount in won_rows:
             member_stats[owner_id]["amount"] = amount or ZERO
 
+    if member_ids:
         stale_rows = (
             await session.execute(
                 select(
@@ -2320,35 +2329,37 @@ async def team_summary(session: AsyncSession, user: CurrentUser) -> dict:
             {
                 "user_id": member.id,
                 "name": member.name,
-                "todo_count": int(stats["todo"]),
-                "overdue_count": int(stats["overdue"]),
-                "won_amount_this_month": _f(stats["amount"]),
+                **({
+                    "todo_count": int(stats["todo"]),
+                    "overdue_count": int(stats["overdue"]),
+                } if can_view_tasks else {}),
+                **({"won_amount_this_month": _f(stats["amount"])} if can_view_opportunities else {}),
                 "stale_customer_count": int(stats["stale"]),
             }
         )
-
-    # 风险商机（团队范围内）
-    risky = await risk_opportunities(session, user, limit=10)
-
-    # 商机漏斗（团队范围内）
-    team_funnel = await funnel(session, user)
 
     return {
         "is_team_view": True,
         "data_scope": user.data_scope,
         "member_count": len(member_ids),
-        "team_task_count": int(team_task_count),
-        "team_overdue_count": int(team_overdue_count),
+        **({
+            "team_task_count": int(team_task_count),
+            "team_overdue_count": int(team_overdue_count),
+        } if can_view_tasks else {}),
         "pending_approval_count": int(pending_approval),
         "unassigned_customer_count": int(unassigned_customers),
-        "team_won_count_this_month": int(won_count),
-        "team_won_amount_this_month": _f(won_amount),
+        **({
+            "team_won_count_this_month": int(won_count),
+            "team_won_amount_this_month": _f(won_amount),
+            "risky_opportunities": await risk_opportunities(session, user, limit=10),
+            "funnel": await funnel(session, user),
+        } if can_view_opportunities else {}),
         "members": per_member,
         "disabled_members": {
-            "todo_count": int(disabled_task_count),
-            "overdue_count": int(disabled_overdue_count),
-            "won_amount_this_month": _f(disabled_won_amount),
+            **({
+                "todo_count": int(disabled_task_count),
+                "overdue_count": int(disabled_overdue_count),
+            } if can_view_tasks else {}),
+            **({"won_amount_this_month": _f(disabled_won_amount)} if can_view_opportunities else {}),
         } if disabled_task_count or disabled_won_count else None,
-        "risky_opportunities": risky,
-        "funnel": team_funnel,
     }

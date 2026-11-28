@@ -203,6 +203,9 @@ MANAGER_PERMISSIONS = SALES_PERMISSIONS + [
 
 FINANCE_PERMISSIONS = [
     "customer:view",
+    # 2026-11-28 主人确认：财务需要看商机预测，直接开放查看权限；
+    # 不再按字段拆权限。任务仍按 task:view 控制，财务默认不看团队待办。
+    "opportunity:view",
     "quote:view",
     "quote:finance_approve",
     "order:view",

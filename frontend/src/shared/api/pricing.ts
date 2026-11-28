@@ -95,6 +95,7 @@ export interface LogisticsRateRow {
 /** 物流试算：单件体积/重量与计费重（PRD §14 要求的输出项）。 */
 export interface LogisticsMeasures {
   actual_weight: number
+  weight_missing?: boolean
   volume: number
   volumetric_weight: number
   volumetric_enabled: boolean
@@ -165,6 +166,7 @@ export interface LogisticsQuoteRow {
   shipping_method: string
   chargeable_weight: number
   actual_weight: number
+  weight_missing?: boolean
   volume: number
   currency: string
   amount: number

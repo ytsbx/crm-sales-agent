@@ -161,7 +161,16 @@ const server=createServer(async (req,res)=>{
     else if(path.endsWith('/customers/batch-transfer') && req.method==='POST') {customerOwnerWrites.push({path,body});data={affected:body.customer_ids.length}}
     else if(path==='/api/v1/customers' && req.method==='POST') {customerOwnerWrites.push({path,body});data={id:151,...body}}
     else if(path==='/api/v1/customers') data={items:[publicCustomer],total:1}
-    else if(path==='/api/v1/payments' && req.method==='POST') {financialPayments.push(body);data=exactPayment}
+    else if(path==='/api/v1/payments' && req.method==='POST') {
+      financialPayments.push(body)
+      if(financialPayments.length===1) {
+        // Assume the isolated fixture saved the payment before the gateway timed out.
+        res.writeHead(504, {'Content-Type':'application/json'})
+        res.end(JSON.stringify({code:50001,message:'隔离模拟网关超时',data:null}))
+        return
+      }
+      data=exactPayment
+    }
     else if(path==='/api/v1/orders/994/shipments') data={items:[],batches:[],summary:{ordered:1000,planned:0,shipped:0,remaining:1000,all_shipped:false,ordered_exact:'1000.000',planned_exact:'0.000',shipped_exact:'0.000',remaining_exact:'1000.000',unplanned_exact:'1000.000'}}
     else if(path==='/api/v1/orders/994') data={...exactOrder,id:994,order_no:'FOUR-DECIMAL-994',total_amount:33333.3,total_amount_exact:'33333.30',received_amount:0,received_amount_exact:'0.00',unreceived_amount:33333.3,unreceived_amount_exact:'33333.30'}
     else if(path==='/api/v1/orders/994/items') data=[{id:995,order_id:994,sku_id:1,sku_code:'FOUR-DECIMAL-ITEM',quantity:1000,unit_price:33.3333,unit_price_exact:'33.3333',amount:33333.3,amount_exact:'33333.30'}]
@@ -1108,8 +1117,51 @@ try {
   await waitFor(`document.querySelector('input[aria-label="实际到账金额"]')`)
   assert.equal(await evaluate(`document.querySelector('input[aria-label="实际到账金额"]').value`),'99999999999999.99')
   await evaluate(`Array.from(document.querySelectorAll('.semi-modal-content button')).find(el=>el.innerText.trim()==='提交财务确认').click()`)
+  await waitFor(`document.body.innerText.includes('上次登记的结果还未确认')`)
+  await evaluate(`Array.from(document.querySelectorAll('.semi-modal-content button')).find(el=>el.innerText.trim()==='取消').click()`)
   await waitFor(`!document.querySelector('input[aria-label="实际到账金额"]')`)
+  const paymentButton = label => `Array.from(document.querySelectorAll('button')).find(el=>el.innerText.trim()===${JSON.stringify(label)})`
+  await waitFor(paymentButton('继续登记回款'))
+  const openReceivables = async () => {
+    const tab = `Array.from(document.querySelectorAll('[role="tab"]')).find(el=>el.innerText.includes('应收计划'))`
+    await waitFor(tab)
+    await evaluate(`${tab}.click()`)
+  }
+
+  const reloadReceivables = async () => {
+    const pageStart = await evaluate('performance.timeOrigin')
+    await send('Page.reload')
+    await waitFor(`performance.timeOrigin!==${pageStart}`)
+    await openReceivables()
+  }
+  await reloadReceivables()
+  await waitFor(paymentButton('继续登记回款'))
   assert.equal(financialPayments.length,1)
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/workbench`})
+  await waitFor(`location.pathname==='/workbench'`)
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/orders/991`})
+  await openReceivables()
+  await waitFor(paymentButton('继续登记回款'))
+  await evaluate(`${paymentButton('继续登记回款')}.click()`)
+  await waitFor(`document.querySelector('input[aria-label="实际到账金额"]')`)
+  assert.equal(await evaluate(`document.querySelector('input[aria-label="实际到账金额"]').disabled`),true)
+  assert.equal(await evaluate(`document.querySelector('input[aria-label="实际到账金额"]').value`),'99999999999999.99')
+  await evaluate(`${paymentButton('重试本次登记')}.click()`)
+  await waitFor(`!document.querySelector('input[aria-label="实际到账金额"]')`)
+  assert.equal(financialPayments.length,2)
+  assert.ok(financialPayments[0].request_key)
+  assert.deepEqual(financialPayments[1],financialPayments[0])
+  console.log('BROWSER_PAYMENT_RETRY_PRESERVES_REQUEST_AFTER_RELOAD_AND_RETURN=true')
+
+  await reloadReceivables()
+  await waitFor(paymentButton('登记回款'))
+  assert.equal(await evaluate(`Boolean(${paymentButton('继续登记回款')})`),false)
+  await evaluate(`${paymentButton('登记回款')}.click()`)
+  await evaluate(`${paymentButton('提交财务确认')}.click()`)
+  await waitFor(`!document.querySelector('input[aria-label="实际到账金额"]')`)
+  assert.equal(financialPayments.length,3)
+  assert.notEqual(financialPayments[2].request_key,financialPayments[0].request_key)
+  console.log('BROWSER_NEW_PAYMENT_AFTER_CONFIRMED_REPLAY_USES_FRESH_KEY=true')
   assert.equal(financialPayments[0].received_amount,'99999999999999.99')
   console.log('BROWSER_REGISTER_PAYMENT_PRESERVES_UNEDITED_EXACT_AMOUNT=true')
   financialPlansEmpty=true

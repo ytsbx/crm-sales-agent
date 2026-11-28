@@ -135,6 +135,14 @@ async def test_insight_edit_flags_match_existing_public_pool_write_scope(db_sess
     assert (await get_insight(3, reviewer, session))["data"]["can_edit"] is False
 
 
+def test_finance_role_permissions_include_opportunity_view():
+    """财务可看商机，但团队待办仍受 task:view 控制（2026-11-28 主人决定）。"""
+    from scripts.seed import FINANCE_PERMISSIONS
+
+    assert "opportunity:view" in FINANCE_PERMISSIONS
+    assert "task:view" not in FINANCE_PERMISSIONS
+
+
 @pytest.mark.anyio
 async def test_team_summary_reports_disabled_employee_subtotal_in_scope(db_session):
     for model in (ApprovalInstance, Task, SystemSetting, OpportunityStageHistory):
@@ -156,7 +164,8 @@ async def test_team_summary_reports_disabled_employee_subtotal_in_scope(db_sessi
     ])
     db_session.flush()
     session = SyncSessionAsAsync(db_session)
-    user = make_user(data_scope="department")
+    permissions = {"customer:view", "task:view", "opportunity:view"}
+    user = make_user(data_scope="department", permissions=permissions)
     user.department_id = 1
     result = await team_summary(session, user)
     assert result["member_count"] == 1
@@ -165,9 +174,31 @@ async def test_team_summary_reports_disabled_employee_subtotal_in_scope(db_sessi
     assert result["disabled_members"] == {
         "todo_count": 1, "overdue_count": 1, "won_amount_this_month": 100.25,
     }
-    company_result = await team_summary(session, make_user(data_scope="all"))
+    company_result = await team_summary(session, make_user(data_scope="all", roles=("admin",)))
     assert company_result["team_task_count"] == 4
     assert company_result["disabled_members"]["todo_count"] == 2
+
+    limited = await team_summary(session, make_user(
+        data_scope="all", roles=("finance_view_only",), permissions={"customer:view", "quote:view"},
+    ))
+    assert limited["is_team_view"] and limited["member_count"] == 1
+    assert "unassigned_customer_count" in limited
+    assert {"team_task_count", "team_overdue_count", "team_won_count_this_month",
+            "team_won_amount_this_month", "risky_opportunities", "funnel"}.isdisjoint(limited)
+    assert limited["disabled_members"] is None
+    assert {"todo_count", "overdue_count", "won_amount_this_month"}.isdisjoint(limited["members"][0])
+
+    # 2026-11-28 主人决定：财务可看商机预测，但仍不看团队待办。
+    finance_user = make_user(
+        data_scope="all", roles=("finance",),
+        permissions={"customer:view", "quote:view", "opportunity:view"},
+    )
+    finance_result = await team_summary(session, finance_user)
+    assert finance_result["team_won_count_this_month"] == 1
+    assert finance_result["team_won_amount_this_month"] == 100.25
+    assert "risky_opportunities" in finance_result and "funnel" in finance_result
+    assert {"team_task_count", "team_overdue_count"}.isdisjoint(finance_result)
+    assert {"todo_count", "overdue_count"}.isdisjoint(finance_result["members"][0])
 
     db_session.get(User, 102).status = "active"
     result = await team_summary(session, user)
@@ -313,6 +344,7 @@ async def test_inactive_staff_tasks_wait_for_scoped_batch_handover(db_session, m
         User(id=5, name="离岗员工", username="disabled", password_hash="x", status=staff_status, department_id=1),
         User(id=6, name="在职接手人", username="active", password_hash="x", department_id=1),
         User(id=7, name="其他部门员工", username="other", password_hash="x", status="disabled", department_id=2),
+        User(id=8, name="其他部门接手人", username="outside", password_hash="x", department_id=2),
         Task(id=1, title="历史在办任务", owner_id=5),
         Task(id=2, title="完成历史", owner_id=5, status="done"),
         Task(id=3, title="其他部门任务", owner_id=7),
@@ -342,6 +374,11 @@ async def test_inactive_staff_tasks_wait_for_scoped_batch_handover(db_session, m
     admin = make_user(101, roles=("admin",), data_scope="all")
     assert (await list_tasks(page=1, page_size=20, user=admin, session=session, handover=True))["data"]["total"] == 3
     request = Request({"type": "http", "headers": []})
+    assert (await handover_candidates("outside", 1, 20, admin, session))["data"]["total"] == 1
+    with pytest.raises(AppError, match="接手人不在你的数据范围内"):
+        await batch_handover_tasks(TaskBatchHandover(task_ids=[1], owner_id=8), request, manager, session)
+    assert db_session.get(Task, 1).owner_id == 5
+    await session.rollback()
     with pytest.raises(AppError):
         await batch_handover_tasks(TaskBatchHandover(task_ids=[3], owner_id=6), request, manager, session)
     await session.rollback()

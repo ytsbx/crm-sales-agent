@@ -149,8 +149,39 @@ async def test_manual_shipped_status_requires_actual_quantity_but_erp_can_report
         await router.change_status(erp_order.id, receipt, request, user, session)
     assert erp_order.status == "shipped"
 
+    with pytest.raises(AppError, match="整单还有未发数量") as partial:
+        await router.change_status(order.id, receipt, request, user, session)
+    assert partial.value.http_status == 422
+    assert order.status == "shipped"
+    assert raw.query(OrderStatusHistory).filter_by(order_id=order.id).count() == 1
+
+    final_batch = OrderShipmentBatch(id=2, order_id=1, batch_no=2, status="shipped", created_at=datetime.now(UTC))
+    final_line = OrderShipmentBatchItem(batch_id=2, order_item_id=1, planned_qty=1, shipped_qty=1)
+    raw.add_all([final_batch, final_line])
+    raw.flush()
     await router.change_status(order.id, receipt, request, user, session)
     assert order.status == "delivered"
+
+    for target_status in ("pending", "in_production", "shipped"):
+        with pytest.raises(AppError, match="必须填写更正原因"):
+            await router.change_status(
+                order.id, OrderStatusChange(status=target_status, remark="  "), request, user, session,
+            )
+    assert order.status == "delivered"
+    assert raw.query(OrderStatusHistory).filter_by(order_id=order.id).count() == 2
+    with pytest.raises(AppError, match="最多填写 255 字"):
+        await router.change_status(
+            order.id, OrderStatusChange(status="pending", remark="更" * 256), request, user, session,
+        )
+
+    reason = "客户只签收了第一批"
+    await router.change_status(
+        order.id, OrderStatusChange(status="shipped", remark=f" {reason} "), request, user, session,
+    )
+    history = raw.query(OrderStatusHistory).filter_by(old_status="delivered").one()
+    audit = raw.query(AuditLog).filter_by(business_id=order.id, action="change_status").order_by(AuditLog.id.desc()).first()
+    assert order.status == "shipped"
+    assert history.remark == audit.after_data["remark"] == reason
 
 
 @pytest.mark.anyio

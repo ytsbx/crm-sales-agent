@@ -86,6 +86,34 @@ async def test_logistics_checks_quantity_by_sku_unit(monkeypatch, unit, quantity
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("weight", [None, Decimal("0")])
+async def test_missing_weight_only_offers_volume_based_rates(monkeypatch, weight):
+    sku = Sku(id=1, sku_code="SKU-1", weight=weight, unit="件")
+    session = SimpleNamespace(get=AsyncMock(return_value=sku))
+    monkeypatch.setattr(logistics, "volumetric_ratio", AsyncMock(return_value=Decimal(0)))
+    weight_only = make_rate(id=1, unit_price_per_volume=None, min_charge=Decimal(0))
+    by_volume = make_rate(id=2, unit_price_per_volume=Decimal(300), min_charge=Decimal(0))
+    monkeypatch.setattr(logistics, "match_rates", AsyncMock(return_value=([weight_only, by_volume], [], 1)))
+
+    result = await logistics.prepare(session, sku_id=1, quantity=Decimal(1))
+    assert result["options"] == []
+    assert result["measures"]["weight_missing"]
+    assert any("补填单重" in warning for warning in result["warnings"])
+
+    result = await logistics.prepare(session, sku_id=1, quantity=Decimal(1), volume_override=Decimal("0.1"))
+    assert [(option["rate_id"], option["amount_exact"]) for option in result["options"]] == [(2, "30.00")]
+    assert any("按体积估算" in warning for warning in result["warnings"])
+
+    logistics.volumetric_ratio.return_value = Decimal(100)
+    result = await logistics.prepare(session, sku_id=1, quantity=Decimal(1), volume_override=Decimal("0.1"))
+    assert [(option["rate_id"], option["amount_exact"]) for option in result["options"]] == [(1, "25.00"), (2, "30.00")]
+
+    result = await logistics.prepare(session, sku_id=1, quantity=Decimal(1), weight_override=Decimal(2))
+    assert not result["measures"]["weight_missing"]
+    assert {option["rate_id"] for option in result["options"]} == {1, 2}
+
+
+@pytest.mark.anyio
 async def test_agent_logistics_uses_decimal_quantity(monkeypatch):
     sku = Sku(id=1, sku_code="SKU-1", weight=Decimal("2"))
     session = SimpleNamespace(get=AsyncMock(return_value=sku))

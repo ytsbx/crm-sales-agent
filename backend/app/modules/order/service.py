@@ -645,6 +645,30 @@ async def change_status(
         # allow_restore 只给「恢复已取消订单」专用入口：恢复同样要处理
         # 回款/批次的前置条件，不能借普通状态接口绕过。
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已取消的订单不能再变更状态")
+    if new_status == "delivered" and source == "WEB":
+        overview = await order_shipments(session, order)
+        summary = overview["summary"]
+        if Decimal(summary["shipped_exact"]) <= 0:
+            raise AppError(
+                ErrorCode.STATUS_NOT_ALLOWED,
+                "请先在「发货批次」登记实际发货数量，再标记整单已签收。",
+                422,
+            )
+        if not summary["all_shipped"]:
+            raise AppError(
+                ErrorCode.STATUS_NOT_ALLOWED,
+                "整单还有未发数量。请先在「发货批次」登记剩余数量，"
+                "客户收齐后再标记整单已签收。",
+                422,
+            )
+    if source == "WEB" and order.status == "delivered" and new_status in (
+        "pending", "in_production", "shipped",
+    ):
+        remark = (remark or "").strip()
+        if not remark:
+            raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "将「已签收」订单改回较早的状态时，必须填写更正原因。", 422)
+        if len(remark) > 255:
+            raise AppError(ErrorCode.PARAM_ERROR, "更正原因最多填写 255 字。", 422)
     if new_status == "completed":
         # 「已完成」必须有**履约依据**：实发数量要盖住订单数量（issue #10）。
         #

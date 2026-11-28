@@ -1012,7 +1012,7 @@ async def change_status(
     # 状态切换先锁整单：与"登记发货"并发时，两边都必须串行化，
     # 否则同一时刻可能既取消成功又发货成功（第一批返修 §3.5）。
     order = await svc.get_visible_order(session, user, order_id, for_update=True)
-    if payload.status in ("shipped", "delivered") and order.status not in (payload.status, "cancelled"):
+    if payload.status == "shipped" and order.status not in ("shipped", "cancelled"):
         shipments = await svc.order_shipments(session, order)
         if Decimal(shipments["summary"]["shipped_exact"]) <= 0:
             raise AppError(
@@ -1032,6 +1032,8 @@ async def change_status(
         session, order, new_status=payload.status, operator_id=user.id, remark=payload.remark
     )
     audit_after = {"status": payload.status}
+    if before_status == "delivered" and payload.status in ("pending", "in_production", "shipped"):
+        audit_after["remark"] = (payload.remark or "").strip()
     if finance_after is not None:
         audit_after.update({
             "remark": (payload.remark or "").strip() or None,

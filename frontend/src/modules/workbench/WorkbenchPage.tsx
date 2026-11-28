@@ -358,19 +358,19 @@ export default function WorkbenchPage() {
             className="kpi-grid kpi-cols-4 kpi-inline"
             tintValues={false}
             items={[
-              {
+              ...(canViewTasks ? [{
                 label: '团队待办',
                 value: team.team_task_count ?? 0,
                 hint: `逾期 ${team.team_overdue_count ?? 0} 项`,
                 tone: (team.team_overdue_count ?? 0) > 0 ? 'error' : 'default',
-              },
+              } satisfies KpiItem] : []),
               {
                 label: '公海客户',
                 value: team.unassigned_customer_count ?? 0,
                 hint: '没有跟进人，可领取',
                 onClick: () => navigate('/customers?scope=pool'),
               },
-              {
+              ...(canViewOpportunities ? [{
                 label: '本月团队成交',
                 // 大数字给金额、小字给笔数：这张卡的名字是「成交」，一眼要能看出成交额；
                 // 原来大数字是笔数（10），旁边小字才是金额，读起来像「成交 10 元」。
@@ -383,7 +383,7 @@ export default function WorkbenchPage() {
                 hint: '临近成交 / 长期未更新',
                 tone: (team.risky_opportunities?.length ?? 0) > 0 ? 'error' : 'default',
                 onClick: () => navigate('/opportunities'),
-              },
+              }] satisfies KpiItem[] : []),
             ]}
           />
 
@@ -398,33 +398,33 @@ export default function WorkbenchPage() {
                   {/* 列宽按比例给：原来是「成员」列不设宽、把剩下的 670px 全吃了，
                       右边四个数字列挤在 480px 里，一左一右失衡（2026-11-21 巡检）。 */}
                   <th style={{ textAlign: 'left', padding: '6px 12px', fontWeight: 500, width: '32%' }}>成员</th>
-                  <th style={{ textAlign: 'right', padding: '6px 12px', fontWeight: 500, width: '17%' }}>待办</th>
-                  <th style={{ textAlign: 'right', padding: '6px 12px', fontWeight: 500, width: '17%' }}>逾期</th>
+                  {canViewTasks && <th style={{ textAlign: 'right', padding: '6px 12px', fontWeight: 500, width: '17%' }}>待办</th>}
+                  {canViewTasks && <th style={{ textAlign: 'right', padding: '6px 12px', fontWeight: 500, width: '17%' }}>逾期</th>}
                   <th style={{ textAlign: 'right', padding: '6px 12px', fontWeight: 500, width: '17%' }}>
                     待跟进客户
                   </th>
                   {/* 金额列挂 .cell-right：2246 行那条「原生表格一律居中」的
                       !important 规则会把这里的内联右对齐压掉（2026-11-19 实测
                       computed 仍是 center），必须靠 index.css 里同名的豁免拿回来。 */}
-                  <th className="cell-right" style={{ textAlign: 'right', padding: '6px 12px', fontWeight: 500, width: '17%' }}>
+                  {canViewOpportunities && <th className="cell-right" style={{ textAlign: 'right', padding: '6px 12px', fontWeight: 500, width: '17%' }}>
                     本月成交额
-                  </th>
+                  </th>}
                 </tr>
               </thead>
               <tbody>
                 {(team.members ?? []).map((member) => (
                   <tr key={member.user_id} style={{ borderTop: '1px solid var(--crm-surface-high)' }}>
                     <td style={{ padding: '8px 12px' }}>{member.name}</td>
-                    <td style={{ textAlign: 'right', padding: '8px 12px' }}>{member.todo_count}</td>
-                    <td
+                    {canViewTasks && <td style={{ textAlign: 'right', padding: '8px 12px' }}>{member.todo_count}</td>}
+                    {canViewTasks && <td
                       style={{
                         textAlign: 'right',
                         padding: '8px 12px',
-                        color: member.overdue_count > 0 ? 'var(--crm-error)' : undefined,
+                        color: (member.overdue_count ?? 0) > 0 ? 'var(--crm-error)' : undefined,
                       }}
                     >
                       {member.overdue_count}
-                    </td>
+                    </td>}
                     <td
                       style={{
                         textAlign: 'right',
@@ -434,32 +434,32 @@ export default function WorkbenchPage() {
                     >
                       {member.stale_customer_count}
                     </td>
-                    <td className="cell-right" style={{ textAlign: 'right', padding: '8px 12px' }}>
+                    {canViewOpportunities && <td className="cell-right" style={{ textAlign: 'right', padding: '8px 12px' }}>
                       {exactMoney(member.won_amount_this_month)}
-                    </td>
+                    </td>}
                   </tr>
                 ))}
                 {disabledMembers && (
                   <tr style={{ borderTop: '1px solid var(--crm-surface-high)', fontWeight: 600 }}>
                     <th scope="row" style={{ padding: '8px 12px' }}>停用员工合计</th>
-                    <td style={{ padding: '8px 12px' }}>{disabledMembers.todo_count}</td>
-                    <td
+                    {canViewTasks && <td style={{ padding: '8px 12px' }}>{disabledMembers.todo_count}</td>}
+                    {canViewTasks && <td
                       style={{
                         padding: '8px 12px',
-                        color: disabledMembers.overdue_count > 0 ? 'var(--crm-error)' : undefined,
+                        color: (disabledMembers.overdue_count ?? 0) > 0 ? 'var(--crm-error)' : undefined,
                       }}
                     >
                       {disabledMembers.overdue_count}
-                    </td>
+                    </td>}
                     <td style={{ padding: '8px 12px' }}>—</td>
-                    <td className="cell-right" style={{ textAlign: 'right', padding: '8px 12px' }}>
+                    {canViewOpportunities && <td className="cell-right" style={{ textAlign: 'right', padding: '8px 12px' }}>
                       {exactMoney(disabledMembers.won_amount_this_month)}
-                    </td>
+                    </td>}
                   </tr>
                 )}
                 {(team.members ?? []).length === 0 && !disabledMembers && (
                   <tr>
-                    <td colSpan={5} style={{ padding: '12px 0', color: 'var(--crm-text-3)' }}>
+                    <td colSpan={2 + (canViewTasks ? 2 : 0) + (canViewOpportunities ? 1 : 0)} style={{ padding: '12px 0', color: 'var(--crm-text-3)' }}>
                       数据范围内没有成员
                     </td>
                   </tr>

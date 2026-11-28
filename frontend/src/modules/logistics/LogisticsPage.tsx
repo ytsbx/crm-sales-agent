@@ -286,7 +286,8 @@ export default function LogisticsPage() {
       title: '计费重 (kg)',
       dataIndex: 'chargeable_weight',
       width: 120,
-      render: (value: number) => value.toLocaleString('zh-CN'),
+      render: (value: number, record: LogisticsQuoteRow) =>
+        record.weight_missing && !value ? '按体积估算' : value.toLocaleString('zh-CN'),
     },
     {
       title: '运费', dataIndex: 'amount', width: 110,
@@ -569,7 +570,7 @@ export default function LogisticsPage() {
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 200px), 1fr))', gap: '0 32px', marginTop: 12 }}>
                     <SummaryRow
                       label="实际重量"
-                      value={`${result.measures.actual_weight.toLocaleString('zh-CN')} kg`}
+                      value={result.measures.weight_missing ? '待补单重' : `${result.measures.actual_weight.toLocaleString('zh-CN')} kg`}
                     />
                     <SummaryRow
                       label="体积"
@@ -577,10 +578,12 @@ export default function LogisticsPage() {
                     />
                     <SummaryRow
                       label="计费重"
-                      value={`${result.measures.chargeable_weight.toLocaleString('zh-CN')} kg`}
+                      value={result.measures.weight_missing && !result.measures.volumetric_weight
+                        ? '—' : `${result.measures.chargeable_weight.toLocaleString('zh-CN')} kg`}
                       tone="primary"
                     />
-                    <SummaryRow label="计费依据" value={result.measures.chargeable_basis} />
+                    <SummaryRow label="计费依据" value={result.measures.weight_missing
+                      ? (result.options.length ? "按体积估算" : "待补计费数据") : result.measures.chargeable_basis} />
                     <SummaryRow
                       label="体积重"
                       value={
@@ -603,9 +606,11 @@ export default function LogisticsPage() {
                       pagination={false}
                       scroll={{ x: 700 }}
                     />
-                  ) : <EmptyState title="没有匹配到运费费率"
-                    hint={canManageRates ? '维护对应线路的费率后，可以回来重新试算。' : '请让价格管理员维护对应线路的费率，再回来试算。'}
-                    action={canManageRates ? <Link className="logistics-rate-link" to="/prices?tab=logistics">去维护运费费率</Link> : undefined} />}
+                  ) : <EmptyState title={result.measures.weight_missing ? "暂无可试算的方案" : "没有匹配到运费费率"}
+                    hint={result.measures.weight_missing
+                      ? '补齐单重后可重新试算，也可以在本次试算中填写实际单重。'
+                      : canManageRates ? '维护对应线路的费率后，可以回来重新试算。' : '请让价格管理员维护对应线路的费率，再回来试算。'}
+                    action={!result.measures.weight_missing && canManageRates ? <Link className="logistics-rate-link" to="/prices?tab=logistics">去维护运费费率</Link> : undefined} />}
                 </>
               )}
             </SectionCard>

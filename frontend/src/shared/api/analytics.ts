@@ -294,9 +294,9 @@ export function getDashboardActivities(limit = 8) {
 export interface TeamMemberRow {
   user_id: number
   name: string
-  todo_count: number
-  overdue_count: number
-  won_amount_this_month: number
+  todo_count?: number
+  overdue_count?: number
+  won_amount_this_month?: number
   stale_customer_count: number
 }
 

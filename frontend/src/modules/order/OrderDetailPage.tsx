@@ -11,6 +11,7 @@ import {
 import type { ReactNode } from 'react'
 import { Banner, Button, DatePicker, Dropdown, Input, InputNumber, Modal, Popconfirm, Select, Table, Tabs, Tag, TextArea, Toast } from '@douyinfe/semi-ui'
 import AllocationAdjustModal from './AllocationAdjustModal'
+import { ApiError } from '../../shared/api/client'
 import FormLabel from '../../shared/components/FormLabel'
 import { emptyText } from '../../shared/hooks/emptyText'
 import GuardedButton from '../../shared/components/GuardedButton'
@@ -102,6 +103,34 @@ import { requiredQuantityText } from '../../shared/number-input'
 import ReceivablePlanPicker, { defaultPlanRows, planBlockedReasons } from '../../shared/components/ReceivablePlanPicker'
 import EmptyState from '../../shared/components/EmptyState'
 import PageLoading from '../../shared/components/PageLoading'
+
+type PaymentAttempt = {
+  receivable_plan_id: number
+  received_date: string
+  received_amount: string
+  payment_method: string
+  request_key: string
+}
+
+function readPaymentAttempt(storageKey: string | null): PaymentAttempt | null {
+  if (!storageKey) return null
+  try {
+    const raw = sessionStorage.getItem(storageKey)
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
+
+function clearPaymentAttempt(storageKey: string, requestKey: string) {
+  try {
+    if (readPaymentAttempt(storageKey)?.request_key === requestKey) {
+      sessionStorage.removeItem(storageKey)
+    }
+  } catch {
+    // 保留旧提交仍可安全重试，避免清除失败影响已成功的回款。
+  }
+}
 
 /** 数量按十进制原文显示，沿用原来不显示尾零的格式。 */
 function shipmentQuantity(value: number | string): string {
@@ -268,6 +297,7 @@ export default function OrderDetailPage() {
   const narrowScreen = viewportWidth < 1200
   const [statusVisible, setStatusVisible] = useState(false)
   const [targetStatus, setTargetStatus] = useState<string | null>(null)
+  const [receiptCorrectionReason, setReceiptCorrectionReason] = useState('')
   const [orderMoreVisible, setOrderMoreVisible] = useState(false)
   //: 取消订单是**不可逆的终态动作**，单独一个确认弹窗把影响讲清楚
   //: （见下面「取消订单」那个 Modal）。
@@ -335,11 +365,11 @@ export default function OrderDetailPage() {
     value: paymentForm.method,
     onChange: (v) => setPaymentForm({ ...paymentForm, method: v }),
   })
-  // 登记回款的请求键（第七批 7.9）：**一份表单一把键**，打开表单时生成、
-  // 成功后才换新的。弱网重试（服务端已建好、响应没回来，用户再点一次"登记"）
-  // 带的是同一把键，后端据此只建一行；在提交时才现生成等于每点一次换一把键，
-  // 服务端照样会建第二条 —— 那就不叫幂等。
-  const paymentKeyRef = useRef('')
+  // 同一标签页内按账号、订单、应收期恢复未确认的提交。
+  const paymentStorageKey = (planId: number) => currentUser
+    ? `crm-payment-attempt:${currentUser.id}:${orderId}:${planId}`
+    : null
+  const [paymentRetryRequired, setPaymentRetryRequired] = useState(false)
   // 跟单里程碑（模块⑤）：编辑弹窗状态
   const [milestoneEdit, setMilestoneEdit] = useState<OrderMilestoneRow | null>(null)
   //: 交期变更弹窗（方案 :105）：先预览受影响面，再生成变更单
@@ -538,7 +568,9 @@ export default function OrderDetailPage() {
   }
 
   const statusMutation = useMutation({
-    mutationFn: () => changeOrderStatus(orderId, targetStatus!, '在订单详情页更新'),
+    mutationFn: () => changeOrderStatus(
+      orderId, targetStatus!, correctingReceipt ? receiptCorrectionReason.trim() : '在订单详情页更新',
+    ),
     onSuccess: (result) => {
       // 文案要说清**是什么对象**变了，不能只写"已更新为「已发货」"——
       // 提示是全局浮层，用户切到别的页面它还会挂几秒，没有主语就完全对不上号。
@@ -552,6 +584,7 @@ export default function OrderDetailPage() {
   const openStatusEditor = (status: string | null = null) => {
     statusMutation.reset()
     setTargetStatus(status)
+    setReceiptCorrectionReason('')
     setStatusVisible(true)
   }
 
@@ -830,37 +863,30 @@ export default function OrderDetailPage() {
   })
 
   const paymentMutation = useMutation({
-    mutationFn: () => {
-      // 兜底：极端情况下（比如将来多开了一个入口忘了生成键）也要保证同一份
-      // 表单的重试复用同一把键，所以这里只在为空时补一把。
-      if (!paymentKeyRef.current) paymentKeyRef.current = newRequestKey()
-      return createPayment({
-        receivable_plan_id: paymentTarget!.id,
-        // ⚠️ 必须用共享件，不能 `toISOString().slice(0,10)`（2026-10-14 审查修）。
-        // 那个写法转的是 **UTC**，而日历上点的是**当地那一天**：北京（UTC+8）
-        // 选 10 月 1 日、这个 Date 又是当地时间零点（Semi 的 DatePicker 内部
-        // `startOfDay` 就是这么归一的）→ 截出来是 **09-30，整整早一天**。
-        // `shared/calendar-day.ts` 的注释就是为这件事写的，且**本文件第 68 行
-        // 早就 import 了 `calendarDay`** —— 只有这一处漏用（同文件其它日期都走了它）。
-        // 后果不小：收款日期、回款归月/对账、账期与逾期判定全错一天，
-        // 而界面只显示"回款已登记"，看不出来。
-        received_date: calendarDay(paymentForm.date),
-        received_amount: paymentForm.amount.trim(),
-        payment_method: paymentForm.method,
-        request_key: paymentKeyRef.current,
-      })
-    },
-    onSuccess: (payment) => {
+    mutationFn: ({ payload }: { storageKey: string; payload: PaymentAttempt; retry: boolean }) => createPayment(payload),
+    onSuccess: (payment, { storageKey, payload }) => {
+      clearPaymentAttempt(storageKey, payload.request_key)
+      setPaymentRetryRequired(false)
       Toast.success(payment.status === 'pending' ? '回款已登记，待财务确认。可在「回款记录」跟进。' : '可在「回款记录」查看这笔款项的最新状态。')
       setPaymentTarget(null)
       setActiveKey('payments')
       setPaymentForm({ amount: '', date: new Date(), method: '银行转账' })
-      // 成功才换键：下一次登记是新的一笔，不能复用上一笔的键
-      // （否则会被后端判成"同键不同内容"直接拒绝）。
-      paymentKeyRef.current = ''
       refresh()
     },
-    onError: (error: Error) => Toast.error(error.message),
+    onError: (error: Error, { storageKey, payload, retry }) => {
+      // 明确的参数拒绝可以修改后再提交。超时、在处理中或未知结果时保留原单。
+      if (error instanceof ApiError && (
+        error.status === 400 || error.status === 422 ||
+        (!retry && [401, 403, 404].includes(error.status ?? 0))
+      )) {
+        clearPaymentAttempt(storageKey, payload.request_key)
+        setPaymentRetryRequired(false)
+        Toast.error(error.message)
+      } else {
+        setPaymentRetryRequired(true)
+        Toast.warning('暂未确认这笔回款是否登记成功。请重试本次登记。')
+      }
+    },
   })
 
   const confirmMutation = useMutation({
@@ -1259,7 +1285,13 @@ export default function OrderDetailPage() {
   const completionBlocked = completingDelivery && remainingToShip != null && Number(remainingToShip) > 0
     ? `还有 ${shipmentQuantity(remainingToShip)} 件未发。请先登记发货，再完成订单。`
     : ''
-  const needsShipment = targetStatus === 'shipped' || targetStatus === 'delivered'
+  const confirmingReceipt = targetStatus === 'delivered' && order.status !== 'delivered'
+  const correctingReceipt = order.status === 'delivered'
+    && (targetStatus === 'pending' || targetStatus === 'in_production' || targetStatus === 'shipped')
+  const receiptBlocked = confirmingReceipt && shipment && !shipment.summary.all_shipped
+    ? '还有商品未发齐，请先到「发货批次」登记剩余数量。'
+    : ''
+  const needsShipment = targetStatus === 'shipped' || confirmingReceipt
   const shippedAmount = shipment?.summary.shipped_exact ?? shipment?.summary.shipped
   const shipmentBlocked = needsShipment && shippedAmount != null && Number(shippedAmount) <= 0
     ? '请先到「发货批次」登记实际发货，再更新状态。' : ''
@@ -1267,7 +1299,8 @@ export default function OrderDetailPage() {
     ? `${waitingForPayment}，财务确认全部回款后才能完成订单。`
     : ''
   const statusBlocked = targetStatus
-    ? completionBlocked || shipmentBlocked || completionPaymentBlocked
+    ? completionBlocked || shipmentBlocked || receiptBlocked || completionPaymentBlocked
+      || (correctingReceipt && !receiptCorrectionReason.trim() ? '请填写更正原因。' : '')
     : '先选择要更新的履约状态。'
   // 后端兜底拒绝时也可能带“去回款/去发货”的去处；能判断出类型就给按钮，
   // 不让用户只看到一句红字、还得自己找页签。
@@ -1377,7 +1410,8 @@ export default function OrderDetailPage() {
         // 同文件对"取消是终态、失败入口不给"已经处理过（隐藏「更新履约状态/取消订单」），
         // 这一列漏了。
         const planCancelled = record.status === 'cancelled' || order.status === 'cancelled'
-        const canRegister = record.status !== 'paid' && !planCancelled && canRegisterPayment
+        const pending = readPaymentAttempt(paymentStorageKey(record.id))
+        const canRegister = canRegisterPayment && (Boolean(pending) || (record.status !== 'paid' && !planCancelled))
         // ⚠️ 「删除」的判据必须是**后端的真实闸门**（2026-10-14 审查修）：
         // 删除时后端判的是"该期下有没有**任何**回款行"（待确认/已驳回都算，
         // 不带 status 过滤），而原来前端用的是 `received_amount > 0`
@@ -1426,16 +1460,19 @@ export default function OrderDetailPage() {
                 <Button size="small" theme="borderless"
                   onClick={() => {
                     setPaymentTarget(record)
-                    setPaymentForm({
+                    setPaymentRetryRequired(Boolean(pending))
+                    setPaymentForm(pending ? {
+                      amount: pending.received_amount,
+                      date: new Date(`${pending.received_date}T00:00:00`),
+                      method: pending.payment_method,
+                    } : {
                       amount: record.remaining_amount_exact ?? String(record.remaining_amount),
                       date: new Date(),
                       method: '银行转账',
                     })
-                    // 打开表单就定下这一笔的请求键；中途提交失败重试仍用它。
-                    paymentKeyRef.current = newRequestKey()
                   }}
                 >
-                  登记回款
+                  {pending ? '继续登记回款' : '登记回款'}
                 </Button>
               )}
               {canDelete && (
@@ -2613,6 +2650,9 @@ export default function OrderDetailPage() {
                       : '全部回款已由财务确认，可以完成订单。'}
                   </p>
                   <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                    {order.status !== 'delivered' && (
+                      <Button size="small" theme="outline" onClick={() => openStatusEditor('delivered')}>登记整单签收</Button>
+                    )}
                     <Button size="small" theme="outline" disabled={hasUnreceived} onClick={() => openStatusEditor('completed')}>完成订单</Button>
                     {hasUnreceived && (
                       <button type="button" className="crm-text-action" onClick={() => jumpToTab('payments')}>
@@ -3306,20 +3346,20 @@ export default function OrderDetailPage() {
             <Button onClick={() => setStatusVisible(false)}>取消</Button>
             <GuardedButton
               theme="outline"
-              action={completingDelivery ? '确认完成订单' : '更新状态'}
+              action={completingDelivery ? '确认完成订单' : confirmingReceipt ? '确认整单签收' : '更新状态'}
               disabled={Boolean(statusBlocked)}
               blockedReasons={statusBlocked ? [statusBlocked] : []}
               loading={statusMutation.isPending}
               hintBelow
               onClick={() => statusMutation.mutate()}
             >
-              {completingDelivery ? '确认完成订单' : '更新'}
+              {completingDelivery ? '确认完成订单' : confirmingReceipt ? '确认整单签收' : '更新'}
             </GuardedButton>
           </div>
         }
       >
         <div style={{ marginBottom: 12, color: 'var(--crm-text-3)', fontSize: 13 }}>
-          MES 未接入前由人工维护；接入后这一步会由 MES 回传自动完成。
+          按实际发货和客户收货情况更新订单状态。
         </div>
         <Select
           placeholder="选择状态"
@@ -3340,6 +3380,22 @@ export default function OrderDetailPage() {
           ]}
           style={{ width: '100%' }}
         />
+        {confirmingReceipt && (
+          <p className="workflow-guide">客户确认收齐所有批次后，再标记整单已签收。</p>
+        )}
+        {correctingReceipt && (
+          <div style={{ marginTop: 12 }}>
+            <FormLabel required><label htmlFor={`receipt-correction-${order.id}`}>更正原因</label></FormLabel>
+            <TextArea
+              id={`receipt-correction-${order.id}`}
+              value={receiptCorrectionReason}
+              onChange={setReceiptCorrectionReason}
+              placeholder="例如客户只收到第一批，原状态登记有误"
+              maxLength={255}
+              maxCount={255}
+            />
+          </div>
+        )}
         {completionPaymentBlocked && !completionBlocked && (
           <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
             <p className="workflow-guide" style={{ margin: 0 }}>
@@ -3354,7 +3410,7 @@ export default function OrderDetailPage() {
             </Button>
           </div>
         )}
-        {(completionBlocked || shipmentBlocked) && (
+        {(completionBlocked || shipmentBlocked || receiptBlocked) && (
           <Button size="small" theme="borderless" style={{ marginTop: 8 }} onClick={() => {
             setStatusVisible(false)
             jumpToTab('shipments')
@@ -3664,18 +3720,50 @@ export default function OrderDetailPage() {
         title={`登记回款：${paymentTarget?.plan_name ?? ''}`}
         style={{ maxWidth: 'calc(100vw - 32px)' }}
         visible={Boolean(paymentTarget)}
-        onCancel={() => setPaymentTarget(null)}
+        onCancel={() => { if (!paymentMutation.isPending) setPaymentTarget(null) }}
         onOk={() => {
+          if (!paymentTarget || paymentMutation.isPending) return
+          const storageKey = paymentStorageKey(paymentTarget.id)
+          if (!storageKey) {
+            Toast.warning('登录信息尚未加载，请稍后重试。')
+            return
+          }
+          const pending = readPaymentAttempt(storageKey)
+          if (pending) {
+            paymentMutation.mutate({ storageKey, payload: pending, retry: true })
+            return
+          }
           if (!paymentForm.amount.trim() || !Number.isFinite(Number(paymentForm.amount)) || Number(paymentForm.amount) <= 0) {
             Toast.warning('请填写大于 0 的实际到账金额。')
             return
           }
-          paymentMutation.mutate()
+          const receivedDate = calendarDay(paymentForm.date)
+          if (!receivedDate) {
+            Toast.warning('请选择实际到账日期。')
+            return
+          }
+          const payload: PaymentAttempt = {
+            receivable_plan_id: paymentTarget.id,
+            received_date: receivedDate,
+            received_amount: paymentForm.amount.trim(),
+            payment_method: paymentForm.method,
+            request_key: newRequestKey(),
+          }
+          // 必须先保存编号再发请求，刷新时可能还没收到服务端响应。
+          try {
+            sessionStorage.setItem(storageKey, JSON.stringify(payload))
+          } catch {
+            Toast.error('浏览器无法保存防重复编号，本次未提交。请允许此页面使用浏览器存储后重试。')
+            return
+          }
+          paymentMutation.mutate({ storageKey, payload, retry: false })
         }}
         confirmLoading={paymentMutation.isPending}
-        okText="提交财务确认"
+        okText={paymentRetryRequired ? "重试本次登记" : "提交财务确认"}
       >
         <div style={{ display: 'grid', gap: 12 }}>
+          {paymentRetryRequired && <Banner type="warning" closeIcon={null}
+            description="上次登记的结果还未确认。重试会提交原来的金额、日期和方式，已经登记成功的回款只会返回原记录。" />}
           <div style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
             该节点未收{' '}
             {formatMoney(
@@ -3685,22 +3773,23 @@ export default function OrderDetailPage() {
           </div>
           <div>
             <FormLabel required>实际到账金额</FormLabel>
-            <Input aria-label="实际到账金额" inputMode="decimal" value={paymentForm.amount}
+            <Input disabled={paymentRetryRequired || paymentMutation.isPending} aria-label="实际到账金额" inputMode="decimal" value={paymentForm.amount}
               onChange={(value) => setPaymentForm({ ...paymentForm, amount: value })} />
           </div>
           <div>
             <FormLabel required>实际到账日期</FormLabel>
-            <DatePicker aria-label="实际到账日期" value={paymentForm.date}
+            <DatePicker disabled={paymentRetryRequired || paymentMutation.isPending} aria-label="实际到账日期" value={paymentForm.date}
               onChange={(date) => setPaymentForm({ ...paymentForm, date: (date as Date) ?? new Date() })}
               style={{ width: '100%' }} />
           </div>
           <div>
             <FormLabel>收款方式</FormLabel>
-            <Select aria-label="收款方式" value={methodOption.selectValue} onChange={methodOption.onSelect}
+            <Select disabled={paymentRetryRequired || paymentMutation.isPending} aria-label="收款方式" value={methodOption.selectValue} onChange={methodOption.onSelect}
               optionList={PAYMENT_METHODS.map((value) => ({ value, label: value }))} style={{ width: '100%' }} />
           </div>
           {methodOption.showInput && (
             <Input
+              disabled={paymentRetryRequired || paymentMutation.isPending}
               value={methodOption.inputValue}
               onChange={methodOption.onInput}
               placeholder="请说明是什么收款方式（可不填）"

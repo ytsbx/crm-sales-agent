@@ -1123,7 +1123,7 @@ export default function ProductDetailPage() {
                 <Input
                   value={skuForm[field]}
                   onChange={(v) => setSkuForm({ ...skuForm, [field]: v })}
-                  placeholder="数字"
+                  placeholder={field === 'weight' ? '大于 0，未知可留空' : '数字'}
                 />
               </div>
             ))}

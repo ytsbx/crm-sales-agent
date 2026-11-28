@@ -790,6 +790,9 @@ async def handover_candidates(
 ):
     _require_handover_manager(user)
     stmt = select(User).where(User.status == "active")
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is not None:
+        stmt = stmt.where(User.id.in_(owner_ids))
     if search := keyword.strip():
         stmt = stmt.where(or_(User.name.icontains(search, autoescape=True),
                               User.username.icontains(search, autoescape=True)))
@@ -893,6 +896,8 @@ async def batch_handover_tasks(
     if len(tasks) != len(ids):
         raise AppError(ErrorCode.NOT_FOUND, "部分待办不存在，请刷新交接清单", 404)
     owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is not None and target.id not in owner_ids:
+        raise AppError(ErrorCode.DATA_SCOPE_DENIED, "接手人不在你的数据范围内", 403)
     for task in tasks:
         subject = _handover_subject(task)
         if subject is None or (owner_ids is not None and subject not in owner_ids):

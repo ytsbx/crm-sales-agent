@@ -40,7 +40,7 @@ class NumericRule:
     integer: bool
     max_digits: int
     decimal_places: int
-    #: 允许的最小值。物理量一律 0（负数没有意义）
+    #: 允许的最小值。单重必须为正，未知时留空。
     minimum: Decimal = Decimal(0)
 
 
@@ -51,7 +51,7 @@ NUMERIC_RULES: dict[str, NumericRule] = {
     "length": NumericRule("长(mm)", integer=False, max_digits=12, decimal_places=3),
     "width": NumericRule("宽(mm)", integer=False, max_digits=12, decimal_places=3),
     "height": NumericRule("高(mm)", integer=False, max_digits=12, decimal_places=3),
-    "weight": NumericRule("单重(kg)", integer=False, max_digits=12, decimal_places=3),
+    "weight": NumericRule("单重(kg)", integer=False, max_digits=12, decimal_places=3, minimum=Decimal("0.001")),
     "carton_volume": NumericRule("箱体积(m³)", integer=False, max_digits=12, decimal_places=4),
     "carton_qty": NumericRule("装箱数", integer=True, max_digits=12, decimal_places=0),
     "moq": NumericRule("起订量", integer=True, max_digits=12, decimal_places=0),
@@ -65,7 +65,7 @@ def parse_numeric_field(field: str, value: Any, *, where: str) -> Decimal | int 
 
     拒绝的情形（一律 422，不静默改值）：
     - 不是数字、或不是有限数（NaN / Infinity）；
-    - 小于 0（物理量没有负数，"还没填"请传空值）；
+    - 小于字段允许的最小值（"还没填"请传空值）；
     - 位数超出库列能放的范围（否则落库时是 500）；
     - 该是整数的字段给了小数（**不截断**）。
     """
@@ -89,10 +89,11 @@ def parse_numeric_field(field: str, value: Any, *, where: str) -> Decimal | int 
             422,
         )
     if number < rule.minimum:
+        requirement = "不能是负数" if rule.minimum == 0 else f"最小为 {rule.minimum}"
         raise AppError(
             ErrorCode.PARAM_ERROR,
-            f"{where}：{rule.label}（{field}）不能是负数（收到 {number}）。"
-            "要表示「还没填」请传空值，不要传负数",
+            f"{where}：{rule.label}（{field}）{requirement}（收到 {number}）。"
+            "如果还没填写，请留空",
             422,
         )
     if rule.integer:

@@ -846,8 +846,7 @@ async def estimate_logistics(
     「重量计价 / 体积计价」较大者，最低收费按数量摊到单件——核价全程按
     「单价」计算，运费必须是单件口径，否则利润完全失真。
 
-    兼容旧口径：SKU 没维护单重时返回 None 请手工填写（与历史行为一致）；
-    没录体积数据的 SKU 计费重=实际重量，结果与旧算法相同（行为不变）。
+    缺少单重时可以按有效体积与费率估算。缺少两者时请手工填写。
     取费率时在匹配到的方案里选**最便宜**的一条（估算口径），并在备注里
     说明计价方式与时效。
     """
@@ -855,7 +854,7 @@ async def estimate_logistics(
 
     # 没维护单重但**有体积数据**的 SKU（典型抛货）仍可按体积计价——
     # 在此直接退出会让体积功能对这类 SKU 失效；单重与体积都缺才请手工填写
-    if sku.weight is None and logistics_calc.sku_unit_volume(sku)[0] is None:
+    if (sku.weight is None or sku.weight <= 0) and logistics_calc.sku_unit_volume(sku)[0] is None:
         return None, "该 SKU 没有维护单重与体积数据，无法自动估算运费，请手工填写"
 
     try:
@@ -872,6 +871,8 @@ async def estimate_logistics(
 
     options = prepared["options"]
     if not options:
+        if prepared["measures"].get("weight_missing"):
+            return None, "该 SKU 缺少有效单重，也没有可按体积计费的方案，请补填单重或手工填写运费"
         return None, "还没有维护运费费率，请先在价格中心配置或手工填写运费"
 
     chosen = options[0]  # prepare 已按金额升序排列，估算取最便宜方案
