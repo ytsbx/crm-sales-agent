@@ -865,6 +865,9 @@ export default function CustomerDetailPage() {
                   客户名称 / 客户类型 / 国家地区是「总该有值」的，不加这个开关。 */}
               <Field label="客户简称" value={customer.short_name ?? '-'} hideIfEmpty />
               <Field label="客户类型" value={customer.customer_type ?? '-'} />
+              {/* 来源原来只在头部信息行里，概览字段看不到；新建/编辑填了来源后
+                  用户找不到落点，所以在概览里补一个固定字段。 */}
+              <Field label="客户来源" value={displayCustomerSource(customer.source) || '-'} />
               <Field
                 label="国家 / 地区"
                 value={

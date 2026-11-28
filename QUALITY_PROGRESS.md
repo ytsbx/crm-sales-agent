@@ -6944,3 +6944,4 @@
 - 事故与恢复：`5409f296` 的 `--apply` 在命令被中断后仍在后台跑完，`2026-11-28T02:07:47Z` 生产短暂升到 `5409f296`（含来源统一、但仍带旧「在途业务停滞」按钮）。发现后立即回滚旧发布包，`2026-11-28T02:09:52Z` 恢复 `1a5e6ce5`，服务 active、health ok、公网 200。恢复备份 `/opt/crm-sales-agent/backup/unified-1a5e6ce55843-2zg4f8s0`。未部署 `1847c699`。
 - 正式部署：主人确认部署后，生产候选分支 `release/customer-filter-remove-20261128`（提交 `dcaf27be696c107477ea297e2cf1b5ec37f8b188`，基线 `1a5e6ce5`）上线；包含企微来源统一和撤掉「在途业务停滞」按钮。发布包 SHA256 `a8962b792773346e4c50a6c40cec942ff3ea6d3b5eba7e98c016c3ed0a655ce9`。
 - 上线核验：`status=verified`、`verified_at_utc=2026-11-28T02:11:29Z`；两端版本记录均为 `dcaf27be`；服务 active、`/health database=ok`、公网首页 200；当前入口 chunk `CustomerListPage-Dvl2EWfF.js` 已无「在途业务停滞」按钮；备份 `/opt/crm-sales-agent/backup/unified-dcaf27be696c-84d_8kyw`。
+- 主人反馈「客户来源不显示，填了没有地方显示」。核对：列表对企微来源隐藏、详情头部 meta 有来源，但概览字段里确实没有「客户来源」。已在客户详情概览加固定字段「客户来源」，值走统一来源显示（企微旧别名归一为「企业微信」）。
