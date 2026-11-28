@@ -692,6 +692,19 @@ async def main() -> int:
     check('业务员仍能读核价历史（对照：脱敏不等于整页不可用）', status, 200)
     check('业务员读到的历史快照全部为空（成本/底价不落地）',
           all(r.get('before') is None and r.get('after') is None for r in rows), True)
+    # 造一条主管可见的核价历史：产品/价格规则类历史的可见性跟随产品，
+    # 与客户归属无关。直接落一条成本审计，避免依赖其它套件留下的数据。
+    async with SessionLocal() as s:
+        from app.core.audit import AuditLog
+        from app.modules.pricing.model import ProductCost
+
+        cost = (await s.execute(select(ProductCost).limit(1))).scalar_one()
+        s.add(AuditLog(
+            business_type='product_cost', business_id=cost.id, action='update',
+            before_data={'purchase_cost': '1.0000', 'remark': f'{PREFIX}{stamp}快照夹具'},
+            after_data={'purchase_cost': '2.0000', 'remark': f'{PREFIX}{stamp}快照夹具'},
+        ))
+        await s.commit()
     status, res = call('GET', '/pricing/history?page_size=50', manager_token)
     manager_rows = (res.get('data') or {}).get('items') or []
     check('主管（有 price:manage）仍能读到快照',

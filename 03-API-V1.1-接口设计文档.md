@@ -7,6 +7,24 @@
 
 ---
 
+# 0. 2026-11-27 变更说明：客户改为“一组跟进人”（覆盖下文旧描述）
+
+- 客户**没有默认负责人**：`customers.owner_id` 仅历史字段，业务代码不再读写。
+- 响应中的 `owner_id/owner_name` 仅为兼容别名（取第一位跟进人，不参与授权）；新客户端用 `followers` / `follower_count`。
+- `GET /customers`：支持 `mine=true`（我跟进的）；`owner_id` 参数按“跟进人包含该用户”兼容解释；不再有按负责人筛选。
+- `POST /customers`：创建人自动成为跟进人；请求里的 `owner_id`（旧字段）按“额外加入一位跟进人”处理。
+- 跟进人接口：`POST /customers/{id}/followers`、`DELETE /customers/{id}/followers/{user_id}`；**没有** `set-primary`。
+- `POST /customers/{id}/transfer` / `assign`：`owner_id` 是接手人（空=放公海），`from_user_id` 是被替换的跟进人；放公海会清空全部跟进人。
+- 可见性：任一有效跟进人在数据范围内，或公海客户（`pool_status=public`），即可见；客户子资源展示该客户全部单据。
+- 删除/恢复：只有“唯一跟进人”可自助删/恢复；多人跟进需 `customer:delete`。
+- 公海客户不能直接下单/签合同/线索转化，需先领取或指派。
+- 撞单裁定：`keep_both` / `assign_existing`（并成同一组跟进人，可选 `owner_id` 顺手加一位）；`assign_new` 仅兼容旧调用。
+- CSV 导入模板列名：`跟进人登录名`（旧 `负责人登录名` 兼容），语义是额外加入一位跟进人；导出列名 `跟进人`。
+- 客户数/新客/停滞统计：按有效跟进人各算一次、仅私海；公海不计。
+- 主管跟进通知已取消（手工跟进与业务动作均不推送）。
+
+---
+
 # 1. 通用规范
 
 ## 1.1 返回结构

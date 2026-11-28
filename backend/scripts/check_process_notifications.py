@@ -43,7 +43,7 @@ async def main():
             s.add(customer)
             await s.flush()
             customer_id = customer.id
-            s.add(CustomerFollower(customer_id=customer_id, user_id=sales.id, source='fixture'))
+            # Customer 插入时兼容事件会把 owner 落成跟进人，无需再补。
             order = SalesOrder(order_no=marker, customer_id=customer_id, owner_id=sales.id)
             s.add(order)
             await s.flush()
