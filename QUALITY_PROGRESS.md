@@ -6947,3 +6947,4 @@
 - 主人反馈「客户来源不显示，填了没有地方显示」。核对：列表对企微来源隐藏、详情头部 meta 有来源，但概览字段里确实没有「客户来源」。已在客户详情概览加固定字段「客户来源」，值走统一来源显示（企微旧别名归一为「企业微信」）。
 - 发布：`release/customer-detail-source-20261128`，提交 `49deb02ab6376e9bebc3093a19912ab9fea4a842`，基线 `dcaf27be`；发布包 SHA256 `745fcdbb4760c1daf249eefe89b512cbf99a4e759dc3f553706f1434f794eb93`。
 - 上线核验：`status=verified`、`verified_at_utc=2026-11-28T02:20:13Z`；两端版本记录均为 `49deb02a`；服务 active、`/health database=ok`、公网首页 200；当前详情 chunk `CustomerDetailPage-C_nc8LND.js` 已含「客户来源」字段；备份 `/opt/crm-sales-agent/backup/unified-49deb02ab637-yq334syt`。
+- 主人明确：没有跟进过的客户可以显示「未跟进」。已把 `activity_status=unknown` 统一显示为「未跟进」，不再因企微来源或 `last_contact_unknown` 隐藏；企微来源名仍隐藏，所以企微导入行只显示「未跟进」，不会重新出现「企业微信 · 未跟进」。

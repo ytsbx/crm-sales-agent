@@ -472,21 +472,15 @@ export default function CustomerListPage() {
   }
 
   // 「活跃状态」原本是独立一列，现在并进客户名称的下方小字。
-  // `unknown` 不能都叫「待补核」：
-  //   · 企业微信导入只是同步联系人，没有“历史联系时间”可补，也不逐行显示
-  //     「未跟进」或「企业微信」——几千条客户会把列表刷成一堵重复的墙；
-  //   · 非企微的历史导入没给联系日期 → 真正的待补核，由顶部汇总承接，行内不重复；
-  //   · 新建客户还没记过跟进 → 只是「未跟进」，不是资料缺口。
+  // `unknown` 统一显示「未跟进」：没跟进过就是没跟进，不因为来源是企微就藏起来。
+  // 企微来源本身仍然不在列表逐行显示，避免「企业微信 · 未跟进」刷满几千行；
+  // 但这一行只留下事实状态「未跟进」，主人 2026-11-28 明确要求保留。
   const activityLabel = (record: Customer) => {
     const value = record.activity_status
     if (value === 'active') return '活跃'
     if (value === 'stale') return '沉睡'
     if (value === 'watch') return '关注'
-    if (value === 'unknown' || !value) {
-      // 企微来源（导入或手工添加）不逐行显示「未跟进」：
-      // 导入客户几千条，重复标签会把列表刷成一堵墙；手工添加的同一个渠道也按同一口径。
-      return record.last_contact_unknown || isWecomCustomerSource(record.source) ? '' : '未跟进'
-    }
+    if (value === 'unknown' || !value) return '未跟进'
     return ''
   }
 
