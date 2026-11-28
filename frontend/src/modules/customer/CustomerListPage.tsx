@@ -495,10 +495,10 @@ export default function CustomerListPage() {
     {
       title: '客户名称',
       dataIndex: 'name',
-      // 全站表格 CSS 默认 `text-align: center !important`，Semi 的 align 会被压掉；
-      // 用 `cell-left` 这个专用类把表头和表体一起拉回左边，保证同一条竖线。
-      align: 'left' as const,
-      className: 'cell-left',
+      // 列表其它列都是居中；客户名称也跟着居中，表头和数据才不会左右错位。
+      // 用 `cell-center` 专用类，避免被全局左对齐/其它样式覆盖。
+      align: 'center' as const,
+      className: 'cell-center',
       // 两行：上面公司名，下面「地区 · 来源 · 活跃状态」。
       // 那三列各自只有几个字却各占 90-120px，合到名字下面能省掉三列，
       // 顺带把横向滚动条也去掉（14 列 → 10 列）。

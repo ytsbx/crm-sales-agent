@@ -6927,3 +6927,4 @@
 - 发布：生产候选分支 `release/customer-cell-left-20261128`，提交 `37c8954d0df238984380e97b5c99e5351c60e87f`，基线 `5445fd37`；发布包 SHA256 `414cd4e9257d19123e09ce94d838e713f6d792832aa9618bc9a3813ac14845bd`。
 - 上线核验：`status=verified`、`verified_at_utc=2026-11-28T01:47:34Z`；两端版本记录均为 `37c8954d`；服务 active、`/health database=ok`、公网首页 200；数据库仍为 `d4f6a8b0c2e1`；生产当前 CSS 为 `index-DsfhMQyL.css`，已含 `.semi-table-thead .semi-table-row-head.cell-left,...{text-align:left!important}`。
 - 备份：`/opt/crm-sales-agent/backup/unified-37c8954d0df2-7cyovog4`。
+- 追加（2026-11-28）：主人指出「别的列都是居中，为什么客户名称靠左」。上一版把客户名称强制左对齐，反而和其它列不一致；改为 `cell-center`，表头和数据都居中，和等级/阶段/商机等列统一。
