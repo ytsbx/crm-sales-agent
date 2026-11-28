@@ -19,7 +19,9 @@ name: CI
 
 on:
   push:
-    branches: ['**']
+    # release/** 是生产发布副本，只跑 release-ci.yml 的发布冒烟；
+    # 全量回归继续覆盖功能分支和其它开发分支。
+    branches: ['**', '!release/**']
   pull_request:
   workflow_dispatch:
 
