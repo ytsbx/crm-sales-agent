@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Toast } from '@douyinfe/semi-ui'
 import {
@@ -43,8 +43,22 @@ export default function LoginPage() {
   // 还会把刚拿到的登录态顶掉。
   const handledCallback = useRef(false)
 
+  const [profileRetry, setProfileRetry] = useState<{ path: string; epoch: number } | null>(null)
+  const finishLogin = useCallback(async (path: string, epoch = currentAuthEpoch()) => {
+    try {
+      const me = await fetchMe()
+      if (epoch !== currentAuthEpoch()) return
+      setUser(me)
+      setProfileRetry(null)
+      navigate(path, { replace: true })
+    } catch {
+      if (epoch === currentAuthEpoch()) setProfileRetry({ path, epoch })
+      else Toast.warning('登录状态已失效，请重新登录。')
+    }
+  }, [navigate, setUser])
+
   const handleLogin = async () => {
-    if (loading) return
+    if (loading || dingtalkLoading) return
     if (!username.trim() || !password) {
       Toast.warning('请输入用户名和密码')
       return
@@ -53,19 +67,8 @@ export default function LoginPage() {
     try {
       const result = await login(username.trim(), password)
       setAuth(result.access_token, null)
-      // 记住"这次登录属于哪一代"：下面这个取用户信息的请求如果回来晚了
-      // （人已经点了退出、或又登了一次），就不能再把用户写回去 ——
-      // 否则界面会自己回到登录态（第十批 10.12）。
-      const epoch = currentAuthEpoch()
-      try {
-        const me = await fetchMe()
-        if (currentAuthEpoch() === epoch) {
-          setUser(me)
-        }
-      } catch {
-        // 用户信息拉取失败不阻塞登录
-      }
-      navigate(returnTo, { replace: true })
+      setProfileRetry(null)
+      await finishLogin(returnTo)
     } catch (error) {
       Toast.error(error instanceof Error ? error.message : '登录失败')
     } finally {
@@ -118,25 +121,17 @@ export default function LoginPage() {
       try {
         const result = await dingtalkExchange(ticket)
         setAuth(result.access_token, null)
-        // 与密码登录同一条纪律：写回用户信息前先比一次「登录代」，
-        // 期间人若已登出 / 又登了一次，就不能再把用户写回去。
-        const epoch = currentAuthEpoch()
-        try {
-          const me = await fetchMe()
-          if (currentAuthEpoch() === epoch) {
-            setUser(me)
-          }
-        } catch {
-          // 用户信息拉取失败不阻塞登录
-        }
-        navigate(callbackNext, { replace: true })
+        clearCallback()
+        setProfileRetry(null)
+        await finishLogin(callbackNext)
       } catch (err) {
         Toast.error(err instanceof Error ? err.message : '钉钉登录失败')
         clearCallback()
+      } finally {
         setDingtalkLoading(false)
       }
     })()
-  }, [searchParams, setSearchParams, setAuth, setUser, navigate, returnTo])
+  }, [searchParams, setSearchParams, setAuth, finishLogin, returnTo])
 
   return (
     <div className="crm-login">
@@ -187,6 +182,24 @@ export default function LoginPage() {
             <p className="crm-login-description">{returnTo !== '/workbench' ? '登录后将返回你刚才打开的页面。' : '从这里，继续今天的业务。'}</p>
           )}
 
+          {profileRetry && (
+            <div className="crm-login-session-notice" role="alert">
+              登录已验证，暂时无法读取账号权限。
+              <button type="button" className="crm-text-action" disabled={loading || dingtalkLoading} onClick={async () => {
+                if (currentAuthEpoch() !== profileRetry.epoch) {
+                  setProfileRetry(null)
+                  Toast.warning('登录状态已失效，请重新登录。')
+                  return
+                }
+                setLoading(true)
+                try {
+                  await finishLogin(profileRetry.path, profileRetry.epoch)
+                } finally {
+                  setLoading(false)
+                }
+              }}>重试读取权限</button>
+            </div>
+          )}
           <form
             className="crm-login-form"
             aria-label="账号登录"

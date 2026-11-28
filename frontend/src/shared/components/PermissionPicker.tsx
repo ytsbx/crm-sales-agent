@@ -161,8 +161,8 @@ export default function PermissionPicker({ options, value, onChange, loading }: 
     const next = new Set(value)
     if (checked) next.add(code)
     else next.delete(code)
-    // 顺序按 options 走，避免每次勾选都让"已选"数组顺序乱跳（保存的是集合，但看着乱）
-    onChange(options.filter((option) => next.has(option.code)).map((option) => option.code))
+    // 目录可能缺项，只改这次勾选的权限。
+    onChange([...next])
   }
 
   const toggleGroup = (codes: string[], checked: boolean) => {
@@ -171,11 +171,12 @@ export default function PermissionPicker({ options, value, onChange, loading }: 
       if (checked) next.add(code)
       else next.delete(code)
     }
-    onChange(options.filter((option) => next.has(option.code)).map((option) => option.code))
+    onChange([...next])
   }
 
   const total = options.length
   const picked = options.filter((option) => selected.has(option.code)).length
+  const unlistedCount = selected.size - picked
 
   return (
     <div className="permission-picker">
@@ -191,6 +192,12 @@ export default function PermissionPicker({ options, value, onChange, loading }: 
           已选 {picked} / {total}
         </span>
       </div>
+
+      {!loading && unlistedCount > 0 && (
+        <div role="status" className="permission-picker-empty">
+          有 {unlistedCount} 项已选权限未在当前目录显示，保存时会保留。
+        </div>
+      )}
 
       <div className="permission-picker-body" role="group" aria-label="权限">
         {loading && <div className="permission-picker-empty">权限加载中…</div>}

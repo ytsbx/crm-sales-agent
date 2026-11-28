@@ -2599,7 +2599,8 @@ export default function SettingsPage() {
         title={roleEditTarget ? `编辑角色：${roleEditTarget.name}` : '新建角色'}
         visible={roleModal}
         onCancel={() => setRoleModal(false)}
-        onOk={() => roleSaveMutation.mutate()}
+        onOk={() => { if (permissionsQuery.isSuccess) roleSaveMutation.mutate() }}
+        okButtonProps={{ disabled: !permissionsQuery.isSuccess }}
         confirmLoading={roleSaveMutation.isPending}
         okText="保存"
         width={680}
@@ -2656,25 +2657,34 @@ export default function SettingsPage() {
             {/* 按业务条线分组的多选（主人 2026-10-12：「太乱了…要找具体的权限要翻半天」）。
                 原来是一个 `Select multiple`，业务员那条角色 23 个标签铺满五行、还得点「∨」
                 展开；现在按模块成组、整组可勾、顶部可搜，并且自带滚动不撑长弹窗。 */}
-            <PermissionPicker
-              loading={permissionsQuery.isLoading}
-              value={roleForm.permission_codes}
-              onChange={(codes) => setRoleForm({ ...roleForm, permission_codes: codes })}
-              options={(permissionsQuery.data ?? []).map((perm) => ({
-                code: perm.code,
-                name: perm.name,
-                // `resource` 在接口里可空；空的归到"其他"，**不丢权限**
-                resource: perm.resource ?? 'other',
-                action: perm.action ?? '',
-                // 「用户管理」是能改别人账号和权限的钥匙：勾上时在选项下面说清它到底能做什么，
-                // 只作说明，不拦保存（2026-11-18 主人要求）
-                note: perm.code === 'customer:pool_restore'
-                  ? '与「公海回收复核」一起使用。可将数据范围内已回收的客户交还原负责人。'
-                  : perm.code === 'user:manage'
-                  ? '授予后，此人可以重置他人密码、分配管理员角色，以及修改角色权限和数据范围。请确认授权对象。'
-                  : undefined,
-              }))}
-            />
+            {permissionsQuery.isError ? (
+              <div role="alert">
+                权限目录加载失败。重试成功后才能保存角色。
+                <Button size="small" theme="borderless" loading={permissionsQuery.isFetching} onClick={() => void permissionsQuery.refetch()}>
+                  重试
+                </Button>
+              </div>
+            ) : (
+              <PermissionPicker
+                loading={permissionsQuery.isLoading}
+                value={roleForm.permission_codes}
+                onChange={(codes) => setRoleForm({ ...roleForm, permission_codes: codes })}
+                options={(permissionsQuery.data ?? []).map((perm) => ({
+                  code: perm.code,
+                  name: perm.name,
+                  // `resource` 在接口里可空；空的归到"其他"，**不丢权限**
+                  resource: perm.resource ?? 'other',
+                  action: perm.action ?? '',
+                  // 「用户管理」是能改别人账号和权限的钥匙：勾上时在选项下面说清它到底能做什么，
+                  // 只作说明，不拦保存（2026-11-18 主人要求）
+                  note: perm.code === 'customer:pool_restore'
+                    ? '与「公海回收复核」一起使用。可将数据范围内已回收的客户交还原负责人。'
+                    : perm.code === 'user:manage'
+                    ? '授予后，此人可以重置他人密码、分配管理员角色，以及修改角色权限和数据范围。请确认授权对象。'
+                    : undefined,
+                }))}
+              />
+            )}
           </div>
           <div>
             <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>说明</div>

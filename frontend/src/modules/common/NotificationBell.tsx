@@ -105,7 +105,7 @@ export default function NotificationBell() {
   })
 
   const items = listQuery.data?.items ?? []
-  const count = countQuery.data?.count ?? 0
+  const count = countQuery.isError ? undefined : countQuery.data?.count
   const total = listQuery.data?.total ?? 0
   const lastPage = Math.max(1, Math.ceil(total / (listQuery.data?.page_size ?? 10)))
   if (listQuery.data && !listQuery.isFetching && page > lastPage) setPage(lastPage)
@@ -126,6 +126,12 @@ export default function NotificationBell() {
           </Popconfirm>
         </div>
       </div>
+      {countQuery.isError && (
+        <div className="notice-empty" role="status">
+          未读数暂不可用
+          <Button size="small" theme="borderless" loading={countQuery.isFetching} onClick={() => void countQuery.refetch()}>重试</Button>
+        </div>
+      )}
       <div className="notice-filters">
         <div className="notice-views" role="group" aria-label="查看通知">
           {([false, true] as const).map(onlyUnread => (
@@ -287,12 +293,13 @@ export default function NotificationBell() {
       <button
         className="notice-trigger"
         type="button"
-        aria-label={count > 0 ? `通知，${count} 条未读` : '通知'}
+        aria-label={countQuery.isError ? '通知，未读数暂不可用' : count ? `通知，${count} 条未读` : '通知'}
       >
         <span>通知</span>
         {/* 未读数走行内小圆点：跟着文字排队，不会像绝对定位的角标那样压住「通知」。
             为 0 时整个不渲染，没消息就别摆个 0 在那儿占地方。 */}
-        {count > 0 && <span className="notice-count">{count > 99 ? '99+' : count}</span>}
+        {countQuery.isError && <span aria-hidden>—</span>}
+        {count != null && count > 0 && <span className="notice-count">{count > 99 ? '99+' : count}</span>}
       </button>
     </Popover>
   )

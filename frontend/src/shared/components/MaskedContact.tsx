@@ -45,7 +45,11 @@ type MaskedContactProps = {
   style?: CSSProperties
 }
 
-export default function MaskedContact({
+export default function MaskedContact(props: MaskedContactProps) {
+  return <ContactValue key={JSON.stringify([props.value, props.masked, props.kind])} {...props} />
+}
+
+function ContactValue({
   value,
   kind = 'phone',
   masked = false,

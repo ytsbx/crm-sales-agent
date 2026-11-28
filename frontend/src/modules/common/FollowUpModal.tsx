@@ -44,6 +44,7 @@ export default function FollowUpModal({ visible, onClose, target, onCreated }: P
   })
 
   const reset = () => {
+    setFollowupType('电话')
     setContent('')
     setFeedback('')
     setNextAction('')
@@ -100,7 +101,11 @@ export default function FollowUpModal({ visible, onClose, target, onCreated }: P
           </div>
         }
       visible={visible}
-      onCancel={() => { if (!mutation.isPending) onClose() }}
+      onCancel={() => {
+        if (mutation.isPending) return
+        if (!submission.current) reset()
+        onClose()
+      }}
       onOk={() => {
         if (!content.trim()) {
           Toast.warning('跟进内容必填')

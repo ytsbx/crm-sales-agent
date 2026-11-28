@@ -1388,8 +1388,8 @@ export default function OrderDetailPage() {
     },
     // 行自带币种就优先用它（历史数据里可能与订单币种不一致），没有才退回订单币种
     { title: '应收金额', dataIndex: 'amount', width: 130, className: 'cell-right', render: (v: number, r: Receivable) => formatMoney(toTwoDecimals(r.amount_exact ?? v), r.currency ?? order.currency) },
-    { title: '已收', dataIndex: 'received_amount', width: 130, className: 'cell-right col-hide-narrow', render: (v: number, r: Receivable) => formatMoney(toTwoDecimals(r.received_amount_exact ?? v), r.currency ?? order.currency) },
-    { title: '未收', dataIndex: 'remaining_amount', width: 130, className: 'cell-right col-hide-narrow', render: (v: number, r: Receivable) => formatMoney(toTwoDecimals(r.remaining_amount_exact ?? v), r.currency ?? order.currency) },
+    { title: '已收', dataIndex: 'received_amount', width: 130, className: 'cell-right cell-money', render: (v: number, r: Receivable) => formatMoney(toTwoDecimals(r.received_amount_exact ?? v), r.currency ?? order.currency) },
+    { title: '未收', dataIndex: 'remaining_amount', width: 130, className: 'cell-right cell-money', render: (v: number, r: Receivable) => formatMoney(toTwoDecimals(r.remaining_amount_exact ?? v), r.currency ?? order.currency) },
     {
       title: '状态',
       dataIndex: 'status_label',
@@ -2299,6 +2299,7 @@ export default function OrderDetailPage() {
               </div>
               <Table<Receivable>
                 columns={receivableColumns}
+                scroll={{ x: 'max(100%, 890px)' }}
                 dataSource={receivablesQuery.data ?? []}
                 loading={receivablesQuery.isLoading}
                 rowKey="id"
@@ -2325,6 +2326,7 @@ export default function OrderDetailPage() {
             </p>)}
             <Table<Payment>
               className="order-tab-table"
+              scroll={{ x: 'max(100%, 1050px)' }}
               columns={[
                 /* 这一排列宽加起来原来 1150，卡片只有 1130 —— 最后一列「操作」
                    （调整分配）被右边缘直接切掉一半（2026-11-20 截图）。
@@ -2334,8 +2336,8 @@ export default function OrderDetailPage() {
                 { title: '收款日期', dataIndex: 'received_date', width: narrowScreen ? 112 : 114 },
                 { title: '整笔到账', dataIndex: 'received_amount', width: narrowScreen ? 112 : 114, className: 'cell-money', render: (v: number, r: Payment) => formatMoney(r.received_amount_exact ?? v, r.currency ?? order.currency) },
                 /* 108：¥94,500.00 是这里最长的一档金额，100 宽会被截成「¥94,500.…」 */
-                { title: '已分配', dataIndex: 'allocated_amount', width: 108, className: 'cell-right col-hide-narrow', render: (v: number, r: Payment) => r.status === 'confirmed' ? formatMoney(r.allocated_amount_exact ?? v, r.currency ?? order.currency) : '-' },
-                { title: '待分配', dataIndex: 'unallocated_amount', width: 108, className: 'cell-right col-hide-narrow', render: (v: number, r: Payment) => r.status === 'confirmed' ? formatMoney(r.unallocated_amount_exact ?? v, r.currency ?? order.currency) : '-' },
+                { title: '已分配', dataIndex: 'allocated_amount', width: 108, className: 'cell-right cell-money', render: (v: number, r: Payment) => r.status === 'confirmed' ? formatMoney(r.allocated_amount_exact ?? v, r.currency ?? order.currency) : '-' },
+                { title: '待分配', dataIndex: 'unallocated_amount', width: 108, className: 'cell-right cell-money', render: (v: number, r: Payment) => r.status === 'confirmed' ? formatMoney(r.unallocated_amount_exact ?? v, r.currency ?? order.currency) : '-' },
                 { title: '方式', dataIndex: 'payment_method', width: 90, className: 'col-hide-narrow', render: (v: string | null) => v ?? '-' },
                 {
                   title: '回款凭证',
