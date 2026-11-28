@@ -7101,3 +7101,11 @@
 - 修复：发送前把原编号、应收期、到账金额原文、日期及方式保存到当前浏览器标签页，按账号、订单、应收期区分。刷新或离开订单再回来，显示「继续登记回款」并原样重试。收到成功回执或明确表单拒绝才清除对应记录；实际保存编号失败时阻止发起请求。
 - 范围：同一浏览器标签页。新浏览器标签页与其他设备没有共享恢复记录。后端沿用现有同编号防重与权限校验。
 - 验证：前端构建和订单页 lint 通过，28 项回款后端隔离测试通过；浏览器全量冒烟通过刷新和离开返回场景。最终版另跑回款浏览器专项，验证原编号暂时不可读取时无提交、恢复后原样重试、成功后新登记使用新编号。仅修改本机，未部署。
+
+## 2026-11-28 生产全量发布（B 批）
+
+- 生产实际基线 `1ce7ec7744d25261039cdf39c4c4c8cbddfa13fb`（2026-11-28T05:39:14Z 已验），不是此前台账中的 `06482d13`。本次按主人决定发当前 `feat/k2-sales-return-20261125` 全量差异，发布提交 `36d4602b32c3bdd4ccc2c190457da21134071839`。
+- 发布范围：`backend/app + frontend/src` 共 59 个文件，约 1962 insertions / 545 deletions；另有 3 个 alembic 迁移。发布包 `manifest.json` 记录 559 个文件，`migration_change=true`，`baseline_commit=1ce7ec77`；包 SHA256 `5f208fd0b70fa3a78fa8ff525b81db9a73f70152215bd606ecd6c6475cfdd79d`。
+- 发布前备份：`/opt/crm-sales-agent/backup/db-36d4602b-20261128T1528Z.dump`（1.4 MB，`pg_restore -l` 可读，1057 TOC entries）。发布工具单测 26 项通过；`release.py build`、服务器预检均通过。
+- 生产迁移：`c3d5e7f9a1b2 -> e1a3c5d7b9f2`（财务打回字段）→ `d4f6a8b0c2e1` 合并分叉 `fbe435eab96a` → `b3e7c1a9d5f2`（客户跟进人硬删级联）。生产 `alembic_version=b3e7c1a9d5f2`。
+- 发布结果：`RELEASE.json` `commit=36d4602b`、`status=verified`、`verified_at_utc=2026-11-28T07:26:42Z`；发布工具备份 `unified-36d4602b32c3-x44z2uku`。服务 `crm-sales.service` active，`/health` 200，公网 `https://crm.mandla.cn/` 200；admin 生产登录成功，`/auth/me` 正常。生产 finance 角色已补 `opportunity:view`，未加 `task:view`（生产当前无 finance 角色用户，权限供后续账号使用）。
