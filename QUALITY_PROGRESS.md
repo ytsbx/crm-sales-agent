@@ -6923,3 +6923,4 @@
 - 上线核验：`status=verified`、`verified_at_utc=2026-11-28T01:44:28Z`；两端版本记录均为 `5445fd37`；服务 active、`/health database=ok`、公网首页 200；数据库仍为 `d4f6a8b0c2e1`。
 - 生产口径实测：直接调用已部署的 `find_duplicate_customers(company_name="11")`，返回 1 条、分数 70、原因「企业名称一致」——只在真的存在同名客户「11」时提示，不再命中手机号/门牌号包含 11 的无关客户。
 - 备份：`/opt/crm-sales-agent/backup/unified-5445fd3779a3-9ggq2_jb`。
+- 追加（2026-11-28）：主人复测表头仍居中、名字靠左。根因不是 Semi 的 `align` 没生效，而是全站 CSS `text-align: center !important` 压在表头上。给客户名称列加 `className: 'cell-left'`，并在 `index.css` 同时命中 thead/tbody 写 `text-align: left !important`。构建产物已确认出现该规则。
