@@ -6580,58 +6580,17 @@ table:not(.semi-table) td.cell-right {
   min-width: 0;
 }
 
-.customer-score-details {
-  margin: 0 0 12px;
-  border: 1px solid var(--crm-border);
-  border-radius: 8px;
-  background: var(--crm-surface-low);
+/* 查重计分规则：直接跟在说明下面，一行小字。
+   原来做成「查看计分规则」的折叠框，折叠三角+灰底在设置页里太抢眼；
+   规则本身是辅助信息，展开/收起反而多一次点击。 */
+.setting-field-rule {
+  display: block;
+  margin-top: 4px;
+  color: var(--crm-text-3);
+  font-size: 11.5px;
+  line-height: 1.6;
+  font-variant-numeric: tabular-nums;
 }
-.customer-score-details summary {
-  padding: 9px 12px;
-  color: var(--crm-primary);
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.customer-score-details summary:focus-visible {
-  outline: 2px solid var(--crm-primary);
-  outline-offset: -2px;
-  border-radius: 8px;
-}
-.customer-score-body,
-.customer-score-details > .settings-help { padding: 0 12px 12px; }
-.customer-score-groups {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
-  gap: 10px;
-}
-.customer-score-groups section {
-  min-width: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--crm-border);
-  border-radius: 8px;
-  background: var(--crm-surface);
-}
-.customer-score-groups h5 { margin: 0 0 6px; font-size: 13px; }
-.customer-score-groups dl { margin: 0; }
-.customer-score-groups dl > div {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 5px 0;
-  border-bottom: 1px solid var(--crm-border);
-  font-size: 12px;
-}
-.customer-score-groups dl > div:last-child { border: 0; }
-.customer-score-groups dd {
-  margin: 0;
-  color: var(--crm-text);
-  font-weight: 600;
-  text-align: end;
-  white-space: nowrap;
-}
-.customer-score-groups p,
-.customer-score-total { margin: 8px 0 0; color: var(--crm-text-2); font-size: 12px; line-height: 1.6; }
 
 /* "当前用不上""历史遗留"这类橙色说明：单独占一行。
    原来 inline 跟在描述后面，说明一长就把 Tag 压成"历史…"三个字。 */
