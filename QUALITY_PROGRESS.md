@@ -6948,3 +6948,5 @@
 - 发布：`release/customer-detail-source-20261128`，提交 `49deb02ab6376e9bebc3093a19912ab9fea4a842`，基线 `dcaf27be`；发布包 SHA256 `745fcdbb4760c1daf249eefe89b512cbf99a4e759dc3f553706f1434f794eb93`。
 - 上线核验：`status=verified`、`verified_at_utc=2026-11-28T02:20:13Z`；两端版本记录均为 `49deb02a`；服务 active、`/health database=ok`、公网首页 200；当前详情 chunk `CustomerDetailPage-C_nc8LND.js` 已含「客户来源」字段；备份 `/opt/crm-sales-agent/backup/unified-49deb02ab637-yq334syt`。
 - 主人明确：没有跟进过的客户可以显示「未跟进」。已把 `activity_status=unknown` 统一显示为「未跟进」，不再因企微来源或 `last_contact_unknown` 隐藏；企微来源名仍隐藏，所以企微导入行只显示「未跟进」，不会重新出现「企业微信 · 未跟进」。
+- 发布：`release/customer-unfollowed-label-20261128`，提交 `4da93a0060d2ebc88b7404ddf1538b6a07413372`，基线 `49deb02a`；发布包 SHA256 `45265be3260d73160cb6c5d4e59d6e757cf86d350cc8fee0a1da4d21de349bb4`。
+- 上线核验：`status=verified`、`verified_at_utc=2026-11-28T02:27:56Z`；两端版本记录均为 `4da93a00`；服务 active、`/health database=ok`、公网首页 200；当前列表 chunk `CustomerListPage-DZReL52E.js` 已含「未跟进」；备份 `/opt/crm-sales-agent/backup/unified-4da93a0060d2-rqt35en8`。
