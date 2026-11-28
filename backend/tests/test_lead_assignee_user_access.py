@@ -1,4 +1,4 @@
-"""分配线索按用户确认的 B 方案读取现有完整员工列表。仅内存 SQLite。"""
+"""员工选人和用户管理共用列表，按权限返回不同字段。仅内存 SQLite。"""
 
 import httpx
 import pytest
@@ -29,6 +29,7 @@ def isolated_app():
         ])
         raw.add(Role(id=1, code='isolated-role', name='隔离角色', data_scope='self', status='active'))
         raw.flush()
+        raw.get(User, 21).oa_user_id = 'isolated-oa-21'
         raw.execute(user_roles.insert().values(user_id=21, role_id=1))
         raw.commit()
         app = FastAPI(default_response_class=DecimalJSONResponse)
@@ -42,9 +43,10 @@ def isolated_app():
 
 
 @pytest.mark.anyio
-async def test_lead_assign_can_read_existing_full_user_list(isolated_app):
+@pytest.mark.parametrize('permission', ['lead:assign', 'customer:assign'])
+async def test_assignment_can_search_and_page_only_selection_fields(isolated_app, permission):
     async def current():
-        return make_user(1, permissions=('lead:view', 'lead:assign'))
+        return make_user(1, permissions=(permission,))
     isolated_app.dependency_overrides[get_current_user] = current
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=isolated_app), base_url='http://isolated') as client:
         first = await client.get('/users', params={'page': 1, 'page_size': 20})
@@ -58,13 +60,15 @@ async def test_lead_assign_can_read_existing_full_user_list(isolated_app):
             assert result.status_code == 200
             items = result.json()['data']['items']
             assert [item['id'] for item in items] == [21]
-            # B 方案明确保留现有完整输出，不把它误改成精简员工接口。
-            assert items[0]['mobile'] == 'isolated-phone-21'
-            assert items[0]['email'] == 'candidate21@example.invalid'
-            assert items[0]['wecom_userid'] == 'isolated-wecom-21'
-            assert items[0]['dingtalk_userid'] == 'isolated-ding-21'
-            assert items[0]['roles'][0]['code'] == 'isolated-role'
-            assert 'password_hash' not in items[0]
+            assert items == [{
+                'id': 21,
+                'name': '候选员工21',
+                'username': 'candidate21',
+                'department_id': None,
+                'department': None,
+                'status': 'active',
+            }]
+        assert (await client.get('/users/21')).status_code == 403
         # 查询授权不连带开放用户管理的写权限。
         forbidden = await client.post('/users', json={'username': 'forbidden', 'name': '越权新用户', 'password': 'isolated-only'})
         assert forbidden.status_code == 403
@@ -83,15 +87,24 @@ async def test_other_permissions_do_not_gain_user_list_access(isolated_app, perm
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('permissions,roles', [
-    (('customer:assign',), ('salesperson',)),
     (('user:manage',), ('salesperson',)),
     ((), ('admin',)),
 ])
-async def test_existing_authorized_roles_keep_user_list_access(isolated_app, permissions, roles):
+async def test_user_management_keeps_full_directory_fields(isolated_app, permissions, roles):
     async def current():
         return make_user(1, permissions=permissions, roles=roles)
     isolated_app.dependency_overrides[get_current_user] = current
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=isolated_app), base_url='http://isolated') as client:
-        response = await client.get('/users', params={'page_size': 1})
+        response = await client.get('/users', params={'keyword': 'candidate21', 'status': 'active', 'page_size': 1})
     assert response.status_code == 200
-    assert len(response.json()['data']['items']) == 1
+    full, = response.json()['data']['items']
+    assert full['mobile'] == 'isolated-phone-21'
+    assert full['email'] == 'candidate21@example.invalid'
+    assert full['wecom_userid'] == 'isolated-wecom-21'
+    assert full['dingtalk_userid'] == 'isolated-ding-21'
+    assert [role['code'] for role in full['roles']] == ['isolated-role']
+    assert 'password_hash' not in full
+    if 'admin' in roles:
+        assert full['oa_user_id'] == 'isolated-oa-21'
+    else:
+        assert 'oa_user_id' not in full

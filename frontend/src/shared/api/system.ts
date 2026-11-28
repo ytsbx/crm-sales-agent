@@ -74,6 +74,7 @@ export interface DepartmentTreeNode extends SystemDepartment {
   children: DepartmentTreeNode[]
 }
 
+/** 分配权限调用仅返回选人字段。账号管理权限可读取完整资料。 */
 export function listUsers(query: {
   keyword?: string
   status?: string

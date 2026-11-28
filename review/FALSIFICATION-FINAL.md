@@ -78,7 +78,7 @@
 - 仍成立 2 条：
   - **B06-10**：`collection_status()` 仍全表统计来源/记录/待匹配，路由只要求 `order:view`，普通业务员可见全局采集水位。
   - **B07-07**：`list_reconcile_runs()` 未传 `owner_ids`，对账批次列表仍全量；同页 `list_diffs` 已按范围过滤。
-- 收窄 1 条：**B11-03** 已从“任意登录用户可读全量员工 PII”改为 `user:manage/customer:assign/lead:assign` 三选一；分配角色仍可见 `mobile/email/wecom/dingtalk`，代码写明是用户确认复用完整员工列表，降 P3 数据最小化项。
+- 收窄 1 条：**B11-03** 原为任意有分配权限的账号可读全量员工 PII；2026-11-28 已修为分配角色仅返回 `id/姓名/username/部门/在职状态`，手机号、邮箱、企微、钉钉身份与角色不再下发；完整资料仅 `user:manage`/admin。保留 `username` 供选人同名区分，属已拍板的取舍；生产未部署。
 
 ### P2 第三批（幂等/重复，2026-11-24）
 
