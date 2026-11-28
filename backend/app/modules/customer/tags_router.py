@@ -26,7 +26,7 @@ from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data
-from app.modules.contact_util import find_duplicate_customers, lock_customer_row
+from app.modules.contact_util import customer_match_mobile, find_duplicate_customers, lock_customer_row
 from app.modules.customer import service as svc
 from app.modules.customer import tags as tag_svc
 from app.modules.customer.model import Customer
@@ -146,6 +146,7 @@ async def deduplicate(
         "address": payload.get("address"),
     }
     exclude_id = None
+    customer_type = payload.get("customer_type")
 
     if customer_id:
         # 编辑场景也必须和详情、合并、批量操作使用同一条数据范围判据。
@@ -154,9 +155,12 @@ async def deduplicate(
         # 统一走可见性读取，同时保留请求中的联系人手机号，修复这两个确定问题。
         existing = await svc.get_visible_customer(session, user, customer_id)
         exclude_id = existing.id
+        customer_type = existing.customer_type
         fields = {
             "company_name": existing.name,
-            "mobile": fields["mobile"],
+            "mobile": fields["mobile"] or (
+                await customer_match_mobile(session, existing.id) if customer_type == "个人" else None
+            ),
             "tax_no": existing.tax_no,
             "domain": existing.domain,
             "address": existing.address,
@@ -169,11 +173,9 @@ async def deduplicate(
         )
 
     matches = await find_duplicate_customers(
-        session, **fields, owner_ids=await scoped_owner_ids(session, user)
+        session, **fields, customer_type=customer_type, exclude_id=exclude_id,
+        owner_ids=await scoped_owner_ids(session, user),
     )
-    # 编辑自己时把自己排除掉，否则永远提示"和自己重复"
-    if exclude_id is not None:
-        matches = [m for m in matches if m.get("id") != exclude_id]
 
     return ok({"matches": matches, "count": len(matches)})
 

@@ -409,6 +409,7 @@ export function batchTransferCustomers(payload: {
 }
 
 export function deduplicateCustomers(payload: {
+  customer_type?: string
   customer_id?: number
   name?: string
   mobile?: string

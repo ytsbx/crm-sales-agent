@@ -576,36 +576,18 @@ function SettingValueField({
   )
 }
 
-function CustomerScoreDetails({ details }: { details?: SystemSettingRow['customer_score_details'] }) {
+function CustomerScoreRule({ details }: { details?: SystemSettingRow['customer_score_details'] }) {
+  if (!details) return null
+  const p = details.points
   return (
-    <details className="customer-score-details">
-      <summary>查看计分规则</summary>
-      {details ? (
-        <div className="customer-score-body">
-          <div className="customer-score-groups">
-            <section>
-              <h5>客户名称</h5>
-              <dl>
-                <div><dt>名称一致</dt><dd>{details.points.weight_name_exact} 分</dd></div>
-                <div><dt>一个名称含另一个</dt><dd>{details.points.weight_name_contains} 分</dd></div>
-                <div><dt>名称部分相似</dt><dd>{details.points.weight_name_contains} 分 × 相似度</dd></div>
-              </dl>
-              <p>名称从上到下只取一项。部分相似时，用最长一段连续相同的字数除以较短名称的字数，达到 {Math.round(details.name_similarity_min * 100)}% 才计分，结果向下取整。</p>
-            </section>
-            <section>
-              <h5>其他匹配项</h5>
-              <dl>
-                <div><dt>统一社会信用代码一致</dt><dd>{details.points.weight_tax_no} 分</dd></div>
-                <div><dt>联系人手机号一致</dt><dd>{details.points.weight_mobile} 分</dd></div>
-                <div><dt>官网域名一致</dt><dd>{details.points.weight_domain} 分</dd></div>
-                <div><dt>地址一致</dt><dd>{details.points.weight_address} 分</dd></div>
-              </dl>
-            </section>
-          </div>
-          <p className="customer-score-total">各项得分相加，最高 {details.max_score} 分。当前达到 <strong>{details.points.threshold} 分</strong>就会提示疑似重复。</p>
-        </div>
-      ) : <p className="settings-help">暂时无法读取当前计分规则。</p>}
-    </details>
+    <>
+      <span className="setting-field-rule">
+        计分：名称一致 {p.weight_name_exact} · 名称包含 {p.weight_name_contains} · 税号 {p.weight_tax_no} · 手机 {p.weight_mobile} · 域名 {p.weight_domain} · 地址 {p.weight_address}；达到 {p.threshold} 分提示。
+      </span>
+      <span className="setting-field-rule">
+        任一方为个人时，姓名最多 {details.personal_name_max_points ?? 30} 分，须有其他匹配项；双方有效税号不同时，名称不单独提示。
+      </span>
+    </>
   )
 }
 
@@ -2275,6 +2257,7 @@ export default function SettingsPage() {
                                 <div className="setting-field-value">{renderSettingValue(row)}</div>
                                 <div className="setting-field-desc">
                                   <span>{settingDescription(row.key, row.description)}</span>
+                                  {row.key === 'dedup_scoring' && <CustomerScoreRule details={row.customer_score_details} />}
                                   {note && (
                                     <span className="setting-field-tag">
                                       <Tag color="orange" size="small">{note.tag}</Tag>
@@ -2283,7 +2266,6 @@ export default function SettingsPage() {
                                   )}
                                 </div>
                               </div>
-                              {row.key === 'dedup_scoring' && <CustomerScoreDetails details={row.customer_score_details} />}
                               </div>
                             )
                           })}

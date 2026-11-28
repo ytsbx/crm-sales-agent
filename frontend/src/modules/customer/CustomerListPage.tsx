@@ -299,8 +299,9 @@ export default function CustomerListPage() {
   })
 
   const dedupMutation = useMutation({
-    // 新建表单里只有名称可以用来查重（税号等字段表单没收集）
-    mutationFn: () => deduplicateCustomers({ name: form.name }),
+    mutationFn: () => deduplicateCustomers({
+      name: form.name, address: form.address || undefined, tax_no: form.tax_no || undefined,
+    }),
     onSuccess: (result) => setDupMatches(result.matches ?? []),
     onError: () => setDupMatches([]),
   })

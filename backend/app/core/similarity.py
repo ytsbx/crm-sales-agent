@@ -10,8 +10,10 @@
 from typing import Any
 
 import re
+import unicodedata
+from urllib.parse import urlsplit
 
-from app.core.tax_no import normalize_tax_no
+from app.core.tax_no import normalize_tax_no, validate_tax_no
 
 CUSTOMER_SCORE_FALLBACKS = {
     "threshold": 50,
@@ -27,6 +29,8 @@ CUSTOMER_NAME_SIMILARITY_MIN = 0.6
 #: **完全相等**：否则 "11" 会命中所有手机号/门牌号里带 11 的客户，满屏误报。
 CUSTOMER_NAME_FUZZY_MIN_LENGTH = 4
 CUSTOMER_SCORE_MAX = 100
+PERSONAL_NAME_MAX_POINTS = 30
+MOBILE_SEPARATORS = " -‐‑–—\t\n\r"
 
 # 公司名里不影响主体的后缀，比较前先去掉
 NAME_SUFFIXES = (
@@ -39,6 +43,36 @@ NAME_SUFFIXES = (
     "工厂",
     "厂",
 )
+
+
+def normalize_name_text(name: str | None) -> str:
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", name or "")).lower()
+
+
+def normalize_mobile(value: str | None) -> str:
+    text = unicodedata.normalize("NFKC", value or "").translate(str.maketrans("", "", MOBILE_SEPARATORS))
+    return text[3:] if re.fullmatch(r"\+861[0-9]{10}", text) else text
+
+
+def normalize_domain(value: str | None) -> str:
+    text = (value or "").strip().lower()
+    if not text:
+        return ""
+    try:
+        url = urlsplit(text if "://" in text else f"//{text}")
+        if url.username is not None or url.scheme not in ("", "http", "https"):
+            return ""
+        host = (url.hostname or "").rstrip(".")
+        return host.removeprefix("www.")
+    except ValueError:
+        return ""
+
+
+def _valid_tax_no(value: str) -> bool:
+    try:
+        return bool(validate_tax_no(value))
+    except ValueError:
+        return False
 
 
 def normalize_name(name: str | None) -> str:
@@ -62,7 +96,7 @@ def normalize_name(name: str | None) -> str:
     实现：从**结尾**按"最长优先"反复削（`NAME_SUFFIXES` 已是长→短排列），
     且削到只剩 1 个字符就停（避免"厂"这类名字被削成空串）。
     """
-    text = re.sub(r"\s+", "", (name or "").strip())
+    text = normalize_name_text(name)
     changed = True
     while changed and len(text) > 1:
         changed = False
@@ -116,17 +150,20 @@ def similarity_score(
     score = 0
     reasons: list[str] = []
 
-    left_name = normalize_name(left.get("name"))
-    right_name = normalize_name(right.get("name"))
+    personal = "个人" in (left.get("customer_type"), right.get("customer_type"))
+    normalize = normalize_name_text if personal else normalize_name
+    left_name = normalize(left.get("name"))
+    right_name = normalize(right.get("name"))
+    name_label = "客户姓名" if personal else "企业名称"
     if left_name and right_name:
         if left_name == right_name:
             score += int(w.get("weight_name_exact", CUSTOMER_SCORE_FALLBACKS["weight_name_exact"]))
-            reasons.append("企业名称一致")
+            reasons.append(f"{name_label}一致")
         elif left_name in right_name or right_name in left_name:
             # 短名/纯数字名不做包含匹配；例如 "11" 不能算 "AAA19891181602" 的重复。
             if _has_fuzzy_name_signal(left_name) and _has_fuzzy_name_signal(right_name):
                 score += int(w.get("weight_name_contains", CUSTOMER_SCORE_FALLBACKS["weight_name_contains"]))
-                reasons.append("企业名称互相包含")
+                reasons.append(f"{name_label}互相包含")
         else:
             ratio = longest_common_substring_ratio(left_name, right_name)
             if (
@@ -138,8 +175,13 @@ def similarity_score(
                     w.get("weight_name_contains", CUSTOMER_SCORE_FALLBACKS["weight_name_contains"])
                 )
                 score += int(contains_points * ratio)
-                reasons.append(f"企业名称相似度 {int(ratio * 100)}%")
+                reasons.append(f"{name_label}相似度 {int(ratio * 100)}%")
 
+    if personal:
+        score = min(score, PERSONAL_NAME_MAX_POINTS)
+    name_score = score
+    left_tax_no = normalize_tax_no(left.get("tax_no")) or ""
+    right_tax_no = normalize_tax_no(right.get("tax_no")) or ""
     for field, weight_key, label in (
         ("mobile", "weight_mobile", "手机号一致"),
         ("tax_no", "weight_tax_no", "统一社会信用代码一致"),
@@ -148,8 +190,11 @@ def similarity_score(
     ):
         if field == "tax_no":
             # 税号先按国标规范化（去空格/全角、统一大写）再比，脏格式不该骗过查重。
-            lv = normalize_tax_no(left.get(field)) or ""
-            rv = normalize_tax_no(right.get(field)) or ""
+            lv, rv = left_tax_no, right_tax_no
+        elif field == "mobile":
+            lv, rv = normalize_mobile(left.get(field)), normalize_mobile(right.get(field))
+        elif field == "domain":
+            lv, rv = normalize_domain(left.get(field)), normalize_domain(right.get(field))
         else:
             lv = (left.get(field) or "").strip().lower()
             rv = (right.get(field) or "").strip().lower()
@@ -157,4 +202,10 @@ def similarity_score(
             score += int(w.get(weight_key, CUSTOMER_SCORE_FALLBACKS[weight_key]))
             reasons.append(label)
 
+    # 姓名只是线索。个人同名、有效税号冲突时，要有额外得分才能提示。
+    if score == name_score and (
+        personal
+        or (left_tax_no != right_tax_no and _valid_tax_no(left_tax_no) and _valid_tax_no(right_tax_no))
+    ):
+        return 0, []
     return min(score, CUSTOMER_SCORE_MAX), reasons

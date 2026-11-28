@@ -82,16 +82,17 @@ async def open_cases_for_customer(
     ——否则裁定页会被同一件事刷屏，人就不看了。
     """
     # 查重打分在 contact_util（文档 §11.5 :269 点名的"疑似重复识别"），复用它
-    from app.modules.contact_util import find_duplicate_customers
+    from app.modules.contact_util import customer_match_mobile, find_duplicate_customers
 
     matches = await find_duplicate_customers(
         session,
         company_name=customer.name,
-        # 这几个证据位客户档案上目前没有独立字段（联系人在 contacts 表），
-        # 先按"没有"传；名称与域名是建档时最可靠的两项
-        mobile=None,
+        customer_type=customer.customer_type,
+        exclude_id=customer.id,
+        mobile=await customer_match_mobile(session, customer.id) if customer.customer_type == "个人" else None,
         tax_no=customer.tax_no,
         domain=customer.domain,
+        address=customer.address,
     )
     candidate_ids = {match["id"] for match in matches if match.get("id") is not None}
     if not candidate_ids - {customer.id}:
