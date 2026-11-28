@@ -6937,3 +6937,5 @@
 - 客户列表「联系情况」下拉只有「在途业务停滞」一个选项，等于一个伪装成下拉的开关。已移除该下拉，改成工具栏上的「在途业务停滞」筛选按钮：点一次只看在途停滞客户，再点取消；按钮高亮表示筛选生效。`unknown_contact` 仍由顶部待补核汇总承接。
 - 发布：`release/customer-filter-toggle-20261128`，提交 `1a5e6ce55843263b6d36cdf117b47065f3cfaf07`，基线 `44c98122`；发布包 SHA256 `03a66b1f319848d975b7dae6d062622dbb5671c56ccae3cb07b17eefcd3eb0fb`。
 - 上线核验：`status=verified`、`verified_at_utc=2026-11-28T02:03:03Z`；两端版本记录均为 `1a5e6ce5`；服务 active、`/health database=ok`、公网首页 200；备份 `/opt/crm-sales-agent/backup/unified-1a5e6ce55843-dwb_2lfk`。
+- 客户「11」单独出现「企微添加 · 未跟进」的原因：它是手工新建，`source=企微添加`；其余 2,562 条是企微导入，`source=企业微信` 且 `last_contact_unknown=true`，来源和未跟进都被隐藏。同一渠道存在「企业微信 / 企微添加」两种写法。
+- 修复：新增 `frontend/src/shared/customer-source.ts`，把「企微添加」视为企微来源别名；列表里企微来源统一隐藏来源和「未跟进」，详情展示统一为「企业微信」；新建客户来源选项改为「企业微信」，编辑打开时也归一为「企业微信」。
