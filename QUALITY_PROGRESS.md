@@ -6907,3 +6907,6 @@
 - 上线核验：`status=verified`、`verified_at_utc=2026-11-28T01:21:26Z`；两端版本记录均为 `9b4ff055`；服务 active、`/health database=ok`、公网首页 200；数据库仍为 `d4f6a8b0c2e1`；当前 `index.html` 引用 `CustomerListPage-BWp3z9C2.js`，该 chunk 的逻辑是 `last_contact_unknown ? '' : '未跟进'`，企微导入行内只保留来源。
 - 备份：`/opt/crm-sales-agent/backup/unified-9b4ff055222e-j6gkewy0`。首次 `--apply` 在重启后 30 秒健康检查超时，已自动回滚并恢复 `d606c66b`；原失败备份 `/opt/crm-sales-agent/backup/unified-9b4ff055222e-f2445l1u` 保留；第二次 `--apply` 通过。
 - 追加（2026-11-28）：主人再问「为什么要显示来源」。企微占 2,562/2,565，逐行「企业微信」同样没有信息量；行内把 `source=企业微信` 隐藏，其他来源保留。企微客户副标题只剩地区/活跃状态，若都没有则为空。前端构建/lint 通过（0 error / 41 条历史 warning）。
+- 发布：生产候选分支 `release/customer-source-20261128`，提交 `d3d6098c7492363a918e20cadcddfaae22d59bd4`，基线 `9b4ff055`；发布包 SHA256 `d82e204cfdf9d8f21ccc2130ca567d04b79c45f49b70853afa3b930137722879`。
+- 上线核验：`status=verified`、`verified_at_utc=2026-11-28T01:26:39Z`；两端版本记录均为 `d3d6098c`；服务 active、`/health database=ok`、公网首页 200；数据库仍为 `d4f6a8b0c2e1`；当前 `index.html` 引用 `CustomerListPage-ozvvXIhS.js`，chunk 内为 `source === '企业微信' ? '' : source`，企微客户行内不再显示来源，其他来源保留。
+- 备份：`/opt/crm-sales-agent/backup/unified-d3d6098c7492-u0lq_9o9`。
