@@ -178,6 +178,14 @@ async function expectText(client, path, expected, name) {
   throw new Error(`${name}（${path}）没有出现预期内容：${expected.join(' / ')}`)
 }
 
+function cleanupProfile() {
+  try {
+    rmSync(PROFILE_DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  } catch {
+    // 临时目录留给 runner 自己回收，不影响发布冒烟结论
+  }
+}
+
 async function main() {
   console.log(`发布冒烟：API=${API_BASE} APP=${APP_BASE}`)
   const auth = await apiLogin()
@@ -188,7 +196,7 @@ async function main() {
   }
   console.log('✓ 核心列表接口可用：客户 / 报价 / 订单')
 
-  rmSync(PROFILE_DIR, { recursive: true, force: true })
+  cleanupProfile()
   const browser = spawn(
     EDGE_BIN,
     [
@@ -241,7 +249,10 @@ async function main() {
   } finally {
     if (client) client.close()
     browser.kill('SIGKILL')
-    rmSync(PROFILE_DIR, { recursive: true, force: true })
+    // Chrome 收到 SIGKILL 后还会短暂写 user-data-dir；清理临时目录不能反过来
+    // 把已经通过的发布冒烟判红，所以等待并在失败时容忍残留。
+    await sleep(300)
+    cleanupProfile()
   }
 }
 
