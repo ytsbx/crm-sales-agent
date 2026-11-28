@@ -21,12 +21,8 @@ const DECISIONS = {
     description: '结案后，两条档案各自的跟进人、待办和单据保持不变。',
   },
   assign_existing: {
-    label: '归并到同一组跟进人',
-    description: '两条档案分开保留，双方原有跟进人合并成一组，都能看到两边档案。',
-  },
-  assign_new: {
-    label: '指定一位同事共同跟进',
-    description: '两条档案分开保留，并把你选定的同事加入两条档案的跟进人。',
+    label: '并成同一组跟进人',
+    description: '两条档案分开保留，双方原有跟进人合并成一组；可以顺便再加入一位同事。',
   },
 }
 type Decision = keyof typeof DECISIONS
@@ -103,7 +99,7 @@ export default function DuplicateCasePage() {
   const usersQuery = useQuery({
     queryKey: ['assignable-users', 'duplicate-case', ownerKeyword],
     queryFn: () => listUsers({ keyword: ownerKeyword, status: 'active', page: 1, page_size: 100 }),
-    enabled: isReviewing && form.decision === 'assign_new',
+    enabled: isReviewing && form.decision === 'assign_existing',
   })
   const owners = (usersQuery.data?.items ?? []).map((user) => ({ value: user.id, label: `${user.name}（${user.username}）` }))
   if (form.owner && !owners.some((owner) => owner.value === form.owner?.value)) owners.unshift(form.owner)
@@ -126,7 +122,7 @@ export default function DuplicateCasePage() {
   const resolveMutation = useMutation({
     mutationFn: () => resolveDuplicateCase(record!.id, {
       decision: form.decision!,
-      owner_id: form.decision === 'assign_new' ? form.owner?.value : undefined,
+      owner_id: form.decision === 'assign_existing' ? form.owner?.value : undefined,
       remark: form.remark.trim() || null,
     }),
     onSuccess: (result) => {
@@ -145,13 +141,12 @@ export default function DuplicateCasePage() {
       void customersQuery.refetch()
     },
   })
-  const canSubmit = Boolean(isReviewing && customersQuery.isSuccess && form.decision
-    && (form.decision !== 'assign_new' || form.owner))
+  const canSubmit = Boolean(isReviewing && customersQuery.isSuccess && form.decision)
   const rows = query.data?.items ?? []
 
   return (
     <div className="page-container duplicate-case-page">
-      <PageHeader title="撞单裁定" subtitle="核对疑似重复的客户档案，决定两条档案分别或由同一位同事跟进。"
+      <PageHeader title="撞单裁定" subtitle="核对疑似重复的客户档案，决定两条档案各自保留还是并成同一组跟进人。"
         extra={returnToTransfer || undefined} />
 
       <SectionCard style={{ flex: '0 0 auto' }} title={query.isSuccess ? `撞单记录（${query.data.total} 条）` : '撞单记录'} extra={
@@ -255,9 +250,10 @@ export default function DuplicateCasePage() {
                   onChange={(value) => setForm({ ...form, decision: value as Decision })} style={{ width: '100%' }} />
                 {form.decision && <p className="duplicate-case-hint">{DECISIONS[form.decision].description}</p>}
               </div>
-              {form.decision === 'assign_new' && <div>
-                <FormLabel required>共同跟进人</FormLabel>
-                <Select aria-label="共同跟进人" remote filter value={form.owner?.value} placeholder="输入姓名或登录名查询在职同事"
+              {form.decision === 'assign_existing' && <div>
+                <FormLabel>顺便加入同事（可选）</FormLabel>
+                <Select aria-label="顺便加入同事" remote filter value={form.owner?.value}
+                  placeholder="不选也可以，稍后到客户详情添加"
                   loading={usersQuery.isFetching} optionList={owners} onSearch={(value) => setOwnerKeyword(value.trim())}
                   onChange={(value) => setForm({ ...form, owner: owners.find((owner) => owner.value === value) })}
                   style={{ width: '100%' }} />

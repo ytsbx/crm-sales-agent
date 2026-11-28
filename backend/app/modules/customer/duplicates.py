@@ -301,26 +301,22 @@ async def resolve_case(
 
     resolved_user_id: int | None = None
     if decision in ("assign_existing", "assign_new"):
-        if decision == "assign_existing":
-            # 以「已有客户」为基准并入两条客户的跟进人
-            base = locked_customers[case.candidate_id]
-            target_ids = set(await active_follower_ids(session, base.id))
-            # 沿用已有客户的跟进人时，这些人也必须仍是在职的——停用账号不能
-            # 借撞单裁定把公海客户重新划到自己名下。
-            for uid in sorted(target_ids):
-                target = await session.get(User, uid)
-                if target is None or target.status != "active":
-                    name = target.name if target else f"id={uid}"
-                    raise AppError(
-                        ErrorCode.PARAM_ERROR,
-                        f"「{name}」已停用或不存在，不能接收客户",
-                        422,
-                    )
-        else:
-            if owner_id is None:
+        base = locked_customers[case.candidate_id]
+        target_ids = set(await active_follower_ids(session, base.id))
+        # 沿用已有跟进人时，这些人也必须仍是在职的——停用账号不能借裁定继续接客户。
+        for uid in sorted(target_ids):
+            target = await session.get(User, uid)
+            if target is None or target.status != "active":
+                name = target.name if target else f"id={uid}"
                 raise AppError(
-                    ErrorCode.REQUIRED_FIELD_MISSING, "裁定归属必须指定负责人", 422
+                    ErrorCode.PARAM_ERROR,
+                    f"「{name}」已停用或不存在，不能接收客户",
+                    422,
                 )
+        if decision == "assign_new" and owner_id is None:
+            raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "裁定归属必须指定负责人", 422)
+        if owner_id is not None:
+            # 「并组」时可选地顺手加入一位同事；指定的人也必须存在且在岗。
             target = await session.get(User, owner_id)
             if target is None:
                 raise AppError(ErrorCode.NOT_FOUND, f"负责人 id={owner_id} 不存在", 404)
@@ -328,7 +324,7 @@ async def resolve_case(
                 raise AppError(
                     ErrorCode.PARAM_ERROR, f"「{target.name}」已停用，不能接收客户", 422
                 )
-            target_ids = {owner_id}
+            target_ids.add(owner_id)
             resolved_user_id = owner_id
         union_ids = set(target_ids)
         for customer in locked_customers.values():
