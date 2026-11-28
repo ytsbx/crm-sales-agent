@@ -495,9 +495,10 @@ export default function CustomerListPage() {
     {
       title: '客户名称',
       dataIndex: 'name',
-      // Semi 表头默认居中、单元格默认靠左；只改单元格会看起来像“表头在中间、
-      // 名字全挤到左边”。这里连表头一起左对齐，表头和数据从同一条竖线开始。
+      // 全站表格 CSS 默认 `text-align: center !important`，Semi 的 align 会被压掉；
+      // 用 `cell-left` 这个专用类把表头和表体一起拉回左边，保证同一条竖线。
       align: 'left' as const,
+      className: 'cell-left',
       // 两行：上面公司名，下面「地区 · 来源 · 活跃状态」。
       // 那三列各自只有几个字却各占 90-120px，合到名字下面能省掉三列，
       // 顺带把横向滚动条也去掉（14 列 → 10 列）。

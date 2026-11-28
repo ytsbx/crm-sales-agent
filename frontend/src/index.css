@@ -8185,6 +8185,13 @@ table:not(.semi-table) td.cell-right {
 .semi-table-tbody .semi-table-row-cell {
   color: #4e5969;
 }
+/* 名称/文本类列需要左对齐时，用这个类兜过全站表格的居中 !important。
+   必须同时命中 thead 和 tbody：只改一边会出现“表头中间、内容左边”的错位。 */
+.semi-table-thead .semi-table-row-head.cell-left,
+.semi-table-tbody .semi-table-row-cell.cell-left {
+  text-align: left !important;
+}
+
 /* 长金额允许换行，沿用各列的对齐方式。 */
 .semi-table-tbody .semi-table-row-cell:is(.cell-right, .cell-money),
 table:not(.semi-table) td.cell-right {
