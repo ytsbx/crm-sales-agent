@@ -6986,3 +6986,8 @@
 - F10-01：FastAPI TestClient 用只有 `wecom:view + wecom:manage`、无客户权限的账号实测，候选客户返回 403 需要 `customer:view`，绑客返回 403 需要 `customer:update`，建客返回 403 需要 `customer:create`。候选服务使用 `scoped_owner_ids`，绑客使用 `get_visible_customer`。
 - 复现脚本：`review/verification/p0_f01_create_version_guard.py`、`review/verification/p0_f10_permission_gates.py`；两条均输出 `BLOCKED (PASS)`。
 - 结论：后端 P0 仍为 0；前端原两条 P0 已不再成立，当前全量活 P0 为 0。`B04-01` 维持“不成立、降为待确认”的设计缺口，不作为 P0 施工项。
+
+## 2026-11-28 B11-02 关闭
+
+- 主人明确指示 B11-02 默认密码项“不用管，标记已完成”。按既定口径关闭，不修改后端闸门、不补强制改密。
+- 台账已把 B11-02 从 P1 活账移出；后端 P1 活账由 2 条降为 1 条，只剩 B11-01 登录 CSRF。
