@@ -6919,3 +6919,7 @@
 - 上线核验：`status=verified`、`verified_at_utc=2026-11-28T01:41:38Z`；两端版本记录均为 `20c14f7d`；服务 active、`/health database=ok`、公网首页 200；数据库仍为 `d4f6a8b0c2e1`；客户名称列已带左对齐。
 - 备份：`/opt/crm-sales-agent/backup/unified-20c14f7d6a9e-g8m3cmq7`。
 - 追加（2026-11-28）：主人截图输入客户名「11」，查重弹出 5 个疑似重复，原因全是“企业名称互相包含”。根因是 `similarity_score` 对任意长度的名称都做包含匹配，`11` 命中了手机号/门牌号里的 11。现改为：1~3 个字的短名、纯数字名只做**完全相等**，不做包含/相似；4 字以上且含字母或汉字才做模糊匹配。新增 `tests/test_similarity_short_name.py` 4 项；dedup/tax 相关回归 47 项通过。
+- 发布：生产候选分支 `release/customer-shortname-dedup-20261128`，提交 `5445fd3779a31e318e3d5ac46214bf41bbb5658c`，基线 `20c14f7d`；发布包 SHA256 `f935998aa1d7d3d6500d6277d43eb98d387a0f1b1dcf4c414ca4d298a94017f9`。
+- 上线核验：`status=verified`、`verified_at_utc=2026-11-28T01:44:28Z`；两端版本记录均为 `5445fd37`；服务 active、`/health database=ok`、公网首页 200；数据库仍为 `d4f6a8b0c2e1`。
+- 生产口径实测：直接调用已部署的 `find_duplicate_customers(company_name="11")`，返回 1 条、分数 70、原因「企业名称一致」——只在真的存在同名客户「11」时提示，不再命中手机号/门牌号包含 11 的无关客户。
+- 备份：`/opt/crm-sales-agent/backup/unified-5445fd3779a3-9ggq2_jb`。
