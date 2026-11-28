@@ -49,11 +49,15 @@ const LEVEL_OPTIONS = [
   { value: 'D', label: 'D 级' },
 ]
 
-// 与库里的 8 个真实渠道一一对齐（2026-11-21）：原来的「老客户介绍 / 企业微信 /
-// Excel 导入 / 手工录入 / 其他」都是同义旧写法，新建一次客户就把脏数据造回来了。
-const SOURCE_OPTIONS = ['展会', '官网询盘', '客户介绍', '电话开发', '企微添加', '导入', '老客复购', '抖音私信'].map(
-  (value) => ({ value, label: value }),
-)
+// 与库里的 8 个真实渠道一一对齐（2026-11-21）；「其他」作为受控自定义入口保留：
+// 选中后必须写具体来源（最多 32 字），避免再把「老客户介绍 / Excel 导入 / 手工录入」
+// 这类同义旧写法直接写回库。
+const SOURCE_OPTIONS = [
+  ...['展会', '官网询盘', '客户介绍', '电话开发', '企微添加', '导入', '老客复购', '抖音私信'].map(
+    (value) => ({ value, label: value }),
+  ),
+  { value: '其他', label: '其他' },
+]
 
 const CUSTOMER_EXPORT_PURPOSES: Array<{ value: CustomerExportPurpose; label: string }> = [
   { value: 'customer_follow_up', label: '客户跟进' },
@@ -822,6 +826,8 @@ export default function CustomerListPage() {
             onClick={() => {
               // 每次打开"新建客户"都是一次新表单 → 换一把新的幂等键
               createRequestKeyRef.current = newRequestKey()
+              setForm(EMPTY_FORM)
+              setOtherSource('')
               setModalVisible(true)
             }}
           >
@@ -1342,15 +1348,23 @@ export default function CustomerListPage() {
         // 不写 width 时 Semi 用 448，表单挤成一条竖线、八个字段拉出一屏半高。
         visible={modalVisible}
         width={600}
-        onCancel={() => setModalVisible(false)}
+        onCancel={() => {
+          setModalVisible(false)
+          setForm(EMPTY_FORM)
+          setOtherSource('')
+        }}
         onOk={() => {
           if (!form.name.trim()) {
             Toast.warning('客户名称必填')
             return
           }
+          if (form.source === '其他' && !otherSource.trim()) {
+            Toast.warning('选择「其他」时请填写具体来源')
+            return
+          }
           createMutation.mutate({
             ...form,
-            source: form.source === '其他' ? (otherSource.trim() || '其他') : form.source,
+            source: form.source === '其他' ? otherSource.trim() : form.source,
           })
         }}
         confirmLoading={createMutation.isPending}
