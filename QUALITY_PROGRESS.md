@@ -6902,3 +6902,4 @@
 - 发布：生产候选分支 `release/customer-wecom-20261127`，提交 `d606c66b6d7c628cace12d89198699853d7c9888`，基线 `9e693c5f`；发布包 SHA256 `20f802d056e1cb2046a4c6b2efbd3c39433609663b6bf3123fe5fd5243ccf5a0`，备份 `/opt/crm-sales-agent/backup/unified-d606c66b6d7c-ywvaqel3`。
 - 上线核验：`status=verified`、`verified_at_utc=2026-11-27T10:24:40Z`；两端版本记录均为 `d606c66b`；服务 active、`/health database=ok`、公网首页 200；数据库仍为 `d4f6a8b0c2e1`；生产 `web-dist` 已含「企业微信导入未跟进」和「非企业微信来源」新文案；发布后日志无 error/traceback。
 - 生产接口口径核验：直接调用已部署的 `build_list_stmt(activity="unknown_contact")` 统计，`unknown_contact_total=0`，确认 2,562 条企微客户不再进入待补核筛选。
+- 追加（2026-11-28）：主人截图反馈「企业微信 · 未跟进」还是会满屏重复。口径再收一档：企微导入客户行内只显示来源「企业微信」，不再显示「未跟进」；新建未跟进客户仍显示「未跟进」，非企微历史导入仍由顶部汇总承接。前端构建/lint 通过（41 条历史 warning，0 error）。

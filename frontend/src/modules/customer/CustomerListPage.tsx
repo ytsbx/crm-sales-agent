@@ -383,7 +383,7 @@ export default function CustomerListPage() {
   })
 
   // 非企微的历史导入、联系时间未知的客户只在列表顶部汇总，不再逐行重复「待补核」；
-  // 企业微信导入是同步联系人，没有历史联系时间可补，按「未跟进」处理。
+  // 企业微信导入是同步联系人，没有历史联系时间可补；行内只保留来源，不逐行显示「未跟进」。
   // 单独取 total：page_size=1 不会把几千条客户拉回前端；数量跟随当前数据范围。
   const unknownContactQuery = useQuery({
     queryKey: ['customers', 'unknown-contact', { scope, userId: currentUser?.id }],
@@ -467,7 +467,8 @@ export default function CustomerListPage() {
 
   // 「活跃状态」原本是独立一列，现在并进客户名称的下方小字。
   // `unknown` 不能都叫「待补核」：
-  //   · 企业微信导入只是同步联系人，没有“历史联系时间”可补，直接按「未跟进」；
+  //   · 企业微信导入只是同步联系人，没有“历史联系时间”可补，也不逐行显示
+  //     「未跟进」——几千条客户会把列表刷成一堵重复的墙，只保留来源即可；
   //   · 非企微的历史导入没给联系日期 → 真正的待补核，由顶部汇总承接，行内不重复；
   //   · 新建客户还没记过跟进 → 只是「未跟进」，不是资料缺口。
   const activityLabel = (record: Customer) => {
@@ -476,8 +477,7 @@ export default function CustomerListPage() {
     if (value === 'stale') return '沉睡'
     if (value === 'watch') return '关注'
     if (value === 'unknown' || !value) {
-      if (record.last_contact_unknown && record.source !== '企业微信') return ''
-      return '未跟进'
+      return record.last_contact_unknown ? '' : '未跟进'
     }
     return ''
   }
