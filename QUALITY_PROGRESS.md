@@ -6915,3 +6915,6 @@
 - 上线核验：`status=verified`、`verified_at_utc=2026-11-28T01:32:03Z`；两端版本记录均为 `ce1e86db`；服务 active、`/health database=ok`、公网首页 200；数据库仍为 `d4f6a8b0c2e1`；新建客户来源已含「其他」，选中后出现自填框，空值提交会拦截。
 - 备份：`/opt/crm-sales-agent/backup/unified-ce1e86db61ad-q9gqtjc1`。
 - 追加（2026-11-28）：主人反馈客户列表「客户名称」表头居中、名字靠左，看起来偏左。Semi 表头默认居中、单元格默认靠左；给客户名称列加 `align: 'left' as const`，让表头和数据从同一条左边线开始。前端构建/lint 通过（0 error / 41 条历史 warning）。
+- 发布：生产候选分支 `release/customer-name-align-20261128`，提交 `20c14f7d6a9e55719f133f5bad3a87e800e1a711`，基线 `ce1e86db`；发布包 SHA256 `f5bef449869f49d32d5770aa1970966443c7828658c3d5def54b6d8117a3a001`。
+- 上线核验：`status=verified`、`verified_at_utc=2026-11-28T01:41:38Z`；两端版本记录均为 `20c14f7d`；服务 active、`/health database=ok`、公网首页 200；数据库仍为 `d4f6a8b0c2e1`；客户名称列已带左对齐。
+- 备份：`/opt/crm-sales-agent/backup/unified-20c14f7d6a9e-g8m3cmq7`。
