@@ -617,6 +617,44 @@ async def unbound_candidates(session: AsyncSession, contact_id: int, *, user: Cu
     }
 
 
+async def linked_contacts(session: AsyncSession, user: CurrentUser, customer_id: int) -> list[dict]:
+    await customer_service.get_visible_customer(session, user, customer_id)
+    rows = await session.execute(
+        select(WeComExternalContact.id, WeComExternalContact.name, WeComExternalContact.crm_contact_id)
+        .where(
+            WeComExternalContact.crm_customer_id == customer_id,
+            WeComExternalContact.crm_contact_id.is_not(None),
+        )
+        .order_by(WeComExternalContact.id)
+    )
+    return [{"id": row.id, "name": row.name, "crm_contact_id": row.crm_contact_id} for row in rows]
+
+
+async def unlink_customer(
+    session: AsyncSession, user: CurrentUser, customer_id: int, contact_id: int, expected_crm_contact_id: int,
+) -> dict:
+    # 与关联、客户合并采用同一加锁顺序。
+    await customer_service.get_visible_customer(session, user, customer_id, for_update=True)
+    row = (await session.execute(
+        select(WeComExternalContact)
+        .where(WeComExternalContact.id == contact_id, WeComExternalContact.crm_customer_id == customer_id)
+        .with_for_update().execution_options(populate_existing=True)
+    )).scalar_one_or_none()
+    if row is None or row.crm_contact_id != expected_crm_contact_id:
+        raise AppError(ErrorCode.VERSION_CONFLICT, "企微关联已变化，请刷新后核对。", 409)
+    before = {
+        "crm_customer_id": row.crm_customer_id,
+        "crm_contact_id": row.crm_contact_id,
+        "normalize_status": row.normalize_status,
+    }
+    row.crm_customer_id = None
+    row.crm_contact_id = None
+    row.normalize_status = "pending"
+    row.normalized_by = None
+    row.normalized_at = None
+    return before
+
+
 async def bind_customer(
     session: AsyncSession,
     *,

@@ -39,6 +39,64 @@ def test_action_card_checks_scope_and_permission(db_session,owner,permissions,vi
     result=asyncio.run(runtime.action_display(SyncSessionAsAsync(db_session),action,user=make_user(101,permissions=permissions)))
     assert ('不可泄露的客户' in str(result)) == visible
 
+@pytest.mark.anyio
+async def test_stream_recovers_original_turn_without_running_it_twice(db_session, monkeypatch):
+    from sqlalchemy.orm import Session
+
+    from app.core.errors import ErrorCode
+    from app.modules.agent import router
+    from app.modules.agent.model import AgentMessage, AgentSession
+    from app.modules.agent.schema import StreamMessageIn
+
+    for model in (AgentSession, AgentMessage):
+        model.__table__.create(db_session.get_bind(), checkfirst=True)
+    db_session.add(AgentSession(id=1, user_id=101))
+    db_session.commit()
+    session = SyncSessionAsAsync(db_session)
+    user = make_user(101)
+    monkeypatch.setattr(runtime, "model_ready", lambda: False)
+    payload = StreamMessageIn(content="整理当前进度", request_key="turn-key")
+
+    async def status(key, actor=user):
+        with Session(db_session.get_bind()) as raw:
+            return (await router.stream_turn_status(1, key, actor, SyncSessionAsAsync(raw)))["data"]["status"]
+
+    async def retry(message):
+        with Session(db_session.get_bind()) as raw:
+            response = await router.stream_message(1, message, user, SyncSessionAsAsync(raw))
+            return "".join([frame async for frame in response.body_iterator])
+
+    assert await status("turn-key") == "not_received"
+    original = await router.stream_message(1, payload, user, session)
+    assert await status("turn-key") == "running"
+    with pytest.raises(AppError) as duplicate:
+        await retry(payload)
+    assert duplicate.value.code == ErrorCode.DUPLICATE
+
+    frames = "".join([frame async for frame in original.body_iterator])
+    assert "event: done" in frames
+    assert await status("turn-key") == "done"
+    assert "turn_already_saved" in await retry(payload)
+    assert db_session.query(AgentMessage).filter_by(session_id=1, role="user").count() == 1
+    with pytest.raises(AppError) as unauthorized:
+        await status("turn-key", make_user(202))
+    assert unauthorized.value.http_status == 404
+
+    async def failing(*args, **kwargs):
+        yield "notice", {"reason": "fixture"}
+        raise AppError(ErrorCode.EXTERNAL_ERROR, "internal-provider-marker", 502)
+
+    monkeypatch.setattr(runtime, "run_turn_events", failing)
+    broken = await router.stream_message(1, StreamMessageIn(content="失败", request_key="broken-turn"), user, session)
+    frames = "".join([frame async for frame in broken.body_iterator])
+    assert "AI 服务暂时不可用" in frames
+    assert "internal-provider-marker" not in frames
+    assert await status("broken-turn") == "interrupted"
+    with pytest.raises(AppError) as interrupted:
+        await retry(StreamMessageIn(content="失败", request_key="broken-turn"))
+    assert interrupted.value.code == ErrorCode.VERSION_CONFLICT
+
+
 def test_provider_body_not_exposed():
     assert 'secret-token' not in runtime.model_error_message(RuntimeError('secret-token private-body'))
 

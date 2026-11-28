@@ -13,6 +13,10 @@ class MessageIn(BaseModel):
     content: str = Field(min_length=1, max_length=4000)
 
 
+class StreamMessageIn(MessageIn):
+    request_key: str | None = Field(default=None, min_length=1, max_length=64)
+
+
 class ActionReject(BaseModel):
     reason: str | None = None
 

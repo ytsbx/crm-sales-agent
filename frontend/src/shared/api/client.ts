@@ -62,7 +62,10 @@ function pickInvalidFields(body: unknown): string[] {
  * 所以这里统一判：拿不到可用文字时，退化成一句带错误码的人话
  * （「系统内部错误」也比空白强）。
  */
-function readableMessage(raw: unknown, code: number): string {
+export function readableMessage(raw: unknown, code: number, status?: number): string {
+  if ((status != null && status >= 500) || (code >= 500 && code < 600) || (code >= 50000 && code < 60000)) {
+    return `服务暂时不可用（错误码 ${code}），请稍后重试或联系管理员`
+  }
   const text = typeof raw === 'string' ? raw.trim() : ''
   if (!text || text === 'null' || text === 'undefined') {
     return code
@@ -153,7 +156,7 @@ http.interceptors.response.use(
       ? await readBlobError(data, error.response?.headers?.['content-type'])
       : data
     const code = typeof body?.code === 'number' ? body.code : status ?? 0
-    const baseMessage: string = readableMessage(body?.message, code)
+    const baseMessage = readableMessage(typeof body?.code === 'number' ? body.message : undefined, code, status)
     // 后端只回一句笼统的「参数校验失败」时，把出问题的字段名一并带上 ——
     // 只显示那句等于什么都没说。
     // 但后端**认得出**的错误（数值超出范围、小数位过多、内容太长…）现在会直接
@@ -177,9 +180,9 @@ http.interceptors.response.use(
 async function unwrap<T>(promise: Promise<AxiosResponse<Envelope<T>>>): Promise<T> {
   const response = await promise
   const body = response.data
-  if (body.code !== 0) {
-    // 同样要归一：这里直接透传 body.message，为空时会抛出一条没有文字的提示
-    throw new ApiError(readableMessage(body.message, body.code), body.code)
+  if (body?.code !== 0) {
+    const code = typeof body?.code === 'number' ? body.code : 0
+    throw new ApiError(readableMessage(code ? body.message : undefined, code), code)
   }
   return body.data
 }

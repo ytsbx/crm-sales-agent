@@ -84,11 +84,11 @@ async def test_merge_preview_applies_price_visibility_and_resolution_permissions
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("owner_status,third_pair", [
-    ("active", None), ("inactive", None), (None, None),
-    ("active", (41, 43)), ("active", (43, 42)),
+@pytest.mark.parametrize("owner_status,third_pair,keep_existing", [
+    ("active", None, False), ("disabled", None, False), ("archived", None, False), (None, None, False),
+    ("active", None, True), ("active", (41, 43), False), ("active", (43, 42), False),
 ])
-async def test_customer_merge_closes_its_pair_and_checks_other_cases(db_session, owner_status, third_pair):
+async def test_customer_merge_closes_its_pair_and_checks_other_cases(db_session, owner_status, third_pair, keep_existing):
     tables = [tags._load_model(path, model).__table__ for path, model, _ in tags.MERGE_TARGETS]
     tables.extend(model.__table__ for model in (
         AuditLog, CustomerMergeLog, CustomerOwnerHistory, Tag, FileRecord, BusinessFile,
@@ -107,8 +107,16 @@ async def test_customer_merge_closes_its_pair_and_checks_other_cases(db_session,
     if third_pair:
         db_session.add(CustomerDuplicateCase(id=2, customer_id=third_pair[0], candidate_id=third_pair[1],
                                             status="pending", created_at=datetime.now(UTC)))
+    if keep_existing:
+        db_session.add_all([
+            User(id=203, name="保留档案原跟进人", username="existing-follower", password_hash="x", status="disabled"),
+            User(id=204, name="来源档案停用跟进人", username="skipped-follower", password_hash="x", status="disabled"),
+        ])
     db_session.flush()
     follow_customer(db_session, 41, 202)
+    if keep_existing:
+        follow_customer(db_session, 42, 203)
+        follow_customer(db_session, 41, 204)
     db_session.commit()
     session = SyncSessionAsAsync(db_session)
     user = make_user(data_scope="all")
@@ -127,9 +135,9 @@ async def test_customer_merge_closes_its_pair_and_checks_other_cases(db_session,
 
     await tags_router.merge_customers(payload, request, user, session)
     target = db_session.get(Customer, 42)
-    # 客户没有默认负责人：合并只并跟进人，目标转私海
+    # 来源没有在职跟进人，公海目标继续留在公海。
     assert target.owner_id is None
-    assert target.pool_status == "private"
+    assert target.pool_status == ("private" if owner_status == "active" else "public")
     pending, total = await duplicates.list_cases(session, user=user)
     assert pending == [] and total == 0
     resolved, total = await duplicates.list_cases(session, user=user, status="resolved")
@@ -137,7 +145,12 @@ async def test_customer_merge_closes_its_pair_and_checks_other_cases(db_session,
     assert db_session.query(CustomerOwnerHistory).count() == 0
     audit = db_session.query(AuditLog).filter_by(action="merge").one()
     assert audit.after_data["resolved_duplicate_case_ids"] == [1]
-    assert audit.after_data["target_follower_ids"] == [202]
+    expected_followers = [202] if owner_status == "active" else []
+    if keep_existing:
+        expected_followers.append(203)
+    assert audit.after_data["target_follower_ids"] == expected_followers
+    from app.modules.customer.followers import active_follower_ids
+    assert sorted(await active_follower_ids(session, target.id)) == expected_followers
 
 
 class CustomerLockProbe(SyncSessionAsAsync):

@@ -1,4 +1,4 @@
-import { api, ApiError, handleSessionRejection } from './client'
+import { api, ApiError, handleSessionRejection, readableMessage } from './client'
 import { currentAuthEpoch, useAuthStore } from '../store/auth'
 import type { PageResult } from '../types'
 
@@ -121,11 +121,18 @@ export type AgentStreamEventKind =
   | 'error'
   | 'done'
 
+export type AgentTurnStatus = 'not_received' | 'running' | 'done' | 'interrupted'
+
+export function getAgentTurnStatus(sessionId: number, requestKey: string) {
+  return api.get<{ status: AgentTurnStatus }>(`/agent/sessions/${sessionId}/turns/${encodeURIComponent(requestKey)}`)
+}
+
 export async function streamAgentMessage(
   sessionId: number,
   content: string,
   onEvent: (kind: AgentStreamEventKind, data: Record<string, unknown>) => void,
   signal?: AbortSignal,
+  requestKey?: string,
 ): Promise<AgentTurnResult | null> {
   const token = useAuthStore.getState().token
   const sentAt = currentAuthEpoch()
@@ -136,17 +143,18 @@ export async function streamAgentMessage(
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ content, request_key: requestKey }),
   })
   if (!resp.ok) {
     // 失败时响应体是统一信封，解析出人话再抛；401 与 axios 拦截器同口径处理
     const body = await resp.json().catch(() => null)
-    const message = body?.message ?? `请求失败（HTTP ${resp.status}）`
-    const code = body?.code
+    const hasCode = typeof body?.code === 'number'
+    const code = hasCode ? body.code : resp.status
+    const message = readableMessage(hasCode ? body.message : undefined, code, resp.status)
     if (resp.status === 401 || code === 40101 || code === 40102) {
       handleSessionRejection(sentAt, code === 40102)
     }
-    throw new ApiError(message, 0)
+    throw new ApiError(message, code, resp.status)
   }
   if (!resp.body) {
     throw new ApiError('当前浏览器不支持流式读取', 0)

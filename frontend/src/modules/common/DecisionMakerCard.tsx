@@ -74,7 +74,7 @@ export default function DecisionMakerCard({
   if (!customerId) return null
 
   // 空态降级：一行说明 + 去加联系人的入口，不占一整张卡
-  if (footnoteOnEmpty && !contactsQuery.isLoading && contacts.length === 0) {
+  if (footnoteOnEmpty && contactsQuery.isSuccess && contacts.length === 0) {
     return (
       /* 收起成一行，但**不能裸着挂在上一张卡下面**（2026-11-17 发现）：
          之前 padding 只有 `0 2px`、也没有外壳，看上去像上一张卡掉出来的一截尾巴，
@@ -116,12 +116,21 @@ export default function DecisionMakerCard({
       <div className="toolbar" style={{ marginBottom: 8 }}>
         <div style={{ fontWeight: 600 }}>{title}</div>
         <div style={{ flex: 1 }} />
-        <span style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
-          共 {contacts.length} 位联系人
-        </span>
+        {contactsQuery.isSuccess && (
+          <span style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
+            共 {contacts.length} 位联系人
+          </span>
+        )}
       </div>
 
-      {contactsQuery.isLoading ? (
+      {contactsQuery.isError ? (
+        <div role="alert">
+          联系人加载失败。
+          <Button size="small" theme="borderless" loading={contactsQuery.isFetching} onClick={() => void contactsQuery.refetch()}>
+            重试
+          </Button>
+        </div>
+      ) : contactsQuery.isLoading ? (
         <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>加载中…</div>
       ) : contacts.length === 0 ? (
         // 不用 <Empty>：它自带一个大图标，150px 高，而这里只有一句话要说 ——

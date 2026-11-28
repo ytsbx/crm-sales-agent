@@ -8,6 +8,7 @@ import {
   createAgentSession,
   deleteAgentSession,
   getAgentSession,
+  getAgentTurnStatus,
   getAgentOlderMessages,
   listAgentSessions,
   listAgentTools,
@@ -22,6 +23,18 @@ import {
 import type { TagTone } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
 import { getCustomer } from '../../shared/api/customer'
+import { newRequestKey } from '../../shared/api/requestKey'
+import { useAuthStore } from '../../shared/store/auth'
+
+type TurnAttempt = { requestKey: string; content: string }
+
+function readTurnAttempt(key: string): TurnAttempt | null {
+  try {
+    return JSON.parse(sessionStorage.getItem(key) ?? 'null')
+  } catch {
+    return null
+  }
+}
 
 const RISK_TONE: Record<string, TagTone> = { L1: 'green', L2: 'orange', L3: 'red' }
 
@@ -50,6 +63,38 @@ export default function AgentPage() {
   const [streamTools, setStreamTools] = useState<AgentToolCall[]>([])
   const busyRef = useRef(false)
   const streamAbortRef = useRef<AbortController | null>(null)
+
+  const userId = useAuthStore((state) => state.user?.id)
+  const [attempts, setAttempts] = useState<Record<string, TurnAttempt | null>>({})
+  const attemptKey = (id: number) => `crm-agent-turn:${userId}:${id}`
+  const currentKey = sessionId ? attemptKey(sessionId) : ''
+  const attempt = currentKey && userId != null
+    ? (currentKey in attempts ? attempts[currentKey] : readTurnAttempt(currentKey))
+    : null
+  const saveAttempt = (id: number, value: TurnAttempt | null) => {
+    const key = attemptKey(id)
+    if (userId != null) {
+      try {
+        if (value) sessionStorage.setItem(key, JSON.stringify(value))
+        else sessionStorage.removeItem(key)
+      } catch {
+        // 浏览器存储不可用时，仍可在当前页面恢复。
+      }
+    }
+    setAttempts((previous) => ({ ...previous, [key]: value }))
+  }
+  const recoveryKey = attempt?.requestKey
+  const recovery = useQuery({
+    queryKey: ['agent-turn', sessionId, recoveryKey],
+    queryFn: () => getAgentTurnStatus(sessionId!, recoveryKey!),
+    enabled: Boolean(sessionId && attempt && !streaming),
+    refetchInterval: (query) => query.state.data?.status === 'running' ? 3000 : false,
+  })
+  const recoveryStatus = recovery.data?.status
+  useEffect(() => {
+    if (!sessionId || !recoveryKey || streaming || (recoveryStatus !== 'done' && recoveryStatus !== 'interrupted')) return
+    void queryClient.invalidateQueries({ queryKey: ['agent-session', sessionId] })
+  }, [sessionId, recoveryKey, recoveryStatus, streaming, queryClient])
 
   useEffect(() => () => streamAbortRef.current?.abort(), [])
   const routeContextType = searchParams.get('context')
@@ -142,11 +187,12 @@ export default function AgentPage() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [detailQuery.data?.messages.length, streamText])
 
-  const runStream = async (id: number, content: string) => {
+  const runStream = async (id: number, content: string, requestKey = newRequestKey()) => {
+    saveAttempt(id, { requestKey, content })
     const controller = new AbortController()
     streamAbortRef.current = controller
     const aborted = new Promise<void>((resolve) => controller.signal.addEventListener('abort', () => resolve(), { once: true }))
-    const idleReason = '一段时间没有收到回复，已停止。可以重新发送问题。'
+    const idleReason = '一段时间没有收到回复，正在核对这次提问的状态。'
     let idleTimer: ReturnType<typeof setTimeout> | undefined
     const resetIdleTimer = () => {
       clearTimeout(idleTimer)
@@ -174,14 +220,15 @@ export default function AgentPage() {
         } else if (kind === 'error') {
           Toast.error(String(data.message ?? '对话失败'))
         }
-      }, controller.signal)
+      }, controller.signal, requestKey)
       if (result) {
+        saveAttempt(id, null)
         setLastTools(result.tool_calls)
         // 中间轮次的话不在最终回复里：气泡以权威回复收口，
         // 随后 invalidate 拉回服务端消息，两者内容一致
         if (!textAcc.endsWith(result.reply)) setStreamText(result.reply)
       } else {
-        Toast.error('连接中断，未拿到完整回复')
+        Toast.error('连接中断，正在核对这次提问的状态')
       }
     } catch (error) {
       if (controller.signal.reason === idleReason) Toast.warning(idleReason)
@@ -197,6 +244,7 @@ export default function AgentPage() {
       if (!controller.signal.aborted) await Promise.race([refreshHistory, aborted])
       streamAbortRef.current = null
       busyRef.current = false
+      void queryClient.invalidateQueries({ queryKey: ['agent-turn', id, requestKey] })
       setStreaming(false)
       setStreamText('')
       setStreamTools([])
@@ -205,7 +253,7 @@ export default function AgentPage() {
 
   const handleSend = (text: string) => {
     const content = text.trim()
-    if (!content || busyRef.current || changingEntry) return
+    if (!content || busyRef.current || changingEntry || attempt) return
     setInput('')
     if (!sessionId) {
       busyRef.current = true
@@ -262,6 +310,7 @@ export default function AgentPage() {
       return deleteAgentSession(id)
     },
     onSuccess: (_data, deletedId) => {
+      saveAttempt(deletedId, null)
       if (sessionId === deletedId) {
         setSelectedSession(null)
         setInput('')
@@ -359,7 +408,7 @@ export default function AgentPage() {
           theme="outline"
           type="primary"
           style={{ marginBottom: 12, flexShrink: 0, alignSelf: 'flex-start' }}
-          disabled={streaming || changingEntry}
+          disabled={streaming || changingEntry || Boolean(attempt)}
           onClick={() => {
             if (busyRef.current) return
             setSelectedSession(null)
@@ -545,7 +594,7 @@ export default function AgentPage() {
                   }
                   return EXAMPLES
                 })().map((text) => (
-                  <button key={text} type="button" disabled={streaming || changingEntry} onClick={() => handleSend(text)}>
+                  <button key={text} type="button" disabled={streaming || changingEntry || Boolean(attempt)} onClick={() => handleSend(text)}>
                     {text}
                   </button>
                 ))}
@@ -643,6 +692,27 @@ export default function AgentPage() {
         </div>
 
         <div className="agent-composer">
+          {attempt && !streaming && sessionId && (
+            <div role="status" className="agent-composer-hint" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              {recovery.isError ? '暂时查不到这次提问的状态。'
+                : recoveryStatus === 'done' ? '已找回这次回复，可继续提问。'
+                  : recoveryStatus === 'interrupted' ? '这次提问已中断。已保存的回复和待确认操作可在上方查看。'
+                    : recoveryStatus === 'not_received' ? '暂未查到这次提问，可用原编号重试。'
+                      : '正在核对这次提问的状态，请稍等。'}
+              {recovery.isError && <Button size="small" onClick={() => void recovery.refetch()}>重新查询</Button>}
+              {!recovery.isError && recoveryStatus === 'not_received' && (
+                <Button size="small" onClick={() => {
+                  if (!busyRef.current) void runStream(sessionId, attempt.content, attempt.requestKey)
+                }}>重试本次提问</Button>
+              )}
+              {!recovery.isError && (recoveryStatus === 'done' || recoveryStatus === 'interrupted') && (
+                <Button size="small" onClick={() => {
+                  if (recoveryStatus === 'interrupted') setInput(attempt.content)
+                  saveAttempt(sessionId, null)
+                }}>{recoveryStatus === 'done' ? '继续提问' : '重新提问'}</Button>
+              )}
+            </div>
+          )}
           {/* 输入框和发送键包一层：按钮原来按整个 composer 定位，而 composer 底下
               还压着一行「会直接读系统里的…」小字，结果按钮落到小字那一行上，
               和输入框错开了一截（2026-11-21 巡检）。包一层之后按钮就贴着框右下角。 */}
@@ -683,7 +753,7 @@ export default function AgentPage() {
           ) : <Button type="primary"
             className="agent-send"
             loading={streaming}
-            disabled={!input.trim() || changingEntry}
+            disabled={!input.trim() || changingEntry || Boolean(attempt)}
             onClick={() => handleSend(input)}
           >
             {streaming ? '回复中…' : '发送'}

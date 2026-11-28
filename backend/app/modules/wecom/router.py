@@ -407,6 +407,36 @@ async def unbound_candidates(
     return ok(await svc.unbound_candidates(session, contact_id, user=user))
 
 
+@router.get("/integrations/wecom/customers/{customer_id}/linked-contacts")
+async def list_linked_contacts(
+    customer_id: int,
+    user: CurrentUser = Depends(require_wecom_action("wecom:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    ensure_permission(user, "customer:update")
+    return ok(await svc.linked_contacts(session, user, customer_id))
+
+
+@router.delete("/integrations/wecom/customers/{customer_id}/linked-contacts/{contact_id}")
+async def unlink_customer(
+    customer_id: int,
+    contact_id: int,
+    request: Request,
+    crm_contact_id: int = Query(..., gt=0),
+    user: CurrentUser = Depends(require_wecom_action("wecom:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    ensure_permission(user, "customer:update")
+    before = await svc.unlink_customer(session, user, customer_id, contact_id, crm_contact_id)
+    after = {"crm_customer_id": None, "crm_contact_id": None, "normalize_status": "pending"}
+    await write_audit(
+        session, operator_id=user.id, action="wecom_unlink_customer", business_type="integration",
+        business_id=contact_id, before=before, after=after, ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(after, "已解除企微关联，联系人已回到待确认列表。")
+
+
 @router.post("/integrations/wecom/unbound-contacts/{contact_id}/bind-customer")
 async def bind_customer(
     contact_id: int,

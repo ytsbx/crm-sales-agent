@@ -120,6 +120,18 @@ export function listUnboundContacts(query: { keyword?: string; page?: number; pa
   return api.get<PageResult<WeComUnboundContact>>('/integrations/wecom/unbound-contacts', query)
 }
 
+export type WeComLinkedContact = { id: number; name: string | null; crm_contact_id: number }
+
+export function listWeComLinkedContacts(customerId: number) {
+  return api.get<WeComLinkedContact[]>(`/integrations/wecom/customers/${customerId}/linked-contacts`)
+}
+
+export function unlinkWeComCustomer(customerId: number, contact: WeComLinkedContact) {
+  return api.delete<{ normalize_status: 'pending' }>(
+    `/integrations/wecom/customers/${customerId}/linked-contacts/${contact.id}?crm_contact_id=${contact.crm_contact_id}`,
+  )
+}
+
 export function getUnboundCandidates(contactId: number) {
   return api.get<WeComCandidates>(
     `/integrations/wecom/unbound-contacts/${contactId}/candidates`,

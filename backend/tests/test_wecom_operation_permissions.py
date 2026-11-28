@@ -14,7 +14,7 @@ from app.core.audit import AuditLog
 from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.core.errors import register_exception_handlers
-from app.modules.customer.model import Customer
+from app.modules.customer.model import Contact, Customer
 from app.modules.user.model import User
 from app.modules.wecom import router as routes
 from app.modules.wecom.model import WeComExternalContact
@@ -57,6 +57,43 @@ async def test_wecom_customer_actions_follow_crm_permissions_and_scope(db_sessio
         bound = await client.post(f"{base}/21/bind-customer", json={"customer_id": 11})
         assert bound.status_code == 200
         assert bound.json()["data"]["customer_id"] == 11
+        crm_contact_id = bound.json()["data"]["contact_id"]
+        linked = "/integrations/wecom/customers/11/linked-contacts"
+        outside = "/integrations/wecom/customers/12/linked-contacts"
+        params = {"crm_contact_id": crm_contact_id}
+        assert (await client.get(linked)).json()["data"] == [
+            {"id": 21, "name": "要关联的联系人", "crm_contact_id": crm_contact_id},
+        ]
+        assert (await client.get(outside)).status_code == 403
+        assert (await client.delete(f"{outside}/21", params=params)).status_code == 403
+        actor.permissions.remove("customer:update")
+        assert (await client.delete(f"{linked}/21", params=params)).status_code == 403
+        actor.permissions.add("customer:update")
+        actor.permissions.remove("wecom:manage")
+        assert (await client.delete(f"{linked}/21", params=params)).status_code == 403
+        actor.permissions.add("wecom:manage")
+        assert (await client.delete(
+            f"{linked}/21", params={"crm_contact_id": crm_contact_id + 1},
+        )).status_code == 409
+        assert db_session.get(WeComExternalContact, 21).crm_customer_id == 11
+        assert (await client.delete(f"{linked}/21", params=params)).status_code == 200
+        external = db_session.get(WeComExternalContact, 21)
+        assert external.normalize_status == "pending"
+        assert external.crm_customer_id is None and external.crm_contact_id is None
+        assert external.normalized_at is None and external.normalized_by is None
+        contact = db_session.get(Contact, crm_contact_id)
+        assert contact.customer_id == 11 and contact.deleted_at is None
+        audit = db_session.query(AuditLog).filter_by(action="wecom_unlink_customer", business_id=21).one()
+        assert audit.before_data["crm_contact_id"] == crm_contact_id
+        assert audit.after_data["normalize_status"] == "pending"
+        assert (await client.get(linked)).json()["data"] == []
+        actor.data_scope = "all"
+        assert (await client.post(f"{base}/21/bind-customer", json={"customer_id": 12})).status_code == 200
+        assert (await client.delete(f"{linked}/21", params=params)).status_code == 409
+        assert (await client.delete(f"{outside}/21", params=params)).status_code == 409
+        assert db_session.get(WeComExternalContact, 21).crm_customer_id == 12
+        assert db_session.get(Contact, crm_contact_id).customer_id == 11
+        actor.data_scope = "self"
         actor.permissions.add("customer:create")
         # 指定别人当负责人属于分配动作：没有 customer:assign 时拒绝
         assert (await client.post(f"{base}/23/create-customer",

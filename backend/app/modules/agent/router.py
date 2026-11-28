@@ -2,13 +2,17 @@
 
 import asyncio
 import json
-from datetime import UTC, datetime
+from contextlib import aclosing
+from datetime import UTC, datetime, timedelta
+
+import anyio
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import idempotency
 from app.core.audit import write_audit
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
@@ -35,6 +39,7 @@ from app.modules.agent.schema import (
     QuoteDraftIn,
     RiskAnalysisIn,
     SessionIn,
+    StreamMessageIn,
 )
 from app.modules.agent.tools import TOOLS
 
@@ -470,10 +475,38 @@ async def retry_execution(
     return ok(result, "已重试")
 
 
+AGENT_TURN_ACTION = "agent:stream-turn"
+
+
+@router.get("/agent/sessions/{session_id}/turns/{request_key}")
+async def stream_turn_status(
+    session_id: int,
+    request_key: str,
+    user: CurrentUser = Depends(require_permission("agent:use")),
+    session: AsyncSession = Depends(get_db),
+):
+    await _get_session(session, session_id, user.id)
+    key = idempotency.RequestKey
+    row = (await session.execute(select(key).where(
+        key.user_id == user.id, key.action == AGENT_TURN_ACTION,
+        key.request_key == request_key, key.result_id == session_id,
+    ))).scalar_one_or_none()
+    if row is None:
+        return ok({"status": "not_received"})
+    if row.status == "done":
+        return ok({"status": "done"})
+    created_at = row.created_at
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=UTC)
+    if row.status == "failed" or created_at <= datetime.now(UTC) - timedelta(minutes=2):
+        return ok({"status": "interrupted"})
+    return ok({"status": "running"})
+
+
 @router.post("/agent/sessions/{session_id}/messages/stream")
 async def stream_message(
     session_id: int,
-    payload: MessageIn,
+    payload: StreamMessageIn,
     user: CurrentUser = Depends(require_permission("agent:use")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -488,16 +521,52 @@ async def stream_message(
     """
     row = await _get_session(session, session_id, user.id)
 
+    reservation = None
+    reservation_id = None
+    if payload.request_key is not None:
+        reservation = await idempotency.reserve(
+            session, user_id=user.id, action=AGENT_TURN_ACTION, request_key=payload.request_key,
+            payload={"session_id": session_id, "content": payload.content},
+            result_type="agent_session",
+        )
+        if not reservation.should_replay:
+            reservation_id = reservation.row.id
+            reservation.row.result_id = session_id
+            await session.commit()
+
     async def event_stream():
-        yield _sse("start", {"session_id": session_id})
+        if reservation is not None and reservation.should_replay:
+            yield _sse("notice", {"reason": "turn_already_saved"})
+            return
+        finished = False
         try:
+            yield _sse("start", {"session_id": session_id})
             async with asyncio.timeout(90):
-                async for kind, data in runtime.run_turn_events(
+                async with aclosing(runtime.run_turn_events(
                     session, agent_session=row, user=user, text=payload.content
-                ):
-                    yield _sse(kind, data)
-        except Exception as exc:  # 流已经开了，500 发不出去；把原因作为最后一个事件告诉前端
-            yield _sse("error", {"message": exc.message if isinstance(exc, AppError) else runtime.model_error_message(exc)})
+                )) as events:
+                    async for kind, data in events:
+                        if kind == "done" and reservation is not None:
+                            # 会话详情是回复和待确认操作的唯一来源。
+                            await idempotency.complete(
+                                session, reservation, result_payload={"status": "done"}, result_id=session_id,
+                            )
+                            await session.commit()
+                            finished = True
+                        yield _sse(kind, data)
+        except Exception as exc:
+            show_message = isinstance(exc, AppError) and exc.http_status < 500 and exc.code < 50000
+            yield _sse("error", {"message": exc.message if show_message else runtime.model_error_message(exc)})
+        finally:
+            if reservation_id is not None and not finished:
+                # 浏览器断开时先让运行时保留已有内容，再标识这次提交已中断。
+                with anyio.move_on_after(5, shield=True):
+                    await session.rollback()
+                    key = idempotency.RequestKey
+                    await session.execute(update(key).where(
+                        key.id == reservation_id, key.status == "in_flight",
+                    ).values(status="failed"))
+                    await session.commit()
 
     return StreamingResponse(
         event_stream(),

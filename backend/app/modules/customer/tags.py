@@ -27,6 +27,7 @@ from app.modules.customer.model import (
     Tag,
     customer_tags,
 )
+from app.modules.user.model import User
 
 
 def _now() -> datetime:
@@ -846,12 +847,15 @@ async def merge_customers(
                    "domain", "tax_no", "source", "level", "remark"):
         if getattr(target, column) in (None, "") and snapshot.get(column):
             setattr(target, column, snapshot[column])
-    # 跟进人取并集：合并后双方原来能看到的同事都继续能看；
-    # 来源客户的跟进关系随即清空（它已经软删，留着的行没有意义）。
+    # 保留目标已有关系，只从来源带入在职员工。
     from app.modules.customer.followers import add_followers, clear_followers
 
     union_followers = set(target_follower_ids)
-    union_followers.update(source_follower_ids)
+    if source_follower_ids:
+        active_source = await session.scalars(
+            select(User.id).where(User.id.in_(source_follower_ids), User.status == "active")
+        )
+        union_followers.update(active_source)
     if union_followers:
         await add_followers(
             session, target.id, sorted(union_followers), source="merge", created_by=user.id

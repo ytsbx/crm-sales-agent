@@ -33,6 +33,7 @@ import {
   type CustomerPayload,
   type DocumentTransfer,
 } from '../../shared/api/customer'
+import { listWeComLinkedContacts, unlinkWeComCustomer, type WeComLinkedContact } from '../../shared/api/wecom'
 import { listUsers, type SystemUser } from '../../shared/api/system'
 import { ApiError } from '../../shared/api/client'
 import { listDictionaries } from '../../shared/api/settings'
@@ -225,6 +226,27 @@ export default function CustomerDetailPage() {
     queryKey: ['contacts', customerId],
     queryFn: () => listContacts(customerId),
     enabled: Number.isFinite(customerId),
+  })
+
+  const canUnlinkWeCom = can('customer:update') && can('wecom:view') && can('wecom:manage')
+  const wecomLinks = useQuery({
+    queryKey: ['wecom-linked-contacts', customerId],
+    queryFn: () => listWeComLinkedContacts(customerId),
+    enabled: canUnlinkWeCom && Number.isFinite(customerId) && activeKey === 'contacts',
+  })
+  const unlinkWeComMutation = useMutation({
+    mutationFn: (contact: WeComLinkedContact) => unlinkWeComCustomer(customerId, contact),
+    onSuccess: () => {
+      Toast.success('已解除企微关联。可在「企业微信 → 待确认联系人」重新关联。')
+      void queryClient.invalidateQueries({ queryKey: ['wecom-linked-contacts', customerId] })
+      void queryClient.invalidateQueries({ queryKey: ['wecom-unbound'] })
+      void queryClient.invalidateQueries({ queryKey: ['wecom-candidates'] })
+      void queryClient.invalidateQueries({ queryKey: ['wecom-readiness'] })
+    },
+    onError: (error: Error) => {
+      Toast.error(error.message)
+      void wecomLinks.refetch()
+    },
   })
 
   const contactMutation = useMutation({
@@ -1077,6 +1099,29 @@ export default function CustomerDetailPage() {
                   // 编辑/删除（按"第一条"或按姓名找会误伤别人的数据，实测踩过）
                   onRow={(row) => ({ 'data-contact-id': String((row as Contact).id) })}
                 />
+                {canUnlinkWeCom && wecomLinks.isError && (
+                  <Button size="small" theme="borderless" onClick={() => void wecomLinks.refetch()}>
+                    企微关联加载失败，点击重试
+                  </Button>
+                )}
+                {canUnlinkWeCom && Boolean(wecomLinks.data?.length) && (
+                  <section style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--crm-border)' }}>
+                    <div style={{ fontWeight: 600, marginBottom: 8 }}>关联的企微联系人</div>
+                    {wecomLinks.data?.map((contact) => (
+                      <div key={contact.id} style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
+                        <span>{contact.name || '未命名企微联系人'}</span>
+                        <Popconfirm
+                          title="解除这个企微联系人的关联？"
+                          content="解除后，这位企微联系人会回到「待确认联系人」，可重新选择客户。这家客户的 CRM 联系人档案和历史记录会保留。"
+                          okText="解除关联"
+                          onConfirm={() => unlinkWeComMutation.mutate(contact)}
+                        >
+                          <Button theme="borderless" size="small" disabled={unlinkWeComMutation.isPending}>解除关联</Button>
+                        </Popconfirm>
+                      </div>
+                    ))}
+                  </section>
+                )}
               </div>
               {/* 核心决策人卡片（设计稿客户详情右栏）：窄屏时整块落到下方 */}
               <div className="split-side">

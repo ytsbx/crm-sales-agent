@@ -386,7 +386,16 @@ export default function CopilotDrawer() {
               </Button>
             </div>
           )}
-          {messages.length === 0 && !sending && (
+          {detailQuery.isError && (
+            <div role="alert" style={{ marginBottom: 12 }}>
+              会话加载失败，重试后可查看消息和待确认操作。
+              <Button size="small" theme="borderless" loading={detailQuery.isFetching} onClick={() => void detailQuery.refetch()}>
+                重试
+              </Button>
+            </div>
+          )}
+          {sessionId && detailQuery.isLoading && <div role="status">正在加载会话…</div>}
+          {messages.length === 0 && !sending && (!sessionId || detailQuery.isSuccess) && (
             <div style={{ display: 'grid', gap: 8 }}>
               <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>
                 问点什么，或者直接点下面的常用问题：
