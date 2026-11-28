@@ -6911,3 +6911,6 @@
 - 上线核验：`status=verified`、`verified_at_utc=2026-11-28T01:26:39Z`；两端版本记录均为 `d3d6098c`；服务 active、`/health database=ok`、公网首页 200；数据库仍为 `d4f6a8b0c2e1`；当前 `index.html` 引用 `CustomerListPage-ozvvXIhS.js`，chunk 内为 `source === '企业微信' ? '' : source`，企微客户行内不再显示来源，其他来源保留。
 - 备份：`/opt/crm-sales-agent/backup/unified-d3d6098c7492-u0lq_9o9`。
 - 追加（2026-11-28）：主人指出「客户来源应该有一个其他，然后自己填」。原代码有 `source === '其他'` 的输入框分支，但 `SOURCE_OPTIONS` 把「其他」删了，导致分支永远走不到。现补回「其他」选项；选中后必须填写具体来源（最多 32 字），空着点创建会提示；打开/取消/创建成功都重置自定义来源，避免旧输入残留。前端构建/lint 通过（0 error / 41 条历史 warning）。
+- 发布：生产候选分支 `release/customer-other-source-20261128`，提交 `ce1e86db61ad7642ccecfe066aae886636ca124f`，基线 `d3d6098c`；发布包 SHA256 `bff8f98b892276771c5eb8bcb8b46deb5d337624601ff142cbd7a38a621085e7`。
+- 上线核验：`status=verified`、`verified_at_utc=2026-11-28T01:32:03Z`；两端版本记录均为 `ce1e86db`；服务 active、`/health database=ok`、公网首页 200；数据库仍为 `d4f6a8b0c2e1`；新建客户来源已含「其他」，选中后出现自填框，空值提交会拦截。
+- 备份：`/opt/crm-sales-agent/backup/unified-ce1e86db61ad-q9gqtjc1`。
