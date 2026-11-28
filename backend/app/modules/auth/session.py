@@ -33,6 +33,8 @@ SID_CLAIM = "sid"
 REASON_LOGOUT = "logout"
 #: 吊销原因：管理员改了 / 重置了这个账号的密码。
 REASON_PASSWORD_CHANGE = "password_change"
+#: 吊销原因：管理员停用了这个账号。重新启用后必须重新登录，旧令牌不能复活。
+REASON_ACCOUNT_DISABLED = "disabled"
 
 
 async def open_session(session: AsyncSession, user_id: int) -> LoginSession:
@@ -66,7 +68,7 @@ async def load_active_session(
       本机制上线前签发的旧令牌会因此失效，用户重新登一次即可 ——
       一次性成本，换的是「不存在不可吊销的凭据」。
     - **查不到这一行**：伪造的、或所属用户已被删除（外键级联带走）。
-    - **行是 `revoked`**：登出过、或改过密码。
+    - **行是 `revoked`**：登出过、改过密码、被离职归档或被停用。
 
     另外也核一下 `user_id`：正常签不出"别人的 sid"，但这一步是白给的，
     留着可以挡住"拿 A 的会话号配 B 的 subject"这类构造。
@@ -129,11 +131,11 @@ async def revoke_session(session: AsyncSession, sid: str | None, *, reason: str)
 
 
 async def revoke_user_sessions(session: AsyncSession, user_id: int, *, reason: str) -> int:
-    """吊销某人的**全部**有效会话（改密码 / 重置密码），返回作废条数。
+    """吊销某人的**全部**有效会话（改密码 / 离职归档 / 停用），返回作废条数。
 
-    调用方必须把它和"写新密码哈希"放在**同一个事务**里：要么
-    「新密码生效 + 旧会话全废」一起发生，要么两件都不发生。
-    否则会留下一个很别扭的中间态 —— 密码已经换了，别人的旧令牌还能进去。
+    调用方必须把它和账号状态变更放在**同一个事务**里：要么
+    「新状态生效 + 旧会话全废」一起发生，要么两件都不发生。
+    否则会留下一个很别扭的中间态 —— 账号已经停用，别人的旧令牌还能进去。
 
     用一条 UPDATE 而不是"先查出来再逐条改"：判据（`status = active`）
     跟着写语句一起下去，并发下不会被同一条会话的另一次吊销挤成重复动作。

@@ -8,6 +8,7 @@ from app.core.audit import AuditLog
 from app.core.base import Base
 from app.core.errors import AppError
 from app.modules.auth.model import LoginSession
+from app.modules.auth.session import load_active_session
 from app.modules.customer.model import Customer
 from app.modules.user import router
 from app.modules.user.model import Role, User, user_roles
@@ -117,3 +118,57 @@ async def test_only_admin_can_archive_or_delete(accounts):
         with pytest.raises(AppError) as error:
             await endpoint(2, REQUEST, manager, session)
         assert error.value.http_status == 403
+
+
+@pytest.mark.anyio
+async def test_disable_revokes_all_active_sessions_and_enable_requires_relogin(accounts):
+    """B11-04：停用必须吊销全部有效会话；重新启用后旧会话仍是 revoked。"""
+    raw, session = accounts
+    raw.get(User, 2).status = "active"
+    raw.add_all([
+        LoginSession(id=6, sid="staff-1", user_id=2, status="active"),
+        LoginSession(id=7, sid="staff-2", user_id=2, status="active"),
+        LoginSession(id=8, sid="old-logout", user_id=2, status="revoked", revoked_reason="logout"),
+    ])
+    raw.commit()
+
+    await router.disable_user(2, REQUEST, ADMIN, session)
+
+    assert raw.get(User, 2).status == "disabled"
+    for session_id in (6, 7):
+        row = raw.get(LoginSession, session_id)
+        assert row.status == "revoked"
+        assert row.revoked_reason == "disabled"
+        assert row.revoked_at is not None
+    # 已经登出的旧会话不重复改写原因
+    assert raw.get(LoginSession, 8).revoked_reason == "logout"
+
+    with pytest.raises(AppError) as error:
+        await load_active_session(session, "staff-1", 2)
+    assert error.value.http_status == 401
+
+    await router.enable_user(2, REQUEST, ADMIN, session)
+
+    assert raw.get(User, 2).status == "active"
+    for session_id in (6, 7):
+        row = raw.get(LoginSession, session_id)
+        assert row.status == "revoked"
+        assert row.revoked_reason == "disabled"
+    with pytest.raises(AppError) as error:
+        await load_active_session(session, "staff-1", 2)
+    assert error.value.http_status == 401
+
+
+@pytest.mark.anyio
+async def test_enable_revokes_sessions_left_by_legacy_disabled_account(accounts):
+    """修复前已停用但漏吊销的存量账号：启用时补一次，照样必须重新登录。"""
+    raw, session = accounts
+    raw.get(User, 2).status = "disabled"
+    raw.add(LoginSession(id=9, sid="legacy", user_id=2, status="active"))
+    raw.commit()
+
+    await router.enable_user(2, REQUEST, ADMIN, session)
+
+    assert raw.get(User, 2).status == "active"
+    assert raw.get(LoginSession, 9).status == "revoked"
+    assert raw.get(LoginSession, 9).revoked_reason == "disabled"

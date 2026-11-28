@@ -59,7 +59,7 @@ class LoginSession(Base, IdMixin, TimestampMixin):
     #: 不留"指向已删用户的会话"这种要定期清扫的孤儿行。
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"))
     status: Mapped[str] = mapped_column(String(32), default=SESSION_ACTIVE)
-    #: 为什么被吊销：logout / password_change。
+    #: 为什么被吊销：logout / password_change / archived / disabled。
     #: 排查"人怎么突然掉线了"时要看它 —— 只记一个"已失效"等于没说。
     revoked_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

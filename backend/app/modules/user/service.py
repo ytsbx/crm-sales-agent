@@ -16,7 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import AppError, ErrorCode
 from app.core.base import Base
 from app.core.security import hash_password
-from app.modules.auth.session import REASON_PASSWORD_CHANGE, revoke_user_sessions
+from app.modules.auth.session import (
+    REASON_ACCOUNT_DISABLED,
+    REASON_PASSWORD_CHANGE,
+    revoke_user_sessions,
+)
 from app.modules.user.model import (
     Department,
     Permission,
@@ -331,6 +335,14 @@ async def set_user_status(
         if operator_id is not None and user.id == operator_id:
             raise AppError(ErrorCode.PARAM_ERROR, "不能停用自己的账号", 422)
         await _assert_not_last_admin(session, user, reason="停用")
+        # 停用是权限闸门，不是“先睡一会儿”：必须把这个人所有有效会话一次性吊销。
+        # 否则停用期间接口虽会 401，但会话行仍是 active，管理员重新启用后旧令牌
+        # 在有效期内又能用，甚至能续期到会话上限。和状态修改放在同一事务里。
+        await revoke_user_sessions(session, user.id, reason=REASON_ACCOUNT_DISABLED)
+    elif status == "active" and user.status == "disabled":
+        # 兼容修复前已停用、但会话行还没吊销的存量账号：启用时再清一次，
+        # 保证“重新启用必须重新登录”，不要求上线时先跑数据订正。
+        await revoke_user_sessions(session, user.id, reason=REASON_ACCOUNT_DISABLED)
     user.status = status
     await session.flush()
     return user
