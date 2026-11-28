@@ -6934,3 +6934,4 @@
 - 追加（2026-11-28）：主人复测客户名称仍靠左。列级 `align`/`cell-center` 在运行时被表格容器的布局吃掉，改为在名称单元格内部直接写 `width:100%; textAlign:center`（标题和副标题都写），不再依赖外层对齐。
 - 发布：`release/customer-inner-center-20261128`，提交 `44c98122cbabbf0d6dd5215294a05a19a90b992a`，基线 `0a952ec6`；发布包 SHA256 `7b2cc254e1b999175db97b4b80a76f4c32a667ac9ac3ad7b6700b706ed46e28b`。
 - 上线核验：`status=verified`、`verified_at_utc=2026-11-28T01:57:30Z`；两端版本记录均为 `44c98122`；服务 active、`/health database=ok`、公网首页 200；备份 `/opt/crm-sales-agent/backup/unified-44c98122cbab-3r_peq0a`。
+- 客户列表「联系情况」下拉只有「在途业务停滞」一个选项，等于一个伪装成下拉的开关。已移除该下拉，改成工具栏上的「在途业务停滞」筛选按钮：点一次只看在途停滞客户，再点取消；按钮高亮表示筛选生效。`unknown_contact` 仍由顶部待补核汇总承接。
