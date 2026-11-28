@@ -6942,3 +6942,5 @@
 - 主人反馈工具栏的「在途业务停滞」按钮太丑，且此前已指出单选项筛选没有意义。已把该按钮和对应说明条一并撤掉，工具栏恢复为「搜索 / 客户等级 / 范围 / 查询」。后端 `activity=stale` 能力保留，但暂不暴露入口。
 - 本轮只做 git 保存，未部署生产；生产仍停在 `1a5e6ce5`（含旧按钮版本）。
 - 事故与恢复：`5409f296` 的 `--apply` 在命令被中断后仍在后台跑完，`2026-11-28T02:07:47Z` 生产短暂升到 `5409f296`（含来源统一、但仍带旧「在途业务停滞」按钮）。发现后立即回滚旧发布包，`2026-11-28T02:09:52Z` 恢复 `1a5e6ce5`，服务 active、health ok、公网 200。恢复备份 `/opt/crm-sales-agent/backup/unified-1a5e6ce55843-2zg4f8s0`。未部署 `1847c699`。
+- 正式部署：主人确认部署后，生产候选分支 `release/customer-filter-remove-20261128`（提交 `dcaf27be696c107477ea297e2cf1b5ec37f8b188`，基线 `1a5e6ce5`）上线；包含企微来源统一和撤掉「在途业务停滞」按钮。发布包 SHA256 `a8962b792773346e4c50a6c40cec942ff3ea6d3b5eba7e98c016c3ed0a655ce9`。
+- 上线核验：`status=verified`、`verified_at_utc=2026-11-28T02:11:29Z`；两端版本记录均为 `dcaf27be`；服务 active、`/health database=ok`、公网首页 200；当前入口 chunk `CustomerListPage-Dvl2EWfF.js` 已无「在途业务停滞」按钮；备份 `/opt/crm-sales-agent/backup/unified-dcaf27be696c-84d_8kyw`。
