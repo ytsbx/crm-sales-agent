@@ -8,7 +8,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { emptyText } from '../../shared/hooks/emptyText'
 import { Banner, Button, Input, Modal, Select, Table, Tabs, Toast, TextArea } from '@douyinfe/semi-ui'
-import { IconFilter } from '@douyinfe/semi-icons'
 
 import {
   batchTagCustomers,
@@ -767,20 +766,6 @@ export default function CustomerListPage() {
             style={{ width: 140 }}
             showClear
           />
-          <Button
-            icon={<IconFilter />}
-            theme={activity === 'stale' ? 'light' : 'outline'}
-            type={activity === 'stale' ? 'primary' : 'tertiary'}
-            onClick={() => {
-              setActivity(activity === 'stale' ? undefined : 'stale')
-              setPage(1)
-            }}
-            style={{ height: 32, fontSize: 13 }}
-            aria-pressed={activity === 'stale'}
-            title={activity === 'stale' ? '点击清除筛选' : '只看有未结束业务、且超过 30 天没有跟进或业务进展的客户'}
-          >
-            在途业务停滞
-          </Button>
           <Select
             value={scope}
             onChange={(value) => {
@@ -839,12 +824,6 @@ export default function CustomerListPage() {
             新建客户
           </Button>
         </div>
-
-        {activity === 'stale' && (
-          <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 10 }}>
-            在途业务停滞：只显示有未结束业务（商机 / 报价 / 打样 / 订单 / 应收 / 需求）的客户，按最近一次跟进或业务进展从早到晚排序。
-          </div>
-        )}
 
         {activity === 'unknown_contact' && (
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 10 }}>
