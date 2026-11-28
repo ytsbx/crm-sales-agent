@@ -7048,3 +7048,15 @@
 - 行为：停用立即踢下线；重新启用必须重新登录（钉钉/企微 SSO 重新授权即可）。已登出的历史会话不被改写。
 - 回归：`test_user_offboarding.py` 新增 2 项，覆盖多会话全部吊销、已登出会话原因不变、重新启用后 `load_active_session` 仍 401、存量停用账号启用时补清；账号/会话相关 28 项通过，后端全量通过。
 - 未部署：只改主工作区，生产仍为 `06482d13`。
+
+## 2026-11-28 前端 P1 清单当前状态复核
+
+- 范围：`F01-02`、`F01-03`、`F02-01`、`F02-02`、`F02-03`、`F02-04`、`F02-05`、`F03-01`、`F03-02`、`F04-01`、`F05-01`、`F06-01`、`F08-07`、`F10-05`、`F11-01`、`F11-03`、`F12-01`、`F12-02`；`F13-01` 按 B11-02 决定不修，不计。
+- 结论：**13 条已修/不再成立，F02-04 部分修，4 条仍成立或待拍板（F02-01、F10-05、F08-07、F12-02）**。`FRONTEND-FINAL.md` 是 2026-11-23/24 时点快照，不能直接当当前待办。
+- 已修证据：`F01-02` 版本 URL 已用 `allVersionIds.includes` 校验归属；`F01-03` 费用入参改原样字符串并显示 `*_exact`；`F02-02/F02-03` 手工建单传原始字符串和 `request_key`；`F02-05` 前端和后端都拦已取消应收删除；`F03-01/F03-02` 价格表单走 `parseOptionalDecimal`，后端 `_f` 返回 Decimal 并补齐 `*_exact`；`F04-01` 合并确认等预览成功且冲突已解决；`F05-01` 上传挂 `pending_signature`，签署时才改 `signed` 并复用同一条挂载；`F06-01` 商机金额走十进制字符串与 `expected_amount_exact`；`F11-01` 非法数量/目标价直接中止；`F11-03` 转报价三项均走十进制字符串；`F12-01` SKU 物理字段原样提交，非法文本由后端 422，不再静默变 null。
+- `F02-04` 部分修：零发货标已发货/已签收已被前后端拦住（`order/router.py:1015-1020`、`OrderDetailPage.tsx:1259-1270`）；但后端没有完整状态流转矩阵，`delivered` 仍可回退到生产状态且不要求理由（仅 `completed` 回退要求理由，`order/service.py:707-717`）；API 直调时 `shipped_exact>0` 但未发完也能标 `delivered`（前端会按 `remainingToShip` 拦）。
+- `F02-01` 仍成立：打开回款弹窗即换新 `request_key`（`OrderDetailPage.tsx:1435`），取消只清目标不清键（`:3667`），成功才清（`:860`）；首次已落库但响应超时，关闭重开会换键并多一笔待确认回款。
+- `F10-05` 仍成立：交接候选人只筛 `User.status == "active"`，不限部门/数据范围（`task/router.py:792`）；交接目标 `_active_owner` 只校验存在和在岗（`:221-231`），批量交接也不校验目标范围。
+- `F08-07` 仍成立：`GET /dashboard/team` 只要求 `customer:view`（`analytics/router.py:563-565`）；默认 `finance` 角色有 `customer:view`、`data_scope=all`、无 `opportunity:view/task:view`，接口仍返回成员姓名/待办数、团队成交额、`risky_opportunities` 的标题/客户名/金额（`analytics/service.py:2330-2352`）。
+- `F12-02` 行为成立但需拍板：`weight=0` 通过 `parse_numeric_field` 并落库（`field_rules.py:50-56`）；物流只在 `None` 告警，零单重按 `actual_weight=0` 计费（`logistics.py:183-214`）；手工覆盖又拒绝 `<=0`（`:475-478`）。现有测试明确把 `weight=0` 当合法边界（`test_batch9_review_repairs.py:44`）。0 到底表示“未填”还是“真实 0”，需业务先定。
+- 回归：`test_manual_order_guards.py` 的建单幂等、零发货状态闸门，以及 `test_payment_consistency.py` 的已取消应收拒删，共 3 项通过；Python 小复现 `parse_numeric_field("weight","0") -> 0`、`quote_rate(chargeable_weight=0, min_charge=0) -> 0.00`。
