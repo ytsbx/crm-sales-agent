@@ -95,7 +95,7 @@ async def import_template(
                 "浙江",                            # 省份
                 "浙江省宁波市…",                   # 详细地址
                 "展会",                            # 客户来源
-                "zhangsan",                        # 负责人登录名
+                "zhangsan",                        # 跟进人登录名（可选，额外加入一位）
                 "2025-03-18",                      # 最后联系日期
                 "历史名单导入，联系时间来自老系统",  # 备注
             ]
@@ -321,10 +321,10 @@ async def import_customers(
     第七批 7.1 / 7.5 的返修点：
     - 每行一个 SAVEPOINT：坏行只回滚自己，不会让后续正常行一起失败；
     - 非法/未来日期明确报错（不再静默丢成"没填"）；
-    - 负责人登录名写错、账号已停用 → 这一行失败，不静默归到导入人名下；
+    - 跟进人登录名写错、账号已停用 → 这一行失败，不静默归到导入人名下；
     - 没有联系日期的客户标 `last_contact_unknown`，**不参与自动回收扫描**，
       等补核（用户 2026-10-06 确认的口径）；
-    - 支持 `preview=1`，并在预览里回一份**负责人映射表**供人工核对。
+    - 支持 `preview=1`，并在预览里回一份**跟进人映射表**供人工核对。
     """
     from app.core.data_scope import scoped_owner_ids
 
@@ -339,7 +339,7 @@ async def import_customers(
     # 否则这个接口就等于"用 Excel 批量试探全公司客户名"。明细在撞单裁定页，
     # 由有范围的主管看。
     scope = await scoped_owner_ids(session, user)
-    #: 负责人映射表：预览时人要看的就是它（哪个登录名落到了谁，谁没匹配上）
+    #: 跟进人映射表：预览时人要看的就是它（哪个登录名落到了谁，谁没匹配上）
     owner_mapping: dict[str, dict] = {}
     unknown_contact_rows: list[dict] = []
 
@@ -379,14 +379,15 @@ async def import_customers(
             except AppError as exc:
                 errs.add(exc.message)
 
-        owner_login = (row.get("负责人登录名") or "").strip()
+        # 新列名「跟进人登录名」；旧模板的「负责人登录名」继续兼容。
+        owner_login = (row.get("跟进人登录名") or row.get("负责人登录名") or "").strip()
         # 导入文件里明确指定负责人属于分配动作；空白才按导入人归属。
         # 否则只有 customer:create 的账号可以借 Excel 入口绕过 customer:assign，
         # 与单个新建、线索导入的权限口径不一致。
         if owner_login:
             ensure_permission(user, "customer:assign")
         owner_id, owner_error, owner_info = await io_util.resolve_owner_checked(
-            session, row.get("负责人登录名"), user.id
+            session, owner_login, user.id
         )
         if owner_error:
             errs.add(owner_error)
@@ -513,7 +514,7 @@ async def import_customers(
         preview_token=preview_token,
         business_type="customer",
         extra={
-            # 负责人映射表：预览时先看这里，别等导完才发现登录名写错
+            # 跟进人映射表：预览时先看这里，别等导完才发现登录名写错
             "owner_mapping": list(owner_mapping.values()),
             "unknown_contact_count": len(unknown_contact_rows),
             "unknown_contact": unknown_contact_rows[:200],

@@ -30,7 +30,7 @@ TEMPLATE_HEADERS = [
     "省份",
     "详细地址",
     "客户来源",
-    "负责人登录名",
+    "跟进人登录名",
     # 老数据迁移（§六 :167「导入不应重置客户最近有效联系时间」）：
     # 历史名单里通常有这个日期，填了就按真实的写；不填才落回"刚建档"。
     # 没有它，500 个三年没联系的老客户进系统当天全被当成"今天刚联系过"，
@@ -136,7 +136,7 @@ async def resolve_owner_checked(
                 "resolved": "import_operator",
                 "owner_id": default_user_id,
                 "owner_name": getattr(row, "name", None),
-                "note": "文件未填负责人，导入人自动成为跟进人",
+                "note": "文件未填跟进人，导入人自动成为跟进人",
             },
         )
     found = (
@@ -145,7 +145,7 @@ async def resolve_owner_checked(
     if found is None:
         return (
             default_user_id,
-            f"找不到登录名为「{login}」的账号，请核对负责人登录名（不会自动归到导入人名下）",
+            f"找不到登录名为「{login}」的账号，请核对跟进人登录名（不会自动归到导入人名下）",
             {},
         )
     if found.status != "active":
