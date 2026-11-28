@@ -163,8 +163,9 @@ async def main():
             followup_id = created['id']
             for content in [marker+'改一', marker+'改一', marker+'改二']:
                 request('PATCH', f'/followups/{followup_id}', {'content': content}, token=zhangsan)
+            # 2026-11-28 主人确认：手工跟进记录不再给主管发通知（太频繁）。
             manual = [n for n in await notices() if n.title in ('新增客户跟进', '修改客户跟进')]
-            assert len(manual) == 6
+            assert len(manual) == 0, manual
 
             # 打样逐步动作留痕、操作者与真正来源；相同反馈/制作/确认重放无新增。
             sku = request('GET', '/pricing/sku-options')[0]['id']

@@ -1,7 +1,6 @@
 """页面与 Agent 共用的人工跟进写入口；事务由调用方提交。"""
 from datetime import UTC, datetime
 import hashlib
-from uuid import uuid4
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,7 +13,6 @@ from app.modules.customer import service as customer_service
 from app.modules.customer.model import Contact, Customer
 from app.modules.followup.model import FollowUp
 from app.modules.followup.schema import FollowUpCreate, EXEMPTION_LABELS
-from app.modules.followup.service import queue_manager_notification
 from app.modules.followup.visibility import get_visible_followup
 from app.modules.lead.model import Lead
 from app.modules.opportunity.model import Opportunity
@@ -43,25 +41,6 @@ def serialize(followup: FollowUp, owner_name: str | None = None) -> dict:
         "next_task_id": followup.next_task_id,
         "created_at": followup.created_at,
     }
-
-
-async def notify_manual_followup(session: AsyncSession, followup: FollowUp, user: CurrentUser, *, action: str):
-    # 原单优先；只关联客户时打开客户日志。使用客户/原单负责人定位部门。
-    source_type, source_id = next(
-        ((kind, getattr(followup, f"{kind}_id")) for kind in ('sample', 'order', 'quote', 'opportunity', 'lead', 'customer')
-         if getattr(followup, f"{kind}_id")), ('customer', None)
-    )
-    models = {'customer': Customer, 'lead': Lead, 'opportunity': Opportunity, 'quote': Quote, 'order': SalesOrder}
-    source = await session.get(models[source_type], source_id) if source_type in models and source_id else None
-    owner_id = source.owner_id if source else followup.owner_id
-    await queue_manager_notification(
-        session, event_key=f"followup:{action}:{followup.id}" + (f":{uuid4().hex}" if action == 'update' else ''),
-        customer_id=followup.customer_id, owner_id=owner_id, operator_id=user.id,
-        title='新增客户跟进' if action == 'create' else '修改客户跟进',
-        content=followup.content + (f"；下一动作：{followup.next_action}；下次跟进：{followup.planned_at.isoformat()}" if followup.planned_at else f"；免填原因：{EXEMPTION_LABELS[followup.exemption_reason]}" if followup.exemption_reason else ""), source_type=source_type, source_id=source_id,
-        exclude_user_id=user.id, required_permission='followup:view',
-    )
-
 
 
 async def create_manual_followup(session: AsyncSession, user: CurrentUser, payload: FollowUpCreate,
@@ -149,5 +128,4 @@ async def create_manual_followup(session: AsyncSession, user: CurrentUser, paylo
     await customer_service.refresh_next_followup_at(session, customer_id)
     await write_audit(session, operator_id=user.id, action="create", business_type="followup",
                       business_id=followup.id, after=serialize(followup), source=source, ip=ip)
-    await notify_manual_followup(session, followup, user, action="create")
     return followup, False

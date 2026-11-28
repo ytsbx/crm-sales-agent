@@ -15,7 +15,7 @@ from app.core.response import ok, page_data, paginate
 from app.modules.customer import service as customer_service
 from app.modules.customer.model import Customer
 from app.modules.followup.model import FollowUp
-from app.modules.followup.mutations import serialize, notify_manual_followup, create_manual_followup
+from app.modules.followup.mutations import serialize, create_manual_followup
 from app.modules.notification import service as notification_service
 from app.modules.followup.visibility import get_visible_followup, followup_visibility_filter
 from app.modules.followup.schema import (
@@ -157,8 +157,6 @@ async def update_followup(
         after=serialize(followup),
         ip=client_ip(request),
     )
-    if before != serialize(followup):
-        await notify_manual_followup(session, followup, user, action="update")
     await session.commit()
     await notification_service.dispatch_after_commit(session)
     return ok(serialize(followup), "已保存")
