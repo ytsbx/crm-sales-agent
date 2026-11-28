@@ -7028,6 +7028,15 @@
 - B05-08：已修。已取消应收只允许改备注；名称、到期日、金额改动均 422，金额不再触发重平衡。
 - B04-04：已修。订单转移负责人已补 `ensure_in_scope`，目标必须在操作者数据范围内。
 - B05-19：已修。确认回款审计记金额、订单、期次、本次分配；驳回审计记金额、订单、期次。项目全系统 CNY，币种不单列；不构成需补项。
-- B02-04：部分修。当前 `quote.status in (sent, accepted, voided)` 已拦；但历史版本已发送/被接受/被拒后，新建版本会把 `quote.status` 改回 draft，再删整单仍可软删，对客证据随父行隐藏。需补“任一版本 sent_at/accepted_at/declined_at 即拒删”。
+- B02-04：复核时部分修（当前 sent/accepted/voided 已拦，但历史版本与 declined 仍可删）；同日已补完，见下节。
 - B11-04：仍成立。`disabled` 只改状态、不吊销会话；重新启用后旧 token 在会话有效期内恢复可用。六条中唯一明确需要修的安全项。
-- 结论：4 条已修、1 条只剩边界（B02-04）、1 条仍成立（B11-04）。除 B02-04 边界与 B11-04 外，不建议重复动工。
+- 结论：4 条已修、B02-04 边界已补齐、B11-04 仍成立。除 B11-04 外，六条不再返工。
+
+## 2026-11-28 B02-04 报价删除与「历史报价」标签
+
+- 问题：`delete_quote` 只按当前 `quote.status` 判断；V1 已发送/已接受/已拒绝后新建 V2 会把状态改回 draft，再删整单仍可放行。当前 `declined` 也没在拦截列表里，客户拒绝的报价可被直接删。
+- 后端：删除前查该报价所有 `QuoteVersion`，任一版本有 `sent_at / accepted_at / declined_at` 即 422；当前状态补拦 `declined`。纯草稿、无对客时间戳、未转订单仍可删。
+- 列表：`GET /quotes` 新增 `scope=active|history`；`active` 排除 declined，`history` 只返回 declined。不传 `scope` 保持旧行为，客户详情、规则面板等调用不受影响。
+- 前端：报价中心新增「报价中 / 历史报价」标签；报价中隐藏「客户拒绝」筛选，历史报价只读展示 declined；报价详情对 declined 隐藏删除入口，删除确认文案补历史版本口径。
+- 回归：新增 2 项后端测试，覆盖历史版本/当前 declined 拒删、纯草稿可删、active/history/default 三种列表口径；`backend/tests/test_review_batch_b02_b05.py` 16 项通过，后端全量通过；`npm run build` 通过，`npm run lint` 0 error（仅存量 warning）。
+- 未部署：本轮只改主工作区，生产仍为 `06482d13`。

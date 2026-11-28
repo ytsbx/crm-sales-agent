@@ -4,6 +4,7 @@ import asyncio
 import logging
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy import func, or_, select
@@ -173,6 +174,7 @@ async def _quote_context(session: AsyncSession, quotes: list[Quote]) -> dict:
 async def list_quotes(
     keyword: str | None = None,
     status: str | None = None,
+    scope: Literal["active", "history"] | None = None,
     opportunity_id: int | None = None,
     customer_id: int | None = None,
     owner_id: int | None = None,
@@ -196,6 +198,12 @@ async def list_quotes(
         )
     if status:
         stmt = stmt.where(Quote.status == status)
+    # 报价中心分两个标签：报价中不含客户拒绝，历史报价只放客户拒绝。
+    # 默认不传 scope 时保持旧行为（客户详情、规则面板等调用仍能看到全部状态）。
+    if scope == "active":
+        stmt = stmt.where(Quote.status != "declined")
+    elif scope == "history":
+        stmt = stmt.where(Quote.status == "declined")
     if opportunity_id:
         stmt = stmt.where(Quote.opportunity_id == opportunity_id)
     if customer_id:
@@ -493,11 +501,35 @@ async def delete_quote(
             f"该报价已转成订单（id={order_id}），不能删除",
         )
     # 2026-11-25 主人拍板：已发送/已接受/已作废只能作废保留，不能删除
-    if quote.status in ("sent", "accepted", "voided"):
+    if quote.status in ("sent", "accepted", "declined", "voided"):
+        message = (
+            "客户已拒绝的报价不能删除（需要保留对客证据）"
+            if quote.status == "declined"
+            else "已发送、已接受或已作废的报价不能删除（需要保留对客证据）；"
+            "如需终止，请使用「作废报价」并填写原因"
+        )
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, message, 422)
+    # 仅看当前状态会被“新建版本”绕过：V1 已发送/已被客户接受或拒绝，
+    # 新建 V2 会把 quote.status 改回 draft，再删整单就会把 V1 的对客证据一起藏掉。
+    # 删除前必须把该报价的所有版本翻一遍，任意一版有对客时间戳都拒绝。
+    version_with_customer_evidence = (
+        await session.execute(
+            select(QuoteVersion.id)
+            .where(
+                QuoteVersion.quote_id == quote.id,
+                or_(
+                    QuoteVersion.sent_at.is_not(None),
+                    QuoteVersion.accepted_at.is_not(None),
+                    QuoteVersion.declined_at.is_not(None),
+                ),
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if version_with_customer_evidence is not None:
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
-            "已发送、已接受或已作废的报价不能删除（需要保留对客证据）；"
-            "如需终止，请使用「作废报价」并填写原因",
+            "该报价的历史版本已发送、被客户接受或拒绝，不能删除（需要保留对客证据）",
             422,
         )
     before = svc.serialize_quote(quote)

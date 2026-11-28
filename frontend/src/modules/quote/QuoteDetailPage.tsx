@@ -1099,8 +1099,8 @@ export default function QuoteDetailPage() {
                 <span className="qhk-value">{(detail?.items ?? []).length} 条</span>
               </div>
             </div>
-            {/* 已发送/已接受/已作废只能作废保留，不出现删除入口（后端同样拦） */}
-            {canManage && !hasActiveOrder && !['sent', 'accepted', 'voided'].includes(quote.status) && (
+            {/* 已发送/已接受/已拒绝/已作废只能作废保留，不出现删除入口（后端同样拦） */}
+            {canManage && !hasActiveOrder && !['sent', 'accepted', 'declined', 'voided'].includes(quote.status) && (
               // 删除是低频且不可逆的动作，红框按钮摆页头最显眼的位置会抢掉
               // 「转销售订单」的注意力。改成无边框次级按钮，仍可点、仍二次确认。
               <Button theme="borderless" type="danger" onClick={() => setDeleteVisible(true)}>
@@ -1679,7 +1679,7 @@ export default function QuoteDetailPage() {
         onOk={() => { if (!deleteMutation.isPending) deleteMutation.mutate() }}
       >
         删除的是整张报价单，包含所有版本，不是仅删除当前查看的版本。
-        删除后将从报价列表移除，历史版本和审计记录仍保留。已关联订单的报价不能删除。
+        删除后将从报价列表移除，历史版本和审计记录仍保留。已关联订单，或已有版本发送、被客户接受/拒绝的报价不能删除。
       </Modal>
 
       {(detail.cost_problems ?? []).length > 0 && (

@@ -6,7 +6,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { emptyText } from '../../shared/hooks/emptyText'
-import { Button, Input, Modal, Select, Table, Toast } from '@douyinfe/semi-ui'
+import { Button, Input, Modal, Select, Table, Tabs, Toast } from '@douyinfe/semi-ui'
 
 import { listOpportunities } from '../../shared/api/opportunity'
 import { createQuote, listQuotes, type Quote } from '../../shared/api/quote'
@@ -26,6 +26,14 @@ const STATUS_OPTIONS = [
   { value: 'declined', label: '客户拒绝' },
   { value: 'approval_rejected', label: '审批未通过' },
   { value: 'voided', label: '已作废' },
+]
+
+/** 「报价中」不提供客户拒绝选项；客户拒绝只在「历史报价」标签出现。 */
+const ACTIVE_STATUS_OPTIONS = STATUS_OPTIONS.filter(({ value }) => value !== 'declined')
+
+const QUOTE_TABS = [
+  { itemKey: 'active', tab: '报价中' },
+  { itemKey: 'history', tab: '历史报价' },
 ]
 
 const STATUS_TONE: Record<string, TagTone> = {
@@ -48,6 +56,7 @@ export default function QuoteListPage() {
   const [keywordInput, setKeywordInput] = useState('')
   const [keyword, setKeyword] = useState('')
   const [status, setStatus] = useState<string | undefined>()
+  const [listScope, setListScope] = useState<'active' | 'history'>('active')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [createVisible, setCreateVisible] = useState(false)
@@ -70,8 +79,14 @@ export default function QuoteListPage() {
   }, [])
 
   const query = useQuery({
-    queryKey: ['quotes', { keyword, status, page, pageSize }],
-    queryFn: () => listQuotes({ keyword, status, page, page_size: pageSize }),
+    queryKey: ['quotes', { keyword, status, page, pageSize, scope: listScope }],
+    queryFn: () => listQuotes({
+      keyword,
+      status: listScope === 'active' ? status : undefined,
+      scope: listScope,
+      page,
+      page_size: pageSize,
+    }),
   })
   useEffect(() => {
     const timer = setTimeout(() => setOpportunityKeyword(opportunitySearch.trim()), 250)
@@ -243,11 +258,22 @@ export default function QuoteListPage() {
     <div className="page-container">
       <PageHeader
         title="报价中心"
-        subtitle="从商机生成报价，拟报价默认取系统适用价（客户目标价仅作参考）；整单优惠后超出权限必须审批"
+        subtitle="从商机生成报价，拟报价默认取系统适用价（客户目标价仅作参考）；整单优惠后超出权限必须审批。客户拒绝的报价保留在「历史报价」中，作为对客证据"
       />
 
       <SectionCard>
-        <div className="toolbar">
+        <Tabs
+          type="line"
+          activeKey={listScope}
+          onChange={(key) => {
+            setListScope(key as 'active' | 'history')
+            setStatus(undefined)
+            setPage(1)
+          }}
+          tabList={QUOTE_TABS}
+        />
+
+        <div className="toolbar" style={{ marginTop: 16 }}>
           <Input
             placeholder="搜索报价单号"
             value={keywordInput}
@@ -259,17 +285,24 @@ export default function QuoteListPage() {
             style={{ width: 220 }}
             showClear
           />
-          <Select
-            placeholder="报价状态"
-            value={status}
-            onChange={(value) => {
-              setStatus(value as string | undefined)
-              setPage(1)
-            }}
-            optionList={STATUS_OPTIONS}
-            style={{ width: 150 }}
-            showClear
-          />
+          {listScope === 'active' && (
+            <Select
+              placeholder="报价状态"
+              value={status}
+              onChange={(value) => {
+                setStatus(value as string | undefined)
+                setPage(1)
+              }}
+              optionList={ACTIVE_STATUS_OPTIONS}
+              style={{ width: 150 }}
+              showClear
+            />
+          )}
+          {listScope === 'history' && (
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+              这里只放客户拒绝的报价，可查不可删
+            </span>
+          )}
           <Button
             type="tertiary"
             theme="borderless"
@@ -307,7 +340,7 @@ export default function QuoteListPage() {
           loading={query.isLoading}
           rowKey="id"
           size="middle"
-          empty={emptyText(query, '还没有报价单')}
+          empty={emptyText(query, listScope === 'history' ? '还没有历史报价' : '还没有报价单')}
           pagination={{
             currentPage: page,
             pageSize,

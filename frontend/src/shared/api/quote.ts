@@ -292,6 +292,8 @@ export interface ApprovalRow {
 export function listQuotes(query: {
   keyword?: string
   status?: string
+  /** 报价中心标签：active=报价中（不含客户拒绝），history=历史报价（仅客户拒绝） */
+  scope?: 'active' | 'history'
   opportunity_id?: number
   customer_id?: number
   page?: number

@@ -426,3 +426,98 @@ async def test_reschedule_rejects_shipped_batch_and_blank_reason():
             assert raw.get(OrderShipmentBatch, 1).planned_date == date(2026, 12, 5)
     finally:
         engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_quote_delete_blocks_historical_customer_evidence_and_declined():
+    """B02-04：历史版本已发送/已接受/已拒绝，或当前已拒绝，都不能删；纯草稿仍可删。"""
+    from app.modules.quote import router as quote_router
+    from app.modules.quote.model import Quote, QuoteVersion
+
+    engine = _engine([User, Customer, Quote, QuoteVersion, SalesOrder, AuditLog])
+    try:
+        with Session(engine, expire_on_commit=False) as raw:
+            raw.add_all([
+                User(id=1, name="业务员", username="u1", password_hash="x", status="active"),
+                Customer(id=1, name="客户", owner_id=1),
+            ])
+            quote_with_history = Quote(
+                id=1, quote_no="BJ-1", customer_id=1, owner_id=1, created_by=1,
+                status="draft", created_at=datetime.now(UTC),
+            )
+            raw.add(quote_with_history)
+            raw.flush()
+            raw.add_all([
+                QuoteVersion(id=1, quote_id=1, version_no=1, created_at=datetime.now(UTC),
+                             sent_at=datetime.now(UTC), accepted_at=datetime.now(UTC)),
+                QuoteVersion(id=2, quote_id=1, version_no=2, created_at=datetime.now(UTC)),
+            ])
+            quote_with_history.current_version_id = 2
+            raw.add_all([
+                Quote(id=2, quote_no="BJ-2", customer_id=1, owner_id=1,
+                      status="declined", created_at=datetime.now(UTC)),
+                Quote(id=3, quote_no="BJ-3", customer_id=1, owner_id=1, created_by=1,
+                      status="draft", current_version_id=3, created_at=datetime.now(UTC)),
+                QuoteVersion(id=3, quote_id=3, version_no=1, created_at=datetime.now(UTC)),
+            ])
+            raw.commit()
+            actor = make_user(1, permissions=("quote:manage",), data_scope="all")
+
+            with pytest.raises(AppError) as caught:
+                await quote_router.delete_quote(1, _request(), actor, SyncSessionAsAsync(raw))
+            assert caught.value.http_status == 422
+            assert "历史版本" in caught.value.message
+            assert raw.get(Quote, 1).deleted_at is None
+
+            with pytest.raises(AppError) as caught:
+                await quote_router.delete_quote(2, _request(), actor, SyncSessionAsAsync(raw))
+            assert caught.value.http_status == 422
+            assert "已拒绝" in caught.value.message
+            assert raw.get(Quote, 2).deleted_at is None
+
+            await quote_router.delete_quote(3, _request(), actor, SyncSessionAsAsync(raw))
+            assert raw.get(Quote, 3).deleted_at is not None
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_quote_list_scope_splits_declined_into_history():
+    """B02-04：报价中不含客户拒绝，历史报价只含客户拒绝；不传 scope 保持旧行为。"""
+    from app.modules.quote import router as quote_router
+    from app.modules.quote.model import Quote, QuoteVersion
+
+    engine = _engine([User, Customer, Quote, QuoteVersion, SalesOrder, AuditLog])
+    try:
+        with Session(engine, expire_on_commit=False) as raw:
+            raw.add_all([
+                User(id=1, name="业务员", username="u1", password_hash="x", status="active"),
+                Customer(id=1, name="客户", owner_id=1),
+                Quote(id=1, quote_no="BJ-1", customer_id=1, owner_id=1, created_by=1,
+                      status="draft", created_at=datetime.now(UTC)),
+                Quote(id=2, quote_no="BJ-2", customer_id=1, owner_id=1,
+                      status="declined", created_at=datetime.now(UTC)),
+                Quote(id=3, quote_no="BJ-3", customer_id=1, owner_id=1,
+                      status="sent", created_at=datetime.now(UTC)),
+            ])
+            raw.commit()
+            actor = make_user(1, permissions=("quote:view",), data_scope="all")
+
+            active = await quote_router.list_quotes(
+                scope="active", page=1, page_size=20, user=actor, session=SyncSessionAsAsync(raw)
+            )
+            assert active["data"]["total"] == 2
+            assert {item["status"] for item in active["data"]["items"]} == {"draft", "sent"}
+
+            history = await quote_router.list_quotes(
+                scope="history", page=1, page_size=20, user=actor, session=SyncSessionAsAsync(raw)
+            )
+            assert history["data"]["total"] == 1
+            assert {item["status"] for item in history["data"]["items"]} == {"declined"}
+
+            all_rows = await quote_router.list_quotes(
+                page=1, page_size=20, user=actor, session=SyncSessionAsAsync(raw)
+            )
+            assert all_rows["data"]["total"] == 3
+    finally:
+        engine.dispose()
