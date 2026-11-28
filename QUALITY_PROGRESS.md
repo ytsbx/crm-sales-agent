@@ -6935,3 +6935,5 @@
 - 发布：`release/customer-inner-center-20261128`，提交 `44c98122cbabbf0d6dd5215294a05a19a90b992a`，基线 `0a952ec6`；发布包 SHA256 `7b2cc254e1b999175db97b4b80a76f4c32a667ac9ac3ad7b6700b706ed46e28b`。
 - 上线核验：`status=verified`、`verified_at_utc=2026-11-28T01:57:30Z`；两端版本记录均为 `44c98122`；服务 active、`/health database=ok`、公网首页 200；备份 `/opt/crm-sales-agent/backup/unified-44c98122cbab-3r_peq0a`。
 - 客户列表「联系情况」下拉只有「在途业务停滞」一个选项，等于一个伪装成下拉的开关。已移除该下拉，改成工具栏上的「在途业务停滞」筛选按钮：点一次只看在途停滞客户，再点取消；按钮高亮表示筛选生效。`unknown_contact` 仍由顶部待补核汇总承接。
+- 发布：`release/customer-filter-toggle-20261128`，提交 `1a5e6ce55843263b6d36cdf117b47065f3cfaf07`，基线 `44c98122`；发布包 SHA256 `03a66b1f319848d975b7dae6d062622dbb5671c56ccae3cb07b17eefcd3eb0fb`。
+- 上线核验：`status=verified`、`verified_at_utc=2026-11-28T02:03:03Z`；两端版本记录均为 `1a5e6ce5`；服务 active、`/health database=ok`、公网首页 200；备份 `/opt/crm-sales-agent/backup/unified-1a5e6ce55843-dwb_2lfk`。
