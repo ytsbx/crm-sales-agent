@@ -3733,6 +3733,10 @@ export default function OrderDetailPage() {
             paymentMutation.mutate({ storageKey, payload: pending, retry: true })
             return
           }
+          if (paymentRetryRequired) {
+            Toast.warning('原提交编号暂时不可用，请先到「回款记录」核对这笔回款。')
+            return
+          }
           if (!paymentForm.amount.trim() || !Number.isFinite(Number(paymentForm.amount)) || Number(paymentForm.amount) <= 0) {
             Toast.warning('请填写大于 0 的实际到账金额。')
             return
