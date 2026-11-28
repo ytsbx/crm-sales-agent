@@ -129,13 +129,13 @@ async def record_and_notify(
     exclude_user_id: int | None = None,
     event_key: str | None = None,
 ) -> None:
-    """过程记录 + 推业务主管（站内/企微，按通知设置走 followup 事件开关）。
+    """过程记录（客户时间线），**不推送主管**。
 
-    幂等（场景04）：调用点传确定性 event_key（如 order:create:42），
-    同一 key 的重放/重试整体跳过——不留痕、不推送，客户时间线只一条、
-    主管只收一次。业务事件本身落 business_events 表（唯一约束兜底并发）。
-    在业务事务内调用：留痕随业务一起 commit；企微投递由调用方
-    commit 后 `dispatch_pending`。通知环节异常只告警，不回滚业务。
+    主管需要时自己查看时间线/单据即可（2026-11-28 主人确认：业务动作也不再
+    逐条推主管）。幂等（场景04）：调用点传确定性 event_key（如 order:create:42），
+    同一 key 的重放/重试整体跳过——不留痕，客户时间线只一条；业务事件本身落
+    business_events 表（唯一约束兜底并发）。
+    在业务事务内调用：留痕随业务一起 commit。主管不发推送，需要时自己查看。
     """
     identity = sample_id or (business_id if business_type == "sample" else None)
     if identity is not None:
@@ -154,82 +154,3 @@ async def record_and_notify(
     )
     if not recorded:
         return
-    source_type, source_id = (
-        ("sample", sample_id) if sample_id else
-        ("order", order_id) if order_id else
-        ("quote", quote_id) if quote_id else
-        ("opportunity", opportunity_id) if opportunity_id else
-        (business_type, business_id) if business_type and business_id else
-        ("customer", customer_id)
-    )
-    await queue_manager_notification(
-        session, event_key=event_key, customer_id=customer_id, owner_id=owner_id,
-        operator_id=operator_id if operator_id is not None else owner_id,
-        title=title, content=content, source_type=source_type, source_id=source_id,
-        exclude_user_id=exclude_user_id,
-    )
-
-
-async def queue_manager_notification(
-    session: AsyncSession, *, event_key: str, customer_id: int | None,
-    owner_id: int | None, operator_id: int | None, title: str, content: str,
-    source_type: str, source_id: int | None, exclude_user_id: int | None = None,
-    required_permission: str | None = None,
-) -> None:
-    """持久化通知待办；生成失败留在事件上，重试不再创建跟进或业务单。"""
-    from app.modules.customer.model import Customer
-    from app.modules.notification import service as notification_service
-    from app.modules.user.model import User
-
-    event_stmt = select(BusinessEvent).where(
-        BusinessEvent.event_key == event_key,
-    ).with_for_update().execution_options(populate_existing=True)
-    event = await session.scalar(event_stmt)
-    if event is None:
-        event = await _insert_business_event_once(
-            session, event_key=event_key, customer_id=customer_id,
-            business_type=source_type, business_id=source_id, title=title,
-        )
-        if event is None:
-            event = (await session.execute(event_stmt)).scalar_one()
-    if event.notification_payload is not None:
-        return
-    owner = await session.get(User, owner_id) if owner_id else None
-    actor = await session.get(User, operator_id) if operator_id else None
-    customer = await session.get(Customer, customer_id) if customer_id else None
-    # 客户没有默认负责人：主管通知按「所有跟进人所在部门」的并集投递，
-    # 内容里列跟进人姓名而不是"负责人"。
-    department_ids: set[int] = set()
-    follower_names: list[str] = []
-    if customer is not None:
-        from app.modules.customer.model import CustomerFollower
-
-        rows = (
-            await session.execute(
-                select(User.id, User.name, User.department_id)
-                .join(CustomerFollower, CustomerFollower.user_id == User.id)
-                .where(
-                    CustomerFollower.customer_id == customer.id,
-                    CustomerFollower.deleted_at.is_(None),
-                )
-                .order_by(CustomerFollower.created_at)
-            )
-        ).all()
-        follower_names = [name for _uid, name, _dept in rows]
-        department_ids = {dept for _uid, _name, dept in rows if dept is not None}
-    if owner is not None and owner.department_id is not None:
-        department_ids.add(owner.department_id)
-    event.notification_payload = {
-        "department_ids": sorted(department_ids),
-        # 兼容旧字段：只保留一个时仍写 department_id
-        "department_id": next(iter(department_ids)) if len(department_ids) == 1 else None,
-        "customer_id": customer_id,
-        "source_type": source_type, "source_id": source_id,
-        "exclude_user_id": exclude_user_id, "required_permission": required_permission,
-        "title": title,
-        "content": f"客户：{customer.name if customer else '未关联'}；"
-                   f"操作者：{actor.name if actor else '系统'}；"
-                   f"跟进人：{'、'.join(follower_names) if follower_names else '无'}；{content}",
-    }
-    await session.flush()
-    await notification_service.materialize_business_notifications(session, event_id=event.id)
