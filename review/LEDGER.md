@@ -893,6 +893,8 @@
 
 ### 已确认发现总表（按块追加）
 
+> 2026-11-28 状态提示：前端 `F02-01/F10-05/F08-07/F12-02/F02-04` 的旧“待决策/未覆盖”状态已被文末「前端 P1 最终复核」覆盖；后端 P2/P3 行仍按表内状态，不在本次前端发布范围内。
+
 
 
 | 编号     | 严重度            | 位置                                                                                                                                                                        | 一句话                                                                                                                                                                                                                                        | 状态                                                                                            |
@@ -1821,10 +1823,18 @@
 - B20-03 已实测 `owner_id=None` 可通过；B20-05 复测已不成立（SKU 导入已走 NUMERIC_RULES）；B20-06 已实测 300 字文本核定通过、列宽 200/64/16；B21-01 已实测 `_f` 四位舍入；B21-02、B22-04、B23-03 复测已不成立（当前代码已修），从确认清单移除。B21-04 洞察价格 float、B22-05 任务负责人不判范围已实测。
 - 下一步若要关闭，先定这 4 条回款/应收 + 交期变更的业务口径，再决定改代码或改测试；P3 仍未复现。
 
-## 前端 P1 清单 2026-11-28 复核（覆盖上面旧状态）
+## 前端 P1 最终复核（2026-11-28，生产 `36d4602b`）
 
-- 结论：18 条中 **13 条已修/不再成立**，`F02-04` 部分修，4 条仍成立/待拍板（`F02-01`、`F10-05`、`F08-07`、`F12-02`）；`F13-01` 按 B11-02 决定不修。
-- 已修：`F01-02`（URL 版本归属校验）、`F01-03`（费用原样字符串 + exact）、`F02-02`（手工建单小数原样）、`F02-03`（建单 request_key）、`F02-05`（取消应收前后端拒删）、`F03-01/F03-02`（价格 decimal + exact）、`F04-01`（合并等预览成功）、`F05-01`（签署件 pending_signature，签署时才转 signed）、`F06-01`（商机 exact）、`F11-01`（非法数量中止）、`F11-03`（转报价 decimal）、`F12-01`（SKU 原样字符串，后端 422）。
-- 仍成立：`F02-01` 回款弹窗关闭重开换幂等键；`F10-05` 交接候选/目标不限部门与数据范围；`F08-07` `/dashboard/team` 只按 customer:view 收门却下发成员任务与风险商机；`F12-02` 0 单重落库后按 0 计费，与手工覆盖拒绝 <=0 冲突（0 是否合法需业务拍板）。
-- `F02-04` 残留：零发货已拦住；`delivered` 可无理由回退、API 部分发货可标 delivered，仍缺完整状态矩阵。
-- 证据与回归：见 `QUALITY_PROGRESS.md` 的「2026-11-28 前端 P1 清单当前状态复核」。
+- 范围：`F01-02`、`F01-03`、`F02-01`、`F02-02`、`F02-03`、`F02-04`、`F02-05`、`F03-01`、`F03-02`、`F04-01`、`F05-01`、`F06-01`、`F08-07`、`F10-05`、`F11-01`、`F11-03`、`F12-01`、`F12-02`，共 18 条；`F13-01` 按 B11-02 决定不修，不计入这 18 条。
+- 最终结论：**18/18 已闭环，当前前端活 P1 = 0。** 生产发布 `36d4602b`，`RELEASE.json status=verified`；前端 `npm run build` 通过，后端全量 2381 项通过。
+- 本节是 2026-11-28 最终复核，覆盖本文上方所有前端旧状态；上方表格中对应行的“未覆盖/待决策”不再作为待办。
+
+### 逐条当前代码证据
+
+- `F02-01`（已修，刷新可恢复）：`OrderDetailPage.tsx:115-129` 从 `sessionStorage` 读/清未确认提交；`:369-372` 按「账号 + 订单 + 应收期」拼键；`:3726-3763` 发送前先写盘，写盘失败不提交；`:868-884` 仅在成功回执或明确 400/422（以及首次请求的 401/403/404）清除。关闭弹窗、刷新、离开订单再回来仍用原 `request_key` 重试。浏览器回归 `ops/confirmation_browser_smoke.mjs:1150-1158` 已覆盖刷新恢复与“编号暂时不可读时不提交”。
+- `F10-05`（已修）：`task/router.py:793-795` 交接候选按 `scoped_owner_ids` 收口；`:898-904` 批量交接目标与每条任务来源都在范围内，否则 `DATA_SCOPE_DENIED(403)`；单条 `/transfer` 在 `:1063-1078` 仍走 `ensure_in_scope`。`tests/test_external_review_confirmed.py:339-385` 已覆盖同部门候选、跨部门目标拒绝和管理员全范围。
+- `F08-07`（已修，按主人决定开放商机）：`analytics/service.py:2155-2156` 分别取 `task:view` / `opportunity:view`；`:2350-2354` 只在有商机权限时返回本月团队成交、风险商机和漏斗；`:2222-2275` 的成员任务统计也只在 `can_view_tasks` 时查询/下发。`seed.py:207-208` 默认 finance 角色有 `opportunity:view`、没有 `task:view`。本地 5275 以 `wangqian`（finance）实测：工作台显示进行中商机 75 / ¥6,751,100、团队成交 ¥3,890,400 / 16 笔、风险商机 10；团队明细无任务列，左侧销售任务无权限。`/dashboard/summary` 仍会给财务返回待办数字但页面不展示，主人已接受“不要卡太死”，单独记录、不列 P1。
+- `F02-04`（已修）：`order/service.py:648-657` WEB 来源标 `delivered` 必须实发 > 0 且 `all_shipped`；`:664-671` 已签收回退到待生产/生产中/已发货必须填 ≤255 字更正原因；`order/router.py:1035-1045` 同时写审计。前端 `OrderDetailPage.tsx:1291-1303` 同步拦截未发齐和缺原因。ERP 状态同步仍按原规则（source 非 WEB 不受这两道闸门约束），不是漏修，是既定口径。`tests/test_manual_order_guards.py:122` 已覆盖手工/ERP 边界。
+- `F12-02`（已修）：`product/field_rules.py:54` 新录 SKU 单重最小 `0.001`；`pricing/logistics.py:186-189` 历史 0/空值一律 `weight_missing`；`:498-508` 缺单重时只保留可按体积/体积重计费的费率；`pricing/service.py:857` 单重与体积都缺才回落手工。`tests/test_logistics_quote.py:90-115` 已覆盖缺单重只给体积方案。
+- 其余 13 条（F01-02、F01-03、F02-02、F02-03、F02-05、F03-01、F03-02、F04-01、F05-01、F06-01、F11-01、F11-03、F12-01）沿用 `QUALITY_PROGRESS.md` 的「2026-11-28 前端 P1 清单当前状态复核」证据，均已在此前提交中修复，未在本轮重新改动。
+- 回归：本轮针对性复跑 `test_finance_role_permissions_include_opportunity_view`、`test_team_summary_reports_disabled_employee_subtotal_in_scope`、`test_inactive_staff_tasks_wait_for_scoped_batch_handover`、`test_manual_shipped_status_requires_actual_quantity_but_erp_can_report_status`、`test_missing_weight_only_offers_volume_based_rates`，7 项通过；前端构建和浏览器冒烟沿用 `36d4602b` 发布前结果。
