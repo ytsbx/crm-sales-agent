@@ -7109,3 +7109,9 @@
 - 发布前备份：`/opt/crm-sales-agent/backup/db-36d4602b-20261128T1528Z.dump`（1.4 MB，`pg_restore -l` 可读，1057 TOC entries）。发布工具单测 26 项通过；`release.py build`、服务器预检均通过。
 - 生产迁移：`c3d5e7f9a1b2 -> e1a3c5d7b9f2`（财务打回字段）→ `d4f6a8b0c2e1` 合并分叉 `fbe435eab96a` → `b3e7c1a9d5f2`（客户跟进人硬删级联）。生产 `alembic_version=b3e7c1a9d5f2`。
 - 发布结果：`RELEASE.json` `commit=36d4602b`、`status=verified`、`verified_at_utc=2026-11-28T07:26:42Z`；发布工具备份 `unified-36d4602b32c3-x44z2uku`。服务 `crm-sales.service` active，`/health` 200，公网 `https://crm.mandla.cn/` 200；admin 生产登录成功，`/auth/me` 正常。生产 finance 角色已补 `opportunity:view`，未加 `task:view`（生产当前无 finance 角色用户，权限供后续账号使用）。
+
+## 2026-11-28 本地 5275 财务商机页面验收
+
+- 本地 5275 前端实际代理到 `127.0.0.1:8009`，后端使用 `crm_oa_local_copy_20261116_134521`。用 finance 用户王倩（`wangqian`）登录后，`/auth/me` 返回 `opportunity:view`，工作台实际显示「进行中商机 75 估算货值 ¥6,751,100」「本月团队成交 ¥3,890,400 商机成交额 · 16 笔」「风险商机 10」；团队明细只有「待跟进客户 / 本月成交额」，没有任务列。
+- 同一页面左侧「销售任务」显示当前角色没有权限；`/dashboard/team` 只返回商机字段，没有 `team_task_count`/`todo_count`/`overdue_task_count`。F08-07 的「财务可看商机、不开放团队待办」在真实页面成立。
+- 验收入口：`http://127.0.0.1:5275/workbench`；账号 `wangqian`（finance，默认测试密码）。生产 finance 角色权限已写库，但生产暂无 finance 用户，页面验收以本地同角色账号完成。
