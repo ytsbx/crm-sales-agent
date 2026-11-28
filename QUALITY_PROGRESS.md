@@ -6950,3 +6950,4 @@
 - 主人明确：没有跟进过的客户可以显示「未跟进」。已把 `activity_status=unknown` 统一显示为「未跟进」，不再因企微来源或 `last_contact_unknown` 隐藏；企微来源名仍隐藏，所以企微导入行只显示「未跟进」，不会重新出现「企业微信 · 未跟进」。
 - 发布：`release/customer-unfollowed-label-20261128`，提交 `4da93a0060d2ebc88b7404ddf1538b6a07413372`，基线 `49deb02a`；发布包 SHA256 `45265be3260d73160cb6c5d4e59d6e757cf86d350cc8fee0a1da4d21de349bb4`。
 - 上线核验：`status=verified`、`verified_at_utc=2026-11-28T02:27:56Z`；两端版本记录均为 `4da93a00`；服务 active、`/health database=ok`、公网首页 200；当前列表 chunk `CustomerListPage-DZReL52E.js` 已含「未跟进」；备份 `/opt/crm-sales-agent/backup/unified-4da93a0060d2-rqt35en8`。
+- 主人明确：来源不要在客户列表里逐行显示，统一放进客户详情页。已从列表的客户名称小字和 tooltip 移除来源，只保留地区/活跃状态；客户详情概览的「客户来源」固定字段保留并显示。

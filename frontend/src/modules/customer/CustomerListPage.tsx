@@ -28,7 +28,6 @@ import { newRequestKey } from '../../shared/api/requestKey'
 import { useAuthStore } from '../../shared/store/auth'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { Customer } from '../../shared/types'
-import { isWecomCustomerSource } from '../../shared/customer-source'
 import SectionCard from '../../shared/components/SectionCard'
 import BlockedHint, { useBlockedNotify } from '../../shared/components/BlockedHint'
 import GuardedButton from '../../shared/components/GuardedButton'
@@ -473,8 +472,8 @@ export default function CustomerListPage() {
 
   // 「活跃状态」原本是独立一列，现在并进客户名称的下方小字。
   // `unknown` 统一显示「未跟进」：没跟进过就是没跟进，不因为来源是企微就藏起来。
-  // 企微来源本身仍然不在列表逐行显示，避免「企业微信 · 未跟进」刷满几千行；
-  // 但这一行只留下事实状态「未跟进」，主人 2026-11-28 明确要求保留。
+  // 来源不再进列表：客户来源统一放到客户详情页的固定字段，列表只保留地区/状态这类
+  // 行内补充信息，避免几千行重复来源名。
   const activityLabel = (record: Customer) => {
     const value = record.activity_status
     if (value === 'active') return '活跃'
@@ -483,11 +482,6 @@ export default function CustomerListPage() {
     if (value === 'unknown' || !value) return '未跟进'
     return ''
   }
-
-  // 企微导入占绝大多数，来源逐行显示只会重复；其他来源仍有区分价值。
-  // 旧手工入口写过的「企微添加」和导入的「企业微信」是同一个渠道，一起隐藏。
-  const sourceLabel = (record: Customer) =>
-    isWecomCustomerSource(record.source) ? '' : record.source
 
   const columns = [
     {
@@ -513,11 +507,11 @@ export default function CustomerListPage() {
             {text}
           </button>
           <div
-            title={[record.region, sourceLabel(record), activityLabel(record), compact ? (record.pool_status === 'public' ? '公海' : `跟进人 ${record.follower_count ?? 0}`) : ''].filter(Boolean).join(' · ')}
+            title={[record.region, activityLabel(record), compact ? (record.pool_status === 'public' ? '公海' : `跟进人 ${record.follower_count ?? 0}`) : ''].filter(Boolean).join(' · ')}
             style={{ marginTop: 2, color: 'var(--crm-text-3)', fontSize: 12, textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
           >
             {compact ? `${record.level ?? '未分级'} · ` : ''}
-            {[record.region, sourceLabel(record), activityLabel(record)]
+            {[record.region, activityLabel(record)]
               .filter(Boolean)
               .join(' · ')}
             {compact ? ` · ${record.pool_status === 'public' ? '公海' : `跟进人 ${record.follower_count ?? 0}`}` : ''}
