@@ -6951,3 +6951,5 @@
 - 发布：`release/customer-unfollowed-label-20261128`，提交 `4da93a0060d2ebc88b7404ddf1538b6a07413372`，基线 `49deb02a`；发布包 SHA256 `45265be3260d73160cb6c5d4e59d6e757cf86d350cc8fee0a1da4d21de349bb4`。
 - 上线核验：`status=verified`、`verified_at_utc=2026-11-28T02:27:56Z`；两端版本记录均为 `4da93a00`；服务 active、`/health database=ok`、公网首页 200；当前列表 chunk `CustomerListPage-DZReL52E.js` 已含「未跟进」；备份 `/opt/crm-sales-agent/backup/unified-4da93a0060d2-rqt35en8`。
 - 主人明确：来源不要在客户列表里逐行显示，统一放进客户详情页。已从列表的客户名称小字和 tooltip 移除来源，只保留地区/活跃状态；客户详情概览的「客户来源」固定字段保留并显示。
+- 发布：`release/customer-list-source-remove-20261128`，提交 `06482d13026eabaa6f2504fc802ca2d20b391ad0`，基线 `4da93a00`；发布包 SHA256 `838d608ccbc918b11e3ff3fb8133407e0198de7f966d543d84a2cfcec542f9a4`。
+- 上线核验：`status=verified`、`verified_at_utc=2026-11-28T02:30:23Z`；两端版本记录均为 `06482d13`；服务 active、`/health database=ok`、公网首页 200；当前列表 chunk `CustomerListPage-61TLp1a0.js` 已无「手工录入」等来源名，详情 chunk 仍有「客户来源」；备份 `/opt/crm-sales-agent/backup/unified-06482d13026e-ef4c8_mj`。
