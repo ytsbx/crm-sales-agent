@@ -23,6 +23,9 @@ CUSTOMER_SCORE_FALLBACKS = {
     "weight_address": 0,
 }
 CUSTOMER_NAME_SIMILARITY_MIN = 0.6
+#: 名称模糊匹配的最小有效长度。1~3 个字的短名（"11"、"邵"、"超哥"）只做
+#: **完全相等**：否则 "11" 会命中所有手机号/门牌号里带 11 的客户，满屏误报。
+CUSTOMER_NAME_FUZZY_MIN_LENGTH = 4
 CUSTOMER_SCORE_MAX = 100
 
 # 公司名里不影响主体的后缀，比较前先去掉
@@ -71,6 +74,15 @@ def normalize_name(name: str | None) -> str:
     return text.lower()
 
 
+def _has_fuzzy_name_signal(name: str) -> bool:
+    """只有足够长、且含字母/汉字的名字才允许“包含/相似”判定。
+
+    纯数字串（例如客户名只写了 "11" 或 "12345"）很容易出现在别人的手机号、
+    门牌号、订单号里；这类名字只保留完全相等，不再做包含匹配。
+    """
+    return len(name) >= CUSTOMER_NAME_FUZZY_MIN_LENGTH and any(ch.isalpha() for ch in name)
+
+
 def longest_common_substring_ratio(a: str, b: str) -> float:
     """最长公共子串占较短串的比例，用来判断"像不像同一个名字"。
 
@@ -111,11 +123,17 @@ def similarity_score(
             score += int(w.get("weight_name_exact", CUSTOMER_SCORE_FALLBACKS["weight_name_exact"]))
             reasons.append("企业名称一致")
         elif left_name in right_name or right_name in left_name:
-            score += int(w.get("weight_name_contains", CUSTOMER_SCORE_FALLBACKS["weight_name_contains"]))
-            reasons.append("企业名称互相包含")
+            # 短名/纯数字名不做包含匹配；例如 "11" 不能算 "AAA19891181602" 的重复。
+            if _has_fuzzy_name_signal(left_name) and _has_fuzzy_name_signal(right_name):
+                score += int(w.get("weight_name_contains", CUSTOMER_SCORE_FALLBACKS["weight_name_contains"]))
+                reasons.append("企业名称互相包含")
         else:
             ratio = longest_common_substring_ratio(left_name, right_name)
-            if ratio >= CUSTOMER_NAME_SIMILARITY_MIN:
+            if (
+                _has_fuzzy_name_signal(left_name)
+                and _has_fuzzy_name_signal(right_name)
+                and ratio >= CUSTOMER_NAME_SIMILARITY_MIN
+            ):
                 contains_points = int(
                     w.get("weight_name_contains", CUSTOMER_SCORE_FALLBACKS["weight_name_contains"])
                 )
