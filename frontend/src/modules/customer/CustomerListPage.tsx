@@ -506,9 +506,9 @@ export default function CustomerListPage() {
       // （2026-11-16 全站表格扫描）。210 仍够放「宁波家电01厂【演示造数】」。
       width: compact ? 215 : 210,
       render: (text: string, record: Customer) => (
-        <div>
+        <div style={{ width: '100%', textAlign: 'center' }}>
           <button type="button" className="crm-text-action"
-            style={{ color: 'var(--crm-primary)', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+            style={{ color: 'var(--crm-primary)', display: 'block', width: '100%', textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
             onClick={() => navigate(`/customers/${record.id}`)}
             title={text}
           >
@@ -516,7 +516,7 @@ export default function CustomerListPage() {
           </button>
           <div
             title={[record.region, sourceLabel(record), activityLabel(record), compact ? (record.pool_status === 'public' ? '公海' : `跟进人 ${record.follower_count ?? 0}`) : ''].filter(Boolean).join(' · ')}
-            style={{ marginTop: 2, color: 'var(--crm-text-3)', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+            style={{ marginTop: 2, color: 'var(--crm-text-3)', fontSize: 12, textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
           >
             {compact ? `${record.level ?? '未分级'} · ` : ''}
             {[record.region, sourceLabel(record), activityLabel(record)]
