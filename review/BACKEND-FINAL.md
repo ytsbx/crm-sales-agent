@@ -2,7 +2,7 @@
 
 > **2026-11-28 状态提示**：本文件是后端 2026-11-23/24 的复核快照，不是当前待办清单。前端 18 条 P1 已随生产 `36d4602b` 闭环；后端 P1/P2/P3 仍按本文件的分级和证据保留，本轮没有重新全量改后端，也没有把未处理的 P2 说成已修。若要继续，按文末“无法确定/需业务口径”先拍板，再按代码逐条复核。
 >
-> **2026-11-28 增量**：`B11-03` 已修——`GET /users` 对分配角色仅返回 id/姓名/username/部门/在职状态，手机号、邮箱、企微/钉钉身份与角色不再下发；完整字段仅 `user:manage`/admin。保留 `username` 用于选人同名区分，属已拍板取舍。
+> **2026-11-28 增量**：`B11-03` 已修——`GET /users` 对分配角色仅返回 id/姓名/username/部门/在职状态，手机号、邮箱、企微/钉钉身份与角色不再下发；完整字段仅 `user:manage`/admin。保留 `username` 用于选人同名区分，属已拍板取舍。已随生产 `c809ce62` 部署（`RELEASE.json status=verified`）。
 
 - 复核方式：逐块重读业务代码与上下游，优先找“触发条件不成立/已被其他闸门兜住”的误报；能纯函数或最小替身复现的写进 `review/repro/`。
 - 测试：`cd backend && PYTHONPATH=. .venv/bin/python -m pytest ../review/repro/test_b0*.py ../review/repro/test_b1*.py ../review/repro/test_b2*.py -q`
