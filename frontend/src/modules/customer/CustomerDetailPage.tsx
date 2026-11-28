@@ -1,5 +1,6 @@
 import { formatBeijingTime } from '../../shared/beijing-time'
 import { UNRATED_OPTION, customerLevelValue, customerLevelPayload, customerLevelLabel } from '../../shared/customer-level'
+import { displayCustomerSource } from '../../shared/customer-source'
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -672,7 +673,7 @@ export default function CustomerDetailPage() {
                 : (customer.followers ?? []).map((item) => item.name).join('、') || '-'}
             </span>
             <span>地区：{customer.region ?? '-'}</span>
-            <span>来源：{customer.source ?? '-'}</span>
+            <span>来源：{displayCustomerSource(customer.source) || '-'}</span>
             <span>联系人：{customer.contact_count}</span>
           </>
         }
@@ -689,7 +690,7 @@ export default function CustomerDetailPage() {
                     region: customer.region ?? '',
                     address: customer.address ?? '',
                     tax_no: customer.tax_no ?? '',
-                    source: customer.source ?? '',
+                    source: displayCustomerSource(customer.source),
                     level: customer.level ?? null,
                     remark: customer.remark ?? '',
                   })

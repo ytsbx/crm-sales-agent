@@ -29,6 +29,7 @@ import { newRequestKey } from '../../shared/api/requestKey'
 import { useAuthStore } from '../../shared/store/auth'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { Customer } from '../../shared/types'
+import { isWecomCustomerSource } from '../../shared/customer-source'
 import SectionCard from '../../shared/components/SectionCard'
 import BlockedHint, { useBlockedNotify } from '../../shared/components/BlockedHint'
 import GuardedButton from '../../shared/components/GuardedButton'
@@ -54,7 +55,7 @@ const LEVEL_OPTIONS = [
 // 选中后必须写具体来源（最多 32 字），避免再把「老客户介绍 / Excel 导入 / 手工录入」
 // 这类同义旧写法直接写回库。
 const SOURCE_OPTIONS = [
-  ...['展会', '官网询盘', '客户介绍', '电话开发', '企微添加', '导入', '老客复购', '抖音私信'].map(
+  ...['展会', '官网询盘', '客户介绍', '电话开发', '企业微信', '导入', '老客复购', '抖音私信'].map(
     (value) => ({ value, label: value }),
   ),
   { value: '其他', label: '其他' },
@@ -483,14 +484,17 @@ export default function CustomerListPage() {
     if (value === 'stale') return '沉睡'
     if (value === 'watch') return '关注'
     if (value === 'unknown' || !value) {
-      return record.last_contact_unknown ? '' : '未跟进'
+      // 企微来源（导入或手工添加）不逐行显示「未跟进」：
+      // 导入客户几千条，重复标签会把列表刷成一堵墙；手工添加的同一个渠道也按同一口径。
+      return record.last_contact_unknown || isWecomCustomerSource(record.source) ? '' : '未跟进'
     }
     return ''
   }
 
   // 企微导入占绝大多数，来源逐行显示只会重复；其他来源仍有区分价值。
+  // 旧手工入口写过的「企微添加」和导入的「企业微信」是同一个渠道，一起隐藏。
   const sourceLabel = (record: Customer) =>
-    record.source === '企业微信' ? '' : record.source
+    isWecomCustomerSource(record.source) ? '' : record.source
 
   const columns = [
     {
