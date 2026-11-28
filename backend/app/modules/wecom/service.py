@@ -600,6 +600,7 @@ async def unbound_candidates(session: AsyncSession, contact_id: int, *, user: Cu
     matches = await find_duplicate_customers(
         session,
         company_name=row.corp_name or row.name,
+        customer_type="企业" if row.corp_name else "个人",
         mobile=None,
         owner_ids=await scoped_owner_ids(session, user),
     )

@@ -360,6 +360,7 @@ async def test_deduplicate_existing_customer_keeps_request_mobile(monkeypatch):
     existing = SimpleNamespace(
         id=99,
         name="客户 99",
+        customer_type="个人",
         tax_no=None,
         domain=None,
         address=None,
@@ -388,6 +389,8 @@ async def test_deduplicate_existing_customer_keeps_request_mobile(monkeypatch):
 
     assert seen["company_name"] == "客户 99"
     assert seen["mobile"] == "13800000000"
+    assert seen["customer_type"] == "个人"
+    assert seen["exclude_id"] == 99
 @pytest.mark.anyio
 async def test_exact_duplicate_candidates_are_not_crowded_out(db_session, monkeypatch):
     from app.modules.contact_util import find_duplicate_contacts, find_duplicate_customers
@@ -417,3 +420,77 @@ async def test_exact_duplicate_candidates_are_not_crowded_out(db_session, monkey
         session, user=make_user(), name="张三", email="same@example.test", limit=5,
     )
     assert contacts[0]["id"] == 65
+
+
+@pytest.mark.anyio
+async def test_personal_customer_names_need_corroboration_and_use_normalized_phone(db_session, monkeypatch):
+    from app.modules.contact_util import find_duplicate_customers
+    from app.modules.settings import service as settings
+    from tests.conftest import SyncSessionAsAsync
+
+    weights = {**settings.DEFAULT_SETTINGS["dedup_scoring"], "threshold": 20}
+    monkeypatch.setattr(settings, "get_setting", AsyncMock(return_value=weights))
+    db_session.add_all([
+        Customer(id=201, name="Lily", customer_type="个人"),
+        Customer(id=202, name="Lily Chen", customer_type="个人"),
+        Customer(id=203, name="Lily 有限公司", customer_type="企业"),
+    ])
+    db_session.flush()
+    db_session.add(Contact(customer_id=201, name="Lily", mobile="+86 138-0000-0000"))
+    db_session.commit()
+    session = SyncSessionAsAsync(db_session)
+
+    rows = await find_duplicate_customers(session, company_name="Lily", mobile=None)
+    assert [row["id"] for row in rows] == [203]
+    rows = await find_duplicate_customers(session, company_name="Lily", customer_type="个人", mobile="13800000000")
+    assert [(row["id"], row["score"]) for row in rows] == [(201, 75)]
+    assert rows[0]["reasons"] == ["客户姓名一致", "手机号一致"]
+
+    db_session.add(Contact(customer_id=202, name="Lily Chen", mobile="13800000000", is_primary=True))
+    db_session.commit()
+    monkeypatch.setattr(tags_router.svc, "get_visible_customer", AsyncMock(return_value=db_session.get(Customer, 202)))
+    monkeypatch.setattr(tags_router, "scoped_owner_ids", AsyncMock(return_value=None))
+    result = await tags_router.deduplicate({"customer_id": 202}, user=object(), session=session)
+    assert [row["id"] for row in result["data"]["matches"]] == [201]
+
+
+@pytest.mark.anyio
+async def test_normalized_evidence_can_find_candidate_without_name_match(db_session, monkeypatch):
+    from app.modules.contact_util import find_duplicate_customers
+    from app.modules.settings import service as settings
+    from tests.conftest import SyncSessionAsAsync
+
+    weights = {**settings.DEFAULT_SETTINGS["dedup_scoring"], "threshold": 30}
+    monkeypatch.setattr(settings, "get_setting", AsyncMock(return_value=weights))
+    db_session.add_all([
+        Customer(id=211, name="宁波（中国）有限公司", domain="https://www.example.test/path"),
+        Customer(id=212, name="其它企业", domain="www.example.test.other.test"),
+        Customer(id=213, name="另一个名称", tax_no="91440300 708461136t"),
+    ])
+    db_session.commit()
+    session = SyncSessionAsAsync(db_session)
+
+    for query in (
+        {"company_name": None, "domain": "example.test", "expected_id": 211},
+        {"company_name": "宁波(中国)有限公司", "expected_id": 211},
+        {"company_name": None, "tax_no": "91440300708461136T", "expected_id": 213},
+    ):
+        expected_id = query.pop("expected_id")
+        rows = await find_duplicate_customers(session, mobile=None, **query)
+        assert [row["id"] for row in rows] == [expected_id]
+
+
+def test_conflicting_valid_tax_numbers_require_other_evidence():
+    from app.core.similarity import similarity_score
+    from app.core.tax_no import _check_char
+    from app.modules.settings.service import DEFAULT_SETTINGS
+
+    prefix = "91440300708461137"
+    left = {"name": "宏远包装有限公司", "tax_no": "91440300708461136T"}
+    right = {"name": "宏远包装有限公司", "tax_no": prefix + _check_char(prefix)}
+    weights = DEFAULT_SETTINGS["dedup_scoring"]
+    assert similarity_score(left=left, right=right, weights=weights) == (0, [])
+    assert similarity_score(left=left, right={**right, "tax_no": None}, weights=weights)[0] == 70
+    assert similarity_score(
+        left={**left, "mobile": "13800000000"}, right={**right, "mobile": "13800000000"}, weights=weights,
+    )[0] == 100

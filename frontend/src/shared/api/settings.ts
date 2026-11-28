@@ -11,6 +11,7 @@ export interface SystemSettingRow {
   customer_score_details?: {
     points: Record<string, number | string>
     name_similarity_min: number
+    personal_name_max_points: number
     max_score: number
   }
   /**

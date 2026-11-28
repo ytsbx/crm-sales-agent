@@ -2,10 +2,14 @@
 
 import re
 
-from sqlalchemy import case, or_, select
+from sqlalchemy import case, func, literal_column, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.similarity import CUSTOMER_SCORE_FALLBACKS, similarity_score
+from app.core.similarity import (
+    CUSTOMER_SCORE_FALLBACKS, MOBILE_SEPARATORS, normalize_domain, normalize_mobile,
+    normalize_name_text, similarity_score,
+)
+from app.core.tax_no import normalize_tax_no
 from app.modules.customer.model import Contact, Customer
 
 #: 显式授权码：拿到它的人可以看**完整**联系方式（不限于自己负责/本团队的客户）。
@@ -334,16 +338,47 @@ async def create_contact_for_customer(
     return contact
 
 
+def _replace_chars(column, characters):
+    for character in characters:
+        column = func.replace(column, character, "")
+    return column
+
+
+def _normalized_width(column, postgresql: bool):
+    if postgresql:
+        return func.normalize(column, literal_column("NFKC"))
+    return func.replace(func.replace(func.replace(column, "（", "("), "）", ")"), "　", " ")
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+async def customer_match_mobile(session: AsyncSession, customer_id: int) -> str | None:
+    return await session.scalar(
+        select(Contact.mobile)
+        .where(
+            Contact.customer_id == customer_id,
+            Contact.deleted_at.is_(None),
+            func.trim(Contact.mobile) != "",
+        )
+        .order_by(Contact.is_primary.desc(), Contact.id)
+        .limit(1)
+    )
+
+
 async def find_duplicate_customers(
     session: AsyncSession,
     *,
     company_name: str | None,
     mobile: str | None,
+    customer_type: str | None = None,
     tax_no: str | None = None,
     domain: str | None = None,
     address: str | None = None,
     limit: int = 5,
     owner_ids: list[int] | None = None,
+    exclude_id: int | None = None,
 ) -> list[dict]:
     """找疑似重复客户：先宽松捞候选，再用加权规则打分排序。
 
@@ -362,29 +397,58 @@ async def find_duplicate_customers(
     weights = await settings_service.get_setting(session, "dedup_scoring")
     threshold = int(weights.get("threshold", CUSTOMER_SCORE_FALLBACKS["threshold"]))
 
+    postgresql = session.get_bind().dialect.name == "postgresql"
     conditions = []
     exact = []
-    if company_name:
-        _cn = company_name.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        conditions.append(Customer.name.ilike(f"%{_cn}%", escape="\\"))
-        conditions.append(Customer.short_name.ilike(f"%{_cn}%", escape="\\"))
-        # 名称相似但不相含的（例如只差后缀），用前几个字再捞一轮候选
-        head = _cn[:4]
-        if len(head) >= 2:
-            conditions.append(Customer.name.ilike(f"%{head}%", escape="\\"))
-    if mobile:
+    name_key = normalize_name_text(company_name)
+    if name_key:
+        name_columns = [
+            _replace_chars(_normalized_width(column, postgresql), " \t\n\r")
+            for column in (Customer.name, Customer.short_name)
+        ]
+        name = _escape_like(name_key)
+        conditions.extend(column.ilike(f"%{name}%", escape="\\") for column in name_columns)
+        head = _escape_like(name_key[:4])
+        if len(name_key) >= 2:
+            conditions.append(name_columns[0].ilike(f"%{head}%", escape="\\"))
+    mobile_key = normalize_mobile(mobile)
+    if mobile_key:
+        mobile_column = _replace_chars(_normalized_width(Contact.mobile, postgresql), MOBILE_SEPARATORS)
+        mobile_keys = [mobile_key]
+        if re.fullmatch(r"1[0-9]{10}", mobile_key):
+            mobile_keys.append(f"+86{mobile_key}")
         contact_customer_ids = select(Contact.customer_id).where(
-            Contact.mobile == mobile, Contact.deleted_at.is_(None)
+            mobile_column.in_(mobile_keys), Contact.deleted_at.is_(None)
         )
         exact.append(Customer.id.in_(contact_customer_ids))
-    for value, column in ((tax_no, Customer.tax_no), (domain, Customer.domain)):
-        if value:
-            exact.append(column == value.strip())
+    tax_key = normalize_tax_no(tax_no)
+    if tax_key:
+        tax_column = func.upper(_replace_chars(_normalized_width(Customer.tax_no, postgresql), " \t\n\r"))
+        exact.append(tax_column == tax_key)
+    domain_key = normalize_domain(domain)
+    if domain_key:
+        domain_column = func.lower(func.trim(Customer.domain))
+        domain_column = case(
+            (domain_column.like("https://%"), func.substr(domain_column, 9)),
+            (domain_column.like("http://%"), func.substr(domain_column, 8)),
+            else_=domain_column,
+        )
+        domain_column = case(
+            (domain_column.like("www.%"), func.substr(domain_column, 5)),
+            else_=domain_column,
+        )
+        host = _escape_like(domain_key)
+        exact.append(or_(domain_column.in_([domain_key, f"{domain_key}."]), *(
+            domain_column.like(f"{host}{delimiter}%", escape="\\")
+            for delimiter in ("/", ":", "?", "#", "./", ".:", ".?", ".#")
+        )))
     conditions.extend(exact)
     if not conditions:
         return []
 
     stmt = select(Customer).where(Customer.deleted_at.is_(None), or_(*conditions))
+    if exclude_id is not None:
+        stmt = stmt.where(Customer.id != exclude_id)
     if exact:
         stmt = stmt.order_by(case((or_(*exact), 0), else_=1))
     if owner_ids is not None:
@@ -419,6 +483,7 @@ async def find_duplicate_customers(
             score, reasons = similarity_score(
                 left={
                     "name": company_name,
+                    "customer_type": customer_type,
                     "mobile": my_mobile,
                     "tax_no": tax_no,
                     "domain": domain,
@@ -426,6 +491,7 @@ async def find_duplicate_customers(
                 },
                 right={
                     "name": customer.name,
+                    "customer_type": customer.customer_type,
                     "mobile": contact.get("mobile"),
                     "tax_no": customer.tax_no,
                     "domain": customer.domain,
@@ -435,7 +501,7 @@ async def find_duplicate_customers(
             )
             if score > best_score:
                 best_score, best_reasons = score, reasons
-        if best_score >= threshold:
+        if best_score > 0 and best_score >= threshold:
             scored.append(
                 {
                     "id": customer.id,

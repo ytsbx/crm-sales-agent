@@ -12,7 +12,7 @@ import {
   claimCustomer,
   createContact,
   deduplicateContacts,
-  deduplicateCustomers,
+  listCustomers,
   deleteContact,
   deleteCustomer,
   detachCustomerTag,
@@ -189,13 +189,10 @@ export default function CustomerDetailPage() {
 
   const tagsQuery = useQuery({ queryKey: ['tags'], queryFn: () => listTags(false) })
 
-  // 合并目标候选：按关键词搜其他客户；顺带展示查重打分，优先合并疑似重复的
+  // 人工选择合并目标仍可用姓名搜索个人客户。
   const mergeCandidatesQuery = useQuery({
     queryKey: ['merge-candidates', mergeKeyword],
-    queryFn: () =>
-      mergeKeyword.trim()
-        ? deduplicateCustomers({ name: mergeKeyword.trim() })
-        : Promise.resolve({ matches: [], count: 0 }),
+    queryFn: () => listCustomers({ keyword: mergeKeyword.trim(), page: 1, page_size: 20 }),
     enabled: mergeModal && mergeKeyword.trim().length > 0,
   })
 
@@ -1820,14 +1817,14 @@ export default function CustomerDetailPage() {
               <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>查询中…</div>
             )}
             {!mergeCandidatesQuery.isLoading &&
-              (mergeCandidatesQuery.data?.matches ?? []).filter((m) => m.id !== customerId)
+              (mergeCandidatesQuery.data?.items ?? []).filter((m) => m.id !== customerId)
                 .length === 0 && (
                 <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
                   没有找到匹配的客户，换个关键词试试。
                 </div>
               )}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {(mergeCandidatesQuery.data?.matches ?? [])
+              {(mergeCandidatesQuery.data?.items ?? [])
                 .filter((m) => m.id !== customerId)
                 .map((match) => (
                   <div
@@ -1850,7 +1847,7 @@ export default function CustomerDetailPage() {
                   >
                     <div style={{ fontWeight: 600 }}>{match.name}</div>
                     <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                      相似度 {match.score}%（{match.reasons.join('、')}）
+                      {[match.customer_type, match.region, match.address].filter(Boolean).join(' · ')}
                     </div>
                   </div>
                 ))}

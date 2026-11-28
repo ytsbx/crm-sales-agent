@@ -16,6 +16,7 @@ from app.core.similarity import (
     CUSTOMER_NAME_SIMILARITY_MIN,
     CUSTOMER_SCORE_FALLBACKS,
     CUSTOMER_SCORE_MAX,
+    PERSONAL_NAME_MAX_POINTS,
 )
 from app.modules.settings import service as svc
 from app.modules.settings.model import (
@@ -78,6 +79,7 @@ def _include_customer_score_details(item: dict) -> dict:
                 for key, fallback in CUSTOMER_SCORE_FALLBACKS.items()
             },
             "name_similarity_min": CUSTOMER_NAME_SIMILARITY_MIN,
+            "personal_name_max_points": PERSONAL_NAME_MAX_POINTS,
             "max_score": CUSTOMER_SCORE_MAX,
         }
     return item
