@@ -8,6 +8,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { emptyText } from '../../shared/hooks/emptyText'
 import { Banner, Button, Input, Modal, Select, Table, Tabs, Toast, TextArea } from '@douyinfe/semi-ui'
+import { IconFilter } from '@douyinfe/semi-icons'
 
 import {
   batchTagCustomers,
@@ -762,24 +763,20 @@ export default function CustomerListPage() {
             style={{ width: 140 }}
             showClear
           />
-          <Select
-            placeholder="联系情况"
-            value={activity}
-            onChange={(value) => {
-              setActivity(value as string | undefined)
+          <Button
+            icon={<IconFilter />}
+            theme={activity === 'stale' ? 'light' : 'outline'}
+            type={activity === 'stale' ? 'primary' : 'tertiary'}
+            onClick={() => {
+              setActivity(activity === 'stale' ? undefined : 'stale')
               setPage(1)
             }}
-            optionList={[
-              { value: 'stale', label: '在途业务停滞' },
-              // 企业微信导入不是历史档案，不产生“待补核”入口；只有真正存在
-              // 非企微历史导入缺口时才显示这个筛选，避免长期挂一个没人处理的指标。
-              ...(unknownContactCount > 0
-                ? [{ value: 'unknown_contact', label: '历史导入待补核' }]
-                : []),
-            ]}
-            style={{ width: 140 }}
-            showClear
-          />
+            style={{ height: 32, fontSize: 13 }}
+            aria-pressed={activity === 'stale'}
+            title={activity === 'stale' ? '点击清除筛选' : '只看有未结束业务、且超过 30 天没有跟进或业务进展的客户'}
+          >
+            在途业务停滞
+          </Button>
           <Select
             value={scope}
             onChange={(value) => {
