@@ -6928,3 +6928,6 @@
 - 上线核验：`status=verified`、`verified_at_utc=2026-11-28T01:47:34Z`；两端版本记录均为 `37c8954d`；服务 active、`/health database=ok`、公网首页 200；数据库仍为 `d4f6a8b0c2e1`；生产当前 CSS 为 `index-DsfhMQyL.css`，已含 `.semi-table-thead .semi-table-row-head.cell-left,...{text-align:left!important}`。
 - 备份：`/opt/crm-sales-agent/backup/unified-37c8954d0df2-7cyovog4`。
 - 追加（2026-11-28）：主人指出「别的列都是居中，为什么客户名称靠左」。上一版把客户名称强制左对齐，反而和其它列不一致；改为 `cell-center`，表头和数据都居中，和等级/阶段/商机等列统一。
+- 发布：生产候选分支 `release/customer-cell-center-20261128`，提交 `0a952ec6dad68ae0fa76b119404667f82c5cb78a`，基线 `37c8954d`；发布包 SHA256 `c0e3e571ca73b425fe79e728e469a5ccc3cf2f7a128de350b973088c3761298b`。
+- 上线核验：`status=verified`、`verified_at_utc=2026-11-28T01:53:39Z`；两端版本记录均为 `0a952ec6`；服务 active、`/health database=ok`、公网首页 200；数据库仍为 `d4f6a8b0c2e1`；生产当前 CSS 为 `index-Bh8mgnuc.css`，已含 `.semi-table-thead .semi-table-row-head.cell-center,...{text-align:center!important}`。
+- 备份：`/opt/crm-sales-agent/backup/unified-0a952ec6dad6-i90nffzr`。
